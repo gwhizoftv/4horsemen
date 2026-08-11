@@ -1,12 +1,18 @@
 {
   "project": "coordination",
   "agents": [
-    { "id": "claude", "root": "../coordination-claude" },
-    { "id": "codex", "root": "../coordination-codex" },
-    { "id": "cursor", "root": "../coordination-cursor" },
-    { "id": "antigravity", "root": "../coordination-antigravity" }
+    { "id": "claude", "root": "../coordination-claude", "harness": "claude-code", "nudge": false },
+    { "id": "codex", "root": "../coordination-codex", "harness": "codex", "nudge": false },
+    { "id": "cursor", "root": "../coordination-cursor", "harness": "cursor", "nudge": false },
+    { "id": "antigravity", "root": "../coordination-antigravity", "harness": "antigravity", "nudge": false }
   ],
   "branch": "issue-{issue}/{agent}",
-  "defaultCoordRoot": "../coord-runtime",
-  "maxRevisionRounds": 3
+  "baseBranch": "main",
+  "maxRevisionRounds": 3,
+  "prPolicy": "coord-open-unmerged",
+  "profile": "consensus",
+  "checks": [
+    ["pnpm", "install", "--frozen-lockfile"],
+    ["pnpm", "check"]
+  ]
 }

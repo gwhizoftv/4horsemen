@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
-if [[ ! -f dist/main.js ]]; then
+newest_src=$(find src -name '*.ts' -newer dist/main.js 2>/dev/null | head -1)
+if [[ ! -f dist/main.js || -n "$newest_src" ]]; then
   pnpm build
 fi
 exec node dist/main.js "$@"
