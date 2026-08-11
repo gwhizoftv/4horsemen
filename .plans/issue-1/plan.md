@@ -1,37 +1,39 @@
-# Issue 382 plan — Codex
+# Issue 1 plan — Codex
 
 ## Context and binding decisions
 
-Issue 382 replaces agent-driven phase interpretation with an owner-side workflow
-driver. The driver gives each agent one concrete action, accepts an exact pushed
-commit SHA as the agent's completion intent, verifies the required artifact in
-that commit, and advances only after the corresponding mechanical predicate
-passes.
+Issue 1 implements the owner-side workflow driver in the dedicated
+`coordination` repository. The driver gives each agent one concrete action,
+accepts an exact pushed commit SHA as the agent's completion intent, verifies
+the required artifact in that commit, and advances only after the corresponding
+mechanical predicate passes.
 
-This plan treats Cursor's `.plans/issue-382/workflow-algorithm.md` at commit
-`c894fae9bd4068d2bf45bf6fd01a359801e9d137` as the accepted design for all four
-implementations. The owner has also fixed `maxRevisionRounds` at **3**,
-overriding the example value of 5 in that design. Amendments are removed: the
-driver has no amendment step. Automatic consensus declaration and creation of
-an unmerged PR are permitted by the owner-local coordinator policy; merging
-remains owner-only. This issue is being
-developed with automation off and no barriers; that affects only how this plan
-is coordinated, not the workflow driver being built.
+This plan treats this repository's `.plans/issue-1/workflow-algorithm.md` at
+baseline commit `9f918cd97ca8476593c3c831c52d2f51aaf9c563` as the accepted design for all
+four implementations. The owner has fixed `maxRevisionRounds` at **3**,
+removed amendments and signed owner-authority paperwork, allowed automatic
+consensus declaration and creation of an unmerged PR, and retained merge as an
+owner-only operation. This issue is coordinated manually without automation
+barriers.
 
-There is no backward-compatibility requirement between the new driver and the
-legacy automation CLI, schemas, runtime state, or tests. `automation/` remains
-unchanged as a frozen reference implementation. Selected self-contained files
-may be copied at the implementation baseline, but `coordination/` becomes the
-only version maintained going forward and may diverge without synchronization.
+The legacy consensus-ai `automation/` suite is not part of this repository and
+has no backward-compatibility contract with the new driver. It is frozen
+reference material at consensus-ai commit
+`01be9854919e1bf9a75f70ced7980d48d7150c28`. Selected self-contained files may
+be copied from that immutable source once; this repository owns all subsequent
+maintenance and may diverge without synchronization.
 
 ## Proposed architecture
 
-Implement the driver as a new, standalone root-level package under
-`coordination/`. Every tracked implementation, configuration, test, executable,
-and operator-documentation file for the driver lives there. Do not extend or
-import the existing phase-oriented `automation/` implementation; the new
-package owns its protocol schemas, control loop, operational-state model, Git
-snapshot logic, evidence evaluation, tmux integration, and CLI.
+Implement the driver at the root of the standalone repository located at
+`/Volumes/4TB-SOURCE/REPOS/coord/coordination/`. Agent implementation work occurs
+on the corresponding issue branch in each sibling agent clone, including
+`coordination-codex`; it reaches the canonical `coordination/` checkout only
+through the normal review/merge process. All paths below are relative to that
+repository root—do **not** create a nested `coordination/coordination/`
+directory. The package owns its protocol schemas, control loop,
+operational-state model, Git snapshot logic, evidence evaluation, tmux
+integration, and CLI.
 
 The coordinator owns a runtime `coord/` tree in the owner's control folder,
 outside every configured repository clone. A required `--coord-root` is
@@ -54,188 +56,185 @@ the append-only journal.
 
 ## Exact file map
 
-### New production files
+### Production file map
 
-1. **`coordination/.gitignore`** — ignore this package's `node_modules/`,
-   `dist/`, coverage, and temporary test output.
-2. **`coordination/package.json`** — private Node 26 ESM package with build,
-   typecheck, lint, test, and check scripts plus pinned Zod/tooling dependencies.
-3. **`coordination/pnpm-workspace.yaml`** — make `coordination/` an independent
-   one-package pnpm workspace without changing the repository root workspace.
-4. **`coordination/pnpm-lock.yaml`** — standalone reproducible dependency lock.
-5. **`coordination/tsconfig.json`** — strict NodeNext TypeScript build from
-   `src/` to `dist/`.
-6. **`coordination/vitest.config.ts`** — focused unit/integration test config.
-7. **`coordination/eslint.config.mjs`** — standalone strict TypeScript lint
+The repository scaffold already supplies package infrastructure, a wrapper,
+operator-documentation stubs, and placeholder source/tests. Retain or refine
+those files rather than nesting another package inside this one.
+
+1. **`.gitignore`** — retain the scaffold's package/build/tool ignores.
+2. **`.nvmrc`** — retain the scaffold's Node 26 declaration.
+3. **`package.json`** — refine the existing private Node 26 ESM package scripts
+   so `check`, `check:fast`, `test:fast`, and `test:e2e` cover the complete
+   driver and match the existing hook entry points.
+4. **`pnpm-workspace.yaml`** — retain the existing one-package root workspace.
+5. **`pnpm-lock.yaml`** — update from this repository's `package.json` only when
+   dependencies change; do not copy the legacy automation lockfile.
+6. **`tsconfig.json`** — refine the existing strict NodeNext TypeScript build
+   from `src/` to `dist/` as needed.
+7. **`test/tsconfig.json`** — add the standalone test typecheck configuration.
+8. **`vitest.config.ts`** — refine the existing focused unit/integration test
    configuration.
-8. **`coordination/coord`** — executable wrapper that builds when needed and
-   invokes `coordination/dist/main.js`, giving owner and agent panes a stable
-   `coord` command.
-9. **`coordination/src/paths.ts`** — resolve the external runtime
+9. **`eslint.config.mjs`** — refine the existing strict TypeScript lint config.
+10. **`coord`** — retain/refine the executable wrapper that builds when needed
+    and invokes `dist/main.js`.
+11. **`src/paths.ts`** — resolve the external runtime
    `coord/issue-<n>/` tree, containment-check every derived path, reject
    symlinks, and refuse a runtime root inside any configured agent clone.
-10. **`coordination/src/state.ts`** — strict Zod schemas and atomic I/O for
+12. **`src/state.ts`** — strict Zod schemas and atomic I/O for
     `start.json`, `cursors.json`, and `journal.jsonl`; original and dropped
     roster state; runtime format version; pause state; and restart reconstruction.
-11. **`coordination/src/action.ts`** — keep the internal order and rendered
+13. **`src/action.ts`** — keep the internal order and rendered
     agent action as distinct types; render/parse the restricted `action.md`,
     parse and clear `complete`, and place exact expected input commits in the
     human task text without serializing internal step/gate/phase/evidence IDs.
-12. **`coordination/src/protocol.ts`** — driver-owned Zod schemas and helpers for
+14. **`src/protocol.ts`** — driver-owned Zod schemas and helpers for
     the published join, plan, ballot, implementation, comparison, revision,
     consensus, and finalization artifacts the evidence predicates consume.
     Selectively adapt the required primitives, envelope/citation rules, and
-    artifact schemas from `automation/src/schemas.ts`; do not copy that file or
+    artifact schemas from the pinned legacy `automation/src/schemas.ts`; do not
     import it. Omit its amendment, signed owner-override/drop, and escalation-ID
-    types. The coordination schemas become the maintained definitions; changes
-    are not backported to the frozen automation schemas.
-13. **`coordination/src/mirror.ts`** — owner-side bare-mirror setup, explicit
+    types. These coordination schemas become the maintained definitions.
+15. **`src/mirror.ts`** — owner-side bare-mirror setup, explicit
     origin ref fetching, transient-failure classification, submission-SHA
     reachability, exact-commit blob reads, ancestry, and changed paths.
-14. **`coordination/src/steps.ts`** — coordinator-internal step, gate, and
+16. **`src/steps.ts`** — coordinator-internal step, gate, and
     evidence identifiers; profile participants, step table, gate denominators,
     path templates, and defaults including `maxRevisionRounds: 3`. These IDs
     are never part of the agent-facing action schema.
-15. **`coordination/src/evidence.ts`** — the
+17. **`src/evidence.ts`** — the
    `isSatisfied(action, submissionSha)` predicate registry. It checks the exact
    required path, required document sections, driver-owned protocol schemas,
    issue/session/agent/digest fields, bound inputs, citations, rounds, pin
    ancestry, signal-commit separation, and approved implementation file maps.
    Failures return concrete stable `outstanding[]` values rather than a generic
    missing-agent result.
-16. **`coordination/src/machine.ts`** — pure observations-to-decisions reducer,
+18. **`src/machine.ts`** — pure observations-to-decisions reducer,
     intent/proof matrix, advisory attempt counts, gate advancement, owner drop
     handling, plan/reviser routing, revision accounting, and finalization
     policy. Attempt counts never cause an automatic drop or advance.
-17. **`coordination/src/tmux.ts`** — tmux session/window creation,
+19. **`src/tmux.ts`** — tmux session/window creation,
    per-agent `start-<agent>.sh` launch, foreground-process and pane checks,
    `load-buffer`/`paste-buffer` delivery, harness disappearance detection, and
    the nudge policy. Automatic non-Claude nudging remains disabled until an
    explicitly supported idle fixture proves it safe.
-18. **`coordination/src/runLoop.ts`** — effectful polling/orchestration loop:
+20. **`src/runLoop.ts`** — effectful polling/orchestration loop:
     prepare actions, snapshot intent, fetch/verify, re-order with precise
     outstanding work, apply owner controls, recover pushed-then-died work, and
     wait without busy-spinning.
-19. **`coordination/src/cli.ts`** — strict parsing and stdin/stdout handling
+21. **`src/cli.ts`** — strict parsing and stdin/stdout handling
     for `start`, `run`, `next`, `answer`, `drop`, `pause`, `resume`,
     `restart-action`, and `abandon`. It defines a new testable CLI API and exit
     contract without preserving legacy automation command or export shapes.
-20. **`coordination/src/main.ts`** — import-safe process entry and exit-code
-    mapping, separate from the testable CLI module.
-21. **`coordination/docs/coord-driver.md`** — owner operations, directory
+22. **`src/main.ts`** — replace the scaffold stub with an import-safe process
+    entry and exit-code mapping, separate from the testable CLI module.
+23. **`src/hash.ts`** — add the copied SHA-256 helpers.
+24. **`src/pinValidation.ts`** — add the copied NUL-safe Git range parsing,
+    ancestry, pin immutability, and coordination-path checks.
+25. **`src/finalization.ts`** — add the copied cleanup-only finalization
+    verifier.
+26. **`docs/coord-driver.md`** — expand the scaffold operator notes with owner
+    operations, directory
     topology, command examples, profiles, tmux attachment,
     indefinite waiting, agent drop semantics, recovery, and explicit
     confirmation that the coordinator can never merge.
-22. **`coordination/config.example.json`** — documented portable roster,
-    clone-root, branch-template, harness, and PR-policy configuration example.
-23. **`coordination/config.consensus-ai.json`** — this project's four-agent
-    coordinator configuration, without owner-signing keys, including explicit
-    argument-vector check commands used before finalization/PR creation.
-24. **`coordination/.nvmrc`** — Node major declaration, copied unchanged from
-    the repository root `.nvmrc`.
-25. **`coordination/test/tsconfig.json`** — test typecheck configuration, copied
-    unchanged from `automation/test/tsconfig.json`.
-26. **`coordination/src/hash.ts`** — SHA-256 helpers, copied unchanged from
-    `automation/src/hash.ts`.
-27. **`coordination/src/pinValidation.ts`** — NUL-safe Git range parsing,
-    ancestry, pin immutability, and coordination-path checks, copied unchanged
-    from `automation/src/pinValidation.ts`.
-28. **`coordination/src/finalization.ts`** — cleanup-only finalization verifier,
-    copied unchanged from `automation/src/finalization.ts`.
+27. **`README.md`** — expand the scaffold quick start with the maintained CLI
+    and required external runtime-root contract.
+28. **`config.example.json`** — refine the scaffold's portable roster,
+    clone-root, branch-template, harness, PR-policy, and argument-vector check
+    configuration. Remove `defaultCoordRoot`: `--coord-root` is always required.
 
 ### New test files
 
-1. **`coordination/test/action.test.ts`** — restricted front-matter round trips,
+1. **`test/action.test.ts`** — restricted front-matter round trips,
    opaque action IDs, expected-input rendering, proof that internal
    step/gate/phase/evidence fields are never emitted, and every malformed
    `complete` form.
-2. **`coordination/test/state.test.ts`** — schema strictness, runtime format,
+2. **`test/state.test.ts`** — schema strictness, runtime format,
    default revision limit of 3, atomic writes, journal recovery, indefinite
    waiting, persisted dropped agents, and pause/resume.
-3. **`coordination/test/protocol.test.ts`** — strict published-artifact schemas,
+3. **`test/protocol.test.ts`** — strict published-artifact schemas,
    cross-field/session validation, and rejection of unknown or stale inputs.
-4. **`coordination/test/mirror.test.ts`** — external-root refusal, real bare
+4. **`test/mirror.test.ts`** — external-root refusal, real bare
    origins, exact-SHA reads, wrong-branch SHAs, ancestry, changed paths, and
    transient fetch outage distinct from absence.
-5. **`coordination/test/evidence.test.ts`** — positive and negative
+5. **`test/evidence.test.ts`** — positive and negative
    fixtures for every predicate in the accepted design, including missing or
    wrong paths, malformed documents, stale hashes, incorrect pins/rounds, and
    signal commits incorrectly used as product pins.
-6. **`coordination/test/machine.test.ts`** — intent/proof matrix, profile
+6. **`test/machine.test.ts`** — intent/proof matrix, profile
    denominators, four-agent ordering, indefinite wait and re-order after any
    number of failed submissions, immediate local drop, exact omission of all
    dropped-agent inputs, degradation to solo at one agent, refusal to drop the
    final agent, and rounds 1–3 with no round 4.
-7. **`coordination/test/tmux.test.ts`** — fake-runner unit coverage
+7. **`test/tmux.test.ts`** — fake-runner unit coverage
    plus a throwaway real tmux socket when tmux is available, covering launch
    targets, buffer-based insertion, busy panes, owner typing, missing harnesses,
    Claude nudge behavior, and non-Claude pull-only behavior.
-8. **`coordination/test/runLoop.test.ts`** — poll/verify/reorder
+8. **`test/runLoop.test.ts`** — poll/verify/reorder
    behavior, simultaneous agents, invalid and unpublished SHAs, transient fetch
    failures that preserve `complete` and emit no artifact verdict, crash
    boundaries, idempotent restart, ignored post-drop completions,
    pushed-then-died escape, wait/drop/pause/abandon semantics, and proof that a
    failed configured final check blocks PR creation.
-9. **`coordination/test/cli.test.ts`** — every public command, stable exit
+9. **`test/cli.test.ts`** — every public command, stable exit
    codes, required `--coord-root`, `coord drop A`, refusal to drop the final
    active agent, agent identity for `next`, and proof that `next` exposes no
    peer, step, gate, evidence ID, or global phase state.
-10. **`coordination/test/integration.test.ts`** — a four-agent
+10. **`test/integration.test.ts`** — a four-agent
     temporary-origin canary with fake harnesses covering start, action delivery,
     exact-SHA completion, dropping one unavailable agent, action inputs that omit
     it, gate advancement, one revision, consensus declaration, and finalization
     without a merge.
-11. **`coordination/test/hash.test.ts`** — copied unchanged from
-    `automation/test/hash.test.ts`.
-12. **`coordination/test/finalization.test.ts`** — a new standalone adaptation
-    of `automation/test/finalization.test.ts`. Retain the useful cleanup,
-    ancestry, rewrite, and changed-path cases, but replace the old CLI
-    compatibility assertions with the new R7 coordinator behavior.
-13. **`coordination/test/pinValidation.test.ts`** — a new standalone adaptation
+11. **`test/hash.test.ts`** — copied unchanged from
+    the pinned legacy `automation/test/hash.test.ts`.
+12. **`test/finalization.test.ts`** — a new standalone adaptation
+    of the pinned legacy `automation/test/finalization.test.ts`. Retain the
+    useful cleanup, ancestry, rewrite, and changed-path cases, but replace the
+    old CLI compatibility assertions with the new R7 coordinator behavior.
+13. **`test/pinValidation.test.ts`** — a new standalone adaptation
     of the existing pin tests. It cannot be copied unchanged because the old
     test imports the legacy automation `git-fixture.ts` dependency graph.
 
+Delete the scaffold-only **`test/stub.test.ts`** once real tests replace it.
+
 ### Byte-for-byte copies
 
-The following destinations are created with contents exactly equal to their
-sources at the issue baseline. Run `cmp -s <source> <destination>` for each pair
-before the implementation commit; any necessary semantic change instead gets a
-new coordination-owned module or test rather than silently altering a claimed
-copy. This equality claim applies only to the initial implementation baseline;
-afterward these coordination-owned copies may evolve independently while their
-automation sources remain frozen.
+The following destinations are created with contents exactly equal to blobs in
+the frozen consensus-ai source commit
+`01be9854919e1bf9a75f70ced7980d48d7150c28`. Compare each destination to
+`git show <source-commit>:<source-path>` before the implementation commit. Any
+necessary semantic change is an explicitly adapted coordination-owned file,
+not a claimed copy. This equality claim applies only to the initial
+implementation baseline; afterward the destinations may evolve independently.
 
 | Existing source | New destination | Why it is safe to copy unchanged |
 | --- | --- | --- |
-| `.nvmrc` | `coordination/.nvmrc` | Declares Node 26 only |
-| `automation/.gitignore` | `coordination/.gitignore` | Ignores only package build/runtime output |
-| `automation/pnpm-lock.yaml` | `coordination/pnpm-lock.yaml` | New package declares the same dependency versions |
-| `automation/tsconfig.json` | `coordination/tsconfig.json` | Generic strict `src` → `dist` NodeNext config |
-| `automation/test/tsconfig.json` | `coordination/test/tsconfig.json` | Generic test typecheck config with the same relative layout |
-| `automation/vitest.config.ts` | `coordination/vitest.config.ts` | Generic `test/**/*.test.ts` Node runner config |
-| `automation/eslint.config.mjs` | `coordination/eslint.config.mjs` | Generic strict TypeScript flat config |
-| `automation/src/hash.ts` | `coordination/src/hash.ts` | Self-contained Node hashing helper |
-| `automation/src/pinValidation.ts` | `coordination/src/pinValidation.ts` | Self-contained Git subprocess and path-policy helper |
-| `automation/src/finalization.ts` | `coordination/src/finalization.ts` | Depends only on the copied sibling `pinValidation.ts` |
-| `automation/test/hash.test.ts` | `coordination/test/hash.test.ts` | Depends only on the copied sibling hash module |
+| `automation/test/tsconfig.json` | `test/tsconfig.json` | Generic test typecheck config with the same relative layout |
+| `automation/src/hash.ts` | `src/hash.ts` | Self-contained Node hashing helper |
+| `automation/src/pinValidation.ts` | `src/pinValidation.ts` | Self-contained Git subprocess and path-policy helper |
+| `automation/src/finalization.ts` | `src/finalization.ts` | Depends only on the copied sibling `pinValidation.ts` |
+| `automation/test/hash.test.ts` | `test/hash.test.ts` | Depends only on the copied sibling hash module |
 
 ### Existing files modified
 
-**None.** The implementation is additive-only. The owner-local control process
-is the authority boundary: commands typed into `coord` take effect directly and
-are journaled for restart/audit, without signatures or approval files. The
-program exposes no merge operation. Existing agent instructions, manual
-automation-OFF behavior, and legacy automation behavior remain unchanged.
+Modify the existing scaffold files **`package.json`**, **`pnpm-lock.yaml`** (only
+if dependency metadata changes), **`tsconfig.json`**, **`vitest.config.ts`**,
+**`eslint.config.mjs`**, **`coord`**, **`src/main.ts`**, **`README.md`**,
+**`docs/coord-driver.md`**, and **`config.example.json`** as described above.
+Delete only the placeholder **`test/stub.test.ts`**.
 
-In particular, `AGENTS.md`, everything under `automation/`, the root
-`pnpm-workspace.yaml`, current barriers, hooks, and launcher scripts remain
-byte-for-byte unchanged. The standalone package supplies its own workspace,
-lockfile, compiler, lint, and test configuration entirely under
-`coordination/`.
+Keep **`AGENTS.md`**, **`.gitignore`**, **`.nvmrc`**,
+**`pnpm-workspace.yaml`**, **`scripts/**`**, **`githooks/**`**, and agent-local
+launcher/tool directories unchanged. There is no `automation/` directory and
+no nested package. The owner-local control process is the authority boundary:
+commands typed into `coord` take effect directly and are journaled for restart
+and audit without signatures or approval files. The program exposes no merge
+operation.
 
 ## Public commands and internal APIs
 
-The supported external surface is the new `coordination/coord` executable:
+The supported external surface is the new `coord` executable:
 
 - `coord start <issue> --profile <solo|reviewed|consensus> --config <path> --coord-root <external-owner-path>`
 - `coord run`
@@ -261,9 +260,8 @@ The main typed seams are:
 - tmux helpers for launch/liveness/nudge behavior;
 - `runTick(...)` and `runLoop(...)` for effectful orchestration.
 
-These are implementation-level exports inside the new directory. The public
-package barrel is intentionally unchanged; the CLI is the supported product
-boundary.
+These are implementation-level exports inside this package. The executable CLI
+is the supported product boundary; no legacy package barrel is preserved.
 
 ## Required behavior
 
@@ -327,7 +325,7 @@ boundary.
 12. After three unsuccessful revision rounds, the driver requires owner action;
     it never enters round 4.
 13. Finalization obeys the owner-selected `prPolicy`. The coordinator calls its
-    byte-for-byte local copy at `coordination/src/finalization.ts`, which calls
+    byte-for-byte local copy at `src/finalization.ts`, which calls
     the copied sibling `pinValidation.ts`; it neither imports automation nor
     shells out to the old automation CLI. R7 invokes the local verification
     function internally; no legacy `verify-finalization` CLI compatibility is
@@ -335,27 +333,22 @@ boundary.
     materializes a clean throwaway verification worktree at the exact final SHA
     under the external control root, runs the config's explicit argument-vector
     check commands there, and records their exit results. The consensus-ai
-    config declares install/check argv for both the root workspace and the
-    standalone coordination package, including
-    `scripts/test-changed.sh {baselineSha}`, `pnpm check:fast`, and
-    `pnpm --dir coordination check`; placeholder expansion changes one argv
-    element and never invokes a shell. A failed verifier or check blocks PR
-    creation. It may open an unmerged PR when authorized and has no merge
-    command or merge effect.
+    config declares explicit install/check argv such as
+    `pnpm install --frozen-lockfile` and `pnpm check`; placeholder expansion
+    changes one argv element and never invokes a shell. A failed verifier or
+    check blocks PR creation. It may open an unmerged PR when authorized and
+    has no merge command or merge effect.
 
 ## Independence from existing automation
 
-The new package does not import from `automation/src/`, depend on its compiled
-output, or require its workspace to build first. The explicitly listed copy
-pairs are duplicated byte-for-byte at the implementation baseline and thereafter
-are coordination-owned source/config/test files. `protocol.ts` is an adapted,
-reduced schema implementation rather than a copy of `automation/src/schemas.ts`.
-All other Git, path, state-machine, CLI, and fixture code is newly implemented
-under `coordination/src/` and `coordination/test/`. There is no dual-maintenance
-or compatibility promise: the copied/adapted code is a one-time fork, all future
-maintenance occurs in `coordination/`, and `automation/` stays frozen. This
-reuses proven material without making the new driver depend at build or runtime
-on the phase/barrier implementation it supersedes.
+This repository does not import from the consensus-ai `automation/` source,
+depend on its compiled output, or require that repository to build first. The
+explicitly listed copy pairs are duplicated byte-for-byte from the pinned source
+commit and become coordination-owned files. `protocol.ts` is an adapted,
+reduced schema implementation rather than a copy of legacy `schemas.ts`. All
+other Git, path, state-machine, CLI, and fixture code is implemented under
+`src/` and `test/`. There is no dual-maintenance or compatibility promise: the
+copy/adaptation is a one-time fork and all future maintenance occurs here.
 
 ## Build order
 
@@ -372,36 +365,34 @@ on the phase/barrier implementation it supersedes.
 
 ## Dependencies, configuration, and migration
 
-- **Standalone dependencies.** Declare exactly the same Zod 4, TypeScript,
-  Vitest, ESLint, and Node type dependency specifiers as the existing automation
-  package so the copied lockfile remains valid byte-for-byte. The package name,
-  entry points, and scripts are new and coordination-specific. Runtime behavior
-  otherwise uses Node 26 built-ins and explicit Git/tmux subprocess adapters.
-- **No root package/workspace change.** Build and test with
-  `pnpm --dir coordination ...`; the new wrapper invokes `coordination/dist/`
-  directly.
-- **Repository check wiring is deliberately explicit.** Because the root
-  `pnpm-workspace.yaml`, Turbo graph, dependency-cruiser glob, changed-test
-  script, and hooks remain unchanged, none of them discovers the standalone
-  package. Every agent implementing or revising `coordination/**` must run the
-  standalone command sequence in Validation; the root pre-commit hook still
-  runs its existing `pnpm check:fast`, and the pre-push hook applies its existing
-  path policy independently.
+- **Standalone dependencies.** Keep this repository's Zod 4, TypeScript,
+  Vitest, ESLint, and Node type dependencies managed by its own `package.json`
+  and lockfile. Do not inherit or copy the legacy automation dependency graph.
+  Runtime behavior otherwise uses Node 26 built-ins and explicit Git/tmux
+  subprocess adapters.
+- **Repository-root package.** Build and test from this repository root with
+  `pnpm ...`; the `coord` wrapper invokes `dist/main.js` directly.
+- **Checks and hooks cover this package.** `package.json` supplies `check`,
+  `check:fast`, `test:fast`, and `test:e2e`. The existing pre-commit hook runs
+  `pnpm check:fast` for product commits. The existing pre-push hook treats
+  `src/`, `test/`, package metadata, scripts, and hooks as workflow-critical and
+  runs `pnpm test:e2e`. No Turbo, dependency-cruiser, or cross-repository
+  changed-test wiring is needed.
 - **No database or schema migration.** Operational state is new, versioned,
   untracked JSON/Markdown/JSONL under the owner-selected external `coord/`
   root. The driver refuses to place it inside any configured clone.
-- The legacy automation commands remain independently runnable only because
-  their directory is left untouched; the new driver neither integrates with
-  nor preserves their interfaces. `coordination/` is the forward path, entered
-  through `coord start`, and supports automation-OFF and single-agent use.
+- The legacy automation repository remains only a pinned copy/reference source;
+  this driver neither invokes nor preserves its interfaces. This repository is
+  the forward path, entered through `coord start`, and supports manually
+  coordinated and single-agent use.
 - A runtime format version in `start.json` makes incompatible future changes
   fail closed rather than guessing how to resume.
 
 ## Alternatives rejected
 
-1. **Extend `automation/src/cli.ts` and `scripts/wait.sh`.** Rejected because
-   those interfaces are phase-oriented and agent-invoked, while this issue
-   requires owner-side action ordering and exact-submission verification.
+1. **Continue development inside the legacy consensus-ai automation suite.**
+   Rejected because it is frozen and its interfaces are phase-oriented and
+   agent-invoked, while this repository owns the new owner-side driver.
 2. **Treat a branch tip as completion.** Rejected because intermediate pushes
    race verification and do not express agent intent.
 3. **Commit the completion receipt to the agent branch.** Rejected because the
@@ -412,13 +403,12 @@ on the phase/barrier implementation it supersedes.
    and simpler crash recovery.
 5. **Automatically nudge every harness.** Rejected until idle fixtures prove
    mid-turn insertion safe for each non-Claude harness.
-6. **Rewrite the existing automation package wholesale.** Rejected because a
-   parallel directory provides a smaller review boundary, leaves proven manual
-   workflows intact, and can reuse strict schemas without coupling control
-   loops.
-7. **Store runtime data under `automation/.runtime/`.** Rejected because that is
-   still inside an agent clone. The control plane belongs in the owner's folder
-   and must be unable to dirty or mutate an agent worktree.
+6. **Vendor or rewrite the entire legacy automation package.** Rejected because
+   a small standalone repository provides a clearer review boundary and can
+   selectively reuse proven helpers without inheriting the old control loop.
+7. **Store runtime data under this repository.** Rejected because that is still
+   inside an agent clone. The control plane belongs in the required external
+   owner folder and must not dirty or mutate an agent worktree.
 8. **Require a signed answer, proposal/approval exchange, or roster epoch to
    drop an agent.** Rejected as owner-control-plane ceremony. `coord drop A` is
    the authority and persists one local dropped-agent fact; exact later actions
@@ -465,41 +455,30 @@ on the phase/barrier implementation it supersedes.
 
 ## Validation
 
-The standalone package is intentionally outside the root workspace, so the
-validation commands are explicit rather than implied by Turbo:
+This repository is the standalone package and root workspace. Run:
 
 ```sh
 nvm use 26
-pnpm --dir coordination install --frozen-lockfile
-pnpm --dir coordination check
-scripts/test-changed.sh origin/main
-pnpm check:fast
+pnpm install --frozen-lockfile
+pnpm check
 ```
 
-`coordination check` builds, lints, typechecks, runs focused unit tests, and runs
-the four-agent integration test. `scripts/test-changed.sh` currently checks the
-root/Turbo workspaces and legacy `automation/`; it does **not** discover
-`coordination/`, so it supplements rather than replaces `coordination check`.
-Likewise, the existing pre-commit hook runs root `pnpm check:fast` for a
-`coordination/**` product commit, but that root command does not include the new
-package. The existing pre-push hook does not classify `coordination/**` as a
-legacy-automation E2E trigger. Therefore the standalone check must be run and
-pass before each implementation or revision code commit and again after the
-last code change before push; the unchanged hooks then run whatever additional
-root checks their existing policies require.
+`pnpm check` builds, lints, typechecks, runs focused unit tests, and runs the
+four-agent integration test. The pre-commit hook independently runs
+`pnpm check:fast`; the pre-push hook runs `pnpm test:e2e` for workflow-critical
+changes. Do not bypass either hook.
 
-Before the implementation commit, also run `cmp -s` for every
-source/destination pair in the byte-for-byte-copy table. Everything must pass
-under Node 26 with no `any`, no unchecked unvalidated JSON, and no skipped hook.
+Before the implementation commit, also compare every claimed byte-for-byte copy
+to its pinned `git show` source blob. Everything must pass under Node 26 with no
+`any`, no unchecked unvalidated JSON, and no skipped hook.
 
 ## Conclusion
 
-Build a new standalone owner-side workflow driver in root-level
-`coordination/`, alongside rather than inside the current automation. The driver uses an external
-owner control tree for the local action/submission channel, immutable origin
-commits for proof, a pure state machine for ordering, attachable tmux sessions
-for intervention, and direct owner-local commands for control. The proposed map
-is additive-only, retains automation-OFF and single-agent operation, waits
-indefinitely for unavailable agents unless the owner types `coord drop`, omits
-amendments, caps revisions at three, may open only an unmerged PR when selected
-by owner policy, and never merges.
+Build the standalone owner-side workflow driver directly at the root of the
+dedicated `coordination` repository, with runtime state in the required external
+owner control tree. The driver uses immutable origin commits for proof, a pure
+state machine for ordering, attachable tmux sessions for intervention, and
+direct owner-local commands for control. It supports single-agent operation,
+waits indefinitely for unavailable agents unless the owner types `coord drop`,
+omits amendments, caps revisions at three, may open only an unmerged PR when
+selected by owner policy, and never merges.
