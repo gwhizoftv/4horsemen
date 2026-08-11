@@ -1,0 +1,12 @@
+{
+  "project": "coordination",
+  "agents": [
+    { "id": "claude", "root": "../coordination-claude" },
+    { "id": "codex", "root": "../coordination-codex" },
+    { "id": "cursor", "root": "../coordination-cursor" },
+    { "id": "antigravity", "root": "../coordination-antigravity" }
+  ],
+  "branch": "issue-{issue}/{agent}",
+  "defaultCoordRoot": "../coord-runtime",
+  "maxRevisionRounds": 3
+}

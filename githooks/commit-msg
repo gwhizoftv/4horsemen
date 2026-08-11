@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Tracked, agent-neutral hook. Identity is resolved at runtime — never edit a
+# clone-specific value into this file.
+lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/identity.sh"
+[[ -r "$lib" ]] || { echo "HOOK BLOCKED: cannot read $lib; core.hooksPath must point at the tracked githooks directory." >&2; exit 1; }
+# shellcheck source=lib/identity.sh
+. "$lib"
+
+# Merge commits are exempt.
+GIT_DIR=$(git rev-parse --git-dir)
+[[ -f "$GIT_DIR/MERGE_HEAD" ]] && exit 0
+
+first_line=$(head -n1 "$1")
+if [[ "$first_line" != "$AGENT_LABEL: "* ]]; then
+  echo "HOOK BLOCKED: commit message must start with '$AGENT_LABEL: '" >&2
+  echo "  Example: $AGENT_LABEL: add pagination to /users endpoint" >&2
+  exit 1
+fi
+
+exit 0

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Tracked, agent-neutral hook. Identity is resolved at runtime — never edit a
+# clone-specific value into this file.
+lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/identity.sh"
+[[ -r "$lib" ]] || { echo "HOOK BLOCKED: cannot read $lib; core.hooksPath must point at the tracked githooks directory." >&2; exit 1; }
+# shellcheck source=lib/identity.sh
+. "$lib"
+
+branch=$(git rev-parse --abbrev-ref HEAD)
+
+echo ""
+echo "REMINDER ($AGENT_LABEL): committed to '$branch'. Push it so reviewers can see it:"
+echo "  git push -u $REMOTE_NAME $branch"
+
+exit 0

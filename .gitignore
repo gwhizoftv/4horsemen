@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.DS_Store
+/start-*.sh
+.claude/
+.codex/
+.cursor/
+.antigravity/
+.agents/

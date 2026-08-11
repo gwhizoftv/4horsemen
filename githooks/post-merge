@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Tracked, agent-neutral hook. Identity is resolved at runtime — never edit a
+# clone-specific value into this file.
+lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/identity.sh"
+[[ -r "$lib" ]] || { echo "HOOK BLOCKED: cannot read $lib; core.hooksPath must point at the tracked githooks directory." >&2; exit 1; }
+# shellcheck source=lib/identity.sh
+. "$lib"
+
+command -v ctags >/dev/null && ctags -R --exclude=node_modules --exclude=.git . 2>/dev/null || true
+[[ -x ./directory_tree.sh ]] && ./directory_tree.sh || true
+
+# Regenerate the launcher when a merge removed it — most visibly the pull that
+# untracked it, which deletes a file the clone still needs. The template lives in
+# scripts/lib/launcher.sh so that this hook and setup cannot drift apart. Never
+# overwrite an existing launcher: a clone may have customised it, and this hook
+# runs on every merge.
+launcher="start-${AGENT_NAME}.sh"
+launcher_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../scripts/lib/launcher.sh"
+
+if [[ ! -e "$launcher" && -r "$launcher_lib" ]]; then
+  # shellcheck source=../scripts/lib/launcher.sh
+  . "$launcher_lib"
+
+  if write_launcher "$launcher" "$AGENT_NAME" "$AGENT_LABEL" "$SHARED_BRANCH"; then
+    echo "Regenerated $launcher (generated per clone, never tracked)."
+  else
+    echo "No launch command is defined for agent '$AGENT_NAME'; $launcher was not regenerated." >&2
+    echo "  Run scripts/setup_${AGENT_NAME}.sh from the master repo, or add one to launcher_command()." >&2
+  fi
+fi
+
+exit 0

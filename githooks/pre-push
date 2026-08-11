@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# Tracked, agent-neutral hook. Identity is resolved at runtime — never edit a
+# clone-specific value into this file.
+lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/identity.sh"
+[[ -r "$lib" ]] || { echo "HOOK BLOCKED: cannot read $lib; core.hooksPath must point at the tracked githooks directory." >&2; exit 1; }
+# shellcheck source=lib/identity.sh
+. "$lib"
+
+ZERO="0000000000000000000000000000000000000000"
+status=0
+
+# The automation E2E suite exercises the coordination workflow, not product
+# behaviour, so it is scoped to the paths that can change what the workflow or
+# the hook itself does. Everything here fails closed: an undecidable
+# changed-path set runs the suite.
+# Root entries are the build inputs that decide what the gate itself runs:
+# the scripts and workspace layout behind `pnpm test:e2e`, and the Turbo task
+# graph that runs the automation suite. Root tsconfigs are deliberately absent —
+# automation/tsconfig.json declares no `extends`, so nothing outside
+# `automation/` can change how the suite compiles.
+workflow_critical_prefixes=("scripts/" "githooks/" "src/" "test/")
+workflow_critical_files=("package.json" "pnpm-lock.yaml" "pnpm-workspace.yaml" "turbo.json")
+
+is_workflow_critical() {
+  local path="$1" prefix file
+
+  for prefix in "${workflow_critical_prefixes[@]}"; do
+    [[ "$path" == "$prefix"* ]] && return 0
+  done
+
+  for file in "${workflow_critical_files[@]}"; do
+    [[ "$path" == "$file" ]] && return 0
+  done
+
+  return 1
+}
+
+refs=0
+push_local_sha=""
+push_remote_sha=""
+push_ref=""
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  branch="${remote_ref#refs/heads/}"
+
+  # 1) Never push the shared branch or consensus branches.
+  if [[ "$branch" == "$SHARED_BRANCH" || "$branch" =~ ^issue-[0-9]+/final$ ]]; then
+    echo "HOOK BLOCKED ($AGENT_LABEL): pushing '$branch' is forbidden. Human/PR merge only." >&2
+    status=1
+    continue
+  fi
+
+  # 2) Only push branches this agent owns.
+  # Allowed:
+  #   issue-<n>/<agent>
+  #   <agent>/<scratch>
+  if [[ "$branch" =~ ^issue-[0-9]+/([a-z0-9-]+)$ ]]; then
+    owner="${BASH_REMATCH[1]}"
+    if [[ "$owner" != "$AGENT_NAME" ]]; then
+      echo "HOOK BLOCKED ($AGENT_LABEL): branch '$branch' belongs to agent '$owner', not you." >&2
+      status=1
+      continue
+    fi
+  elif [[ "$branch" == "$AGENT_NAME"/* ]]; then
+    : # allowed personal scratch branch
+  else
+    echo "HOOK BLOCKED ($AGENT_LABEL): remote branch '$branch' does not follow the allowed naming scheme." >&2
+    echo "  Use issue-<n>/$AGENT_NAME for issue work, or $AGENT_NAME/<name> for scratch work." >&2
+    status=1
+    continue
+  fi
+
+  # 3) Block history rewrites. Plain non-fast-forward pushes are rejected by
+  # git itself; refs generally reach here non-FF only when force was used.
+  if [[ "$local_sha" == "$ZERO" ]]; then
+    echo "HOOK BLOCKED ($AGENT_LABEL): deleting remote branches is forbidden." >&2
+    status=1
+    continue
+  fi
+  if [[ "$local_sha" != "$ZERO" && "$remote_sha" != "$ZERO" ]]; then
+    if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+      echo "HOOK BLOCKED ($AGENT_LABEL): force-push / history rewrite of '$branch' is forbidden." >&2
+      echo "  Fetch and integrate instead: git pull $REMOTE_NAME $branch" >&2
+      status=1
+      continue
+    fi
+  fi
+
+  refs=$((refs + 1))
+  push_local_sha="$local_sha"
+  push_remote_sha="$remote_sha"
+  push_ref="$remote_ref"
+done
+
+# 4) Decide whether this push can affect the automation workflow. Only the
+# E2E gate is scoped here; the pre-commit checks stay unconditional.
+run_e2e=false
+scope_reason=""
+
+if [[ $status -ne 0 ]]; then
+  scope_reason="push already rejected"
+elif [[ $refs -eq 0 ]]; then
+  scope_reason="no refs to push"
+elif [[ $refs -gt 1 ]]; then
+  run_e2e=true
+  scope_reason="$refs refs pushed at once; the changed-path set is ambiguous"
+else
+  base=""
+  if [[ "$push_remote_sha" != "$ZERO" ]]; then
+    base="$push_remote_sha"
+  else
+    # A new remote branch has no previous state to diff against. Derive the
+    # base deterministically from the shared branch instead of exempting the
+    # push, which would let the first push of any branch skip the suite.
+    base="$(git merge-base "$push_local_sha" "refs/remotes/$REMOTE_NAME/$SHARED_BRANCH" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$base" ]]; then
+    run_e2e=true
+    scope_reason="no deterministic comparison base for ${push_ref:-the pushed ref}"
+  elif ! changed="$(git diff --name-only "$base" "$push_local_sha" 2>/dev/null)"; then
+    run_e2e=true
+    scope_reason="could not list the changed paths of ${push_ref:-the pushed ref}"
+  else
+    changed_count=0
+    while IFS= read -r path; do
+      [[ -n "$path" ]] || continue
+      changed_count=$((changed_count + 1))
+      if is_workflow_critical "$path"; then
+        run_e2e=true
+        scope_reason="workflow-critical path $path"
+        break
+      fi
+    done <<< "$changed"
+
+    if [[ "$run_e2e" == false ]]; then
+      scope_reason="no workflow-critical paths among $changed_count changed file(s)"
+    fi
+  fi
+fi
+
+if [[ "$run_e2e" == true ]]; then
+  echo "$AGENT_LABEL hook: automation E2E required — $scope_reason."
+else
+  echo "$AGENT_LABEL hook: automation E2E skipped — $scope_reason."
+fi
+
+if [[ $status -eq 0 && "$run_e2e" == true && -f package.json && -f pnpm-lock.yaml ]] && grep -q '"test:e2e"[[:space:]]*:' package.json; then
+  if ! command -v pnpm >/dev/null; then
+    if command -v corepack >/dev/null; then
+      corepack enable pnpm >/dev/null 2>&1 || true
+    fi
+  fi
+
+  if ! command -v pnpm >/dev/null; then
+    echo "HOOK BLOCKED: pnpm-lock.yaml exists, but pnpm is not available." >&2
+    status=1
+  else
+    echo "$AGENT_LABEL hook: running pnpm test:e2e..."
+    pnpm test:e2e || { echo "HOOK BLOCKED: pnpm test:e2e failed — fix before pushing." >&2; status=1; }
+  fi
+fi
+
+[[ $status -eq 0 ]] && echo "$AGENT_LABEL: pre-push checks passed."
+exit $status
