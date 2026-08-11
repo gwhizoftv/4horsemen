@@ -1,12 +1,21 @@
-# coordination
+# @consensus-ai/coordination
 
-Standalone **workflow driver** repository (issue 1). Not the test app.
+Owner-side driver for agent coordination.
 
-```bash
-pnpm install && pnpm check:fast
-pnpm build && ./coord --help
+## Quick Start
+
+The driver must be run with a strictly-contained runtime root that exists entirely outside of any agent worktree.
+
+```sh
+# Ensure you are on Node 26
+nvm use 26
+pnpm install --frozen-lockfile
+
+# Start the workflow
+./coord start 1 --profile consensus --coord-root /path/to/coord-runtime
+
+# Run the long-lived orchestration loop
+./coord run --coord-root /path/to/coord-runtime
 ```
 
-Agent clones (siblings): `coordination-claude`, etc.
-
-Default runtime: `/Volumes/4TB-SOURCE/REPOS/coord/coord-runtime`
+See `docs/coord-driver.md` for more details.

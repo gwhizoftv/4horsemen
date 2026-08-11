@@ -1,14 +1,20 @@
-/** Process entry — implement coord CLI in issue 1. */
-const run = async (): Promise<number> => {
-  const [cmd] = process.argv.slice(2);
-  if (cmd === undefined || cmd === "--help" || cmd === "-h") {
-    process.stdout.write(
-      "coord — workflow driver (stub)\n\nUsage: coord <start|run|next|...>\n"
-    );
-    return 0;
+import { runCli } from "./cli.js";
+
+export const main = async () => {
+  try {
+    const code = await runCli(process.argv);
+    process.exit(code);
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      console.error(err.message);
+    }
+    process.exit(1);
   }
-  process.stderr.write(`coord: '${cmd}' not implemented yet (issue 1)\n`);
-  return 2;
 };
 
-run().then((code) => process.exit(code));
+import { fileURLToPath } from "node:url";
+
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
+  main();
+}
