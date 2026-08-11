@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,6 +53,24 @@ const fakeLoop = (paths: ReturnType<typeof issueRuntimePaths>): CliRunLoop => ({
   run: async () => undefined
 });
 
+const baselineSha = "a".repeat(40);
+const trustedSourceSha = "d".repeat(40);
+const successfulStartGit = async (argv: readonly string[]) => {
+  if (argv.includes("ls-remote")) {
+    return { exitCode: 0, stdout: `${baselineSha}\trefs/heads/main\n`, stderr: "" };
+  }
+  if (argv.includes("rev-parse")) return { exitCode: 0, stdout: `${trustedSourceSha}\n`, stderr: "" };
+  return { exitCode: 1, stdout: "", stderr: `unexpected command: ${argv.join(" ")}` };
+};
+const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
+  if (argv.includes("ls-remote")) {
+    return { exitCode: 0, stdout: `${baselineSha}\trefs/heads/main\n`, stderr: "" };
+  }
+  const [command, ...args] = argv;
+  if (command === undefined) return { exitCode: 1, stdout: "", stderr: "empty command" };
+  return { exitCode: 0, stdout: execFileSync(command, args, { cwd, encoding: "utf8" }), stderr: "" };
+};
+
 describe("CLI", () => {
   it("requires the external coord root explicitly rather than accepting COORD_ROOT", async () => {
     const fixture = setup();
@@ -81,13 +100,15 @@ describe("CLI", () => {
       ["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
       {
         io: { cwd: process.cwd(), stdout: (message) => output.push(message) },
-        processRunner: async () => ({ exitCode: 0, stdout: `${"a".repeat(40)}\trefs/heads/main\n`, stderr: "" }),
+        processRunner: resolvableStartGit,
         makeRunLoop: fakeLoop
       }
     );
     expect(result).toBe(0);
     const paths = issueRuntimePaths(fixture.runtime, 1);
-    expect(readStartState(paths).baselineSha).toBe("a".repeat(40));
+    const trustedSourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    expect(readStartState(paths)).toMatchObject({ baselineSha, trustedSourceCommit });
+    expect(() => execFileSync("git", ["cat-file", "-e", `${trustedSourceCommit}^{commit}`])).not.toThrow();
     const start = readStartState(paths);
     const cursors = readCursorsState(paths);
     const runtime = agentRuntimePaths(paths, "codex");
@@ -122,7 +143,7 @@ describe("CLI", () => {
     expect(
       await runCli(["start", "7", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
         io: { cwd: elsewhere },
-        processRunner: async () => ({ exitCode: 0, stdout: `${"a".repeat(40)}\trefs/heads/main\n`, stderr: "" }),
+        processRunner: successfulStartGit,
         makeRunLoop: fakeLoop
       })
     ).toBe(0);
@@ -141,11 +162,34 @@ describe("CLI", () => {
     expect(
       await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
-        processRunner: async () => ({ exitCode: 0, stdout: `${"a".repeat(40)}\n`, stderr: "" }),
+        processRunner: successfulStartGit,
         makeRunLoop: fakeLoop
       })
     ).toBe(2);
     expect(errors.join("")).toContain("requires a supported github.com origin");
+    expect(existsSync(join(fixture.runtime, "issue-1"))).toBe(false);
+  });
+
+  it("fails closed when the running coordinator source commit cannot be resolved", async () => {
+    const fixture = setup();
+    const errors: string[] = [];
+    let effectsCalled = false;
+    expect(
+      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stderr: (message) => errors.push(message) },
+        processRunner: async (argv) =>
+          argv.includes("ls-remote")
+            ? { exitCode: 0, stdout: `${baselineSha}\trefs/heads/main\n`, stderr: "" }
+            : { exitCode: 128, stdout: "", stderr: "not a Git checkout" },
+        startEffects: async () => {
+          effectsCalled = true;
+          return { cleanup: async () => undefined };
+        },
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(2);
+    expect(errors.join("")).toContain("Cannot resolve trusted coordinator source commit");
+    expect(effectsCalled).toBe(false);
     expect(existsSync(join(fixture.runtime, "issue-1"))).toBe(false);
   });
 
@@ -155,7 +199,7 @@ describe("CLI", () => {
     expect(
       await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
-        processRunner: async () => ({ exitCode: 0, stdout: `${"a".repeat(40)}\trefs/heads/main\n`, stderr: "" }),
+        processRunner: successfulStartGit,
         startEffects: async () => {
           throw new Error("mirror preflight failed");
         },
@@ -164,6 +208,36 @@ describe("CLI", () => {
     ).toBe(2);
     expect(errors.join("")).toContain("mirror preflight failed");
     expect(existsSync(join(fixture.runtime, "issue-1"))).toBe(false);
+  });
+
+  it("retains resumable state and launched effects when the first tick fails", async () => {
+    const fixture = setup();
+    const errors: string[] = [];
+    let cleanups = 0;
+    expect(
+      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stderr: (message) => errors.push(message) },
+        processRunner: successfulStartGit,
+        startEffects: async () => ({
+          cleanup: async () => {
+            cleanups += 1;
+          }
+        }),
+        makeRunLoop: () => ({
+          initializeEffects: async () => undefined,
+          runTick: async () => {
+            throw new Error("initial nudge failed");
+          },
+          run: async () => undefined
+        })
+      })
+    ).toBe(2);
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    expect(readStartState(paths)).toMatchObject({ trustedSourceCommit: trustedSourceSha });
+    expect(readCursorsState(paths).abandoned).toBe(false);
+    expect(cleanups).toBe(0);
+    expect(errors.join("")).toContain("was started durably");
+    expect(errors.join("")).toContain(`resume with coord run --issue 1 --coord-root ${fixture.runtime}`);
   });
 
   it("rejects an escaping launcher before startup effects", async () => {
@@ -178,7 +252,7 @@ describe("CLI", () => {
     expect(
       await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
-        processRunner: async () => ({ exitCode: 0, stdout: `${"a".repeat(40)}\n`, stderr: "" }),
+        processRunner: successfulStartGit,
         startEffects: async () => {
           effectsCalled = true;
           return { cleanup: async () => undefined };
@@ -194,7 +268,7 @@ describe("CLI", () => {
   it("refuses to drop the final active agent", async () => {
     const fixture = setup();
     await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
-      processRunner: async () => ({ exitCode: 0, stdout: `${"a".repeat(40)}\trefs/heads/main\n`, stderr: "" }),
+      processRunner: successfulStartGit,
       makeRunLoop: fakeLoop
     });
     const errors: string[] = [];
@@ -206,10 +280,59 @@ describe("CLI", () => {
     expect(errors.join("")).toContain("final active agent");
   });
 
+  it("refuses to silently rebind an authorized reviser on drop", async () => {
+    const fixture = setup();
+    await runCli(["start", "1", "--profile", "consensus", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      processRunner: successfulStartGit,
+      makeRunLoop: fakeLoop
+    });
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const current = readCursorsState(paths);
+    const now = "2026-08-11T17:00:00.000Z";
+    writeCursorsState(
+      paths,
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R6.revise", gateId: "gate-6-consensus", round: 1 },
+        reviser: "cursor",
+        selection: {
+          planAgents: ["codex"],
+          implementationAgent: "cursor",
+          implementationPin: "e".repeat(40),
+          reviser: "cursor"
+        },
+        accepted: [
+          {
+            stepId: "R5.reviser-auth",
+            agent: "codex",
+            round: null,
+            submissionSha: "f".repeat(40),
+            productPin: "e".repeat(40),
+            reviser: "cursor",
+            path: ".signals/issue-1/reviser-authorized.json",
+            acceptedAt: now
+          }
+        ],
+        updatedAt: now
+      })
+    );
+    const errors: string[] = [];
+    expect(
+      await runCli(["drop", "cursor", "--issue", "1", "--coord-root", fixture.runtime], {
+        io: { stderr: (message) => errors.push(message) },
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(2);
+    const after = readCursorsState(paths);
+    expect(after.activeRoster).toContain("cursor");
+    expect(after.selection.reviser).toBe("cursor");
+    expect(errors.join("")).toContain("Cannot drop authorized reviser cursor");
+  });
+
   it("preserves peer acceptance and pending intent when another agent is dropped", async () => {
     const fixture = setup();
     await runCli(["start", "1", "--profile", "reviewed", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
-      processRunner: async () => ({ exitCode: 0, stdout: `${"a".repeat(40)}\trefs/heads/main\n`, stderr: "" }),
+      processRunner: successfulStartGit,
       makeRunLoop: fakeLoop
     });
     const paths = issueRuntimePaths(fixture.runtime, 1);
@@ -256,7 +379,7 @@ describe("CLI", () => {
   it("applies typed owner answers durably and idempotently without allowing round four", async () => {
     const fixture = setup();
     await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
-      processRunner: async () => ({ exitCode: 0, stdout: `${"a".repeat(40)}\trefs/heads/main\n`, stderr: "" }),
+      processRunner: successfulStartGit,
       makeRunLoop: fakeLoop
     });
     const paths = issueRuntimePaths(fixture.runtime, 1);

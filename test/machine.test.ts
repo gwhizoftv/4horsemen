@@ -175,4 +175,53 @@ describe("pure workflow machine", () => {
       })
     ).toEqual([{ type: "retry-verification", agent: "claude", outstanding: ["fetch failed"] }]);
   });
+
+  it("processes an in-flight satisfied observation before repeating an owner question", () => {
+    const base = initialCursors(start, now);
+    const actionId = "ce80f31a-6884-42cf-b0ff-b0fb27fc6cc8";
+    const cursors = cursorsStateSchema.parse({
+      ...base,
+      issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
+      ownerQuestion: {
+        id: "10000000-0000-4000-8000-000000000001",
+        kind: "ballot-escalation",
+        round: 1,
+        allowedAnswers: ["retry", "revise", "abandon"],
+        createdAt: now
+      },
+      agents: {
+        ...base.agents,
+        claude: {
+          ...base.agents.claude,
+          actionId,
+          stepId: "R6.ballot",
+          evidenceId: "consensus-ballot-published",
+          status: "verifying"
+        }
+      }
+    });
+    expect(
+      decide({
+        start,
+        cursors,
+        observations: [
+          {
+            agent: "claude",
+            actionId,
+            submissionSha: "d".repeat(40),
+            status: "satisfied",
+            outstanding: [],
+            disposition: "approve"
+          }
+        ]
+      })
+    ).toEqual([
+      {
+        type: "accept-submission",
+        agent: "claude",
+        submissionSha: "d".repeat(40),
+        disposition: "approve"
+      }
+    ]);
+  });
 });

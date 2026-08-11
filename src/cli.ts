@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { clearCompletion, readAction } from "./action.js";
 import { sha256 } from "./hash.js";
 import { BareMirror } from "./mirror.js";
@@ -64,6 +65,8 @@ const defaultIo: CliIo = {
 };
 
 type ParsedArgs = { positionals: string[]; flags: Map<string, string> };
+
+const coordinatorSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const parseArgs = (args: readonly string[]): ParsedArgs => {
   const positionals: string[] = [];
@@ -316,6 +319,15 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const baselineSha = baselineResult.stdout.trim().split(/\s+/)[0];
       const parsedBaseline = gitShaSchema.safeParse(baselineSha);
       if (!parsedBaseline.success) throw new Error("Origin returned an invalid baseline SHA.");
+      const trustedSourceResult = await runner(
+        ["git", "rev-parse", "--verify", "HEAD^{commit}"],
+        coordinatorSourceRoot
+      );
+      if (trustedSourceResult.exitCode !== 0) {
+        throw new Error(`Cannot resolve trusted coordinator source commit: ${trustedSourceResult.stderr.trim()}`);
+      }
+      const trustedSourceCommit = gitShaSchema.safeParse(trustedSourceResult.stdout.trim());
+      if (!trustedSourceCommit.success) throw new Error("Coordinator source checkout returned an invalid trusted commit SHA.");
       let effects: { cleanup: () => Promise<void> } | null = null;
       try {
         effects = await startEffects({ paths, issue, origin: config.origin, agents: roster });
@@ -333,7 +345,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           automationDigest: digest.digest,
           automationDigestScheme: "sha256-length-prefixed-v1",
           automationDigestSources: digest.sources,
-          trustedSourceCommit: "01be9854919e1bf9a75f70ced7980d48d7150c28",
+          trustedSourceCommit: trustedSourceCommit.data,
           origin: config.origin,
           coordRoot,
           configPath,
@@ -341,7 +353,6 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           checks: config.checks,
           pollIntervalMs: config.pollIntervalMs
         });
-        await makeRunLoop(paths).runTick();
       } catch (error) {
         rmSync(paths.issueRoot, { recursive: true, force: true });
         if (effects !== null) {
@@ -354,6 +365,16 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           }
         }
         throw error;
+      }
+      try {
+        await makeRunLoop(paths).runTick();
+      } catch (error) {
+        throw new Error(
+          `Issue ${issue} was started durably at ${paths.issueRoot}, but its initial tick failed; ` +
+            `resume with coord run --issue ${issue} --coord-root ${coordRoot}: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+        );
       }
       io.stdout(`Started issue ${issue} (${profile}) at ${paths.issueRoot}.\n`);
       return 0;
@@ -466,6 +487,11 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         }
         if (!current.activeRoster.includes(agent)) throw new Error(`${agent} is not active.`);
         if (current.activeRoster.length === 1) throw new Error("Cannot drop the final active agent.");
+        if (current.selection.reviser === agent || current.reviser === agent) {
+          throw new Error(
+            `Cannot drop authorized reviser ${agent}; revision and finalization must not be rebound without a new authorization.`
+          );
+        }
         appendJournal(paths, { type: "agent-dropped", agent, details: {} }, now);
         return rederiveAfterDrop(paths, current, agent, now);
       });

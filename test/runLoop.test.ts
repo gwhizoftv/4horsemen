@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readAction } from "../src/action.js";
+import { readAction, writeAction } from "../src/action.js";
+import { computeInputSetHash } from "../src/evidence.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder, CoordinatorRunLoop, deterministicWinner, githubRepositoryFromOrigin } from "../src/runLoop.js";
@@ -225,6 +226,95 @@ describe("effectful run loop", () => {
       expect(commands).not.toContain("show");
     }
   );
+
+  it("accepts an in-flight completion while an owner question remains open", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const current = readCursorsState(paths);
+    const now = "2026-08-11T17:00:00.000Z";
+    const actionId = "ce80f31a-6884-42cf-b0ff-b0fb27fc6cc8";
+    const revisionPin = "e".repeat(40);
+    const submissionSha = "d".repeat(40);
+    const seeded = cursorsStateSchema.parse({
+      ...current,
+      issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
+      reviser: "codex",
+      selection: {
+        planAgents: ["claude"],
+        implementationAgent: "codex",
+        implementationPin: "f".repeat(40),
+        reviser: "codex"
+      },
+      ownerQuestion: {
+        id: "10000000-0000-4000-8000-000000000001",
+        kind: "ballot-escalation",
+        round: 1,
+        allowedAnswers: ["retry", "revise", "abandon"],
+        createdAt: now
+      },
+      agents: {
+        ...current.agents,
+        claude: {
+          ...current.agents.claude,
+          stepId: "R6.ballot",
+          evidenceId: "consensus-ballot-published",
+          actionId,
+          status: "ordered",
+          updatedAt: now
+        }
+      },
+      accepted: [
+        {
+          stepId: "R6.revise",
+          agent: "codex",
+          round: 1,
+          submissionSha: "c".repeat(40),
+          productPin: revisionPin,
+          path: ".signals/issue-1/revision-ready-codex-round-1.json",
+          acceptedAt: now
+        }
+      ],
+      updatedAt: now
+    });
+    writeCursorsState(paths, seeded);
+    const order = buildOrder(paths, start, seeded, "claude", "R6.ballot", 1, actionId);
+    writeAction(paths.coordRoot, agentRuntimePaths(paths, "claude").action, order);
+    writeFileSync(agentRuntimePaths(paths, "claude").complete, `${submissionSha}\n`);
+    const artifact = JSON.stringify({
+      protocolVersion: 1,
+      artifact: "consensus-ballot",
+      issue: 1,
+      issueSessionId: start.issueSessionId,
+      agent: "claude",
+      inputSetHash: computeInputSetHash(order.inputs),
+      round: 1,
+      revisionCommitSha: revisionPin,
+      disposition: "approve",
+      rationale: "The revision is ready."
+    });
+    const mirror = new BareMirror(paths.mirror, "/origin.git");
+    mirror.fetchBranch = async () => ({
+      ok: true,
+      ref: "refs/remotes/origin/issue-1/claude",
+      tip: submissionSha
+    });
+    mirror.isReachable = async () => true;
+    mirror.readBlob = async () => artifact;
+
+    const after = await new CoordinatorRunLoop(paths, { tmux: null, mirror }).runTick();
+    expect(after.ownerQuestion?.id).toBe("10000000-0000-4000-8000-000000000001");
+    expect(after.accepted).toContainEqual(
+      expect.objectContaining({
+        stepId: "R6.ballot",
+        agent: "claude",
+        round: 1,
+        submissionSha,
+        disposition: "approve"
+      })
+    );
+    expect(after.agents.claude?.status).toBe("waiting-peer");
+    expect(existsSync(agentRuntimePaths(paths, "claude").complete)).toBe(false);
+  });
 
   it("publishes exactly from durable accepted R7 outbox state and records retryable failure", async () => {
     const { paths } = fixture({ prPolicy: "coord-open-unmerged", origin: "https://github.com/example/project.git" });

@@ -68,11 +68,14 @@ pnpm build
 COORD_ISSUE=42 ./coord run --coord-root /absolute/owner/runtime
 ```
 
-`start` preflights the exact origin baseline, digest inputs, GitHub/PR-policy
+`start` preflights the exact origin baseline, the running coordinator checkout's
+real `HEAD` as its trusted source commit, digest inputs, GitHub/PR-policy
 compatibility, confined non-symlink executable launchers, mirror, and tmux. It
 creates an attachable `coord-<issue>` session and invokes each configured
 `start-<agent>.sh` before committing active issue state. A failed partial tmux
 launch is cleaned up, and no apparently active issue runtime is left behind.
+Once state is committed, a failure in the initial tick is reported without
+deleting the resumable runtime or terminating the successfully launched panes.
 
 The coordinator can itself run in a tmux control window so closing the owner
 terminal does not stop it. Attach with:
@@ -145,6 +148,8 @@ safety-critical external state location remains visible at the call site.
 completion, retains other agents' valid accepted evidence and pending intent,
 and rederives only unresolved affected actions so their input sets omit that
 agent. Later stale completions from the dropped agent are ignored.
+An already-authorized reviser cannot be dropped because revision and
+finalization may not be silently rebound without a new authorization.
 
 `pause` retains actions, mirror data, journal, and tmux sessions. `resume` plus
 `run` continues from strict versioned state. State changes use a short

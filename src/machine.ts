@@ -60,17 +60,6 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
   if (cursors.abandoned) return [{ type: "wait", reason: "workflow was abandoned" }];
   if (cursors.completed) return [{ type: "wait", reason: "workflow is complete" }];
   if (cursors.paused) return [{ type: "wait", reason: "workflow is paused" }];
-  if (cursors.ownerQuestion !== null) {
-    return [
-      {
-        type: "owner-action-required",
-        reason: `${cursors.ownerQuestion.kind} at revision round ${cursors.ownerQuestion.round}`,
-        kind: cursors.ownerQuestion.kind,
-        round: cursors.ownerQuestion.round,
-        allowedAnswers: cursors.ownerQuestion.allowedAnswers
-      }
-    ];
-  }
 
   const decisions: MachineDecision[] = [];
   for (const observation of input.observations ?? []) {
@@ -97,6 +86,17 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
     }
   }
   if (decisions.length > 0) return decisions;
+  if (cursors.ownerQuestion !== null) {
+    return [
+      {
+        type: "owner-action-required",
+        reason: `${cursors.ownerQuestion.kind} at revision round ${cursors.ownerQuestion.round}`,
+        kind: cursors.ownerQuestion.kind,
+        round: cursors.ownerQuestion.round,
+        allowedAnswers: cursors.ownerQuestion.allowedAnswers
+      }
+    ];
+  }
 
   const profile = effectiveProfile(start, cursors);
   const current = cursors.issueCursor.stepId;
