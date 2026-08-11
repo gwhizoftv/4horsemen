@@ -71,6 +71,21 @@ export type SectionRequirement = {
   readonly anyOf: readonly string[];
 };
 
+/**
+ * Where an action's bound inputs come from.
+ *
+ * - `peers`: what every *other* active agent published for that step.
+ * - `all`: what every active agent published, including the acting agent.
+ * - `selected`: what the selected agent published.
+ *
+ * Inputs are always read from the active roster, which is why a dropped
+ * agent's published work can never be cited again.
+ */
+export type InputSource = {
+  readonly stepId: StepId;
+  readonly scope: "peers" | "all" | "selected";
+};
+
 export type StepDefinition = {
   readonly stepId: StepId;
   readonly gateId: GateId;
@@ -80,6 +95,9 @@ export type StepDefinition = {
   readonly participation: Participation;
   /** Present only for markdown steps. */
   readonly sections?: readonly SectionRequirement[];
+  readonly inputsFrom?: InputSource;
+  /** Human task text. Contains no internal vocabulary. */
+  readonly task: string;
 };
 
 export const planSectionRequirements: readonly SectionRequirement[] = [
@@ -106,7 +124,8 @@ export const stepTable: readonly StepDefinition[] = [
     gateId: "gate-1-join",
     evidenceId: "join-published",
     pathTemplate: ".signals/issue-{issue}/joined-{agent}.json",
-    participation: "all-active"
+    participation: "all-active",
+    task: "Publish your join signal for this issue."
   },
   {
     stepId: "R2.plan",
@@ -114,7 +133,8 @@ export const stepTable: readonly StepDefinition[] = [
     evidenceId: "plan-published",
     pathTemplate: ".plans/issue-{issue}/plan.md",
     participation: "all-active",
-    sections: planSectionRequirements
+    sections: planSectionRequirements,
+    task: "Publish your implementation plan."
   },
   {
     stepId: "R3.review",
@@ -122,28 +142,34 @@ export const stepTable: readonly StepDefinition[] = [
     evidenceId: "review-published",
     pathTemplate: ".plans/issue-{issue}/review-{agent}.md",
     participation: "all-active",
-    sections: reviewSectionRequirements
+    sections: reviewSectionRequirements,
+    inputsFrom: { stepId: "R2.plan", scope: "peers" },
+    task: "Review the plans published by the other agents and publish your review."
   },
   {
     stepId: "R3.plan-ballot",
     gateId: "gate-3-selection",
     evidenceId: "plan-ballot-published",
     pathTemplate: ".plans/issue-{issue}/ballot-{agent}.json",
-    participation: "all-active"
+    participation: "all-active",
+    inputsFrom: { stepId: "R2.plan", scope: "all" },
+    task: "Weigh the published plans and file your ballot for the one to implement."
   },
   {
     stepId: "R3.publish-selection",
     gateId: "gate-3-selection",
     evidenceId: "coordinator-internal",
     pathTemplate: ".plans/issue-{issue}/selection.json",
-    participation: "coordinator"
+    participation: "coordinator",
+    task: "Coordinator records the selected plan."
   },
   {
     stepId: "R4.implement",
     gateId: "gate-4-implementation",
     evidenceId: "implementation-pinned",
     pathTemplate: ".signals/issue-{issue}/implementation-ready-{agent}.json",
-    participation: "implementers"
+    participation: "implementers",
+    task: "Implement the selected plan, push it, then publish your implementation-ready signal naming the product commit."
   },
   {
     stepId: "R5.compare",
@@ -151,42 +177,52 @@ export const stepTable: readonly StepDefinition[] = [
     evidenceId: "comparison-published",
     pathTemplate: ".code-reviews/issue-{issue}/comparison-{agent}.md",
     participation: "all-active",
-    sections: comparisonSectionRequirements
+    sections: comparisonSectionRequirements,
+    inputsFrom: { stepId: "R4.implement", scope: "peers" },
+    task: "Compare the published implementations and publish your comparison."
   },
   {
     stepId: "R5.compare-ballot",
     gateId: "gate-5-comparison",
     evidenceId: "comparison-ballot-published",
     pathTemplate: ".code-reviews/issue-{issue}/comparison-ballot-{agent}.json",
-    participation: "all-active"
+    participation: "all-active",
+    inputsFrom: { stepId: "R4.implement", scope: "all" },
+    task: "File your ballot for the implementation to carry forward."
   },
   {
     stepId: "R6.revise",
     gateId: "gate-6-consensus",
     evidenceId: "revision-pinned",
     pathTemplate: ".signals/issue-{issue}/revision-ready-{agent}.json",
-    participation: "reviser"
+    participation: "reviser",
+    inputsFrom: { stepId: "R4.implement", scope: "selected" },
+    task: "Apply the review feedback, push the revision, then publish your revision-ready signal."
   },
   {
     stepId: "R6.ballot",
     gateId: "gate-6-consensus",
     evidenceId: "consensus-ballot-published",
     pathTemplate: ".code-reviews/issue-{issue}/consensus-ballot-{agent}.json",
-    participation: "all-active"
+    participation: "all-active",
+    inputsFrom: { stepId: "R6.revise", scope: "selected" },
+    task: "Review the revision and file your consensus ballot."
   },
   {
     stepId: "R6.declare",
     gateId: "gate-6-consensus",
     evidenceId: "coordinator-internal",
     pathTemplate: ".signals/issue-{issue}/consensus.json",
-    participation: "coordinator"
+    participation: "coordinator",
+    task: "Coordinator declares consensus."
   },
   {
     stepId: "R7.finalize",
     gateId: "gate-7-finalized",
     evidenceId: "coordinator-internal",
     pathTemplate: ".signals/issue-{issue}/finalization.json",
-    participation: "coordinator"
+    participation: "coordinator",
+    task: "Coordinator verifies finalization and runs the configured checks."
   }
 ];
 

@@ -62,7 +62,7 @@ const makeStart = (overrides: Partial<StartRecord> = {}): StartRecord => ({
   branchTemplate: "issue-{issue}/{agent}",
   maxRevisionRounds: DEFAULT_MAX_REVISION_ROUNDS,
   prPolicy: "owner-only",
-  automationDigest: "digest",
+  automationDigest: "d".repeat(64),
   automationDigestScheme: "v3",
   trustedSourceCommit: sha("b"),
   finalChecks: [{ argv: ["pnpm", "check"] }],

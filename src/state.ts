@@ -83,7 +83,7 @@ export const startRecordSchema = z
     branchTemplate: z.string().min(1),
     maxRevisionRounds: z.number().int().min(1),
     prPolicy: prPolicySchema,
-    automationDigest: z.string().min(1),
+    automationDigest: z.string().regex(/^[a-f0-9]{64}$/),
     automationDigestScheme: z.string().min(1),
     trustedSourceCommit: gitShaSchema,
     finalChecks: z.array(checkCommandSchema),
@@ -119,6 +119,8 @@ export const agentCursorSchema = z
     outstanding: z.array(z.string()),
     /** Steps this agent has already satisfied in this run. */
     satisfied: z.array(z.string()),
+    /** stepId -> the accepted submission commit, used to bind peer inputs. */
+    published: z.record(z.string(), gitShaSchema),
     updatedAt: timestampSchema
   })
   .strict();
@@ -311,6 +313,7 @@ export const emptyAgentCursor = (now: string, delivery: AgentCursor["delivery"])
   submissionSha: null,
   outstanding: [],
   satisfied: [],
+  published: {},
   updatedAt: now
 });
 
@@ -376,9 +379,15 @@ export const saveCursors = (state: RuntimeState, now: string): void => {
   writeJsonAtomic(state.paths.cursorsJson, state.cursors, state.paths.root);
 };
 
-/** Path of the throwaway verification worktree for a finalization attempt. */
-export const verificationWorktreePath = (paths: CoordPaths, sha: string): string =>
-  join(paths.worktreesDir, `verify-${sha.slice(0, 12)}`);
+/**
+ * Path of the throwaway verification worktree for one finalization attempt.
+ *
+ * The nonce keeps every attempt on a fresh directory. Reusing a name risks
+ * colliding with a stale `git worktree` admin entry left by an interrupted
+ * run, which fails the checkout rather than the checks.
+ */
+export const verificationWorktreePath = (paths: CoordPaths, sha: string, nonce?: string): string =>
+  join(paths.worktreesDir, `verify-${sha.slice(0, 12)}${nonce === undefined ? "" : `-${nonce}`}`);
 
 export const writeStartRecord = (paths: CoordPaths, start: StartRecord): void => {
   writeJsonAtomic(paths.startJson, startRecordSchema.parse(start), paths.root);

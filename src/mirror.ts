@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 import { inspectCommitRange, type CommitRangeInspection } from "./pinValidation.js";
 
@@ -27,14 +28,48 @@ export type GitRunner = (args: readonly string[], cwd?: string) => GitRun;
 
 const defaultTimeoutMs = 30_000;
 
+/**
+ * Git environment variables that redirect where git reads and writes.
+ *
+ * The coordinator can be launched from an agent pane, a git hook, or any shell
+ * that already has these set, and every one of them would silently point mirror
+ * operations at the wrong repository. They are stripped rather than trusted.
+ */
+const inheritedGitVars = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_NAMESPACE",
+  "GIT_PREFIX",
+  "GIT_CONFIG",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM"
+] as const;
+
+const gitEnv = (): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+
+  for (const key of inheritedGitVars) {
+    delete env[key];
+  }
+
+  return env;
+};
+
 export const spawnGit: GitRunner = (args, cwd) => {
   const result = spawnSync("git", [...args], {
-    cwd,
+    // Never inherit the caller's directory: an explicit `-C` in args decides
+    // the repository, and a stray cwd inside another worktree can misdirect
+    // the checkout half of a `worktree add`.
+    cwd: cwd ?? tmpdir(),
     encoding: "buffer",
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
     timeout: defaultTimeoutMs,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }
+    env: gitEnv()
   });
 
   return {
