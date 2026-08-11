@@ -186,6 +186,179 @@ and do not belong to a repo-level installer.
 
 ---
 
+## 4a. The installer is language-agnostic; the hooks are not, and they fail open
+
+**This is the largest gap in #4 and it is not listed among its open questions.**
+
+#4's premise is onboarding an arbitrary product codebase. The driver delivers on
+that — nothing in `paths`, `protocol`, `steps`, `state`, `action`, `mirror`,
+`evidence`, `machine`, `runLoop`, or `cli` knows what language the product is
+written in. Evidence predicates check git paths and Markdown/JSON artifacts;
+`checks[].argv` is already an explicit argument vector, so `["cargo", "test"]`
+or `["go", "test", "./..."]` work today with no change.
+
+The hooks do not.
+
+```bash
+# githooks/pre-commit:63
+if [[ -f package.json ]]; then
+  # …every project check lives inside this branch…
+fi
+exit 0
+```
+
+A Rust or Go product repo has no `package.json`. The hook runs the
+branch-ownership and identity checks — those are generic and fine — and then
+**exits 0 without running any project verification at all, silently.** No
+warning, no "I do not know how to check this project type."
+
+`pre-push:148` is the same shape: the e2e gate requires `-f package.json && -f
+pnpm-lock.yaml` before it will run anything.
+
+This is the same failure class as the missing-install case in §2, and as the
+absent `test:e2e` script found during issue 1: **a guard that is skipped reports
+success.** Onboarding a Go server under #4 as written would produce a workspace
+that looks fully configured, enforces branch ownership correctly, drives the
+whole R1–R7 workflow correctly, verifies evidence at exact commits correctly —
+and never once compiles or tests the product locally.
+
+### Node assumptions, enumerated
+
+| Location | Assumption | Effect on a Rust/Go product |
+| --- | --- | --- |
+| `githooks/pre-commit:63-135` | `package.json` + pnpm/npm/yarn lockfile | all checks skipped, exit 0 |
+| `githooks/pre-push:148` | `package.json` + `pnpm-lock.yaml` + `test:e2e` script | e2e gate never fires |
+| `githooks/pre-push:22` | `workflow_critical_files` are Node manifests | `Cargo.toml`/`go.mod` changes not workflow-critical |
+| `scripts/setup_common.sh:80` `common_ensure_node_version` | `.nvmrc` + nvm in the **product** | noise or wrong toolchain; irrelevant to the product |
+| `scripts/setup_common.sh:246-249` `common_detect_project` | sniffs `package.json` for react / react-native | no project type detected |
+| generated `AGENTS.md` (`setup_common.sh:188`) | "For pnpm repos, use pnpm…" | instructions that do not apply |
+
+Note the split: `common_ensure_node_version` is legitimate for the **coordination
+install** (the driver runs on Node 26) and wrong for the **product**. #4's
+installer must not conflate them.
+
+### Proposed change: declare verification, and fail closed without it
+
+Move project verification out of lockfile sniffing and into the emitted
+workspace config, where `checks[].argv` already lives:
+
+```jsonc
+{
+  "project": "myserver",
+  "toolchain": "go",
+  "verify": {
+    "precommit": [
+      { "name": "vet",  "argv": ["go", "vet", "./..."] },
+      { "name": "test", "argv": ["go", "test", "./..."] }
+    ],
+    "prepush": [
+      { "name": "build", "argv": ["go", "build", "./..."] }
+    ]
+  },
+  "workflowCriticalPrefixes": ["cmd/", "internal/", "pkg/"],
+  "workflowCriticalFiles": ["go.mod", "go.sum"],
+  "checks": [
+    { "name": "test", "argv": ["go", "test", "./..."] }
+  ]
+}
+```
+
+The hook body then becomes ecosystem-neutral: read the declared argv, run each
+in order, block on the first non-zero exit. `checks` (finalization, run by the
+coordinator in a throwaway worktree) and `verify` (local, run by hooks) stay
+separate because they answer different questions at different times.
+
+Three rules make this safe:
+
+1. **No declaration is an error, not a skip.** If `verify` is absent the hook
+   blocks and says so. Opting out must be explicit — `"verify": { "precommit":
+   [], "prepush": [] }` — so that a product with no local checks is a recorded
+   decision rather than an accident of file layout.
+2. **`coord doctor` preflights the toolchain.** Verify `argv[0]` resolves for
+   every declared command at install time, not at the operator's first commit.
+   The existing "pnpm-lock.yaml exists but pnpm is not available" block is the
+   right instinct — generalise it and move it earlier.
+3. **Keep lockfile sniffing only as a scaffolding default.** `coord
+   setup-workspace` may *propose* `verify` for a recognised ecosystem (pnpm,
+   cargo, go, make) and write it into the config for review. The hook itself
+   must never sniff.
+
+`common_ensure_node_version` then applies to the install root only, the
+`AGENTS.md` template takes its build guidance from `toolchain`/`verify` instead
+of hardcoding pnpm, and `common_detect_project`'s react sniffing either becomes
+a config field or goes away.
+
+### Answer to "is this suitable for a Rust or Go repo?"
+
+**The driver: yes, today, unchanged.** The coordination protocol is about git
+commits, published artifacts, and argv — none of which is language-specific. The
+operator's machine needs Node to run `coord`; the product does not.
+
+**The setup and hook layer: not yet, and it would fail quietly rather than
+loudly.** Everything in this section is what stands between the current state and
+a truthful yes. None of it is deep — it is roughly one hook rewrite plus config
+plumbing — but it must land before a non-Node repo is onboarded, or the
+onboarding will look successful and be hollow.
+
+---
+
+## 4b. Versioning: package identity and the install stamp
+
+#4 mentions "package display strings should be coordination-native" under naming
+debt. Two concrete decisions belong in it.
+
+### Package identity
+
+All four branches still carry the scaffold's identity:
+
+```json
+"name": "@consensus-ai/coordination",
+"version": "0.0.0"
+```
+
+`@consensus-ai` is stale provenance — the adopted plan makes this a standalone
+repository and "the forward path". `0.0.0` is a placeholder.
+
+Proposed: rename to `coordination` (or `@gwhizoftv/coordination` if a scope is
+wanted later) and set `0.1.0` when issue 1 merges. The package stays
+`private: true`; this is about honest identity and having something for the stamp
+below to reference, not about publishing.
+
+**Not proposed: adopting a package manager for distribution.** Coordination has
+one runtime dependency (`zod`), the consumers are local clones on one machine,
+and the interface is still being revised. More importantly, the target repo must
+never be made to depend on a Node toolchain — a Go repo whose `git commit`
+requires `pnpm install` is precisely the coupling #4's non-goals reject. The
+install-root indirection keeps the operator's install and the product's reference
+to it separate; that separation is what should be preserved, and it is what makes
+adopting a package manager later a one-line change to how `installRoot` resolves.
+
+### Install stamp
+
+Record what a product was installed against, in the emitted workspace config:
+
+```jsonc
+"coordination": {
+  "installRoot": "/Volumes/4TB-SOURCE/REPOS/coord/coordination",
+  "version": "0.1.0",
+  "commit": "8c2ab24…",
+  "installedAt": "2026-08-11T17:40:00Z"
+}
+```
+
+`coord doctor` compares `commit` against `git -C $installRoot rev-parse HEAD` and
+reports an upgrade nobody reviewed. That is the property a lockfile would give,
+obtained without a registry — and if coordination is ever published, `version`
+becomes the semver and nothing else in the design changes.
+
+This directly mitigates the risk centralisation creates: with one canonical hook
+body, a bad coordination update reaches every onboarded project at once. The
+stamp makes that upgrade visible and, with `--pin`, opt-in. Without it, "which
+coordination is `testapp` running against?" has no answer — the same class of
+problem as the `pre-push` divergence in §1, one level up.
+
+---
+
 ## 5. Additional acceptance criteria to add to #4
 
 #4's list does not currently assert the property §2 is about:
@@ -206,6 +379,18 @@ and do not belong to a repo-level installer.
 - [ ] A test asserts the workspace config emitted by `setup-workspace` is
       accepted by `coord start` without modification — the two consumers cannot
       drift apart.
+- [ ] **A non-Node product repo onboards end to end.** A Rust or Go fixture gets
+      agent clones, hooks, and a config; a commit that fails the declared
+      `verify.precommit` is **blocked**. This is the criterion that would have
+      caught §4a.
+- [ ] A product repo with no `verify` declaration **blocks** commits with a
+      message naming the fix; an explicit empty `verify` allows them.
+- [ ] `coord doctor` fails when a declared `argv[0]` is not on PATH, at install
+      time rather than at first commit.
+- [ ] No hook body branches on `package.json`, a lockfile name, or any other
+      ecosystem marker.
+- [ ] The emitted config records the coordination version and commit, and
+      `coord doctor` reports a drifted install root.
 
 ---
 
