@@ -14,6 +14,7 @@ import {
 import { evaluateEvidence, type EvidenceContext } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
 import { decide, type MachineInput } from "./machine.js";
+import { parseJsonArtifact, planBallotSchema } from "./protocol.js";
 import type { Mirror } from "./mirror.js";
 import {
   activeAgents,
@@ -426,13 +427,24 @@ const applyDecisions = (
 
       case "advance-gate": {
         progressed = true;
+
+        const active = activeAgents(state.start, state.cursors);
+        const current = state.cursors.selected;
+        // Selection only becomes meaningful once implementation starts, and a
+        // pick that has since been dropped must be recomputed rather than kept.
+        const needsSelection =
+          decision.to !== "gate-1-join" &&
+          decision.to !== "gate-2-plans" &&
+          decision.to !== "gate-3-selection" &&
+          (current === null || !active.includes(current));
+
         state.cursors = {
           ...state.cursors,
           issueCursor: {
             gateId: decision.to,
             round: decision.to === "gate-6-consensus" ? (state.cursors.issueCursor.round ?? 1) : null
           },
-          selected: state.cursors.selected ?? selectFromBallots(state)
+          selected: needsSelection ? selectFromBallots(state, deps) : current
         };
         appendJournal(
           state.paths.journal,
@@ -509,14 +521,54 @@ export const runTick = (state: RuntimeState, deps: LoopDeps): TickResult => {
 };
 
 /**
- * Coordinator-side selection. Automatic declaration is permitted by owner
- * policy; merging never is.
+ * Coordinator-side selection, tallied from the ballots agents actually
+ * published. Automatic declaration is permitted by owner policy; merging never
+ * is.
+ *
+ * Only active agents can vote and only active agents can be chosen, so a
+ * dropped agent neither casts nor receives a vote. Ties break on roster order
+ * so the result is deterministic and reproducible after a restart.
  */
-export const selectFromBallots = (state: RuntimeState): string | null => {
+export const selectFromBallots = (state: RuntimeState, deps: LoopDeps): string | null => {
   const active = activeAgents(state.start, state.cursors);
-  const withPlans = active.filter((agent) => cursorFor(state, agent).published["R2.plan"] !== undefined);
+  const eligible = active.filter((agent) => cursorFor(state, agent).published["R2.plan"] !== undefined);
 
-  return withPlans[0] ?? active[0] ?? null;
+  if (eligible.length === 0) {
+    return active[0] ?? null;
+  }
+
+  const tally = new Map<string, number>(eligible.map((agent) => [agent, 0]));
+
+  for (const voter of active) {
+    const ballotSha = cursorFor(state, voter).published["R3.plan-ballot"];
+
+    if (ballotSha === undefined) {
+      continue;
+    }
+
+    const blob = deps.mirror.readBlob(
+      ballotSha,
+      requiredPathFor(stepById("R3.plan-ballot"), state.start.issue, voter)
+    );
+
+    if (!blob.ok) {
+      continue;
+    }
+
+    const parsed = parseJsonArtifact(planBallotSchema, blob.contents);
+
+    if (!parsed.ok) {
+      continue;
+    }
+
+    const current = tally.get(parsed.value.choice);
+
+    if (current !== undefined) {
+      tally.set(parsed.value.choice, current + 1);
+    }
+  }
+
+  return eligible.reduce((best, agent) => ((tally.get(agent) ?? 0) > (tally.get(best) ?? 0) ? agent : best), eligible[0] as string);
 };
 
 export type FinalizationOutcome = {
