@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Tracked, agent-neutral hook. Identity is resolved at runtime — never edit a
 # clone-specific value into this file.
+# Intentionally no `set -e`: the stdin ref loop must tolerate EOF from `read`,
+# and we accumulate status across refs instead of aborting mid-stream.
+set -uo pipefail
 lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/identity.sh"
 [[ -r "$lib" ]] || { echo "HOOK BLOCKED: cannot read $lib." >&2; exit 1; }
 # shellcheck source=lib/identity.sh

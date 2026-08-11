@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tracked, agent-neutral hook. Identity is resolved at runtime — never edit a
 # clone-specific value into this file.
+set -euo pipefail
 lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/identity.sh"
 [[ -r "$lib" ]] || { echo "HOOK BLOCKED: cannot read $lib." >&2; exit 1; }
 # shellcheck source=lib/identity.sh
@@ -41,7 +42,7 @@ else
 fi
 
 # 3) Skip declared verify when the commit only touches coordination evidence paths.
-staged="$(git diff --cached --name-only 2>/dev/null)"
+staged="$(git diff --cached --name-only 2>/dev/null || true)"
 run_checks=false
 
 if [[ -n "$staged" ]]; then

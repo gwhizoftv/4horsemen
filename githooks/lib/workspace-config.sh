@@ -3,6 +3,10 @@
 #
 # Policy lives in the coord-root workspace config (coord.workspaceConfig).
 # Hooks must not sniff package.json / lockfiles / script names.
+#
+# Functions return non-zero on hard failures. Callers must check status
+# (hooks use `set -e` / `|| exit 1`) — never rely on `exit` inside
+# command substitutions, which only terminate the subshell.
 
 coord_workspace_config_path() {
   git config --local --get coord.workspaceConfig 2>/dev/null || true
@@ -10,6 +14,7 @@ coord_workspace_config_path() {
 
 # Prints MISSING | EMPTY | JSON-array-of-command-objects for the named hook phase.
 # phase: precommit | prepush
+# Returns non-zero if the workspace config path is unset/unreadable.
 coord_verify_phase() {
   local phase="$1"
   local path
@@ -17,11 +22,11 @@ coord_verify_phase() {
   if [[ -z "$path" || ! -f "$path" ]]; then
     echo "HOOK BLOCKED: coord.workspaceConfig is unset or missing (${path:-<unset>})." >&2
     echo "  Fix: re-run coord install for this product." >&2
-    exit 1
+    return 1
   fi
   if ! command -v node >/dev/null; then
     echo "HOOK BLOCKED: node is required to read the workspace verify config." >&2
-    exit 1
+    return 1
   fi
   node --input-type=module -e '
 import { readFileSync } from "node:fs";
@@ -45,12 +50,14 @@ coord_run_verify_phase() {
   local phase="$1"
   local label="$2"
   local payload command_json name
-  payload="$(coord_verify_phase "$phase")"
+  if ! payload="$(coord_verify_phase "$phase")"; then
+    return 1
+  fi
   if [[ "$payload" == "MISSING" ]]; then
     echo "HOOK BLOCKED ($label): workspace config has no verify declaration." >&2
     echo "  Add verify.precommit / verify.prepush argv arrays, or set an explicit empty verify object." >&2
     echo "  Human product clones without coordination hooks are unaffected." >&2
-    exit 1
+    return 1
   fi
   if [[ "$payload" == "EMPTY" ]]; then
     echo "$label hook: verify.$phase is explicitly empty; skipping project checks."
@@ -69,12 +76,13 @@ const result = spawnSync(argv[0], argv.slice(1), { stdio: "inherit" });
 process.exit(result.status ?? 1);
 ' "$command_json"; then
       echo "HOOK BLOCKED: verify.$phase '$name' failed — fix before continuing." >&2
-      exit 1
+      return 1
     fi
   done < <(node --input-type=module -e '
 const list = JSON.parse(process.argv[1]);
 for (const item of list) process.stdout.write(`${JSON.stringify(item)}\n`);
 ' "$payload")
+  return 0
 }
 
 # Loads workflowCriticalPrefixes / workflowCriticalFiles into namerefs.
@@ -85,7 +93,7 @@ coord_load_workflow_critical() {
   path="$(coord_workspace_config_path)"
   if [[ -z "$path" || ! -f "$path" ]]; then
     echo "HOOK BLOCKED: coord.workspaceConfig is unset or missing (${path:-<unset>})." >&2
-    exit 1
+    return 1
   fi
   local raw
   raw="$(node --input-type=module -e '
@@ -109,4 +117,5 @@ for (const value of data.prefixes) process.stdout.write(`${value}\n`);
 const data = JSON.parse(process.argv[1]);
 for (const value of data.files) process.stdout.write(`${value}\n`);
 ' "$raw")
+  return 0
 }
