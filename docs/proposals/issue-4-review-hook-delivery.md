@@ -237,10 +237,51 @@ Note the split: `common_ensure_node_version` is legitimate for the **coordinatio
 install** (the driver runs on Node 26) and wrong for the **product**. #4's
 installer must not conflate them.
 
+### Whose tests are these? Three tiers, only one of which coordination owns
+
+#4 does not state this anywhere, and it is the first question an operator asks.
+**Coordination adds no tests to the target repository.** It runs the target's
+own, at two distinct tiers that are easy to conflate:
+
+| Tier | Whose tests | Where it runs | On failure |
+| --- | --- | --- | --- |
+| 1 | **coordination's** (`coordination/test/`) | the driver's own repo | blocks coordination's commits. Never installed into a target. |
+| 2 | **target's**, via hooks (`verify`) | the agent's clone, working tree as-is | blocks that agent's commit or push |
+| 3 | **target's**, via `checks[].argv` | throwaway worktree at the exact final commit | **blocks PR creation** (required behavior 13) |
+
+Tiers 2 and 3 run the same product suite and answer different questions. Tier 2
+is fast feedback in a dirty worktree and can be defeated by uncommitted state or
+a stale dependency tree. Tier 3 is hermetic — materialised from the mirror at the
+exact commit consensus approved, with results journaled — and is the one that
+gates publication. Both should exist; neither substitutes for the other.
+
+### The coupling being removed: coordination currently dictates script *names*
+
+The reason this needs saying is that today the hooks do not run "the target's
+checks" — they run **scripts the target must name coordination's way**:
+
+```bash
+# githooks/pre-commit
+grep -q '"check:fast"[[:space:]]*:' package.json   # then "check", then lint/typecheck/test
+# githooks/pre-push
+grep -q '"test:e2e"[[:space:]]*:' package.json
+```
+
+`testapp` has a `check:fast` script because the hook looks for that literal
+string, not because the project chose the name. That is coordination reaching
+into the target's build configuration, and it is undocumented.
+
+It has already failed in practice. **`testapp` has no `test:e2e` script at all**,
+so its pre-push e2e gate cannot fire — independently of the
+`workflow_critical_prefixes` divergence in §1. One onboarded repo, two unrelated
+silent skips, neither visible to the operator.
+
 ### Proposed change: declare verification, and fail closed without it
 
-Move project verification out of lockfile sniffing and into the emitted
-workspace config, where `checks[].argv` already lives:
+Move project verification out of lockfile sniffing *and out of script-name
+matching* into the emitted workspace config, where `checks[].argv` already lives.
+The target keeps whatever script names, Makefile targets, or bare binaries it
+already uses; coordination stops having an opinion.
 
 ```jsonc
 {
@@ -287,6 +328,31 @@ Three rules make this safe:
 `AGENTS.md` template takes its build guidance from `toolchain`/`verify` instead
 of hardcoding pnpm, and `common_detect_project`'s react sniffing either becomes
 a config field or goes away.
+
+### What this deliberately does not do
+
+Nothing here requires that new product code **arrives with tests**. An agent can
+implement a feature with no new tests and every tier above passes trivially,
+because the target's existing suite still goes green.
+
+That is by design, and the adopted plan says so under its risks: *"Mechanical
+validity can be mistaken for quality. Keep the distinction explicit in output and
+require plan review, comparison, ballots, or owner decisions according to
+profile."* Whether a change is adequately tested is an R3 review, R5 comparison,
+and R6 ballot judgement. No evidence predicate can decide it, and one that tried
+would be measuring the wrong thing.
+
+If mechanical pressure is wanted there, the correct shape is a **target-declared
+check**, not a coordination-invented rule:
+
+```jsonc
+{ "name": "coverage", "argv": ["./scripts/coverage-gate.sh", "--min", "80"] }
+```
+
+Ownership stays where it belongs: the target sets its own quality bar,
+coordination runs it and blocks on a non-zero exit. This is the same principle as
+the rest of §4a — coordination supplies the mechanism, the product supplies the
+policy.
 
 ### Answer to "is this suitable for a Rust or Go repo?"
 
@@ -388,7 +454,15 @@ problem as the `pre-push` divergence in §1, one level up.
 - [ ] `coord doctor` fails when a declared `argv[0]` is not on PATH, at install
       time rather than at first commit.
 - [ ] No hook body branches on `package.json`, a lockfile name, or any other
-      ecosystem marker.
+      ecosystem marker — **and none greps the target for a script name.** A
+      target whose checks are `make test` or a bare binary is verified exactly
+      like a pnpm one.
+- [ ] Tier 2 and tier 3 are separately observable: a target whose `verify` passes
+      but whose `checks` fail in the clean worktree **blocks PR creation**, and
+      the journal shows which tier failed.
+- [ ] `testapp`'s pre-push e2e gate demonstrably fires after migration. It cannot
+      today — no `test:e2e` script exists — so this is a regression test for the
+      script-name coupling, not a hypothetical.
 - [ ] The emitted config records the coordination version and commit, and
       `coord doctor` reports a drifted install root.
 
