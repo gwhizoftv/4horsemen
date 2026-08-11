@@ -1,6 +1,7 @@
 # Code review: Claude implementation for issue 4
 
-- Reviewed head: `72db53ab67d2ac788ea682302e6492e98c531d88`
+- Reviewed branch head: `d2e5226f82cc9c489a89556bddc27d8aca4fbf3d`
+- Implementation under review: `72db53ab67d2ac788ea682302e6492e98c531d88` (the later commit adds review documents only)
 - Baseline: `origin/main` at `a67338341d720160e7e30e8af2ea043d740564d4`
 - Validation: `pnpm check` passed (168 focused tests and the four-agent E2E canary) under Node 23.11.0; the package declares Node 26. Reinstall transitions were also exercised directly: the hook manifest changed on an alleged no-op, and adding `--write-product` left `wroteProductIgnore: false`, causing uninstall to retain the managed block.
 

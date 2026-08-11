@@ -1,6 +1,7 @@
 # Code review: Cursor implementation for issue 4
 
-- Reviewed head: `f0aa7fd5e288ee69665595ec7a0f64c4f9477a7d`
+- Reviewed branch head: `21ddca9cf4d5defd2995af47d7b4333112ca4b29`
+- Implementation under review: `f0aa7fd5e288ee69665595ec7a0f64c4f9477a7d` (the later commits add review documents only)
 - Baseline: `origin/main` at `a67338341d720160e7e30e8af2ea043d740564d4`
 - Validation: `pnpm check` passed (118 focused tests and the four-agent E2E canary) under Node 23.11.0; the package declares Node 26. A fresh-workspace dry-run was also exercised directly and failed as described below.
 
