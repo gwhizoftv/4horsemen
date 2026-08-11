@@ -1,17 +1,40 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname } from "node:path";
 import { gitShaSchema, repositoryPathSchema } from "./protocol.js";
+import { validatePhasePin, type PinValidationResult } from "./pinValidation.js";
 
 export type CommandResult = { exitCode: number; stdout: Buffer; stderr: string };
 export type GitRunner = (args: readonly string[], options?: { cwd?: string }) => Promise<CommandResult>;
 
+const repositoryRedirectors = new Set([
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_NAMESPACE",
+  "GIT_PREFIX",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_DISCOVERY_ACROSS_FILESYSTEM"
+]);
+
+export const hermeticGitEnv = (source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...source, GIT_TERMINAL_PROMPT: "0" };
+  for (const key of Object.keys(env)) {
+    if (repositoryRedirectors.has(key) || key === "GIT_CONFIG" || key.startsWith("GIT_CONFIG_")) delete env[key];
+  }
+  return env;
+};
+
 export const runGitCommand: GitRunner = (args, options = {}) =>
   new Promise((resolve, reject) => {
     const child = spawn("git", [...args], {
-      cwd: options.cwd,
+      cwd: options.cwd ?? tmpdir(),
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }
+      env: hermeticGitEnv()
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
@@ -127,6 +150,16 @@ export class BareMirror {
       .toString("utf8")
       .split("\0")
       .filter((path) => path !== "");
+  }
+
+  async validatePhasePin(params: {
+    pin: string;
+    tip: string;
+    issue: number;
+    subject: string;
+    ref: string;
+  }): Promise<PinValidationResult> {
+    return validatePhasePin({ root: this.path, ...params });
   }
 
   async materializeWorktree(target: string, sha: string): Promise<void> {

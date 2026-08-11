@@ -50,6 +50,32 @@ describe("owner bare mirror", () => {
     expect(await mirror.changedPaths(git(fixture.work, "rev-parse", "main"), fixture.sha)).toContain(".plans/issue-1/plan.md");
   });
 
+  it("ignores ambient Git repository and config redirectors", async () => {
+    const fixture = repository();
+    const poisoned = join(fixture.root, "poison.git");
+    execFileSync("git", ["init", "--bare", "-q", poisoned]);
+    const previous = {
+      GIT_DIR: process.env.GIT_DIR,
+      GIT_WORK_TREE: process.env.GIT_WORK_TREE,
+      GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL
+    };
+    process.env.GIT_DIR = poisoned;
+    process.env.GIT_WORK_TREE = join(fixture.root, "wrong-worktree");
+    process.env.GIT_CONFIG_GLOBAL = join(fixture.root, "missing-config");
+    try {
+      const mirror = new BareMirror(join(fixture.root, "runtime-hermetic/mirror.git"), fixture.origin);
+      await mirror.initialize();
+      const fetched = await mirror.fetchBranch("issue-1/codex");
+      expect(fetched).toMatchObject({ ok: true, tip: fixture.sha });
+      expect(await mirror.readBlob(fixture.sha, ".plans/issue-1/plan.md")).toBe("# Plan\n");
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("distinguishes transient network failures", () => {
     expect(isTransientGitFailure("fatal: Could not resolve host: example.invalid")).toBe(true);
     expect(isTransientGitFailure("fatal: couldn't find remote ref missing")).toBe(false);

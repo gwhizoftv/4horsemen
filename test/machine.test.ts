@@ -6,7 +6,7 @@ const now = "2026-08-11T12:00:00.000Z";
 const roster = ["claude", "codex", "cursor", "antigravity"];
 
 const start = startStateSchema.parse({
-  formatVersion: 1,
+  formatVersion: 2,
   issue: 1,
   issueSessionId: `issue-1:${"a".repeat(40)}`,
   baselineSha: "a".repeat(40),
@@ -17,6 +17,8 @@ const start = startStateSchema.parse({
   maxRevisionRounds: 3,
   prPolicy: "owner-only",
   automationDigest: "b".repeat(64),
+  automationDigestScheme: "sha256-length-prefixed-v1",
+  automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }],
   trustedSourceCommit: "c".repeat(40),
   origin: "/origin.git",
   coordRoot: "/runtime",
@@ -87,7 +89,69 @@ describe("pure workflow machine", () => {
       accepted: roster.map((agent) => accepted("R6.ballot", agent, 3, agent === "codex" ? "revise" : "approve"))
     });
     expect(decide({ start, cursors })).toEqual([
-      { type: "owner-action-required", reason: "revision limit 3 reached; round 4 is forbidden" }
+      {
+        type: "owner-action-required",
+        reason: "revision limit 3 reached; round 4 is forbidden",
+        kind: "revision-limit",
+        round: 3,
+        allowedAnswers: ["retry", "abandon"]
+      }
+    ]);
+  });
+
+  it("routes revision work to the persisted authorized reviser", () => {
+    const base = initialCursors(start, now);
+    const cursors = cursorsStateSchema.parse({
+      ...base,
+      issueCursor: { stepId: "R6.revise", gateId: "gate-6-consensus", round: 1 },
+      reviser: "cursor",
+      selection: {
+        planAgents: ["claude"],
+        implementationAgent: "cursor",
+        implementationPin: "d".repeat(40),
+        reviser: "cursor"
+      }
+    });
+    expect(decide({ start, cursors })).toEqual([
+      { type: "prepare-action", agent: "cursor", stepId: "R6.revise", round: 1 }
+    ]);
+  });
+
+  it("routes reviewed implementation to the selected plan winner", () => {
+    const reviewed = startStateSchema.parse({ ...start, profile: "reviewed" });
+    const base = initialCursors(reviewed, now);
+    const cursors = cursorsStateSchema.parse({
+      ...base,
+      issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
+      selection: { ...base.selection, planAgents: ["cursor"] }
+    });
+    expect(decide({ start: reviewed, cursors })).toEqual([
+      { type: "prepare-action", agent: "cursor", stepId: "R4.implement", round: null }
+    ]);
+  });
+
+  it("advances revise dispositions through round three and types escalations", () => {
+    const base = initialCursors(start, now);
+    const revision = cursorsStateSchema.parse({
+      ...base,
+      issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
+      accepted: roster.map((agent) => accepted("R6.ballot", agent, 1, agent === "codex" ? "revise" : "approve"))
+    });
+    expect(decide({ start, cursors: revision })).toEqual([
+      { type: "advance-step", from: "R6.ballot", to: "R6.revise", round: 2 }
+    ]);
+    const escalation = cursorsStateSchema.parse({
+      ...revision,
+      accepted: roster.map((agent) => accepted("R6.ballot", agent, 1, agent === "codex" ? "escalate" : "approve"))
+    });
+    expect(decide({ start, cursors: escalation })).toEqual([
+      {
+        type: "owner-action-required",
+        reason: "consensus ballot round 1 requested escalation",
+        kind: "ballot-escalation",
+        round: 1,
+        allowedAnswers: ["retry", "revise", "abandon"]
+      }
     ]);
   });
 

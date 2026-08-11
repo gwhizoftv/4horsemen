@@ -77,6 +77,8 @@ describe("four-agent coordinator canary", () => {
         maxRevisionRounds: 3,
         prPolicy: "owner-only",
         automationDigest: "b".repeat(64),
+        automationDigestScheme: "sha256-length-prefixed-v1",
+        automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }],
         trustedSourceCommit: "c".repeat(40),
         origin,
         coordRoot: runtimeRoot,
@@ -176,8 +178,12 @@ Bind every input commit.
 ## Conclusion
 Implement the selected product files.
 `;
-      for (const agent of activeAfterDrop) submit(agent, plan);
+      for (const agent of ["claude", "codex"] as const) submit(agent, plan);
       await loop.runTick();
+      expect(readCursorsState(paths).accepted.filter((submission) => submission.stepId === "R2.plan")).toHaveLength(2);
+      submit("cursor", plan);
+      const cursorPendingPlan = agentRuntimePaths(paths, "cursor").complete;
+      expect(existsSync(cursorPendingPlan)).toBe(true);
       let cursors = readCursorsState(paths);
       appendJournal(paths, { type: "agent-dropped", agent: "antigravity", details: { reason: "fixture unavailable" } });
       cursors = dropAgent(cursors, "antigravity");
@@ -186,6 +192,8 @@ Implement the selected product files.
       if (existsSync(droppedRuntime.action)) unlinkSync(droppedRuntime.action);
       writeCursorsState(paths, cursors);
       await loop.runTick();
+      expect(readCursorsState(paths).accepted.filter((submission) => submission.stepId === "R2.plan")).toHaveLength(3);
+      expect(existsSync(cursorPendingPlan)).toBe(false);
 
       expectStep("R3.review");
       for (const agent of activeAfterDrop) {
@@ -208,7 +216,7 @@ Implement the selected product files.
             inputSetHash: computeInputSetHash(order.inputs),
             plans: order.inputs.filter((input) => input.kind === "plan").map(({ agent: citedAgent, commitSha, path }) => ({ agent: citedAgent, commitSha, path })),
             reviews: order.inputs.filter((input) => input.kind === "review").map(({ agent: citedAgent, commitSha, path }) => ({ agent: citedAgent, commitSha, path })),
-            choice: "claude",
+            choice: "codex",
             rationale: "The plans are mechanically complete."
           })
         );
@@ -223,7 +231,7 @@ Implement the selected product files.
           JSON.stringify({
             ...commonArtifact(order, "selection"),
             inputSetHash: computeInputSetHash(order.inputs),
-            selectedAgents: [...activeAfterDrop],
+            selectedAgents: ["codex"],
             ballots: order.inputs.map(({ agent, commitSha, path }) => ({ agent, commitSha, path }))
           })
         );
@@ -231,8 +239,10 @@ Implement the selected product files.
       await loop.runTick();
 
       expectStep("R4.implement");
+      expect(readCursorsState(paths).selection.planAgents).toEqual(["codex"]);
       for (const agent of activeAfterDrop) {
         const order = currentOrder(agent);
+        expect(order.inputs.map((input) => input.agent)).toEqual(["codex"]);
         const pin = commitAndPush(agent, `src/product-${agent}.txt`, `${agent} product\n`, `product ${agent}`);
         submit(
           agent,
@@ -262,8 +272,8 @@ Implement the selected product files.
             ...commonArtifact(order, "comparison-ballot"),
             inputSetHash: computeInputSetHash(order.inputs),
             implementations: order.inputs.map(({ agent: citedAgent, commitSha, path }) => ({ agent: citedAgent, commitSha, path })),
-            choice: "claude",
-            rationale: "Select the Claude implementation."
+            choice: "cursor",
+            rationale: "Select the Cursor implementation."
           })
         );
       }
@@ -272,14 +282,16 @@ Implement the selected product files.
       expectStep("R5.reviser-auth");
       {
         const order = currentOrder("claude");
-        const selectedPin = order.inputs.find((input) => input.kind === "implementation")?.commitSha;
+        const selectedPin = order.inputs.find(
+          (input) => input.kind === "implementation" && input.agent === "cursor"
+        )?.commitSha;
         if (selectedPin === undefined) throw new Error("No selected implementation pin.");
         submit(
           "claude",
           JSON.stringify({
             ...commonArtifact(order, "reviser-authorization"),
             inputSetHash: computeInputSetHash(order.inputs),
-            reviser: "claude",
+            reviser: "cursor",
             implementationCommitSha: selectedPin
           })
         );
@@ -287,12 +299,18 @@ Implement the selected product files.
       await loop.runTick();
 
       expectStep("R6.revise");
+      expect(readCursorsState(paths).selection).toMatchObject({
+        implementationAgent: "cursor",
+        reviser: "cursor"
+      });
+      expect(existsSync(agentRuntimePaths(paths, "claude").action)).toBe(false);
+      expect(existsSync(agentRuntimePaths(paths, "codex").action)).toBe(false);
       let revisionPin = "";
       {
-        const order = currentOrder("claude");
-        revisionPin = commitAndPush("claude", "src/revision.txt", "revision one\n", "revision product");
+        const order = currentOrder("cursor");
+        revisionPin = commitAndPush("cursor", "src/revision.txt", "revision one\n", "revision product");
         submit(
-          "claude",
+          "cursor",
           JSON.stringify({
             ...commonArtifact(order, "revision-ready"),
             inputSetHash: computeInputSetHash(order.inputs),
@@ -323,9 +341,9 @@ Implement the selected product files.
 
       expectStep("R6.declare");
       {
-        const order = currentOrder("claude");
+        const order = currentOrder("cursor");
         submit(
-          "claude",
+          "cursor",
           JSON.stringify({
             ...commonArtifact(order, "consensus-declaration"),
             inputSetHash: computeInputSetHash(order.inputs),
@@ -340,18 +358,18 @@ Implement the selected product files.
       await loop.runTick();
 
       expectStep("R7.finalize");
-      const claudeClone = clones.get("claude") as string;
+      const cursorClone = clones.get("cursor") as string;
       for (const directory of [".plans/issue-1", ".signals/issue-1", ".code-reviews/issue-1"]) {
-        rmSync(join(claudeClone, directory), { recursive: true, force: true });
+        rmSync(join(cursorClone, directory), { recursive: true, force: true });
       }
-      git(claudeClone, "add", "-A");
-      git(claudeClone, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "cleanup only");
-      const finalSha = git(claudeClone, "rev-parse", "HEAD");
-      git(claudeClone, "push", "-q", "origin", "HEAD:refs/heads/issue-1/claude");
+      git(cursorClone, "add", "-A");
+      git(cursorClone, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "cleanup only");
+      const finalSha = git(cursorClone, "rev-parse", "HEAD");
+      git(cursorClone, "push", "-q", "origin", "HEAD:refs/heads/issue-1/cursor");
       {
-        const order = currentOrder("claude");
+        const order = currentOrder("cursor");
         submit(
-          "claude",
+          "cursor",
           JSON.stringify({
             ...commonArtifact(order, "finalization"),
             consensusSha: revisionPin,

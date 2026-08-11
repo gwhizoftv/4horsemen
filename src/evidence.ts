@@ -15,6 +15,7 @@ import {
   validateCommonArtifactFields
 } from "./protocol.js";
 import type { BoundInput, EvidenceObservation, InternalOrder } from "./steps.js";
+import type { PinValidationResult } from "./pinValidation.js";
 
 export type EvidenceMirror = {
   fetchBranch(branch: string): Promise<FetchResult>;
@@ -22,6 +23,13 @@ export type EvidenceMirror = {
   isAncestor(base: string, tip: string): Promise<boolean>;
   readBlob(sha: string, path: string): Promise<string | null>;
   changedPaths(base: string, tip: string): Promise<string[]>;
+  validatePhasePin(params: {
+    pin: string;
+    tip: string;
+    issue: number;
+    subject: string;
+    ref: string;
+  }): Promise<PinValidationResult>;
 };
 
 const canonicalInputs = (inputs: readonly BoundInput[]): string =>
@@ -112,7 +120,10 @@ const rejected = (order: InternalOrder, sha: string, outstanding: readonly strin
 const satisfied = (
   order: InternalOrder,
   sha: string,
-  extra: Pick<EvidenceObservation, "productPin" | "disposition"> = {}
+  extra: Pick<
+    EvidenceObservation,
+    "productPin" | "disposition" | "approvedPaths" | "selectedAgents" | "choice" | "reviser" | "checkResults"
+  > = {}
 ): EvidenceObservation => ({
   agent: order.agent,
   actionId: order.actionId,
@@ -142,15 +153,28 @@ const pinErrors = async (
   if (!(await mirror.isReachable(pin, ref))) outstanding.push(`pinned commit ${pin} is not reachable from ${order.branch}`);
   if (!(await mirror.isAncestor(order.baselineSha, pin))) outstanding.push("pinned commit does not descend from the issue baseline");
   if (!(await mirror.isAncestor(pin, submissionSha))) outstanding.push("coordination signal commit does not descend from its product pin");
+  const phase = await mirror.validatePhasePin({
+    pin,
+    tip: submissionSha,
+    issue: order.issue,
+    subject: `${order.evidenceId} artifact`,
+    ref: order.branch
+  });
+  if (!phase.ok) outstanding.push(phase.details);
   return outstanding;
 };
+
+const sameStrings = (actual: readonly string[], expected: readonly string[]): boolean =>
+  JSON.stringify([...actual].sort()) === JSON.stringify([...expected].sort());
 
 export const evaluateEvidence = async (
   order: InternalOrder,
   submissionSha: string,
-  mirror: EvidenceMirror
+  mirror: EvidenceMirror,
+  assertAuthority: () => void = () => undefined
 ): Promise<EvidenceObservation> => {
   const fetched = await mirror.fetchBranch(order.branch);
+  assertAuthority();
   if (!fetched.ok) {
     if (!fetched.transient) {
       return rejected(order, submissionSha, [`expected origin branch ${order.branch} could not be fetched: ${fetched.error}`]);
@@ -163,10 +187,13 @@ export const evaluateEvidence = async (
       outstanding: [`origin fetch failed${fetched.error === "" ? "" : `: ${fetched.error}`}`]
     };
   }
-  if (!(await mirror.isReachable(submissionSha, fetched.ref))) {
+  const reachable = await mirror.isReachable(submissionSha, fetched.ref);
+  assertAuthority();
+  if (!reachable) {
     return rejected(order, submissionSha, [`submission ${submissionSha} is not reachable from origin/${order.branch}`]);
   }
   const blob = await mirror.readBlob(submissionSha, order.requiredPath);
+  assertAuthority();
   if (blob === null) return rejected(order, submissionSha, [`required artifact ${order.requiredPath} is missing`]);
 
   if (order.evidenceId === "plan-published") {
@@ -209,7 +236,12 @@ export const evaluateEvidence = async (
     if (!citationsEqualInputs([...parsed.value.plans, ...parsed.value.reviews], order.inputs)) {
       errors.push("plan ballot citations do not equal the bound plan/review set");
     }
-    return errors.length === 0 ? satisfied(order, submissionSha) : rejected(order, submissionSha, errors);
+    if (!order.eligibleChoices.includes(parsed.value.choice)) {
+      errors.push(`plan ballot choice ${parsed.value.choice} is not an eligible active plan agent`);
+    }
+    return errors.length === 0
+      ? satisfied(order, submissionSha, { choice: parsed.value.choice })
+      : rejected(order, submissionSha, errors);
   }
 
   if (order.evidenceId === "selection-published") {
@@ -217,6 +249,12 @@ export const evaluateEvidence = async (
     if (!parsed.ok) return rejected(order, submissionSha, [`invalid selection artifact: ${parsed.error}`]);
     const errors = [...commonErrors(parsed.value, order), ...inputHashErrors(parsed.value.inputSetHash, order)];
     if (!citationsEqualInputs(parsed.value.ballots, order.inputs)) errors.push("selection ballot citations do not equal bound inputs");
+    if (!sameStrings(parsed.value.selectedAgents, order.expectedSelectedAgents)) {
+      errors.push("selection result does not equal the coordinator's deterministic ballot tally");
+    }
+    if (parsed.value.selectedAgents.some((agent) => !order.activeRoster.includes(agent))) {
+      errors.push("selection names an inactive or dropped agent");
+    }
     return errors.length === 0
       ? { ...satisfied(order, submissionSha), selectedAgents: parsed.value.selectedAgents }
       : rejected(order, submissionSha, errors);
@@ -251,17 +289,30 @@ export const evaluateEvidence = async (
     if (!parsed.ok) return rejected(order, submissionSha, [`invalid comparison ballot: ${parsed.error}`]);
     const errors = [...commonErrors(parsed.value, order), ...inputHashErrors(parsed.value.inputSetHash, order)];
     if (!citationsEqualInputs(parsed.value.implementations, order.inputs)) errors.push("comparison ballot pins do not equal bound inputs");
-    return errors.length === 0 ? satisfied(order, submissionSha) : rejected(order, submissionSha, errors);
+    if (!order.eligibleChoices.includes(parsed.value.choice)) {
+      errors.push(`comparison ballot choice ${parsed.value.choice} is not an eligible active implementation agent`);
+    }
+    return errors.length === 0
+      ? satisfied(order, submissionSha, { choice: parsed.value.choice })
+      : rejected(order, submissionSha, errors);
   }
 
   if (order.evidenceId === "reviser-authorized") {
     const parsed = parseJsonWithSchema(blob, reviserAuthorizationArtifactSchema);
     if (!parsed.ok) return rejected(order, submissionSha, [`invalid reviser authorization: ${parsed.error}`]);
     const errors = [...commonErrors(parsed.value, order), ...inputHashErrors(parsed.value.inputSetHash, order)];
-    if (!order.inputs.some((input) => input.commitSha === parsed.value.implementationCommitSha)) {
-      errors.push("authorized implementation pin is not one of the bound inputs");
+    if (parsed.value.implementationCommitSha !== order.expectedImplementationPin) {
+      errors.push("authorized implementation pin does not equal the deterministic comparison winner");
     }
-    return errors.length === 0 ? satisfied(order, submissionSha, { productPin: parsed.value.implementationCommitSha }) : rejected(order, submissionSha, errors);
+    if (parsed.value.reviser !== order.expectedReviser || !order.activeRoster.includes(parsed.value.reviser)) {
+      errors.push("authorized reviser does not equal the active deterministic comparison winner");
+    }
+    return errors.length === 0
+      ? satisfied(order, submissionSha, {
+          productPin: parsed.value.implementationCommitSha,
+          reviser: parsed.value.reviser
+        })
+      : rejected(order, submissionSha, errors);
   }
 
   if (order.evidenceId === "revision-pinned") {
@@ -275,6 +326,18 @@ export const evaluateEvidence = async (
     if (parsed.value.round !== order.round) errors.push(`revision round must be ${order.round ?? 1}`);
     const expectedPins = order.inputs.map((input) => input.commitSha).sort();
     if (JSON.stringify([...parsed.value.basedOn].sort()) !== JSON.stringify(expectedPins)) errors.push("revision basedOn pins do not equal bound inputs");
+    if (expectedPins.length !== 1) errors.push("revision must be based on exactly one authorized product pin");
+    const inputPin = expectedPins[0];
+    if (inputPin !== undefined && !(await mirror.isAncestor(inputPin, parsed.value.revisedBranchHead))) {
+      errors.push("revised product pin does not descend from its exact authorized input pin");
+    }
+    if (inputPin !== undefined) {
+      const changed = await mirror.changedPaths(inputPin, parsed.value.revisedBranchHead);
+      const disallowed = changed.filter(
+        (path) => !isCurrentIssueCoordinationPath(path, order.issue) && !matchesApprovedPath(path, order.approvedPaths)
+      );
+      if (disallowed.length > 0) errors.push(`revision changes paths outside the approved file map: ${disallowed.join(", ")}`);
+    }
     return errors.length === 0
       ? satisfied(order, submissionSha, { productPin: parsed.value.revisedBranchHead })
       : rejected(order, submissionSha, errors);
@@ -314,6 +377,14 @@ export const evaluateEvidence = async (
   if (parsed.value.finalSha === submissionSha) errors.push("final cleanup pin must differ from the coordination signal commit");
   if (!(await mirror.isReachable(parsed.value.finalSha, fetched.ref))) errors.push("final cleanup pin is not reachable from the expected origin branch");
   if (!(await mirror.isAncestor(parsed.value.finalSha, submissionSha))) errors.push("finalization signal does not descend from its final cleanup pin");
+  const phase = await mirror.validatePhasePin({
+    pin: parsed.value.finalSha,
+    tip: submissionSha,
+    issue: order.issue,
+    subject: "finalization artifact",
+    ref: order.branch
+  });
+  if (!phase.ok) errors.push(phase.details);
   if (!order.inputs.some((input) => input.commitSha === parsed.value.consensusSha)) errors.push("finalization consensusSha is not the bound consensus pin");
   if (parsed.value.checks.some((check) => check.exitCode !== 0)) errors.push("finalization artifact contains a failed check");
   return errors.length === 0 ? satisfied(order, submissionSha, { productPin: parsed.value.finalSha }) : rejected(order, submissionSha, errors);

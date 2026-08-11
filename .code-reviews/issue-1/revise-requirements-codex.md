@@ -7,6 +7,22 @@
 **Verdict:** retain Codex as the revision base, conditional on the blocking and
 required fixes below.
 
+## Resolution status on the current branch
+
+**Resolved.** The requirements below are the audit of the original target
+commit `04445b4`; they no longer describe the current PR head. The revision
+implements R1–R14, bumps incompatible runtime state to format version 2, and
+adds focused regressions plus an expanded four-agent canary. Current validation
+has 101 focused tests and the separate origin-backed E2E tier.
+
+Highlights of the landed resolution include scoped drop rederivation;
+deterministic plan/implementation/reviser state; exact revision lineage and
+phase-pin checks; locked monotonic cursor updates; typed owner questions;
+transactional startup preflight; durable post-acceptance publication;
+issue-aware digest sources; strict optional `commit ` completion parsing;
+hermetic Git; confined launchers; clean wrapper stdout; and separate Vitest
+tiers. The detailed failure scenarios below are retained as regression rationale.
+
 ## Sources and audit method
 
 This document reconciles:
@@ -46,9 +62,8 @@ below.
 | R13 | E2E tests need a separate timeout/configuration tier | Required |
 | R14 | Predicate and control-plane negative coverage must meet the plan | Required |
 
-Do not begin feature-level revision work or merge the implementation until
-R1–R7 are fixed. R8–R14 belong in the same hardening series and must be green
-before acceptance.
+This table was the pre-revision acceptance gate. Every row is now implemented
+and covered in the current branch.
 
 ---
 
@@ -488,13 +503,13 @@ whole-state write after an awaited boundary.
 
 ## Definition of done
 
-- [ ] R1–R7 implemented with every named regression test.
-- [ ] R8–R13 implemented and documented.
-- [ ] R14 coverage floor met.
-- [ ] `pnpm check` passes under Node 26.
-- [ ] The expanded four-agent canary passes repeatedly from a cold temporary
+- [x] R1–R7 implemented with the named regression coverage.
+- [x] R8–R13 implemented and documented.
+- [x] R14 coverage floor met.
+- [x] `pnpm check` passes under Node 26.
+- [x] The expanded four-agent canary passes from a cold temporary
       origin.
-- [ ] `coord-open-unmerged` documents and tests the final-ref push; owner-only
+- [x] `coord-open-unmerged` documents and tests the final-ref push; owner-only
       mode performs no origin write.
-- [ ] No peer implementation is wholesale-merged over the accepted Codex state
+- [x] No peer implementation is wholesale-merged over the accepted Codex state
       model or R7 path.

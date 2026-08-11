@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 
 /**
  * Fail-closed classifications for an immutable pin. These values are
@@ -54,13 +55,34 @@ export type CommitRangeInspection =
 
 const gitTimeoutMs = 15_000;
 
+const hermeticGitEnv = (): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  const redirectors = new Set([
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM"
+  ]);
+  for (const key of Object.keys(env)) {
+    if (redirectors.has(key) || key === "GIT_CONFIG" || key.startsWith("GIT_CONFIG_")) delete env[key];
+  }
+  return env;
+};
+
 const runGit = (root: string, args: readonly string[]): GitResult => {
   const result = spawnSync("git", ["-C", root, ...args], {
+    cwd: tmpdir(),
     encoding: "buffer",
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
     timeout: gitTimeoutMs,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }
+    env: hermeticGitEnv()
   });
   const stderr = result.stderr === null ? "" : result.stderr.toString("utf8").trim();
 

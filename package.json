@@ -9,9 +9,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json",
     "lint": "eslint src test",
-    "test": "vitest run",
-    "test:fast": "vitest run --exclude test/integration.test.ts",
-    "test:e2e": "vitest run test/integration.test.ts",
+    "test": "pnpm test:fast && pnpm test:e2e",
+    "test:fast": "vitest run --config vitest.config.ts",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "check:fast": "pnpm lint && pnpm typecheck && pnpm test:fast",
     "check": "pnpm build && pnpm check:fast && pnpm test:e2e"
   },

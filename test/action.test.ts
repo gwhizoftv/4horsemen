@@ -25,7 +25,10 @@ const order = (root: string): InternalOrder => ({
   automationDigest: "2".repeat(64),
   task: "Review the bound plan.",
   inputs: [{ agent: "claude", commitSha: "3".repeat(40), path: ".plans/issue-1/plan.md", kind: "plan" }],
-  approvedPaths: []
+  approvedPaths: [],
+  activeRoster: ["codex", "claude"],
+  eligibleChoices: [],
+  expectedSelectedAgents: []
 });
 
 describe("agent actions", () => {
@@ -53,7 +56,20 @@ describe("agent actions", () => {
     expect(readFileSync(path, "utf8")).toContain(join(root, "agents/codex/complete"));
   });
 
-  it.each(["", "abc", `${"A".repeat(40)}\n`, ` ${"a".repeat(40)}`, `${"a".repeat(40)}\nextra\n`])(
+  it.each([
+    "",
+    "abc",
+    "{}",
+    "a".repeat(12),
+    `${"A".repeat(40)}\n`,
+    `commit ${"A".repeat(40)}`,
+    `Commit ${"a".repeat(40)}`,
+    ` ${"a".repeat(40)}`,
+    `${"a".repeat(40)} `,
+    `\uFEFF${"a".repeat(40)}`,
+    `${"a".repeat(40)}\n\n`,
+    `${"a".repeat(40)}\nextra\n`
+  ])(
     "rejects malformed completion %j",
     (raw) => expect(parseCompletion(raw).status).toBe("malformed")
   );
@@ -62,5 +78,7 @@ describe("agent actions", () => {
     const sha = "a".repeat(40);
     expect(parseCompletion(sha)).toEqual({ status: "valid", sha });
     expect(parseCompletion(`${sha}\n`)).toEqual({ status: "valid", sha });
+    expect(parseCompletion(`commit ${sha}`)).toEqual({ status: "valid", sha });
+    expect(parseCompletion(`commit ${sha}\n`)).toEqual({ status: "valid", sha });
   });
 });

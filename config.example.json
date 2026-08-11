@@ -33,6 +33,7 @@
   "baseBranch": "main",
   "maxRevisionRounds": 3,
   "prPolicy": "owner-only",
+  "digestPaths": [".plans/issue-{issue}/plan.md"],
   "pollIntervalMs": 1000,
   "checks": [
     { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },

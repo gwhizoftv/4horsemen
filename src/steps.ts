@@ -231,7 +231,15 @@ export type InternalOrder = {
   task: string;
   inputs: readonly BoundInput[];
   approvedPaths: readonly string[];
+  activeRoster: readonly string[];
+  eligibleChoices: readonly string[];
+  expectedSelectedAgents: readonly string[];
+  expectedImplementationAgent?: string;
+  expectedImplementationPin?: string;
+  expectedReviser?: string;
 };
+
+export type CheckResult = { name: string; argv: readonly string[]; exitCode: number };
 
 export type EvidenceObservation = {
   agent: string;
@@ -243,6 +251,9 @@ export type EvidenceObservation = {
   disposition?: "approve" | "revise" | "escalate";
   approvedPaths?: readonly string[];
   selectedAgents?: readonly string[];
+  choice?: string;
+  reviser?: string;
+  checkResults?: readonly CheckResult[];
 };
 
 export type MachineDecision =
@@ -255,9 +266,18 @@ export type MachineDecision =
       disposition?: "approve" | "revise" | "escalate";
       approvedPaths?: readonly string[];
       selectedAgents?: readonly string[];
+      choice?: string;
+      reviser?: string;
+      checkResults?: readonly CheckResult[];
     }
   | { type: "reissue-action"; agent: string; outstanding: readonly string[] }
   | { type: "retry-verification"; agent: string; outstanding: readonly string[] }
   | { type: "advance-step"; from: WorkflowStepId; to: WorkflowStepId | null; round: number | null }
   | { type: "wait"; reason: string }
-  | { type: "owner-action-required"; reason: string };
+  | {
+      type: "owner-action-required";
+      reason: string;
+      kind: "ballot-escalation" | "revision-limit";
+      round: number;
+      allowedAnswers: readonly ("retry" | "revise" | "abandon")[];
+    };

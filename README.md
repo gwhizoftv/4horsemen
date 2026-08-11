@@ -31,8 +31,9 @@ both tiers.
 ## Quick start
 
 Copy and edit `config.example.json`. In particular, set `origin`, clone roots,
-launchers, explicit final-check argument vectors, and the PR policy. There is no
-default runtime root: `--coord-root` is always required at start.
+launchers, issue-aware `digestPaths`, explicit final-check argument vectors,
+and the PR policy. There is no default runtime root: `--coord-root` is always
+required at start.
 
 ```bash
 ./coord start 1 \
@@ -54,7 +55,8 @@ COORD_AGENT=codex ./coord next
 
 The action names an absolute `complete` path. After pushing the commit that
 contains the required artifact, the agent writes that exact lowercase 40-hex
-SHA to `complete`. Branch-tip movement alone never completes an action.
+SHA—or `commit <sha>`—to `complete`. Branch-tip movement alone never completes
+an action.
 
 See [`docs/coord-driver.md`](docs/coord-driver.md) for profiles, owner controls,
 tmux behavior, recovery, finalization, and runtime topology.

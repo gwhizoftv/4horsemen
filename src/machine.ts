@@ -60,6 +60,17 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
   if (cursors.abandoned) return [{ type: "wait", reason: "workflow was abandoned" }];
   if (cursors.completed) return [{ type: "wait", reason: "workflow is complete" }];
   if (cursors.paused) return [{ type: "wait", reason: "workflow is paused" }];
+  if (cursors.ownerQuestion !== null) {
+    return [
+      {
+        type: "owner-action-required",
+        reason: `${cursors.ownerQuestion.kind} at revision round ${cursors.ownerQuestion.round}`,
+        kind: cursors.ownerQuestion.kind,
+        round: cursors.ownerQuestion.round,
+        allowedAnswers: cursors.ownerQuestion.allowedAnswers
+      }
+    ];
+  }
 
   const decisions: MachineDecision[] = [];
   for (const observation of input.observations ?? []) {
@@ -78,7 +89,10 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
         ...(observation.productPin === undefined ? {} : { productPin: observation.productPin }),
         ...(observation.disposition === undefined ? {} : { disposition: observation.disposition }),
         ...(observation.approvedPaths === undefined ? {} : { approvedPaths: observation.approvedPaths }),
-        ...(observation.selectedAgents === undefined ? {} : { selectedAgents: observation.selectedAgents })
+        ...(observation.selectedAgents === undefined ? {} : { selectedAgents: observation.selectedAgents }),
+        ...(observation.choice === undefined ? {} : { choice: observation.choice }),
+        ...(observation.reviser === undefined ? {} : { reviser: observation.reviser }),
+        ...(observation.checkResults === undefined ? {} : { checkResults: observation.checkResults })
       });
     }
   }
@@ -93,7 +107,13 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
     return [{ type: "advance-step", from: current, to: normalized, round }];
   }
 
-  const participants = participantsForStep(current, profile, cursors.activeRoster, cursors.reviser ?? undefined);
+  const designated =
+    current === "R4.implement"
+      ? cursors.selection.planAgents[0]
+      : current === "R3.publish-selection" || current === "R5.reviser-auth"
+        ? cursors.activeRoster[0]
+      : (cursors.selection.reviser ?? cursors.reviser ?? cursors.selection.planAgents[0]);
+  const participants = participantsForStep(current, profile, cursors.activeRoster, designated);
   const round = current.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
   const complete = participants.every((agent) => hasAccepted(cursors, current, agent, round));
 
@@ -103,14 +123,27 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
         (submission) => submission.stepId === current && submission.round === round && participants.includes(submission.agent)
       );
       if (ballots.some((ballot) => ballot.disposition === "escalate")) {
-        return [{ type: "owner-action-required", reason: `consensus ballot round ${round ?? 1} requested escalation` }];
+        const currentRound = round ?? 1;
+        return [
+          {
+            type: "owner-action-required",
+            reason: `consensus ballot round ${currentRound} requested escalation`,
+            kind: "ballot-escalation",
+            round: currentRound,
+            allowedAnswers:
+              currentRound < start.maxRevisionRounds ? ["retry", "revise", "abandon"] : ["retry", "abandon"]
+          }
+        ];
       }
       if (ballots.some((ballot) => ballot.disposition === "revise")) {
         if ((round ?? 1) >= start.maxRevisionRounds) {
           return [
             {
               type: "owner-action-required",
-              reason: `revision limit ${start.maxRevisionRounds} reached; round ${start.maxRevisionRounds + 1} is forbidden`
+              reason: `revision limit ${start.maxRevisionRounds} reached; round ${start.maxRevisionRounds + 1} is forbidden`,
+              kind: "revision-limit",
+              round: start.maxRevisionRounds,
+              allowedAnswers: ["retry", "abandon"]
             }
           ];
         }

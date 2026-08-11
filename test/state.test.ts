@@ -8,10 +8,12 @@ import {
   cursorsStateSchema,
   dropAgent,
   initializeOperationalState,
+  mutateCursorsState,
   readCursorsState,
   readJournal,
   readStartState,
   setPaused,
+  StateConflictError,
   startStateSchema,
   writeCursorsState
 } from "../src/state.js";
@@ -41,6 +43,8 @@ const initialize = () => {
         maxRevisionRounds: 3,
         prPolicy: "owner-only",
         automationDigest: "b".repeat(64),
+        automationDigestScheme: "sha256-length-prefixed-v1",
+        automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }],
         trustedSourceCommit: "c".repeat(40),
         origin: "file:///origin.git",
         coordRoot: root,
@@ -60,7 +64,7 @@ const initialize = () => {
 describe("operational state", () => {
   it("writes strict versioned start, cursor, and journal state atomically", () => {
     const { paths } = initialize();
-    expect(readStartState(paths)).toMatchObject({ formatVersion: 1, maxRevisionRounds: 3 });
+    expect(readStartState(paths)).toMatchObject({ formatVersion: 2, maxRevisionRounds: 3 });
     expect(readCursorsState(paths).activeRoster).toEqual(["claude", "codex"]);
     expect(readJournal(paths).map((event) => event.type)).toEqual(["started"]);
     appendJournal(paths, { type: "paused", details: {} }, "2026-08-11T10:01:00.000Z");
@@ -79,6 +83,18 @@ describe("operational state", () => {
   it("fails closed on an unsupported revision limit or unknown state fields", () => {
     const { cursors, start } = initialize();
     expect(cursorsStateSchema.safeParse({ ...cursors, mystery: true }).success).toBe(false);
+    expect(cursorsStateSchema.safeParse({ ...cursors, formatVersion: 1 }).success).toBe(false);
     expect(startStateSchema.safeParse({ ...start, maxRevisionRounds: 4 }).success).toBe(false);
+  });
+
+  it("rejects stale whole-state writes after an owner control revision", () => {
+    const { paths } = initialize();
+    const stale = readCursorsState(paths);
+    const paused = mutateCursorsState(paths, (current) => setPaused(current, true, "2026-08-11T10:01:00.000Z"));
+    expect(paused.state.stateRevision).toBe(stale.stateRevision + 1);
+    const staleWrite = mutateCursorsState(paths, () => stale, stale.stateRevision);
+    expect(staleWrite.applied).toBe(false);
+    expect(staleWrite.state.paused).toBe(true);
+    expect(new StateConflictError("conflict").name).toBe("StateConflictError");
   });
 });

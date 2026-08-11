@@ -93,7 +93,8 @@ export const parseCompletion = (raw: string): CompletionParseResult => {
   if (normalized.includes("\n") || normalized.includes("\r") || normalized !== normalized.trim()) {
     return { status: "malformed", message: "complete must contain exactly one unpadded line" };
   }
-  const parsed = gitShaSchema.safeParse(normalized);
+  const match = /^(?:commit )?([a-f0-9]{40})$/.exec(normalized);
+  const parsed = gitShaSchema.safeParse(match?.[1]);
   if (!parsed.success) {
     return { status: "malformed", message: "complete must contain a 40-character lowercase Git SHA" };
   }

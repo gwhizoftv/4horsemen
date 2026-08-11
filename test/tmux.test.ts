@@ -1,7 +1,14 @@
-import { describe, expect, it } from "vitest";
-import { TmuxController, type TmuxResult, type TmuxRunner } from "../src/tmux.js";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { resolveAgentLauncher, TmuxController, type TmuxResult, type TmuxRunner } from "../src/tmux.js";
 
 const ok = (stdout = ""): TmuxResult => ({ exitCode: 0, stdout, stderr: "" });
+const roots: string[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 describe("tmux boundary", () => {
   it("uses a buffer-based nudge only for the supported Claude harness", async () => {
@@ -48,5 +55,26 @@ describe("tmux boundary", () => {
     expect(
       await gone.nudge(1, { id: "claude", root: "/clone", launcher: "start-claude.sh", delivery: "nudge" }, "/a")
     ).toBe("gone");
+  });
+
+  it("confines executable launchers to the real agent clone", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-launcher-"));
+    roots.push(root);
+    const clone = join(root, "clone");
+    mkdirSync(clone);
+    const launcher = join(clone, "start-codex.sh");
+    writeFileSync(launcher, "#!/bin/sh\n", { mode: 0o700 });
+    const base = { id: "codex", root: clone, launcher: "start-codex.sh", delivery: "pull" as const };
+    expect(resolveAgentLauncher(base)).toBe(launcher);
+    expect(() => resolveAgentLauncher({ ...base, launcher: "../outside.sh" })).toThrow("outside coordinator root");
+    expect(() => resolveAgentLauncher({ ...base, launcher })).toThrow("must be relative");
+    const outside = join(root, "outside.sh");
+    writeFileSync(outside, "#!/bin/sh\n", { mode: 0o700 });
+    symlinkSync(outside, join(clone, "linked.sh"));
+    expect(() => resolveAgentLauncher({ ...base, launcher: "linked.sh" })).toThrow("symlink");
+    const notExecutable = join(clone, "not-executable.sh");
+    writeFileSync(notExecutable, "#!/bin/sh\n");
+    chmodSync(notExecutable, 0o600);
+    expect(() => resolveAgentLauncher({ ...base, launcher: "not-executable.sh" })).toThrow("non-executable");
   });
 });

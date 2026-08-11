@@ -43,6 +43,8 @@ Start from `config.example.json`:
 - `branch`: must contain `{issue}` and `{agent}`
 - `maxRevisionRounds`: fixed at 3 or less; no round 4 is possible
 - `prPolicy`: `owner-only` or `coord-open-unmerged`
+- `digestPaths`: config-relative, confined source templates such as
+  `.plans/issue-{issue}/plan.md`; their identities and hashes are persisted
 - `checks[]`: explicit argv arrays executed in a clean worktree at the final
   pin; no shell is invoked
 - `pollIntervalMs`: bounded completion-file polling interval
@@ -66,10 +68,11 @@ pnpm build
 COORD_ROOT=/absolute/owner/runtime COORD_ISSUE=42 ./coord run
 ```
 
-`start` resolves the exact origin baseline, writes versioned runtime state,
-initializes the bare mirror, creates an attachable `coord-<issue>` tmux
-session, and invokes each configured `start-<agent>.sh`. A missing or
-non-executable launcher is a startup error, never a fallback shell.
+`start` preflights the exact origin baseline, digest inputs, GitHub/PR-policy
+compatibility, confined non-symlink executable launchers, mirror, and tmux. It
+creates an attachable `coord-<issue>` session and invokes each configured
+`start-<agent>.sh` before committing active issue state. A failed partial tmux
+launch is cleaned up, and no apparently active issue runtime is left behind.
 
 The coordinator can itself run in a tmux control window so closing the owner
 terminal does not stop it. Attach with:
@@ -91,6 +94,10 @@ intent:
 0123456789abcdef0123456789abcdef01234567
 ```
 
+The exact alternative form `commit 0123456789abcdef0123456789abcdef01234567`
+is also valid. Uppercase, padding, BOMs, abbreviated SHAs, JSON, prose, and
+multiple lines are rejected.
+
 The driver refreshes only the expected origin branch, proves the SHA is
 reachable there, and checks the required path/schema/pins against that exact
 commit. A failed mechanical check clears `complete` and reissues the same
@@ -110,6 +117,12 @@ for indefinitely unless the owner explicitly drops it.
 - `consensus`: every active agent joins, plans, reviews, implements, compares,
   and ballots; one reviser prepares up to three rounds.
 
+Plan and implementation choices are tallied from the exact accepted active
+ballot set. The highest vote count wins; ties use persisted active-roster
+order. Selected plans, the implementation owner/pin, and the authorized
+reviser are stored separately. Round 1 binds only the selected implementation,
+and later rounds bind only the preceding accepted revision.
+
 When drops leave one active agent, future unresolved work degrades to the solo
 sequence. Completed historical gates and immutable product pins are retained.
 
@@ -123,18 +136,22 @@ and `COORD_ISSUE` are equivalent.
 ./coord pause --coord-root /absolute/owner/runtime --issue 42
 ./coord resume --coord-root /absolute/owner/runtime --issue 42
 ./coord restart-action --agent codex --coord-root /absolute/owner/runtime --issue 42
-./coord answer "continue after owner inspection" --coord-root /absolute/owner/runtime --issue 42
+./coord answer <question-id> <retry|revise|abandon> --coord-root /absolute/owner/runtime --issue 42
 ./coord abandon --coord-root /absolute/owner/runtime --issue 42
 ```
 
-`drop` refuses the final agent, clears the dropped agent's pending local
-completion, and rederives unresolved actions so their input sets omit that
+`drop` refuses the final agent, clears only the dropped agent's local action and
+completion, retains other agents' valid accepted evidence and pending intent,
+and rederives only unresolved affected actions so their input sets omit that
 agent. Later stale completions from the dropped agent are ignored.
 
 `pause` retains actions, mirror data, journal, and tmux sessions. `resume` plus
-`run` continues from strict versioned state. `restart-action` reissues pending
-work without changing a gate. `abandon` stops the workflow while retaining its
-audit state.
+`run` continues from strict versioned state. State changes use a short
+exclusive lock plus a monotonic revision, so an in-flight fetch or check cannot
+overwrite a concurrent pause, drop, or abandon. `restart-action` reissues
+pending work without changing a gate. `answer` consumes one typed pending
+question, is idempotent for the same answer, and cannot create round 4.
+`abandon` stops the workflow while retaining its audit state.
 
 ## Recovery and finalization
 
@@ -147,5 +164,8 @@ pin. From consensus to cleanup, only deletion of the current issue's
 `.plans/**`, `.signals/**`, and `.code-reviews/**` files is allowed. The driver
 then materializes a clean detached worktree at the cleanup pin and runs every
 configured argv check. Any verifier or check failure blocks PR creation. A
-successful `coord-open-unmerged` run may create a draft PR; only the owner can
-merge it.
+successful `coord-open-unmerged` run records accepted R7 and its check results
+first, then uses a durable retryable publication outbox. That policy may push
+an owner-visible `issue-<n>/<agent>-final` head to origin and create or reconcile
+one draft PR. Publication failures never discard accepted finalization.
+`owner-only` performs no origin write, and only the owner can merge any PR.

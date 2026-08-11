@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { computeInputSetHash, evaluateEvidence, type EvidenceMirror } from "../src/evidence.js";
-import type { InternalOrder } from "../src/steps.js";
+import type { EvidenceId, InternalOrder, WorkflowStepId } from "../src/steps.js";
 
 const sha = (character: string): string => character.repeat(40);
 
@@ -20,6 +20,9 @@ const order = (overrides: Partial<InternalOrder> = {}): InternalOrder => ({
   task: "Plan",
   inputs: [],
   approvedPaths: [],
+  activeRoster: ["codex"],
+  eligibleChoices: [],
+  expectedSelectedAgents: [],
   ...overrides
 });
 
@@ -29,6 +32,7 @@ const mirror = (blob: string | null, overrides: Partial<EvidenceMirror> = {}): E
   isAncestor: async () => true,
   readBlob: async () => blob,
   changedPaths: async () => ["src/product.ts"],
+  validatePhasePin: async () => ({ ok: true }),
   ...overrides
 });
 
@@ -125,5 +129,224 @@ Implement it.
     );
     expect(result.status).toBe("rejected");
     expect(result.outstanding.join(" ")).toContain("docs/unapproved.md");
+  });
+
+  it("rejects a coordination signal commit used as its own product pin", async () => {
+    const inputs = [{ agent: "codex", commitSha: sha("2"), path: ".plans/issue-1/plan.md", kind: "selected-plan" }];
+    const action = order({
+      stepId: "R4.implement",
+      evidenceId: "implementation-pinned",
+      requiredPath: ".signals/issue-1/implementation-ready-codex.json",
+      inputs,
+      approvedPaths: ["src/product.ts"]
+    });
+    const submission = sha("d");
+    const blob = JSON.stringify({
+      protocolVersion: 1,
+      artifact: "implementation-ready",
+      issue: 1,
+      issueSessionId: action.issueSessionId,
+      agent: "codex",
+      inputSetHash: computeInputSetHash(inputs),
+      implementationCommitSha: submission,
+      approvedPaths: ["src/product.ts"]
+    });
+    const result = await evaluateEvidence(action, submission, mirror(blob));
+    expect(result.outstanding).toContain("product pin must differ from the coordination signal commit");
+  });
+
+  it.each([
+    ["R1.join", "join-published"],
+    ["R2.plan", "plan-published"],
+    ["R3.review", "review-published"],
+    ["R3.plan-ballot", "plan-ballot-published"],
+    ["R3.publish-selection", "selection-published"],
+    ["R4.implement", "implementation-pinned"],
+    ["R5.compare", "comparison-published"],
+    ["R5.compare-ballot", "comparison-ballot-published"],
+    ["R5.reviser-auth", "reviser-authorized"],
+    ["R6.revise", "revision-pinned"],
+    ["R6.ballot", "consensus-ballot-published"],
+    ["R6.declare", "consensus-declared"],
+    ["R7.finalize", "finalization-verified"]
+  ] as const)("rejects missing required-path evidence for %s", async (stepId, evidenceId) => {
+    const result = await evaluateEvidence(
+      order({ stepId: stepId as WorkflowStepId, evidenceId: evidenceId as EvidenceId, requiredPath: `.missing/${stepId}` }),
+      sha("c"),
+      mirror(null)
+    );
+    expect(result).toMatchObject({ status: "rejected" });
+    expect(result.outstanding.join(" ")).toContain("is missing");
+  });
+
+  it.each([
+    ["R1.join", "join-published"],
+    ["R3.plan-ballot", "plan-ballot-published"],
+    ["R3.publish-selection", "selection-published"],
+    ["R4.implement", "implementation-pinned"],
+    ["R5.compare-ballot", "comparison-ballot-published"],
+    ["R5.reviser-auth", "reviser-authorized"],
+    ["R6.revise", "revision-pinned"],
+    ["R6.ballot", "consensus-ballot-published"],
+    ["R6.declare", "consensus-declared"],
+    ["R7.finalize", "finalization-verified"]
+  ] as const)("rejects malformed structured evidence for %s", async (stepId, evidenceId) => {
+    const result = await evaluateEvidence(
+      order({ stepId: stepId as WorkflowStepId, evidenceId: evidenceId as EvidenceId }),
+      sha("c"),
+      mirror("not-json")
+    );
+    expect(result).toMatchObject({ status: "rejected" });
+    expect(result.outstanding.join(" ")).toMatch(/invalid|artifact/);
+  });
+
+  it.each([
+    ["R2.plan", "plan-published"],
+    ["R3.review", "review-published"],
+    ["R5.compare", "comparison-published"]
+  ] as const)("rejects mechanically incomplete markdown evidence for %s", async (stepId, evidenceId) => {
+    const result = await evaluateEvidence(
+      order({ stepId: stepId as WorkflowStepId, evidenceId: evidenceId as EvidenceId }),
+      sha("c"),
+      mirror("# Incomplete\n")
+    );
+    expect(result).toMatchObject({ status: "rejected" });
+  });
+
+  it("validates deterministic ballot selection and reviser authorization", async () => {
+    const plan = { agent: "claude", commitSha: sha("1"), path: ".plans/issue-1/plan.md", kind: "plan" };
+    const review = { agent: "claude", commitSha: sha("2"), path: ".plans/issue-1/review.md", kind: "review" };
+    const ballotOrder = order({
+      stepId: "R3.plan-ballot",
+      evidenceId: "plan-ballot-published",
+      requiredPath: ".plans/issue-1/ballot-codex.json",
+      inputs: [plan, review],
+      activeRoster: ["codex", "claude"],
+      eligibleChoices: ["claude"]
+    });
+    const ballotBlob = JSON.stringify({
+      protocolVersion: 1,
+      artifact: "plan-ballot",
+      issue: 1,
+      issueSessionId: ballotOrder.issueSessionId,
+      agent: "codex",
+      inputSetHash: computeInputSetHash(ballotOrder.inputs),
+      plans: [{ agent: plan.agent, commitSha: plan.commitSha, path: plan.path }],
+      reviews: [{ agent: review.agent, commitSha: review.commitSha, path: review.path }],
+      choice: "claude",
+      rationale: "complete"
+    });
+    expect(await evaluateEvidence(ballotOrder, sha("c"), mirror(ballotBlob))).toMatchObject({
+      status: "satisfied",
+      choice: "claude"
+    });
+    const badChoice = JSON.stringify({ ...JSON.parse(ballotBlob), choice: "cursor" });
+    expect((await evaluateEvidence(ballotOrder, sha("c"), mirror(badChoice))).outstanding.join(" ")).toContain(
+      "not an eligible active plan agent"
+    );
+
+    const implementation = {
+      agent: "claude",
+      commitSha: sha("3"),
+      path: ".signals/issue-1/implementation-ready-claude.json",
+      kind: "implementation"
+    };
+    const comparisonBallot = {
+      agent: "codex",
+      commitSha: sha("4"),
+      path: ".code-reviews/issue-1/ballot-codex.json",
+      kind: "comparison-ballot"
+    };
+    const authOrder = order({
+      stepId: "R5.reviser-auth",
+      evidenceId: "reviser-authorized",
+      requiredPath: ".signals/issue-1/reviser-authorized.json",
+      inputs: [implementation, comparisonBallot],
+      activeRoster: ["codex", "claude"],
+      expectedImplementationAgent: "claude",
+      expectedImplementationPin: implementation.commitSha,
+      expectedReviser: "claude"
+    });
+    const auth = {
+      protocolVersion: 1,
+      artifact: "reviser-authorization",
+      issue: 1,
+      issueSessionId: authOrder.issueSessionId,
+      agent: "codex",
+      inputSetHash: computeInputSetHash(authOrder.inputs),
+      reviser: "claude",
+      implementationCommitSha: implementation.commitSha
+    };
+    expect(await evaluateEvidence(authOrder, sha("c"), mirror(JSON.stringify(auth)))).toMatchObject({
+      status: "satisfied",
+      reviser: "claude",
+      productPin: implementation.commitSha
+    });
+    expect(
+      (
+        await evaluateEvidence(authOrder, sha("c"), mirror(JSON.stringify({ ...auth, reviser: "cursor" })))
+      ).outstanding.join(" ")
+    ).toContain("deterministic comparison winner");
+  });
+
+  it("requires revision lineage, approved paths, and immutable phase separation", async () => {
+    const input = {
+      agent: "claude",
+      commitSha: sha("2"),
+      path: ".signals/issue-1/implementation-ready-claude.json",
+      kind: "implementation"
+    };
+    const action = order({
+      stepId: "R6.revise",
+      evidenceId: "revision-pinned",
+      requiredPath: ".signals/issue-1/revision-ready-codex-round-1.json",
+      round: 1,
+      inputs: [input],
+      approvedPaths: ["src/product.ts"]
+    });
+    const artifact = {
+      protocolVersion: 1,
+      artifact: "revision-ready",
+      issue: 1,
+      issueSessionId: action.issueSessionId,
+      agent: "codex",
+      inputSetHash: computeInputSetHash(action.inputs),
+      round: 1,
+      revisedBranchHead: sha("d"),
+      basedOn: [input.commitSha]
+    };
+    const unrelated = await evaluateEvidence(
+      action,
+      sha("e"),
+      mirror(JSON.stringify(artifact), {
+        isAncestor: async (base, tip) => !(base === input.commitSha && tip === artifact.revisedBranchHead)
+      })
+    );
+    expect(unrelated.outstanding.join(" ")).toContain("does not descend from its exact authorized input pin");
+
+    const escaped = await evaluateEvidence(
+      action,
+      sha("e"),
+      mirror(JSON.stringify(artifact), { changedPaths: async () => ["docs/unapproved.md"] })
+    );
+    expect(escaped.outstanding.join(" ")).toContain("outside the approved file map");
+
+    const postPin = await evaluateEvidence(
+      action,
+      sha("e"),
+      mirror(JSON.stringify(artifact), {
+        changedPaths: async () => ["src/product.ts"],
+        validatePhasePin: async () => ({ ok: false, reason: "post-pin-implementation-change", details: "post-pin product change" })
+      })
+    );
+    expect(postPin.outstanding).toContain("post-pin product change");
+
+    expect(
+      await evaluateEvidence(
+        action,
+        sha("e"),
+        mirror(JSON.stringify(artifact), { changedPaths: async () => ["src/product.ts"] })
+      )
+    ).toMatchObject({ status: "satisfied", productPin: artifact.revisedBranchHead });
   });
 });

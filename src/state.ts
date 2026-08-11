@@ -1,5 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
 import { dirname, relative } from "node:path";
 import { z } from "zod";
 import { agentIdSchema, digestSchema, gitShaSchema, issueSchema, issueSessionIdSchema } from "./protocol.js";
@@ -13,7 +23,7 @@ import {
   type WorkflowStepId
 } from "./steps.js";
 
-export const RUNTIME_FORMAT_VERSION = 1;
+export const RUNTIME_FORMAT_VERSION = 2;
 
 const workflowProfileSchema = z.enum(["solo", "reviewed", "consensus"]);
 const prPolicySchema = z.enum(["owner-only", "coord-open-unmerged"]);
@@ -85,6 +95,15 @@ export const coordinatorConfigSchema = z
     baseBranch: z.string().min(1).default("main"),
     maxRevisionRounds: z.literal(DEFAULT_MAX_REVISION_ROUNDS).default(DEFAULT_MAX_REVISION_ROUNDS),
     prPolicy: prPolicySchema.default("owner-only"),
+    digestPaths: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "digest path must be confined")
+      )
+      .min(1)
+      .default([".plans/issue-{issue}/plan.md"]),
     checks: z.array(checkCommandSchema).min(1),
     pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000)
   })
@@ -93,6 +112,9 @@ export const coordinatorConfigSchema = z
     const ids = config.agents.map((agent) => agent.id);
     if (new Set(ids).size !== ids.length) {
       context.addIssue({ code: "custom", message: "agent ids must be unique", path: ["agents"] });
+    }
+    if (new Set(config.digestPaths).size !== config.digestPaths.length) {
+      context.addIssue({ code: "custom", message: "digest paths must be unique", path: ["digestPaths"] });
     }
   });
 
@@ -109,6 +131,17 @@ export const startStateSchema = z
     maxRevisionRounds: z.literal(DEFAULT_MAX_REVISION_ROUNDS),
     prPolicy: prPolicySchema,
     automationDigest: digestSchema,
+    automationDigestScheme: z.literal("sha256-length-prefixed-v1"),
+    automationDigestSources: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            sha256: digestSchema
+          })
+          .strict()
+      )
+      .min(1),
     trustedSourceCommit: gitShaSchema,
     origin: z.string().min(1),
     coordRoot: z.string().min(1),
@@ -154,6 +187,19 @@ export const acceptedSubmissionSchema = z
     disposition: z.enum(["approve", "revise", "escalate"]).optional(),
     approvedPaths: z.array(z.string().min(1)).optional(),
     selectedAgents: z.array(agentIdSchema).optional(),
+    choice: agentIdSchema.optional(),
+    reviser: agentIdSchema.optional(),
+    checkResults: z
+      .array(
+        z
+          .object({
+            name: z.string().min(1),
+            argv: z.array(z.string()).min(1),
+            exitCode: z.number().int()
+          })
+          .strict()
+      )
+      .optional(),
     path: z.string().min(1),
     acceptedAt: timestampSchema
   })
@@ -162,6 +208,7 @@ export const acceptedSubmissionSchema = z
 export const cursorsStateSchema = z
   .object({
     formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
+    stateRevision: z.number().int().nonnegative(),
     issueCursor: z
       .object({
         stepId: stepIdSchema,
@@ -172,6 +219,42 @@ export const cursorsStateSchema = z
     activeRoster: z.array(agentIdSchema).min(1),
     droppedAgents: z.array(agentIdSchema),
     reviser: agentIdSchema.nullable(),
+    selection: z
+      .object({
+        planAgents: z.array(agentIdSchema),
+        implementationAgent: agentIdSchema.nullable(),
+        implementationPin: gitShaSchema.nullable(),
+        reviser: agentIdSchema.nullable()
+      })
+      .strict(),
+    ownerQuestion: z
+      .object({
+        id: z.string().uuid(),
+        kind: z.enum(["ballot-escalation", "revision-limit"]),
+        round: z.number().int().min(1),
+        allowedAnswers: z.array(z.enum(["retry", "revise", "abandon"])).min(1),
+        createdAt: timestampSchema
+      })
+      .strict()
+      .nullable(),
+    lastOwnerAnswer: z
+      .object({
+        questionId: z.string().uuid(),
+        answer: z.enum(["retry", "revise", "abandon"]),
+        answeredAt: timestampSchema
+      })
+      .strict()
+      .nullable(),
+    publication: z
+      .object({
+        status: z.enum(["not-required", "pending", "completed", "failed"]),
+        finalSha: gitShaSchema.nullable(),
+        branch: z.string().min(1).nullable(),
+        url: z.string().url().nullable(),
+        error: z.string().min(1).nullable(),
+        attempts: z.number().int().nonnegative()
+      })
+      .strict(),
     paused: z.boolean(),
     abandoned: z.boolean(),
     completed: z.boolean(),
@@ -193,6 +276,7 @@ export const journalEventSchema = z
       "intent-seen",
       "verify-result",
       "gate-advanced",
+      "owner-question",
       "owner-answer",
       "agent-dropped",
       "paused",
@@ -200,6 +284,8 @@ export const journalEventSchema = z
       "action-restarted",
       "abandoned",
       "final-check",
+      "publication-pending",
+      "publication-failed",
       "pr-created"
     ]),
     agent: agentIdSchema.optional(),
@@ -274,10 +360,22 @@ export const initialCursors = (start: StartState, now = new Date().toISOString()
   }
   return cursorsStateSchema.parse({
     formatVersion: RUNTIME_FORMAT_VERSION,
+    stateRevision: 0,
     issueCursor: { stepId: "R1.join", gateId: "gate-1-join", round: null },
     activeRoster: start.originalRoster,
     droppedAgents: [],
-    reviser: start.originalRoster[0] ?? null,
+    reviser: null,
+    selection: { planAgents: [], implementationAgent: null, implementationPin: null, reviser: null },
+    ownerQuestion: null,
+    lastOwnerAnswer: null,
+    publication: {
+      status: "not-required",
+      finalSha: null,
+      branch: null,
+      url: null,
+      error: null,
+      attempts: 0
+    },
     paused: false,
     abandoned: false,
     completed: false,
@@ -324,27 +422,112 @@ export const appendJournal = (
   input: JournalEventInput,
   now = new Date().toISOString()
 ): JournalEvent => {
-  const existing = readJournal(paths);
-  const event = journalEventSchema.parse({
-    ...input,
-    formatVersion: RUNTIME_FORMAT_VERSION,
-    sequence: existing.length,
-    at: now
-  });
   mkdirSync(dirname(paths.journal), { recursive: true, mode: 0o700 });
-  assertNoSymlink(paths.coordRoot, dirname(paths.journal));
-  const handle = openSync(paths.journal, "a", 0o600);
+  const lockPath = `${paths.journal}.lock`;
+  const lock = acquireExclusiveLock(lockPath);
   try {
-    writeFileSync(handle, `${JSON.stringify(event)}\n`, "utf8");
-    fsyncSync(handle);
+    const existing = readJournal(paths);
+    const event = journalEventSchema.parse({
+      ...input,
+      formatVersion: RUNTIME_FORMAT_VERSION,
+      sequence: existing.length,
+      at: now
+    });
+    assertNoSymlink(paths.coordRoot, dirname(paths.journal));
+    const handle = openSync(paths.journal, "a", 0o600);
+    try {
+      writeFileSync(handle, `${JSON.stringify(event)}\n`, "utf8");
+      fsyncSync(handle);
+    } finally {
+      closeSync(handle);
+    }
+    return event;
   } finally {
-    closeSync(handle);
+    closeSync(lock);
+    if (existsSync(lockPath)) unlinkSync(lockPath);
   }
-  return event;
 };
 
 export const writeCursorsState = (paths: IssueRuntimePaths, cursors: CursorsState): void => {
   atomicWriteJson(paths.coordRoot, paths.cursors, cursorsStateSchema.parse(cursors));
+};
+
+export class StateConflictError extends Error {
+  override readonly name = "StateConflictError";
+}
+
+const cursorLockPath = (paths: IssueRuntimePaths): string => `${paths.cursors}.lock`;
+
+const processIsAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
+  }
+};
+
+const acquireExclusiveLock = (lockPath: string): number => {
+  for (let attempt = 0; attempt < 250; attempt += 1) {
+    try {
+      const handle = openSync(lockPath, "wx", 0o600);
+      writeFileSync(handle, `${process.pid}\n`, "utf8");
+      fsyncSync(handle);
+      return handle;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+      try {
+        const owner = Number(readFileSync(lockPath, "utf8").trim());
+        if (Number.isInteger(owner) && owner > 0 && !processIsAlive(owner)) {
+          unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        // The owner may be between exclusive creation and writing its pid.
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+  }
+  throw new Error(`Timed out waiting for coordinator state lock ${lockPath}.`);
+};
+
+/**
+ * Apply one short local state transition under an exclusive lock. Slow Git,
+ * tmux, check, and publication effects must happen outside this callback and
+ * use expectedRevision when committing their result.
+ */
+export const mutateCursorsState = (
+  paths: IssueRuntimePaths,
+  mutation: (current: CursorsState) => CursorsState,
+  expectedRevision?: number
+): { applied: boolean; state: CursorsState } => {
+  const handle = acquireExclusiveLock(cursorLockPath(paths));
+  try {
+    const current = readCursorsState(paths);
+    if (expectedRevision !== undefined && current.stateRevision !== expectedRevision) {
+      return { applied: false, state: current };
+    }
+    const candidate = mutation(current);
+    const state = cursorsStateSchema.parse({
+      ...candidate,
+      stateRevision: current.stateRevision + 1
+    });
+    writeCursorsState(paths, state);
+    return { applied: true, state };
+  } finally {
+    closeSync(handle);
+    if (existsSync(cursorLockPath(paths))) unlinkSync(cursorLockPath(paths));
+  }
+};
+
+export const requireStateMutation = (
+  paths: IssueRuntimePaths,
+  expectedRevision: number,
+  mutation: (current: CursorsState) => CursorsState
+): CursorsState => {
+  const result = mutateCursorsState(paths, mutation, expectedRevision);
+  if (!result.applied) throw new StateConflictError("Coordinator state changed during an effect; re-observation is required.");
+  return result.state;
 };
 
 export const replaceCursor = (
@@ -375,7 +558,13 @@ export const dropAgent = (cursors: CursorsState, agent: string, now = new Date()
     ...cursors,
     activeRoster,
     droppedAgents: [...cursors.droppedAgents, agent],
-    reviser: cursors.reviser === agent ? activeRoster[0] : cursors.reviser,
+    reviser: cursors.reviser === agent ? null : cursors.reviser,
+    selection: {
+      planAgents: cursors.selection.planAgents.filter((candidate) => candidate !== agent),
+      implementationAgent: cursors.selection.implementationAgent === agent ? null : cursors.selection.implementationAgent,
+      implementationPin: cursors.selection.implementationAgent === agent ? null : cursors.selection.implementationPin,
+      reviser: cursors.selection.reviser === agent ? null : cursors.selection.reviser
+    },
     agents: {
       ...cursors.agents,
       [agent]: { ...current, status: "dropped", actionId: null, submissionSha: null, outstanding: [], updatedAt: now }
