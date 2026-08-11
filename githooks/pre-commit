@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
-# Tracked, agent-neutral hook. Identity is resolved at runtime — never edit a
-# clone-specific value into this file.
+# Tracked, agent-neutral hook. Identity is resolved at runtime.
 lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/identity.sh"
-[[ -r "$lib" ]] || { echo "HOOK BLOCKED: cannot read $lib; core.hooksPath must point at the tracked githooks directory." >&2; exit 1; }
-# shellcheck source=lib/identity.sh
+[[ -r "$lib" ]] || { echo "HOOK BLOCKED: cannot read $lib" >&2; exit 1; }
 . "$lib"
 
 branch=$(git rev-parse --abbrev-ref HEAD)
 
-# 1) Never commit on the shared branch or consensus branches.
 if [[ "$branch" == "$SHARED_BRANCH" ]]; then
   echo "HOOK BLOCKED ($AGENT_LABEL): direct commits to '$SHARED_BRANCH' are forbidden." >&2
-  echo "  Create your issue branch first: git checkout -b issue-<n>/$AGENT_NAME" >&2
   exit 1
 fi
 
@@ -20,121 +16,65 @@ if [[ "$branch" =~ ^issue-[0-9]+/final$ ]]; then
   exit 1
 fi
 
-# 2) Only commit on branches you own: issue-<n>/<agent> or <agent>/<scratch>.
 if [[ "$branch" =~ ^issue-[0-9]+/([a-z0-9-]+)$ ]]; then
   owner="${BASH_REMATCH[1]}"
   if [[ "$owner" != "$AGENT_NAME" ]]; then
     echo "HOOK BLOCKED ($AGENT_LABEL): '$branch' belongs to agent '$owner', not you." >&2
-    echo "  Review their work with diffs/comments; never commit to their branch." >&2
     exit 1
   fi
 elif [[ "$branch" == "$AGENT_NAME"/* ]]; then
-  : # personal scratch branch — allowed
+  : # allowed
 else
   echo "HOOK BLOCKED ($AGENT_LABEL): branch '$branch' does not follow the naming scheme." >&2
-  echo "  Use issue-<n>/$AGENT_NAME for issue work, or $AGENT_NAME/<name> for scratch work." >&2
   exit 1
 fi
 
-# 3) Run project checks when the project defines them.
-# Decide whether this commit only touches coordination files.                           
-    staged="$(git diff --cached --name-only 2>/dev/null)"                                      
-    run_checks=false                                                                           
-                                                                                               
-    if [[ -n "$staged" ]]; then                                                                
-      while IFS= read -r path; do                                                              
-        [[ -n "$path" ]] || continue                                                           
-        # If any staged file is NOT in a coordination directory, we must run checks            
-        if [[ ! "$path" =~ ^\.(signals|plans|code-reviews|amendments|escalations)/ ]]; then    
-          run_checks=true                                                                      
-          break                                                                                
-        fi                                                                                     
-      done <<< "$staged"                                                                       
-    else                                                                                       
-      # Empty commit or could not list staged files; fail closed and run checks                
-      run_checks=true                                                                          
-    fi                                                                                         
-                                                                                               
-    if [[ "$run_checks" == false ]]; then                                                      
-      echo "$AGENT_LABEL hook: skipping checks for coordination-only commit."                  
-      exit 0                                                                                   
-    fi                   
+# Determine if we need to run checks
+install_root="$(git config --get coord.installRoot 2>/dev/null || true)"
+staged="$(git diff --cached --name-only 2>/dev/null)"
+run_checks=false
 
-if [[ -f package.json ]]; then
-  if [[ -f pnpm-lock.yaml ]]; then
-    if ! command -v pnpm >/dev/null; then
-      if command -v corepack >/dev/null; then
-        corepack enable pnpm >/dev/null 2>&1 || true
-      fi
+if [[ -n "$staged" ]]; then
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    if [[ ! "$path" =~ ^\.(signals|plans|code-reviews|amendments|escalations)/ ]]; then
+      run_checks=true
+      break
     fi
+  done <<< "$staged"
+else
+  run_checks=true
+fi
 
-    if ! command -v pnpm >/dev/null; then
-      echo "HOOK BLOCKED: pnpm-lock.yaml exists, but pnpm is not available." >&2
-      echo "  Run: corepack enable pnpm" >&2
-      exit 1
-    fi
+if [[ "$run_checks" == false ]]; then
+  echo "$AGENT_LABEL hook: skipping checks for coordination-only commit."
+  exit 0
+fi
 
-    if grep -q '"check:fast"[[:space:]]*:' package.json; then
-      echo "$AGENT_LABEL hook: running pnpm check:fast..."
-      pnpm check:fast || { echo "HOOK BLOCKED: pnpm check:fast failed — fix before committing." >&2; exit 1; }
-    elif grep -q '"check"[[:space:]]*:' package.json; then
-      echo "$AGENT_LABEL hook: running pnpm check..."
-      pnpm check || { echo "HOOK BLOCKED: pnpm check failed — fix before committing." >&2; exit 1; }
-    else
-      if grep -q '"lint"[[:space:]]*:' package.json; then
-        echo "$AGENT_LABEL hook: running pnpm lint..."
-        pnpm lint || { echo "HOOK BLOCKED: lint failed — fix before committing." >&2; exit 1; }
-      fi
-      if grep -q '"typecheck"[[:space:]]*:' package.json; then
-        echo "$AGENT_LABEL hook: running pnpm typecheck..."
-        pnpm typecheck || { echo "HOOK BLOCKED: typecheck failed — fix before committing." >&2; exit 1; }
-      fi
-      if grep -q '"test"[[:space:]]*:' package.json; then
-        echo "$AGENT_LABEL hook: running pnpm test..."
-        pnpm test || { echo "HOOK BLOCKED: tests failed — fix before committing." >&2; exit 1; }
-      fi
-    fi
-
-  elif [[ -f package-lock.json ]]; then
-    if ! command -v npm >/dev/null; then
-      echo "HOOK BLOCKED: package-lock.json exists, but npm is not available." >&2
-      exit 1
-    fi
-
-    if grep -q '"check"[[:space:]]*:' package.json; then
-      echo "$AGENT_LABEL hook: running npm run check..."
-      npm run --silent check || { echo "HOOK BLOCKED: npm check failed — fix before committing." >&2; exit 1; }
-    else
-      if grep -q '"lint"[[:space:]]*:' package.json; then
-        echo "$AGENT_LABEL hook: running npm run lint..."
-        npm run --silent lint || { echo "HOOK BLOCKED: lint failed — fix before committing." >&2; exit 1; }
-      fi
-      if grep -q '"test"[[:space:]]*:' package.json; then
-        echo "$AGENT_LABEL hook: running npm test..."
-        npm test --silent || { echo "HOOK BLOCKED: tests failed — fix before committing." >&2; exit 1; }
-      fi
-    fi
-
-  elif [[ -f yarn.lock ]]; then
-    if ! command -v yarn >/dev/null; then
-      if command -v corepack >/dev/null; then
-        corepack enable yarn >/dev/null 2>&1 || true
-      fi
-    fi
-
-    if ! command -v yarn >/dev/null; then
-      echo "HOOK BLOCKED: yarn.lock exists, but yarn is not available." >&2
-      exit 1
-    fi
-
-    if grep -q '"check"[[:space:]]*:' package.json; then
-      echo "$AGENT_LABEL hook: running yarn check..."
-      yarn check || { echo "HOOK BLOCKED: yarn check failed — fix before committing." >&2; exit 1; }
-    elif grep -q '"lint"[[:space:]]*:' package.json; then
-      echo "$AGENT_LABEL hook: running yarn lint..."
-      yarn lint || { echo "HOOK BLOCKED: lint failed — fix before committing." >&2; exit 1; }
-    fi
-  fi
+if [[ -n "$install_root" && -f "$install_root/workspace.json" ]]; then
+  # Extract verify commands from workspace.json
+  # Simple python script to parse and execute them
+  python3 -c '
+import sys, json, subprocess
+try:
+    with open(sys.argv[1]) as f:
+        config = json.load(f)
+    verify = config.get("verify")
+    if verify is None:
+        print("HOOK BLOCKED: verify array is missing in workspace config. Add it or set to [] to explicitly allow.", file=sys.stderr)
+        sys.exit(1)
+    if not verify:
+        sys.exit(0)
+    for check in verify:
+        print(f"Running {check[\"name\"]}...")
+        result = subprocess.run(check["argv"])
+        if result.returncode != 0:
+            print(f"HOOK BLOCKED: {check[\"name\"]} failed — fix before committing.", file=sys.stderr)
+            sys.exit(1)
+except Exception as e:
+    print(f"Error parsing workspace config: {e}", file=sys.stderr)
+    sys.exit(1)
+' "$install_root/workspace.json" || exit 1
 fi
 
 exit 0

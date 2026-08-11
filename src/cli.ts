@@ -31,6 +31,8 @@ import {
 } from "./state.js";
 import type { WorkflowProfile } from "./steps.js";
 import { resolveAgentLauncher, TmuxController } from "./tmux.js";
+import { install, uninstall } from "./install.js";
+import { doctor } from "./doctor.js";
 
 export type CliIo = {
   stdout: (message: string) => void;
@@ -121,6 +123,9 @@ Usage:
   coord answer <question-id> <retry|revise|abandon> --issue <issue> --coord-root <path>
   coord drop <agent> --issue <issue> --coord-root <path>
   coord pause|resume|restart-action|abandon --issue <issue> --coord-root <path>
+  coord install --product <path> --coord-root <path> --agents <a1,a2> --profile <profile> [--write-product] [--vendor] [--clone-root <dir>]
+  coord uninstall --product <path> --coord-root <path> [--delete-clones]
+  coord doctor --coord-root <path>
 
 COORD_ISSUE and COORD_AGENT may replace the corresponding options. The safety-critical
 --coord-root option must always be explicit.
@@ -378,6 +383,51 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       }
       io.stdout(`Started issue ${issue} (${profile}) at ${paths.issueRoot}.\n`);
       return 0;
+    }
+
+    if (command === "install") {
+      allowedFlags(parsed, ["product", "coord-root", "agents", "profile", "write-product", "vendor", "clone-root", "dry-run"]);
+      if (parsed.positionals.length !== 0) throw new Error("install takes no positional arguments.");
+      const productRoot = requireFlag(parsed, "product");
+      const coordRoot = requireFlag(parsed, "coord-root");
+      const agentsStr = requireFlag(parsed, "agents");
+      const agents = agentsStr.split(",").map(s => s.trim()).filter(Boolean);
+      const writeProduct = parsed.flags.has("write-product");
+      const vendor = parsed.flags.has("vendor");
+      const cloneRoot = parsed.flags.get("clone-root");
+      
+      await install({
+        productRoot,
+        coordRoot,
+        agents,
+        writeProduct,
+        vendor,
+        cloneRoot
+      });
+      return 0;
+    }
+
+    if (command === "uninstall") {
+      allowedFlags(parsed, ["product", "coord-root", "delete-clones"]);
+      if (parsed.positionals.length !== 0) throw new Error("uninstall takes no positional arguments.");
+      const productRoot = requireFlag(parsed, "product");
+      const coordRoot = requireFlag(parsed, "coord-root");
+      const deleteClones = parsed.flags.has("delete-clones");
+      
+      await uninstall({
+        productRoot,
+        coordRoot,
+        deleteClones
+      });
+      return 0;
+    }
+
+    if (command === "doctor") {
+      allowedFlags(parsed, ["coord-root"]);
+      if (parsed.positionals.length !== 0) throw new Error("doctor takes no positional arguments.");
+      const coordRoot = requireFlag(parsed, "coord-root");
+      const code = await doctor(coordRoot);
+      return code;
     }
 
     if (command === "run") {

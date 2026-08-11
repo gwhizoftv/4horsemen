@@ -1,0 +1,9 @@
+# Agent-local files added by coordination install
+.plans/
+.signals/
+.code-reviews/
+.amendments/
+.escalations/
+start-*.sh
+tags
+directory_tree.md
