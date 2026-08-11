@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# DEPRECATED: use `coord install` instead of this script.
+# Kept temporarily for migration; see docs/setup-workspace.md.
+#
 # setup_antigravity.sh — set up the Google Antigravity CLI (agy) agent clone.
 # Run from the root of your MASTER repo:
 #   ./scripts/setup_antigravity.sh [-n|--dry-run] [--force] [shared_branch] [remote_name]
@@ -17,6 +20,10 @@
 #   - Enforcement: git hooks are the hard layer (no PreToolUse equivalent);
 #     tune agy's own permission rules in-session with /permissions.
 set -euo pipefail
+
+echo "WARNING: scripts/setup_antigravity.sh is deprecated; prefer:" >&2
+echo "  ./coord install --product <path> --coord-root <path> --agents ..." >&2
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

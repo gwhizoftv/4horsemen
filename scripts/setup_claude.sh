@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
+# DEPRECATED: use `coord install` instead of this script.
+# Kept temporarily for migration; see docs/setup-workspace.md.
+#
 # setup_claude.sh — set up the Claude Code agent clone.
 # Run from the root of your MASTER repo:
 #   ./scripts/setup_claude.sh [-n|--dry-run] [--force] [shared_branch] [remote_name]
 set -euo pipefail
+
+echo "WARNING: scripts/setup_claude.sh is deprecated; prefer:" >&2
+echo "  ./coord install --product <path> --coord-root <path> --agents ..." >&2
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

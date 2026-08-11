@@ -76,6 +76,27 @@ export const checkCommandSchema = z
   })
   .strict();
 
+export const verifyHookSchema = z
+  .object({
+    precommit: z.array(checkCommandSchema).default([]),
+    prepush: z.array(checkCommandSchema).default([])
+  })
+  .strict();
+
+export const coordinationInstallSchema = z
+  .object({
+    installRoot: z.string().min(1),
+    version: z.string().min(1),
+    commit: gitShaSchema,
+    installedAt: z.string().datetime({ offset: true }),
+    productRoot: z.string().min(1),
+    wroteProduct: z.boolean().default(false),
+    vendor: z.boolean().default(false),
+    bootstrappedCoordination: z.boolean().default(false),
+    managedGitignore: z.boolean().default(false)
+  })
+  .strict();
+
 export const agentConfigSchema = z
   .object({
     id: agentIdSchema,
@@ -105,7 +126,11 @@ export const coordinatorConfigSchema = z
       .min(1)
       .default([".plans/issue-{issue}/plan.md"]),
     checks: z.array(checkCommandSchema).min(1),
-    pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000)
+    pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000),
+    verify: verifyHookSchema.optional(),
+    workflowCriticalPrefixes: z.array(z.string().min(1)).optional(),
+    workflowCriticalFiles: z.array(z.string().min(1)).optional(),
+    coordination: coordinationInstallSchema.optional()
   })
   .strict()
   .superRefine((config, context) => {
@@ -296,6 +321,8 @@ export const journalEventSchema = z
   .strict();
 
 export type CoordinatorConfig = z.infer<typeof coordinatorConfigSchema>;
+export type CoordinationInstall = z.infer<typeof coordinationInstallSchema>;
+export type VerifyHooks = z.infer<typeof verifyHookSchema>;
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
 export type StartState = z.infer<typeof startStateSchema>;
 export type AgentCursor = z.infer<typeof agentCursorSchema>;

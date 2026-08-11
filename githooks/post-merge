@@ -2,20 +2,24 @@
 # Tracked, agent-neutral hook. Identity is resolved at runtime — never edit a
 # clone-specific value into this file.
 lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/identity.sh"
-[[ -r "$lib" ]] || { echo "HOOK BLOCKED: cannot read $lib; core.hooksPath must point at the tracked githooks directory." >&2; exit 1; }
+[[ -r "$lib" ]] || { echo "HOOK BLOCKED: cannot read $lib." >&2; exit 1; }
 # shellcheck source=lib/identity.sh
 . "$lib"
 
 command -v ctags >/dev/null && ctags -R --exclude=node_modules --exclude=.git . 2>/dev/null || true
 [[ -x ./directory_tree.sh ]] && ./directory_tree.sh || true
 
-# Regenerate the launcher when a merge removed it — most visibly the pull that
-# untracked it, which deletes a file the clone still needs. The template lives in
-# scripts/lib/launcher.sh so that this hook and setup cannot drift apart. Never
-# overwrite an existing launcher: a clone may have customised it, and this hook
-# runs on every merge.
+# Regenerate the launcher when a merge removed it. Prefer the coordination
+# install's launcher template (installRoot), falling back to a sibling scripts/
+# path when running from a vendored or in-tree checkout.
 launcher="start-${AGENT_NAME}.sh"
-launcher_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../scripts/lib/launcher.sh"
+install_root="$(git config --local --get coord.installRoot 2>/dev/null || true)"
+launcher_lib=""
+if [[ -n "$install_root" && -r "$install_root/scripts/lib/launcher.sh" ]]; then
+  launcher_lib="$install_root/scripts/lib/launcher.sh"
+else
+  launcher_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../scripts/lib/launcher.sh"
+fi
 
 if [[ ! -e "$launcher" && -r "$launcher_lib" ]]; then
   # shellcheck source=../scripts/lib/launcher.sh
@@ -25,7 +29,7 @@ if [[ ! -e "$launcher" && -r "$launcher_lib" ]]; then
     echo "Regenerated $launcher (generated per clone, never tracked)."
   else
     echo "No launch command is defined for agent '$AGENT_NAME'; $launcher was not regenerated." >&2
-    echo "  Run scripts/setup_${AGENT_NAME}.sh from the master repo, or add one to launcher_command()." >&2
+    echo "  Re-run coord install, or add one to launcher_command() in scripts/lib/launcher.sh." >&2
   fi
 fi
 

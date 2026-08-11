@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
+# DEPRECATED: use `coord install` instead of this script.
+# Kept temporarily for migration; see docs/setup-workspace.md.
+#
 # setup_cursor.sh — set up the Cursor CLI agent clone.
 # Run from the root of your MASTER repo:
 #   ./scripts/setup_cursor.sh [-n|--dry-run] [--force] [shared_branch] [remote_name]
-#
-# Cursor specifics vs the other setup scripts:
-#   - Cursor reads the repo-root AGENTS.md natively: no shim file is needed.
-#   - Repository-specific guidance is supplied through Cursor rule files in
-#     <clone>/.cursor/rules/*.mdc, which are discovered automatically.
-#   - There is no equivalent of Codex's trusted-project config; the project-local
-#     rule file is the main mechanism for steering Cursor in this clone.
 set -euo pipefail
+
+echo "WARNING: scripts/setup_cursor.sh is deprecated; prefer:" >&2
+echo "  ./coord install --product <path> --coord-root <path> --agents cursor,..." >&2
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -93,7 +92,7 @@ fi
 echo ""
 echo "=== Cursor agent ready =============================================="
 echo "Clone   : $CLONE_DIR"
-echo "Launch  : $CLONE_DIR/start-cursor.sh   (or use start_isolated_claude_agents.sh)"
+echo "Launch  : $CLONE_DIR/start-cursor.sh"
 echo "Rules   : $CLONE_DIR/.cursor/rules/*.mdc"
 echo "Temp dir: $CLONE_DIR/.cursor/tmp"
 echo "======================================================================"

@@ -25,9 +25,9 @@ consensus_agent_label_key="consensus.agentLabel"
 consensus_identity_failed() {
   echo "HOOK BLOCKED: $1" >&2
   echo "  Hooks never fall back to a default identity." >&2
-  echo "  Fix: from the master repo run this clone's setup script (scripts/setup_<agent>.sh)," >&2
-  echo "  which writes $consensus_agent_id_key, $consensus_agent_label_key and core.hooksPath=githooks." >&2
-  echo "  Then confirm with: git config --get consensus.agentId" >&2
+  echo "  Fix: re-run coord install for this product (writes $consensus_agent_id_key," >&2
+  echo "  $consensus_agent_label_key, and agent-clone .git/hooks shims)." >&2
+  echo "  Then confirm with: git config --local --get consensus.agentId" >&2
   exit 1
 }
 

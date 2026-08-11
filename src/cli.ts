@@ -31,6 +31,8 @@ import {
 } from "./state.js";
 import type { WorkflowProfile } from "./steps.js";
 import { resolveAgentLauncher, TmuxController } from "./tmux.js";
+import { formatDoctorReport, runDoctorChecks } from "./doctor.js";
+import { loadWorkspaceConfig, runInstall, runUninstall } from "./install.js";
 
 export type CliIo = {
   stdout: (message: string) => void;
@@ -68,9 +70,10 @@ type ParsedArgs = { positionals: string[]; flags: Map<string, string> };
 
 const coordinatorSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-const parseArgs = (args: readonly string[]): ParsedArgs => {
+const parseArgs = (args: readonly string[], booleanFlags: readonly string[] = []): ParsedArgs => {
   const positionals: string[] = [];
   const flags = new Map<string, string>();
+  const booleans = new Set(booleanFlags);
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index] as string;
     if (!argument.startsWith("--")) {
@@ -80,11 +83,25 @@ const parseArgs = (args: readonly string[]): ParsedArgs => {
     const name = argument.slice(2);
     if (name === "" || flags.has(name)) throw new Error(`Invalid or duplicate option ${argument}.`);
     const value = args[index + 1];
+    if (booleans.has(name)) {
+      if (value === undefined || value.startsWith("--")) {
+        flags.set(name, "true");
+      } else {
+        flags.set(name, value);
+        index += 1;
+      }
+      continue;
+    }
     if (value === undefined || value.startsWith("--")) throw new Error(`Option ${argument} requires a value.`);
     flags.set(name, value);
     index += 1;
   }
   return { positionals, flags };
+};
+
+const flagEnabled = (parsed: ParsedArgs, name: string): boolean => {
+  const value = parsed.flags.get(name);
+  return value === "true" || value === "1" || value === "yes";
 };
 
 const requireFlag = (parsed: ParsedArgs, name: string): string => {
@@ -115,6 +132,11 @@ const allowedFlags = (parsed: ParsedArgs, allowed: readonly string[]): void => {
 const help = `coord — owner-side workflow driver
 
 Usage:
+  coord install --product <path> --coord-root <path> --agents <id,id,...> [--profile <p>]
+               [--config <template>] [--clone-root <dir>] [--install-root <dir>]
+               [--write-product] [--vendor] [--dry-run]
+  coord uninstall --coord-root <path> [--delete-clones] [--wipe-runtime] [--force] [--dry-run]
+  coord doctor --coord-root <path>
   coord start <issue> --profile <solo|reviewed|consensus> --config <path> --coord-root <external-path>
   coord run --issue <issue> --coord-root <path>
   coord next --issue <issue> --coord-root <path> --agent <agent>
@@ -123,7 +145,7 @@ Usage:
   coord pause|resume|restart-action|abandon --issue <issue> --coord-root <path>
 
 COORD_ISSUE and COORD_AGENT may replace the corresponding options. The safety-critical
---coord-root option must always be explicit.
+--coord-root option must always be explicit. Default install leaves zero product-master diff.
 `;
 
 export const automationDigestMaterial = (
@@ -283,6 +305,92 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   }
 
   try {
+    if (command === "install") {
+      const parsed = parseArgs(rest, [
+        "write-product",
+        "vendor",
+        "bootstrap-coordination",
+        "dry-run"
+      ]);
+      allowedFlags(parsed, [
+        "product",
+        "coord-root",
+        "agents",
+        "profile",
+        "config",
+        "clone-root",
+        "install-root",
+        "write-product",
+        "vendor",
+        "bootstrap-coordination",
+        "dry-run",
+        "shared-branch",
+        "remote-name"
+      ]);
+      if (parsed.positionals.length !== 0) throw new Error("install takes no positional arguments.");
+      const agents = requireFlag(parsed, "agents")
+        .split(",")
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0);
+      if (agents.length === 0) throw new Error("--agents must list at least one agent id.");
+      runInstall({
+        product: requireFlag(parsed, "product"),
+        coordRoot: requireFlag(parsed, "coord-root"),
+        agents,
+        profile: parsed.flags.get("profile"),
+        installRoot: parsed.flags.get("install-root"),
+        cloneRoot: parsed.flags.get("clone-root"),
+        configTemplate: parsed.flags.get("config"),
+        writeProduct: flagEnabled(parsed, "write-product"),
+        vendor: flagEnabled(parsed, "vendor"),
+        bootstrapCoordination: flagEnabled(parsed, "bootstrap-coordination"),
+        dryRun: flagEnabled(parsed, "dry-run"),
+        sharedBranch: parsed.flags.get("shared-branch"),
+        remoteName: parsed.flags.get("remote-name"),
+        cwd: io.cwd,
+        io: { stdout: io.stdout, stderr: io.stderr }
+      });
+      return 0;
+    }
+
+    if (command === "uninstall") {
+      const parsed = parseArgs(rest, ["delete-clones", "wipe-runtime", "delete-coordination", "force", "dry-run"]);
+      allowedFlags(parsed, [
+        "coord-root",
+        "delete-clones",
+        "wipe-runtime",
+        "delete-coordination",
+        "force",
+        "dry-run"
+      ]);
+      if (parsed.positionals.length !== 0) throw new Error("uninstall takes no positional arguments.");
+      runUninstall({
+        coordRoot: requireFlag(parsed, "coord-root"),
+        deleteClones: flagEnabled(parsed, "delete-clones"),
+        wipeRuntime: flagEnabled(parsed, "wipe-runtime"),
+        deleteCoordination: flagEnabled(parsed, "delete-coordination"),
+        force: flagEnabled(parsed, "force"),
+        dryRun: flagEnabled(parsed, "dry-run"),
+        cwd: io.cwd,
+        io: { stdout: io.stdout, stderr: io.stderr }
+      });
+      return 0;
+    }
+
+    if (command === "doctor") {
+      const parsed = parseArgs(rest);
+      allowedFlags(parsed, ["coord-root"]);
+      if (parsed.positionals.length !== 0) throw new Error("doctor takes no positional arguments.");
+      const loaded = loadWorkspaceConfig(requireFlag(parsed, "coord-root"), io.cwd);
+      const report = runDoctorChecks({
+        configPath: loaded.configPath,
+        config: loaded.config,
+        requirePathCommands: true
+      });
+      io.stdout(formatDoctorReport(report));
+      return report.ok ? 0 : 2;
+    }
+
     const parsed = parseArgs(rest);
     if (command === "start") {
       allowedFlags(parsed, ["profile", "config", "coord-root"]);

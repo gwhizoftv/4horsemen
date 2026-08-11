@@ -1,0 +1,8 @@
+# BEGIN coordination (managed by coord install --write-product)
+/start-*.sh
+.claude/
+.codex/
+.cursor/
+.antigravity/
+.agents/
+# END coordination

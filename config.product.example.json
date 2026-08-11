@@ -1,0 +1,59 @@
+{
+  "project": "example-product",
+  "origin": "https://github.com/example/example-product.git",
+  "agents": [
+    {
+      "id": "claude",
+      "root": "../example-product-claude",
+      "launcher": "start-claude.sh",
+      "delivery": "nudge",
+      "harnessProcess": "claude"
+    },
+    {
+      "id": "codex",
+      "root": "../example-product-codex",
+      "launcher": "start-codex.sh",
+      "delivery": "pull",
+      "harnessProcess": "codex"
+    },
+    {
+      "id": "cursor",
+      "root": "../example-product-cursor",
+      "launcher": "start-cursor.sh",
+      "delivery": "pull"
+    },
+    {
+      "id": "antigravity",
+      "root": "../example-product-antigravity",
+      "launcher": "start-antigravity.sh",
+      "delivery": "pull"
+    }
+  ],
+  "branch": "issue-{issue}/{agent}",
+  "baseBranch": "main",
+  "maxRevisionRounds": 3,
+  "prPolicy": "owner-only",
+  "digestPaths": [".plans/issue-{issue}/plan.md"],
+  "pollIntervalMs": 1000,
+  "verify": {
+    "precommit": [{ "name": "check", "argv": ["pnpm", "check:fast"] }],
+    "prepush": [{ "name": "e2e", "argv": ["pnpm", "test:e2e"] }]
+  },
+  "workflowCriticalPrefixes": ["src/", "test/", "scripts/", "githooks/"],
+  "workflowCriticalFiles": ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"],
+  "checks": [
+    { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
+    { "name": "check", "argv": ["pnpm", "check"] }
+  ],
+  "coordination": {
+    "installRoot": "/absolute/path/to/coordination",
+    "version": "0.0.0",
+    "commit": "0000000000000000000000000000000000000000",
+    "installedAt": "2026-01-01T00:00:00.000Z",
+    "productRoot": "/absolute/path/to/example-product",
+    "wroteProduct": false,
+    "vendor": false,
+    "bootstrappedCoordination": false,
+    "managedGitignore": false
+  }
+}
