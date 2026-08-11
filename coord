@@ -1,7 +1,20 @@
 #!/usr/bin/env bash
+# Stable entry point for owner and agent panes. Rebuilds when dist is missing
+# or stale so `coord next` never hands an agent an action from a superseded
+# build. Build output goes to stderr: stdout belongs to the command.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
+
+needs_build=false
+
 if [[ ! -f dist/main.js ]]; then
-  pnpm build
+  needs_build=true
+elif [[ -n "$(find src -name '*.ts' -newer dist/main.js -print -quit 2>/dev/null)" ]]; then
+  needs_build=true
 fi
+
+if [[ "$needs_build" == true ]]; then
+  pnpm build >&2
+fi
+
 exec node dist/main.js "$@"
