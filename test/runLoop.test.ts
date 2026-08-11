@@ -304,6 +304,47 @@ describe("effectful run loop", () => {
     expect(readJournal(paths).filter((event) => event.type === "pr-created")).toHaveLength(1);
   });
 
+  it("records an invalid persisted publication origin as a retryable failure", async () => {
+    const { paths } = fixture({ prPolicy: "coord-open-unmerged", origin: "/unsupported/origin.git" });
+    const finalSha = "f".repeat(40);
+    const current = readCursorsState(paths);
+    writeCursorsState(
+      paths,
+      cursorsStateSchema.parse({
+        ...current,
+        publication: {
+          status: "pending",
+          finalSha,
+          branch: "issue-1/codex-final",
+          url: null,
+          error: null,
+          attempts: 0
+        }
+      })
+    );
+    let pushes = 0;
+    const mirror = new BareMirror(paths.mirror, "/unsupported/origin.git");
+    mirror.publishBranch = async () => {
+      pushes += 1;
+    };
+    const messages: string[] = [];
+    const result = await new CoordinatorRunLoop(paths, {
+      tmux: null,
+      mirror,
+      log: (message) => messages.push(message)
+    }).runTick();
+    expect(result.publication).toMatchObject({
+      status: "failed",
+      finalSha,
+      branch: "issue-1/codex-final",
+      error: "Cannot derive a GitHub repository from origin /unsupported/origin.git.",
+      attempts: 1
+    });
+    expect(pushes).toBe(0);
+    expect(messages.join(" ")).toContain("Owner action required: finalization publication failed");
+    expect(readJournal(paths).at(-1)?.type).toBe("publication-failed");
+  });
+
   it("keeps failed final checks in verification and performs no publication effect", async () => {
     const { root, paths } = fixture({ prPolicy: "coord-open-unmerged", origin: "https://github.com/example/project.git" });
     const seed = join(root, "final-seed");

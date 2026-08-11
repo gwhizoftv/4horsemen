@@ -97,9 +97,8 @@ const parseIssue = (value: string): number => {
 };
 
 const context = (parsed: ParsedArgs, io: CliIo): IssueRuntimePaths => {
-  const coordRoot = parsed.flags.get("coord-root") ?? io.env.COORD_ROOT;
+  const coordRoot = requireFlag(parsed, "coord-root");
   const issueValue = parsed.flags.get("issue") ?? io.env.COORD_ISSUE;
-  if (coordRoot === undefined) throw new Error("--coord-root or COORD_ROOT is required.");
   if (issueValue === undefined) throw new Error("--issue or COORD_ISSUE is required.");
   return issueRuntimePaths(resolve(io.cwd, coordRoot), parseIssue(issueValue));
 };
@@ -120,7 +119,8 @@ Usage:
   coord drop <agent> --issue <issue> --coord-root <path>
   coord pause|resume|restart-action|abandon --issue <issue> --coord-root <path>
 
-COORD_ROOT, COORD_ISSUE, and COORD_AGENT may replace the corresponding options.
+COORD_ISSUE and COORD_AGENT may replace the corresponding options. The safety-critical
+--coord-root option must always be explicit.
 `;
 
 export const automationDigestMaterial = (

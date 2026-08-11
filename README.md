@@ -41,16 +41,16 @@ required at start.
   --config ./config.json \
   --coord-root /Volumes/4TB-SOURCE/REPOS/coord/coord-runtime
 
-export COORD_ROOT=/Volumes/4TB-SOURCE/REPOS/coord/coord-runtime
 export COORD_ISSUE=1
-./coord run
+./coord run --coord-root /Volumes/4TB-SOURCE/REPOS/coord/coord-runtime
 ```
 
 Pull-only agents can fetch their current action without seeing internal step,
 gate, evidence, or global cursor state:
 
 ```bash
-COORD_AGENT=codex ./coord next
+COORD_AGENT=codex ./coord next \
+  --coord-root /Volumes/4TB-SOURCE/REPOS/coord/coord-runtime
 ```
 
 The action names an absolute `complete` path. After pushing the commit that

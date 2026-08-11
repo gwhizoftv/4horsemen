@@ -65,7 +65,7 @@ pnpm build
   --config ./config.json \
   --coord-root /absolute/owner/runtime
 
-COORD_ROOT=/absolute/owner/runtime COORD_ISSUE=42 ./coord run
+COORD_ISSUE=42 ./coord run --coord-root /absolute/owner/runtime
 ```
 
 `start` preflights the exact origin baseline, digest inputs, GitHub/PR-policy
@@ -128,8 +128,9 @@ sequence. Completed historical gates and immutable product pins are retained.
 
 ## Owner controls
 
-Every command after `start` accepts `--coord-root` and `--issue`; `COORD_ROOT`
-and `COORD_ISSUE` are equivalent.
+Every command after `start` requires an explicit `--coord-root` so the
+safety-critical external state location remains visible at the call site.
+`COORD_ISSUE` may replace `--issue`.
 
 ```bash
 ./coord drop cursor --coord-root /absolute/owner/runtime --issue 42

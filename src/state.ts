@@ -525,6 +525,8 @@ export const requireStateMutation = (
   expectedRevision: number,
   mutation: (current: CursorsState) => CursorsState
 ): CursorsState => {
+  // This compare-and-swap is the authority boundary for effects: without it,
+  // a delayed Git/tmux/check result could overwrite a concurrent owner control.
   const result = mutateCursorsState(paths, mutation, expectedRevision);
   if (!result.applied) throw new StateConflictError("Coordinator state changed during an effect; re-observation is required.");
   return result.state;

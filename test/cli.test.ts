@@ -53,13 +53,24 @@ const fakeLoop = (paths: ReturnType<typeof issueRuntimePaths>): CliRunLoop => ({
 });
 
 describe("CLI", () => {
-  it("requires an explicit external coord root at start", async () => {
+  it("requires the external coord root explicitly rather than accepting COORD_ROOT", async () => {
     const fixture = setup();
     const messages: string[] = [];
     const result = await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath], {
       io: { stderr: (message) => messages.push(message) }
     });
     expect(result).toBe(2);
+    expect(messages.join("")).toContain("--coord-root is required");
+
+    messages.length = 0;
+    expect(
+      await runCli(["run", "--issue", "1"], {
+        io: {
+          env: { COORD_ROOT: fixture.runtime },
+          stderr: (message) => messages.push(message)
+        }
+      })
+    ).toBe(2);
     expect(messages.join("")).toContain("--coord-root is required");
   });
 

@@ -625,11 +625,11 @@ export class CoordinatorRunLoop {
     if (start.prPolicy !== "coord-open-unmerged") return cursors;
     if (cursors.publication.status !== "pending" && cursors.publication.status !== "failed") return cursors;
     const { finalSha, branch } = cursors.publication;
-    if (finalSha === null || branch === null) throw new Error("Pending publication is missing its final pin or branch.");
-    const repository = githubRepositoryFromOrigin(start.origin);
-    if (repository === null) throw new Error(`Cannot derive a GitHub repository from origin ${start.origin}.`);
     const authority = this.authority(cursors, true);
     try {
+      if (finalSha === null || branch === null) throw new Error("Pending publication is missing its final pin or branch.");
+      const repository = githubRepositoryFromOrigin(start.origin);
+      if (repository === null) throw new Error(`Cannot derive a GitHub repository from origin ${start.origin}.`);
       await this.mirror.publishBranch(finalSha, branch);
       this.authority(authority, true);
       const result = await this.pullRequestOpener({
