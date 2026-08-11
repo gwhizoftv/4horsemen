@@ -8,10 +8,14 @@ import { automationDigestMaterial, runCli, type CliRunLoop } from "../src/cli.js
 import { agentRuntimePaths, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
 import { cursorsStateSchema, readConfig, readCursorsState, readStartState, writeCursorsState } from "../src/state.js";
+import { DOCTOR_CODES } from "../src/doctor.js";
+import { ensureBuilt, makeProduct, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
 
 const roots: string[] = [];
+const productFixtures: ProductFixture[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const fixture of productFixtures.splice(0)) fixture.cleanup();
 });
 
 const setup = () => {
@@ -433,5 +437,94 @@ describe("CLI", () => {
     ).toBe(2);
     expect(errors.join("")).toContain("not allowed");
     expect(readCursorsState(paths).issueCursor.round).toBe(3);
+  });
+});
+
+describe("CLI — install, doctor, and the hook bridge", () => {
+  const installedWorkspace = () => {
+    ensureBuilt();
+    const product = makeProduct();
+    productFixtures.push(product);
+    const declarePath = writeDeclaration(product.workspaceRoot, {
+      checks: [{ name: "test", argv: ["true"] }],
+      verify: { precommit: [{ name: "ok", argv: ["true"] }], prepush: [] },
+      workflowCriticalPrefixes: ["cmd/"]
+    });
+    return { product, declarePath };
+  };
+
+  const installArgs = (product: ProductFixture, declarePath: string): string[] => [
+    "install",
+    "--product",
+    product.productRoot,
+    "--coord-root",
+    product.coordRoot,
+    "--agents",
+    "claude",
+    "--profile",
+    "solo",
+    "--declare",
+    declarePath
+  ];
+
+  it("accepts the boolean switches without swallowing the next option", async () => {
+    const { product, declarePath } = installedWorkspace();
+    const out: string[] = [];
+    const code = await runCli([...installArgs(product, declarePath), "--dry-run"], {
+      io: { stdout: (message) => out.push(message) }
+    });
+    expect(code).toBe(0);
+    expect(out.join("")).toContain("would clone");
+    expect(existsSync(join(product.coordRoot, "workspaces"))).toBe(false);
+  });
+
+  it("emits a config that coord start accepts unchanged", async () => {
+    const { product, declarePath } = installedWorkspace();
+    expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
+
+    const configPath = join(product.coordRoot, "workspaces", "myserver", "config.json");
+    const runtime = join(product.coordRoot, "runtime");
+    const messages: string[] = [];
+    const started = await runCli(
+      ["start", "1", "--profile", "solo", "--config", configPath, "--coord-root", runtime],
+      {
+        io: { stdout: (message) => messages.push(message), stderr: (message) => messages.push(message) },
+        makeRunLoop: fakeLoop,
+        processRunner: successfulStartGit
+      }
+    );
+    // The only reason start may refuse here is the owner-supplied digest source,
+    // which an operator places beside the config; the config itself must parse
+    // and validate. Anything else would be the two consumers having drifted.
+    expect(messages.join("")).not.toContain("Invalid");
+    expect(messages.join("")).not.toContain("Unknown option");
+    if (started !== 0) expect(messages.join("")).toContain("Digest source");
+  });
+
+  it("returns doctor's class-specific exit code", async () => {
+    const { product, declarePath } = installedWorkspace();
+    expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
+
+    const doctorArgs = ["doctor", "--coord-root", product.coordRoot, "--product", product.productRoot];
+    expect(await runCli(doctorArgs, { io: { stdout: () => undefined } })).toBe(0);
+
+    rmSync(join(product.workspaceRoot, "myserver-claude", "start-claude.sh"));
+    const errors: string[] = [];
+    expect(await runCli(doctorArgs, { io: { stderr: (message) => errors.push(message) } })).toBe(DOCTOR_CODES.launcher);
+    expect(errors.join("")).toContain("launcher");
+  });
+
+  it("serves the hook bridge from the workspace config", async () => {
+    const { product, declarePath } = installedWorkspace();
+    expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
+    const clone = join(product.workspaceRoot, "myserver-claude");
+
+    const scope: string[] = [];
+    expect(await runCli(["hook-scope", "--clone", clone], { io: { stdout: (message) => scope.push(message) } })).toBe(0);
+    // Declared prefixes replace the proposal's; the files it did not declare
+    // keep the proposal's, which is what the emitted config records.
+    expect(scope.join("")).toBe("prefix\tcmd/\nfile\tgo.mod\nfile\tgo.sum\n");
+
+    expect(await runCli(["hook-verify", "--clone", clone, "--phase", "precommit"], { io: { stdout: () => undefined } })).toBe(0);
   });
 });

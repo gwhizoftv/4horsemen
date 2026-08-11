@@ -1,0 +1,9 @@
+/start-*.sh
+tags
+directory_tree.md
+.claude/
+.codex/
+.cursor/
+.antigravity/
+.gemini/
+.agents/

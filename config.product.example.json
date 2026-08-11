@@ -1,0 +1,44 @@
+{
+  "project": "myserver",
+  "origin": "https://github.com/example/myserver.git",
+  "toolchain": "go",
+  "agents": [
+    { "id": "claude", "root": "../../../myserver-claude", "launcher": "start-claude.sh", "delivery": "nudge", "harnessProcess": "claude" },
+    { "id": "codex", "root": "../../../myserver-codex", "launcher": "start-codex.sh", "delivery": "pull", "harnessProcess": "codex" }
+  ],
+  "branch": "issue-{issue}/{agent}",
+  "baseBranch": "main",
+  "maxRevisionRounds": 3,
+  "prPolicy": "owner-only",
+  "digestPaths": [".plans/issue-{issue}/plan.md"],
+  "pollIntervalMs": 1000,
+
+  "verify": {
+    "precommit": [{ "name": "vet", "argv": ["go", "vet", "./..."] }],
+    "prepush": [{ "name": "test", "argv": ["go", "test", "./..."] }]
+  },
+
+  "workflowCriticalPrefixes": ["cmd/", "internal/", "pkg/"],
+  "workflowCriticalFiles": ["go.mod", "go.sum"],
+
+  "checks": [
+    { "name": "build", "argv": ["go", "build", "./..."] },
+    { "name": "test", "argv": ["go", "test", "./..."] }
+  ],
+
+  "coordination": {
+    "installRoot": "/Volumes/4TB-SOURCE/REPOS/coord/coordination",
+    "cliEntry": "/Volumes/4TB-SOURCE/REPOS/coord/coordination/dist/main.js",
+    "version": "0.1.0",
+    "commit": "0000000000000000000000000000000000000000",
+    "canonicalDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "installedAt": "2026-08-11T17:40:00Z",
+    "productRoot": "/Volumes/4TB-SOURCE/REPOS/coord/myserver",
+    "cloneRoot": "/Volumes/4TB-SOURCE/REPOS/coord",
+    "vendored": false,
+    "bootstrapped": false,
+    "ownsInstallRoot": false,
+    "wroteProductIgnore": false,
+    "wroteAgentsMd": false
+  }
+}

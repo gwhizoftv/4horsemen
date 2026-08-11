@@ -76,6 +76,61 @@ export const checkCommandSchema = z
   })
   .strict();
 
+/**
+ * Local verification the agent-clone hooks run, declared as argument vectors so
+ * the hook bodies never branch on an ecosystem marker or grep the product for a
+ * script name. Absent means "undeclared" and fails an agent clone closed; the
+ * two empty arrays are the explicit, recorded way to opt out.
+ */
+export const verifyConfigSchema = z
+  .object({
+    precommit: z.array(checkCommandSchema),
+    prepush: z.array(checkCommandSchema)
+  })
+  .strict();
+
+export const verifyPhaseSchema = z.enum(["precommit", "prepush"]);
+
+/**
+ * Path fragments the pre-push scope filter compares against. They cross a
+ * line-oriented boundary into the hooks, so whitespace is rejected here rather
+ * than producing an ambiguous token the hook would silently mis-split.
+ */
+const pathTokenSchema = z
+  .string()
+  .min(1)
+  .refine((value) => !/\s/.test(value), "workflow-critical entries must not contain whitespace");
+
+/** What a workspace was installed against, so `coord doctor` can report drift. */
+export const installStampSchema = z
+  .object({
+    installRoot: z.string().min(1),
+    cliEntry: z.string().min(1),
+    version: z.string().min(1),
+    commit: gitShaSchema,
+    /**
+     * Digest of the hook bodies, shim template, and launcher template the
+     * clones actually execute. The commit alone cannot see an uncommitted edit
+     * to a canonical body, which is how a hook rewritten to `exit 0` passed
+     * inspection while every clone ran it.
+     */
+    canonicalDigest: digestSchema,
+    installedAt: timestampSchema,
+    productRoot: z.string().min(1),
+    cloneRoot: z.string().min(1),
+    vendored: z.boolean(),
+    /** Bootstrap commands were run in the install checkout. */
+    bootstrapped: z.boolean(),
+    /**
+     * Coordination created the install checkout and may therefore delete it.
+     * Running `pnpm install` inside somebody's existing clone is not ownership.
+     */
+    ownsInstallRoot: z.boolean(),
+    wroteProductIgnore: z.boolean(),
+    wroteAgentsMd: z.boolean()
+  })
+  .strict();
+
 export const agentConfigSchema = z
   .object({
     id: agentIdSchema,
@@ -105,7 +160,12 @@ export const coordinatorConfigSchema = z
       .min(1)
       .default([".plans/issue-{issue}/plan.md"]),
     checks: z.array(checkCommandSchema).min(1),
-    pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000)
+    pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000),
+    toolchain: z.string().min(1).optional(),
+    verify: verifyConfigSchema.optional(),
+    workflowCriticalPrefixes: z.array(pathTokenSchema).default([]),
+    workflowCriticalFiles: z.array(pathTokenSchema).default([]),
+    coordination: installStampSchema.optional()
   })
   .strict()
   .superRefine((config, context) => {
@@ -117,6 +177,38 @@ export const coordinatorConfigSchema = z
       context.addIssue({ code: "custom", message: "digest paths must be unique", path: ["digestPaths"] });
     }
   });
+
+/**
+ * What an operator may hand to `coord install --declare`: the parts of a
+ * workspace config that are the product's decision rather than the installer's.
+ * Identity, agent roots, and the install stamp are deliberately absent — those
+ * are derived from the arguments of the install itself, so a declaration file
+ * cannot quietly redirect a clone.
+ */
+export const workspaceDeclarationSchema = z
+  .object({
+    toolchain: z.string().min(1).optional(),
+    verify: verifyConfigSchema.optional(),
+    workflowCriticalPrefixes: z.array(pathTokenSchema).optional(),
+    workflowCriticalFiles: z.array(pathTokenSchema).optional(),
+    checks: z.array(checkCommandSchema).min(1).optional(),
+    branch: z
+      .string()
+      .refine((value) => value.includes("{issue}") && value.includes("{agent}"))
+      .optional(),
+    prPolicy: prPolicySchema.optional(),
+    digestPaths: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "digest path must be confined")
+      )
+      .min(1)
+      .optional(),
+    pollIntervalMs: z.number().int().min(100).max(60_000).optional()
+  })
+  .strict();
 
 export const startStateSchema = z
   .object({
@@ -297,6 +389,11 @@ export const journalEventSchema = z
 
 export type CoordinatorConfig = z.infer<typeof coordinatorConfigSchema>;
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
+export type CheckCommand = z.infer<typeof checkCommandSchema>;
+export type VerifyConfig = z.infer<typeof verifyConfigSchema>;
+export type VerifyPhase = z.infer<typeof verifyPhaseSchema>;
+export type InstallStamp = z.infer<typeof installStampSchema>;
+export type WorkspaceDeclaration = z.infer<typeof workspaceDeclarationSchema>;
 export type StartState = z.infer<typeof startStateSchema>;
 export type AgentCursor = z.infer<typeof agentCursorSchema>;
 export type AcceptedSubmission = z.infer<typeof acceptedSubmissionSchema>;

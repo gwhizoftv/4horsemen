@@ -1,28 +1,54 @@
 #!/usr/bin/env bash
-# Tracked, agent-neutral hook. Identity is resolved at runtime — never edit a
-# clone-specific value into this file.
-lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/identity.sh"
-[[ -r "$lib" ]] || { echo "HOOK BLOCKED: cannot read $lib; core.hooksPath must point at the tracked githooks directory." >&2; exit 1; }
+# coord-managed-hook
+# Canonical, agent-neutral hook body. See githooks/pre-commit for the placement
+# rule; identity is resolved at runtime, never edited into this file.
+lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+[[ -r "$lib_dir/identity.sh" ]] || { echo "HOOK BLOCKED: cannot read $lib_dir/identity.sh; the coordination install is incomplete." >&2; exit 1; }
 # shellcheck source=lib/identity.sh
-. "$lib"
+. "$lib_dir/identity.sh"
+
+# Not an agent clone: pass through to whatever this repository already does.
+[[ "$CONSENSUS_AGENT_CLONE" == true ]] || exit 0
+
+# shellcheck source=lib/policy.sh
+. "$lib_dir/policy.sh"
 
 ZERO="0000000000000000000000000000000000000000"
 status=0
 
-# The automation E2E suite exercises the coordination workflow, not product
-# behaviour, so it is scoped to the paths that can change what the workflow or
-# the hook itself does. Everything here fails closed: an undecidable
-# changed-path set runs the suite.
-# Root entries are the build inputs that decide what the gate itself runs:
-# the scripts and workspace layout behind `pnpm test:e2e`, and the Turbo task
-# graph that runs the automation suite. Root tsconfigs are deliberately absent —
-# automation/tsconfig.json declares no `extends`, so nothing outside
-# `automation/` can change how the suite compiles.
-workflow_critical_prefixes=("scripts/" "githooks/" "src/" "test/")
-workflow_critical_files=("package.json" "pnpm-lock.yaml" "pnpm-workspace.yaml" "turbo.json")
+# Buffer the ref list before anything else runs.
+#
+# git delivers the refs being pushed on stdin, and stdin can be consumed once.
+# Every branch-ownership, force-push, and deletion check below reads from it, so
+# any child process that drained stdin first would leave the loop with nothing
+# to iterate, `status` at 0, and every gate skipped while the push succeeded.
+# Buffering here makes that class of regression impossible rather than merely
+# absent today.
+push_refs="$(cat)"
+
+# Which paths make a push able to change what the workflow does is a project
+# fact, not a coordination one, so it is declared in the workspace config. An
+# empty declaration means no narrowing was declared: every push is in scope.
+workflow_critical_prefixes=()
+workflow_critical_files=()
+scope_declared=false
+
+if scope="$(coord_scope)"; then
+  while IFS=$'\t' read -r kind value; do
+    [[ -n "$value" ]] || continue
+    case "$kind" in
+      prefix) workflow_critical_prefixes+=("$value"); scope_declared=true ;;
+      file) workflow_critical_files+=("$value"); scope_declared=true ;;
+    esac
+  done <<< "$scope"
+else
+  exit 1
+fi
 
 is_workflow_critical() {
   local path="$1" prefix file
+
+  $scope_declared || return 0
 
   for prefix in "${workflow_critical_prefixes[@]}"; do
     [[ "$path" == "$prefix"* ]] && return 0
@@ -41,6 +67,9 @@ push_remote_sha=""
 push_ref=""
 
 while read -r local_ref local_sha remote_ref remote_sha; do
+  # A here-string on an empty buffer still yields one empty line; skip it rather
+  # than letting a blank ref fall through to the naming-scheme rejection.
+  [[ -n "$remote_ref" ]] || continue
   branch="${remote_ref#refs/heads/}"
 
   # 1) Never push the shared branch or consensus branches.
@@ -90,11 +119,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   push_local_sha="$local_sha"
   push_remote_sha="$remote_sha"
   push_ref="$remote_ref"
-done
+done <<< "$push_refs"
 
-# 4) Decide whether this push can affect the automation workflow. Only the
-# E2E gate is scoped here; the pre-commit checks stay unconditional.
-run_e2e=false
+# 4) Decide whether this push can affect the declared workflow-critical paths.
+# Only the pre-push verification is scoped here; pre-commit stays unconditional.
+run_verify=false
 scope_reason=""
 
 if [[ $status -ne 0 ]]; then
@@ -102,7 +131,7 @@ if [[ $status -ne 0 ]]; then
 elif [[ $refs -eq 0 ]]; then
   scope_reason="no refs to push"
 elif [[ $refs -gt 1 ]]; then
-  run_e2e=true
+  run_verify=true
   scope_reason="$refs refs pushed at once; the changed-path set is ambiguous"
 else
   base=""
@@ -111,15 +140,15 @@ else
   else
     # A new remote branch has no previous state to diff against. Derive the
     # base deterministically from the shared branch instead of exempting the
-    # push, which would let the first push of any branch skip the suite.
+    # push, which would let the first push of any branch skip verification.
     base="$(git merge-base "$push_local_sha" "refs/remotes/$REMOTE_NAME/$SHARED_BRANCH" 2>/dev/null || true)"
   fi
 
   if [[ -z "$base" ]]; then
-    run_e2e=true
+    run_verify=true
     scope_reason="no deterministic comparison base for ${push_ref:-the pushed ref}"
   elif ! changed="$(git diff --name-only "$base" "$push_local_sha" 2>/dev/null)"; then
-    run_e2e=true
+    run_verify=true
     scope_reason="could not list the changed paths of ${push_ref:-the pushed ref}"
   else
     changed_count=0
@@ -127,38 +156,26 @@ else
       [[ -n "$path" ]] || continue
       changed_count=$((changed_count + 1))
       if is_workflow_critical "$path"; then
-        run_e2e=true
+        run_verify=true
         scope_reason="workflow-critical path $path"
         break
       fi
     done <<< "$changed"
 
-    if [[ "$run_e2e" == false ]]; then
+    if [[ "$run_verify" == false ]]; then
       scope_reason="no workflow-critical paths among $changed_count changed file(s)"
     fi
   fi
 fi
 
-if [[ "$run_e2e" == true ]]; then
-  echo "$AGENT_LABEL hook: automation E2E required — $scope_reason."
+if [[ "$run_verify" == true ]]; then
+  echo "$AGENT_LABEL hook: declared pre-push checks required — $scope_reason."
 else
-  echo "$AGENT_LABEL hook: automation E2E skipped — $scope_reason."
+  echo "$AGENT_LABEL hook: declared pre-push checks skipped — $scope_reason."
 fi
 
-if [[ $status -eq 0 && "$run_e2e" == true && -f package.json && -f pnpm-lock.yaml ]] && grep -q '"test:e2e"[[:space:]]*:' package.json; then
-  if ! command -v pnpm >/dev/null; then
-    if command -v corepack >/dev/null; then
-      corepack enable pnpm >/dev/null 2>&1 || true
-    fi
-  fi
-
-  if ! command -v pnpm >/dev/null; then
-    echo "HOOK BLOCKED: pnpm-lock.yaml exists, but pnpm is not available." >&2
-    status=1
-  else
-    echo "$AGENT_LABEL hook: running pnpm test:e2e..."
-    pnpm test:e2e || { echo "HOOK BLOCKED: pnpm test:e2e failed — fix before pushing." >&2; status=1; }
-  fi
+if [[ $status -eq 0 && "$run_verify" == true ]]; then
+  coord_verify prepush || status=1
 fi
 
 [[ $status -eq 0 ]] && echo "$AGENT_LABEL: pre-push checks passed."
