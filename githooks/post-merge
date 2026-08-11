@@ -1,23 +1,42 @@
 #!/usr/bin/env bash
-# Tracked, agent-neutral hook. Identity is resolved at runtime — never edit a
-# clone-specific value into this file.
-lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/identity.sh"
-[[ -r "$lib" ]] || { echo "HOOK BLOCKED: cannot read $lib; core.hooksPath must point at the tracked githooks directory." >&2; exit 1; }
+# Canonical, agent-neutral hook body. See githooks/pre-commit for the placement
+# rule; identity is resolved at runtime, never edited into this file.
+lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+[[ -r "$lib_dir/identity.sh" ]] || { echo "HOOK BLOCKED: cannot read $lib_dir/identity.sh; the coordination install is incomplete." >&2; exit 1; }
 # shellcheck source=lib/identity.sh
-. "$lib"
+. "$lib_dir/identity.sh"
+
+# Not an agent clone: pass through to whatever this repository already does.
+[[ "$CONSENSUS_AGENT_CLONE" == true ]] || exit 0
 
 command -v ctags >/dev/null && ctags -R --exclude=node_modules --exclude=.git . 2>/dev/null || true
 [[ -x ./directory_tree.sh ]] && ./directory_tree.sh || true
 
-# Regenerate the launcher when a merge removed it — most visibly the pull that
-# untracked it, which deletes a file the clone still needs. The template lives in
-# scripts/lib/launcher.sh so that this hook and setup cannot drift apart. Never
-# overwrite an existing launcher: a clone may have customised it, and this hook
-# runs on every merge.
+# Regenerate the launcher when a merge removed it. The template lives in
+# scripts/lib/launcher.sh so that this hook and `coord install` cannot drift
+# apart. Never overwrite an existing launcher: a clone may have customised it,
+# and this hook runs on every merge.
+#
+# Exactly one copy of the template is authoritative, decided by how the hooks
+# were delivered. With an install root, that install owns it. Without one this
+# clone was vendored, so the copy beside these bodies owns it. There is no
+# configuration in which both are live, and no fallback between them.
 launcher="start-${AGENT_NAME}.sh"
-launcher_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../scripts/lib/launcher.sh"
+install_root="$(git config --local --get coord.installRoot 2>/dev/null || true)"
 
-if [[ ! -e "$launcher" && -r "$launcher_lib" ]]; then
+if [[ -n "$install_root" ]]; then
+  launcher_lib="$install_root/scripts/lib/launcher.sh"
+else
+  launcher_lib="$lib_dir/launcher.sh"
+fi
+
+if [[ ! -e "$launcher" ]]; then
+  if [[ ! -r "$launcher_lib" ]]; then
+    echo "Cannot regenerate $launcher: the launcher template $launcher_lib is unreadable." >&2
+    echo "  Fix: coord doctor --coord-root <runtime> --product <product>" >&2
+    exit 0
+  fi
+
   # shellcheck source=../scripts/lib/launcher.sh
   . "$launcher_lib"
 
@@ -25,7 +44,7 @@ if [[ ! -e "$launcher" && -r "$launcher_lib" ]]; then
     echo "Regenerated $launcher (generated per clone, never tracked)."
   else
     echo "No launch command is defined for agent '$AGENT_NAME'; $launcher was not regenerated." >&2
-    echo "  Run scripts/setup_${AGENT_NAME}.sh from the master repo, or add one to launcher_command()." >&2
+    echo "  Add one to launcher_command() in $launcher_lib." >&2
   fi
 fi
 

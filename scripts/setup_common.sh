@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
-# setup_common.sh — shared library for multi-agent CLI setup scripts.
+# setup_common.sh — DEPRECATED shared library for multi-agent CLI setup scripts.
+#
+# Superseded by `coord install`, which owns clone creation, launchers, ignore
+# rules, clone identity, and hook wiring. Those responsibilities moved into
+# TypeScript so they share the driver's own containment logic and are covered by
+# `pnpm check`; the functions below that used to perform them now refuse and
+# print the `coord install` command instead.
+#
+# What remains here and in the setup_<agent>.sh scripts is vendor-specific
+# harness configuration — memory shims, trust entries, MCP settings — which runs
+# AFTER `coord install` has wired the clone.
 #
 # DO NOT run this file directly. Source it from a vendor script that first sets:
 #   AGENT_NAME    - lowercase id used in paths/branches (claude | codex | antigravity | gemini | cursor)
@@ -126,117 +136,26 @@ common_detect_repo() {
 }
 
 # ------------------------------------------------------------ AGENTS.md ----
-# One shared, committed workflow file. All agents read it. Claude gets a
-# CLAUDE.md shim that imports AGENTS.md.
+# Writing AGENTS.md into the product is now opt-in and belongs to
+# `coord install --write-product`. The default install adds no tracked file to
+# the product, so that a developer who clones it normally inherits no new
+# obligations from coordination.
 common_ensure_agents_md() {
-  local f="$MASTER_ROOT/AGENTS.md"
-
-  if [[ -f "$f" ]]; then
-    echo "AGENTS.md already exists in master repo — leaving it alone."
-    return 0
-  fi
-
-  echo "Writing shared AGENTS.md to master repo..."
-  if $DRY_RUN; then
-    echo "DRY-RUN: would create $f"
-    return 0
-  fi
-
-  cat > "$f" <<AGENTS_EOF
-# Agent Workflow — ${PROJECT_NAME}
-
-Three AI agents and one human maintainer work on this repo in parallel. Each
-agent works in its own clone. This file is the single source of truth for the
-workflow. Your agent identity and clone path are in your agent-specific memory
-file — never act as another agent.
-
-## Branch scheme
-- \`${SHARED_BRANCH}\` — shared truth. NEVER commit or push to it. Only the human merges here.
-- \`issue-<n>/<agent>\` — your working branch for issue n, e.g. \`issue-42/claude\`.
-  You may only commit/push to branches carrying YOUR agent name.
-- \`issue-<n>/final\` — the consensus branch for issue n. Updated ONLY by merging
-  the reviewed pull request. Never push to it directly.
-
-## Workflow per issue
-1. Sync: \`git checkout ${SHARED_BRANCH} && git pull ${REMOTE_NAME} ${SHARED_BRANCH}\`
-2. The human assigns the issue and announces the issue number <n>.
-3. Create YOUR branch: \`git checkout -b issue-<n>/<your-agent-name>\`
-4. Implement the issue. Add tests. Run lint/typecheck/test/check. Commit and push.
-5. The human picks the best implementation ("best-so-far").
-6. REVIEW ROUND — if you are NOT best-so-far: fetch and study the best-so-far
-   branch:
-   \`git fetch ${REMOTE_NAME} && git diff ${SHARED_BRANCH}...${REMOTE_NAME}/issue-<n>/<winner>\`
-   Write concrete, actionable review comments. Do NOT push code to the winner's branch.
-7. REVIEW ROUND — if you ARE best-so-far: read all review comments, incorporate
-   what is correct, push revisions to your own branch, and reply to each comment
-   stating what you changed or why you disagree.
-8. Repeat 6–7 until both reviewers approve or the human stops the loop.
-9. The human merges the winning branch into \`issue-<n>/final\` and eventually
-   into \`${SHARED_BRANCH}\`. Then everyone returns to step 1.
-
-## Hard rules
-- Never commit on \`${SHARED_BRANCH}\` or any \`issue-*/final\` branch.
-- Never commit/push to another agent's branch.
-- Never use \`--no-verify\`, \`--force\`, \`--force-with-lease\`, or change \`core.hooksPath\`.
-- Commit messages start with your agent label, e.g. \`Claude: fix login redirect\`.
-- If a hook blocks you, the hook is right: fix the state it complains about.
-
-## Conventions
-- Prefer editing existing files over creating new ones.
-- Add or update tests for behavior you change.
-- Run the project check command before committing.
-- For pnpm repos, use pnpm. Do not run npm install in a pnpm-lock.yaml repo.
-AGENTS_EOF
-
-  echo ""
-  echo "AGENTS.md created at:"
-  echo "  $f"
-  echo ""
-  echo "Review it, then commit and push it manually from the master repo:"
-  echo "  git add AGENTS.md"
-  echo "  git commit -m 'chore: add shared AGENTS.md workflow file'"
-  echo "  git push $REMOTE_NAME $SHARED_BRANCH"
-  echo ""
-  echo "Continuing setup using the local AGENTS.md file."
+  echo "NOTE: AGENTS.md is no longer written by setup. Use 'coord install --write-product' if you want it committed."
 }
 
 # ---------------------------------------------------------------- clone ----
+# Cloning and syncing moved to `coord install`, which never resets an existing
+# clone: re-running the installer to repair wiring must not discard an agent's
+# in-flight work.
 common_clone_agent() {
-  if [[ -d "$CLONE_DIR" ]]; then
-    echo "Clone already exists: $CLONE_DIR"
-  else
-    echo "Cloning agent repo..."
-    run git clone "$MASTER_ROOT" "$CLONE_DIR"
-    run git -C "$CLONE_DIR" remote set-url "$REMOTE_NAME" "$REMOTE_URL"
-  fi
+  [[ -d "$CLONE_DIR" ]] \
+    || die "Clone $CLONE_DIR does not exist. Create it first: coord install --product '$MASTER_ROOT' --coord-root <runtime> --agents $AGENT_NAME"
+  echo "Clone present: $CLONE_DIR"
 }
 
-# ----------------------------------------------------------------- sync ----
 common_sync_clone() {
-  $DRY_RUN && {
-    echo "DRY-RUN: would sync $CLONE_DIR to $REMOTE_NAME/$SHARED_BRANCH"
-    return 0
-  }
-
-  # Refuse to destroy in-flight work unless --force.
-  if ! git -C "$CLONE_DIR" diff --quiet || ! git -C "$CLONE_DIR" diff --cached --quiet; then
-    if ! $FORCE; then
-      die "Clone $CLONE_DIR has uncommitted changes. Commit/stash them, or re-run with --force to DISCARD them."
-    fi
-
-    echo "WARNING: --force given; discarding uncommitted changes in $CLONE_DIR"
-    git -C "$CLONE_DIR" reset --hard HEAD
-    git -C "$CLONE_DIR" clean -fd
-  fi
-
-  git -C "$CLONE_DIR" checkout "$SHARED_BRANCH"
-
-  if git -C "$CLONE_DIR" fetch "$REMOTE_NAME" "$SHARED_BRANCH" 2>/dev/null; then
-    git -C "$CLONE_DIR" reset --hard "$REMOTE_NAME/$SHARED_BRANCH"
-    echo "Synced $SHARED_BRANCH to $REMOTE_NAME/$SHARED_BRANCH."
-  else
-    echo "NOTE: could not fetch $REMOTE_NAME/$SHARED_BRANCH. Using local state."
-  fi
+  echo "NOTE: setup no longer syncs the clone. Sync it yourself when you mean to: (cd '$CLONE_DIR' && git checkout $SHARED_BRANCH && git pull $REMOTE_NAME $SHARED_BRANCH)"
 }
 
 # ---------------------------------------------------- project detection ----
@@ -289,12 +208,10 @@ common_detect_project() {
 # local ignore lists cannot conflict.
 common_write_gitignore() {
   local ex="$CLONE_DIR/.git/info/exclude"
-  # githooks/ is deliberately absent: hooks are tracked files now. The old
-  # ignored .githooks/ entry stays out of this list so a clone migrating to the
-  # tracked directory never needs a per-clone exclude edit.
-  # start-<agent>.sh is deliberately absent: the launchers are covered by the
-  # tracked .gitignore, which reaches every clone with the merge instead of
-  # depending on whether setup has run in that clone yet.
+  # Only this vendor's extra entries belong here now. The shared set — launchers,
+  # generated indexes, agent tool directories — is written by `coord install` as
+  # a delimited managed block in the same file, so uninstall can remove exactly
+  # what it added without touching anything a vendor script or an operator wrote.
   local lines=("tags" "directory_tree.md")
   lines+=("${AGENT_IGNORES[@]}")
 
@@ -331,79 +248,43 @@ common_write_gitignore() {
 }
 
 # ---------------------------------------------------------------- hooks ----
-# Hook bodies are TRACKED, agent-neutral files in githooks/ (issue #171). Setup
-# no longer generates them: it activates the tracked directory and records this
-# clone's identity in local Git config, which is the one contract the hooks
-# resolve at runtime. A hook change now reaches every clone with `git pull`, and
-# the consensus-critical source digest hashes the same committed bytes in every
-# clone instead of per-clone generated output.
-#
-# The tracked directory is `githooks/`, not `.githooks/`: the old path is
-# excluded per clone through .git/info/exclude, so reusing it would require
-# hand-editing that untracked file in every clone and would let a clone migrate
-# to no hooks at all without saying so.
+# Hook wiring moved to `coord install`, which writes fail-closed shims into the
+# clone's .git/hooks/ — untracked by construction, so a human clone of the same
+# product remote never receives them. This function now only verifies that the
+# installer has run, and refuses to proceed with vendor configuration if it has
+# not: vendor settings on an unwired clone look configured and enforce nothing.
 common_install_hooks() {
-  local hd="$CLONE_DIR/githooks"
-  local hooks=(commit-msg post-commit post-merge pre-commit pre-push)
-  local hook
+  local manifest="$CLONE_DIR/.git/hooks/coord-hooks.json"
 
   $DRY_RUN && {
-    echo "DRY-RUN: would activate $hd and record agent identity in $CLONE_DIR/.git/config"
+    echo "DRY-RUN: would require coordination hooks at $manifest"
     return 0
   }
 
-  [[ -d "$hd" ]] \
-    || die "Clone has no tracked githooks/ directory. Merge the hook migration into $SHARED_BRANCH first, then re-run setup."
+  [[ -f "$manifest" ]] \
+    || die "Clone $CLONE_DIR has no coordination hooks. Run: coord install --product '$MASTER_ROOT' --coord-root <runtime> --agents $AGENT_NAME"
 
-  for hook in "${hooks[@]}"; do
-    [[ -f "$hd/$hook" ]] || die "Tracked hook githooks/$hook is missing from the clone; pull $SHARED_BRANCH and re-run setup."
-    # Backstop for exotic filesystems and core.fileMode=false clones, where the
-    # committed 755 mode may not survive checkout. Committed modes cover the
-    # normal case; CLI startup validation catches whatever neither does.
-    chmod +x "$hd/$hook"
-  done
+  local recorded
+  recorded="$(git -C "$CLONE_DIR" config --local --get consensus.agentId || true)"
+  [[ "$recorded" == "$AGENT_NAME" ]] \
+    || die "Clone $CLONE_DIR records consensus.agentId='$recorded', not '$AGENT_NAME'. Re-run coord install with the intended layout."
 
-  [[ -r "$hd/lib/identity.sh" ]] || die "Tracked githooks/lib/identity.sh is missing; pull $SHARED_BRANCH and re-run setup."
-
-  git -C "$CLONE_DIR" config core.hooksPath githooks
-  git -C "$CLONE_DIR" config consensus.agentId "$AGENT_NAME"
-  git -C "$CLONE_DIR" config consensus.agentLabel "$AGENT_LABEL"
-  git -C "$CLONE_DIR" config consensus.sharedBranch "$SHARED_BRANCH"
-  git -C "$CLONE_DIR" config consensus.remoteName "$REMOTE_NAME"
-
-  echo "Activated tracked hooks: ${hooks[*]}"
-  echo "Recorded identity: consensus.agentId=$AGENT_NAME consensus.agentLabel=$AGENT_LABEL"
-
-  # Finish the migration rather than leaving the operator a note. These bodies
-  # were generated by an earlier run of this same function, they are inert now
-  # that the tracked directory is active, and a stale copy left on disk is the
-  # thing most likely to be mistaken later for the hooks Git actually runs.
-  # Deleted only after the tracked hooks are verified and activated above, so an
-  # early failure can never leave a clone with neither.
-  if [[ -d "$CLONE_DIR/.githooks" ]]; then
-    rm -rf "$CLONE_DIR/.githooks"
-    echo "Removed the pre-migration generated hooks at $CLONE_DIR/.githooks."
-  fi
-
-  echo ""
-  echo "Verify the installation before publishing anything:"
-  echo "  (cd '$CLONE_DIR' && git config --get consensus.agentId)"
+  echo "Coordination hooks present and identity recorded: consensus.agentId=$recorded"
 }
 
 # --------------------------------------------------- start-<agent>.sh --
+# The launcher is written by `coord install` (and regenerated by
+# githooks/post-merge when a merge removes it), both through the single template
+# in scripts/lib/launcher.sh.
 common_write_start_sh() {
+  local launcher="$CLONE_DIR/start-${AGENT_NAME}.sh"
+
   $DRY_RUN && {
-    echo "DRY-RUN: would write $CLONE_DIR/start-${AGENT_NAME}.sh (launch: $(launcher_command "$AGENT_NAME" | tail -1))"
+    echo "DRY-RUN: would require $launcher"
     return 0
   }
 
-  # The template and this agent's launch command both live in scripts/lib/launcher.sh,
-  # because githooks/post-merge regenerates the same file when a pull removes it.
-  if ! write_launcher \
-    "$CLONE_DIR/start-${AGENT_NAME}.sh" "$AGENT_NAME" "$AGENT_LABEL" "$SHARED_BRANCH"; then
-    echo "ERROR: no launch command is defined for agent '$AGENT_NAME'." >&2
-    echo "       Add one to launcher_command() in scripts/lib/launcher.sh." >&2
-    return 1
-  fi
-  echo "Wrote launcher: $CLONE_DIR/start-${AGENT_NAME}.sh"
+  [[ -x "$launcher" ]] \
+    || die "Launcher $launcher is missing. Run: coord install --product '$MASTER_ROOT' --coord-root <runtime> --agents $AGENT_NAME"
+  echo "Launcher present: $launcher"
 }

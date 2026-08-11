@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Tracked, agent-neutral hook. Identity is resolved at runtime — never edit a
-# clone-specific value into this file.
-lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/identity.sh"
-[[ -r "$lib" ]] || { echo "HOOK BLOCKED: cannot read $lib; core.hooksPath must point at the tracked githooks directory." >&2; exit 1; }
+# Canonical, agent-neutral hook body. See githooks/pre-commit for the placement
+# rule; identity is resolved at runtime, never edited into this file.
+lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+[[ -r "$lib_dir/identity.sh" ]] || { echo "HOOK BLOCKED: cannot read $lib_dir/identity.sh; the coordination install is incomplete." >&2; exit 1; }
 # shellcheck source=lib/identity.sh
-. "$lib"
+. "$lib_dir/identity.sh"
+
+# Not an agent clone: pass through to whatever this repository already does.
+[[ "$CONSENSUS_AGENT_CLONE" == true ]] || exit 0
 
 # Merge commits are exempt.
 GIT_DIR=$(git rev-parse --git-dir)

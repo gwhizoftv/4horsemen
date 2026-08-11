@@ -492,7 +492,12 @@ describe("effectful run loop", () => {
       cursors
     );
     expect(observation.status).toBe("rejected");
-    expect(observation.outstanding.join(" ")).toContain("final check check failed");
+    expect(observation.outstanding.join(" ")).toContain("finalization check (tier: checks) check failed");
+    // Which tier failed must be legible in the journal: the agent's own clone
+    // runs the declared `verify` before a commit exists, and only the hermetic
+    // `checks` at the approved commit reach here.
+    const finalCheck = readJournal(paths).find((event) => event.type === "final-check");
+    expect(finalCheck?.details).toMatchObject({ tier: "checks", name: "check", exitCode: 1 });
     expect(pushes).toBe(0);
     expect(opens).toBe(0);
     expect(readCursorsState(paths).publication.status).toBe("not-required");

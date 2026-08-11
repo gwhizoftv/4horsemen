@@ -602,7 +602,12 @@ export class CoordinatorRunLoop {
             type: "final-check",
             agent: order.agent,
             actionId: order.actionId,
-            details: { name: check.name, argv, exitCode: result.exitCode }
+            // The tier is recorded because two different suites can fail the
+            // same project: the agent's own clone runs the declared `verify`
+            // before a commit exists, and this runs the declared `checks`
+            // hermetically at the approved commit. Only the second one reaches
+            // the journal, and saying so is what makes the distinction legible.
+            details: { tier: "checks", name: check.name, argv, exitCode: result.exitCode }
           },
           this.now()
         );
@@ -610,7 +615,9 @@ export class CoordinatorRunLoop {
           return {
             ...observation,
             status: "rejected",
-            outstanding: [`final check ${check.name} failed with exit ${result.exitCode}: ${result.stderr.trim()}`]
+            outstanding: [
+              `finalization check (tier: checks) ${check.name} failed with exit ${result.exitCode}: ${result.stderr.trim()}`
+            ]
           };
         }
       }

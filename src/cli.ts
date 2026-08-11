@@ -2,7 +2,10 @@ import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clearCompletion, readAction } from "./action.js";
+import { doctor, renderDoctorReport } from "./doctor.js";
 import { sha256 } from "./hash.js";
+import { renderHookScope, resolveWorkspaceConfig, runVerifyPhase } from "./hookPolicy.js";
+import { install, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import {
   agentRuntimePaths,
@@ -26,6 +29,7 @@ import {
   readStartState,
   replaceCursor,
   setPaused,
+  verifyPhaseSchema,
   type CoordinatorConfig,
   type CursorsState
 } from "./state.js";
@@ -68,7 +72,7 @@ type ParsedArgs = { positionals: string[]; flags: Map<string, string> };
 
 const coordinatorSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-const parseArgs = (args: readonly string[]): ParsedArgs => {
+const parseArgs = (args: readonly string[], booleans: readonly string[] = []): ParsedArgs => {
   const positionals: string[] = [];
   const flags = new Map<string, string>();
   for (let index = 0; index < args.length; index += 1) {
@@ -79,6 +83,10 @@ const parseArgs = (args: readonly string[]): ParsedArgs => {
     }
     const name = argument.slice(2);
     if (name === "" || flags.has(name)) throw new Error(`Invalid or duplicate option ${argument}.`);
+    if (booleans.includes(name)) {
+      flags.set(name, "true");
+      continue;
+    }
     const value = args[index + 1];
     if (value === undefined || value.startsWith("--")) throw new Error(`Option ${argument} requires a value.`);
     flags.set(name, value);
@@ -86,6 +94,18 @@ const parseArgs = (args: readonly string[]): ParsedArgs => {
   }
   return { positionals, flags };
 };
+
+/**
+ * Switches that take no value. Declared per command so the existing
+ * value-taking options keep rejecting a missing argument rather than silently
+ * absorbing the next flag.
+ */
+const booleanFlags: Record<string, readonly string[]> = {
+  install: ["write-product", "vendor", "bootstrap-coordination", "dry-run"],
+  uninstall: ["delete-clones", "wipe-runtime", "delete-coordination", "force", "dry-run"]
+};
+
+const flagIsSet = (parsed: ParsedArgs, name: string): boolean => parsed.flags.get(name) === "true";
 
 const requireFlag = (parsed: ParsedArgs, name: string): string => {
   const value = parsed.flags.get(name);
@@ -115,12 +135,25 @@ const allowedFlags = (parsed: ParsedArgs, allowed: readonly string[]): void => {
 const help = `coord — owner-side workflow driver
 
 Usage:
+  coord install --product <path> --coord-root <external-path> --agents <a,b,c> [--profile <p>]
+                [--clone-root <dir>] [--declare <file>] [--write-product] [--vendor]
+                [--bootstrap-coordination] [--dry-run]
+  coord uninstall --coord-root <path> --product <path> [--delete-clones] [--force]
+                  [--wipe-runtime] [--delete-coordination] [--dry-run]
+  coord doctor --coord-root <path> --product <path>
   coord start <issue> --profile <solo|reviewed|consensus> --config <path> --coord-root <external-path>
   coord run --issue <issue> --coord-root <path>
   coord next --issue <issue> --coord-root <path> --agent <agent>
   coord answer <question-id> <retry|revise|abandon> --issue <issue> --coord-root <path>
   coord drop <agent> --issue <issue> --coord-root <path>
   coord pause|resume|restart-action|abandon --issue <issue> --coord-root <path>
+
+Called by the agent-clone hooks, not by operators:
+  coord hook-verify --clone <path> --phase <precommit|prepush>
+  coord hook-scope --clone <path>
+
+install leaves the product's tracked tree untouched by default: all wiring lands in the
+agent clones and under --coord-root, so a human clone of the same remote is unaffected.
 
 COORD_ISSUE and COORD_AGENT may replace the corresponding options. The safety-critical
 --coord-root option must always be explicit.
@@ -283,7 +316,101 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   }
 
   try {
-    const parsed = parseArgs(rest);
+    const parsed = parseArgs(rest, booleanFlags[command] ?? []);
+
+    if (command === "install") {
+      allowedFlags(parsed, [
+        "product",
+        "coord-root",
+        "agents",
+        "profile",
+        "clone-root",
+        "declare",
+        "origin",
+        "base-branch",
+        ...(booleanFlags.install ?? [])
+      ]);
+      if (parsed.positionals.length !== 0) throw new Error("install takes no positional arguments.");
+      const agents = requireFlag(parsed, "agents")
+        .split(",")
+        .map((agent) => agent.trim())
+        .filter((agent) => agent !== "");
+      if (agents.length === 0) throw new Error("--agents requires at least one agent id.");
+      const profile = parsed.flags.get("profile") ?? "consensus";
+      if (!(profile === "solo" || profile === "reviewed" || profile === "consensus")) {
+        throw new Error("--profile must be solo, reviewed, or consensus.");
+      }
+      install({
+        installRoot: coordinatorSourceRoot,
+        productRoot: resolve(io.cwd, requireFlag(parsed, "product")),
+        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
+        agents,
+        profile,
+        ...(parsed.flags.has("clone-root") ? { cloneRoot: resolve(io.cwd, requireFlag(parsed, "clone-root")) } : {}),
+        ...(parsed.flags.has("declare") ? { declarePath: resolve(io.cwd, requireFlag(parsed, "declare")) } : {}),
+        ...(parsed.flags.has("origin") ? { origin: requireFlag(parsed, "origin") } : {}),
+        ...(parsed.flags.has("base-branch") ? { baseBranch: requireFlag(parsed, "base-branch") } : {}),
+        writeProduct: flagIsSet(parsed, "write-product"),
+        vendor: flagIsSet(parsed, "vendor"),
+        bootstrap: flagIsSet(parsed, "bootstrap-coordination"),
+        dryRun: flagIsSet(parsed, "dry-run"),
+        log: io.stdout
+      });
+      return 0;
+    }
+
+    if (command === "uninstall") {
+      allowedFlags(parsed, ["product", "project", "coord-root", ...(booleanFlags.uninstall ?? [])]);
+      if (parsed.positionals.length !== 0) throw new Error("uninstall takes no positional arguments.");
+      uninstall({
+        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
+        ...(parsed.flags.has("product") ? { productRoot: resolve(io.cwd, requireFlag(parsed, "product")) } : {}),
+        ...(parsed.flags.has("project") ? { project: requireFlag(parsed, "project") } : {}),
+        deleteClones: flagIsSet(parsed, "delete-clones"),
+        wipeRuntime: flagIsSet(parsed, "wipe-runtime"),
+        deleteCoordination: flagIsSet(parsed, "delete-coordination"),
+        force: flagIsSet(parsed, "force"),
+        dryRun: flagIsSet(parsed, "dry-run"),
+        log: io.stdout
+      });
+      return 0;
+    }
+
+    if (command === "doctor") {
+      allowedFlags(parsed, ["product", "project", "coord-root"]);
+      if (parsed.positionals.length !== 0) throw new Error("doctor takes no positional arguments.");
+      const report = doctor({
+        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
+        ...(parsed.flags.has("product") ? { productRoot: resolve(io.cwd, requireFlag(parsed, "product")) } : {}),
+        ...(parsed.flags.has("project") ? { project: requireFlag(parsed, "project") } : {})
+      });
+      (report.exitCode === 0 ? io.stdout : io.stderr)(renderDoctorReport(report));
+      return report.exitCode;
+    }
+
+    if (command === "hook-verify") {
+      allowedFlags(parsed, ["clone", "phase"]);
+      if (parsed.positionals.length !== 0) throw new Error("hook-verify takes no positional arguments.");
+      const clone = resolve(io.cwd, requireFlag(parsed, "clone"));
+      const phase = verifyPhaseSchema.parse(requireFlag(parsed, "phase"));
+      const { config } = resolveWorkspaceConfig(clone);
+      const result = runVerifyPhase({ clone, config, phase, log: io.stdout });
+      if (result.ok) return 0;
+      io.stderr(
+        `HOOK BLOCKED: declared ${phase} check '${result.failed.name}' failed with exit ${result.exitCode}.\n` +
+          `  argv: ${result.failed.argv.join(" ")}\n`
+      );
+      return 1;
+    }
+
+    if (command === "hook-scope") {
+      allowedFlags(parsed, ["clone"]);
+      if (parsed.positionals.length !== 0) throw new Error("hook-scope takes no positional arguments.");
+      const clone = resolve(io.cwd, requireFlag(parsed, "clone"));
+      io.stdout(renderHookScope(resolveWorkspaceConfig(clone).config));
+      return 0;
+    }
+
     if (command === "start") {
       allowedFlags(parsed, ["profile", "config", "coord-root"]);
       if (parsed.positionals.length !== 1) throw new Error("start requires exactly one issue number.");
