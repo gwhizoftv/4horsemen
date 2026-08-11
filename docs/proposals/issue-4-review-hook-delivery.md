@@ -13,14 +13,90 @@ dry-run requirement, the product-side removal table, the `consensus-ai` naming
 debt, and emitting the workspace config under `coord-root` rather than the
 product tree. I am not restating any of that.
 
-This review contributes three things #4 does not have:
+This review contributes:
 
-1. **Evidence** that the drift it predicts has already happened, which bears
-   directly on its open question 2.
-2. **A failure-mode analysis** of hook delivery that #4's options do not
-   consider, and which I think decides that question.
-3. **A third option** for the hook fork, plus answers to all five open
-   questions.
+1. **The two-mode rule** (§0) — owner-stated, agreed by Cursor, and worth
+   recording in #4 as a non-negotiable because it decides several open questions.
+2. **Evidence** that the drift #4 predicts has already happened (§1).
+3. **A failure-mode analysis** of hook delivery its options do not consider (§2),
+   including a verified defect where committed hooks would block every commit in
+   a human's clone (§2a).
+4. **A third option** for the hook fork (§3), plus answers to all five open
+   questions (§4).
+5. **Language support** (§4a) — the driver is language-agnostic, the hooks are
+   not, and they fail open on a Rust or Go repo.
+6. **Versioning** (§4b) — package identity and an install stamp.
+
+---
+
+## 0. The governing rule: one repo, two modes
+
+Added after owner feedback and agreed with Cursor. **This should be stated in #4
+as a non-negotiable, because it decides several of its open questions.**
+
+> Coordination constrains **agents and the owner control plane**. It does not
+> constrain the product's other developers. One developer must be able to work
+> `testapp` from plain VS Code — no coordination, no Node, no new obligations —
+> while another drives agents against the same repository.
+
+Consequences, which the rest of this review is now written against:
+
+| | Human clone of the product | Agent clone (`<product>-<agent>`) |
+| --- | --- | --- |
+| Hooks | **none** | branch ownership, commit prefix, `verify` |
+| Identity config | none | `consensus.agentId`, `coord.installRoot` |
+| Launcher | none | `start-<agent>.sh` |
+| Day-to-day git | exactly as today | gated |
+
+The enabling fact is that **git never activates hooks from a commit**.
+`core.hooksPath` is per-clone *local* config, so committed hook files were always
+inert for anyone who did not run setup. The problem was never that we constrained
+other developers — it is that we put files in their tree that look like
+obligations, and that any path which activates them turns their clone hostile
+(see §2a).
+
+Under this rule the target's permanent footprint can be **zero**:
+
+| Artifact | #4 as written | Under the two-mode rule |
+| --- | --- | --- |
+| hook bodies / shims | committed to product | **`.git/hooks/` of each agent clone** — untracked by construction |
+| `scripts/setup_*`, `lib/launcher.sh` | committed to product | coordination install only |
+| `start-<agent>.sh` | clone, via product `.gitignore` | clone, via `.git/info/exclude` |
+| agent tool ignores (`.claude/`, …) | committed `.gitignore` block | `.git/info/exclude` per clone |
+| `verify` policy | — | coord-root workspace config |
+| `AGENTS.md` | committed | opt-in `--commit-agents-md`; default untracked in clones |
+
+So #4's `--ignore-mode=exclude` should be **promoted from fallback to default**,
+and the managed `.gitignore` block becomes the opt-in for owners who want the
+convention visible in the repo.
+
+### The one footprint that cannot be zero — and why it is acceptable
+
+`.plans/issue-N/`, `.signals/issue-N/`, and `.code-reviews/issue-N/` **must** be
+committed and pushed. They *are* the evidence: the protocol is agents publishing
+artifacts at exact commits and the coordinator reading blobs at those SHAs.
+
+They are transient by design. R7 finalization is deletion-only cleanup of exactly
+those prefixes, enforced by `verifyFinalization`, which rejects any change that is
+not a deletion under the current issue's coordination paths. A developer on `main`
+never sees them; they exist on agent branches during a run and are gone before the
+merge-ready PR.
+
+Worth stating in #4 explicitly — "does this litter my repo?" is the first question
+a maintainer asks, and the answer is "only on agent branches, only until
+finalization."
+
+### What the rule does not solve, and should not
+
+A human developer's commits are **ungated**. If someone pushes broken code to
+`main`, that becomes the baseline the next `coord start` records. Coordination
+cannot prevent this and should not try — it is the same exposure as any
+repository. It does mean the recorded `baselineSha` is a snapshot of whatever
+state `main` happened to be in, which belongs in the operator docs.
+
+A human merging to `main` mid-run does not invalidate anything, since agents work
+from the recorded baseline; it just means a real merge at PR time. Normal, not a
+defect.
 
 ---
 
@@ -94,6 +170,75 @@ hooks can become a no-op without saying so.
 
 ---
 
+## 2a. Committed hooks are a loaded gun: `identity.sh` fails closed on a human clone
+
+Cursor's review of the two-mode rule proposes gating enforcement on "am I an
+agent?" — only enforce when `consensus.agentId` is set. That is the right
+instinct, and the current code does **the exact opposite**.
+
+`githooks/lib/identity.sh` ends by calling `consensus_load_identity` at source
+time, and every hook body sources it as its first act. With `consensus.agentId`
+unset:
+
+```
+HOOK BLOCKED: this clone has no local consensus.agentId; agent identity is unresolved.
+  Hooks never fall back to a default identity.
+  Fix: from the master repo run this clone's setup script (scripts/setup_<agent>.sh) …
+```
+
+The file's own comment states the intent: *"unresolved identity fails the hook
+closed."* For an agent clone that is correct and should stay. For a human clone it
+is the failure Cursor warns about, in its strongest form — **every commit
+blocked**, with remediation instructions telling a developer who has never heard
+of coordination to run an agent setup script.
+
+Today this is latent, because humans do not set `core.hooksPath`. But shipping the
+files into the product master means one `git config core.hooksPath githooks` — run
+by a curious developer, a tooling default, a copied clone, or a future git
+version — converts a working repository into a blocked one. That is a loaded gun
+in someone else's tree, and it is a second, independent argument for §0's
+zero-footprint placement.
+
+### Proposed change
+
+Separate *"is this an agent clone?"* from *"is this agent's identity valid?"*:
+
+```bash
+consensus_load_identity() {
+  local id label
+  id="$(git config --local --get "$consensus_agent_id_key" 2>/dev/null || true)"
+
+  # Not an agent clone. Coordination has no business here.
+  if [[ -z "$id" ]]; then
+    CONSENSUS_AGENT_CLONE=false
+    return 0
+  fi
+
+  CONSENSUS_AGENT_CLONE=true
+  # …existing validation: malformed id or missing label still fails closed…
+}
+```
+
+Each hook body then returns early when `CONSENSUS_AGENT_CLONE` is false, passing
+through to whatever the product already does.
+
+**This is defence in depth, not the primary mechanism.** With §0's placement the
+hooks only exist in agent clones, so `agentId` should never be unset where they
+run. The gate matters for the transition period, for `--vendor` mode, and for any
+tree where hooks might end up shared — precisely the cases where a silent hostile
+failure would otherwise be possible.
+
+Note the residual trade if hooks *are* shared: an agent clone whose local config
+got wiped would then pass through silently instead of blocking, losing every gate.
+That is the silent-skip class again. **Placement resolves it**: hooks living in
+`.git/hooks/` of an agent clone mean their presence *is* the signal, so unset
+identity there remains a hard error while a human clone simply has no hooks at
+all. You get both properties instead of choosing between punishing humans and
+silently degrading agents — which is the strongest argument in this review for
+§0's placement over #4's Option A.
+
+---
+
 ## 3. Proposed answer to open question 2: Option C
 
 #4 frames the fork as binary: vendor the files (A) or call `coord` from PATH (B).
@@ -146,6 +291,35 @@ work unguarded*. Which is correct depends on who clones the product repo:
 So: **C as the default, A available as `--vendor`**, stamped with the source
 commit and flagged stale by `coord doctor`. That preserves #4's Option A intent
 for the case that needs it without making every project pay for it.
+
+### Revision after the two-mode rule: keep the property, move the file
+
+Cursor objects that a fail-closed shim must not sit on the product's default
+branch, because it "would punish every normal clone." **That objection is correct
+about placement and wrong about the property**, and the two are separable.
+
+The shim's value is that a missing install root **blocks loudly** instead of
+silently disabling every gate (§2). That value is entirely about agent clones —
+an agent whose install root vanished must not keep committing ungated. It says
+nothing about human clones, which should have no hooks at all.
+
+So Option C survives, relocated:
+
+| | Original C | **Revised C** |
+| --- | --- | --- |
+| Shim location | committed to product `githooks/` | **`.git/hooks/` of each agent clone** |
+| Human clone | file present, inert until hooksPath set — but hostile if ever set (§2a) | **file absent; nothing changes for them** |
+| Agent clone | fail-closed | fail-closed, unchanged |
+| Written by | `setup-workspace`, committed by a human | `setup-workspace`, never committed |
+| Product diff | ~15 lines × 5 hooks | **none** |
+
+`.git/hooks/` is the default hooks path, so no `core.hooksPath` config is needed
+at all; it is untracked by construction; and `git pull` cannot clobber it, which
+**removes the post-merge regeneration coupling for hooks entirely** — only
+`start-<agent>.sh` still needs regenerating. That collapses #4's open question 2
+further than any of A/B/C did: under this placement nothing lands in the product
+tree either way, so the vendor-versus-link debate applies only to `--vendor`
+mode, where an owner has explicitly asked for it.
 
 This also resolves the post-merge/launcher coupling #4 flags in the same
 question: under C the launcher template resolves from `$install_root`, so
@@ -311,10 +485,12 @@ separate because they answer different questions at different times.
 
 Three rules make this safe:
 
-1. **No declaration is an error, not a skip.** If `verify` is absent the hook
-   blocks and says so. Opting out must be explicit — `"verify": { "precommit":
-   [], "prepush": [] }` — so that a product with no local checks is a recorded
-   decision rather than an accident of file layout.
+1. **No declaration is an error, not a skip — in an agent clone.** If `verify`
+   is absent the hook blocks and says so. Opting out must be explicit —
+   `"verify": { "precommit": [], "prepush": [] }` — so that a product with no
+   local checks is a recorded decision rather than an accident of file layout.
+   Per §0 this governs **agent clones only**; a human clone has no hooks and is
+   unaffected whether or not `verify` exists.
 2. **`coord doctor` preflights the toolchain.** Verify `argv[0]` resolves for
    every declared command at install time, not at the operator's first commit.
    The existing "pnpm-lock.yaml exists but pnpm is not available" block is the
@@ -412,6 +588,15 @@ Record what a product was installed against, in the emitted workspace config:
 }
 ```
 
+This lives in the **coord-root workspace config, not the product tree**. An
+earlier draft of this review argued for committing project policy so it would be
+versioned with the code it verifies; §0 retires that argument. The policy governs
+agents only, and agent work is already gated by tier 3 — hermetic, at the exact
+approved commit, owner-controlled — so tier 2 is fast feedback rather than the
+authority. Keeping it out of the product also means no agent can supply argv that
+the coordinator or another agent's clone will execute, which removes a privilege
+escalation that a committed `verify` would have opened.
+
 `coord doctor` compares `commit` against `git -C $installRoot rev-parse HEAD` and
 reports an upgrade nobody reviewed. That is the property a lockfile would give,
 obtained without a registry — and if coordination is ever published, `version`
@@ -465,6 +650,16 @@ problem as the `pre-push` divergence in §1, one level up.
       script-name coupling, not a hypothetical.
 - [ ] The emitted config records the coordination version and commit, and
       `coord doctor` reports a drifted install root.
+- [ ] **A human clone of an onboarded product is unaffected.** Clone the product
+      normally, without running any coordination command: `git commit` and
+      `git push` behave exactly as before onboarding — no hooks, no Node
+      requirement, no "coordination is not installed" message. This is the
+      executable form of §0 and should be the first test written.
+- [ ] `setup-workspace` leaves **no tracked file** in the product master by
+      default. Onboarding produces an empty `git status` in the product.
+- [ ] With hooks present but `consensus.agentId` unset, the hooks pass through
+      rather than blocking (§2a); with `agentId` set but malformed, they still
+      fail closed.
 
 ---
 
