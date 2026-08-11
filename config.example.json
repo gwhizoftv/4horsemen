@@ -35,6 +35,12 @@
   "prPolicy": "owner-only",
   "digestPaths": [".plans/issue-{issue}/plan.md"],
   "pollIntervalMs": 1000,
+  "verify": {
+    "precommit": [{ "name": "fast checks", "argv": ["pnpm", "check:fast"] }],
+    "prepush": [{ "name": "end-to-end checks", "argv": ["pnpm", "test:e2e"] }]
+  },
+  "workflowCriticalPrefixes": ["src/", "test/", "scripts/", "githooks/"],
+  "workflowCriticalFiles": ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"],
   "checks": [
     { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
     { "name": "check", "argv": ["pnpm", "check"] }

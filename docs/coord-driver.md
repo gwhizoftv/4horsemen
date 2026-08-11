@@ -47,6 +47,11 @@ Start from `config.example.json`:
   `.plans/issue-{issue}/plan.md`; their identities and hashes are persisted
 - `checks[]`: explicit argv arrays executed in a clean worktree at the final
   pin; no shell is invoked
+- `verify.precommit[]` / `verify.prepush[]`: product-declared argv run only in
+  agent clone hooks; missing declarations fail closed and explicit empty arrays
+  opt out
+- `workflowCriticalPrefixes` / `workflowCriticalFiles`: declared pre-push
+  scope; empty lists mean every changed product path is critical
 - `pollIntervalMs`: bounded completion-file polling interval
 
 Any `{worktree}` token in one check argument is replaced with the verification

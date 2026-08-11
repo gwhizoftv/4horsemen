@@ -1,17 +1,27 @@
 # coordination
 
-`coordination` is the standalone owner-side workflow driver. It gives each
+`coordination` is the standalone owner-side workflow driver and workspace
+installer. It gives each
 agent one concrete action, verifies the exact pushed commit named by the agent,
 and advances only when the required origin-backed evidence passes. It never
 merges a pull request.
 
-## Requirements
+## Two modes, one product remote
+
+`coord install` adds hooks and identity only to dedicated agent clones. The
+ordinary product clone gets no coordination hooks, no Node dependency, and no
+tracked changes by default. See
+[`docs/setup-workspace.md`](docs/setup-workspace.md) for install, doctor,
+uninstall, language-agnostic verification, and the explicit vendor/product
+write options.
+
+## Operator requirements
 
 - Node 26 and pnpm 11
 - Git
 - tmux for interactive agent launch/delivery
-- one existing clone and executable `start-<agent>.sh` launcher per configured
-  agent
+- one product Git clone with an `origin` remote (agent clones and launchers can
+  be created by `coord install`)
 - an owner-controlled runtime directory outside every agent clone
 
 ## Install and verify
@@ -29,6 +39,19 @@ pnpm build
 both tiers.
 
 ## Quick start
+
+Create the agent workspace without changing the product's tracked tree:
+
+```bash
+./coord install \
+  --product /path/to/product \
+  --coord-root /absolute/owner/runtime \
+  --agents claude,codex,cursor,antigravity \
+  --profile consensus
+```
+
+Edit the emitted `verify` and `checks` argv declarations for the product, then
+use the printed start command. Hooks never infer commands from ecosystem files.
 
 Copy and edit `config.example.json`. In particular, set `origin`, clone roots,
 launchers, issue-aware `digestPaths`, explicit final-check argument vectors,

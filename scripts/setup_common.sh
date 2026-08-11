@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# setup_common.sh — shared library for multi-agent CLI setup scripts.
+# setup_common.sh — deprecated compatibility library for legacy setup scripts.
+# New workspaces are installed by the TypeScript `coord install` command.
 #
 # DO NOT run this file directly. Source it from a vendor script that first sets:
 #   AGENT_NAME    - lowercase id used in paths/branches (claude | codex | antigravity | gemini | cursor)

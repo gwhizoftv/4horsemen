@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Tracked, agent-neutral hook. Identity is resolved at runtime — never edit a
-# clone-specific value into this file.
+# Canonical, agent-neutral hook. Identity is resolved from clone-local config.
 lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/identity.sh"
 [[ -r "$lib" ]] || { echo "HOOK BLOCKED: cannot read $lib; core.hooksPath must point at the tracked githooks directory." >&2; exit 1; }
 # shellcheck source=lib/identity.sh

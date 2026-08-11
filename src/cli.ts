@@ -2,7 +2,9 @@ import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clearCompletion, readAction } from "./action.js";
+import { doctorWorkspace } from "./doctor.js";
 import { sha256 } from "./hash.js";
+import { install } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import {
   agentRuntimePaths,
@@ -31,6 +33,7 @@ import {
 } from "./state.js";
 import type { WorkflowProfile } from "./steps.js";
 import { resolveAgentLauncher, TmuxController } from "./tmux.js";
+import { uninstallWorkspace } from "./uninstall.js";
 
 export type CliIo = {
   stdout: (message: string) => void;
@@ -67,6 +70,16 @@ const defaultIo: CliIo = {
 type ParsedArgs = { positionals: string[]; flags: Map<string, string> };
 
 const coordinatorSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const booleanFlags = new Set([
+  "dry-run",
+  "vendor",
+  "write-product",
+  "bootstrap-coordination",
+  "delete-clones",
+  "force",
+  "wipe-runtime",
+  "delete-coordination"
+]);
 
 const parseArgs = (args: readonly string[]): ParsedArgs => {
   const positionals: string[] = [];
@@ -79,6 +92,10 @@ const parseArgs = (args: readonly string[]): ParsedArgs => {
     }
     const name = argument.slice(2);
     if (name === "" || flags.has(name)) throw new Error(`Invalid or duplicate option ${argument}.`);
+    if (booleanFlags.has(name)) {
+      flags.set(name, "true");
+      continue;
+    }
     const value = args[index + 1];
     if (value === undefined || value.startsWith("--")) throw new Error(`Option ${argument} requires a value.`);
     flags.set(name, value);
@@ -112,9 +129,14 @@ const allowedFlags = (parsed: ParsedArgs, allowed: readonly string[]): void => {
   }
 };
 
+const enabled = (parsed: ParsedArgs, name: string): boolean => parsed.flags.get(name) === "true";
+
 const help = `coord — owner-side workflow driver
 
 Usage:
+  coord install --product <path> --coord-root <path> --agents <ids> --profile <profile> [--dry-run]
+  coord uninstall --product <path> --coord-root <path> [--delete-clones] [--force]
+  coord doctor --product <path> --coord-root <path>
   coord start <issue> --profile <solo|reviewed|consensus> --config <path> --coord-root <external-path>
   coord run --issue <issue> --coord-root <path>
   coord next --issue <issue> --coord-root <path> --agent <agent>
@@ -284,6 +306,94 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
 
   try {
     const parsed = parseArgs(rest);
+    if (command === "install") {
+      allowedFlags(parsed, [
+        "product",
+        "coord-root",
+        "agents",
+        "profile",
+        "clone-root",
+        "config",
+        "base-branch",
+        "remote",
+        "dry-run",
+        "vendor",
+        "write-product",
+        "bootstrap-coordination"
+      ]);
+      if (parsed.positionals.length !== 0) throw new Error("install takes no positional arguments.");
+      const profileValue = requireFlag(parsed, "profile");
+      if (!(profileValue === "solo" || profileValue === "reviewed" || profileValue === "consensus")) {
+        throw new Error("--profile must be solo, reviewed, or consensus.");
+      }
+      const agents = requireFlag(parsed, "agents").split(",").map((agent) => agent.trim()).filter(Boolean);
+      const result = install({
+        product: resolve(io.cwd, requireFlag(parsed, "product")),
+        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
+        agents,
+        profile: profileValue,
+        installRoot: coordinatorSourceRoot,
+        ...(parsed.flags.has("clone-root") ? { cloneRoot: resolve(io.cwd, requireFlag(parsed, "clone-root")) } : {}),
+        ...(parsed.flags.has("config") ? { configSource: resolve(io.cwd, requireFlag(parsed, "config")) } : {}),
+        ...(parsed.flags.has("base-branch") ? { baseBranch: requireFlag(parsed, "base-branch") } : {}),
+        ...(parsed.flags.has("remote") ? { remoteName: requireFlag(parsed, "remote") } : {}),
+        dryRun: enabled(parsed, "dry-run"),
+        vendor: enabled(parsed, "vendor"),
+        writeProduct: enabled(parsed, "write-product"),
+        bootstrapCoordination: enabled(parsed, "bootstrap-coordination"),
+        log: io.stdout
+      });
+      if (!enabled(parsed, "dry-run")) {
+        io.stdout(`${result.changed ? "Installed" : "Already current"}: ${result.configPath}\n`);
+      }
+      return 0;
+    }
+
+    if (command === "uninstall") {
+      allowedFlags(parsed, [
+        "product",
+        "coord-root",
+        "config",
+        "delete-clones",
+        "force",
+        "wipe-runtime",
+        "delete-coordination",
+        "dry-run"
+      ]);
+      if (parsed.positionals.length !== 0) throw new Error("uninstall takes no positional arguments.");
+      const result = uninstallWorkspace({
+        product: resolve(io.cwd, requireFlag(parsed, "product")),
+        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
+        ...(parsed.flags.has("config") ? { configPath: resolve(io.cwd, requireFlag(parsed, "config")) } : {}),
+        deleteClones: enabled(parsed, "delete-clones"),
+        force: enabled(parsed, "force"),
+        wipeRuntime: enabled(parsed, "wipe-runtime"),
+        deleteCoordination: enabled(parsed, "delete-coordination"),
+        dryRun: enabled(parsed, "dry-run"),
+        log: io.stdout
+      });
+      if (!enabled(parsed, "dry-run")) io.stdout(`${result.changed ? "Uninstalled" : "Already absent"}.\n`);
+      return 0;
+    }
+
+    if (command === "doctor") {
+      allowedFlags(parsed, ["product", "coord-root", "config"]);
+      if (parsed.positionals.length !== 0) throw new Error("doctor takes no positional arguments.");
+      const result = doctorWorkspace({
+        product: resolve(io.cwd, requireFlag(parsed, "product")),
+        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
+        ...(parsed.flags.has("config") ? { configPath: resolve(io.cwd, requireFlag(parsed, "config")) } : {})
+      });
+      if (!result.ok) {
+        for (const issue of result.issues) {
+          io.stderr(`coord doctor [${issue.code}]${issue.agent === undefined ? "" : ` ${issue.agent}`}: ${issue.message}\n`);
+        }
+        return 3;
+      }
+      io.stdout(`coord doctor: healthy (${result.configPath}).\n`);
+      return 0;
+    }
+
     if (command === "start") {
       allowedFlags(parsed, ["profile", "config", "coord-root"]);
       if (parsed.positionals.length !== 1) throw new Error("start requires exactly one issue number.");

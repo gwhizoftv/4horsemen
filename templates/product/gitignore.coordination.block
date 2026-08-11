@@ -1,0 +1,10 @@
+# BEGIN coord managed
+start-*.sh
+.claude/
+.codex/
+.cursor/
+.gemini/
+.antigravity/
+tags
+directory_tree.md
+# END coord managed

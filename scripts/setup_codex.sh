@@ -14,6 +14,7 @@
 #   - There is no PreToolUse-guard equivalent; the git hooks are the hard
 #     enforcement layer, plus Codex's own workspace-write sandbox.
 set -euo pipefail
+echo "DEPRECATED: scripts/setup_codex.sh is legacy. Prefer: coord install --agents codex ..." >&2
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

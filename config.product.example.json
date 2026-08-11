@@ -1,0 +1,40 @@
+{
+  "project": "my-go-service",
+  "productRoot": "/absolute/path/to/my-go-service",
+  "origin": "https://github.com/example/my-go-service.git",
+  "agents": [
+    {
+      "id": "codex",
+      "root": "/absolute/path/to/my-go-service-codex",
+      "launcher": "start-codex.sh",
+      "delivery": "pull",
+      "harnessProcess": "codex"
+    }
+  ],
+  "branch": "issue-{issue}/{agent}",
+  "baseBranch": "main",
+  "maxRevisionRounds": 3,
+  "prPolicy": "owner-only",
+  "digestPaths": [],
+  "verify": {
+    "precommit": [
+      { "name": "vet", "argv": ["go", "vet", "./..."] },
+      { "name": "test", "argv": ["go", "test", "./..."] }
+    ],
+    "prepush": [{ "name": "build", "argv": ["go", "build", "./..."] }]
+  },
+  "workflowCriticalPrefixes": ["cmd/", "internal/", "pkg/"],
+  "workflowCriticalFiles": ["go.mod", "go.sum"],
+  "checks": [{ "name": "test", "argv": ["go", "test", "./..."] }],
+  "coordination": {
+    "installRoot": "/absolute/path/to/coordination",
+    "version": "0.1.0",
+    "commit": "0000000000000000000000000000000000000000",
+    "installedAt": "2026-08-11T00:00:00.000Z",
+    "hookMode": "shim",
+    "writeProduct": false,
+    "bootstrapOwned": false,
+    "cloneRoot": "/absolute/path/to"
+  },
+  "pollIntervalMs": 1000
+}

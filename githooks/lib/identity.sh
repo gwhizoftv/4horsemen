@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# githooks/lib/identity.sh — the runtime identity contract for tracked hooks.
+# githooks/lib/identity.sh — the runtime identity contract for agent hooks.
 #
-# The hook bodies in githooks/ are agent-neutral tracked files: identical bytes
-# in every clone, so a generator change propagates with `git pull` and cannot
-# leave two clones running different hooks. Everything agent-specific is read
-# here, at hook runtime, from ONE explicit contract: this clone's LOCAL Git
-# config.
+# The canonical bodies live in the coordination install and are reached through
+# generated shims in each agent clone's `.git/hooks/` directory. Vendor mode
+# copies the same bodies for offline use. Everything agent-specific is read at
+# hook runtime from one explicit contract: this clone's LOCAL Git config.
 #
 #   consensus.agentId      lowercase agent id used in branch names
 #   consensus.agentLabel   commit-message prefix / display label
@@ -15,9 +14,8 @@
 # failure mode these hooks exist to prevent. There is no default identity and
 # no interactive prompt: unresolved identity fails the hook closed.
 #
-# scripts/setup_common.sh writes these keys, and the automation CLI
-# (`doctor`, startup validation, fresh-issue.sh) verifies that consensus.agentId
-# agrees with the agent whose configured root is this clone.
+# `coord install` writes these keys, and `coord doctor` verifies that the local
+# identity agrees with the workspace config entry for this clone.
 
 consensus_agent_id_key="consensus.agentId"
 consensus_agent_label_key="consensus.agentLabel"
@@ -25,8 +23,8 @@ consensus_agent_label_key="consensus.agentLabel"
 consensus_identity_failed() {
   echo "HOOK BLOCKED: $1" >&2
   echo "  Hooks never fall back to a default identity." >&2
-  echo "  Fix: from the master repo run this clone's setup script (scripts/setup_<agent>.sh)," >&2
-  echo "  which writes $consensus_agent_id_key, $consensus_agent_label_key and core.hooksPath=githooks." >&2
+  echo "  Fix: from the product clone rerun coord install for this agent workspace," >&2
+  echo "  which writes $consensus_agent_id_key and $consensus_agent_label_key locally." >&2
   echo "  Then confirm with: git config --get consensus.agentId" >&2
   exit 1
 }

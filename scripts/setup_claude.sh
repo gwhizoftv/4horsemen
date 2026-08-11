@@ -3,6 +3,7 @@
 # Run from the root of your MASTER repo:
 #   ./scripts/setup_claude.sh [-n|--dry-run] [--force] [shared_branch] [remote_name]
 set -euo pipefail
+echo "DEPRECATED: scripts/setup_claude.sh is legacy. Prefer: coord install --agents claude ..." >&2
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

@@ -10,6 +10,7 @@
 #   - There is no equivalent of Codex's trusted-project config; the project-local
 #     rule file is the main mechanism for steering Cursor in this clone.
 set -euo pipefail
+echo "DEPRECATED: scripts/setup_cursor.sh is legacy. Prefer: coord install --agents cursor ..." >&2
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

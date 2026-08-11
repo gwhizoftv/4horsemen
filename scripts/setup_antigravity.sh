@@ -17,6 +17,7 @@
 #   - Enforcement: git hooks are the hard layer (no PreToolUse equivalent);
 #     tune agy's own permission rules in-session with /permissions.
 set -euo pipefail
+echo "DEPRECATED: scripts/setup_antigravity.sh is legacy. Prefer: coord install --agents antigravity ..." >&2
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

@@ -72,7 +72,27 @@ const timestampSchema = z.string().datetime({ offset: true });
 export const checkCommandSchema = z
   .object({
     name: z.string().min(1),
-    argv: z.array(z.string()).min(1)
+    argv: z.array(z.string().min(1)).min(1)
+  })
+  .strict();
+
+export const verifyConfigSchema = z
+  .object({
+    precommit: z.array(checkCommandSchema),
+    prepush: z.array(checkCommandSchema)
+  })
+  .strict();
+
+export const coordinationInstallSchema = z
+  .object({
+    installRoot: z.string().min(1),
+    version: z.string().min(1),
+    commit: gitShaSchema,
+    installedAt: timestampSchema,
+    hookMode: z.enum(["shim", "vendor"]),
+    writeProduct: z.boolean(),
+    bootstrapOwned: z.boolean(),
+    cloneRoot: z.string().min(1)
   })
   .strict();
 
@@ -89,6 +109,7 @@ export const agentConfigSchema = z
 export const coordinatorConfigSchema = z
   .object({
     project: z.string().min(1),
+    productRoot: z.string().min(1).optional(),
     origin: z.string().min(1),
     agents: z.array(agentConfigSchema).min(1),
     branch: z.string().refine((value) => value.includes("{issue}") && value.includes("{agent}")),
@@ -102,9 +123,12 @@ export const coordinatorConfigSchema = z
           .min(1)
           .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "digest path must be confined")
       )
-      .min(1)
       .default([".plans/issue-{issue}/plan.md"]),
-    checks: z.array(checkCommandSchema).min(1),
+    verify: verifyConfigSchema.optional(),
+    workflowCriticalPrefixes: z.array(z.string().min(1)).default([]),
+    workflowCriticalFiles: z.array(z.string().min(1)).default([]),
+    checks: z.array(checkCommandSchema),
+    coordination: coordinationInstallSchema.optional(),
     pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000)
   })
   .strict()
@@ -115,6 +139,20 @@ export const coordinatorConfigSchema = z
     }
     if (new Set(config.digestPaths).size !== config.digestPaths.length) {
       context.addIssue({ code: "custom", message: "digest paths must be unique", path: ["digestPaths"] });
+    }
+    if (new Set(config.workflowCriticalPrefixes).size !== config.workflowCriticalPrefixes.length) {
+      context.addIssue({
+        code: "custom",
+        message: "workflow critical prefixes must be unique",
+        path: ["workflowCriticalPrefixes"]
+      });
+    }
+    if (new Set(config.workflowCriticalFiles).size !== config.workflowCriticalFiles.length) {
+      context.addIssue({
+        code: "custom",
+        message: "workflow critical files must be unique",
+        path: ["workflowCriticalFiles"]
+      });
     }
   });
 
@@ -147,7 +185,7 @@ export const startStateSchema = z
     coordRoot: z.string().min(1),
     configPath: z.string().min(1),
     agents: z.array(agentConfigSchema).min(1),
-    checks: z.array(checkCommandSchema).min(1),
+    checks: z.array(checkCommandSchema),
     pollIntervalMs: z.number().int().min(100).max(60_000),
     createdAt: timestampSchema
   })
