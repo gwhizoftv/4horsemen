@@ -1,12 +1,41 @@
 {
   "project": "coordination",
+  "origin": "https://github.com/example/coordination.git",
   "agents": [
-    { "id": "claude", "root": "../coordination-claude" },
-    { "id": "codex", "root": "../coordination-codex" },
-    { "id": "cursor", "root": "../coordination-cursor" },
-    { "id": "antigravity", "root": "../coordination-antigravity" }
+    {
+      "id": "claude",
+      "root": "../coordination-claude",
+      "launcher": "start-claude.sh",
+      "delivery": "nudge",
+      "harnessProcess": "claude"
+    },
+    {
+      "id": "codex",
+      "root": "../coordination-codex",
+      "launcher": "start-codex.sh",
+      "delivery": "pull",
+      "harnessProcess": "codex"
+    },
+    {
+      "id": "cursor",
+      "root": "../coordination-cursor",
+      "launcher": "start-cursor.sh",
+      "delivery": "pull"
+    },
+    {
+      "id": "antigravity",
+      "root": "../coordination-antigravity",
+      "launcher": "start-antigravity.sh",
+      "delivery": "pull"
+    }
   ],
   "branch": "issue-{issue}/{agent}",
-  "defaultCoordRoot": "../coord-runtime",
-  "maxRevisionRounds": 3
+  "baseBranch": "main",
+  "maxRevisionRounds": 3,
+  "prPolicy": "owner-only",
+  "pollIntervalMs": 1000,
+  "checks": [
+    { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
+    { "name": "check", "argv": ["pnpm", "check"] }
+  ]
 }
