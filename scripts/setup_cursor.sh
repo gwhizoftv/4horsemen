@@ -35,16 +35,17 @@ common_write_start_sh
 # ======================== Cursor-specific setup below =======================
 
 if $DRY_RUN; then
-  echo "DRY-RUN: would write a Cursor rule file under .cursor/rules/ and a"
+  echo "DRY-RUN: would write .cursor/rules/coordination.mdc and a"
   echo "         .cursor/tmp/ directory for scratch files."
   exit 0
 fi
 
 mkdir -p "$CLONE_DIR/.cursor/rules" "$CLONE_DIR/.cursor/tmp"
+rm -f "$CLONE_DIR/.cursor/rules/consensus-ai.mdc"
 
-cat > "$CLONE_DIR/.cursor/rules/consensus-ai.mdc" <<EOF2
+cat > "$CLONE_DIR/.cursor/rules/coordination.mdc" <<EOF2
 ---
-description: Repository workflow and agent identity for the consensus-ai repo
+description: Repository workflow and agent identity for the coordination repo
 globs:
   - "**/*"
 ---
@@ -65,7 +66,7 @@ globs:
 - Put temporary files in .cursor/tmp/ (excluded from git), never in the repo tree.
 EOF2
 
-echo "Wrote Cursor rule file: .cursor/rules/consensus-ai.mdc"
+echo "Wrote Cursor rule file: .cursor/rules/coordination.mdc"
 
 cat > "$CLONE_DIR/.cursor/rules/working-style.mdc" <<EOF3
 ---
