@@ -1,7 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { git, gitOrThrow, hasUncommittedChanges, localConfigGet, localConfigSet, localConfigUnset } from "./gitExec.js";
+import {
+  git,
+  gitOrThrow,
+  hasUncommittedChanges,
+  localConfigGet,
+  localConfigSet,
+  localConfigUnset,
+  worktreeRoot
+} from "./gitExec.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { containedPath, isPathInside } from "./paths.js";
 import { DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile, clearManagedIgnoreFile } from "./productIgnore.js";
@@ -95,6 +104,20 @@ const makeTargets = (productRoot: string): Set<string> => {
 };
 
 /**
+ * A proposal only carries `verify` when it actually found something to run.
+ *
+ * Emitting `{ precommit: [], prepush: [] }` because nothing was recognised
+ * writes the operator's explicit opt-out on their behalf: the hooks then read a
+ * deliberate "this project has no local checks" and allow every commit. Missing
+ * must stay missing so the hooks fail closed and say what to declare.
+ */
+const proposedVerify = (
+  precommit: CheckCommand[],
+  prepush: CheckCommand[]
+): { verify?: { precommit: CheckCommand[]; prepush: CheckCommand[] } } =>
+  precommit.length === 0 && prepush.length === 0 ? {} : { verify: { precommit, prepush } };
+
+/**
  * Scaffold a project's declared policy from what its tree obviously is.
  *
  * This is the ONLY place ecosystem detection is allowed, and its output is
@@ -147,10 +170,7 @@ export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal
     const finalization = ["check", "test"].filter((name) => scripts.has(name)).slice(0, 1);
     return {
       toolchain: manager,
-      verify: {
-        precommit: precommit.map(runScript),
-        prepush: prepush.map(runScript)
-      },
+      ...proposedVerify(precommit.map(runScript), prepush.map(runScript)),
       checks: finalization.length === 0 ? undefined : finalization.map(runScript),
       workflowCriticalPrefixes: ["src/", "test/", "scripts/", "githooks/"],
       workflowCriticalFiles: ["package.json", has("pnpm-lock.yaml") ? "pnpm-lock.yaml" : has("yarn.lock") ? "yarn.lock" : "package-lock.json"]
@@ -162,10 +182,7 @@ export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal
     const target = (name: string): CheckCommand => ({ name, argv: ["make", name] });
     return {
       toolchain: "make",
-      verify: {
-        precommit: targets.has("check") ? [target("check")] : [],
-        prepush: []
-      },
+      ...proposedVerify(targets.has("check") ? [target("check")] : [], []),
       checks: targets.has("test") ? [target("test")] : undefined,
       workflowCriticalPrefixes: [],
       workflowCriticalFiles: ["Makefile"]
@@ -264,16 +281,29 @@ export const writeWorkspaceConfig = (
 
 // ------------------------------------------------------------------ clones --
 
-export type CloneOutcome = { clone: string; created: boolean };
+export type CloneOutcome = { clone: string; created: boolean; synced: boolean };
+
+/** Normalise remote URLs enough to compare a local path against its clone's. */
+const sameRemote = (left: string, right: string): boolean => {
+  const strip = (value: string): string => value.replace(/\.git$/, "").replace(/\/+$/, "");
+  return strip(left) === strip(right) || strip(resolve(left)) === strip(resolve(right));
+};
 
 /**
- * Create the agent clone if it is missing; otherwise leave its worktree alone.
+ * Adopt or create the agent clone.
  *
- * An existing clone is never reset here. `coord install` is idempotent and gets
- * re-run to repair wiring, and an installer that discards an agent's in-flight
+ * An existing clone is never reset. `coord install` is idempotent and gets
+ * re-run to repair wiring, and an installer that discarded an agent's in-flight
  * work as a side effect of repairing a hook would be the most expensive kind of
- * surprise. `--delete-clones` on uninstall is the only destructive path, and it
- * refuses a dirty clone without `--force`.
+ * surprise. But existence alone is not adoption: the directory must be a git
+ * worktree whose origin is this product, or coordination would wire identity,
+ * policy, hooks, and a launcher into an unrelated repository — and, when the
+ * directory was not a repository at all, fabricate a `.git` on the way to
+ * failing.
+ *
+ * Where the clone is clean and on the shared branch, it is fast-forwarded so a
+ * reinstall does not leave an agent working from a stale baseline. Dirty or
+ * diverged clones are reported, never rewritten.
  */
 export const ensureAgentClone = (input: {
   productRoot: string;
@@ -283,15 +313,72 @@ export const ensureAgentClone = (input: {
   options: EffectOptions;
 }): CloneOutcome => {
   if (existsSync(input.clone)) {
+    const toplevel = worktreeRoot(input.clone);
+    if (toplevel === null || resolve(toplevel) !== resolve(input.clone)) {
+      throw new Error(
+        `${input.clone} already exists but is not the root of a git worktree.\n` +
+          "  Refusing to wire coordination into it. Move it aside, or pass --clone-root to choose another location."
+      );
+    }
+    const remote = localConfigGet(input.clone, "remote.origin.url");
+    if (remote === null || !(sameRemote(remote, input.origin) || sameRemote(remote, input.productRoot))) {
+      throw new Error(
+        `${input.clone} is a clone of '${remote ?? "<no origin>"}', not of ${input.origin}.\n` +
+          "  Refusing to wire this product's identity, policy, and hooks into an unrelated repository."
+      );
+    }
     input.options.log(`clone already present at ${input.clone} (worktree left untouched)\n`);
-    return { clone: input.clone, created: false };
+    return { clone: input.clone, created: false, synced: syncAgentClone(input) };
   }
   act(input.options, `clone ${input.productRoot} into ${input.clone}`, () => {
     mkdirSync(dirname(input.clone), { recursive: true });
     gitOrThrow(dirname(input.clone), "clone", "--branch", input.baseBranch, input.productRoot, input.clone);
     gitOrThrow(input.clone, "remote", "set-url", "origin", input.origin);
   });
-  return { clone: input.clone, created: true };
+  return { clone: input.clone, created: true, synced: false };
+};
+
+/** Fast-forward a clean clone sitting on the shared branch; never rewrite. */
+const syncAgentClone = (input: {
+  clone: string;
+  baseBranch: string;
+  options: EffectOptions;
+}): boolean => {
+  if (hasUncommittedChanges(input.clone)) {
+    input.options.log(`clone ${input.clone} has uncommitted work; not syncing\n`);
+    return false;
+  }
+  const branch = git(input.clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+  if (branch !== input.baseBranch) {
+    input.options.log(`clone ${input.clone} is on '${branch}', not '${input.baseBranch}'; not syncing\n`);
+    return false;
+  }
+  if (input.options.dryRun) {
+    // Report only work that is actually pending: a dry run must not fetch, and
+    // claiming a fast-forward that the real run would find unnecessary breaks
+    // the "second install is a no-op" guarantee it exists to check.
+    const head = git(input.clone, "rev-parse", "HEAD").stdout.trim();
+    const tracked = git(input.clone, "rev-parse", `origin/${input.baseBranch}`);
+    if (tracked.exitCode !== 0 || tracked.stdout.trim() === head) return false;
+    input.options.changes.push(`fast-forward ${input.clone} to origin/${input.baseBranch}`);
+    input.options.log(`would fast-forward ${input.clone} to origin/${input.baseBranch}\n`);
+    return true;
+  }
+  const fetched = git(input.clone, "fetch", "--quiet", "origin", input.baseBranch);
+  if (fetched.exitCode !== 0) {
+    input.options.log(`could not fetch origin/${input.baseBranch} for ${input.clone}; leaving it as is\n`);
+    return false;
+  }
+  const merged = git(input.clone, "merge", "--ff-only", "--quiet", `origin/${input.baseBranch}`);
+  if (merged.exitCode !== 0) {
+    input.options.log(
+      `clone ${input.clone} has diverged from origin/${input.baseBranch}; integrate it yourself (coordination never rewrites a clone)\n`
+    );
+    return false;
+  }
+  const moved = git(input.clone, "rev-parse", "HEAD").stdout.trim();
+  input.options.log(`fast-forwarded ${input.clone} to ${moved.slice(0, 12)}\n`);
+  return true;
 };
 
 /**
@@ -315,21 +402,25 @@ export const writeAgentLauncher = (input: {
   const target = join(input.clone, `start-${input.agent}.sh`);
   // Render through the template first and compare, so re-running the installer
   // to repair something else is not reported as a launcher change.
-  const staging = join(input.clone, `.start-${input.agent}.sh.coord-tmp`);
+  // Staged outside the worktree: rendering inside it made `--dry-run` write a
+  // file, and a crash between render and cleanup left a dotfile the managed
+  // exclude does not match, which then made the clone dirty.
+  const stagingDir = mkdtempSync(join(tmpdir(), "coord-launcher-"));
+  const staging = join(stagingDir, `start-${input.agent}.sh`);
   const render = spawnSync(
     "bash",
     ["-c", '. "$1"; write_launcher "$2" "$3" "$4" "$5"', "_", library, staging, input.agent, input.label, input.baseBranch],
     { encoding: "utf8" }
   );
   if ((render.status ?? 1) !== 0) {
-    rmSync(staging, { force: true });
+    rmSync(stagingDir, { recursive: true, force: true });
     throw new Error(
       `No launch command is defined for agent '${input.agent}'. Add one to launcher_command() in ${library}. ` +
         `${render.stderr ?? ""}`.trim()
     );
   }
   const rendered = readFileSync(staging, "utf8");
-  rmSync(staging, { force: true });
+  rmSync(stagingDir, { recursive: true, force: true });
 
   if (existsSync(target) && readFileSync(target, "utf8") === rendered) {
     input.options.log(`launcher already current at ${target}\n`);

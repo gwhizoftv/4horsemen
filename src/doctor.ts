@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { git, localConfigGet } from "./gitExec.js";
-import { inspectCloneHooks, readHookManifest } from "./hookSync.js";
+import { git, localConfigGet, worktreeRoot } from "./gitExec.js";
+import { canonicalSourceDigest, inspectCloneHooks, readHookManifest } from "./hookSync.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, unresolvableCommands, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { githubRepositoryFromOrigin } from "./runLoop.js";
 import { productName, workspaceConfigPath } from "./setupWorkspace.js";
@@ -26,7 +26,8 @@ export const DOCTOR_CODES = {
   startCompatibility: 15,
   toolchain: 16,
   installDrift: 17,
-  verifyUndeclared: 18
+  verifyUndeclared: 18,
+  cloneMissing: 19
 } as const;
 
 export type DoctorClass = keyof typeof DOCTOR_CODES;
@@ -124,6 +125,7 @@ const checkClone = (input: {
   config: CoordinatorConfig;
   configPath: string;
   agent: CoordinatorConfig["agents"][number];
+  installDigest: string | null;
 }): DoctorFinding[] => {
   const findings: DoctorFinding[] = [];
   const clone = cloneOf(input.configPath, input.agent.root);
@@ -131,7 +133,22 @@ const checkClone = (input: {
 
   if (!existsSync(clone)) {
     findings.push(
-      finding("identity", clone, `Agent clone for '${input.agent.id}' is missing.`, "Re-run coord install to recreate it.")
+      finding("cloneMissing", clone, `Agent clone for '${input.agent.id}' is missing.`, "Re-run coord install to recreate it.")
+    );
+    return findings;
+  }
+
+  // Everything below runs git against the clone. A directory that lost its
+  // .git is precisely the broken install doctor exists to name, so it is
+  // classified here rather than escaping as a raw git error and exit 2.
+  if (worktreeRoot(clone) === null) {
+    findings.push(
+      finding(
+        "cloneMissing",
+        clone,
+        "The agent clone path exists but is not a git worktree, so nothing about its wiring can be verified.",
+        "Restore or remove the directory, then re-run coord install."
+      )
     );
     return findings;
   }
@@ -163,11 +180,33 @@ const checkClone = (input: {
   }
   // A vendored clone deliberately has no install root: its hook bodies are
   // copies, and a set key would give post-merge two candidate templates.
-  const vendored = readHookManifest(clone)?.mode === "vendor";
+  const manifest = readHookManifest(clone);
+  const vendored = manifest.kind === "ok" && manifest.manifest.mode === "vendor";
   const requiredKeys = vendored ? [CLI_ENTRY_KEY, WORKSPACE_CONFIG_KEY] : [INSTALL_ROOT_KEY, CLI_ENTRY_KEY, WORKSPACE_CONFIG_KEY];
   for (const key of requiredKeys) {
     if (localConfigGet(clone, key) === null) {
       findings.push(finding("installRoot", clone, `${key} is unset in this agent clone.`, "Re-run coord install."));
+    }
+  }
+  // Presence is not agreement. A clone whose installRoot was redirected at an
+  // older checkout passed every other check while executing different hook
+  // bodies than the workspace believes it runs.
+  if (stamp !== undefined && !vendored) {
+    for (const [key, expected] of [
+      [INSTALL_ROOT_KEY, stamp.installRoot],
+      [CLI_ENTRY_KEY, stamp.cliEntry]
+    ] as const) {
+      const actual = localConfigGet(clone, key);
+      if (actual !== null && actual !== expected) {
+        findings.push(
+          finding(
+            "installDrift",
+            clone,
+            `${key} is '${actual}' but this workspace was installed against '${expected}'.`,
+            "Re-run coord install so every clone resolves the same hook bodies."
+          )
+        );
+      }
     }
   }
   if (localConfigGet(clone, WORKSPACE_CONFIG_KEY) !== input.configPath) {
@@ -182,7 +221,12 @@ const checkClone = (input: {
   }
 
   if (stamp !== undefined) {
-    const drift = inspectCloneHooks({ clone, installRoot: stamp.installRoot, installCommit: stamp.commit });
+    const drift = inspectCloneHooks({
+      clone,
+      installRoot: stamp.installRoot,
+      installCommit: stamp.commit,
+      ...(input.installDigest === null ? {} : { canonicalDigest: input.installDigest })
+    });
     if (drift.kind === "absent") {
       findings.push(
         finding("hooks", clone, "This agent clone has no coordination hooks, so its commits are ungated.", "Re-run coord install.")
@@ -216,6 +260,33 @@ const checkClone = (input: {
           clone,
           `core.hooksPath is set to '${drift.hooksPath}', which shadows the installed hooks in .git/hooks.`,
           "Unset it: git -C <clone> config --local --unset core.hooksPath, or re-run coord install."
+        )
+      );
+    } else if (drift.kind === "not-executable") {
+      findings.push(
+        finding(
+          "hooks",
+          clone,
+          `Installed hooks are not executable: ${drift.files.join(", ")}. Git skips a hook without its execute bit and reports nothing.`,
+          "Re-run coord install to restore the mode."
+        )
+      );
+    } else if (drift.kind === "invalid-manifest") {
+      findings.push(
+        finding(
+          "hooks",
+          clone,
+          `The coordination hook manifest is unreadable or names paths it may not (${drift.reason}).`,
+          "Re-run coord install to rewrite it; uninstall will not act on a manifest it cannot validate."
+        )
+      );
+    } else if (drift.kind === "install-modified") {
+      findings.push(
+        finding(
+          "installDrift",
+          stamp.installRoot,
+          "The canonical hook sources in the install root differ from the bytes this workspace was installed against, with no new commit.",
+          "Commit or revert the change in the install root, then re-run coord install."
         )
       );
     } else if (drift.kind === "stale-vendor") {
@@ -267,7 +338,7 @@ const checkStartCompatibility = (config: CoordinatorConfig, configPath: string):
   return findings;
 };
 
-const checkDeclarations = (config: CoordinatorConfig, configPath: string): DoctorFinding[] => {
+const checkDeclarations = (config: CoordinatorConfig, configPath: string, cwd: string): DoctorFinding[] => {
   const findings: DoctorFinding[] = [];
   if (config.verify === undefined) {
     findings.push(
@@ -279,7 +350,7 @@ const checkDeclarations = (config: CoordinatorConfig, configPath: string): Docto
       )
     );
   }
-  for (const executable of unresolvableCommands(config)) {
+  for (const executable of unresolvableCommands(config, cwd)) {
     findings.push(
       finding(
         "toolchain",
@@ -306,13 +377,43 @@ export const doctor = (options: DoctorOptions): DoctorReport => {
   if (!existsSync(configPath)) {
     throw new Error(`No installed workspace for '${project}' at ${configPath}. Run coord install first.`);
   }
-  const config = readConfig(configPath);
+  let config: CoordinatorConfig;
+  try {
+    config = readConfig(configPath);
+  } catch (error) {
+    // A config `coord start` would refuse is exactly the startCompatibility
+    // class. Letting readConfig throw produced a generic exit 2 and no finding.
+    const report: DoctorReport = {
+      configPath,
+      findings: [
+        finding(
+          "startCompatibility",
+          configPath,
+          `The workspace config is not one coord start can read: ${error instanceof Error ? error.message : String(error)}`,
+          "Repair the file, or re-run coord install to regenerate it."
+        )
+      ],
+      exitCode: DOCTOR_CODES.startCompatibility
+    };
+    return report;
+  }
+
+  // Recomputed from the install root rather than read from the stamp: the point
+  // is to notice when those bytes changed without the stamp changing.
+  let installDigest: string | null = null;
+  if (config.coordination !== undefined && existsSync(join(config.coordination.installRoot, "githooks"))) {
+    try {
+      installDigest = canonicalSourceDigest(config.coordination.installRoot);
+    } catch {
+      installDigest = null;
+    }
+  }
 
   const findings = [
     ...checkInstallRoot(config),
-    ...config.agents.flatMap((agent) => checkClone({ config, configPath, agent })),
+    ...config.agents.flatMap((agent) => checkClone({ config, configPath, agent, installDigest })),
     ...checkStartCompatibility(config, configPath),
-    ...checkDeclarations(config, configPath)
+    ...checkDeclarations(config, configPath, dirname(configPath))
   ];
 
   const exitCode = findings.length === 0 ? 0 : Math.min(...findings.map((item) => item.code));

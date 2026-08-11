@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,10 +15,23 @@ import { fileURLToPath } from "node:url";
  */
 export const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-/** The hooks resolve declared verification through the built CLI entry point. */
+/**
+ * The hooks resolve declared verification through the built CLI entry point, so
+ * these tests exercise `dist/`, not the sources vitest transforms. A stale build
+ * makes every hook fail against the previous schema, so it is rebuilt whenever a
+ * source file is newer — the same rule the `coord` wrapper applies.
+ */
 export const ensureBuilt = (): string => {
   const entry = join(repoRoot, "dist", "main.js");
-  if (!existsSync(entry)) execFileSync("pnpm", ["build"], { cwd: repoRoot, stdio: "inherit" });
+  const builtAt = existsSync(entry) ? statSync(entry).mtimeMs : 0;
+  const newest = (dir: string): number =>
+    readdirSync(dir, { withFileTypes: true }).reduce((latest, item) => {
+      const path = join(dir, item.name);
+      return Math.max(latest, item.isDirectory() ? newest(path) : statSync(path).mtimeMs);
+    }, 0);
+  if (builtAt === 0 || newest(join(repoRoot, "src")) > builtAt) {
+    execFileSync("pnpm", ["build"], { cwd: repoRoot, stdio: "inherit" });
+  }
   return entry;
 };
 
@@ -69,22 +82,22 @@ export type ProductKind = "go" | "plain";
  * exercised: it is the case where the old lockfile-sniffing hooks ran nothing
  * at all and reported success.
  */
-export const makeProduct = (kind: ProductKind = "go"): ProductFixture => {
+export const makeProduct = (kind: ProductKind = "go", name = "myserver"): ProductFixture => {
   const workspaceRoot = mkdtempSync(join(tmpdir(), "coord-product-"));
   const coordRoot = mkdtempSync(join(tmpdir(), "coord-runtime-"));
-  const productRoot = join(workspaceRoot, "myserver");
-  const originPath = join(workspaceRoot, "myserver-origin.git");
+  const productRoot = join(workspaceRoot, name);
+  const originPath = join(workspaceRoot, `${name}-origin.git`);
 
   mkdirSync(productRoot, { recursive: true });
   git(productRoot, "init", "-q", "--initial-branch=main");
   git(productRoot, "config", "user.name", "Fixture");
   git(productRoot, "config", "user.email", "fixture@example.com");
   if (kind === "go") {
-    writeFileSync(join(productRoot, "go.mod"), "module example.com/myserver\n\ngo 1.24\n");
+    writeFileSync(join(productRoot, "go.mod"), `module example.com/${name}\n\ngo 1.24\n`);
     mkdirSync(join(productRoot, "cmd"), { recursive: true });
     writeFileSync(join(productRoot, "cmd", "main.go"), "package main\n\nfunc main() {}\n");
   } else {
-    writeFileSync(join(productRoot, "README.md"), "# myserver\n");
+    writeFileSync(join(productRoot, "README.md"), `# ${name}\n`);
   }
   git(productRoot, "add", "-A");
   git(productRoot, "commit", "-qm", "initial");

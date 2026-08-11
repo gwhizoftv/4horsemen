@@ -13,21 +13,46 @@
 # machine-wide setting silently supply an identity, which is exactly the failure
 # mode these hooks exist to prevent.
 #
-# Two outcomes, and the difference matters:
+# Three outcomes, and the differences matter:
 #
-#   agentId unset      -> this is not an agent clone. Coordination has no
-#                         business here, so the hook passes through. Placement
-#                         already guarantees a human clone has no hooks at all;
-#                         this is defence in depth for a shared or migrating
-#                         tree, so that coordination can never turn someone
-#                         else's working repository into a blocked one.
-#   agentId malformed  -> an agent clone with a broken identity. Fails closed.
+#   wiring present, id unset/malformed -> an agent clone with a broken
+#                         identity. FAILS CLOSED. Coordination wiring is what
+#                         makes this an agent clone, so an agent that lost its
+#                         id must not keep committing ungated. This is the case
+#                         all four issue-4 reviews flagged: keying the decision
+#                         on the id alone let `git config --unset
+#                         consensus.agentId` skip branch ownership, the commit
+#                         prefix, and the declared verify, in a clone that was
+#                         otherwise fully installed.
+#   no wiring, id unset -> not an agent clone. Coordination has no business
+#                         here, so the hook passes through. Placement already
+#                         guarantees a human clone has no hooks; this keeps that
+#                         true for a shared, migrating, or vendored tree, so
+#                         coordination can never turn someone else's working
+#                         repository into a blocked one.
+#   no wiring, id set   -> honour the id. A clone can carry an identity before
+#                         the installer has finished wiring it.
 #
 # `coord doctor` cross-checks that consensus.agentId agrees with the agent whose
-# configured root is this clone, which is the check a pass-through cannot make.
+# configured root is this clone, which is the check a hook cannot make.
 
 consensus_agent_id_key="consensus.agentId"
 consensus_agent_label_key="consensus.agentLabel"
+
+# True when this clone carries coordination install wiring. Any one of these is
+# proof: the installer writes all of them, and an agent can only remove them by
+# deliberately dismantling its own gating, which is what must fail closed.
+consensus_wiring_present() {
+  local key value git_dir
+
+  for key in coord.installRoot coord.cliEntry coord.workspaceConfig; do
+    value="$(git config --local --get "$key" 2>/dev/null || true)"
+    [[ -n "$value" ]] && return 0
+  done
+
+  git_dir="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
+  [[ -n "$git_dir" && -f "$git_dir/hooks/coord-hooks.json" ]]
+}
 
 consensus_identity_failed() {
   echo "HOOK BLOCKED: $1" >&2
@@ -46,6 +71,9 @@ consensus_load_identity() {
   id="$(git config --local --get "$consensus_agent_id_key" 2>/dev/null || true)"
 
   if [[ -z "$id" ]]; then
+    if consensus_wiring_present; then
+      consensus_identity_failed "this clone carries coordination install wiring but has no local $consensus_agent_id_key; agent identity is unresolved."
+    fi
     CONSENSUS_AGENT_CLONE=false
     return 0
   fi

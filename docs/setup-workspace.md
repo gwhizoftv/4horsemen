@@ -42,7 +42,7 @@ coord install \
 | --- | --- |
 | 0 | Optional bootstrap/build of the coordination install |
 | 1 | Preflight and containment (product ⊄ coord-root, clone root ⊄ product, …) |
-| 2 | Create `<product>-<agent>` clones that do not exist; **never reset one that does** |
+| 2 | Create missing `<product>-<agent>` clones; adopt only a worktree of this product; fast-forward a clean one; **never reset one** |
 | 3 | Write `start-<agent>.sh`; add the managed block to each clone's `.git/info/exclude` |
 | 4 | Record `consensus.*`, `coord.installRoot`, `coord.cliEntry`, `coord.workspaceConfig` in each clone |
 | 5 | Install fail-closed shims into each agent clone's `.git/hooks/` |
@@ -53,7 +53,22 @@ Not written by default: the product's `githooks/`, `.gitignore`, `package.json`,
 `AGENTS.md`, or `scripts/setup_*`.
 
 A second `coord install` with the same arguments makes no changes. `--dry-run`
-prints what a run would do and touches nothing.
+prints what a run would do and touches nothing — including inside the clones.
+
+Everything knowable is decided before any effect: agent ids are validated
+against the coordinator's own schema, checked for duplicates, and checked for a
+launcher; the workspace config is built and validated. A product whose checks
+cannot be inferred is refused before a clone exists, not after.
+
+**Adoption.** An existing directory at the clone path is adopted only when it is
+the root of a git worktree whose `origin` is this product. Anything else is
+refused rather than wired, because coordination would otherwise write identity,
+policy, hooks, and a launcher into an unrelated repository.
+
+**Syncing.** A clone that is clean and on the base branch is fast-forwarded, so a
+reinstall does not leave an agent working from a stale baseline. A dirty or
+diverged clone is reported and left exactly as it is; coordination never rewrites
+a clone.
 
 ## Uninstall
 
@@ -67,11 +82,25 @@ coord uninstall --coord-root /path/to/coord-runtime --product /path/to/app
 ```
 
 By default it clears the agent-clone hook wiring, the managed exclude block, the
-launchers, and the clone's coordination git config, then deletes the workspace
-entry. It removes the managed `.gitignore` block from the product **only if the
-install recorded writing it**, and it never touches unrelated ignore lines or a
-human-authored `AGENTS.md`. A hook file edited after installation is left in
-place and reported rather than deleted.
+launchers, and the clone's coordination git config, restores any hook that was
+displaced at install time, and deletes the workspace **config file**. It removes
+the managed `.gitignore` block and the generated `AGENTS.md` from the product
+**only if the install recorded writing them**, and it never touches unrelated
+ignore lines or a human-authored `AGENTS.md`. A hook file edited after
+installation is left in place and reported rather than deleted.
+
+Four scoping rules matter:
+
+- The workspace **directory** is not deleted. It is also where you keep this
+  project's plan and digest material, so only the file coordination wrote goes.
+- `--wipe-runtime` is scoped to this project's workspace and issue runtimes. If
+  the runtime holds other products it refuses unless you add `--force`, because
+  those products' in-flight issue state would otherwise go with it.
+- Every refusal — dirty clones, checkout ownership — is decided before anything
+  is unwired, so a refused uninstall leaves the workspace byte-for-byte intact.
+- `--delete-coordination` requires that this install *created* the coordination
+  checkout. Running bootstrap commands inside a checkout you already had is not
+  ownership of it, so the flag refuses.
 
 ## Hook delivery
 
@@ -82,12 +111,20 @@ place and reported rather than deleted.
 - **Missing or unset install root on an agent clone:** commit and push are
   **blocked**, with the remediation command printed.
 - **Human product clone:** no coordination shims, so nothing changes for it.
+- **A hook the clone already had** is renamed to `<hook>.coord-original` and
+  chained by the shim, which runs coordination's body first and the original
+  after. Uninstall puts it back. Adding coordination's gates never removes the
+  product's own.
+- **Identity resolution keys on coordination wiring**, not on the hooks' mere
+  presence. A clone carrying `coord.installRoot`, `coord.cliEntry`,
+  `coord.workspaceConfig`, or a hook manifest is an agent clone, so a missing or
+  malformed `consensus.agentId` there **blocks**. Without any of that wiring the
+  hooks pass through, which is what keeps a human clone usable.
 
 `core.hooksPath` is deliberately unused. When it points at a directory that does
 not exist, git runs no hooks and reports nothing — every gate silently off, with
 successful commits and pushes as the only evidence. `.git/hooks/` is git's
-default path, cannot be clobbered by a pull, and its contents' *presence* is the
-signal that a clone is an agent clone. An install that finds `core.hooksPath`
+default path and cannot be clobbered by a pull. An install that finds `core.hooksPath`
 set (a clone migrating off the old tracked-`githooks/` layout) unsets it, so the
 shims it just wrote are the hooks git actually runs.
 
@@ -100,6 +137,13 @@ fallback between them: exactly one copy is authoritative.
 `--vendor` is not a way to make a product's default branch work for outside
 contributors. Outside humans should use a normal product clone with no
 coordination hooks at all.
+
+`--write-product --vendor` is the one path that puts hook bodies into a tracked
+tree, and it is additive: it refuses to replace a hook the product already
+maintains. The bodies it writes stay harmless to humans for the reason above —
+they resolve identity from coordination wiring a human clone does not have — so
+a developer who enables the committed hooks out of curiosity gets a
+pass-through, not a blocked repository. There is a test for exactly that.
 
 ## What runs, and whose it is
 
@@ -132,6 +176,9 @@ publication. The journal records which tier failed.
   explicit: `"verify": { "precommit": [], "prepush": [] }`. This applies only
   where coordination hooks are installed — that is, agent clones. A human clone
   has no coordination hooks and is unaffected whether or not `verify` exists.
+- The installer never writes that opt-out on your behalf. When its proposal
+  finds no command to run, it omits `verify` entirely, so the hooks fail closed
+  and name the fix rather than recording a decision nobody made.
 - `coord doctor` fails when a declared `argv[0]` is not on PATH, at install time
   rather than at an agent's first commit.
 
@@ -178,17 +225,26 @@ Each class of drift has its own exit code, so a script can act on the answer.
 The process exits with the lowest code among the findings and prints all of
 them, since a missing install root usually explains the hook findings under it.
 
+What doctor compares hooks against is the **canonical source in the install**,
+never the manifest in the clone. That manifest sits in an agent's own working
+copy, so it is evidence to be checked rather than the authority — an agent that
+rewrote a hook and restamped its digest would otherwise be certified healthy,
+by the tool built to catch exactly that. For the same reason the stamp records a
+digest of the hook bodies, shim, and launcher template, so an uncommitted edit
+in the install root is reported even though the commit has not moved.
+
 | Code | Class | Meaning |
 | --- | --- | --- |
 | 10 | `installRoot` | install root, CLI entry, or per-clone `coord.*` config missing |
-| 11 | `hooks` | hooks absent, unmanaged, missing, edited, or shadowed by `core.hooksPath` |
+| 11 | `hooks` | hooks absent, unmanaged, missing, edited, non-executable, shadowed, or described by an invalid manifest |
 | 12 | `vendorStamp` | vendored copies are behind the install |
 | 13 | `launcher` | `start-<agent>.sh` missing or not executable |
 | 14 | `identity` | `consensus.agentId` missing, malformed, or crossed with another clone |
 | 15 | `startCompatibility` | the config is one `coord start` would refuse |
 | 16 | `toolchain` | a declared `argv[0]` is not on PATH |
-| 17 | `installDrift` | the install root moved to a commit this workspace was not installed against |
+| 17 | `installDrift` | the install root moved, its canonical hook bytes changed without a commit, or a clone points elsewhere |
 | 18 | `verifyUndeclared` | no `verify` declared, so every agent commit would block |
+| 19 | `cloneMissing` | an agent clone is absent, or is no longer a git worktree |
 
 ## Transient evidence on agent branches
 

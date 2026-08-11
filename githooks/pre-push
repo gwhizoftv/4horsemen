@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# coord-managed-hook
 # Canonical, agent-neutral hook body. See githooks/pre-commit for the placement
 # rule; identity is resolved at runtime, never edited into this file.
 lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
@@ -14,6 +15,16 @@ lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
 ZERO="0000000000000000000000000000000000000000"
 status=0
+
+# Buffer the ref list before anything else runs.
+#
+# git delivers the refs being pushed on stdin, and stdin can be consumed once.
+# Every branch-ownership, force-push, and deletion check below reads from it, so
+# any child process that drained stdin first would leave the loop with nothing
+# to iterate, `status` at 0, and every gate skipped while the push succeeded.
+# Buffering here makes that class of regression impossible rather than merely
+# absent today.
+push_refs="$(cat)"
 
 # Which paths make a push able to change what the workflow does is a project
 # fact, not a coordination one, so it is declared in the workspace config. An
@@ -56,6 +67,9 @@ push_remote_sha=""
 push_ref=""
 
 while read -r local_ref local_sha remote_ref remote_sha; do
+  # A here-string on an empty buffer still yields one empty line; skip it rather
+  # than letting a blank ref fall through to the naming-scheme rejection.
+  [[ -n "$remote_ref" ]] || continue
   branch="${remote_ref#refs/heads/}"
 
   # 1) Never push the shared branch or consensus branches.
@@ -105,7 +119,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   push_local_sha="$local_sha"
   push_remote_sha="$remote_sha"
   push_ref="$remote_ref"
-done
+done <<< "$push_refs"
 
 # 4) Decide whether this push can affect the declared workflow-critical paths.
 # Only the pre-push verification is scoped here; pre-commit stays unconditional.

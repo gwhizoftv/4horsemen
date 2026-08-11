@@ -35,49 +35,70 @@ export const DEFAULT_CLONE_IGNORES: readonly string[] = [
   ".agents/"
 ];
 
+export class ManagedBlockError extends Error {
+  override readonly name = "ManagedBlockError";
+}
+
 export const renderManagedBlock = (lines: readonly string[]): string =>
   [MANAGED_BLOCK_BEGIN, "# Managed by coordination. Edits inside are overwritten; edit outside.", ...lines, MANAGED_BLOCK_END].join(
     "\n"
   );
 
-const splitAroundBlock = (content: string): { before: string; after: string; found: boolean } => {
+type BlockLocation = { found: false } | { found: true; before: string; after: string };
+
+/**
+ * Locate the managed region and nothing else.
+ *
+ * A begin marker with no end marker is an error rather than a licence to treat
+ * the rest of the file as ours. Assuming ownership there silently deleted every
+ * line below a marker whose terminator a human had removed.
+ */
+const locateBlock = (content: string, path: string): BlockLocation => {
   const beginIndex = content.indexOf(MANAGED_BLOCK_BEGIN);
-  if (beginIndex === -1) return { before: content, after: "", found: false };
+  if (beginIndex === -1) return { found: false };
   const endIndex = content.indexOf(MANAGED_BLOCK_END, beginIndex);
   if (endIndex === -1) {
-    // An unterminated marker means someone edited or truncated the block. Treat
-    // everything from the marker on as ours rather than appending a second one.
-    return { before: content.slice(0, beginIndex), after: "", found: true };
+    throw new ManagedBlockError(
+      `${path} has a coordination begin marker with no matching end marker, so the managed region cannot be identified.\n` +
+        `  Refusing to guess where it ends; the lines below it are not coordination's to remove.\n` +
+        `  Fix: restore the '${MANAGED_BLOCK_END}' line, or delete the begin marker and its block by hand.`
+    );
   }
   return {
+    found: true,
     before: content.slice(0, beginIndex),
-    after: content.slice(endIndex + MANAGED_BLOCK_END.length),
-    found: true
+    after: content.slice(endIndex + MANAGED_BLOCK_END.length)
   };
-};
-
-const normalize = (content: string): string => {
-  const trimmed = content.replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "");
-  if (trimmed === "" || trimmed.endsWith("\n")) return trimmed;
-  return `${trimmed}\n`;
 };
 
 export type ManagedBlockResult = { changed: boolean; content: string };
 
-/** Insert or refresh the managed block, leaving every other line untouched. */
-export const applyManagedBlock = (existing: string, lines: readonly string[]): ManagedBlockResult => {
-  const { before, after } = splitAroundBlock(existing);
-  const head = before === "" ? "" : `${before.replace(/\s+$/, "")}\n\n`;
-  const tail = after.replace(/^\s+/, "");
-  const content = normalize(`${head}${renderManagedBlock(lines)}\n${tail === "" ? "" : `\n${tail}`}`);
-  return { changed: content !== existing, content };
+/**
+ * Insert or refresh the managed block. Every byte outside the region — blank
+ * lines, grouping, trailing whitespace — is preserved exactly, so that
+ * install/uninstall is an identity on a file coordination does not own.
+ */
+export const applyManagedBlock = (existing: string, lines: readonly string[], path = "<ignore file>"): ManagedBlockResult => {
+  const block = renderManagedBlock(lines);
+  const located = locateBlock(existing, path);
+  if (located.found) {
+    const content = `${located.before}${block}${located.after}`;
+    return { changed: content !== existing, content };
+  }
+  // One blank line of separation, and only when the file does not already end
+  // with a newline of its own to build on.
+  const separator = existing === "" ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
+  const content = `${existing}${separator}${block}\n`;
+  return { changed: true, content };
 };
 
-/** Remove the managed block, leaving every other line untouched. */
-export const removeManagedBlock = (existing: string): ManagedBlockResult => {
-  const { before, after, found } = splitAroundBlock(existing);
-  if (!found) return { changed: false, content: existing };
-  const content = normalize(`${before.replace(/\s+$/, "")}\n${after.replace(/^\s+/, "")}`);
+/** Remove the managed block and the one separator `applyManagedBlock` added. */
+export const removeManagedBlock = (existing: string, path = "<ignore file>"): ManagedBlockResult => {
+  const located = locateBlock(existing, path);
+  if (!located.found) return { changed: false, content: existing };
+  const before = located.before.endsWith("\n") ? located.before.slice(0, -1) : located.before;
+  const after = located.after.startsWith("\n") ? located.after.slice(1) : located.after;
+  const content = `${before}${after}`;
   return { changed: content !== existing, content };
 };
 
@@ -90,7 +111,7 @@ export const writeManagedIgnoreFile = (
   lines: readonly string[],
   options: { dryRun: boolean }
 ): IgnoreFileOutcome => {
-  const result = applyManagedBlock(readIfPresent(path), lines);
+  const result = applyManagedBlock(readIfPresent(path), lines, path);
   if (!result.changed) return { path, changed: false, wrote: false };
   if (options.dryRun) return { path, changed: true, wrote: false };
   mkdirSync(dirname(path), { recursive: true });
@@ -100,7 +121,7 @@ export const writeManagedIgnoreFile = (
 
 export const clearManagedIgnoreFile = (path: string, options: { dryRun: boolean }): IgnoreFileOutcome => {
   if (!existsSync(path)) return { path, changed: false, wrote: false };
-  const result = removeManagedBlock(readFileSync(path, "utf8"));
+  const result = removeManagedBlock(readFileSync(path, "utf8"), path);
   if (!result.changed) return { path, changed: false, wrote: false };
   if (options.dryRun) return { path, changed: true, wrote: false };
   writeFileSync(path, result.content, "utf8");

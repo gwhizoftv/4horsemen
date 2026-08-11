@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { delimiter, isAbsolute, join } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { localConfigGet } from "./gitExec.js";
 import { readConfig, type CheckCommand, type CoordinatorConfig, type VerifyPhase } from "./state.js";
 
@@ -70,14 +70,35 @@ export const verifyCommands = (config: CoordinatorConfig, phase: VerifyPhase): r
   return config.verify[phase];
 };
 
-const onPath = (command: string): boolean => {
-  if (command.includes("/")) return existsSync(command);
-  const entries = (process.env.PATH ?? "").split(delimiter).filter((entry) => entry !== "");
-  return entries.some((entry) => existsSync(join(entry, command)));
+const isExecutableFile = (path: string): boolean => {
+  try {
+    const stats = statSync(path);
+    return stats.isFile() && (stats.mode & 0o111) !== 0;
+  } catch {
+    return false;
+  }
 };
 
-/** Which declared `argv[0]` values cannot be resolved right now. */
-export const unresolvableCommands = (config: CoordinatorConfig): string[] => {
+/**
+ * Resolve a declared command exactly as the hook will spawn it: with the clone
+ * as the working directory, and requiring an executable file.
+ *
+ * Checking mere existence against the caller's own directory reported a
+ * relative `./scripts/check.sh` as missing when run from the runtime, and
+ * accepted a directory or a non-executable file that the first hook then failed
+ * to spawn.
+ */
+const resolves = (command: string, cwd: string): boolean => {
+  if (command.includes("/")) return isExecutableFile(resolve(cwd, command));
+  const entries = (process.env.PATH ?? "").split(delimiter).filter((entry) => entry !== "");
+  return entries.some((entry) => isExecutableFile(join(entry, command)));
+};
+
+/**
+ * Which declared `argv[0]` values cannot be resolved right now, checked against
+ * the clone the hooks will run in.
+ */
+export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): string[] => {
   const commands = [
     ...(config.verify?.precommit ?? []),
     ...(config.verify?.prepush ?? []),
@@ -86,7 +107,7 @@ export const unresolvableCommands = (config: CoordinatorConfig): string[] => {
   const missing = new Set<string>();
   for (const command of commands) {
     const executable = command.argv[0] as string;
-    if (!onPath(executable)) missing.add(executable);
+    if (!resolves(executable, cwd)) missing.add(executable);
   }
   return [...missing].sort();
 };

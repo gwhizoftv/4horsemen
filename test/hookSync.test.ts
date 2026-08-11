@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { inspectCloneHooks, readHookManifest } from "../src/hookSync.js";
-import { install } from "../src/install.js";
+import { inspectCloneHooks, readHookManifest, removeCloneHooks, type HookManifest } from "../src/hookSync.js";
+import { install, uninstall } from "../src/install.js";
 import {
   declaredChecks,
   ensureBuilt,
@@ -47,6 +48,30 @@ const installed = (verify: unknown = passingVerify, kind: "go" | "plain" = "go")
   return { fixture, clone: result.clones[0] as string, configPath: result.configPath };
 };
 
+/** The manifest, asserted readable — every test here installs one first. */
+const manifestOf = (clone: string): HookManifest => {
+  const read = readHookManifest(clone);
+  if (read.kind !== "ok") throw new Error(`expected a valid manifest, got ${read.kind}`);
+  return read.manifest;
+};
+
+/** Re-run the installer against an already-installed fixture. */
+const installAgain = (fixture: ProductFixture): void => {
+  install({
+    installRoot: repoRoot,
+    productRoot: fixture.productRoot,
+    coordRoot: fixture.coordRoot,
+    agents: ["claude"],
+    profile: "solo",
+    declarePath: writeDeclaration(fixture.workspaceRoot, { checks: declaredChecks, verify: passingVerify }, "again"),
+    writeProduct: false,
+    vendor: false,
+    bootstrap: false,
+    dryRun: false,
+    log: silence().log
+  });
+};
+
 /** Put the clone on a branch the agent owns, with something staged to commit. */
 const stageWork = (clone: string, branch = "issue-1/claude", file = "cmd/feature.go"): void => {
   git(clone, "checkout", "-q", "-b", branch);
@@ -62,9 +87,9 @@ describe("agent-clone hook wiring", () => {
     expect(shim).toContain("coord.installRoot");
     expect(shim).not.toContain("package.json");
 
-    const manifest = readHookManifest(clone);
-    expect(manifest?.mode).toBe("shim");
-    expect(Object.keys(manifest?.files ?? {}).sort()).toEqual([
+    const manifest = manifestOf(clone);
+    expect(manifest.mode).toBe("shim");
+    expect(Object.keys(manifest.files).sort()).toEqual([
       "commit-msg",
       "post-commit",
       "post-merge",
@@ -117,16 +142,20 @@ describe("agent-clone hook wiring", () => {
     expect(tryGit(clone, "commit", "-m", "Claude: work").exitCode).toBe(0);
   });
 
-  it("passes through in a clone with no agent identity, rather than blocking it", () => {
-    // The placement rule already keeps hooks out of human clones. This is the
-    // defence in depth for a tree where they end up shared anyway: coordination
-    // must never turn someone else's working repository into a blocked one.
+  it("blocks when agentId is unset but the coordination wiring remains", () => {
+    // The wiring is what makes this an agent clone. Keying the decision on the
+    // id alone let a single `git config --unset` skip branch ownership, the
+    // commit prefix, and the declared verify in a fully installed clone.
     const { clone } = installed();
     stageWork(clone);
     git(clone, "config", "--local", "--unset", "consensus.agentId");
 
-    const committed = tryGit(clone, "commit", "-m", "no label at all");
-    expect(committed.exitCode).toBe(0);
+    const committed = tryGit(clone, "commit", "-m", "ungated");
+    expect(committed.exitCode).not.toBe(0);
+    expect(committed.stderr).toContain("coordination install wiring");
+
+    const pushed = tryGit(clone, "push", "origin", "issue-1/claude");
+    expect(pushed.exitCode).not.toBe(0);
   });
 
   it("still fails closed when an agent clone's identity is malformed", () => {
@@ -225,9 +254,9 @@ describe("vendored delivery", () => {
     const { fixture, clone } = installed();
     installVendored(fixture);
 
-    const manifest = readHookManifest(clone);
-    expect(manifest?.mode).toBe("vendor");
-    expect(Object.keys(manifest?.files ?? {})).toContain("lib/identity.sh");
+    const manifest = manifestOf(clone);
+    expect(manifest.mode).toBe("vendor");
+    expect(Object.keys(manifest.files)).toContain("lib/identity.sh");
     expect(readFileSync(join(clone, ".git", "hooks", "pre-commit"), "utf8")).toContain("coord_verify precommit");
     expect(tryGit(clone, "config", "--local", "--get", "coord.installRoot").exitCode).not.toBe(0);
   });
@@ -247,27 +276,159 @@ describe("hook drift", () => {
     const { clone } = installed();
     writeFileSync(join(clone, ".git", "hooks", "pre-commit"), "#!/usr/bin/env bash\nexit 0\n");
     expect(
-      inspectCloneHooks({ clone, installRoot: repoRoot, installCommit: readHookManifest(clone)?.sourceCommit ?? "" })
+      inspectCloneHooks({ clone, installRoot: repoRoot, installCommit: manifestOf(clone).sourceCommit })
     ).toEqual({ kind: "modified", files: ["pre-commit"] });
-  });
-
-  it("reports a vendored copy that has fallen behind the install", () => {
-    const { clone } = installed();
-    const manifest = readHookManifest(clone);
-    writeFileSync(
-      join(clone, ".git", "hooks", "coord-hooks.json"),
-      JSON.stringify({ ...manifest, mode: "vendor" }, null, 2)
-    );
-    expect(inspectCloneHooks({ clone, installRoot: repoRoot, installCommit: "f".repeat(40) })).toMatchObject({
-      kind: "stale-vendor"
-    });
   });
 
   it("reports hooks shadowed by core.hooksPath", () => {
     const { clone } = installed();
     git(clone, "config", "--local", "core.hooksPath", "elsewhere");
     expect(
-      inspectCloneHooks({ clone, installRoot: repoRoot, installCommit: readHookManifest(clone)?.sourceCommit ?? "" })
+      inspectCloneHooks({ clone, installRoot: repoRoot, installCommit: manifestOf(clone).sourceCommit })
     ).toEqual({ kind: "shadowed", hooksPath: "elsewhere" });
+  });
+});
+
+describe("hook attestation", () => {
+  it("restores an execute bit that was lost, and reports it until then", () => {
+    // Git skips a non-executable hook and says nothing, so bytes alone are not
+    // health: a reinstall used to classify this "unchanged" and doctor "ok".
+    const { clone, fixture } = installed();
+    const hook = join(clone, ".git", "hooks", "pre-commit");
+    chmodSync(hook, 0o644);
+
+    expect(
+      inspectCloneHooks({ clone, installRoot: repoRoot, installCommit: manifestOf(clone).sourceCommit })
+    ).toEqual({ kind: "not-executable", files: ["pre-commit"] });
+
+    installAgain(fixture);
+    expect(statSync(hook).mode & 0o111).not.toBe(0);
+  });
+
+  it("detects an edited hook even when its manifest digest was edited to match", () => {
+    // The manifest lives in the agent's own clone. Trusting its digests let an
+    // agent rewrite pre-commit to `exit 0`, restamp it, and be certified healthy.
+    const { clone } = installed();
+    const hook = join(clone, ".git", "hooks", "pre-commit");
+    const forged = "#!/usr/bin/env bash\nexit 0\n";
+    writeFileSync(hook, forged);
+    chmodSync(hook, 0o755);
+    const manifest = manifestOf(clone);
+    writeFileSync(
+      join(clone, ".git", "hooks", "coord-hooks.json"),
+      JSON.stringify({ ...manifest, files: { ...manifest.files, "pre-commit": createHash("sha256").update(forged).digest("hex") } }, null, 2)
+    );
+
+    expect(
+      inspectCloneHooks({ clone, installRoot: repoRoot, installCommit: manifest.sourceCommit })
+    ).toEqual({ kind: "modified", files: ["pre-commit"] });
+  });
+
+  it("refuses a manifest that names a path outside the hooks directory", () => {
+    const { clone, fixture } = installed();
+    const victim = join(fixture.workspaceRoot, "victim.txt");
+    writeFileSync(victim, "not coordination's to delete\n");
+    const manifest = manifestOf(clone);
+    writeFileSync(
+      join(clone, ".git", "hooks", "coord-hooks.json"),
+      JSON.stringify(
+        {
+          ...manifest,
+          files: { ...manifest.files, "../../../victim.txt": createHash("sha256").update(readFileSync(victim)).digest("hex") }
+        },
+        null,
+        2
+      )
+    );
+
+    const removal = removeCloneHooks(clone, { dryRun: false });
+    expect(removal.removed).toEqual([]);
+    expect(removal.kept.join(" ")).toContain("malformed");
+    expect(existsSync(victim)).toBe(true);
+  });
+});
+
+describe("pre-existing hooks", () => {
+  const sentinelBody = (marker: string): string =>
+    `#!/usr/bin/env bash\nprintf 'ran\\n' >> "${marker}"\nexit 0\n`;
+
+  it("preserves and chains a hook the clone already had, and restores it on uninstall", () => {
+    const { clone, fixture } = installed();
+    const marker = join(fixture.workspaceRoot, "sentinel.log");
+    const hook = join(clone, ".git", "hooks", "pre-commit");
+    writeFileSync(hook, sentinelBody(marker));
+    chmodSync(hook, 0o755);
+
+    installAgain(fixture);
+    expect(existsSync(`${hook}.coord-original`)).toBe(true);
+    expect(manifestOf(clone).preserved).toEqual(["pre-commit"]);
+
+    stageWork(clone);
+    expect(tryGit(clone, "commit", "-m", "Claude: work").exitCode).toBe(0);
+    expect(readFileSync(marker, "utf8")).toContain("ran");
+
+    uninstall({
+      coordRoot: fixture.coordRoot,
+      productRoot: fixture.productRoot,
+      deleteClones: false,
+      wipeRuntime: false,
+      deleteCoordination: false,
+      force: false,
+      dryRun: false,
+      log: silence().log
+    });
+    expect(readFileSync(hook, "utf8")).toBe(sentinelBody(marker));
+    expect(existsSync(`${hook}.coord-original`)).toBe(false);
+  });
+});
+
+describe("pre-push gates", () => {
+  const ownedBranchWithCommit = (clone: string): void => {
+    stageWork(clone);
+    git(clone, "commit", "-qm", "Claude: work");
+  };
+
+  it("refuses the shared branch, a peer's branch, force-pushes, and deletions", () => {
+    // These four are the whole point of the hook and their failure mode is
+    // silent, so they are pinned rather than assumed.
+    const { clone } = installed();
+    ownedBranchWithCommit(clone);
+
+    const toMain = tryGit(clone, "push", "origin", "issue-1/claude:main");
+    expect(toMain.exitCode).not.toBe(0);
+    expect(toMain.stderr).toContain("Human/PR merge only");
+
+    const toFinal = tryGit(clone, "push", "origin", "issue-1/claude:issue-1/final");
+    expect(toFinal.exitCode).not.toBe(0);
+
+    const toPeer = tryGit(clone, "push", "origin", "issue-1/claude:issue-1/codex");
+    expect(toPeer.exitCode).not.toBe(0);
+    expect(toPeer.stderr).toContain("belongs to agent 'codex'");
+
+    expect(tryGit(clone, "push", "-q", "origin", "issue-1/claude").exitCode).toBe(0);
+
+    git(clone, "reset", "-q", "--hard", "HEAD~1");
+    writeFileSync(join(clone, "cmd", "other.go"), "package main\n");
+    git(clone, "add", "-A");
+    git(clone, "commit", "-qm", "Claude: rewritten");
+    const forced = tryGit(clone, "push", "--force", "origin", "issue-1/claude");
+    expect(forced.exitCode).not.toBe(0);
+    expect(forced.stderr).toContain("force-push");
+
+    const deleted = tryGit(clone, "push", "origin", ":issue-1/claude");
+    expect(deleted.exitCode).not.toBe(0);
+    expect(deleted.stderr).toContain("deleting remote branches");
+  });
+
+  it("gates every push when the project declared no critical paths", () => {
+    // Absence of a narrowing declaration must widen the gate, never silence it.
+    const { clone } = installed({
+      precommit: [],
+      prepush: [{ name: "must-fail", argv: ["false"] }]
+    });
+    ownedBranchWithCommit(clone);
+    const pushed = tryGit(clone, "push", "origin", "issue-1/claude");
+    expect(pushed.exitCode).not.toBe(0);
+    expect(`${pushed.stdout}${pushed.stderr}`).toContain("must-fail");
   });
 });

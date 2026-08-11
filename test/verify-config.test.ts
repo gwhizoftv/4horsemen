@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import {
   verifyCommands
 } from "../src/hookPolicy.js";
 import { proposeProjectPolicy } from "../src/setupWorkspace.js";
+import { applyManagedBlock, ManagedBlockError, removeManagedBlock } from "../src/productIgnore.js";
 import { coordinatorConfigSchema, workspaceDeclarationSchema, type CoordinatorConfig } from "../src/state.js";
 import { repoRoot } from "./support/workspaceFixture.js";
 
@@ -94,9 +95,29 @@ describe("declared verification", () => {
           precommit: [{ name: "nope", argv: ["definitely-not-a-real-binary-xyz"] }],
           prepush: []
         }
-      })
+      }),
+      repoRoot
     );
     expect(missing).toEqual(["definitely-not-a-real-binary-xyz"]);
+  });
+
+  it("resolves a relative command against the clone, and requires it to be executable", () => {
+    const clone = mkdtempSync(join(tmpdir(), "coord-argv-"));
+    try {
+      const declared = config({ checks: [{ name: "local", argv: ["./scripts/check.sh"] }] });
+      // Absent: reported wherever doctor happens to be invoked from.
+      expect(unresolvableCommands(declared, clone)).toEqual(["./scripts/check.sh"]);
+
+      // Present but not executable is still not something a hook can spawn.
+      mkdirSync(join(clone, "scripts"), { recursive: true });
+      writeFileSync(join(clone, "scripts", "check.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+      expect(unresolvableCommands(declared, clone)).toEqual(["./scripts/check.sh"]);
+
+      chmodSync(join(clone, "scripts", "check.sh"), 0o755);
+      expect(unresolvableCommands(declared, clone)).toEqual([]);
+    } finally {
+      rmSync(clone, { recursive: true, force: true });
+    }
   });
 });
 
@@ -131,6 +152,28 @@ describe("installer proposals", () => {
     const unknown = proposeProjectPolicy(join(repoRoot, "test", "support"));
     expect(unknown.verify).toBeUndefined();
     expect(unknown.checks).toBeUndefined();
+  });
+
+  it("omits verify when nothing was recognized, rather than writing an opt-out", () => {
+    // An empty verify is the operator's explicit "this project has no local
+    // checks". A proposal that found nothing must not sign that on their behalf.
+    const root = mkdtempSync(join(tmpdir(), "coord-propose-"));
+    try {
+      writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { test: "echo ok" } }));
+      expect(proposeProjectPolicy(root).verify).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    const makeRoot = mkdtempSync(join(tmpdir(), "coord-propose-"));
+    try {
+      writeFileSync(join(makeRoot, "Makefile"), "test:\n\techo ok\n");
+      const proposal = proposeProjectPolicy(makeRoot);
+      expect(proposal.toolchain).toBe("make");
+      expect(proposal.verify).toBeUndefined();
+    } finally {
+      rmSync(makeRoot, { recursive: true, force: true });
+    }
   });
 
   it("proposes non-Node argument vectors for non-Node trees", () => {
@@ -206,5 +249,31 @@ describe("workspace declaration", () => {
     ]) {
       expect(workspaceDeclarationSchema.safeParse(forbidden).success, JSON.stringify(forbidden)).toBe(false);
     }
+  });
+});
+
+describe("managed ignore block", () => {
+  it("returns every byte outside the block unchanged across a round trip", () => {
+    // A product's own grouping is not coordination's to reformat: collapsing
+    // blank lines made install/uninstall show a diff in a file it does not own.
+    const original = "# group one\nbuild/\n\n\n# group two — deliberately separated\ndist/\n";
+    const applied = applyManagedBlock(original, ["/start-*.sh"]);
+    expect(applied.content).toContain("coordination managed block");
+    expect(removeManagedBlock(applied.content).content).toBe(original);
+  });
+
+  it("is idempotent and refreshes in place", () => {
+    const original = "build/\n";
+    const once = applyManagedBlock(original, ["/start-*.sh"]).content;
+    expect(applyManagedBlock(once, ["/start-*.sh"])).toMatchObject({ changed: false, content: once });
+    const refreshed = applyManagedBlock(once, ["/start-*.sh", "tags"]).content;
+    expect(removeManagedBlock(refreshed).content).toBe(original);
+  });
+
+  it("refuses an unterminated block instead of deleting the rest of the file", () => {
+    const truncated =
+      "keep me\n# >>> coordination managed block — coord install >>>\n/start-*.sh\nIMPORTANT-PRODUCT-RULE\n";
+    expect(() => removeManagedBlock(truncated)).toThrow(ManagedBlockError);
+    expect(() => applyManagedBlock(truncated, ["/start-*.sh"])).toThrow(/end marker/);
   });
 });

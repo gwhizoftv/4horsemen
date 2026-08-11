@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# coord-managed-hook
 # Canonical, agent-neutral hook body. It lives in the coordination install and
 # is reached through a shim in an agent clone's .git/hooks/ — never committed to
 # a product's default branch, so a human clone of the same remote is unaffected.

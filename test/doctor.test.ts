@@ -1,4 +1,4 @@
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DOCTOR_CODES, doctor, renderDoctorReport } from "../src/doctor.js";
@@ -96,10 +96,28 @@ describe("coord doctor", () => {
   });
 
   it("reports a stale vendor stamp", () => {
-    const { fixture, clone } = installed();
-    const manifestPath = join(clone, ".git", "hooks", "coord-hooks.json");
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
-    writeFileSync(manifestPath, JSON.stringify({ ...manifest, mode: "vendor", sourceCommit: "a".repeat(40) }, null, 2));
+    // A genuine vendor install: the copies exist, so what makes them stale is
+    // the recorded source commit, not their absence.
+    ensureBuilt();
+    const fixture = makeProduct();
+    fixtures.push(fixture);
+    install({
+      installRoot: repoRoot,
+      productRoot: fixture.productRoot,
+      coordRoot: fixture.coordRoot,
+      agents: ["claude"],
+      profile: "solo",
+      declarePath: writeDeclaration(fixture.workspaceRoot, { checks: declaredChecks, verify: passingVerify }),
+      writeProduct: false,
+      vendor: true,
+      bootstrap: false,
+      dryRun: false,
+      log: silence().log
+    });
+    const configPath = join(fixture.coordRoot, "workspaces", "myserver", "config.json");
+    editConfig(configPath, (config) => {
+      (config.coordination as Record<string, unknown>).commit = "a".repeat(40);
+    });
     expect(report(fixture).findings.map((item) => item.code)).toContain(DOCTOR_CODES.vendorStamp);
   });
 
@@ -149,5 +167,54 @@ describe("coord doctor", () => {
     expect(result.findings.length).toBeGreaterThan(1);
     expect(result.exitCode).toBe(Math.min(...result.findings.map((item) => item.code)));
     expect(renderDoctorReport(result)).toContain(`exit ${result.exitCode}`);
+  });
+});
+
+describe("coord doctor — broken clones and configs", () => {
+  it("reports, rather than throws, when a clone is no longer a repository", () => {
+    const { fixture, clone } = installed();
+    rmSync(join(clone, ".git"), { recursive: true, force: true });
+    const result = report(fixture);
+    expect(result.findings.map((item) => item.code)).toContain(DOCTOR_CODES.cloneMissing);
+    expect(result.findings.map((item) => item.class)).not.toContain("identity");
+  });
+
+  it("reports a missing clone under its own class, not as an identity fault", () => {
+    const { fixture, clone } = installed();
+    rmSync(clone, { recursive: true, force: true });
+    const findings = report(fixture).findings;
+    expect(findings.map((item) => item.code)).toContain(DOCTOR_CODES.cloneMissing);
+    expect(findings.map((item) => item.code)).not.toContain(DOCTOR_CODES.identity);
+  });
+
+  it("classifies a config coord start could not read", () => {
+    const { fixture, configPath } = installed();
+    writeFileSync(configPath, "{ not json");
+    const result = report(fixture);
+    expect(result.exitCode).toBe(DOCTOR_CODES.startCompatibility);
+    expect(result.findings[0]?.class).toBe("startCompatibility");
+  });
+
+  it("reports a clone redirected at a different install root", () => {
+    const { fixture, clone } = installed();
+    git(clone, "config", "--local", "coord.installRoot", join(fixture.workspaceRoot, "another-checkout"));
+    expect(report(fixture).findings.map((item) => item.code)).toContain(DOCTOR_CODES.installDrift);
+  });
+
+  it("reports hooks that lost the execute bit", () => {
+    const { fixture, clone } = installed();
+    chmodSync(join(clone, ".git", "hooks", "pre-commit"), 0o644);
+    const findings = report(fixture).findings;
+    expect(findings.map((item) => item.code)).toContain(DOCTOR_CODES.hooks);
+    expect(findings.find((item) => item.class === "hooks")?.message).toContain("not executable");
+  });
+
+  it("reports a manifest that names a path it may not", () => {
+    const { fixture, clone } = installed();
+    const manifestFile = join(clone, ".git", "hooks", "coord-hooks.json");
+    const manifest = JSON.parse(readFileSync(manifestFile, "utf8")) as { files: Record<string, string> };
+    manifest.files["../../../victim"] = "a".repeat(64);
+    writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+    expect(report(fixture).findings.map((item) => item.code)).toContain(DOCTOR_CODES.hooks);
   });
 });

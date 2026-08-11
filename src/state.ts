@@ -108,12 +108,26 @@ export const installStampSchema = z
     cliEntry: z.string().min(1),
     version: z.string().min(1),
     commit: gitShaSchema,
+    /**
+     * Digest of the hook bodies, shim template, and launcher template the
+     * clones actually execute. The commit alone cannot see an uncommitted edit
+     * to a canonical body, which is how a hook rewritten to `exit 0` passed
+     * inspection while every clone ran it.
+     */
+    canonicalDigest: digestSchema,
     installedAt: timestampSchema,
     productRoot: z.string().min(1),
     cloneRoot: z.string().min(1),
     vendored: z.boolean(),
+    /** Bootstrap commands were run in the install checkout. */
     bootstrapped: z.boolean(),
-    wroteProductIgnore: z.boolean()
+    /**
+     * Coordination created the install checkout and may therefore delete it.
+     * Running `pnpm install` inside somebody's existing clone is not ownership.
+     */
+    ownsInstallRoot: z.boolean(),
+    wroteProductIgnore: z.boolean(),
+    wroteAgentsMd: z.boolean()
   })
   .strict();
 

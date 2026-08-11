@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { hermeticGitEnv } from "./mirror.js";
 
 export type GitResult = { exitCode: number; stdout: string; stderr: string };
 
@@ -6,9 +7,15 @@ export type GitResult = { exitCode: number; stdout: string; stderr: string };
  * Synchronous git for the installer. `coord install` is an operator-driven,
  * one-shot command with a strictly ordered set of effects; the run loop's async
  * runner exists to interleave agents, which is not what this needs.
+ *
+ * The environment is scrubbed exactly as the mirror and run loop scrub theirs.
+ * An inherited `GIT_DIR`, `GIT_WORK_TREE`, or `GIT_CONFIG_*` would redirect
+ * worktree detection, remote discovery, and local-config writes away from the
+ * explicit paths the installer was given, which is how containment checks come
+ * to pass while the wrong repository gets wired.
  */
 export const git = (cwd: string, ...args: readonly string[]): GitResult => {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: hermeticGitEnv() });
   if (result.error !== undefined) {
     throw new Error(`Cannot run git ${args.join(" ")} in ${cwd}: ${result.error.message}`);
   }

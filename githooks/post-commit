@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# coord-managed-hook
 # Canonical, agent-neutral hook body. See githooks/pre-commit for the placement
 # rule; identity is resolved at runtime, never edited into this file.
 lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
