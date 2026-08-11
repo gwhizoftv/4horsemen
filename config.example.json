@@ -6,7 +6,10 @@
     { "id": "cursor", "root": "../coordination-cursor" },
     { "id": "antigravity", "root": "../coordination-antigravity" }
   ],
-  "branch": "issue-{issue}/{agent}",
-  "defaultCoordRoot": "../coord-runtime",
-  "maxRevisionRounds": 3
+  "branchTemplate": "issue-{issue}/{agent}",
+  "maxRevisionRounds": 3,
+  "prPolicy": "unmerged",
+  "finalization": {
+    "checkArgv": ["pnpm", "install", "--frozen-lockfile", "&&", "pnpm", "check"]
+  }
 }
