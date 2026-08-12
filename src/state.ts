@@ -137,7 +137,13 @@ export const agentConfigSchema = z
     root: z.string().min(1),
     launcher: z.string().min(1),
     delivery: deliverySchema.default("pull"),
-    harnessProcess: z.string().min(1).optional()
+    harnessProcess: z.string().min(1).optional(),
+    /** tmux send-keys before the nudge text (e.g. vim insert `i`). */
+    nudgePrelude: z.array(z.string().min(1)).optional(),
+    /** tmux send-keys after the nudge text (e.g. Enter or C-j). */
+    nudgeSubmit: z.array(z.string().min(1)).optional(),
+    /** macOS Terminal.app settings-set (profile) name for owner attach windows. */
+    terminalProfile: z.string().min(1).optional()
   })
   .strict();
 

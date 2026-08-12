@@ -36,6 +36,37 @@ export const agentHarnessProcess = (agent: string): string => {
 };
 
 /**
+ * Default per-agent owner UI for nudges and macOS Terminal windows.
+ * Codex uses vim bindings: `i` then Ctrl-J (Enter inserts a newline in insert).
+ * terminalProfile names are stock Terminal.app settings sets when possible.
+ * Operators override any of these in config.json.
+ */
+export const agentOwnerUiDefaults = (
+  agent: string
+): { nudgePrelude: string[]; nudgeSubmit: string[]; terminalProfile: string } => {
+  switch (agent) {
+    case "codex":
+      return { nudgePrelude: ["i"], nudgeSubmit: ["C-j"], terminalProfile: "Grass" };
+    case "claude":
+      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Pro" };
+    case "cursor":
+      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Ocean" };
+    case "antigravity":
+      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Red Sands" };
+    default:
+      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Basic" };
+  }
+};
+
+/** @deprecated Prefer agentOwnerUiDefaults. */
+export const agentNudgeKeyDefaults = (
+  agent: string
+): { nudgePrelude: string[]; nudgeSubmit: string[] } => {
+  const { nudgePrelude, nudgeSubmit } = agentOwnerUiDefaults(agent);
+  return { nudgePrelude, nudgeSubmit };
+};
+
+/**
  * Everything `coord install` does to an agent clone and to the owner runtime.
  *
  * The division of labour this module encodes: the product's tracked tree gets
@@ -242,7 +273,8 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
       launcher: `start-${agent}.sh`,
       // both: driver pastes a short action path; agents can also pull via `coord next`.
       delivery: "both",
-      harnessProcess: agentHarnessProcess(agent)
+      harnessProcess: agentHarnessProcess(agent),
+      ...agentOwnerUiDefaults(agent)
     })),
     branch: declared.branch ?? "issue-{issue}/{agent}",
     baseBranch: input.baseBranch,

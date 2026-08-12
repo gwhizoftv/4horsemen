@@ -4,6 +4,7 @@ import { platform } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import type { AgentConfig } from "./state.js";
 import { assertNoSymlink, containedPath, isPathInside } from "./paths.js";
+import { agentNudgeKeyDefaults, agentOwnerUiDefaults } from "./setupWorkspace.js";
 
 export type TmuxResult = { exitCode: number; stdout: string; stderr: string };
 export type TmuxRunner = (args: readonly string[], input?: string) => Promise<TmuxResult>;
@@ -35,16 +36,23 @@ export const harnessLooksReady = (foreground: string, expected?: string): boolea
   return false;
 };
 
-/**
- * Keys to send before the nudge text. Happy-path harnesses (Claude Code,
- * Cursor agent, Codex, Antigravity) are not vim-normal prompts — a leading
- * `a` is typed literally ("aRead and execute…"). Keep this empty unless an
- * agent is known to need a vim append prelude.
- */
-export const nudgePreludeKeys = (agentId: string): readonly string[] => {
-  void agentId;
-  return [];
+/** Resolve configured or default prelude/submit keys for an agent nudge. */
+export const resolveNudgeKeys = (
+  agent: AgentConfig
+): { prelude: readonly string[]; submit: readonly string[] } => {
+  const defaults = agentOwnerUiDefaults(agent.id);
+  return {
+    prelude: agent.nudgePrelude ?? defaults.nudgePrelude,
+    submit: agent.nudgeSubmit ?? defaults.nudgeSubmit
+  };
 };
+
+/** Resolve macOS Terminal.app profile name for an owner attach window. */
+export const resolveTerminalProfile = (agent: AgentConfig): string =>
+  agent.terminalProfile ?? agentOwnerUiDefaults(agent.id).terminalProfile;
+
+/** @deprecated Prefer resolveNudgeKeys(agent). */
+export const nudgePreludeKeys = (agentId: string): readonly string[] => agentNudgeKeyDefaults(agentId).nudgePrelude;
 
 /**
  * Shell command that attaches a dedicated tmux client focused on one agent window.
@@ -64,7 +72,7 @@ export const agentClientAttachCommand = (session: string, agentId: string): stri
   ].join(" ';' ");
 };
 
-export type OwnerTerminalLaunch = { agentId: string; command: string };
+export type OwnerTerminalLaunch = { agentId: string; command: string; terminalProfile: string };
 export type OwnerTerminalOpener = (launches: readonly OwnerTerminalLaunch[]) => Promise<void>;
 
 const appleScriptString = (value: string): string => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
@@ -73,11 +81,15 @@ const appleScriptString = (value: string): string => `"${value.replace(/\\/g, "\
 export const openDarwinTerminalWindows: OwnerTerminalOpener = async (launches) => {
   for (const launch of launches) {
     const title = launch.agentId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const profile = launch.terminalProfile.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const script = [
       'tell application "Terminal"',
       "  activate",
-      `  do script ${appleScriptString(launch.command)}`,
+      `  set newTab to do script ${appleScriptString(launch.command)}`,
       `  set custom title of front window to "${title}"`,
+      "  try",
+      `    set current settings of newTab to settings set "${profile}"`,
+      "  end try",
       "end tell"
     ].join("\n");
     const result = await new Promise<TmuxResult>((resolvePromise, reject) => {
@@ -143,7 +155,8 @@ export class TmuxController {
     const session = this.sessionName(issue);
     return agents.map((agent) => ({
       agentId: agent.id,
-      command: agentClientAttachCommand(session, agent.id)
+      command: agentClientAttachCommand(session, agent.id),
+      terminalProfile: resolveTerminalProfile(agent)
     }));
   }
 
@@ -261,8 +274,9 @@ export class TmuxController {
     if (!harnessLooksReady(pane.foreground, agent.harnessProcess)) return "busy";
     const text = `Read and execute your current coordinator action at ${actionPath}`;
     // Some harnesses (notably agy) ignore tmux paste-buffer; literal send-keys
-    // reaches the input widget. Optional prelude enters insert/append for vim UIs.
-    for (const key of nudgePreludeKeys(agent.id)) {
+    // reaches the input widget. Prelude/submit keys come from agent config.
+    const { prelude: preludeKeys, submit: submitKeys } = resolveNudgeKeys(agent);
+    for (const key of preludeKeys) {
       const prelude = await this.runner(["send-keys", "-t", target, key]);
       assertAuthority();
       if (prelude.exitCode !== 0) throw new Error(`tmux send-keys prelude failed: ${prelude.stderr}`);
@@ -270,8 +284,11 @@ export class TmuxController {
     const typed = await this.runner(["send-keys", "-l", "-t", target, text]);
     assertAuthority();
     if (typed.exitCode !== 0) throw new Error(`tmux send-keys text failed: ${typed.stderr}`);
-    const enter = await this.runner(["send-keys", "-t", target, "Enter"]);
-    if (enter.exitCode !== 0) throw new Error(`tmux send-keys Enter failed: ${enter.stderr}`);
+    for (const key of submitKeys) {
+      const submit = await this.runner(["send-keys", "-t", target, key]);
+      assertAuthority();
+      if (submit.exitCode !== 0) throw new Error(`tmux send-keys submit failed: ${submit.stderr}`);
+    }
     return "sent";
   }
 }
