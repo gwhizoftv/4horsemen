@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
+# Resolve symlinks (e.g. ~/.local/bin/coord → install-root/coord) before cd.
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  TARGET="$(readlink "$SOURCE")"
+  if [[ "$TARGET" == /* ]]; then
+    SOURCE="$TARGET"
+  else
+    SOURCE="$DIR/$TARGET"
+  fi
+done
+cd -P "$(dirname "$SOURCE")"
 if [[ ! -f dist/main.js ]] || find src -type f -newer dist/main.js -print -quit | grep -q .; then
   pnpm build >&2
 fi
