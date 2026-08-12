@@ -121,10 +121,14 @@ workspaces append the workspace hash printed by tmux/start diagnostics:
 tmux attach -t coord-42
 ```
 
+On macOS, `coord start` / a fresh `coord N` also opens one Terminal.app window per
+agent, each attached to that agent's tmux window (separate clients — no Ctrl-b n).
+Re-open those views later with `coord attach N`.
+
 Nudge delivery uses literal `send-keys -l` (not paste-buffer — some TUIs such
 as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`.
-Vim-oriented harnesses get a prelude `a` before the text; Antigravity does not.
-Then `Enter` submits. If the first delivery is skipped (trust UI, wrong
+No vim prelude is sent (Claude/Cursor/Codex/agy treat a leading `a` as literal
+text). Then `Enter` submits. If the first delivery is skipped (trust UI, wrong
 foreground name), the run loop retries until one successful delivery per action.
 Cursor panes that report as `node` are treated as ready when
 `harnessProcess` is `agent`. Use `coord N -v` for tick-level progress logs.
