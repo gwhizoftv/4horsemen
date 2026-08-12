@@ -81,6 +81,11 @@ const parseArgs = (args: readonly string[], booleans: readonly string[] = []): P
   const flags = new Map<string, string>();
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index] as string;
+    if (argument === "-v" || argument === "--verbose") {
+      if (flags.has("verbose")) throw new Error(`Invalid or duplicate option ${argument}.`);
+      flags.set("verbose", "true");
+      continue;
+    }
     if (!argument.startsWith("--")) {
       positionals.push(argument);
       continue;
@@ -92,7 +97,9 @@ const parseArgs = (args: readonly string[], booleans: readonly string[] = []): P
       continue;
     }
     const value = args[index + 1];
-    if (value === undefined || value.startsWith("--")) throw new Error(`Option ${argument} requires a value.`);
+    if (value === undefined || value.startsWith("--") || value.startsWith("-")) {
+      throw new Error(`Option ${argument} requires a value.`);
+    }
     flags.set(name, value);
     index += 1;
   }
@@ -140,16 +147,16 @@ const help = `coord — owner-side workflow driver
 
 Usage:
   coord onboard <product> [--coord-root <path>] [--agents <a,b,c>] [--profile <p>]
-  coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>]
+  coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord install --product <path> --coord-root <external-path> --agents <a,b,c> [--profile <p>]
                 [--clone-root <dir>] [--declare <file>] [--write-product] [--vendor]
                 [--bootstrap-coordination] [--dry-run]
   coord uninstall --coord-root <path> --product <path> [--delete-clones] [--force]
                   [--wipe-runtime] [--delete-coordination] [--dry-run]
   coord doctor --coord-root <path> --product <path>
-  coord start <issue> --product <path> [--profile <solo|reviewed|consensus>]
-  coord start <issue> --config <path> --coord-root <external-path> [--profile <solo|reviewed|consensus>]
-  coord run --issue <issue> [--product <path> | --coord-root <path>]
+  coord start <issue> --product <path> [--profile <solo|reviewed|consensus>] [-v|--verbose]
+  coord start <issue> --config <path> --coord-root <external-path> [--profile <solo|reviewed|consensus>] [-v|--verbose]
+  coord run --issue <issue> [--product <path> | --coord-root <path>] [-v|--verbose]
   coord next --issue <issue> [--product <path> | --coord-root <path>] [--agent <agent>]
   coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
   coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
@@ -164,6 +171,7 @@ Happy path: bootstrap once, onboard a product once, create GitHub issue N, then 
 
 From an agent clone, \`coord next --issue N\` resolves the runtime via
 coord.workspaceConfig and the caller via consensus.agentId (or --agent / COORD_AGENT).
+Use \`-v\` / \`--verbose\` on \`coord N\`, start, or run for tick-level progress logs.
 
 install remains the advanced explicit interface. Onboard and install leave the product's
 tracked tree untouched; a fresh human clone receives no coordination hooks or metadata.
@@ -470,7 +478,15 @@ const defaultStartEffects = async (input: {
 export const runCli = async (argv: readonly string[], dependencies: CliDependencies = {}): Promise<number> => {
   const io: CliIo = { ...defaultIo, ...dependencies.io };
   const runner = dependencies.processRunner ?? runArgv;
-  const makeRunLoop = dependencies.makeRunLoop ?? ((paths: IssueRuntimePaths) => new CoordinatorRunLoop(paths));
+  const verboseState = { enabled: false };
+  const defaultMakeRunLoop = (paths: IssueRuntimePaths): CliRunLoop =>
+    new CoordinatorRunLoop(paths, {
+      log: (message) => io.stdout(`${message}\n`),
+      verbose: (message) => {
+        if (verboseState.enabled) io.stdout(`${message}\n`);
+      }
+    });
+  const makeRunLoop = dependencies.makeRunLoop ?? defaultMakeRunLoop;
   const startEffects =
     dependencies.startEffects ??
     (dependencies.makeRunLoop === undefined
@@ -570,8 +586,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     const parsed = parseArgs(rest, booleanFlags[command] ?? []);
 
     if (/^[0-9]+$/.test(command)) {
-      allowedFlags(parsed, ["product", "profile", "config", "coord-root"]);
+      allowedFlags(parsed, ["product", "profile", "config", "coord-root", "verbose"]);
       if (parsed.positionals.length !== 0) throw new Error("coord <issue> takes no additional positional arguments.");
+      verboseState.enabled = flagIsSet(parsed, "verbose");
       const issue = parseIssue(command);
       const resolution = resolveStart(parsed, io);
       const existing = existingIssueRuntime(resolution, issue);
@@ -697,16 +714,18 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "start") {
-      allowedFlags(parsed, ["profile", "config", "coord-root", "product"]);
+      allowedFlags(parsed, ["profile", "config", "coord-root", "product", "verbose"]);
       if (parsed.positionals.length !== 1) throw new Error("start requires exactly one issue number.");
+      verboseState.enabled = flagIsSet(parsed, "verbose");
       const issue = parseIssue(parsed.positionals[0] as string);
       await startIssue(issue, resolveStart(parsed, io));
       return 0;
     }
 
     if (command === "run") {
-      allowedFlags(parsed, ["issue", "coord-root", "product"]);
+      allowedFlags(parsed, ["issue", "coord-root", "product", "verbose"]);
       if (parsed.positionals.length !== 0) throw new Error("run takes no positional arguments.");
+      verboseState.enabled = flagIsSet(parsed, "verbose");
       await makeRunLoop(existingContext(parsed, io)).run();
       return 0;
     }

@@ -34,6 +34,13 @@ export const harnessLooksReady = (foreground: string, expected?: string): boolea
   return false;
 };
 
+/**
+ * Keys to send before the nudge text. Vim-normal prompts need `a` to append;
+ * Antigravity does not use vim mode, so a leading `a` would corrupt its input.
+ */
+export const nudgePreludeKeys = (agentId: string): readonly string[] =>
+  agentId === "antigravity" ? [] : ["a"];
+
 export const resolveAgentLauncher = (agent: AgentConfig): string => {
   const root = resolve(agent.root);
   if (isAbsolute(agent.launcher)) throw new Error(`Launcher for ${agent.id} must be relative to its agent clone.`);
@@ -163,21 +170,19 @@ export class TmuxController {
     if (!pane.alive) return "gone";
     if (pane.ownerTyping) return "busy";
     if (!harnessLooksReady(pane.foreground, agent.harnessProcess)) return "busy";
-    const buffer = `coord-${issue}-${safeName(agent.id)}`;
     const text = `Read and execute your current coordinator action at ${actionPath}`;
-    // Many agent UIs default to vim normal mode; `a` appends into the prompt
-    // so the following paste + Enter actually submit.
-    const insert = await this.runner(["send-keys", "-t", target, "a"]);
+    // Some harnesses (notably agy) ignore tmux paste-buffer; literal send-keys
+    // reaches the input widget. Optional prelude enters insert/append for vim UIs.
+    for (const key of nudgePreludeKeys(agent.id)) {
+      const prelude = await this.runner(["send-keys", "-t", target, key]);
+      assertAuthority();
+      if (prelude.exitCode !== 0) throw new Error(`tmux send-keys prelude failed: ${prelude.stderr}`);
+    }
+    const typed = await this.runner(["send-keys", "-l", "-t", target, text]);
     assertAuthority();
-    if (insert.exitCode !== 0) throw new Error(`tmux send-keys insert failed: ${insert.stderr}`);
-    const loaded = await this.runner(["load-buffer", "-b", buffer, "-"], text);
-    assertAuthority();
-    if (loaded.exitCode !== 0) throw new Error(`tmux load-buffer failed: ${loaded.stderr}`);
-    const pasted = await this.runner(["paste-buffer", "-b", buffer, "-d", "-t", target]);
-    assertAuthority();
-    if (pasted.exitCode !== 0) throw new Error(`tmux paste-buffer failed: ${pasted.stderr}`);
+    if (typed.exitCode !== 0) throw new Error(`tmux send-keys text failed: ${typed.stderr}`);
     const enter = await this.runner(["send-keys", "-t", target, "Enter"]);
-    if (enter.exitCode !== 0) throw new Error(`tmux send-keys failed: ${enter.stderr}`);
+    if (enter.exitCode !== 0) throw new Error(`tmux send-keys Enter failed: ${enter.stderr}`);
     return "sent";
   }
 }
