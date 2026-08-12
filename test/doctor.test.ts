@@ -29,6 +29,7 @@ const installed = (
   ensureBuilt();
   const fixture = makeProduct(kind);
   fixtures.push(fixture);
+  git(fixture.productRoot, "remote", "set-url", "origin", "https://github.com/example/myserver.git");
   const result = install({
     installRoot: repoRoot,
     productRoot: fixture.productRoot,
@@ -114,7 +115,7 @@ describe("coord doctor", () => {
       dryRun: false,
       log: silence().log
     });
-    const configPath = join(fixture.coordRoot, "workspaces", "myserver", "config.json");
+    const configPath = join(fixture.coordRoot, "config.json");
     editConfig(configPath, (config) => {
       (config.coordination as Record<string, unknown>).commit = "a".repeat(40);
     });

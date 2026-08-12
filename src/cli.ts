@@ -3,9 +3,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clearCompletion, readAction } from "./action.js";
 import { doctor, renderDoctorReport } from "./doctor.js";
+import { fetchGitHubIssue, renderGitHubIssueSnapshot } from "./githubIssue.js";
 import { sha256 } from "./hash.js";
 import { renderHookScope, resolveWorkspaceConfig, runVerifyPhase } from "./hookPolicy.js";
-import { install, uninstall } from "./install.js";
+import { install, onboard, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import {
   agentRuntimePaths,
@@ -17,9 +18,10 @@ import {
   type IssueRuntimePaths
 } from "./paths.js";
 import { gitShaSchema } from "./protocol.js";
-import { CoordinatorRunLoop, deterministicWinner, githubRepositoryFromOrigin, runArgv, type ProcessRunner } from "./runLoop.js";
+import { CoordinatorRunLoop, deterministicWinner, runArgv, type ProcessRunner } from "./runLoop.js";
 import {
   appendJournal,
+  atomicWriteJson,
   cursorsStateSchema,
   dropAgent,
   initializeOperationalState,
@@ -35,6 +37,7 @@ import {
 } from "./state.js";
 import type { WorkflowProfile } from "./steps.js";
 import { resolveAgentLauncher, TmuxController } from "./tmux.js";
+import { resolveWorkspaceFromProduct, type WorkspaceLocation } from "./workspace.js";
 
 export type CliIo = {
   stdout: (message: string) => void;
@@ -135,14 +138,17 @@ const allowedFlags = (parsed: ParsedArgs, allowed: readonly string[]): void => {
 const help = `coord — owner-side workflow driver
 
 Usage:
+  coord onboard <product> [--coord-root <path>] [--agents <a,b,c>] [--profile <p>]
+  coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>]
   coord install --product <path> --coord-root <external-path> --agents <a,b,c> [--profile <p>]
                 [--clone-root <dir>] [--declare <file>] [--write-product] [--vendor]
                 [--bootstrap-coordination] [--dry-run]
   coord uninstall --coord-root <path> --product <path> [--delete-clones] [--force]
                   [--wipe-runtime] [--delete-coordination] [--dry-run]
   coord doctor --coord-root <path> --product <path>
-  coord start <issue> --profile <solo|reviewed|consensus> --config <path> --coord-root <external-path>
-  coord run --issue <issue> --coord-root <path>
+  coord start <issue> --product <path> [--profile <solo|reviewed|consensus>]
+  coord start <issue> --config <path> --coord-root <external-path> [--profile <solo|reviewed|consensus>]
+  coord run --issue <issue> [--product <path> | --coord-root <path>]
   coord next --issue <issue> --coord-root <path> --agent <agent>
   coord answer <question-id> <retry|revise|abandon> --issue <issue> --coord-root <path>
   coord drop <agent> --issue <issue> --coord-root <path>
@@ -152,21 +158,26 @@ Called by the agent-clone hooks, not by operators:
   coord hook-verify --clone <path> --phase <precommit|prepush>
   coord hook-scope --clone <path>
 
-install leaves the product's tracked tree untouched by default: all wiring lands in the
-agent clones and under --coord-root, so a human clone of the same remote is unaffected.
+Happy path: bootstrap once, onboard a product once, create GitHub issue N, then run
+\`coord N\` from that onboarded product. Agents author plans on issue-N/<agent>.
 
-COORD_ISSUE and COORD_AGENT may replace the corresponding options. The safety-critical
---coord-root option must always be explicit.
+install remains the advanced explicit interface. Onboard and install leave the product's
+tracked tree untouched; a fresh human clone receives no coordination hooks or metadata.
+COORD_ISSUE and COORD_AGENT may replace their corresponding owner-control options.
 `;
 
 export const automationDigestMaterial = (
   configPath: string,
   config: CoordinatorConfig,
-  issue: number
+  issue: number,
+  issueSnapshot: string
 ): { digest: string; sources: Array<{ id: string; sha256: string }> } => {
   const configRoot = dirname(configPath);
   assertNoSymlink(configRoot, configPath);
-  const sourceBytes: Array<{ id: string; content: string }> = [{ id: "config", content: readFileSync(configPath, "utf8") }];
+  const sourceBytes: Array<{ id: string; content: string }> = [
+    { id: "config", content: readFileSync(configPath, "utf8") },
+    { id: "github-issue", content: issueSnapshot }
+  ];
   for (const template of config.digestPaths) {
     const path = template.replaceAll("{issue}", String(issue));
     if (path.includes("{") || path.includes("}")) throw new Error(`Unsupported digest path template ${template}.`);
@@ -287,6 +298,81 @@ const rederiveAfterDrop = (
   return next;
 };
 
+type StartResolution = {
+  configPath: string;
+  config: CoordinatorConfig;
+  runtimeRoot: string;
+  workspace: WorkspaceLocation | null;
+  profile: WorkflowProfile;
+};
+
+const workflowProfile = (value: string): WorkflowProfile => {
+  if (value === "solo" || value === "reviewed" || value === "consensus") return value;
+  throw new Error("--profile must be solo, reviewed, or consensus.");
+};
+
+const resolveStart = (parsed: ParsedArgs, io: CliIo): StartResolution => {
+  const hasConfig = parsed.flags.has("config");
+  const hasCoordRoot = parsed.flags.has("coord-root");
+  if (hasConfig !== hasCoordRoot) {
+    throw new Error("--config and --coord-root must be supplied together, or use --product after coord onboard.");
+  }
+  if (hasConfig && parsed.flags.has("product")) {
+    throw new Error("Use --product or the explicit --config/--coord-root pair, not both.");
+  }
+
+  let configPath: string;
+  let runtimeRoot: string;
+  let workspace: WorkspaceLocation | null = null;
+  if (hasConfig) {
+    configPath = resolve(io.cwd, requireFlag(parsed, "config"));
+    runtimeRoot = resolve(io.cwd, requireFlag(parsed, "coord-root"));
+  } else {
+    const product = parsed.flags.has("product") ? resolve(io.cwd, requireFlag(parsed, "product")) : io.cwd;
+    workspace = resolveWorkspaceFromProduct(product);
+    configPath = workspace.configPath;
+    runtimeRoot = workspace.workspaceRoot;
+  }
+  const config = readConfig(configPath);
+  return {
+    configPath,
+    config,
+    runtimeRoot,
+    workspace,
+    profile: workflowProfile(parsed.flags.get("profile") ?? config.profile)
+  };
+};
+
+const matchesConfig = (paths: IssueRuntimePaths, configPath: string): boolean => {
+  if (!existsSync(paths.start)) return false;
+  const start = readStartState(paths);
+  return resolve(start.configPath) === resolve(configPath);
+};
+
+/** Find durable state for product-resolved commands, including old nested installs. */
+const existingIssueRuntime = (resolution: StartResolution, issue: number): IssueRuntimePaths | null => {
+  const current = issueRuntimePaths(resolution.runtimeRoot, issue);
+  const currentMatches = matchesConfig(current, resolution.configPath);
+  let legacy: IssueRuntimePaths | null = null;
+  let legacyMatches = false;
+  if (resolution.workspace?.layout === "nested") {
+    legacy = issueRuntimePaths(resolution.workspace.coordRoot, issue);
+    legacyMatches = matchesConfig(legacy, resolution.configPath);
+  }
+  if (currentMatches && legacyMatches) {
+    throw new Error(
+      `Issue ${issue} has both workspace-scoped and legacy runtime state for ${resolution.config.project}; ` +
+        "remove or archive the stale copy before continuing."
+    );
+  }
+  if (currentMatches) return current;
+  if (legacyMatches) return legacy;
+  if (existsSync(current.start)) {
+    throw new Error(`Issue ${issue} runtime at ${current.issueRoot} belongs to a different workspace.`);
+  }
+  return null;
+};
+
 const defaultStartEffects = async (input: {
   paths: IssueRuntimePaths;
   issue: number;
@@ -295,7 +381,7 @@ const defaultStartEffects = async (input: {
 }): Promise<{ cleanup: () => Promise<void> }> => {
   const mirror = new BareMirror(input.paths.mirror, input.origin);
   await mirror.initialize();
-  const tmux = new TmuxController();
+  const tmux = new TmuxController(undefined, input.paths.tmuxNamespace);
   await tmux.startSession(input.issue, input.agents);
   return { cleanup: async () => tmux.stopSession(input.issue) };
 };
@@ -309,6 +395,90 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     (dependencies.makeRunLoop === undefined
       ? defaultStartEffects
       : async () => ({ cleanup: async () => undefined }));
+  const startIssue = async (issue: number, resolution: StartResolution): Promise<IssueRuntimePaths> => {
+    const { configPath, config, profile } = resolution;
+    const agents = config.agents.map((agent) => ({ ...agent, root: resolve(dirname(configPath), agent.root) }));
+    const roster = profile === "solo" ? agents.slice(0, 1) : agents;
+    if (roster.length === 0) throw new Error(`Profile ${profile} requires at least one configured agent.`);
+    for (const agent of roster) resolveAgentLauncher(agent);
+    const coordRoot = resolveSafeCoordRoot({
+      coordRoot: resolution.runtimeRoot,
+      agentRoots: agents.map((agent) => agent.root),
+      create: false
+    });
+    const paths = issueRuntimePaths(coordRoot, issue);
+    if (existsSync(paths.issueRoot)) {
+      throw new Error(`Runtime state already exists for issue ${issue}. Use coord ${issue} to resume or abandon it explicitly.`);
+    }
+
+    const snapshot = await fetchGitHubIssue({ origin: config.origin, issue, cwd: io.cwd, runner });
+    const snapshotBytes = renderGitHubIssueSnapshot(snapshot);
+    const digest = automationDigestMaterial(configPath, config, issue, snapshotBytes);
+    const baselineResult = await runner(
+      ["git", "ls-remote", "--exit-code", config.origin, `refs/heads/${config.baseBranch}`],
+      io.cwd
+    );
+    if (baselineResult.exitCode !== 0) throw new Error(`Cannot resolve origin baseline: ${baselineResult.stderr.trim()}`);
+    const baselineSha = baselineResult.stdout.trim().split(/\s+/)[0];
+    const parsedBaseline = gitShaSchema.safeParse(baselineSha);
+    if (!parsedBaseline.success) throw new Error("Origin returned an invalid baseline SHA.");
+    const trustedSourceResult = await runner(["git", "rev-parse", "--verify", "HEAD^{commit}"], coordinatorSourceRoot);
+    if (trustedSourceResult.exitCode !== 0) {
+      throw new Error(`Cannot resolve trusted coordinator source commit: ${trustedSourceResult.stderr.trim()}`);
+    }
+    const trustedSourceCommit = gitShaSchema.safeParse(trustedSourceResult.stdout.trim());
+    if (!trustedSourceCommit.success) throw new Error("Coordinator source checkout returned an invalid trusted commit SHA.");
+
+    let effects: { cleanup: () => Promise<void> } | null = null;
+    try {
+      effects = await startEffects({ paths, issue, origin: config.origin, agents: roster });
+      createIssueRuntime(paths, roster.map((agent) => agent.id));
+      atomicWriteJson(paths.coordRoot, paths.issueSnapshot, snapshot);
+      initializeOperationalState(paths, {
+        issue,
+        issueSessionId: `issue-${issue}:${parsedBaseline.data}`,
+        baselineSha: parsedBaseline.data,
+        profile,
+        originalRoster: roster.map((agent) => agent.id),
+        branchTemplate: config.branch,
+        baseBranch: config.baseBranch,
+        maxRevisionRounds: config.maxRevisionRounds,
+        prPolicy: config.prPolicy,
+        automationDigest: digest.digest,
+        automationDigestScheme: "sha256-length-prefixed-v1",
+        automationDigestSources: digest.sources,
+        trustedSourceCommit: trustedSourceCommit.data,
+        origin: config.origin,
+        coordRoot,
+        configPath,
+        agents: roster,
+        checks: config.checks,
+        pollIntervalMs: config.pollIntervalMs
+      });
+    } catch (error) {
+      rmSync(paths.issueRoot, { recursive: true, force: true });
+      if (effects !== null) {
+        try {
+          await effects.cleanup();
+        } catch (cleanupError) {
+          io.stderr(
+            `coord: startup cleanup also failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}\n`
+          );
+        }
+      }
+      throw error;
+    }
+    try {
+      await makeRunLoop(paths).runTick();
+    } catch (error) {
+      throw new Error(
+        `Issue ${issue} was started durably at ${paths.issueRoot}, but its initial tick failed; ` +
+          `resume with coord ${issue}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    io.stdout(`Started issue ${issue} (${profile}) at ${paths.issueRoot}.\n`);
+    return paths;
+  };
   const [command, ...rest] = argv;
   if (command === undefined || command === "--help" || command === "-h" || command === "help") {
     io.stdout(help);
@@ -317,6 +487,40 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
 
   try {
     const parsed = parseArgs(rest, booleanFlags[command] ?? []);
+
+    if (/^[0-9]+$/.test(command)) {
+      allowedFlags(parsed, ["product", "profile", "config", "coord-root"]);
+      if (parsed.positionals.length !== 0) throw new Error("coord <issue> takes no additional positional arguments.");
+      const issue = parseIssue(command);
+      const resolution = resolveStart(parsed, io);
+      const existing = existingIssueRuntime(resolution, issue);
+      const paths = existing ?? (await startIssue(issue, resolution));
+      await makeRunLoop(paths).run();
+      return 0;
+    }
+
+    if (command === "onboard") {
+      allowedFlags(parsed, ["coord-root", "clone-root", "agents", "profile"]);
+      if (parsed.positionals.length !== 1) throw new Error("onboard requires exactly one product path.");
+      const agents = (parsed.flags.get("agents") ?? "claude,codex,cursor,antigravity")
+        .split(",")
+        .map((agent) => agent.trim())
+        .filter((agent) => agent !== "");
+      if (agents.length === 0) throw new Error("--agents requires at least one agent id.");
+      const profile = workflowProfile(parsed.flags.get("profile") ?? "consensus");
+      const productRoot = resolve(io.cwd, parsed.positionals[0] as string);
+      const result = onboard({
+        installRoot: coordinatorSourceRoot,
+        productRoot,
+        agents,
+        profile,
+        ...(parsed.flags.has("coord-root") ? { coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")) } : {}),
+        ...(parsed.flags.has("clone-root") ? { cloneRoot: resolve(io.cwd, requireFlag(parsed, "clone-root")) } : {}),
+        log: io.stdout
+      });
+      (result.doctor.exitCode === 0 ? io.stdout : io.stderr)(renderDoctorReport(result.doctor));
+      return result.doctor.exitCode;
+    }
 
     if (command === "install") {
       allowedFlags(parsed, [
@@ -412,105 +616,31 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "start") {
-      allowedFlags(parsed, ["profile", "config", "coord-root"]);
+      allowedFlags(parsed, ["profile", "config", "coord-root", "product"]);
       if (parsed.positionals.length !== 1) throw new Error("start requires exactly one issue number.");
       const issue = parseIssue(parsed.positionals[0] as string);
-      const profileValue = requireFlag(parsed, "profile");
-      if (!(profileValue === "solo" || profileValue === "reviewed" || profileValue === "consensus")) {
-        throw new Error("--profile must be solo, reviewed, or consensus.");
-      }
-      const profile: WorkflowProfile = profileValue;
-      const configPath = resolve(io.cwd, requireFlag(parsed, "config"));
-      const config = readConfig(configPath);
-      const agents = config.agents.map((agent) => ({ ...agent, root: resolve(dirname(configPath), agent.root) }));
-      const roster = profile === "solo" ? agents.slice(0, 1) : agents;
-      if (roster.length === 0) throw new Error(`Profile ${profile} requires at least one configured agent.`);
-      if (config.prPolicy === "coord-open-unmerged" && githubRepositoryFromOrigin(config.origin) === null) {
-        throw new Error(
-          `prPolicy "coord-open-unmerged" requires a supported github.com origin; ${config.origin} is incompatible.`
-        );
-      }
-      for (const agent of roster) resolveAgentLauncher(agent);
-      const coordRoot = resolveSafeCoordRoot({
-        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
-        agentRoots: agents.map((agent) => agent.root),
-        create: false
-      });
-      const paths = issueRuntimePaths(coordRoot, issue);
-      if (existsSync(paths.issueRoot)) {
-        throw new Error(`Runtime state already exists for issue ${issue}. Use resume or abandon it explicitly.`);
-      }
-      const digest = automationDigestMaterial(configPath, config, issue);
-      const baselineResult = await runner(["git", "ls-remote", "--exit-code", config.origin, `refs/heads/${config.baseBranch}`], io.cwd);
-      if (baselineResult.exitCode !== 0) throw new Error(`Cannot resolve origin baseline: ${baselineResult.stderr.trim()}`);
-      const baselineSha = baselineResult.stdout.trim().split(/\s+/)[0];
-      const parsedBaseline = gitShaSchema.safeParse(baselineSha);
-      if (!parsedBaseline.success) throw new Error("Origin returned an invalid baseline SHA.");
-      const trustedSourceResult = await runner(
-        ["git", "rev-parse", "--verify", "HEAD^{commit}"],
-        coordinatorSourceRoot
-      );
-      if (trustedSourceResult.exitCode !== 0) {
-        throw new Error(`Cannot resolve trusted coordinator source commit: ${trustedSourceResult.stderr.trim()}`);
-      }
-      const trustedSourceCommit = gitShaSchema.safeParse(trustedSourceResult.stdout.trim());
-      if (!trustedSourceCommit.success) throw new Error("Coordinator source checkout returned an invalid trusted commit SHA.");
-      let effects: { cleanup: () => Promise<void> } | null = null;
-      try {
-        effects = await startEffects({ paths, issue, origin: config.origin, agents: roster });
-        createIssueRuntime(paths, roster.map((agent) => agent.id));
-        initializeOperationalState(paths, {
-          issue,
-          issueSessionId: `issue-${issue}:${parsedBaseline.data}`,
-          baselineSha: parsedBaseline.data,
-          profile,
-          originalRoster: roster.map((agent) => agent.id),
-          branchTemplate: config.branch,
-          baseBranch: config.baseBranch,
-          maxRevisionRounds: config.maxRevisionRounds,
-          prPolicy: config.prPolicy,
-          automationDigest: digest.digest,
-          automationDigestScheme: "sha256-length-prefixed-v1",
-          automationDigestSources: digest.sources,
-          trustedSourceCommit: trustedSourceCommit.data,
-          origin: config.origin,
-          coordRoot,
-          configPath,
-          agents: roster,
-          checks: config.checks,
-          pollIntervalMs: config.pollIntervalMs
-        });
-      } catch (error) {
-        rmSync(paths.issueRoot, { recursive: true, force: true });
-        if (effects !== null) {
-          try {
-            await effects.cleanup();
-          } catch (cleanupError) {
-            io.stderr(
-              `coord: startup cleanup also failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}\n`
-            );
-          }
-        }
-        throw error;
-      }
-      try {
-        await makeRunLoop(paths).runTick();
-      } catch (error) {
-        throw new Error(
-          `Issue ${issue} was started durably at ${paths.issueRoot}, but its initial tick failed; ` +
-            `resume with coord run --issue ${issue} --coord-root ${coordRoot}: ${
-              error instanceof Error ? error.message : String(error)
-            }`
-        );
-      }
-      io.stdout(`Started issue ${issue} (${profile}) at ${paths.issueRoot}.\n`);
+      await startIssue(issue, resolveStart(parsed, io));
       return 0;
     }
 
     if (command === "run") {
-      allowedFlags(parsed, ["issue", "coord-root"]);
+      allowedFlags(parsed, ["issue", "coord-root", "product"]);
       if (parsed.positionals.length !== 0) throw new Error("run takes no positional arguments.");
-      await makeRunLoop(context(parsed, io)).run();
+      const issueValue = parsed.flags.get("issue") ?? io.env.COORD_ISSUE;
+      if (issueValue === undefined) throw new Error("--issue or COORD_ISSUE is required.");
+      const issue = parseIssue(issueValue);
+      if (parsed.flags.has("product")) {
+        if (parsed.flags.has("coord-root")) throw new Error("run accepts --product or --coord-root, not both.");
+        const resolution = resolveStart(
+          { positionals: [], flags: new Map([["product", requireFlag(parsed, "product")]]) },
+          io
+        );
+        const existing = existingIssueRuntime(resolution, issue);
+        if (existing === null) throw new Error(`No runtime state exists for issue ${issue} and this product. Run coord ${issue}.`);
+        await makeRunLoop(existing).run();
+      } else {
+        await makeRunLoop(context(parsed, io)).run();
+      }
       return 0;
     }
 

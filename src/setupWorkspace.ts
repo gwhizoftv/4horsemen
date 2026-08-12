@@ -12,7 +12,7 @@ import {
   worktreeRoot
 } from "./gitExec.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
-import { containedPath, isPathInside } from "./paths.js";
+import { isPathInside } from "./paths.js";
 import { DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile, clearManagedIgnoreFile } from "./productIgnore.js";
 import {
   atomicWriteJson,
@@ -21,6 +21,7 @@ import {
   type CoordinatorConfig,
   type WorkspaceDeclaration
 } from "./state.js";
+import type { WorkspaceLocation } from "./workspace.js";
 
 /**
  * Everything `coord install` does to an agent clone and to the owner runtime.
@@ -63,12 +64,6 @@ const KNOWN_AGENT_LABELS: Record<string, string> = {
 
 export const agentLabel = (agent: string): string =>
   KNOWN_AGENT_LABELS[agent] ?? `${agent.charAt(0).toUpperCase()}${agent.slice(1)}`;
-
-export const workspaceDirectory = (coordRoot: string, project: string): string =>
-  containedPath(resolve(coordRoot), "workspaces", project);
-
-export const workspaceConfigPath = (coordRoot: string, project: string): string =>
-  join(workspaceDirectory(coordRoot, project), "config.json");
 
 export const agentCloneDirectory = (cloneRoot: string, project: string, agent: string): string =>
   join(resolve(cloneRoot), `${project}-${agent}`);
@@ -199,6 +194,7 @@ export type WorkspaceConfigInput = {
   origin: string;
   baseBranch: string;
   agents: readonly string[];
+  profile: string;
   cloneRoot: string;
   workspaceDir: string;
   declared: WorkspaceDeclaration | null;
@@ -237,9 +233,10 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     })),
     branch: declared.branch ?? "issue-{issue}/{agent}",
     baseBranch: input.baseBranch,
+    profile: input.profile,
     maxRevisionRounds: 3,
     prPolicy: declared.prPolicy ?? "owner-only",
-    digestPaths: declared.digestPaths ?? [".plans/issue-{issue}/plan.md"],
+    digestPaths: declared.digestPaths ?? [],
     checks,
     pollIntervalMs: declared.pollIntervalMs ?? 1_000,
     ...(toolchain === undefined ? {} : { toolchain }),
@@ -260,12 +257,12 @@ const relativeFrom = (from: string, to: string): string => {
 };
 
 export const writeWorkspaceConfig = (
-  coordRoot: string,
+  workspace: WorkspaceLocation,
   config: CoordinatorConfig,
   options: EffectOptions
 ): string => {
-  const directory = workspaceDirectory(coordRoot, config.project);
-  const path = workspaceConfigPath(coordRoot, config.project);
+  const directory = workspace.workspaceRoot;
+  const path = workspace.configPath;
   const existing = existsSync(path) ? readFileSync(path, "utf8") : null;
   const rendered = `${JSON.stringify(config, null, 2)}\n`;
   if (existing === rendered) {
@@ -274,7 +271,7 @@ export const writeWorkspaceConfig = (
   }
   act(options, `write workspace config ${path}`, () => {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
-    atomicWriteJson(coordRoot, path, config);
+    atomicWriteJson(workspace.coordRoot, path, config);
   });
   return path;
 };

@@ -11,6 +11,12 @@ afterEach(() => {
 });
 
 describe("tmux boundary", () => {
+  it("keeps flat session names stable and namespaces nested workspaces", () => {
+    const runner: TmuxRunner = async () => ok();
+    expect(new TmuxController(runner).sessionName(42)).toBe("coord-42");
+    expect(new TmuxController(runner, "a1b2c3").sessionName(42)).toBe("coord-42-a1b2c3");
+  });
+
   it("uses a buffer-based nudge only for the supported Claude harness", async () => {
     const calls: Array<{ args: readonly string[]; input?: string }> = [];
     const runner: TmuxRunner = async (args, input) => {

@@ -28,6 +28,7 @@ import {
   type WorkflowStepId
 } from "./steps.js";
 import { TmuxController } from "./tmux.js";
+import { githubRepositoryFromOrigin } from "./githubIssue.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
 export type ProcessRunner = (argv: readonly string[], cwd: string) => Promise<ProcessResult>;
@@ -91,12 +92,7 @@ export const openDraftPullRequest: PullRequestOpener = async (input) => {
   return { url: result.stdout.trim() };
 };
 
-export const githubRepositoryFromOrigin = (origin: string): string | null => {
-  const https = /^https:\/\/github\.com\/([^/]+\/[^/]+?)\/?$/.exec(origin);
-  if (https?.[1] !== undefined) return https[1].replace(/\.git$/, "");
-  const ssh = /^git@github\.com:([^/]+\/[^/]+)$/.exec(origin);
-  return ssh?.[1]?.replace(/\.git$/, "") ?? null;
-};
+export { githubRepositoryFromOrigin } from "./githubIssue.js";
 
 export type RunLoopDependencies = {
   mirror?: BareMirror;
@@ -311,7 +307,7 @@ export class CoordinatorRunLoop {
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
     this.mirror = dependencies.mirror ?? new BareMirror(paths.mirror, start.origin);
-    this.tmux = dependencies.tmux === undefined ? new TmuxController() : dependencies.tmux;
+    this.tmux = dependencies.tmux === undefined ? new TmuxController(undefined, paths.tmuxNamespace) : dependencies.tmux;
     this.processRunner = dependencies.processRunner ?? runArgv;
     this.pullRequestOpener = dependencies.pullRequestOpener ?? openDraftPullRequest;
     this.now = dependencies.now ?? (() => new Date().toISOString());

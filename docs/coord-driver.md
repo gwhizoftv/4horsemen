@@ -17,9 +17,10 @@ into an owner-side bare mirror and evaluates blobs at the exact submission SHA.
 within derived runtime paths are rejected.
 
 ```text
-<coord-root>/
+<workspace-root>/
   mirror.git/
   issue-<n>/
+    github-issue.json immutable start-time GitHub title/body snapshot
     start.json       immutable session/config baseline
     cursors.json     current internal cursor and dropped roster
     journal.jsonl    append-only owner/effect audit
@@ -28,6 +29,13 @@ within derived runtime paths are rejected.
       complete       exact pushed SHA supplied by the agent
       render.log     optional human log
 ```
+
+For a fresh single-product onboard, `<workspace-root>` is the outer coord root
+and `config.json` is flat beside these paths. Additional products sharing that
+outer root use `workspaces/<project>/` as their workspace root. They therefore
+receive distinct mirrors, issue-number namespaces, and tmux session names.
+Existing nested installs and their compatible legacy outer runtime state remain
+resolvable; ambiguous duplicate state fails closed.
 
 `action.md` exposes only an opaque action UUID, the caller identity, required
 path, concrete task, exact bound input commits, and absolute completion path.
@@ -41,10 +49,12 @@ Start from `config.example.json`:
 - `agents[]`: stable id, clone root, executable launcher, delivery policy, and
   optional foreground harness process
 - `branch`: must contain `{issue}` and `{agent}`
+- `profile`: persisted default (`solo`, `reviewed`, or `consensus`) used by
+  product-resolved start and `coord N`
 - `maxRevisionRounds`: fixed at 3 or less; no round 4 is possible
 - `prPolicy`: `owner-only` or `coord-open-unmerged`
-- `digestPaths`: config-relative, confined source templates such as
-  `.plans/issue-{issue}/plan.md`; their identities and hashes are persisted
+- `digestPaths`: optional additional config-relative, confined source
+  templates; the list may be empty
 - `checks[]`: explicit argv arrays executed in a clean worktree at the final
   pin; no shell is invoked
 - `pollIntervalMs`: bounded completion-file polling interval
@@ -52,7 +62,28 @@ Start from `config.example.json`:
 Any `{worktree}` token in one check argument is replaced with the verification
 worktree path. Expansion never creates shell text.
 
+Every new run always hashes the exact config bytes and a canonical snapshot of
+GitHub issue N from `config.origin`; optional `digestPaths` are added after
+those mandatory sources. Agent-authored plans are later protocol evidence, not
+owner-provided start input.
+
 ## Starting and running
+
+After `coord onboard`, the daily command is:
+
+```sh
+cd /path/to/onboarded/product
+coord 42
+```
+
+The positive-number command resolves only the current registered worktree (or
+an explicit `--product`), starts issue 42 if no compatible runtime exists, and
+then enters the normal run loop. Repeating it resumes durable state without
+refetching or rebinding an edited issue. From an unrelated worktree, pass
+`--product /path/to/onboarded/product`; coordination never guesses from a
+machine-global registry.
+
+The explicit forms remain available:
 
 ```bash
 nvm use 26
@@ -60,25 +91,31 @@ pnpm install --frozen-lockfile
 pnpm check
 pnpm build
 
-./coord start 42 \
-  --profile consensus \
-  --config ./config.json \
+coord start 42 --product /path/to/onboarded/product
+
+coord start 42 \
+  --config /absolute/owner/runtime/config.json \
   --coord-root /absolute/owner/runtime
 
-COORD_ISSUE=42 ./coord run --coord-root /absolute/owner/runtime
+COORD_ISSUE=42 coord run --coord-root /absolute/owner/runtime
 ```
 
-`start` preflights the exact origin baseline, the running coordinator checkout's
-real `HEAD` as its trusted source commit, digest inputs, GitHub/PR-policy
-compatibility, confined non-symlink executable launchers, mirror, and tmux. It
+`start` derives the repository from `config.origin`, runs an argv-safe `gh issue
+view N --repo owner/repo`, validates the response, and canonicalizes the title
+and body. Missing or unreadable issues fail before runtime, mirror, or tmux
+effects with create/auth remediation. It then preflights the exact origin
+baseline, the running coordinator checkout's real `HEAD` as its trusted source
+commit, digest inputs, confined non-symlink executable launchers, mirror, and tmux. It
 creates an attachable `coord-<issue>` session and invokes each configured
 `start-<agent>.sh` before committing active issue state. A failed partial tmux
-launch is cleaned up, and no apparently active issue runtime is left behind.
+launch or later startup write is cleaned up, including the issue snapshot, and
+no apparently active issue runtime is left behind.
 Once state is committed, a failure in the initial tick is reported without
 deleting the resumable runtime or terminating the successfully launched panes.
 
 The coordinator can itself run in a tmux control window so closing the owner
-terminal does not stop it. Attach with:
+terminal does not stop it. Flat workspaces retain the legacy name; nested
+workspaces append the workspace hash printed by tmux/start diagnostics:
 
 ```bash
 tmux attach -t coord-42

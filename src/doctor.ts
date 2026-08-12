@@ -3,9 +3,10 @@ import { dirname, join, resolve } from "node:path";
 import { git, localConfigGet, worktreeRoot } from "./gitExec.js";
 import { canonicalSourceDigest, inspectCloneHooks, readHookManifest } from "./hookSync.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, unresolvableCommands, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
-import { githubRepositoryFromOrigin } from "./runLoop.js";
-import { productName, workspaceConfigPath } from "./setupWorkspace.js";
+import { githubRepositoryFromOrigin } from "./githubIssue.js";
+import { productName } from "./setupWorkspace.js";
 import { readConfig, type CoordinatorConfig } from "./state.js";
+import { resolveWorkspaceLocation } from "./workspace.js";
 
 /**
  * `coord doctor` — say exactly which part of an install is wrong.
@@ -313,27 +314,15 @@ const checkClone = (input: {
 
 const checkStartCompatibility = (config: CoordinatorConfig, configPath: string): DoctorFinding[] => {
   const findings: DoctorFinding[] = [];
-  if (config.prPolicy === "coord-open-unmerged" && githubRepositoryFromOrigin(config.origin) === null) {
+  if (githubRepositoryFromOrigin(config.origin) === null) {
     findings.push(
       finding(
         "startCompatibility",
         configPath,
-        `prPolicy "coord-open-unmerged" requires a supported github.com origin; ${config.origin} is incompatible.`,
-        'Set prPolicy to "owner-only", or point origin at a github.com repository.'
+        `Starting an issue requires a supported github.com origin; ${config.origin} is incompatible.`,
+        "Point origin at the GitHub repository whose issues define coordination work."
       )
     );
-  }
-  for (const template of config.digestPaths) {
-    if (!template.includes("{issue}")) {
-      findings.push(
-        finding(
-          "startCompatibility",
-          template,
-          "A digest path has no {issue} placeholder, so every issue would hash the same automation input.",
-          "Parameterise it, for example .plans/issue-{issue}/plan.md."
-        )
-      );
-    }
   }
   return findings;
 };
@@ -373,10 +362,11 @@ export const doctor = (options: DoctorOptions): DoctorReport => {
   const coordRoot = resolve(options.coordRoot);
   const project = options.project ?? (options.productRoot === undefined ? undefined : productName(resolve(options.productRoot)));
   if (project === undefined) throw new Error("doctor requires --product or --project.");
-  const configPath = workspaceConfigPath(coordRoot, project);
-  if (!existsSync(configPath)) {
-    throw new Error(`No installed workspace for '${project}' at ${configPath}. Run coord install first.`);
+  const workspace = resolveWorkspaceLocation(coordRoot, project);
+  if (workspace === null) {
+    throw new Error(`No installed workspace for '${project}' under ${coordRoot}. Run coord onboard or coord install first.`);
   }
+  const configPath = workspace.configPath;
   let config: CoordinatorConfig;
   try {
     config = readConfig(configPath);

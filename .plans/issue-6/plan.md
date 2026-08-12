@@ -80,9 +80,12 @@ Run state follows `workspaceRoot`: flat products use
 `<coord-root>/issue-N` and `<coord-root>/mirror.git`; nested products use the
 same paths under `workspaces/<project>/`. This removes cross-product issue and
 mirror collisions while avoiding a destructive automatic migration. Existing
-nested configs remain discoverable. An existing explicit old run can still be
-operated by its recorded/explicit runtime root; new starts use the resolved
-workspace root.
+nested configs remain discoverable. For a nested config installed before this
+change, product-resolved run/resume first checks the legacy outer
+`<coord-root>/issue-N/start.json` and uses it only when its recorded
+`configPath` is this product's config. New starts always use the isolated
+workspace root; if both compatible legacy and new state exist, resolution
+fails as ambiguous rather than selecting the wrong session.
 
 All selection is deterministic and symlink/containment checked. If both a
 matching flat and matching nested config exist, flat wins, as required, and the
@@ -107,18 +110,22 @@ The simple command may override `--coord-root`, `--clone-root`, `--agents`, and
 overrides, and dry-run stay on advanced `coord install`; onboard should remain
 a small happy-path surface rather than acquire every install flag.
 
-After install, onboard records exactly one owner-only locator in the product
-clone's local Git config: the absolute workspace `config.json` path. This is
-untracked, is not copied to other humans, is not one of the keys that marks an
-agent clone, and is sufficient to derive the run-state root as
-`dirname(configPath)`. There is no global product registry and no tracked
-pointer file. Re-onboard repairs the locator; uninstall removes it when it
-belongs to the workspace being removed.
+After a healthy install, onboard records exactly one owner-only locator in the
+product clone's local Git config: `coord.ownerWorkspaceConfig`, whose value is
+the absolute workspace `config.json` path. It deliberately does **not** use
+`coord.installRoot`, `coord.cliEntry`, or `coord.workspaceConfig`, because the
+hooks treat those keys as proof of agent wiring. The owner key is untracked, is
+not copied to other humans, and is sufficient to derive both the workspace
+root and flat/nested outer root. There is no global product registry and no
+tracked pointer file. Re-onboard repairs the locator; uninstall removes it only
+when it names the workspace being removed.
 
 Finally onboard runs the existing doctor API against the resolved workspace,
 prints the full report, and returns doctor's non-zero class-specific exit code
-on any finding. The installed files remain available for repair rather than
-being partially rolled back after a diagnostic failure.
+on any finding. The owner locator is written only after doctor succeeds, so a
+failed onboard cannot make numeric dispatch appear healthy. The installed
+agent wiring remains available for explicit doctor/repair rather than being
+partially rolled back after a diagnostic failure.
 
 ### 4. Profile and extra digest inputs live in config
 
@@ -174,12 +181,15 @@ that owns all common resolution, preflight, launch, snapshot, and durable-state
 logic. Both public entry points call it:
 
 - `coord start N ...` calls `startIssue` and returns after the initial tick;
-- `coord N ...` calls the same `startIssue`, then invokes the normal long-lived
-  run loop for that issue.
+- `coord N ...` calls `startIssue` only when no compatible runtime exists;
+  otherwise it resumes that runtime, then invokes the normal long-lived run
+  loop either way.
 
 Do not implement the shorthand by spawning `coord start` and `coord run`, and
 do not copy the start branch. Direct composition preserves injected tests,
-error cleanup, and one state transition.
+error cleanup, and one state transition. Explicit `coord start N` remains
+strict and continues to refuse an existing runtime; only the daily numeric
+entry is start-or-resume.
 
 For start-like commands, resolution is:
 
@@ -291,7 +301,8 @@ templating another wrapper is intentionally avoided.
    snapshots; assert config + issue + optional-input digest binding; assert the
    snapshot is materialized before durable start; prove an unreadable issue
    leaves no runtime or tmux effect; exercise `start --product`; and prove
-   `coord N` calls one shared start followed by the run loop.
+   `coord N` calls one shared start followed by the run loop, then resumes on a
+   second invocation without refetching/rebinding the active issue.
 2. **`test/install.test.ts`** — update expected config paths; assert fresh flat
    config/run roots; test a second product's nested workspace; verify re-install
    reuses either layout; verify local locator cleanup and bootstrap ownership;
@@ -322,7 +333,7 @@ templating another wrapper is intentionally avoided.
 | R1 bootstrap | POSIX bootstrap, complete checkout/build, managed PATH symlink, clean-only fast-forward, metadata, hermetic shell tests |
 | R2 onboard | preset over `install`, four defaults, product-local locator, doctor exit propagation, empty tracked status tests |
 | R3 flat layout | single flat-first resolver, nested compatibility, per-workspace run state, second-product nesting, doctor/uninstall/start tests |
-| R4 `coord N` | product/cwd resolution, shared `startIssue`, start then run in one process, explicit options retained |
+| R4 `coord N` | product/cwd resolution, shared `startIssue`, start-or-resume then run in one process, legacy runtime lookup, explicit options retained |
 | R5 issue digest | validated `gh` snapshot, config + title/body binding, atomic persisted snapshot, no owner plan prerequisite, failure cleanup |
 | R6 agent plans | no protocol change; docs explicitly place plan authoring on `issue-N/<agent>` after launch |
 | R7 docs/help | README happy path, both guides, examples, installer output, and CLI help rewritten together |
@@ -369,6 +380,27 @@ templating another wrapper is intentionally avoided.
 - A second product nests without relocating the first; no automatic migration
   transaction or cross-workspace mirror sharing is required.
 
+## Alternatives Rejected
+
+- **Install-root or machine-global product registry.** Rejected because two
+  coordination checkouts would see different state (or require a second XDG
+  database and collision/migration policy). A distinctly named owner-local Git
+  key travels with the exact worktree being selected, does not dirty status,
+  and is never agent wiring.
+- **Use `coord.workspaceConfig` on the product.** Rejected because the hooks
+  intentionally interpret it as agent-clone wiring and would fail closed when
+  no `consensus.agentId` exists.
+- **Always start in `coord N`.** Rejected because an interrupted daily command
+  must be rerunnable; numeric dispatch resumes compatible durable state.
+- **Keep nested products' issue state at the outer root.** Rejected because
+  GitHub issue numbers and mirrors are repository-local and would collide.
+- **User-supplied issue snapshot flag.** Rejected because it could start a
+  nonexistent GitHub issue and bypass the issue-first invariant. Tests inject
+  the fetch boundary rather than exposing a production bypass.
+- **Issue snapshot as a configurable `digestPaths` default.** Rejected because
+  an empty/custom list could remove the work statement from the digest. The
+  snapshot is a built-in mandatory source; paths are extras only.
+
 ### Deliberately not in scope
 
 - Creating or editing the GitHub issue on the owner's behalf.
@@ -385,7 +417,27 @@ templating another wrapper is intentionally avoided.
 - Changing branch evidence schemas, consensus selection, finalization, or PR
   merge authority.
 
-## Acceptance gate
+## Risks and Mitigations
+
+- **Product-local metadata is mistaken for agent wiring.** Use only
+  `coord.ownerWorkspaceConfig`; add a regression proving the three agent-wiring
+  keys remain absent on the product clone and a fresh clone has no locator.
+- **Old nested runs become orphaned when new state moves under the workspace.**
+  Resolve a legacy outer runtime only when `start.json.configPath` matches the
+  selected product; reject dual matches.
+- **A second product overwrites the flat config or shares issue state.** Treat a
+  mismatched flat config as an occupied slot and put all config, mirror, and
+  issue state for the next product under its nested workspace.
+- **Issue edits silently rebind an active run.** Fetch only on a new start and
+  persist the exact canonical bytes; resume trusts immutable `start.json` and
+  the stored snapshot.
+- **Onboard registers unhealthy wiring.** Run doctor before publishing the
+  owner locator and propagate its class-specific exit code.
+- **Bootstrap destroys developer work.** Permit clone or clean fast-forward
+  only; refuse dirty/diverged/foreign roots and unrelated PATH entries without
+  reset, clean, or overwrite.
+
+## Validation
 
 Implementation is ready for peer review when:
 
@@ -407,3 +459,12 @@ Implementation is ready for peer review when:
    issue branches; and
 8. `pnpm check` passes with no weakening of hook, evidence, or finalization
    regressions.
+
+## Conclusion
+
+The implementation should use the Codex workspace and digest architecture,
+with the review-agreed corrections above: a safe doctor-gated owner locator,
+workspace-scoped nested state, mandatory origin-bound issue bytes, persistent
+profiles, and a resumable numeric command. This yields the requested daily
+flow without a second installer, registry, digest scheme, or protocol, while
+keeping explicit commands and existing nested installations compatible.
