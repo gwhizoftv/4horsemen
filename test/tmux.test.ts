@@ -32,8 +32,16 @@ describe("tmux boundary", () => {
         "/runtime/action.md"
       )
     ).toBe("sent");
-    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "load-buffer", "paste-buffer", "send-keys"]);
-    expect(calls[1]?.input).toContain("/runtime/action.md");
+    expect(calls.map((call) => call.args[0])).toEqual([
+      "display-message",
+      "send-keys",
+      "load-buffer",
+      "paste-buffer",
+      "send-keys"
+    ]);
+    expect(calls[1]?.args.slice(1)).toEqual(["-t", "coord-1:cursor.0", "a"]);
+    expect(calls[2]?.input).toContain("/runtime/action.md");
+    expect(calls[4]?.args.slice(-1)).toEqual(["Enter"]);
   });
 
   it("treats pull-only agents as nudge-disabled", async () => {
@@ -48,10 +56,27 @@ describe("tmux boundary", () => {
     expect(called).toBe(false);
   });
 
-  it("accepts Claude version strings as a ready harness", () => {
+  it("accepts Claude version strings and Cursor node as ready harnesses", () => {
     expect(harnessLooksReady("2.1.228", "claude")).toBe(true);
     expect(harnessLooksReady("claude", "claude")).toBe(true);
     expect(harnessLooksReady("node", "claude")).toBe(false);
+    expect(harnessLooksReady("node", "agent")).toBe(true);
+    expect(harnessLooksReady("agent", "agent")).toBe(true);
+  });
+
+  it("nudges Cursor when tmux reports the pane command as node", async () => {
+    const runner: TmuxRunner = async (args) => {
+      if (args[0] === "display-message") return ok("0\tnode\t0\n");
+      return ok();
+    };
+    const controller = new TmuxController(runner);
+    expect(
+      await controller.nudge(
+        1,
+        { id: "cursor", root: "/clone", launcher: "start-cursor.sh", delivery: "both", harnessProcess: "agent" },
+        "/runtime/action.md"
+      )
+    ).toBe("sent");
   });
 
   it("does not insert while the owner is in pane mode or the harness is gone", async () => {

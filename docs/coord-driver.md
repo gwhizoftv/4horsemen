@@ -122,10 +122,13 @@ tmux attach -t coord-42
 ```
 
 Claude nudges use `load-buffer`/`paste-buffer` when the pane is alive and not
-in pane mode. Every onboarded agent defaults to `delivery: both`, so the same
-short “read your action at …” paste is attempted for Codex, Cursor, and
-Antigravity as well. If the first paste is skipped (trust UI, wrong
+in pane mode. Every onboarded agent defaults to `delivery: both`, so a short “read your action
+at …” paste is attempted for Claude, Codex, Cursor, and Antigravity. Before the
+paste, the driver sends `a` so vim-normal-mode prompts append into the input
+buffer, then `Enter` to submit. If the first paste is skipped (trust UI, wrong
 foreground name), the run loop retries until one successful paste per action.
+Cursor panes that report as `node` are treated as ready when
+`harnessProcess` is `agent`.
 
 ## Agent completion contract
 
