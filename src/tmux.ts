@@ -33,6 +33,10 @@ export const harnessLooksReady = (foreground: string, expected?: string): boolea
   if (expected === "claude" && /^\d+(?:\.\d+)*$/.test(foreground)) return true;
   // Cursor's `agent` CLI often appears as `node` in tmux.
   if (expected === "agent" && foreground === "node") return true;
+  // Antigravity may show as agy, antigravity, or node (nvm / verify UI).
+  if (expected === "agy" && (foreground === "agy" || foreground === "antigravity" || foreground === "node")) {
+    return true;
+  }
   return false;
 };
 
@@ -41,10 +45,11 @@ export const resolveNudgeKeys = (
   agent: AgentConfig
 ): { prelude: readonly string[]; submit: readonly string[] } => {
   const defaults = agentOwnerUiDefaults(agent.id);
-  return {
-    prelude: agent.nudgePrelude ?? defaults.nudgePrelude,
-    submit: agent.nudgeSubmit ?? defaults.nudgeSubmit
-  };
+  const prelude = agent.nudgePrelude ?? defaults.nudgePrelude;
+  // Bare tmux "Enter" often does not submit after send-keys -l in these TUIs.
+  const rawSubmit = agent.nudgeSubmit ?? defaults.nudgeSubmit;
+  const submit = rawSubmit.map((key) => (key === "Enter" ? "C-m" : key));
+  return { prelude, submit };
 };
 
 /** Resolve macOS Terminal.app profile name for an owner attach window. */
@@ -284,6 +289,9 @@ export class TmuxController {
     const typed = await this.runner(["send-keys", "-l", "-t", target, text]);
     assertAuthority();
     if (typed.exitCode !== 0) throw new Error(`tmux send-keys text failed: ${typed.stderr}`);
+    // Give the TUI a beat to accept literal input before CR/submit.
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+    assertAuthority();
     for (const key of submitKeys) {
       const submit = await this.runner(["send-keys", "-t", target, key]);
       assertAuthority();

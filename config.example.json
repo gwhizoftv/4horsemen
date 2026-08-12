@@ -9,7 +9,7 @@
       "delivery": "nudge",
       "harnessProcess": "claude",
       "nudgePrelude": [],
-      "nudgeSubmit": ["Enter"],
+      "nudgeSubmit": ["C-m"],
       "terminalProfile": "Pro"
     },
     {
@@ -19,7 +19,7 @@
       "delivery": "pull",
       "harnessProcess": "codex",
       "nudgePrelude": ["i"],
-      "nudgeSubmit": ["C-j"],
+      "nudgeSubmit": ["C-j", "C-m"],
       "terminalProfile": "Grass"
     },
     {
@@ -28,7 +28,7 @@
       "launcher": "start-cursor.sh",
       "delivery": "pull",
       "nudgePrelude": [],
-      "nudgeSubmit": ["Enter"],
+      "nudgeSubmit": ["C-m"],
       "terminalProfile": "Ocean"
     },
     {
@@ -37,7 +37,7 @@
       "launcher": "start-antigravity.sh",
       "delivery": "pull",
       "nudgePrelude": [],
-      "nudgeSubmit": ["Enter"],
+      "nudgeSubmit": ["C-m"],
       "terminalProfile": "Red Sands"
     }
   ],
