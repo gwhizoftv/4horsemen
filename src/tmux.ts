@@ -29,6 +29,8 @@ export const harnessLooksReady = (foreground: string, expected?: string): boolea
   if (foreground === expected) return true;
   // Claude Code sometimes reports its version string as the pane command.
   if (expected === "claude" && /^\d+(?:\.\d+)*$/.test(foreground)) return true;
+  // Cursor's `agent` CLI often appears as `node` in tmux.
+  if (expected === "agent" && foreground === "node") return true;
   return false;
 };
 
@@ -163,6 +165,11 @@ export class TmuxController {
     if (!harnessLooksReady(pane.foreground, agent.harnessProcess)) return "busy";
     const buffer = `coord-${issue}-${safeName(agent.id)}`;
     const text = `Read and execute your current coordinator action at ${actionPath}`;
+    // Many agent UIs default to vim normal mode; `a` appends into the prompt
+    // so the following paste + Enter actually submit.
+    const insert = await this.runner(["send-keys", "-t", target, "a"]);
+    assertAuthority();
+    if (insert.exitCode !== 0) throw new Error(`tmux send-keys insert failed: ${insert.stderr}`);
     const loaded = await this.runner(["load-buffer", "-b", buffer, "-"], text);
     assertAuthority();
     if (loaded.exitCode !== 0) throw new Error(`tmux load-buffer failed: ${loaded.stderr}`);
