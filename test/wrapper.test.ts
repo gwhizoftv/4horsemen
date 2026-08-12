@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -33,7 +34,7 @@ function writeFixture(root: string): { wrapper: string; bin: string } {
   writeFileSync(join(root, "bin/pnpm"), "#!/bin/sh\necho BUILD_BANNER\n", { mode: 0o700 });
   writeFileSync(
     join(root, "bin/node"),
-    "#!/bin/sh\nprintf '%s\\n' '---' 'actionId: protocol-only'\n",
+    "#!/bin/sh\nprintf '%s\\n' \"cwd=$(pwd)\" '---' 'actionId: protocol-only'\n",
     { mode: 0o700 }
   );
   chmodSync(wrapper, 0o700);
@@ -50,7 +51,7 @@ describe("coord wrapper", () => {
       env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` }
     });
     expect(result.status).toBe(0);
-    expect(result.stdout).toBe("---\nactionId: protocol-only\n");
+    expect(result.stdout).toContain("---\nactionId: protocol-only\n");
     expect(result.stdout).not.toContain("BUILD_BANNER");
     expect(result.stderr).toContain("BUILD_BANNER");
   });
@@ -68,7 +69,23 @@ describe("coord wrapper", () => {
       env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` }
     });
     expect(result.status).toBe(0);
-    expect(result.stdout).toBe("---\nactionId: protocol-only\n");
+    expect(result.stdout).toContain("---\nactionId: protocol-only\n");
+    expect(result.stderr).toContain("BUILD_BANNER");
+  });
+
+  it("preserves the caller cwd so relative product paths resolve there", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-wrapper-cwd-"));
+    roots.push(root);
+    const { wrapper, bin } = writeFixture(root);
+    const caller = join(root, "caller");
+    mkdirSync(caller);
+    const result = spawnSync(wrapper, ["onboard", "./testapp"], {
+      cwd: caller,
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` }
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`cwd=${realpathSync(caller)}`);
     expect(result.stderr).toContain("BUILD_BANNER");
   });
 });

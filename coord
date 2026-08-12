@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Resolve symlinks (e.g. ~/.local/bin/coord → install-root/coord) before cd.
+# Resolve symlinks (e.g. ~/.local/bin/coord → install-root/coord) without
+# changing the caller's cwd — relative CLI paths must resolve from there.
 SOURCE="${BASH_SOURCE[0]}"
 while [[ -L "$SOURCE" ]]; do
   DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
@@ -11,8 +12,8 @@ while [[ -L "$SOURCE" ]]; do
     SOURCE="$DIR/$TARGET"
   fi
 done
-cd -P "$(dirname "$SOURCE")"
-if [[ ! -f dist/main.js ]] || find src -type f -newer dist/main.js -print -quit | grep -q .; then
-  pnpm build >&2
+ROOT="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+if [[ ! -f "$ROOT/dist/main.js" ]] || find "$ROOT/src" -type f -newer "$ROOT/dist/main.js" -print -quit | grep -q .; then
+  (cd "$ROOT" && pnpm build) >&2
 fi
-exec node dist/main.js "$@"
+exec node "$ROOT/dist/main.js" "$@"
