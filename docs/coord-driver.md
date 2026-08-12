@@ -121,6 +121,10 @@ workspaces append the workspace hash printed by tmux/start diagnostics:
 tmux attach -t coord-42
 ```
 
+On macOS, `coord start` / a fresh `coord N` also opens one Terminal.app window per
+agent, each attached to that agent's tmux window (separate clients — no Ctrl-b n).
+Re-open those views later with `coord attach N`.
+
 Nudge delivery uses literal `send-keys -l` (not paste-buffer — some TUIs such
 as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`.
 No vim prelude is sent (Claude/Cursor/Codex/agy treat a leading `a` as literal

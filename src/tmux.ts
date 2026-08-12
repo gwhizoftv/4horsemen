@@ -1,5 +1,6 @@
 import { constants, accessSync, lstatSync, realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { platform } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import type { AgentConfig } from "./state.js";
 import { assertNoSymlink, containedPath, isPathInside } from "./paths.js";
@@ -45,6 +46,49 @@ export const nudgePreludeKeys = (agentId: string): readonly string[] => {
   return [];
 };
 
+/**
+ * Shell command that attaches a new tmux client focused on one agent window.
+ * Each OS terminal runs its own client, so owners avoid Ctrl-b n switching.
+ */
+export const agentClientAttachCommand = (session: string, agentId: string): string => {
+  const window = safeName(agentId);
+  return `tmux attach-session -t ${session} \\; select-window -t ${session}:${window}`;
+};
+
+export type OwnerTerminalLaunch = { agentId: string; command: string };
+export type OwnerTerminalOpener = (launches: readonly OwnerTerminalLaunch[]) => Promise<void>;
+
+const appleScriptString = (value: string): string => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+
+/** Open one macOS Terminal.app window per agent, each attached to that agent's tmux window. */
+export const openDarwinTerminalWindows: OwnerTerminalOpener = async (launches) => {
+  for (const launch of launches) {
+    const script = [
+      'tell application "Terminal"',
+      "  activate",
+      `  do script ${appleScriptString(launch.command)}`,
+      "end tell"
+    ].join("\n");
+    const result = await new Promise<TmuxResult>((resolvePromise, reject) => {
+      const child = spawn("osascript", ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+      child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
+      child.once("error", reject);
+      child.once("close", (code) => resolvePromise({ exitCode: code ?? 1, stdout, stderr: stderr.trim() }));
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(`osascript failed for ${launch.agentId}: ${result.stderr || `exit ${result.exitCode}`}`);
+    }
+  }
+};
+
+export type OpenOwnerAgentClientsResult =
+  | { status: "opened"; count: number }
+  | { status: "unsupported"; commands: readonly string[] }
+  | { status: "failed"; error: string; commands: readonly string[] };
+
 export const resolveAgentLauncher = (agent: AgentConfig): string => {
   const root = resolve(agent.root);
   if (isAbsolute(agent.launcher)) throw new Error(`Launcher for ${agent.id} must be relative to its agent clone.`);
@@ -71,7 +115,9 @@ export const resolveAgentLauncher = (agent: AgentConfig): string => {
 export class TmuxController {
   constructor(
     private readonly runner: TmuxRunner = runTmux,
-    private readonly namespace: string | null = null
+    private readonly namespace: string | null = null,
+    private readonly ownerTerminalOpener: OwnerTerminalOpener | null =
+      platform() === "darwin" ? openDarwinTerminalWindows : null
   ) {}
 
   sessionName(issue: number): string {
@@ -80,6 +126,34 @@ export class TmuxController {
 
   target(issue: number, agent: string): string {
     return `${this.sessionName(issue)}:${safeName(agent)}.0`;
+  }
+
+  agentAttachLaunches(issue: number, agents: readonly AgentConfig[]): OwnerTerminalLaunch[] {
+    const session = this.sessionName(issue);
+    return agents.map((agent) => ({
+      agentId: agent.id,
+      command: agentClientAttachCommand(session, agent.id)
+    }));
+  }
+
+  /**
+   * Open one owner OS terminal per agent, each attached to that agent's window.
+   * Failures are returned (not thrown) so issue startup can continue detached.
+   */
+  async openOwnerAgentClients(issue: number, agents: readonly AgentConfig[]): Promise<OpenOwnerAgentClientsResult> {
+    const launches = this.agentAttachLaunches(issue, agents);
+    const commands = launches.map((launch) => launch.command);
+    if (this.ownerTerminalOpener === null) return { status: "unsupported", commands };
+    try {
+      await this.ownerTerminalOpener(launches);
+      return { status: "opened", count: launches.length };
+    } catch (error) {
+      return {
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+        commands
+      };
+    }
   }
 
   async preflight(agents: readonly AgentConfig[]): Promise<void> {

@@ -37,7 +37,11 @@ import {
   type CursorsState
 } from "./state.js";
 import type { WorkflowProfile } from "./steps.js";
-import { resolveAgentLauncher, TmuxController } from "./tmux.js";
+import {
+  resolveAgentLauncher,
+  TmuxController,
+  type OpenOwnerAgentClientsResult
+} from "./tmux.js";
 import { resolveWorkspaceFromProduct, workspaceLocationFromConfig, type WorkspaceLocation } from "./workspace.js";
 
 export type CliIo = {
@@ -62,6 +66,7 @@ export type CliDependencies = {
     issue: number;
     origin: string;
     agents: CoordinatorConfig["agents"];
+    log?: (message: string) => void;
   }) => Promise<{ cleanup: () => Promise<void> }>;
 };
 
@@ -161,6 +166,7 @@ Usage:
   coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
   coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
   coord pause|resume|restart-action|abandon --issue <issue> [--product <path> | --coord-root <path>]
+  coord attach <issue> [--product <path> | --coord-root <path>]
 
 Called by the agent-clone hooks, not by operators:
   coord hook-verify --clone <path> --phase <precommit|prepush>
@@ -172,6 +178,9 @@ Happy path: bootstrap once, onboard a product once, create GitHub issue N, then 
 From an agent clone, \`coord next --issue N\` resolves the runtime via
 coord.workspaceConfig and the caller via consensus.agentId (or --agent / COORD_AGENT).
 Use \`-v\` / \`--verbose\` on \`coord N\`, start, or run for tick-level progress logs.
+
+On macOS, starting an issue opens one Terminal.app window per agent, each attached
+to that agent's tmux window (no Ctrl-b n). Re-open later with \`coord attach N\`.
 
 install remains the advanced explicit interface. Onboard and install leave the product's
 tracked tree untouched; a fresh human clone receives no coordination hooks or metadata.
@@ -462,16 +471,32 @@ const nextContext = (
   return { paths, agent };
 };
 
+const reportOwnerAgentClients = (result: OpenOwnerAgentClientsResult, log: (message: string) => void): void => {
+  if (result.status === "opened") {
+    log(`Opened ${result.count} Terminal window(s), one per agent tmux client.\n`);
+    return;
+  }
+  log(
+    result.status === "failed"
+      ? `Could not open Terminal windows (${result.error}). Attach manually:\n`
+      : `Owner Terminal auto-open is unavailable on this platform. Attach manually:\n`
+  );
+  for (const command of result.commands) log(`  ${command}\n`);
+};
+
 const defaultStartEffects = async (input: {
   paths: IssueRuntimePaths;
   issue: number;
   origin: string;
   agents: CoordinatorConfig["agents"];
+  log?: (message: string) => void;
 }): Promise<{ cleanup: () => Promise<void> }> => {
   const mirror = new BareMirror(input.paths.mirror, input.origin);
   await mirror.initialize();
   const tmux = new TmuxController(undefined, input.paths.tmuxNamespace);
   await tmux.startSession(input.issue, input.agents);
+  const opened = await tmux.openOwnerAgentClients(input.issue, input.agents);
+  reportOwnerAgentClients(opened, input.log ?? ((message) => process.stdout.write(message)));
   return { cleanup: async () => tmux.stopSession(input.issue) };
 };
 
@@ -528,7 +553,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
 
     let effects: { cleanup: () => Promise<void> } | null = null;
     try {
-      effects = await startEffects({ paths, issue, origin: config.origin, agents: roster });
+      effects = await startEffects({ paths, issue, origin: config.origin, agents: roster, log: io.stdout });
       createIssueRuntime(paths, roster.map((agent) => agent.id));
       atomicWriteJson(paths.coordRoot, paths.issueSnapshot, snapshot);
       initializeOperationalState(paths, {
@@ -593,6 +618,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const resolution = resolveStart(parsed, io);
       const existing = existingIssueRuntime(resolution, issue);
       const paths = existing ?? (await startIssue(issue, resolution));
+      if (existing !== null) {
+        io.stdout(`Tip: coord attach ${issue} opens one Terminal window per agent.\n`);
+      }
       await makeRunLoop(paths).run();
       return 0;
     }
@@ -719,6 +747,26 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       verboseState.enabled = flagIsSet(parsed, "verbose");
       const issue = parseIssue(parsed.positionals[0] as string);
       await startIssue(issue, resolveStart(parsed, io));
+      return 0;
+    }
+
+    if (command === "attach") {
+      allowedFlags(parsed, ["product", "config", "coord-root"]);
+      if (parsed.positionals.length !== 1) throw new Error("attach requires exactly one issue number.");
+      const issue = parseIssue(parsed.positionals[0] as string);
+      const resolution = resolveStart(parsed, io);
+      const paths = existingIssueRuntime(resolution, issue);
+      if (paths === null) {
+        throw new Error(`No runtime state exists for issue ${issue}. Start it with coord ${issue} first.`);
+      }
+      const start = readStartState(paths);
+      const tmux = new TmuxController(undefined, paths.tmuxNamespace);
+      const session = tmux.sessionName(issue);
+      const present = await runArgv(["tmux", "has-session", "-t", session], io.cwd);
+      if (present.exitCode !== 0) {
+        throw new Error(`tmux session ${session} is not running. Resume with coord ${issue} first.`);
+      }
+      reportOwnerAgentClients(await tmux.openOwnerAgentClients(issue, start.agents), io.stdout);
       return 0;
     }
 

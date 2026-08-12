@@ -68,6 +68,48 @@ describe("tmux boundary", () => {
     expect(calls[1]?.args.at(-1)).toContain("/runtime/action.md");
   });
 
+  it("builds one attach command per agent window", () => {
+    const controller = new TmuxController(async () => ok(), null, async () => undefined);
+    expect(controller.agentAttachLaunches(7, [
+      { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both" },
+      { id: "codex", root: "/x", launcher: "start-codex.sh", delivery: "both" }
+    ])).toEqual([
+      {
+        agentId: "claude",
+        command: "tmux attach-session -t coord-7 \\; select-window -t coord-7:claude"
+      },
+      {
+        agentId: "codex",
+        command: "tmux attach-session -t coord-7 \\; select-window -t coord-7:codex"
+      }
+    ]);
+  });
+
+  it("opens owner terminals through the injected opener", async () => {
+    const launched: string[] = [];
+    const controller = new TmuxController(async () => ok(), null, async (launches) => {
+      for (const launch of launches) launched.push(launch.agentId);
+    });
+    await expect(
+      controller.openOwnerAgentClients(1, [
+        { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both" },
+        { id: "cursor", root: "/u", launcher: "start-cursor.sh", delivery: "both" }
+      ])
+    ).resolves.toEqual({ status: "opened", count: 2 });
+    expect(launched).toEqual(["claude", "cursor"]);
+  });
+
+  it("returns unsupported when no opener is configured", async () => {
+    const controller = new TmuxController(async () => ok(), null, null);
+    const result = await controller.openOwnerAgentClients(1, [
+      { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both" }
+    ]);
+    expect(result.status).toBe("unsupported");
+    if (result.status === "unsupported") {
+      expect(result.commands[0]).toContain("select-window -t coord-1:claude");
+    }
+  });
+
   it("treats pull-only agents as nudge-disabled", async () => {
     let called = false;
     const controller = new TmuxController(async () => {
