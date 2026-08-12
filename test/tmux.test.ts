@@ -76,11 +76,13 @@ describe("tmux boundary", () => {
     ])).toEqual([
       {
         agentId: "claude",
-        command: "tmux attach-session -t coord-7 \\; select-window -t coord-7:claude"
+        command:
+          "tmux new-session -A -s coord-7-claude -t coord-7 ';' select-window -t claude ';' set-option destroy-unattached on"
       },
       {
         agentId: "codex",
-        command: "tmux attach-session -t coord-7 \\; select-window -t coord-7:codex"
+        command:
+          "tmux new-session -A -s coord-7-codex -t coord-7 ';' select-window -t codex ';' set-option destroy-unattached on"
       }
     ]);
   });
@@ -106,7 +108,8 @@ describe("tmux boundary", () => {
     ]);
     expect(result.status).toBe("unsupported");
     if (result.status === "unsupported") {
-      expect(result.commands[0]).toContain("select-window -t coord-1:claude");
+      expect(result.commands[0]).toContain("select-window -t claude");
+      expect(result.commands[0]).toContain("coord-1-claude");
     }
   });
 

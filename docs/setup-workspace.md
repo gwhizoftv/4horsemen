@@ -154,10 +154,12 @@ Four scoping rules matter:
 - By default only the workspace config is deleted; an empty nested workspace
   directory may also be removed. Issue snapshots and run state stay unless
   `--wipe-runtime` is explicit.
-- `--wipe-runtime` is scoped to this product. For a flat product it removes only
-  outer `issue-N` directories and `mirror.git`, never the outer coord root or
-  nested sibling workspaces—even with `--force`. Without force, a shared flat
-  runtime is still refused as an extra confirmation boundary.
+- `--wipe-runtime` removes this product's issue state and, when no other
+  workspace still uses the outer coord root, deletes that folder too (e.g.
+  `./coord-runtime`). If nested siblings share the root, wipe stays scoped to
+  this product's targets and keeps the outer directory—even with `--force`.
+  Without force, a shared flat runtime is still refused as an extra confirmation
+  boundary.
 - Every refusal — dirty clones, checkout ownership — is decided before anything
   is unwired, so a refused uninstall leaves the workspace byte-for-byte intact.
 - `--delete-coordination` requires that this install *created* the coordination
