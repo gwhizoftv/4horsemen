@@ -3,9 +3,10 @@ import { dirname, join, resolve } from "node:path";
 import { git, localConfigGet, worktreeRoot } from "./gitExec.js";
 import { canonicalSourceDigest, inspectCloneHooks, readHookManifest } from "./hookSync.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, unresolvableCommands, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
-import { githubRepositoryFromOrigin } from "./runLoop.js";
-import { productName, workspaceConfigPath } from "./setupWorkspace.js";
+import { githubRepositoryFromOrigin } from "./githubIssue.js";
+import { productName } from "./setupWorkspace.js";
 import { readConfig, type CoordinatorConfig } from "./state.js";
+import { resolveInstalledWorkspace } from "./workspace.js";
 
 /**
  * `coord doctor` — say exactly which part of an install is wrong.
@@ -138,9 +139,6 @@ const checkClone = (input: {
     return findings;
   }
 
-  // Everything below runs git against the clone. A directory that lost its
-  // .git is precisely the broken install doctor exists to name, so it is
-  // classified here rather than escaping as a raw git error and exit 2.
   if (worktreeRoot(clone) === null) {
     findings.push(
       finding(
@@ -178,8 +176,6 @@ const checkClone = (input: {
       finding("identity", clone, "consensus.agentLabel is unset, so the commit-message prefix is unresolved.", "Re-run coord install.")
     );
   }
-  // A vendored clone deliberately has no install root: its hook bodies are
-  // copies, and a set key would give post-merge two candidate templates.
   const manifest = readHookManifest(clone);
   const vendored = manifest.kind === "ok" && manifest.manifest.mode === "vendor";
   const requiredKeys = vendored ? [CLI_ENTRY_KEY, WORKSPACE_CONFIG_KEY] : [INSTALL_ROOT_KEY, CLI_ENTRY_KEY, WORKSPACE_CONFIG_KEY];
@@ -188,9 +184,6 @@ const checkClone = (input: {
       findings.push(finding("installRoot", clone, `${key} is unset in this agent clone.`, "Re-run coord install."));
     }
   }
-  // Presence is not agreement. A clone whose installRoot was redirected at an
-  // older checkout passed every other check while executing different hook
-  // bodies than the workspace believes it runs.
   if (stamp !== undefined && !vendored) {
     for (const [key, expected] of [
       [INSTALL_ROOT_KEY, stamp.installRoot],
@@ -313,6 +306,17 @@ const checkClone = (input: {
 
 const checkStartCompatibility = (config: CoordinatorConfig, configPath: string): DoctorFinding[] => {
   const findings: DoctorFinding[] = [];
+  // Every start binds a GitHub issue snapshot; unsupported origins fail before launch.
+  if (githubRepositoryFromOrigin(config.origin) === null) {
+    findings.push(
+      finding(
+        "startCompatibility",
+        configPath,
+        `origin ${config.origin} is not a supported github.com repository; coord start cannot fetch an issue snapshot.`,
+        "Point origin at a github.com HTTPS or SSH remote."
+      )
+    );
+  }
   if (config.prPolicy === "coord-open-unmerged" && githubRepositoryFromOrigin(config.origin) === null) {
     findings.push(
       finding(
@@ -367,22 +371,41 @@ export type DoctorOptions = {
   coordRoot: string;
   productRoot?: string;
   project?: string;
+  configPath?: string;
 };
 
 export const doctor = (options: DoctorOptions): DoctorReport => {
   const coordRoot = resolve(options.coordRoot);
   const project = options.project ?? (options.productRoot === undefined ? undefined : productName(resolve(options.productRoot)));
-  if (project === undefined) throw new Error("doctor requires --product or --project.");
-  const configPath = workspaceConfigPath(coordRoot, project);
-  if (!existsSync(configPath)) {
-    throw new Error(`No installed workspace for '${project}' at ${configPath}. Run coord install first.`);
+  if (project === undefined && options.configPath === undefined) {
+    throw new Error("doctor requires --product, --project, or an explicit config path.");
   }
+
+  let configPath: string;
+  if (options.configPath !== undefined) {
+    configPath = resolve(options.configPath);
+  } else {
+    const location = resolveInstalledWorkspace(coordRoot, project as string);
+    if (location !== null) {
+      configPath = location.configPath;
+    } else {
+      // Prefer the flat path when present (even if unreadable), else nested.
+      const flat = join(coordRoot, "config.json");
+      const nested = join(coordRoot, "workspaces", project as string, "config.json");
+      if (existsSync(flat)) configPath = flat;
+      else if (existsSync(nested)) configPath = nested;
+      else {
+        throw new Error(
+          `No installed workspace for '${project}' under ${coordRoot}. Run coord onboard or coord install first.`
+        );
+      }
+    }
+  }
+
   let config: CoordinatorConfig;
   try {
     config = readConfig(configPath);
   } catch (error) {
-    // A config `coord start` would refuse is exactly the startCompatibility
-    // class. Letting readConfig throw produced a generic exit 2 and no finding.
     const report: DoctorReport = {
       configPath,
       findings: [
@@ -398,8 +421,6 @@ export const doctor = (options: DoctorOptions): DoctorReport => {
     return report;
   }
 
-  // Recomputed from the install root rather than read from the stamp: the point
-  // is to notice when those bytes changed without the stamp changing.
   let installDigest: string | null = null;
   if (config.coordination !== undefined && existsSync(join(config.coordination.installRoot, "githooks"))) {
     try {

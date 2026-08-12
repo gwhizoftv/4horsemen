@@ -102,29 +102,35 @@ export const resolveSafeCoordRoot = (options: SafeCoordRootOptions): string => {
 };
 
 export type IssueRuntimePaths = {
+  /** Workspace root used for containment (flat: coord-root; nested: workspaces/<project>). */
   coordRoot: string;
+  /** Alias of coordRoot — the product workspace where issue-N and mirror.git live. */
+  workspaceRoot: string;
   mirror: string;
   issueRoot: string;
   start: string;
   cursors: string;
   journal: string;
   agents: string;
+  issueSnapshot: string;
 };
 
-export const issueRuntimePaths = (coordRoot: string, issue: number): IssueRuntimePaths => {
+export const issueRuntimePaths = (workspaceRoot: string, issue: number): IssueRuntimePaths => {
   if (!Number.isInteger(issue) || issue < 1) {
     throw new PathSafetyError("Issue must be a positive integer.");
   }
-  const root = resolve(coordRoot);
+  const root = resolve(workspaceRoot);
   const issueRoot = containedPath(root, `issue-${issue}`);
   return {
     coordRoot: root,
+    workspaceRoot: root,
     mirror: containedPath(root, "mirror.git"),
     issueRoot,
     start: containedPath(issueRoot, "start.json"),
     cursors: containedPath(issueRoot, "cursors.json"),
     journal: containedPath(issueRoot, "journal.jsonl"),
-    agents: containedPath(issueRoot, "agents")
+    agents: containedPath(issueRoot, "agents"),
+    issueSnapshot: containedPath(issueRoot, "github-issue.json")
   };
 };
 

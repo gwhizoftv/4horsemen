@@ -13,20 +13,24 @@ into an owner-side bare mirror and evaluates blobs at the exact submission SHA.
 
 ## Runtime topology
 
-`--coord-root` must resolve outside every configured clone. Existing symlinks
-within derived runtime paths are rejected.
+`--coord-root` is the operator's outer runtime directory. Per-product config and
+run state live under that product's `workspaceRoot` (flat: the coord-root
+itself; nested: `workspaces/<project>/`). Existing symlinks within derived
+runtime paths are rejected.
 
 ```text
-<coord-root>/
+<workspaceRoot>/
+  config.json
   mirror.git/
   issue-<n>/
-    start.json       immutable session/config baseline
-    cursors.json     current internal cursor and dropped roster
-    journal.jsonl    append-only owner/effect audit
+    github-issue.json  canonical title/body snapshot at start
+    start.json         immutable session/config baseline
+    cursors.json       current internal cursor and dropped roster
+    journal.jsonl      append-only owner/effect audit
     agents/<agent>/
-      action.md      restricted public order
-      complete       exact pushed SHA supplied by the agent
-      render.log     optional human log
+      action.md        restricted public order
+      complete         exact pushed SHA supplied by the agent
+      render.log       optional human log
 ```
 
 `action.md` exposes only an opaque action UUID, the caller identity, required
@@ -37,14 +41,16 @@ Internal step/gate/evidence identifiers remain in `cursors.json`.
 
 Start from `config.example.json`:
 
-- `origin`: canonical Git origin used by the bare mirror
+- `origin`: canonical GitHub origin used by the bare mirror and issue fetch
+- `profile`: default workflow profile (`solo` / `reviewed` / `consensus`)
 - `agents[]`: stable id, clone root, executable launcher, delivery policy, and
   optional foreground harness process
 - `branch`: must contain `{issue}` and `{agent}`
 - `maxRevisionRounds`: fixed at 3 or less; no round 4 is possible
 - `prPolicy`: `owner-only` or `coord-open-unmerged`
-- `digestPaths`: config-relative, confined source templates such as
-  `.plans/issue-{issue}/plan.md`; their identities and hashes are persisted
+- `digestPaths`: optional additional config-relative digest inputs (default `[]`);
+  the GitHub issue snapshot is a mandatory first-class digest source, not only a
+  path entry
 - `checks[]`: explicit argv arrays executed in a clean worktree at the final
   pin; no shell is invoked
 - `pollIntervalMs`: bounded completion-file polling interval
@@ -55,27 +61,30 @@ worktree path. Expansion never creates shell text.
 ## Starting and running
 
 ```bash
-nvm use 26
-pnpm install --frozen-lockfile
-pnpm check
-pnpm build
+coord onboard /path/to/app
+gh issue create --title "…" --body "…"
+coord 42
+```
 
+`coord 42` resolves the workspace (via `--config`/`--coord-root`, `--product`,
+or the cwd owner locator), start-or-resumes the issue, then enters the run loop
+in one process. Explicit `coord start 42` still refuses an existing runtime.
+
+```bash
 ./coord start 42 \
-  --profile consensus \
   --config ./config.json \
   --coord-root /absolute/owner/runtime
+# --profile consensus   # optional when config.profile is set
 
 COORD_ISSUE=42 ./coord run --coord-root /absolute/owner/runtime
 ```
 
-`start` preflights the exact origin baseline, the running coordinator checkout's
-real `HEAD` as its trusted source commit, digest inputs, GitHub/PR-policy
-compatibility, confined non-symlink executable launchers, mirror, and tmux. It
-creates an attachable `coord-<issue>` session and invokes each configured
-`start-<agent>.sh` before committing active issue state. A failed partial tmux
-launch is cleaned up, and no apparently active issue runtime is left behind.
-Once state is committed, a failure in the initial tick is reported without
-deleting the resumable runtime or terminating the successfully launched panes.
+Before any runtime or tmux effects, start fetches
+`gh issue view N --repo owner/repo --json number,title,body`, validates it, and
+binds config bytes + canonical issue snapshot (+ optional `digestPaths`) into
+the automation digest. The snapshot is materialized as
+`<workspaceRoot>/issue-N/github-issue.json` before `start.json` is committed.
+Failure to read the issue leaves no runtime or tmux session.
 
 The coordinator can itself run in a tmux control window so closing the owner
 terminal does not stop it. Attach with:

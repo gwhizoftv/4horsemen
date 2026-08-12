@@ -28,6 +28,9 @@ import {
   type WorkflowStepId
 } from "./steps.js";
 import { TmuxController } from "./tmux.js";
+import { githubRepositoryFromOrigin } from "./githubIssue.js";
+
+export { githubRepositoryFromOrigin } from "./githubIssue.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
 export type ProcessRunner = (argv: readonly string[], cwd: string) => Promise<ProcessResult>;
@@ -89,13 +92,6 @@ export const openDraftPullRequest: PullRequestOpener = async (input) => {
   );
   if (result.exitCode !== 0) throw new Error(`draft PR creation failed: ${result.stderr.trim()}`);
   return { url: result.stdout.trim() };
-};
-
-export const githubRepositoryFromOrigin = (origin: string): string | null => {
-  const https = /^https:\/\/github\.com\/([^/]+\/[^/]+?)\/?$/.exec(origin);
-  if (https?.[1] !== undefined) return https[1].replace(/\.git$/, "");
-  const ssh = /^git@github\.com:([^/]+\/[^/]+)$/.exec(origin);
-  return ssh?.[1]?.replace(/\.git$/, "") ?? null;
 };
 
 export type RunLoopDependencies = {

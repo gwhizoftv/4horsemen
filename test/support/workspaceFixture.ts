@@ -137,7 +137,27 @@ export const failingPrecommit = {
 
 export const declaredChecks = [{ name: "test", argv: ["true"] }];
 
+/** Fake GitHub origin for configs that must pass start/doctor compatibility. */
+export const fakeGitHubOrigin = (name = "myserver"): string => `https://github.com/example/${name}.git`;
+
 export const silence = (): { log: (message: string) => void; lines: string[] } => {
   const lines: string[] = [];
   return { log: (message) => lines.push(message), lines };
 };
+
+export const issueSnapshotBytes = (input: {
+  repository?: string;
+  number: number;
+  title?: string;
+  body?: string;
+}): string =>
+  `${JSON.stringify(
+    {
+      repository: input.repository ?? "example/myserver",
+      number: input.number,
+      title: input.title ?? `Issue ${input.number}`,
+      body: input.body ?? ""
+    },
+    null,
+    2
+  )}\n`;

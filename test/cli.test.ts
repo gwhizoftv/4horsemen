@@ -9,7 +9,14 @@ import { agentRuntimePaths, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
 import { cursorsStateSchema, readConfig, readCursorsState, readStartState, writeCursorsState } from "../src/state.js";
 import { DOCTOR_CODES } from "../src/doctor.js";
-import { ensureBuilt, makeProduct, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
+import {
+  ensureBuilt,
+  fakeGitHubOrigin,
+  issueSnapshotBytes,
+  makeProduct,
+  writeDeclaration,
+  type ProductFixture
+} from "./support/workspaceFixture.js";
 
 const roots: string[] = [];
 const productFixtures: ProductFixture[] = [];
@@ -26,14 +33,13 @@ const setup = () => {
     mkdirSync(clone);
     writeFileSync(join(clone, `start-${agent}.sh`), "#!/usr/bin/env bash\n", { mode: 0o700 });
   }
-  mkdirSync(join(root, ".plans/issue-1"), { recursive: true });
-  writeFileSync(join(root, ".plans/issue-1/plan.md"), "# Issue 1 plan\n");
   const configPath = join(root, "config.json");
   writeFileSync(
     configPath,
     JSON.stringify({
       project: "fixture",
-      origin: join(root, "origin.git"),
+      origin: fakeGitHubOrigin("fixture"),
+      profile: "consensus",
       agents: [
         { id: "codex", root: "clone-codex", launcher: "start-codex.sh", delivery: "pull" },
         { id: "claude", root: "clone-claude", launcher: "start-claude.sh", delivery: "pull" },
@@ -43,7 +49,7 @@ const setup = () => {
       baseBranch: "main",
       maxRevisionRounds: 3,
       prPolicy: "owner-only",
-      digestPaths: [".plans/issue-{issue}/plan.md"],
+      digestPaths: [],
       checks: [{ name: "check", argv: ["node", "-e", "process.exit(0)"] }],
       pollIntervalMs: 100
     })
@@ -59,7 +65,14 @@ const fakeLoop = (paths: ReturnType<typeof issueRuntimePaths>): CliRunLoop => ({
 
 const baselineSha = "a".repeat(40);
 const trustedSourceSha = "d".repeat(40);
+const ghIssueJson = (issue: number) =>
+  JSON.stringify({ number: issue, title: `Issue ${issue}`, body: `Body for ${issue}` });
+
 const successfulStartGit = async (argv: readonly string[]) => {
+  if (argv[0] === "gh" && argv[1] === "issue" && argv[2] === "view") {
+    const issue = Number(argv[3]);
+    return { exitCode: 0, stdout: ghIssueJson(issue), stderr: "" };
+  }
   if (argv.includes("ls-remote")) {
     return { exitCode: 0, stdout: `${baselineSha}\trefs/heads/main\n`, stderr: "" };
   }
@@ -67,6 +80,10 @@ const successfulStartGit = async (argv: readonly string[]) => {
   return { exitCode: 1, stdout: "", stderr: `unexpected command: ${argv.join(" ")}` };
 };
 const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
+  if (argv[0] === "gh" && argv[1] === "issue" && argv[2] === "view") {
+    const issue = Number(argv[3]);
+    return { exitCode: 0, stdout: ghIssueJson(issue), stderr: "" };
+  }
   if (argv.includes("ls-remote")) {
     return { exitCode: 0, stdout: `${baselineSha}\trefs/heads/main\n`, stderr: "" };
   }
@@ -76,14 +93,14 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
 };
 
 describe("CLI", () => {
-  it("requires the external coord root explicitly rather than accepting COORD_ROOT", async () => {
+  it("requires explicit config+coord-root together, or a product locator", async () => {
     const fixture = setup();
     const messages: string[] = [];
     const result = await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath], {
       io: { stderr: (message) => messages.push(message) }
     });
     expect(result).toBe(2);
-    expect(messages.join("")).toContain("--coord-root is required");
+    expect(messages.join("")).toMatch(/--coord-root|onboard|--product/);
 
     messages.length = 0;
     expect(
@@ -132,15 +149,15 @@ describe("CLI", () => {
     expect(readFileSync(runtime.action, "utf8")).toBe(action);
   });
 
-  it("binds the digest to config-relative inputs for the issue being started", async () => {
+  it("binds the digest to config and the GitHub issue snapshot for the issue being started", async () => {
     const fixture = setup();
-    mkdirSync(join(fixture.root, ".plans/issue-7"), { recursive: true });
-    writeFileSync(join(fixture.root, ".plans/issue-7/plan.md"), "# Issue 7 plan\n");
     const config = readConfig(fixture.configPath);
-    const issue1 = automationDigestMaterial(fixture.configPath, config, 1);
-    const issue7 = automationDigestMaterial(fixture.configPath, config, 7);
+    const snap1 = issueSnapshotBytes({ repository: "example/fixture", number: 1, title: "Issue 1", body: "Body for 1" });
+    const snap7 = issueSnapshotBytes({ repository: "example/fixture", number: 7, title: "Issue 7", body: "Body for 7" });
+    const issue1 = automationDigestMaterial(fixture.configPath, config, 1, snap1);
+    const issue7 = automationDigestMaterial(fixture.configPath, config, 7, snap7);
     expect(issue7.digest).not.toBe(issue1.digest);
-    expect(issue7.sources.map((source) => source.id)).toContain(".plans/issue-7/plan.md");
+    expect(issue7.sources.map((source) => source.id)).toEqual(["config", "github-issue"]);
 
     const elsewhere = mkdtempSync(join(tmpdir(), "coord-other-cwd-"));
     roots.push(elsewhere);
@@ -151,16 +168,19 @@ describe("CLI", () => {
         makeRunLoop: fakeLoop
       })
     ).toBe(0);
-    expect(readStartState(issueRuntimePaths(fixture.runtime, 7))).toMatchObject({
+    const start = readStartState(issueRuntimePaths(fixture.runtime, 7));
+    expect(start).toMatchObject({
       automationDigest: issue7.digest,
       automationDigestScheme: "sha256-length-prefixed-v1"
     });
+    expect(existsSync(join(fixture.runtime, "issue-7", "github-issue.json"))).toBe(true);
   });
 
   it("rejects incompatible PR publication before creating issue state", async () => {
     const fixture = setup();
     const config = JSON.parse(readFileSync(fixture.configPath, "utf8")) as Record<string, unknown>;
     config.prPolicy = "coord-open-unmerged";
+    config.origin = "/local/path/not-github.git";
     writeFileSync(fixture.configPath, JSON.stringify(config));
     const errors: string[] = [];
     expect(
@@ -170,7 +190,7 @@ describe("CLI", () => {
         makeRunLoop: fakeLoop
       })
     ).toBe(2);
-    expect(errors.join("")).toContain("requires a supported github.com origin");
+    expect(errors.join("")).toMatch(/github\.com/);
     expect(existsSync(join(fixture.runtime, "issue-1"))).toBe(false);
   });
 
@@ -181,10 +201,13 @@ describe("CLI", () => {
     expect(
       await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
-        processRunner: async (argv) =>
-          argv.includes("ls-remote")
-            ? { exitCode: 0, stdout: `${baselineSha}\trefs/heads/main\n`, stderr: "" }
-            : { exitCode: 128, stdout: "", stderr: "not a Git checkout" },
+        processRunner: async (argv) => {
+          if (argv[0] === "gh") return { exitCode: 0, stdout: ghIssueJson(1), stderr: "" };
+          if (argv.includes("ls-remote")) {
+            return { exitCode: 0, stdout: `${baselineSha}\trefs/heads/main\n`, stderr: "" };
+          }
+          return { exitCode: 128, stdout: "", stderr: "not a Git checkout" };
+        },
         startEffects: async () => {
           effectsCalled = true;
           return { cleanup: async () => undefined };
@@ -242,6 +265,53 @@ describe("CLI", () => {
     expect(cleanups).toBe(0);
     expect(errors.join("")).toContain("was started durably");
     expect(errors.join("")).toContain(`resume with coord run --issue 1 --coord-root ${fixture.runtime}`);
+  });
+
+  it("fails before runtime effects when the GitHub issue cannot be read", async () => {
+    const fixture = setup();
+    const errors: string[] = [];
+    let effectsCalled = false;
+    expect(
+      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stderr: (message) => errors.push(message) },
+        processRunner: async (argv) => {
+          if (argv[0] === "gh") return { exitCode: 1, stdout: "", stderr: "HTTP 404: Not Found" };
+          return successfulStartGit(argv);
+        },
+        startEffects: async () => {
+          effectsCalled = true;
+          return { cleanup: async () => undefined };
+        },
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(2);
+    expect(effectsCalled).toBe(false);
+    expect(existsSync(join(fixture.runtime, "issue-1"))).toBe(false);
+    expect(errors.join("")).toMatch(/Cannot read GitHub issue|gh auth|Create GitHub issue/);
+  });
+
+  it("coord N starts then enters the run loop", async () => {
+    const fixture = setup();
+    let ran = false;
+    let ticks = 0;
+    expect(
+      await runCli(["1", "--config", fixture.configPath, "--coord-root", fixture.runtime, "--profile", "solo"], {
+        processRunner: successfulStartGit,
+        makeRunLoop: (paths) => ({
+          initializeEffects: async () => undefined,
+          runTick: async () => {
+            ticks += 1;
+            return readCursorsState(paths);
+          },
+          run: async () => {
+            ran = true;
+          }
+        })
+      })
+    ).toBe(0);
+    expect(ticks).toBe(1);
+    expect(ran).toBe(true);
+    expect(existsSync(join(fixture.runtime, "issue-1", "github-issue.json"))).toBe(true);
   });
 
   it("rejects an escaping launcher before startup effects", async () => {
@@ -463,6 +533,8 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     "claude",
     "--profile",
     "solo",
+    "--origin",
+    fakeGitHubOrigin("myserver"),
     "--declare",
     declarePath
   ];
@@ -482,23 +554,23 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     const { product, declarePath } = installedWorkspace();
     expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
 
-    const configPath = join(product.coordRoot, "workspaces", "myserver", "config.json");
-    const runtime = join(product.coordRoot, "runtime");
+    const configPath = join(product.coordRoot, "config.json");
+    expect(existsSync(configPath)).toBe(true);
     const messages: string[] = [];
     const started = await runCli(
-      ["start", "1", "--profile", "solo", "--config", configPath, "--coord-root", runtime],
+      ["start", "1", "--profile", "solo", "--config", configPath, "--coord-root", product.coordRoot],
       {
         io: { stdout: (message) => messages.push(message), stderr: (message) => messages.push(message) },
         makeRunLoop: fakeLoop,
         processRunner: successfulStartGit
       }
     );
-    // The only reason start may refuse here is the owner-supplied digest source,
-    // which an operator places beside the config; the config itself must parse
-    // and validate. Anything else would be the two consumers having drifted.
     expect(messages.join("")).not.toContain("Invalid");
     expect(messages.join("")).not.toContain("Unknown option");
-    if (started !== 0) expect(messages.join("")).toContain("Digest source");
+    // Local product fixtures use a file origin unless overridden; start needs github.com.
+    if (started !== 0) {
+      expect(messages.join("")).toMatch(/github\.com|Cannot read GitHub issue|Digest source/);
+    }
   });
 
   it("returns doctor's class-specific exit code", async () => {

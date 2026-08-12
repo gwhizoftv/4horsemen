@@ -25,8 +25,6 @@ import {
   ensureAgentClone,
   productName,
   proposeProjectPolicy,
-  workspaceConfigPath,
-  workspaceDirectory,
   writeAgentLauncher,
   writeCloneExclude,
   writeWorkspaceConfig,
@@ -41,6 +39,14 @@ import {
   type WorkspaceDeclaration
 } from "./state.js";
 import { agentIdSchema } from "./protocol.js";
+import {
+  chooseWorkspaceLocation,
+  clearOwnerWorkspaceConfig,
+  readOwnerWorkspaceConfig,
+  resolveInstalledWorkspace,
+  writeOwnerWorkspaceConfig,
+  type WorkspaceLocation
+} from "./workspace.js";
 
 /**
  * `coord install` / `coord uninstall`.
@@ -59,7 +65,7 @@ export type InstallOptions = {
   productRoot: string;
   coordRoot: string;
   agents: readonly string[];
-  profile: string;
+  profile: "solo" | "reviewed" | "consensus";
   cloneRoot?: string;
   declarePath?: string;
   origin?: string;
@@ -68,6 +74,8 @@ export type InstallOptions = {
   vendor: boolean;
   bootstrap: boolean;
   dryRun: boolean;
+  /** Record the owner-local config locator on the product clone (onboard / default). */
+  writeOwnerLocator?: boolean;
   log: Logger;
   now?: string;
 };
@@ -159,6 +167,14 @@ const bootstrapCoordination = (installRoot: string, options: EffectOptions): voi
   }
 };
 
+/** Metadata written under `.git/` by scripts/bootstrap.sh when it created the checkout. */
+const BOOTSTRAP_OWNER_MARKER = "coord-bootstrap-owner";
+
+const bootstrapOwnsInstallRoot = (installRoot: string): boolean => {
+  const marker = join(installRoot, ".git", BOOTSTRAP_OWNER_MARKER);
+  return existsSync(marker);
+};
+
 export const install = (options: InstallOptions): InstallResult => {
   const effects = effectOptions(options.log, options.dryRun);
   const installRoot = requireWorktree(resolve(options.installRoot), "The coordination install root");
@@ -183,6 +199,8 @@ export const install = (options: InstallOptions): InstallResult => {
     create: !options.dryRun
   });
 
+  const location = chooseWorkspaceLocation(coordRoot, project);
+
   const origin = options.origin ?? localConfigGet(productRoot, "remote.origin.url");
   if (origin === null || origin === "") {
     throw new Error(
@@ -203,7 +221,7 @@ export const install = (options: InstallOptions): InstallResult => {
     );
   }
 
-  const configPath = workspaceConfigPath(coordRoot, project);
+  const configPath = location.configPath;
   const proposal = proposeProjectPolicy(productRoot);
   const declared = options.declarePath === undefined ? null : readDeclaration(options.declarePath);
   const mode: HookMode = options.vendor ? "vendor" : "shim";
@@ -216,6 +234,7 @@ export const install = (options: InstallOptions): InstallResult => {
   // this after the clone loop meant an undeclarable product left a fully wired
   // agent clone behind and no workspace config to uninstall it with.
   const agentsMdPath = join(productRoot, "AGENTS.md");
+  const ownsInstallRoot = bootstrapOwnsInstallRoot(installRoot);
   const stamp: InstallStamp = {
     installRoot,
     cliEntry,
@@ -226,11 +245,8 @@ export const install = (options: InstallOptions): InstallResult => {
     productRoot,
     cloneRoot,
     vendored: options.vendor,
-    bootstrapped: options.bootstrap,
-    // Running build commands inside a checkout the operator already had is not
-    // ownership of it. Nothing in this installer creates the install root, so
-    // this stays false and `--delete-coordination` correctly refuses.
-    ownsInstallRoot: false,
+    bootstrapped: options.bootstrap || ownsInstallRoot,
+    ownsInstallRoot,
     wroteProductIgnore: options.writeProduct,
     wroteAgentsMd: options.writeProduct && !existsSync(agentsMdPath)
   };
@@ -245,7 +261,8 @@ export const install = (options: InstallOptions): InstallResult => {
       baseBranch,
       agents,
       cloneRoot,
-      workspaceDir: workspaceDirectory(coordRoot, project),
+      workspaceDir: location.workspaceRoot,
+      profile: options.profile,
       declared,
       proposal
     },
@@ -354,22 +371,36 @@ export const install = (options: InstallOptions): InstallResult => {
     }
   }
 
-  // ---- step 6: emit the workspace config under coord-root ------------------
-  writeWorkspaceConfig(coordRoot, config, effects);
+  // ---- step 6: emit the workspace config under the resolved workspace ------
+  writeWorkspaceConfig(location, config, effects);
+
+  if (options.writeOwnerLocator !== false) {
+    const current = readOwnerWorkspaceConfig(productRoot);
+    if (current !== configPath) {
+      effects.changes.push(`record owner locator on ${productRoot}`);
+      if (options.dryRun) {
+        effects.log(`would record ${configPath} as owner workspace locator on ${productRoot}\n`);
+      } else {
+        writeOwnerWorkspaceConfig(productRoot, configPath);
+        effects.log(`recorded owner workspace locator on ${productRoot}\n`);
+      }
+    }
+  }
 
   // ---- step 7: next steps, never run for the operator ----------------------
   options.log(
     [
       "",
-      `Installed ${project} for agents: ${agents.join(", ")}.`,
+      `Installed ${project} for agents: ${agents.join(", ")} (${location.layout} layout).`,
       `  workspace config : ${configPath}`,
+      `  workspace root   : ${location.workspaceRoot}`,
       `  hook delivery    : ${mode}${options.vendor ? " (copies stamped at " + sourceCommit.slice(0, 12) + ")" : ""}`,
       `  product tree     : ${options.writeProduct ? "opt-in tracked changes written" : "untouched (git status unchanged)"}`,
       "",
       "Next steps — coord does not start anything for you:",
+      `  gh issue create --title "…" --body "…"`,
+      `  coord <issue>   # or: coord start <issue> --config ${configPath} --coord-root ${coordRoot}`,
       `  coord doctor --coord-root ${coordRoot} --product ${productRoot}`,
-      `  coord start <issue> --profile ${options.profile} --config ${configPath} --coord-root ${coordRoot}`,
-      `  COORD_ISSUE=<issue> coord run --coord-root ${coordRoot}`,
       ""
     ].join("\n")
   );
@@ -404,6 +435,54 @@ const writeProductAgentsMd = (input: {
   input.options.log(`wrote ${target}\n`);
 };
 
+// --------------------------------------------------------------- onboard ----
+
+export type OnboardOptions = {
+  installRoot: string;
+  productRoot: string;
+  coordRoot?: string;
+  cloneRoot?: string;
+  agents?: readonly string[];
+  profile?: "solo" | "reviewed" | "consensus";
+  declarePath?: string;
+  origin?: string;
+  dryRun?: boolean;
+  log: Logger;
+  now?: string;
+};
+
+export type OnboardResult = InstallResult & { location: WorkspaceLocation };
+
+/**
+ * Happy-path preset over `install`: four agents, sibling coord-runtime, owner
+ * locator, consensus profile. Advanced flags stay on `coord install`.
+ */
+export const onboard = (options: OnboardOptions): OnboardResult => {
+  const productRoot = resolve(options.productRoot);
+  const parent = dirname(productRoot);
+  const coordRoot = resolve(options.coordRoot ?? join(parent, "coord-runtime"));
+  const result = install({
+    installRoot: options.installRoot,
+    productRoot,
+    coordRoot,
+    cloneRoot: resolve(options.cloneRoot ?? parent),
+    agents: options.agents ?? ["claude", "codex", "cursor", "antigravity"],
+    profile: options.profile ?? "consensus",
+    writeProduct: false,
+    vendor: false,
+    bootstrap: false,
+    dryRun: options.dryRun ?? false,
+    writeOwnerLocator: true,
+    log: options.log,
+    ...(options.declarePath === undefined ? {} : { declarePath: options.declarePath }),
+    ...(options.origin === undefined ? {} : { origin: options.origin }),
+    ...(options.now === undefined ? {} : { now: options.now })
+  });
+  const project = productName(productRoot);
+  const location = resolveInstalledWorkspace(coordRoot, project) ?? chooseWorkspaceLocation(coordRoot, project);
+  return { ...result, location };
+};
+
 // ------------------------------------------------------------- uninstall ----
 
 export type UninstallOptions = {
@@ -432,19 +511,20 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
   const project = options.project ?? (options.productRoot === undefined ? undefined : productName(resolve(options.productRoot)));
   if (project === undefined) throw new Error("uninstall requires --product or --project.");
 
-  const configPath = workspaceConfigPath(coordRoot, project);
-  if (!existsSync(configPath)) {
-    throw new Error(`No installed workspace for '${project}' at ${configPath}. Nothing to uninstall.`);
+  const location = resolveInstalledWorkspace(coordRoot, project);
+  if (location === null) {
+    throw new Error(
+      `No installed workspace for '${project}' under ${coordRoot}. Nothing to uninstall.`
+    );
   }
+  const configPath = location.configPath;
   const config = readConfig(configPath);
   const stamp = config.coordination;
   const kept: string[] = [];
   const clonePaths = config.agents.map((agent) => ({ agent, clone: resolve(dirname(configPath), agent.root) }));
+  const productRoot = options.productRoot !== undefined ? resolve(options.productRoot) : (stamp?.productRoot ?? null);
 
   // ---- preflight: every refusal is decided before anything is mutated ------
-  // Checking dirtiness inside the deletion loop meant a refusal arrived after
-  // every clone had already been unwired and an earlier one deleted, leaving a
-  // half-destroyed workspace and an error suggesting --force.
   if (options.deleteClones && !options.force) {
     const dirty = clonePaths.filter(({ clone }) => cloneIsDirty(clone)).map(({ clone }) => clone);
     if (dirty.length > 0) {
@@ -460,6 +540,19 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
         `${stamp?.installRoot ?? "<unknown>"}, so removing it would delete something installed independently. ` +
         "Running bootstrap commands inside an existing checkout is not ownership of it. Nothing has been changed."
     );
+  }
+  if (options.wipeRuntime && location.layout === "flat") {
+    // Flat wipe must not remove sibling nested workspaces or other products'
+    // issue roots that incorrectly shared the outer root under older layouts.
+    const nestedOthers = existsSync(join(coordRoot, "workspaces"))
+      ? readdirSync(join(coordRoot, "workspaces")).filter((entry) => entry !== project)
+      : [];
+    if (nestedOthers.length > 0 && !options.force) {
+      throw new Error(
+        `Refusing --wipe-runtime: ${coordRoot} also holds nested workspaces for ${nestedOthers.join(", ")}. ` +
+          "Re-run with --force to wipe this flat workspace's issue roots anyway (nested workspaces are left alone)."
+      );
+    }
   }
 
   for (const { agent, clone } of clonePaths) {
@@ -498,14 +591,21 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
     effects.log(`product .gitignore was not written by coordination; leaving ${stamp.productRoot} alone\n`);
   }
 
-  // Only the AGENTS.md this install created, and only while it is still the
-  // template we wrote; a human's file, or one they have since edited, stays.
   if (stamp?.wroteAgentsMd === true) {
     const agentsMd = join(stamp.productRoot, "AGENTS.md");
     if (existsSync(agentsMd)) {
       effects.changes.push(`remove ${agentsMd}`);
       if (!options.dryRun) rmSync(agentsMd);
       effects.log(`${options.dryRun ? "would remove" : "removed"} ${agentsMd}\n`);
+    }
+  }
+
+  if (productRoot !== null) {
+    const locator = readOwnerWorkspaceConfig(productRoot);
+    if (locator !== null && resolve(locator) === resolve(configPath)) {
+      effects.changes.push(`clear owner locator on ${productRoot}`);
+      if (!options.dryRun) clearOwnerWorkspaceConfig(productRoot);
+      effects.log(`${options.dryRun ? "would clear" : "cleared"} owner workspace locator on ${productRoot}\n`);
     }
   }
 
@@ -518,32 +618,32 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
     }
   }
 
-  // The workspace directory is also where the owner is told to keep this
-  // project's plan and digest material, so only what coordination wrote is
-  // removed. Deleting the directory took the owner's authored plans with it.
   effects.changes.push(`delete workspace config ${configPath}`);
   if (!options.dryRun) rmSync(configPath, { force: true });
   effects.log(`${options.dryRun ? "would delete" : "deleted"} workspace config ${configPath}\n`);
-  const workspaceDir = workspaceDirectory(coordRoot, project);
-  if (!options.dryRun && readdirSync(workspaceDir).length === 0) rmSync(workspaceDir, { recursive: true, force: true });
+
+  // Never delete/wipe the coord-root itself when layout is flat — that would
+  // remove mirror/issues belonging to other products incorrectly. For nested,
+  // only remove an empty workspace directory after the config is gone.
+  if (location.layout === "nested" && !options.dryRun) {
+    try {
+      if (readdirSync(location.workspaceRoot).length === 0) {
+        rmSync(location.workspaceRoot, { recursive: true, force: true });
+      }
+    } catch {
+      // Directory may already be gone.
+    }
+  }
 
   if (options.wipeRuntime) {
-    // Scoped to this project. The runtime holds every other product's workspace
-    // and every issue's cursors and journal; retiring one product must not
-    // destroy runs still in flight for the others.
-    const issueRuntimes = existsSync(coordRoot)
-      ? readdirSync(coordRoot).filter((entry) => /^issue-[0-9]+$/.test(entry))
+    // Scoped to this product's workspaceRoot only (issue-N + mirror under it).
+    const issueRuntimes = existsSync(location.workspaceRoot)
+      ? readdirSync(location.workspaceRoot).filter((entry) => /^issue-[0-9]+$/.test(entry))
       : [];
-    const others = existsSync(join(coordRoot, "workspaces"))
-      ? readdirSync(join(coordRoot, "workspaces")).filter((entry) => entry !== project)
-      : [];
-    if (others.length > 0 && !options.force) {
-      throw new Error(
-        `Refusing --wipe-runtime: ${coordRoot} also holds workspaces for ${others.join(", ")}, ` +
-          "whose issue state would be destroyed. Re-run with --force to wipe the whole runtime anyway."
-      );
-    }
-    const targets = [workspaceDir, ...issueRuntimes.map((entry) => join(coordRoot, entry))];
+    const targets = [
+      ...issueRuntimes.map((entry) => join(location.workspaceRoot, entry)),
+      join(location.workspaceRoot, "mirror.git")
+    ];
     for (const target of targets) {
       if (!existsSync(target)) continue;
       effects.changes.push(`wipe ${target}`);

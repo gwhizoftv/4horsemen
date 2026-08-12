@@ -35,6 +35,7 @@ const installed = (
     coordRoot: fixture.coordRoot,
     agents: ["claude"],
     profile: "solo",
+    origin: "https://github.com/example/myserver.git",
     declarePath: writeDeclaration(fixture.workspaceRoot, declaration),
     writeProduct: false,
     vendor: false,
@@ -55,7 +56,8 @@ const editConfig = (configPath: string, mutate: (config: Record<string, unknown>
 
 describe("coord doctor", () => {
   it("reports nothing on a healthy install", () => {
-    const { fixture } = installed();
+    const { fixture } = installed({ checks: declaredChecks, verify: passingVerify });
+    // installed() already sets a github origin below
     const result = report(fixture);
     expect(result.findings).toEqual([]);
     expect(result.exitCode).toBe(0);
@@ -107,6 +109,7 @@ describe("coord doctor", () => {
       coordRoot: fixture.coordRoot,
       agents: ["claude"],
       profile: "solo",
+      origin: "https://github.com/example/myserver.git",
       declarePath: writeDeclaration(fixture.workspaceRoot, { checks: declaredChecks, verify: passingVerify }),
       writeProduct: false,
       vendor: true,
@@ -114,7 +117,7 @@ describe("coord doctor", () => {
       dryRun: false,
       log: silence().log
     });
-    const configPath = join(fixture.coordRoot, "workspaces", "myserver", "config.json");
+    const configPath = join(fixture.coordRoot, "config.json");
     editConfig(configPath, (config) => {
       (config.coordination as Record<string, unknown>).commit = "a".repeat(40);
     });

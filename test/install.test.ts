@@ -3,7 +3,6 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { install, uninstall } from "../src/install.js";
 import { readConfig } from "../src/state.js";
-import { workspaceConfigPath } from "../src/setupWorkspace.js";
 import {
   declaredChecks,
   ensureBuilt,
@@ -131,7 +130,7 @@ describe("coord install — emitted config", () => {
     const fixture = product();
     const result = installOnce(fixture);
     expect(result.configPath.startsWith(fixture.coordRoot)).toBe(true);
-    expect(result.configPath).toBe(workspaceConfigPath(fixture.coordRoot, "myserver"));
+    expect(result.configPath).toBe(join(fixture.coordRoot, "config.json"));
     expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
   });
 
@@ -334,6 +333,7 @@ describe("coord uninstall — scope", () => {
       coordRoot: fixture.coordRoot,
       agents: ["claude", "codex"],
       profile: "consensus",
+      origin: "https://github.com/example/myserver.git",
       declarePath: writeDeclaration(fixture.workspaceRoot, { checks: declaredChecks, verify: passingVerify }, "two"),
       writeProduct: false,
       vendor: false,
@@ -350,7 +350,7 @@ describe("coord uninstall — scope", () => {
     expect(git(claude, "config", "--local", "--get", "consensus.agentId")).toBe("claude");
   });
 
-  it("scopes --wipe-runtime to this product unless forced", () => {
+  it("scopes --wipe-runtime to this product's workspace root", () => {
     const first = product();
     installOnce(first);
     const second = makeProduct("go", "otherserver");
@@ -361,6 +361,7 @@ describe("coord uninstall — scope", () => {
       coordRoot: first.coordRoot,
       agents: ["codex"],
       profile: "solo",
+      origin: "https://github.com/example/otherserver.git",
       declarePath: writeDeclaration(second.workspaceRoot, { checks: declaredChecks, verify: passingVerify }),
       writeProduct: false,
       vendor: false,
@@ -368,11 +369,11 @@ describe("coord uninstall — scope", () => {
       dryRun: false,
       log: silence().log
     });
-    // Two products share one runtime; both workspaces live under it.
     const otherWorkspace = join(first.coordRoot, "workspaces", "otherserver");
     expect(existsSync(otherWorkspace)).toBe(true);
+    expect(existsSync(join(first.coordRoot, "config.json"))).toBe(true);
 
-    expect(() => uninstallOnce(first, { wipeRuntime: true })).toThrow(/also holds workspaces/);
+    expect(() => uninstallOnce(first, { wipeRuntime: true })).toThrow(/also holds nested workspaces/);
     expect(existsSync(otherWorkspace)).toBe(true);
   });
 

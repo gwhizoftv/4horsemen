@@ -64,9 +64,11 @@ const KNOWN_AGENT_LABELS: Record<string, string> = {
 export const agentLabel = (agent: string): string =>
   KNOWN_AGENT_LABELS[agent] ?? `${agent.charAt(0).toUpperCase()}${agent.slice(1)}`;
 
+/** @deprecated Prefer WorkspaceLocation from workspace.ts; kept for nested-path helpers. */
 export const workspaceDirectory = (coordRoot: string, project: string): string =>
   containedPath(resolve(coordRoot), "workspaces", project);
 
+/** @deprecated Prefer WorkspaceLocation.configPath from workspace.ts. */
 export const workspaceConfigPath = (coordRoot: string, project: string): string =>
   join(workspaceDirectory(coordRoot, project), "config.json");
 
@@ -201,6 +203,7 @@ export type WorkspaceConfigInput = {
   agents: readonly string[];
   cloneRoot: string;
   workspaceDir: string;
+  profile: "solo" | "reviewed" | "consensus";
   declared: WorkspaceDeclaration | null;
   proposal: ProjectPolicyProposal;
 };
@@ -239,7 +242,8 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     baseBranch: input.baseBranch,
     maxRevisionRounds: 3,
     prPolicy: declared.prPolicy ?? "owner-only",
-    digestPaths: declared.digestPaths ?? [".plans/issue-{issue}/plan.md"],
+    profile: declared.profile ?? input.profile,
+    digestPaths: declared.digestPaths ?? [],
     checks,
     pollIntervalMs: declared.pollIntervalMs ?? 1_000,
     ...(toolchain === undefined ? {} : { toolchain }),
@@ -260,23 +264,21 @@ const relativeFrom = (from: string, to: string): string => {
 };
 
 export const writeWorkspaceConfig = (
-  coordRoot: string,
+  location: { workspaceRoot: string; configPath: string; coordRoot: string },
   config: CoordinatorConfig,
   options: EffectOptions
 ): string => {
-  const directory = workspaceDirectory(coordRoot, config.project);
-  const path = workspaceConfigPath(coordRoot, config.project);
-  const existing = existsSync(path) ? readFileSync(path, "utf8") : null;
+  const existing = existsSync(location.configPath) ? readFileSync(location.configPath, "utf8") : null;
   const rendered = `${JSON.stringify(config, null, 2)}\n`;
   if (existing === rendered) {
-    options.log(`workspace config already current at ${path}\n`);
-    return path;
+    options.log(`workspace config already current at ${location.configPath}\n`);
+    return location.configPath;
   }
-  act(options, `write workspace config ${path}`, () => {
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    atomicWriteJson(coordRoot, path, config);
+  act(options, `write workspace config ${location.configPath}`, () => {
+    mkdirSync(location.workspaceRoot, { recursive: true, mode: 0o700 });
+    atomicWriteJson(location.coordRoot, location.configPath, config);
   });
-  return path;
+  return location.configPath;
 };
 
 // ------------------------------------------------------------------ clones --
