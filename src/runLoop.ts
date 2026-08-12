@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import { existsSync, rmSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { clearCompletion, createActionId, readCompletion, writeAction } from "./action.js";
-import { computeInputSetHash, evaluateEvidence, type EvidenceMirror } from "./evidence.js";
+import { evaluateEvidence, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
 import { BareMirror, hermeticGitEnv } from "./mirror.js";
+import { renderArtifactScaffold } from "./orderScaffold.js";
 import { agentRuntimePaths, containedPath, type IssueRuntimePaths } from "./paths.js";
 import { decide } from "./machine.js";
 import {
@@ -245,24 +246,36 @@ export const buildOrder = (
   const selectedImplementationSubmission = acceptedAt(cursors, "R4.implement").find(
     (submission) => submission.agent === selectedImplementation
   );
-  const jsonSteps: readonly WorkflowStepId[] = [
-    "R1.join",
-    "R3.plan-ballot",
-    "R3.publish-selection",
-    "R4.implement",
-    "R5.compare-ballot",
-    "R5.reviser-auth",
-    "R6.revise",
-    "R6.ballot",
-    "R6.declare",
-    "R7.finalize"
-  ];
-  const binding = jsonSteps.includes(stepId)
-    ? `\n\nUse protocolVersion 1, issue ${start.issue}, issueSessionId \`${start.issueSessionId}\`, and agent \`${agent}\`.` +
-      (stepId === "R1.join"
-        ? ` Include \`"artifact": "join"\`. Set baselineSha to \`${start.baselineSha}\` and automationDigest to \`${start.automationDigest}\`.`
-        : ` Set inputSetHash to \`${computeInputSetHash(inputs)}\` when that field is required.`)
-    : "";
+  const approvedPaths = approvedPathsForOrder(cursors, stepId);
+  const eligibleChoices =
+    stepId === "R3.plan-ballot"
+      ? planChoices
+      : stepId === "R5.compare-ballot"
+        ? implementationChoices
+        : [];
+  const expectedSelectedAgents = selectedPlan === null ? [] : [selectedPlan];
+  const scaffold = renderArtifactScaffold({
+    stepId,
+    issue: start.issue,
+    issueSessionId: start.issueSessionId,
+    agent,
+    baselineSha: start.baselineSha,
+    automationDigest: start.automationDigest,
+    inputs,
+    eligibleChoices,
+    expectedSelectedAgents,
+    ...(selectedImplementation === null ? {} : { expectedImplementationAgent: selectedImplementation }),
+    ...(selectedImplementationSubmission?.productPin === undefined
+      ? {}
+      : { expectedImplementationPin: selectedImplementationSubmission.productPin }),
+    ...(selectedImplementation === null ? {} : { expectedReviser: selectedImplementation }),
+    round,
+    approvedPaths
+  });
+  const binding =
+    scaffold === ""
+      ? ""
+      : `\n\nUse protocolVersion 1. Bound values below are authoritative; do not invent alternate digests or citations.`;
   return {
     actionId,
     issue: start.issue,
@@ -276,17 +289,12 @@ export const buildOrder = (
     issueSessionId: start.issueSessionId,
     baselineSha: start.baselineSha,
     automationDigest: start.automationDigest,
-    task: `${definition.task}${binding}${correction}`,
+    task: `${definition.task}${binding}${scaffold}${correction}`,
     inputs,
-    approvedPaths: approvedPathsForOrder(cursors, stepId),
+    approvedPaths,
     activeRoster: [...cursors.activeRoster],
-    eligibleChoices:
-      stepId === "R3.plan-ballot"
-        ? planChoices
-        : stepId === "R5.compare-ballot"
-          ? implementationChoices
-          : [],
-    expectedSelectedAgents: selectedPlan === null ? [] : [selectedPlan],
+    eligibleChoices,
+    expectedSelectedAgents,
     ...(selectedImplementation === null ? {} : { expectedImplementationAgent: selectedImplementation }),
     ...(selectedImplementationSubmission?.productPin === undefined
       ? {}
@@ -411,7 +419,8 @@ export class CoordinatorRunLoop {
     start: StartState,
     cursors: CursorsState,
     agent: string,
-    actionId: string
+    actionId: string,
+    reason: "retry" | "reissue" = "retry"
   ): Promise<CursorsState> {
     if (this.tmux === null || this.nudgedActions.has(actionId)) return cursors;
     const config = start.agents.find((candidate) => candidate.id === agent);
@@ -422,17 +431,21 @@ export class CoordinatorRunLoop {
     this.authority(cursors);
     if (result === "sent") {
       this.nudgedActions.add(actionId);
-      this.verbose(`nudged ${agent} (retry) → ${runtime.action}`);
+      this.verbose(`nudged ${agent} (${reason}) → ${runtime.action}`);
       return this.mutate(cursors, (current) => {
-        appendJournal(this.paths, { type: "nudged", agent, actionId, details: { retry: true } }, this.now());
+        appendJournal(
+          this.paths,
+          { type: "nudged", agent, actionId, details: reason === "retry" ? { retry: true } : { reissue: true } },
+          this.now()
+        );
         return current;
       });
     }
     if (result === "gone") {
-      this.verbose(`nudge retry skipped for ${agent}: harness gone`);
+      this.verbose(`nudge ${reason} skipped for ${agent}: harness gone`);
       return this.mutate(cursors, (current) => replaceCursor(current, agent, { status: "harness-gone" }, this.now()));
     }
-    this.verbose(`nudge retry deferred for ${agent}: ${result}`);
+    this.verbose(`nudge ${reason} deferred for ${agent}: ${result}`);
     return cursors;
   }
 
@@ -541,10 +554,16 @@ export class CoordinatorRunLoop {
     });
   }
 
-  private reissue(start: StartState, cursors: CursorsState, agent: string, outstanding: readonly string[]): CursorsState {
+  private async reissue(
+    start: StartState,
+    cursors: CursorsState,
+    agent: string,
+    outstanding: readonly string[]
+  ): Promise<CursorsState> {
     const cursor = cursors.agents[agent];
     if (cursor === undefined || cursor.stepId === null || cursor.actionId === null) return cursors;
     const runtime = agentRuntimePaths(this.paths, agent);
+    const actionId = cursor.actionId;
     const order = buildOrder(
       this.paths,
       start,
@@ -552,17 +571,16 @@ export class CoordinatorRunLoop {
       agent,
       cursor.stepId,
       cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
-      cursor.actionId,
+      actionId,
       outstanding
     );
-    // Allow maybeRetryNudge to deliver the rewritten action.md; same actionId
-    // would otherwise stay in nudgedActions and never get a second paste.
-    this.nudgedActions.delete(cursor.actionId);
-    this.verbose(`reissued ${agent} action ${cursor.actionId}: ${outstanding.join("; ")}`);
-    return this.mutate(cursors, (current) => {
+    // Clear so an immediate (or later) nudge can deliver the rewritten action.md.
+    this.nudgedActions.delete(actionId);
+    this.verbose(`reissued ${agent} action ${actionId}: ${outstanding.join("; ")}`);
+    const next = this.mutate(cursors, (current) => {
       appendJournal(
         this.paths,
-        { type: "verify-result", agent, actionId: cursor.actionId as string, details: { ok: false, outstanding } },
+        { type: "verify-result", agent, actionId, details: { ok: false, outstanding } },
         this.now()
       );
       clearCompletion(runtime.complete);
@@ -574,6 +592,7 @@ export class CoordinatorRunLoop {
         this.now()
       );
     });
+    return this.maybeRetryNudge(start, next, agent, actionId, "reissue");
   }
 
   private advance(cursors: CursorsState, decision: Extract<MachineDecision, { type: "advance-step" }>): CursorsState {
@@ -739,7 +758,7 @@ export class CoordinatorRunLoop {
     for (const decision of decisions) {
       if (decision.type === "prepare-action") next = await this.prepareAction(start, next, decision.agent, decision.stepId, decision.round);
       else if (decision.type === "accept-submission") next = this.accept(start, next, decision);
-      else if (decision.type === "reissue-action") next = this.reissue(start, next, decision.agent, decision.outstanding);
+      else if (decision.type === "reissue-action") next = await this.reissue(start, next, decision.agent, decision.outstanding);
       else if (decision.type === "retry-verification") {
         next = this.mutate(next, (current) =>
           replaceCursor(current, decision.agent, { status: "intent", outstanding: [...decision.outstanding] }, this.now())
@@ -855,7 +874,7 @@ export class CoordinatorRunLoop {
         continue;
       }
       if (completion.status === "malformed") {
-        cursors = this.reissue(start, cursors, agent, [completion.message]);
+        cursors = await this.reissue(start, cursors, agent, [completion.message]);
         continue;
       }
       cursors = this.mutate(cursors, (current) => {

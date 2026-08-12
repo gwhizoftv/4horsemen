@@ -107,6 +107,10 @@ describe("effectful run loop", () => {
     expect(action.requiredPath).toBe(".signals/issue-1/joined-codex.json");
     expect(action.body).not.toContain("gate-1-join");
     expect(action.body).toContain('"artifact": "join"');
+    expect(action.body).toContain("```json");
+    const start = readStartState(paths);
+    expect(action.body).toContain(`"baselineSha": "${start.baselineSha}"`);
+    expect(action.body).toContain(`"automationDigest": "${start.automationDigest}"`);
   });
 
   it("clears malformed completion and reissues the same action with a concrete correction", async () => {
@@ -141,8 +145,8 @@ describe("effectful run loop", () => {
     await loop.runTick();
     expect(readCursorsState(paths).agents.codex).toMatchObject({ actionId, status: "ordered", attempt: 2 });
     expect(readAction(runtime.action).body).toContain("complete must contain a 40-character lowercase Git SHA");
-    expect(readJournal(paths).at(-1)?.type).toBe("verify-result");
-    await loop.runTick();
+    expect(readJournal(paths).some((event) => event.type === "verify-result")).toBe(true);
+    expect(readJournal(paths).some((event) => event.type === "nudged" && event.details.reissue === true)).toBe(true);
     expect(literalNudges).toBeGreaterThan(firstNudges);
   });
 
