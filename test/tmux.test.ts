@@ -41,7 +41,7 @@ describe("tmux boundary", () => {
     ).toBe("sent");
     expect(calls.map((call) => call.args[0])).toEqual(["display-message", "send-keys", "send-keys"]);
     expect(calls[1]?.args).toEqual(["send-keys", "-l", "-t", "coord-1:cursor.0", expect.stringContaining("/runtime/action.md")]);
-    expect(calls[2]?.args.slice(-1)).toEqual(["Enter"]);
+    expect(calls[2]?.args.slice(-1)).toEqual(["C-m"]);
   });
 
   it("uses per-agent nudgePrelude and nudgeSubmit for Codex vim", async () => {
@@ -65,16 +65,17 @@ describe("tmux boundary", () => {
           delivery: "both",
           harnessProcess: "codex",
           nudgePrelude: ["i"],
-          nudgeSubmit: ["C-j"],
+          nudgeSubmit: ["C-j", "C-m"],
           terminalProfile: "Grass"
         },
         "/runtime/action.md"
       )
     ).toBe("sent");
-    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "send-keys", "send-keys", "send-keys"]);
+    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "send-keys", "send-keys", "send-keys", "send-keys"]);
     expect(calls[1]?.args.slice(-1)).toEqual(["i"]);
     expect(calls[2]?.args[1]).toBe("-l");
     expect(calls[3]?.args.slice(-1)).toEqual(["C-j"]);
+    expect(calls[4]?.args.slice(-1)).toEqual(["C-m"]);
   });
 
   it("honors explicit empty prelude over Codex defaults", async () => {
@@ -93,12 +94,13 @@ describe("tmux boundary", () => {
         launcher: "start-codex.sh",
         delivery: "both",
         nudgePrelude: [],
-        nudgeSubmit: ["Enter"]
+        nudgeSubmit: ["C-m"]
       },
       "/a"
     );
     expect(calls.map((call) => call.args[0])).toEqual(["display-message", "send-keys", "send-keys"]);
     expect(calls[1]?.args[1]).toBe("-l");
+    expect(calls[2]?.args.slice(-1)).toEqual(["C-m"]);
   });
 
   it("builds one attach command per agent window with terminal profiles", () => {
@@ -160,12 +162,15 @@ describe("tmux boundary", () => {
     expect(called).toBe(false);
   });
 
-  it("accepts Claude version strings and Cursor node as ready harnesses", () => {
+  it("accepts Claude version strings and Cursor/Antigravity node as ready harnesses", () => {
     expect(harnessLooksReady("2.1.228", "claude")).toBe(true);
     expect(harnessLooksReady("claude", "claude")).toBe(true);
     expect(harnessLooksReady("node", "claude")).toBe(false);
     expect(harnessLooksReady("node", "agent")).toBe(true);
     expect(harnessLooksReady("agent", "agent")).toBe(true);
+    expect(harnessLooksReady("node", "agy")).toBe(true);
+    expect(harnessLooksReady("antigravity", "agy")).toBe(true);
+    expect(harnessLooksReady("agy", "agy")).toBe(true);
   });
 
   it("nudges Cursor when tmux reports the pane command as node", async () => {

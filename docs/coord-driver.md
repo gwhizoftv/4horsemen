@@ -136,8 +136,8 @@ as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`
 Per-agent config controls owner UI:
 
 - `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert)
-- `nudgeSubmit` — tmux keys after the text (Codex default: `C-j`; Enter alone
-  often inserts a newline in vim insert instead of submitting)
+- `nudgeSubmit` — tmux keys after the text (default `C-m`; Codex also sends `C-j`.
+  Bare `Enter` is unreliable after `send-keys -l` in these TUIs)
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Pro/Grass/Ocean/Red Sands)
 

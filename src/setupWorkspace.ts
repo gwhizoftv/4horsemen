@@ -37,24 +37,24 @@ export const agentHarnessProcess = (agent: string): string => {
 
 /**
  * Default per-agent owner UI for nudges and macOS Terminal windows.
- * Codex uses vim bindings: `i` then Ctrl-J (Enter inserts a newline in insert).
- * terminalProfile names are stock Terminal.app settings sets when possible.
- * Operators override any of these in config.json.
+ * Submit uses `C-m` (CR): bare `Enter` often fails to submit after `send-keys -l`
+ * in Claude/Cursor/Codex TUIs. Codex also needs vim insert `i` and prefers `C-j`
+ * (Enter in vim-insert inserts a newline). Operators override via config.json.
  */
 export const agentOwnerUiDefaults = (
   agent: string
 ): { nudgePrelude: string[]; nudgeSubmit: string[]; terminalProfile: string } => {
   switch (agent) {
     case "codex":
-      return { nudgePrelude: ["i"], nudgeSubmit: ["C-j"], terminalProfile: "Grass" };
+      return { nudgePrelude: ["i"], nudgeSubmit: ["C-j", "C-m"], terminalProfile: "Grass" };
     case "claude":
-      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Pro" };
+      return { nudgePrelude: [], nudgeSubmit: ["C-m"], terminalProfile: "Pro" };
     case "cursor":
-      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Ocean" };
+      return { nudgePrelude: [], nudgeSubmit: ["C-m"], terminalProfile: "Ocean" };
     case "antigravity":
-      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Red Sands" };
+      return { nudgePrelude: [], nudgeSubmit: ["C-m"], terminalProfile: "Red Sands" };
     default:
-      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Basic" };
+      return { nudgePrelude: [], nudgeSubmit: ["C-m"], terminalProfile: "Basic" };
   }
 };
 
