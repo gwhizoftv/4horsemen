@@ -4,7 +4,8 @@ import { git, localConfigGet, worktreeRoot } from "./gitExec.js";
 import { canonicalSourceDigest, inspectCloneHooks, readHookManifest } from "./hookSync.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, unresolvableCommands, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { githubRepositoryFromOrigin } from "./runLoop.js";
-import { productName, workspaceConfigPath } from "./setupWorkspace.js";
+import { productName } from "./setupWorkspace.js";
+import { flatWorkspace, nestedWorkspace, resolveInstalledWorkspace, type WorkspaceLocation } from "./workspace.js";
 import { readConfig, type CoordinatorConfig } from "./state.js";
 
 /**
@@ -42,6 +43,8 @@ export type DoctorFinding = {
 
 export type DoctorReport = {
   configPath: string;
+  /** Absent only for the synthetic report a caller builds for a dry run. */
+  location?: WorkspaceLocation;
   findings: DoctorFinding[];
   exitCode: number;
 };
@@ -373,10 +376,16 @@ export const doctor = (options: DoctorOptions): DoctorReport => {
   const coordRoot = resolve(options.coordRoot);
   const project = options.project ?? (options.productRoot === undefined ? undefined : productName(resolve(options.productRoot)));
   if (project === undefined) throw new Error("doctor requires --product or --project.");
-  const configPath = workspaceConfigPath(coordRoot, project);
-  if (!existsSync(configPath)) {
-    throw new Error(`No installed workspace for '${project}' at ${configPath}. Run coord install first.`);
+  // Both layouts are diagnosed. A workspace doctor cannot find is one it
+  // reports as absent, so resolution failure names every path it looked at.
+  const location = resolveInstalledWorkspace(coordRoot, project, { acceptUnreadableFlat: true });
+  if (location === null) {
+    throw new Error(
+      `No installed workspace for '${project}' under ${coordRoot}. Run coord onboard <product> first.\n` +
+        `  Looked at ${flatWorkspace(coordRoot).configPath} and ${nestedWorkspace(coordRoot, project).configPath}.`
+    );
   }
+  const configPath = location.configPath;
   let config: CoordinatorConfig;
   try {
     config = readConfig(configPath);
@@ -385,6 +394,7 @@ export const doctor = (options: DoctorOptions): DoctorReport => {
     // class. Letting readConfig throw produced a generic exit 2 and no finding.
     const report: DoctorReport = {
       configPath,
+      location,
       findings: [
         finding(
           "startCompatibility",
@@ -417,7 +427,7 @@ export const doctor = (options: DoctorOptions): DoctorReport => {
   ];
 
   const exitCode = findings.length === 0 ? 0 : Math.min(...findings.map((item) => item.code));
-  return { configPath, findings, exitCode };
+  return { configPath, location, findings, exitCode };
 };
 
 export const renderDoctorReport = (report: DoctorReport): string => {

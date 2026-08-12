@@ -102,6 +102,12 @@ export const resolveSafeCoordRoot = (options: SafeCoordRootOptions): string => {
 };
 
 export type IssueRuntimePaths = {
+  /**
+   * The root this issue's state hangs off: the coord-root for a flat workspace,
+   * `<coord-root>/workspaces/<project>` for a nested one. GitHub issue numbers
+   * are repository-local, so two products sharing one runtime must not share an
+   * `issue-N/` or a mirror.
+   */
   coordRoot: string;
   mirror: string;
   issueRoot: string;
@@ -109,13 +115,15 @@ export type IssueRuntimePaths = {
   cursors: string;
   journal: string;
   agents: string;
+  /** Start-time snapshot of the GitHub issue this run is bound to. */
+  githubIssue: string;
 };
 
-export const issueRuntimePaths = (coordRoot: string, issue: number): IssueRuntimePaths => {
+export const issueRuntimePaths = (workspaceRoot: string, issue: number): IssueRuntimePaths => {
   if (!Number.isInteger(issue) || issue < 1) {
     throw new PathSafetyError("Issue must be a positive integer.");
   }
-  const root = resolve(coordRoot);
+  const root = resolve(workspaceRoot);
   const issueRoot = containedPath(root, `issue-${issue}`);
   return {
     coordRoot: root,
@@ -124,7 +132,8 @@ export const issueRuntimePaths = (coordRoot: string, issue: number): IssueRuntim
     start: containedPath(issueRoot, "start.json"),
     cursors: containedPath(issueRoot, "cursors.json"),
     journal: containedPath(issueRoot, "journal.jsonl"),
-    agents: containedPath(issueRoot, "agents")
+    agents: containedPath(issueRoot, "agents"),
+    githubIssue: containedPath(issueRoot, "github-issue.json")
   };
 };
 

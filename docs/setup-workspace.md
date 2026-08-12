@@ -1,5 +1,78 @@
 # Installing coordination against a product
 
+## Bootstrap: the install root
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gwhizoftv/coordination/main/scripts/bootstrap.sh | sh
+```
+
+This installs a **complete coordination checkout** at
+`~/.local/share/coordination` and a `coord` wrapper at `~/.local/bin/coord`. A
+complete checkout is required, not just a binary: each agent clone's hooks are
+fail-closed shims that exec canonical hook bodies out of `githooks/**` in the
+install root, and resolve declared verification through its built `dist/`.
+
+| Flag | Effect |
+| --- | --- |
+| `--root <dir>` | install root; also `COORD_INSTALL_ROOT`, and `--root` wins |
+| `--source <url\|dir>` | repository to clone; also `COORD_INSTALL_SOURCE` |
+| `--ref <branch>` | branch to track (default `main`) |
+| `--no-path` | do not install `~/.local/bin/coord` |
+| `--no-build` | skip `pnpm install` / `pnpm build` |
+
+Re-running is safe and is how you upgrade. A clean checkout is fetched and
+**fast-forwarded only**; a dirty or diverged one is refused with its status
+printed and nothing rewritten. Bootstrap never resets, cleans, or
+force-checks-out, because the install root is frequently somebody's working
+checkout of this repository.
+
+Bootstrap records that it created a checkout in `<root>/.git/coord-bootstrap`,
+inside `.git/` so the worktree stays clean. That note deliberately does **not**
+authorize `coord uninstall --delete-coordination`: one install root serves every
+onboarded product, so no single product's uninstall may remove it. Remove a
+bootstrapped install by hand:
+
+```bash
+rm -rf ~/.local/share/coordination ~/.local/bin/coord
+```
+
+Already develop coordination in a checkout of your own? Point
+`COORD_INSTALL_ROOT` at it, or just run `./coord` from that checkout. Bootstrap
+touches no product repository and onboards nothing.
+
+## Onboard: the whole product-wiring step, once
+
+```bash
+coord onboard /path/to/app
+```
+
+| Default | Value |
+| --- | --- |
+| `--coord-root` | `<parent-of-product>/coord-runtime`, created |
+| `--clone-root` | the product's parent directory |
+| `--agents` | `claude,codex,cursor,antigravity` |
+| `--profile` | `consensus`, recorded in the config so `coord <n>` needs no flag |
+| install root | the checkout containing the running `coord` |
+
+Onboard is defaults plus composition, not a second installer: it calls the same
+`install` below with `--write-product`, `--vendor`, and
+`--bootstrap-coordination` all off, then runs `coord doctor` and **exits with
+doctor's code**. A workspace that would fail at an agent's first commit fails
+here, where it is one command to repair. The installed files stay in place on a
+doctor failure — they are what the repair acts on.
+
+Onboard also records `coord.ownerWorkspaceConfig` in your product clone's local
+git config: the absolute path of its workspace config. That is what lets
+`coord 42` work with no flags from the product or any of its agent clones. It is
+untracked, per-clone, and never copied to anyone else's checkout, and
+`coord uninstall` removes it. It is deliberately **not** one of the three keys
+that mark an agent clone (`coord.installRoot`, `coord.cliEntry`,
+`coord.workspaceConfig`), which the hooks treat as proof that a clone is an
+agent clone.
+
+Anything onboard does not expose — `--declare`, `--write-product`, `--vendor`,
+`--origin`, `--base-branch` — stays on `coord install`.
+
 ## The rule everything else follows
 
 > Coordination constrains **agents and the owner control plane**. It does not
@@ -11,6 +84,7 @@
 | --- | --- | --- |
 | Coordination hooks | **none added** | branch ownership, commit prefix, declared `verify` |
 | Identity / install root | none | `consensus.agentId`, `coord.installRoot`, `coord.cliEntry`, `coord.workspaceConfig` |
+| Owner locator | none | n/a — written only to *your own* product clone |
 | Launcher | none | `start-<agent>.sh` |
 | Day-to-day git | exactly as before onboarding | gated |
 
@@ -47,7 +121,8 @@ coord install \
 | 4 | Record `consensus.*`, `coord.installRoot`, `coord.cliEntry`, `coord.workspaceConfig` in each clone |
 | 5 | Install fail-closed shims into each agent clone's `.git/hooks/` |
 | 6 | Emit the workspace config under `--coord-root` |
-| 7 | Print the `coord doctor` / `coord start` / `coord run` next steps — nothing is auto-started |
+| 6b | Record `coord.ownerWorkspaceConfig` in the owner's product clone |
+| 7 | Print the `coord doctor` / `gh issue create` / `coord <n>` next steps — nothing is auto-started |
 
 Not written by default: the product's `githooks/`, `.gitignore`, `package.json`,
 `AGENTS.md`, or `scripts/setup_*`.
@@ -77,7 +152,7 @@ coord uninstall --coord-root /path/to/coord-runtime --product /path/to/app
   # --delete-clones        # refuses a dirty clone unless --force
   # --force
   # --wipe-runtime
-  # --delete-coordination  # only if this install recorded bootstrap ownership
+  # --delete-coordination  # only if this install created the coordination checkout
   # --dry-run
 ```
 
@@ -202,18 +277,61 @@ without either editing a hook body.
 
 ## Where the config lives, and why
 
-The workspace config is written to
-`<coord-root>/workspaces/<project>/config.json`, not into the product tree.
+Never in the product tree. A `verify` or digest input inside the product tree
+would let an agent supply argument vectors the coordinator or another agent's
+clone then executes.
 
-`digestPaths` resolve relative to the config file, so the automation material
-whose digest the coordinator records sits beside the config, in the
-owner-controlled runtime. That is the point: a `verify` or digest input inside
-the product tree would let an agent supply argument vectors the coordinator or
-another agent's clone then executes.
+A runtime serving **one** product is flat:
 
-Place each issue's owner-authored plan at
-`<coord-root>/workspaces/<project>/.plans/issue-<n>/plan.md` before
-`coord start <n>`.
+```text
+/path/to/coord-runtime/
+  config.json
+  mirror.git
+  issue-42/
+```
+
+A runtime serving **several** products nests every product after the first,
+including its run state:
+
+```text
+/path/to/coord-runtime/
+  config.json                     # the first product
+  mirror.git
+  issue-42/
+  workspaces/other-app/
+    config.json
+    mirror.git
+    issue-42/                     # a different issue 42, in a different repo
+```
+
+Run state follows the workspace root because GitHub issue numbers are
+repository-local: two products can legitimately each have an issue 42, and they
+must not share cursors, journal, digest, or mirror.
+
+Resolution is flat-first and never relocates an existing install, so a workspace
+installed at `workspaces/<project>/config.json` by an earlier version keeps
+working exactly as it did — `start`, `doctor`, and `uninstall` all resolve both
+layouts. There is no migration step and nothing is moved automatically.
+
+### What binds a run
+
+The work statement for issue N is **GitHub issue N**. At `coord start <n>` the
+driver runs `gh issue view <n> --repo <owner/repo>` — with the repository taken
+from the workspace's `origin`, never from your working directory — validates the
+response, and writes the canonical snapshot to
+`<workspace-root>/issue-<n>/github-issue.json`. Those exact bytes are hashed
+into `automationDigest` alongside the config's, so re-hashing the persisted file
+reproduces the digest, and an issue edited upstream later cannot silently rebind
+a run in flight.
+
+There is **no owner-authored plan file**. `digestPaths` still exists and is now
+empty by default: declare paths in it only if you want some additional immutable
+file pinned into the session hash. The agents' `.plans/issue-<n>/plan.md` files
+are R2 protocol evidence on their own branches and are unrelated to the digest.
+
+If issue N does not exist, or `gh` is missing or unauthenticated, start fails
+before creating any runtime state or launching any tmux pane, and names both
+remedies.
 
 ## Doctor
 

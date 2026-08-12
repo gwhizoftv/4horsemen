@@ -114,7 +114,7 @@ describe("coord doctor", () => {
       dryRun: false,
       log: silence().log
     });
-    const configPath = join(fixture.coordRoot, "workspaces", "myserver", "config.json");
+    const configPath = join(fixture.coordRoot, "config.json");
     editConfig(configPath, (config) => {
       (config.coordination as Record<string, unknown>).commit = "a".repeat(40);
     });

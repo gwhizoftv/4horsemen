@@ -7,9 +7,11 @@ import { writeAction } from "../src/action.js";
 import { automationDigestMaterial, runCli, type CliRunLoop } from "../src/cli.js";
 import { agentRuntimePaths, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
+import { canonicalIssueSnapshot } from "../src/githubIssue.js";
 import { cursorsStateSchema, readConfig, readCursorsState, readStartState, writeCursorsState } from "../src/state.js";
 import { DOCTOR_CODES } from "../src/doctor.js";
-import { ensureBuilt, makeProduct, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
+import { onboard, uninstall } from "../src/install.js";
+import { ensureBuilt, makeProduct, repoRoot, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
 
 const roots: string[] = [];
 const productFixtures: ProductFixture[] = [];
@@ -26,14 +28,12 @@ const setup = () => {
     mkdirSync(clone);
     writeFileSync(join(clone, `start-${agent}.sh`), "#!/usr/bin/env bash\n", { mode: 0o700 });
   }
-  mkdirSync(join(root, ".plans/issue-1"), { recursive: true });
-  writeFileSync(join(root, ".plans/issue-1/plan.md"), "# Issue 1 plan\n");
   const configPath = join(root, "config.json");
   writeFileSync(
     configPath,
     JSON.stringify({
       project: "fixture",
-      origin: join(root, "origin.git"),
+      origin: "https://github.com/example/fixture",
       agents: [
         { id: "codex", root: "clone-codex", launcher: "start-codex.sh", delivery: "pull" },
         { id: "claude", root: "clone-claude", launcher: "start-claude.sh", delivery: "pull" },
@@ -43,7 +43,7 @@ const setup = () => {
       baseBranch: "main",
       maxRevisionRounds: 3,
       prPolicy: "owner-only",
-      digestPaths: [".plans/issue-{issue}/plan.md"],
+      digestPaths: [],
       checks: [{ name: "check", argv: ["node", "-e", "process.exit(0)"] }],
       pollIntervalMs: 100
     })
@@ -59,14 +59,49 @@ const fakeLoop = (paths: ReturnType<typeof issueRuntimePaths>): CliRunLoop => ({
 
 const baselineSha = "a".repeat(40);
 const trustedSourceSha = "d".repeat(40);
-const successfulStartGit = async (argv: readonly string[]) => {
+
+/**
+ * A `gh issue view` that answers for any issue number, so the digest binds to
+ * real fetched bytes without a network. Failure fixtures override it.
+ */
+export const fakeGh = (
+  overrides: { title?: string; body?: string; missing?: boolean } = {}
+) => async (argv: readonly string[]) => {
+  const issue = Number(argv[3]);
+  if (overrides.missing === true) {
+    return { exitCode: 1, stdout: "", stderr: `GraphQL: Could not resolve to an Issue with the number of ${issue}.` };
+  }
+  return {
+    exitCode: 0,
+    stdout: JSON.stringify({
+      number: issue,
+      title: overrides.title ?? `Fixture issue ${issue}`,
+      body: overrides.body ?? `Body for issue ${issue}`,
+      url: `https://github.com/example/fixture/issues/${issue}`
+    }),
+    stderr: ""
+  };
+};
+
+export const issueSnapshotFor = (issue: number, overrides: { title?: string; body?: string } = {}): string =>
+  canonicalIssueSnapshot({
+    repository: "example/fixture",
+    number: issue,
+    title: overrides.title ?? `Fixture issue ${issue}`,
+    body: overrides.body ?? `Body for issue ${issue}`,
+    url: `https://github.com/example/fixture/issues/${issue}`
+  });
+
+const successfulStartGit = async (argv: readonly string[], cwd: string) => {
+  if (argv[0] === "gh") return fakeGh()(argv);
   if (argv.includes("ls-remote")) {
     return { exitCode: 0, stdout: `${baselineSha}\trefs/heads/main\n`, stderr: "" };
   }
   if (argv.includes("rev-parse")) return { exitCode: 0, stdout: `${trustedSourceSha}\n`, stderr: "" };
-  return { exitCode: 1, stdout: "", stderr: `unexpected command: ${argv.join(" ")}` };
+  return { exitCode: 1, stdout: "", stderr: `unexpected command: ${argv.join(" ")} in ${cwd}` };
 };
 const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
+  if (argv[0] === "gh") return fakeGh()(argv);
   if (argv.includes("ls-remote")) {
     return { exitCode: 0, stdout: `${baselineSha}\trefs/heads/main\n`, stderr: "" };
   }
@@ -76,25 +111,24 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
 };
 
 describe("CLI", () => {
-  it("requires the external coord root explicitly rather than accepting COORD_ROOT", async () => {
+  it("never takes the runtime root from the environment", async () => {
     const fixture = setup();
+    const elsewhere = mkdtempSync(join(tmpdir(), "coord-not-a-product-"));
+    roots.push(elsewhere);
     const messages: string[] = [];
-    const result = await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath], {
-      io: { stderr: (message) => messages.push(message) }
-    });
-    expect(result).toBe(2);
-    expect(messages.join("")).toContain("--coord-root is required");
-
-    messages.length = 0;
+    // COORD_ROOT is not a supported input: with no --coord-root and no
+    // onboarded product at the cwd, this must fail rather than adopt it.
     expect(
       await runCli(["run", "--issue", "1"], {
         io: {
+          cwd: elsewhere,
           env: { COORD_ROOT: fixture.runtime },
           stderr: (message) => messages.push(message)
         }
       })
     ).toBe(2);
-    expect(messages.join("")).toContain("--coord-root is required");
+    expect(messages.join("")).toContain("not inside a git worktree");
+    expect(messages.join("")).not.toContain(fixture.runtime);
   });
 
   it("starts from the exact origin baseline and exposes only the caller action", async () => {
@@ -132,15 +166,16 @@ describe("CLI", () => {
     expect(readFileSync(runtime.action, "utf8")).toBe(action);
   });
 
-  it("binds the digest to config-relative inputs for the issue being started", async () => {
+  it("binds the digest to the config and the fetched GitHub issue, with no owner plan file", async () => {
     const fixture = setup();
-    mkdirSync(join(fixture.root, ".plans/issue-7"), { recursive: true });
-    writeFileSync(join(fixture.root, ".plans/issue-7/plan.md"), "# Issue 7 plan\n");
     const config = readConfig(fixture.configPath);
-    const issue1 = automationDigestMaterial(fixture.configPath, config, 1);
-    const issue7 = automationDigestMaterial(fixture.configPath, config, 7);
+    const issue1 = automationDigestMaterial(fixture.configPath, config, 1, issueSnapshotFor(1));
+    const issue7 = automationDigestMaterial(fixture.configPath, config, 7, issueSnapshotFor(7));
     expect(issue7.digest).not.toBe(issue1.digest);
-    expect(issue7.sources.map((source) => source.id)).toContain(".plans/issue-7/plan.md");
+    expect(issue7.sources.map((source) => source.id)).toEqual(["config", "github-issue"]);
+    // Only the issue body differs: the work statement must reach the digest.
+    const reworded = automationDigestMaterial(fixture.configPath, config, 7, issueSnapshotFor(7, { body: "rewritten" }));
+    expect(reworded.digest).not.toBe(issue7.digest);
 
     const elsewhere = mkdtempSync(join(tmpdir(), "coord-other-cwd-"));
     roots.push(elsewhere);
@@ -151,16 +186,22 @@ describe("CLI", () => {
         makeRunLoop: fakeLoop
       })
     ).toBe(0);
-    expect(readStartState(issueRuntimePaths(fixture.runtime, 7))).toMatchObject({
+    const paths = issueRuntimePaths(fixture.runtime, 7);
+    expect(readStartState(paths)).toMatchObject({
       automationDigest: issue7.digest,
       automationDigestScheme: "sha256-length-prefixed-v1"
     });
+    // The persisted snapshot is the exact bytes that were hashed, so an audit
+    // can re-derive the digest from the run's own files.
+    expect(readFileSync(paths.githubIssue, "utf8")).toBe(issueSnapshotFor(7));
+    expect(existsSync(join(fixture.root, ".plans"))).toBe(false);
   });
 
   it("rejects incompatible PR publication before creating issue state", async () => {
     const fixture = setup();
     const config = JSON.parse(readFileSync(fixture.configPath, "utf8")) as Record<string, unknown>;
     config.prPolicy = "coord-open-unmerged";
+    config.origin = join(fixture.root, "origin.git");
     writeFileSync(fixture.configPath, JSON.stringify(config));
     const errors: string[] = [];
     expect(
@@ -181,10 +222,12 @@ describe("CLI", () => {
     expect(
       await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
-        processRunner: async (argv) =>
-          argv.includes("ls-remote")
+        processRunner: async (argv) => {
+          if (argv[0] === "gh") return fakeGh()(argv);
+          return argv.includes("ls-remote")
             ? { exitCode: 0, stdout: `${baselineSha}\trefs/heads/main\n`, stderr: "" }
-            : { exitCode: 128, stdout: "", stderr: "not a Git checkout" },
+            : { exitCode: 128, stdout: "", stderr: "not a Git checkout" };
+        },
         startEffects: async () => {
           effectsCalled = true;
           return { cleanup: async () => undefined };
@@ -464,7 +507,11 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     "--profile",
     "solo",
     "--declare",
-    declarePath
+    declarePath,
+    // A github.com origin, because the work statement for a run is now a real
+    // GitHub issue; the fixture answers `gh` without a network.
+    "--origin",
+    "https://github.com/example/myserver"
   ];
 
   it("accepts the boolean switches without swallowing the next option", async () => {
@@ -482,23 +529,23 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     const { product, declarePath } = installedWorkspace();
     expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
 
-    const configPath = join(product.coordRoot, "workspaces", "myserver", "config.json");
-    const runtime = join(product.coordRoot, "runtime");
+    // A single product onboards flat: no workspaces/<project>/ indirection.
+    const configPath = join(product.coordRoot, "config.json");
+    expect(existsSync(join(product.coordRoot, "workspaces"))).toBe(false);
     const messages: string[] = [];
-    const started = await runCli(
-      ["start", "1", "--profile", "solo", "--config", configPath, "--coord-root", runtime],
-      {
-        io: { stdout: (message) => messages.push(message), stderr: (message) => messages.push(message) },
-        makeRunLoop: fakeLoop,
-        processRunner: successfulStartGit
-      }
-    );
-    // The only reason start may refuse here is the owner-supplied digest source,
-    // which an operator places beside the config; the config itself must parse
-    // and validate. Anything else would be the two consumers having drifted.
+    const started = await runCli(["start", "1", "--config", configPath, "--coord-root", product.coordRoot], {
+      io: { stdout: (message) => messages.push(message), stderr: (message) => messages.push(message) },
+      makeRunLoop: fakeLoop,
+      processRunner: successfulStartGit
+    });
+    // Start must succeed outright: the installer's config needs no editing, and
+    // no owner-authored plan file exists anywhere. --profile is not repeated
+    // either; the workspace records the one install chose.
     expect(messages.join("")).not.toContain("Invalid");
-    expect(messages.join("")).not.toContain("Unknown option");
-    if (started !== 0) expect(messages.join("")).toContain("Digest source");
+    expect(started).toBe(0);
+    const paths = issueRuntimePaths(product.coordRoot, 1);
+    expect(readStartState(paths).profile).toBe("solo");
+    expect(readFileSync(paths.githubIssue, "utf8")).toContain("Fixture issue 1");
   });
 
   it("returns doctor's class-specific exit code", async () => {
@@ -526,5 +573,205 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     expect(scope.join("")).toBe("prefix\tcmd/\nfile\tgo.mod\nfile\tgo.sum\n");
 
     expect(await runCli(["hook-verify", "--clone", clone, "--phase", "precommit"], { io: { stdout: () => undefined } })).toBe(0);
+  });
+});
+
+describe("coord <n> — the daily command", () => {
+  /** An onboarded product whose runtime the locator points at. */
+  const onboarded = () => {
+    ensureBuilt();
+    const product = makeProduct("go", "myserver");
+    productFixtures.push(product);
+    const io: string[] = [];
+    const result = onboard({
+      installRoot: repoRoot,
+      productRoot: product.productRoot,
+      coordRoot: product.coordRoot,
+      agents: ["claude"],
+      profile: "solo",
+      dryRun: false,
+      log: (message) => io.push(message)
+    });
+    expect(result.exitCode).toBe(0);
+    // Onboard derives origin from the product's remote, which is a local bare
+    // repo in the fixture; the work statement now has to be a GitHub issue.
+    const config = JSON.parse(readFileSync(result.configPath, "utf8")) as Record<string, unknown>;
+    config.origin = "https://github.com/example/myserver";
+    writeFileSync(result.configPath, `${JSON.stringify(config, null, 2)}\n`);
+    return { product, configPath: result.configPath };
+  };
+
+  it("resolves the product from the cwd, starts the issue, and enters the run loop", async () => {
+    const { product } = onboarded();
+    let ran = 0;
+    const output: string[] = [];
+    const code = await runCli(["7"], {
+      io: { cwd: product.productRoot, stdout: (message) => output.push(message) },
+      processRunner: successfulStartGit,
+      makeRunLoop: (paths) => ({ ...fakeLoop(paths), run: async () => void (ran += 1) })
+    });
+    expect(code).toBe(0);
+    expect(ran).toBe(1);
+
+    const paths = issueRuntimePaths(product.coordRoot, 7);
+    expect(readStartState(paths)).toMatchObject({ issue: 7, profile: "solo" });
+    // No --profile, --config, or --coord-root was typed anywhere.
+    expect(output.join("")).toContain("Fixture issue 7");
+  });
+
+  it("resumes an already-started issue instead of refusing it", async () => {
+    const { product } = onboarded();
+    const options = {
+      io: { cwd: product.productRoot, stdout: () => undefined },
+      processRunner: successfulStartGit,
+      makeRunLoop: fakeLoop
+    };
+    expect(await runCli(["7"], options)).toBe(0);
+
+    // The second invocation is the one after Ctrl-C. Inheriting start's refusal
+    // here would break the daily command.
+    const messages: string[] = [];
+    const again = await runCli(["7"], { ...options, io: { ...options.io, stdout: (m) => messages.push(m) } });
+    expect(again).toBe(0);
+    expect(messages.join("")).toContain("Resuming issue 7");
+
+    // Explicit `coord start` still refuses, so nothing silently reuses a session
+    // where the operator asked for a new one.
+    const errors: string[] = [];
+    expect(
+      await runCli(["start", "7"], {
+        io: { cwd: product.productRoot, stderr: (m) => errors.push(m) },
+        processRunner: successfulStartGit,
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(2);
+    expect(errors.join("")).toContain("Runtime state already exists");
+  });
+
+  it("resolves through --product from an unrelated directory", async () => {
+    const { product } = onboarded();
+    const elsewhere = mkdtempSync(join(tmpdir(), "coord-elsewhere-"));
+    roots.push(elsewhere);
+    expect(
+      await runCli(["7", "--product", product.productRoot], {
+        io: { cwd: elsewhere, stdout: () => undefined },
+        processRunner: successfulStartGit,
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    expect(existsSync(issueRuntimePaths(product.coordRoot, 7).issueRoot)).toBe(true);
+  });
+
+  it("refuses to guess when the cwd is not an onboarded product", async () => {
+    const elsewhere = mkdtempSync(join(tmpdir(), "coord-elsewhere-"));
+    roots.push(elsewhere);
+    const errors: string[] = [];
+    expect(
+      await runCli(["7"], {
+        io: { cwd: elsewhere, stderr: (message) => errors.push(message) },
+        processRunner: successfulStartGit,
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(2);
+    expect(errors.join("")).toContain("not inside a git worktree");
+    expect(errors.join("")).toContain("--product");
+  });
+
+  it("names the onboard remedy for a git repository that was never onboarded", async () => {
+    const product = makeProduct("go", "notonboarded");
+    productFixtures.push(product);
+    const errors: string[] = [];
+    expect(
+      await runCli(["7"], {
+        io: { cwd: product.productRoot, stderr: (message) => errors.push(message) },
+        processRunner: successfulStartGit,
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(2);
+    expect(errors.join("")).toMatch(/has not been onboarded/);
+    expect(errors.join("")).toContain("coord onboard");
+  });
+
+  it("fails before any runtime or launch effect when the issue cannot be read", async () => {
+    const { product } = onboarded();
+    let effectsCalled = false;
+    const errors: string[] = [];
+    const code = await runCli(["7"], {
+      io: { cwd: product.productRoot, stderr: (message) => errors.push(message) },
+      processRunner: async (argv, cwd) => (argv[0] === "gh" ? fakeGh({ missing: true })(argv) : successfulStartGit(argv, cwd)),
+      startEffects: async () => {
+        effectsCalled = true;
+        return { cleanup: async () => undefined };
+      },
+      makeRunLoop: fakeLoop
+    });
+    expect(code).toBe(2);
+    expect(errors.join("")).toContain("gh issue create");
+    // R5/R8: no tmux session, no mirror, no half-created runtime directory.
+    expect(effectsCalled).toBe(false);
+    expect(existsSync(issueRuntimePaths(product.coordRoot, 7).issueRoot)).toBe(false);
+  });
+});
+
+describe("compatibility with an existing nested install", () => {
+  it("start, doctor, and uninstall all still resolve workspaces/<project>/config.json", async () => {
+    ensureBuilt();
+    const product = makeProduct("go", "myserver");
+    productFixtures.push(product);
+    const io: string[] = [];
+    const log = (message: string) => io.push(message);
+
+    // Occupy the flat slot with another product so this one is nested, which is
+    // the layout an install from before this change produced.
+    mkdirSync(product.coordRoot, { recursive: true });
+    writeFileSync(join(product.coordRoot, "config.json"), `${JSON.stringify({ project: "someone-else" }, null, 2)}\n`);
+
+    const result = onboard({
+      installRoot: repoRoot,
+      productRoot: product.productRoot,
+      coordRoot: product.coordRoot,
+      agents: ["claude"],
+      profile: "solo",
+      dryRun: false,
+      log
+    });
+    expect(result.location.layout).toBe("nested");
+    expect(result.configPath).toBe(join(product.coordRoot, "workspaces", "myserver", "config.json"));
+
+    const config = JSON.parse(readFileSync(result.configPath, "utf8")) as Record<string, unknown>;
+    config.origin = "https://github.com/example/myserver";
+    writeFileSync(result.configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    // start: run state lands under the nested workspace, not the outer root.
+    expect(
+      await runCli(["start", "42", "--product", product.productRoot], {
+        io: { cwd: product.productRoot, stdout: () => undefined },
+        processRunner: successfulStartGit,
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    expect(existsSync(join(result.location.workspaceRoot, "issue-42"))).toBe(true);
+    expect(existsSync(join(product.coordRoot, "issue-42"))).toBe(false);
+
+    // doctor: resolves the nested config without being told where it is, with
+    // --product and with no flags at all from inside the product.
+    expect(
+      await runCli(["doctor", "--product", product.productRoot], { io: { cwd: product.productRoot, stdout: () => undefined } })
+    ).toBe(0);
+    expect(await runCli(["doctor"], { io: { cwd: product.productRoot, stdout: () => undefined } })).toBe(0);
+
+    // uninstall: finds it, and leaves the other product's flat config alone.
+    uninstall({
+      coordRoot: product.coordRoot,
+      productRoot: product.productRoot,
+      deleteClones: false,
+      wipeRuntime: false,
+      deleteCoordination: false,
+      force: false,
+      dryRun: false,
+      log
+    });
+    expect(existsSync(result.configPath)).toBe(false);
+    expect(existsSync(join(product.coordRoot, "config.json"))).toBe(true);
   });
 });

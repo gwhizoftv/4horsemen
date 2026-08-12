@@ -13,21 +13,30 @@ into an owner-side bare mirror and evaluates blobs at the exact submission SHA.
 
 ## Runtime topology
 
-`--coord-root` must resolve outside every configured clone. Existing symlinks
+The coord-root must resolve outside every configured clone. Existing symlinks
 within derived runtime paths are rejected.
 
+Run state hangs off the product's **workspace root**, which is the coord-root
+itself for a single-product runtime and `<coord-root>/workspaces/<project>/`
+when several products share one:
+
 ```text
-<coord-root>/
+<workspace-root>/
+  config.json
   mirror.git/
   issue-<n>/
-    start.json       immutable session/config baseline
-    cursors.json     current internal cursor and dropped roster
-    journal.jsonl    append-only owner/effect audit
+    github-issue.json  start-time snapshot of the GitHub issue this run binds to
+    start.json         immutable session/config baseline
+    cursors.json       current internal cursor and dropped roster
+    journal.jsonl      append-only owner/effect audit
     agents/<agent>/
-      action.md      restricted public order
-      complete       exact pushed SHA supplied by the agent
-      render.log     optional human log
+      action.md        restricted public order
+      complete         exact pushed SHA supplied by the agent
+      render.log       optional human log
 ```
+
+GitHub issue numbers are repository-local, so two products sharing a runtime get
+separate `issue-42/` directories and separate mirrors.
 
 `action.md` exposes only an opaque action UUID, the caller identity, required
 path, concrete task, exact bound input commits, and absolute completion path.
@@ -43,8 +52,12 @@ Start from `config.example.json`:
 - `branch`: must contain `{issue}` and `{agent}`
 - `maxRevisionRounds`: fixed at 3 or less; no round 4 is possible
 - `prPolicy`: `owner-only` or `coord-open-unmerged`
-- `digestPaths`: config-relative, confined source templates such as
-  `.plans/issue-{issue}/plan.md`; their identities and hashes are persisted
+- `profile`: default workflow profile; `coord start --profile` overrides it for
+  one run
+- `digestPaths`: OPTIONAL extra digest inputs — config-relative, confined
+  templates for a product that wants some immutable file pinned into the session
+  hash. Empty by default. The work statement is the GitHub issue, which is
+  hashed unconditionally and is not configurable here
 - `checks[]`: explicit argv arrays executed in a clean worktree at the final
   pin; no shell is invoked
 - `pollIntervalMs`: bounded completion-file polling interval
@@ -55,22 +68,28 @@ worktree path. Expansion never creates shell text.
 ## Starting and running
 
 ```bash
-nvm use 26
-pnpm install --frozen-lockfile
-pnpm check
-pnpm build
+gh issue create --title "…" --body "…"    # → #42
+coord 42                                  # start (or resume) and run
+```
 
-./coord start 42 \
-  --profile consensus \
-  --config ./config.json \
-  --coord-root /absolute/owner/runtime
+`coord <n>` resolves the product from the current directory — or from
+`--product <path>` — starts issue N if `issue-N/` does not exist, resumes it if
+it does, and then runs the driver. It is the same start transaction the explicit
+form uses, called in-process, not a spawned subprocess:
 
-COORD_ISSUE=42 ./coord run --coord-root /absolute/owner/runtime
+```bash
+coord start 42 --product /path/to/app       # start only; refuses an existing runtime
+coord run --issue 42 --product /path/to/app
+
+# The explicit form, for a config kept outside the runtime:
+coord start 42 --config ./config.json --coord-root /absolute/owner/runtime
 ```
 
 `start` preflights the exact origin baseline, the running coordinator checkout's
-real `HEAD` as its trusted source commit, digest inputs, GitHub/PR-policy
-compatibility, confined non-symlink executable launchers, mirror, and tmux. It
+real `HEAD` as its trusted source commit, **GitHub issue N itself**, digest
+inputs, GitHub/PR-policy compatibility, confined non-symlink executable
+launchers, mirror, and tmux. The issue fetch happens before any runtime
+directory or tmux pane exists, so an unreadable issue leaves nothing behind. It
 creates an attachable `coord-<issue>` session and invokes each configured
 `start-<agent>.sh` before committing active issue state. A failed partial tmux
 launch is cleaned up, and no apparently active issue runtime is left behind.
@@ -83,6 +102,23 @@ terminal does not stop it. Attach with:
 ```bash
 tmux attach -t coord-42
 ```
+
+### What the session is bound to
+
+`automationDigest` is a length-prefixed SHA-256 over, in order:
+
+1. the exact workspace `config.json` bytes — the policy: agents, verify, checks,
+   origin, PR policy;
+2. the canonical GitHub issue snapshot — what this run is about;
+3. any explicitly declared `digestPaths`.
+
+The snapshot is persisted at `<workspace-root>/issue-<n>/github-issue.json` and
+contains repository, number, title, body, and URL — no fetch timestamp, so
+re-hashing that file reproduces the digest for audit and replay. Editing the
+GitHub issue afterwards does not rebind a run already in flight.
+
+Agent `plan.md` files on `issue-<n>/<agent>` are R2 protocol evidence published
+*by agents after launch*. They are not digest inputs and no owner writes one.
 
 Claude nudges use `load-buffer`/`paste-buffer` only when the pane is alive, not
 in pane mode, and running the expected harness. Codex, Cursor, and Antigravity

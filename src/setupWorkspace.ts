@@ -12,8 +12,10 @@ import {
   worktreeRoot
 } from "./gitExec.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
-import { containedPath, isPathInside } from "./paths.js";
+import { isPathInside } from "./paths.js";
 import { DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile, clearManagedIgnoreFile } from "./productIgnore.js";
+import type { WorkflowProfile } from "./steps.js";
+import type { WorkspaceLocation } from "./workspace.js";
 import {
   atomicWriteJson,
   coordinatorConfigSchema,
@@ -63,12 +65,6 @@ const KNOWN_AGENT_LABELS: Record<string, string> = {
 
 export const agentLabel = (agent: string): string =>
   KNOWN_AGENT_LABELS[agent] ?? `${agent.charAt(0).toUpperCase()}${agent.slice(1)}`;
-
-export const workspaceDirectory = (coordRoot: string, project: string): string =>
-  containedPath(resolve(coordRoot), "workspaces", project);
-
-export const workspaceConfigPath = (coordRoot: string, project: string): string =>
-  join(workspaceDirectory(coordRoot, project), "config.json");
 
 export const agentCloneDirectory = (cloneRoot: string, project: string, agent: string): string =>
   join(resolve(cloneRoot), `${project}-${agent}`);
@@ -201,6 +197,7 @@ export type WorkspaceConfigInput = {
   agents: readonly string[];
   cloneRoot: string;
   workspaceDir: string;
+  profile: WorkflowProfile;
   declared: WorkspaceDeclaration | null;
   proposal: ProjectPolicyProposal;
 };
@@ -239,7 +236,11 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     baseBranch: input.baseBranch,
     maxRevisionRounds: 3,
     prPolicy: declared.prPolicy ?? "owner-only",
-    digestPaths: declared.digestPaths ?? [".plans/issue-{issue}/plan.md"],
+    profile: input.profile,
+    // Empty by default: the GitHub issue is the work statement, and `start`
+    // hashes it unconditionally. Synthesising an owner plan path here is what
+    // made every start depend on a file the owner had to write first.
+    digestPaths: declared.digestPaths ?? [],
     checks,
     pollIntervalMs: declared.pollIntervalMs ?? 1_000,
     ...(toolchain === undefined ? {} : { toolchain }),
@@ -260,12 +261,11 @@ const relativeFrom = (from: string, to: string): string => {
 };
 
 export const writeWorkspaceConfig = (
-  coordRoot: string,
+  location: WorkspaceLocation,
   config: CoordinatorConfig,
   options: EffectOptions
 ): string => {
-  const directory = workspaceDirectory(coordRoot, config.project);
-  const path = workspaceConfigPath(coordRoot, config.project);
+  const path = location.configPath;
   const existing = existsSync(path) ? readFileSync(path, "utf8") : null;
   const rendered = `${JSON.stringify(config, null, 2)}\n`;
   if (existing === rendered) {
@@ -273,8 +273,8 @@ export const writeWorkspaceConfig = (
     return path;
   }
   act(options, `write workspace config ${path}`, () => {
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    atomicWriteJson(coordRoot, path, config);
+    mkdirSync(location.workspaceRoot, { recursive: true, mode: 0o700 });
+    atomicWriteJson(location.coordRoot, path, config);
   });
   return path;
 };

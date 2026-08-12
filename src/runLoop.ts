@@ -27,6 +27,7 @@ import {
   type MachineDecision,
   type WorkflowStepId
 } from "./steps.js";
+import { githubRepositoryFromOrigin } from "./githubIssue.js";
 import { TmuxController } from "./tmux.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
@@ -91,12 +92,9 @@ export const openDraftPullRequest: PullRequestOpener = async (input) => {
   return { url: result.stdout.trim() };
 };
 
-export const githubRepositoryFromOrigin = (origin: string): string | null => {
-  const https = /^https:\/\/github\.com\/([^/]+\/[^/]+?)\/?$/.exec(origin);
-  if (https?.[1] !== undefined) return https[1].replace(/\.git$/, "");
-  const ssh = /^git@github\.com:([^/]+\/[^/]+)$/.exec(origin);
-  return ssh?.[1]?.replace(/\.git$/, "") ?? null;
-};
+// One parser, shared with the issue fetcher. Two copies of this regex pair
+// would let `start` accept an origin that PR publication later refuses.
+export { githubRepositoryFromOrigin };
 
 export type RunLoopDependencies = {
   mirror?: BareMirror;

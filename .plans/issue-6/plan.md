@@ -2,229 +2,219 @@
 
 Simplify coordination bootstrap and onboard (`coord N` from GitHub issues).
 
-## Context
+**This branch implements Codex's plan** (`origin/issue-6/codex`), plus the
+changes the four peer reviews agreed on. Where this document and Codex's differ,
+the differences are listed under "Changes adopted from the reviews" and each one
+is a finding two or more reviewers made.
 
-Issue 6 changes the operator surface only. Every step, gate, evidence
-predicate, pin rule, and finalization invariant in `src/steps.ts`,
-`src/evidence.ts`, `src/pinValidation.ts`, and `src/finalization.ts` is
-untouched, and so are `githooks/**`, `src/hookSync.ts`, `src/hookPolicy.ts`,
-`src/runLoop.ts`, `src/mirror.ts`, and `src/tmux.ts`. The change must be
-reviewable as "how work starts", not "how work is verified".
+Baseline: `origin/main` at `f9d0084`.
 
-Binding decisions taken as fixed: the product's tracked tree stays unchanged and
-human developers of the product get nothing; the install root stays a real
-coordination checkout because hook shims exec canonical bodies out of it;
-`coord install` keeps every advanced flag; agents keep authoring their own plans
-on their own branches.
+## Context and binding decisions
 
-Baseline: `main` at `f9d0084`.
+Issue 6 changes the operator surface only. Every step, gate, evidence predicate,
+pin rule, and finalization invariant is untouched, and so are `githooks/**`,
+`src/hookSync.ts`, `src/hookPolicy.ts`, `src/mirror.ts`, and `src/tmux.ts`. The
+four-agent canary in `test/integration.test.ts` passes unchanged, which is the
+check that the protocol was not disturbed.
 
-## Six changes
+Fixed by the issue and by Codex's plan:
 
-**1. The product→runtime pointer is two git-config keys, not a registry.**
-Agent clones already carry `coord.workspaceConfig` pointing at the absolute
-config path (`src/hookPolicy.ts:21`, set by `configureCloneIdentity`). `onboard`
-writes that same key plus a new `coord.coordRoot` into the **product** clone,
-through the same `localConfigSet` helper. Resolution is then two lines: use
-`--config`/`--coord-root` when given, otherwise read the two keys from the git
-worktree at `--product` or at the cwd. It works from the product, from any agent
-clone, and for any `--coord-root`; it needs no new file, no new schema, no
-global state, and no disambiguation rules. `.git/config` is untracked and
-per-clone, so `git status` in the product stays empty and other people's clones
-are unaffected. This is the one new kind of write this issue makes to the
-product clone, and `clearCloneIdentity` already knows how to remove such keys.
+1. The product's tracked tree stays byte-for-byte unchanged and human developers
+   of the product get nothing.
+2. The install root stays a real coordination checkout, because agent hook shims
+   exec canonical bodies out of it.
+3. `coord install` keeps every advanced flag; `onboard` is a preset over it.
+4. Agents author their own plans on their own branches. `R2.plan` already
+   requires `.plans/issue-<n>/plan.md` at the agent's pushed commit
+   (`src/steps.ts:63-69`), so R6 was a documentation requirement, not a code
+   one — the work was removing the *owner's* same-named pre-start file.
 
-**2. One layout function, not four.** Keep `workspaceConfigPath(coordRoot,
-project)` and its name, so no call site in `install`, `uninstall`, `doctor`, or
-the tests changes. Its body becomes three clauses: return the nested path when
-`<coord-root>/workspaces/<project>/config.json` already exists (never relocate
-an existing install); return the nested path when a **flat** config exists for a
-different project (the multi-product case); otherwise return
-`<coord-root>/config.json`. One rule serves reads and writes, fresh installs get
-flat, and existing installs keep working with no migration.
+## Proposed architecture
 
-**3. The digest binds `config` + the GitHub issue; `digestPaths` defaults to
-`[]`.** `automationDigestMaterial` gains the issue snapshot as a second built-in
-source. `digestPaths` relaxes from `.min(1)` to `.default([])` rather than being
-deleted, so a product that wants a spec file hashed keeps the option and
-fail-closed still holds for anything declared. The snapshot is canonical JSON of
-`{ repository, number, title, body }` — issue content only, so re-hashing the
-persisted file reproduces the digest. Fetch provenance goes to the journal.
+**One workspace resolver** (`src/workspace.ts`). `WorkspaceLocation` carries
+`coordRoot`, `workspaceRoot`, `configPath`, and `layout`. It is the only module
+that decides flat versus nested. A single product is flat
+(`<coord-root>/config.json`); every product after the first nests under
+`workspaces/<project>/`, **including its run state**, because GitHub issue
+numbers are repository-local. Resolution is flat-first and never relocates an
+existing install, so pre-existing nested workspaces keep working with no
+migration.
 
-The digest is computed before `issue-N/` may exist, so the bytes are built in
-memory, hashed, and written to `<coord-root>/issue-N/issue.json` right after
-`createIssueRuntime`, inside the existing try block whose `rmSync` already
-cleans up a failed start. Hashed bytes and persisted bytes are the same string
-by construction.
+**One product locator.** `onboard` records `coord.ownerWorkspaceConfig` — the
+absolute config path — in the owner's product clone. Untracked, per-clone, never
+copied to another checkout, cleared by `uninstall`. Deliberately not
+`coord.workspaceConfig`: `consensus_wiring_present` in `githooks/lib/identity.sh`
+treats that key as proof a clone is an agent clone.
 
-`gh issue view N --repo <r> --json number,title,body` runs through the
-`ProcessRunner` that `start` already injects for `git ls-remote`
-(`src/cli.ts:444`), so faking it in tests needs no new injection point. A
-non-github.com origin, a missing `gh`, and a 404 each fail with their own
-remediation, the last one naming `gh issue create`. **Accepted consequence:** a
-product whose origin is not github.com can no longer start. That is what R5
-specifies, and building an `--issue-snapshot` escape for it is scope this issue
-did not ask for.
+**One start transaction.** `startIssue` in `src/cli.ts` owns resolution,
+preflight, launch, snapshot, and durable state. `coord start <n>` and
+`coord <n>` both call it in-process; nothing spawns a subprocess, so the
+injected runner and run loop the tests depend on survive.
 
-**4. `coord N` starts or resumes.** `start` refuses when `issue-N/` exists
-(`src/cli.ts:440`), so a literal "start then run" would fail on the second
-invocation, including after `Ctrl-C`. `coord N` starts when the runtime is
-absent and resumes when it is present, then runs either way. The explicit
-`coord start N` keeps its refusal exactly as it is.
+**One digest.** `config.json` bytes + the canonical GitHub issue snapshot +
+any declared `digestPaths`. The issue is mandatory and not configurable.
 
-**5. `profile` moves into the workspace config**, defaulted to `consensus` and
-written from `--profile`. Without this, `coord N` cannot avoid a required flag.
-It also fixes the existing oddity that `install --profile` only affects printed
-prose (`src/install.ts:371`) while the real decision is retyped at every start.
+## Changes adopted from the reviews
 
-**6. `bootstrap.sh` is POSIX `sh` with three flags.** `--root` (also
-`COORD_INSTALL_ROOT`, default `~/.local/share/coordination`), `--no-path`, and
-`--source <url|path>` defaulting to the GitHub URL — `--source` exists so the
-tests and in-tree developers can point at a local checkout, and it is what makes
-R8's bootstrap tests possible without a network. `--no-build` skips the build so
-those tests do not pay for `pnpm install` twice per case. The installed
-`~/.local/bin/coord` is a four-line heredoc that execs `node <root>/dist/main.js`
-and does **not** build; the repo-root `./coord` rebuilds stale sources because it
-is a developer tool, but an installed root must not require `pnpm` at runtime.
-A missing `dist/main.js` says "re-run bootstrap.sh".
-
-No metadata file is added to the install root. R1's "metadata so agent shims can
-use `coord.installRoot` / doctor stamps" is already satisfied: the install stamp
-records `installRoot`, `cliEntry`, `version`, `commit`, and `canonicalDigest`
-(`src/state.ts:105-132`), and `cli.ts` derives its own root from
-`import.meta.url` (`src/cli.ts:73`), which is already correct for an installed
-checkout. A stamp file would also make that checkout dirty, which
-`bootstrap.sh` then refuses to update.
-
-## R6 needs no code
-
-`R2.plan` already requires `.plans/issue-<n>/plan.md` at the agent's pushed
-commit (`src/steps.ts:63-69`), `pinValidation` scopes agent branch writes to
-`.plans/issue-<n>/**` and its siblings (`src/pinValidation.ts:162-171`), and
-`verifyFinalization` makes those paths deletion-only after consensus
-(`src/finalization.ts:122`). What R6 needs is for the docs to stop describing a
-*different* `plan.md` — the owner's pre-start digest file — under coord-root.
-That name collision is most of why the current flow confuses; change 3 removes
-it, leaving exactly one `plan.md` in the system, the agent's.
-
-## File map
-
-**New (3):**
-
-1. `scripts/bootstrap.sh` — POSIX `sh`, executable, ~130 lines. Arg parse;
-   `git`/`node`/`pnpm` presence with one hint each; clone when the root is
-   missing, else verify it is a worktree of `--source`, refuse a dirty tree,
-   refuse a non-fast-forward, otherwise `fetch` + `merge --ff-only`; build
-   unless `--no-build`; write the wrapper (mode 755) unless `--no-path`, warning
-   when `~/.local/bin` is off `PATH`; print the `coord onboard` next step.
-2. `test/bootstrap.test.ts` — R8: fresh install, idempotent re-run, dirty
-   refusal leaving the checkout unchanged, non-fast-forward refusal, wrapper
-   written/skipped, each missing-tool hint. Driven with `--source <fixture>
-   --no-build --no-path`.
-3. `test/onboard.test.ts` — R8: no-flags onboard leaves the product's
-   `git status` empty, writes flat `<coord-root>/config.json` with no
-   `workspaces/`, runs doctor, records the two product keys, exits non-zero when
-   doctor fails, is a no-op on a second run, and leaves a human clone of the
-   product with no hooks.
-
-**Modified (11):**
-
-4. `src/setupWorkspace.ts` — `workspaceConfigPath` gains the three clauses of
-   change 2; `workspaceDirectory` becomes its `dirname`; `buildWorkspaceConfig`
-   takes `profile`.
-5. `src/state.ts` — `digestPaths` `.min(1)` → `.default([])`; add
-   `profile: workflowProfileSchema.default("consensus")`. Two lines; no runtime
-   state schema change, since `automationDigestSources` already accepts
-   arbitrary ids.
-6. `src/paths.ts` — add `issueSnapshot` to `IssueRuntimePaths`.
-7. `src/install.ts` — `onboard()` lives here beside `install()` (~35 lines:
-   defaults, `install` with `writeProduct/vendor/bootstrap` all false, write the
-   two product keys, run `doctor`, return its exit code); guard the
-   workspace-directory removal so it never removes the coord-root itself when
-   the two are the same path; clear the product keys on uninstall; rewrite the
-   "Next steps" block to `gh issue create` → `coord <n>`.
-8. `src/cli.ts` — `automationDigestMaterial` takes the snapshot; a ~15-line
-   `resolveRuntime` shared by `start`, `run`, and the numeric form; the
-   `onboard` command; `start` gets optional `--profile`/`--config`/
-   `--coord-root` and the issue fetch; `/^[0-9]+$/` dispatches to `coord N`;
-   `help` rewritten. `doctor` is left alone — `onboard` runs it for you.
-9. `README.md` — bootstrap → onboard → `gh issue create` → `coord N`; the flag
-   tables move to `docs/setup-workspace.md`.
-10. `docs/setup-workspace.md` — bootstrap section; flat-vs-nested; **delete**
-    "Place each issue's owner-authored plan at …" and replace it with the
-    issue-snapshot model.
-11. `docs/coord-driver.md` — `digestPaths` becomes "optional extra hashed
-    inputs"; document `config` + `github-issue`, `issue.json` in the topology,
-    and the flagless start commands.
-12. `config.example.json`, `config.product.example.json` — drop the
-    `digestPaths` entry, add `profile`.
-13. `test/cli.test.ts`, `test/install.test.ts`, `test/doctor.test.ts`,
-    `test/support/workspaceFixture.ts` — flat default and issue-seeded digest;
-    **add** the R8 nested-compatibility case (a pre-existing
-    `workspaces/<project>/config.json` still resolves for start, doctor, and
-    uninstall) and the R8 case that start seeds the digest from issue content
-    with no `plan.md` anywhere.
-
-## Simplifications
-
-- `digestPaths: []` makes the "Digest source … is missing" failure
-  (`src/cli.ts:179`) unreachable on a default install, and retires the
-  `<coord-root>/workspaces/<project>/.plans/` directory that existed only to
-  satisfy it.
-- One `resolveRuntime` replaces the hand-rolled flag derivation in `start` and
-  `run`; `context()` (`src/cli.ts:122`) folds into it.
-- `--profile` leaves the daily command line.
-- **Proposed, owner may veto:** delete `scripts/fresh-issue.sh`. It creates
-  `.plans/`, `.signals/`, `.code-reviews/` and prints `issue-N:<baseline>`.
-  `start` now produces the session id and agents create the directories when
-  they publish; nothing in `src/`, `githooks/`, `templates/`, or the docs
-  references it.
-- **Proposed, owner may veto:** delete `--bootstrap-coordination` and
-  `bootstrapCoordination()` (`src/install.ts:145-160`); `bootstrap.sh` owns that
-  job on the correct side of the boundary. The `bootstrapped` stamp field stays
-  — `installStampSchema` is `.strict()`, so removing it would make existing
-  configs unparseable — and remains permanently `false`.
-- `ownsInstallRoot` stays `false` even though `bootstrap.sh` genuinely creates
-  the checkout. One install root serves every onboarded product, so letting one
-  product's `uninstall --delete-coordination` remove it would re-open exactly
-  what issue 4's R17 closed. Removing a bootstrapped install is
-  `rm -rf ~/.local/share/coordination ~/.local/bin/coord`, documented.
-
-## Requirement trace
-
-| Req | Lands in | Verified by |
+| Change | Raised by | Why |
 | --- | --- | --- |
-| R1 | `scripts/bootstrap.sh` | `test/bootstrap.test.ts` |
-| R2 | `onboard()` in `src/install.ts`, `onboard` command | `test/onboard.test.ts` |
-| R3 | `workspaceConfigPath` clauses | `test/onboard.test.ts` (flat), `test/install.test.ts` + `test/doctor.test.ts` (nested) |
-| R4 | product git-config keys, `resolveRuntime`, numeric dispatch | `test/cli.test.ts` |
-| R5 | issue fetch, `paths.issueSnapshot`, `digestPaths` default | `test/cli.test.ts` |
-| R6 | docs only — already enforced by `src/steps.ts` | existing `test/evidence.test.ts` |
-| R7 | `README.md`, `docs/*.md`, examples, `help` | doc review; `help` asserted in `test/cli.test.ts` |
-| R8 | the three test files above | `pnpm check` |
+| Owner locator must not be `coord.workspaceConfig` | Cursor (on Codex) | That key marks an agent clone; a product carrying it with no `consensus.agentId` fails every commit closed the moment hooks are present |
+| `coord N` starts **or resumes** | Cursor (on Codex), Claude | `start` refuses an existing runtime; inheriting that breaks the command after `Ctrl-C`, which is the common case |
+| Issue snapshot is mandatory, never a `digestPaths` entry | Codex (on Cursor, Antigravity), Cursor (on Codex) | `digestPaths: []` would otherwise remove the work statement, letting two issues share a digest |
+| Flat slot occupied by another project ⇒ nest | Codex (on Cursor, Antigravity) | Otherwise the second product overwrites the first product's config |
+| Per-workspace `issue-N/` and `mirror.git` | Codex (all), Cursor (all) | Two products cannot share one `issue-42/` |
+| `gh issue view` must pass `--repo` from `config.origin` | Codex (on Antigravity) | Otherwise `gh` resolves from the cwd and can hash the wrong repository's issue |
+| Snapshot written inside the startup transaction | Codex (on Antigravity), Cursor | A partial start must leave no `issue-N/` behind |
+| `profile` persisted in config | Codex (on Antigravity), all plans | `coord N` cannot otherwise avoid a required flag |
+| Plan must satisfy `checkPlan` | Codex (on all) | `src/evidence.ts:60-70` requires exact section headings; this document now has them |
 
-The four-agent canary in `test/integration.test.ts` changes only where it
-builds a config, and must otherwise pass unchanged — that is the check that the
-protocol was not disturbed.
+Two review findings were **not** adopted, with reasons:
 
-## Sequencing
+- *Withhold the locator when onboard's doctor fails* (Cursor, on Claude). Codex's
+  plan keeps the installed files available for repair, and the locator is what
+  makes `coord doctor` re-runnable without retyping paths. Onboard still exits
+  non-zero, which is the signal.
+- *`--issue-snapshot` escape for non-GitHub origins* (my own earlier plan;
+  Codex objected). Codex is right that a user-facing bypass defeats the
+  issue-first invariant — `coord start 999 --issue-snapshot fake.json` would
+  create a valid run for an issue that does not exist. Tests inject through the
+  existing `ProcessRunner` instead. Accepted consequence: a product whose origin
+  is not github.com can no longer start.
 
-Four commits, each green under `pnpm check:fast`:
+## Exact file map
 
-1. `workspaceConfigPath` clauses + `profile` in the config + nested-compat test.
-   No behaviour change for existing installs.
-2. Issue-seeded digest and `digestPaths: []`.
-3. Product keys, `resolveRuntime`, `onboard`, numeric dispatch, tests.
-4. `bootstrap.sh` + its tests; then docs, examples, and help, with the two
-   proposed deletions last so they revert independently.
+**New production files**
+
+1. `src/workspace.ts` — `WorkspaceLocation`, flat/nested resolution,
+   install-time selection, `workspaceFromConfigPath` for explicit `--config`,
+   and the owner-locator read/write/clear helpers with named failure kinds.
+2. `src/githubIssue.ts` — origin parsing (now the single copy; `src/runLoop.ts`
+   re-exports it), strict `gh issue view` parsing, canonical snapshot rendering,
+   and a distinct remediation per failure mode.
+3. `scripts/bootstrap.sh` — POSIX `sh`; tool preflight; clone or clean
+   fast-forward; ownership note in `.git/`; build; managed `~/.local/bin/coord`.
+
+**Modified production files**
+
+4. `src/cli.ts` — `resolveWorkspaceLocation`; `context` resolves through it;
+   `startIssue` extracted; `onboard` command; numeric dispatch; `--product` on
+   start/run/next/doctor; `--profile` optional; `automationDigestMaterial` takes
+   the snapshot; help rewritten.
+5. `src/install.ts` — selects a workspace through `src/workspace.ts`; writes and
+   clears the owner locator; `onboard()` preset; uninstall resolves both layouts
+   and never removes a flat workspace root.
+6. `src/state.ts` — `profile` defaulted to `consensus`; `digestPaths` default
+   `[]`; `atomicWriteText` so the hashed bytes are the persisted bytes.
+7. `src/paths.ts` — `issueRuntimePaths` takes a workspace root; adds
+   `githubIssue`.
+8. `src/setupWorkspace.ts` — no longer owns layout policy; persists `profile`.
+9. `src/doctor.ts` — resolves both layouts, including an unparseable flat config.
+10. `src/runLoop.ts` — imports the shared origin parser.
+11. `README.md`, `docs/setup-workspace.md`, `docs/coord-driver.md`,
+    `config.example.json`, `config.product.example.json`.
+
+**New tests**
+
+12. `test/workspace.test.ts` (12), `test/githubIssue.test.ts` (13),
+    `test/onboard.test.ts` (12), `test/bootstrap.test.ts` (13).
+
+**Updated tests**
+
+13. `test/cli.test.ts` — issue-seeded digest, `coord <n>` suite, nested
+    compatibility; `test/install.test.ts`, `test/doctor.test.ts` — flat paths.
+
+## Tests
+
+`pnpm check` passes: 253 fast tests across 22 files, plus the four-agent
+temporary-origin canary. New coverage, by requirement:
+
+- **R1** — clone; idempotent re-run; fast-forward; dirty refusal with the
+  checkout and its HEAD unchanged; diverged refusal; non-worktree refusal;
+  wrapper installed executable and pointing at the root; `--no-path`; refusal to
+  overwrite a foreign `coord`; `--root` over `COORD_INSTALL_ROOT`; missing-tool
+  hint before any effect; `sh -n` and `dash -n`.
+- **R2** — no-flag onboard leaves `git status --porcelain` empty, writes a flat
+  config with no `workspaces/`, runs doctor, records the locator, is a no-op on
+  re-run; a fresh human clone of the same origin has no hooks and no locator;
+  the locator is none of the three agent-wiring keys.
+- **R3** — fresh flat; nested preserved and not relocated; second product nests
+  without touching the first; `issue-42` and `mirror.git` differ between them;
+  start, doctor, and uninstall all resolve a pre-existing nested workspace.
+- **R4** — `coord 7` from the product cwd starts and enters the run loop; a
+  second `coord 7` resumes while `coord start 7` still refuses; `--product`
+  works from an unrelated directory; a non-worktree and a non-onboarded
+  repository each fail with their own remediation.
+- **R5** — digest sources are exactly `["config", "github-issue"]`; the digest
+  changes when only the issue body changes; the persisted
+  `issue-7/github-issue.json` is byte-identical to what was hashed; a missing
+  issue fails with the `gh issue create` remedy, calls no start effects, and
+  leaves no `issue-7/`.
+
+## Validation
+
+```bash
+pnpm check          # lint, typecheck, 253 fast tests, four-agent canary
+sh -n scripts/bootstrap.sh
+```
+
+Not exercised automatically: a real `curl | sh` against the public repository,
+and a real `gh` call. Both are network-dependent; the shell path is covered
+against a local fixture repository and the `gh` argv is asserted exactly.
+
+## Alternatives
+
+**A global product registry** (`~/.local/state/coordination/products.json`), as
+my first plan proposed. Rejected on Codex's and Cursor's reasoning: it is new
+machine-global mutable state, it needs cardinality rules that make the daily
+command's target depend on how many products happen to be registered, and a
+registry under the install root additionally dirties the checkout bootstrap must
+fast-forward. The locator is per-product and needs no such rules.
+
+**Inferring `<parent>/coord-runtime` at start time.** Rejected: it silently
+breaks for anyone who passed `--coord-root`, and guessing a runtime and then
+writing state into it is the class of mistake explicit `--coord-root` existed to
+prevent.
+
+**A symlink for `~/.local/bin/coord`** pointing at the repository's own `./coord`
+(Codex's plan). Not adopted: that wrapper rebuilds stale sources, which is right
+for a developer checkout and wrong for an installed root, where `pnpm` must not
+be a runtime dependency. A generated four-line wrapper that refuses an unbuilt
+root and names `bootstrap.sh` is written instead.
+
+**Deleting `digestPaths`.** Rejected in favour of defaulting it to `[]`: a
+product that wants an immutable spec file pinned into the session keeps the
+option, and fail-closed still holds for anything declared.
+
+**Stamping `ownsInstallRoot: true` when bootstrap created the checkout.**
+Rejected: one install root serves every onboarded product, so letting one
+product's `uninstall --delete-coordination` remove it re-opens exactly what
+issue 4's R17 closed. Removal is documented as `rm -rf`.
 
 ## Risks
 
+- **`gh` becomes a start-time dependency** for every product, not only for
+  `prPolicy: coord-open-unmerged`. Non-github.com origins can no longer start.
+  This is what R5 specifies and the reviews confirmed; it is the one deliberate
+  capability regression in this branch.
 - **Flat/nested ambiguity during migration.** Contained by "never relocate an
-  existing nested install" and by the uninstall guard, which is the only place
-  the ambiguity could delete data.
-- **`gh` becomes a start-time dependency** for every product, not just
-  `prPolicy: coord-open-unmerged` (`src/runLoop.ts:58-92`). Non-github.com
-  origins can no longer start; see change 3.
+  existing install" and by the uninstall guard that refuses to remove a
+  workspace root that is the coord-root — the only place the ambiguity could
+  destroy data. Covered by test.
+- **Pre-existing runs under an old layout.** A nested product started before
+  this change has state at `<coord-root>/issue-N`; new starts use
+  `workspaces/<project>/issue-N`. Nothing is moved. An in-flight run is still
+  reachable with an explicit `--coord-root`, which continues to mean "the root
+  that directly holds `issue-N`".
 - **Docs are the largest surface by line count and the least checkable.** `help`
-  is asserted in tests; the Markdown gets read end-to-end before review.
+  is asserted in tests; the Markdown was read end-to-end before pushing.
+
+## Conclusion
+
+Implemented and green on `issue-6/claude`. R1–R8 are covered, the protocol layer
+is untouched and its canary passes, and the nine cross-review findings above are
+folded in. The two findings not adopted are argued rather than dropped.
+
+Outstanding for the owner: whether to accept the non-github.com start
+regression, and whether `scripts/fresh-issue.sh` and `--bootstrap-coordination`
+should now be deleted — both are made redundant by this branch but neither
+deletion is included, since they are outside R1–R8 and reversible separately.

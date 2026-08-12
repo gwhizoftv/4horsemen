@@ -10,7 +10,8 @@
   "baseBranch": "main",
   "maxRevisionRounds": 3,
   "prPolicy": "owner-only",
-  "digestPaths": [".plans/issue-{issue}/plan.md"],
+  "profile": "consensus",
+  "digestPaths": [],
   "pollIntervalMs": 1000,
 
   "verify": {

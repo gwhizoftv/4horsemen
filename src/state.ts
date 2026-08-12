@@ -150,6 +150,18 @@ export const coordinatorConfigSchema = z
     baseBranch: z.string().min(1).default("main"),
     maxRevisionRounds: z.literal(DEFAULT_MAX_REVISION_ROUNDS).default(DEFAULT_MAX_REVISION_ROUNDS),
     prPolicy: prPolicySchema.default("owner-only"),
+    /** Default profile for this workspace; `coord start --profile` may override it. */
+    profile: workflowProfileSchema.default("consensus"),
+    /**
+     * OPTIONAL extra digest inputs, config-relative and confined.
+     *
+     * The work statement is the GitHub issue, which `coord start` fetches and
+     * hashes unconditionally — these are for a product that also wants some
+     * immutable file pinned into the session. The old default named an
+     * owner-authored `.plans/issue-{issue}/plan.md`, and start's hard failure on
+     * a missing digest source is what forced owners to hand-write one before
+     * every run.
+     */
     digestPaths: z
       .array(
         z
@@ -157,8 +169,7 @@ export const coordinatorConfigSchema = z
           .min(1)
           .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "digest path must be confined")
       )
-      .min(1)
-      .default([".plans/issue-{issue}/plan.md"]),
+      .default([]),
     checks: z.array(checkCommandSchema).min(1),
     pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000),
     toolchain: z.string().min(1).optional(),
@@ -204,7 +215,6 @@ export const workspaceDeclarationSchema = z
           .min(1)
           .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "digest path must be confined")
       )
-      .min(1)
       .optional(),
     pollIntervalMs: z.number().int().min(100).max(60_000).optional()
   })
@@ -416,14 +426,22 @@ const parseFile = <T>(path: string, schema: z.ZodType<T>): T => {
   return result.data;
 };
 
-export const atomicWriteJson = (root: string, path: string, value: unknown): void => {
+/**
+ * Write exact bytes, atomically and confined.
+ *
+ * The GitHub issue snapshot needs this rather than `atomicWriteJson`: the bytes
+ * that were hashed into the automation digest are the bytes that must land on
+ * disk, so re-hashing the persisted file reproduces the digest. Re-serialising
+ * an object here would make that a coincidence of formatting.
+ */
+export const atomicWriteText = (root: string, path: string, contents: string): void => {
   const safePath = containedPath(root, relative(root, path));
   mkdirSync(dirname(safePath), { recursive: true, mode: 0o700 });
   assertNoSymlink(root, dirname(safePath));
   const temporary = containedPath(dirname(safePath), `.${randomUUID()}.tmp`);
   const handle = openSync(temporary, "wx", 0o600);
   try {
-    writeFileSync(handle, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    writeFileSync(handle, contents, "utf8");
     fsyncSync(handle);
   } finally {
     closeSync(handle);
@@ -436,6 +454,9 @@ export const atomicWriteJson = (root: string, path: string, value: unknown): voi
     closeSync(directory);
   }
 };
+
+export const atomicWriteJson = (root: string, path: string, value: unknown): void =>
+  atomicWriteText(root, path, `${JSON.stringify(value, null, 2)}\n`);
 
 export const readConfig = (path: string): CoordinatorConfig => parseFile(path, coordinatorConfigSchema);
 export const readStartState = (paths: IssueRuntimePaths): StartState => parseFile(paths.start, startStateSchema);
