@@ -303,6 +303,8 @@ export class CoordinatorRunLoop {
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly actionId: () => string;
   private readonly log: (message: string) => void;
+  /** Action ids that received a successful tmux paste in this process. */
+  private readonly nudgedActions = new Set<string>();
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
@@ -384,6 +386,7 @@ export class CoordinatorRunLoop {
       const result = await this.tmux.nudge(start.issue, config, runtime.action, () => this.authority(next));
       this.authority(next);
       if (result === "sent") {
+        this.nudgedActions.add(order.actionId);
         next = this.mutate(next, (current) => {
           appendJournal(this.paths, { type: "nudged", agent, actionId: order.actionId, details: {} }, this.now());
           return current;
@@ -393,6 +396,32 @@ export class CoordinatorRunLoop {
       }
     }
     return next;
+  }
+
+  private async maybeRetryNudge(
+    start: StartState,
+    cursors: CursorsState,
+    agent: string,
+    actionId: string
+  ): Promise<CursorsState> {
+    if (this.tmux === null || this.nudgedActions.has(actionId)) return cursors;
+    const config = start.agents.find((candidate) => candidate.id === agent);
+    if (config === undefined) return cursors;
+    const runtime = agentRuntimePaths(this.paths, agent);
+    if (!existsSync(runtime.action)) return cursors;
+    const result = await this.tmux.nudge(start.issue, config, runtime.action, () => this.authority(cursors));
+    this.authority(cursors);
+    if (result === "sent") {
+      this.nudgedActions.add(actionId);
+      return this.mutate(cursors, (current) => {
+        appendJournal(this.paths, { type: "nudged", agent, actionId, details: { retry: true } }, this.now());
+        return current;
+      });
+    }
+    if (result === "gone") {
+      return this.mutate(cursors, (current) => replaceCursor(current, agent, { status: "harness-gone" }, this.now()));
+    }
+    return cursors;
   }
 
   private accept(start: StartState, cursors: CursorsState, decision: Extract<MachineDecision, { type: "accept-submission" }>): CursorsState {
@@ -762,6 +791,8 @@ export class CoordinatorRunLoop {
             cursors = this.mutate(cursors, (current) =>
               replaceCursor(current, agent, { status: "harness-gone" }, this.now())
             );
+          } else if (cursor.status === "ordered") {
+            cursors = await this.maybeRetryNudge(start, cursors, agent, cursor.actionId);
           }
         }
         if (harnessGone) {

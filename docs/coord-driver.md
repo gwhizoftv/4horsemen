@@ -121,9 +121,11 @@ workspaces append the workspace hash printed by tmux/start diagnostics:
 tmux attach -t coord-42
 ```
 
-Claude nudges use `load-buffer`/`paste-buffer` only when the pane is alive, not
-in pane mode, and running the expected harness. Codex, Cursor, and Antigravity
-remain pull-only unless a future idle fixture proves insertion safe.
+Claude nudges use `load-buffer`/`paste-buffer` when the pane is alive and not
+in pane mode. Every onboarded agent defaults to `delivery: both`, so the same
+short “read your action at …” paste is attempted for Codex, Cursor, and
+Antigravity as well. If the first paste is skipped (trust UI, wrong
+foreground name), the run loop retries until one successful paste per action.
 
 ## Agent completion contract
 

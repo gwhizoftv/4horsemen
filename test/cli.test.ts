@@ -355,6 +355,43 @@ describe("CLI", () => {
     expect(existsSync(join(fixture.runtime, "issue-1"))).toBe(false);
   });
 
+  it("resolves coord next from an agent clone without --coord-root", async () => {
+    const fixture = setup();
+    const runtimeConfig = join(fixture.runtime, "config.json");
+    mkdirSync(fixture.runtime, { recursive: true });
+    const config = JSON.parse(readFileSync(fixture.configPath, "utf8")) as {
+      agents: Array<{ id: string; root: string; launcher: string; delivery: string }>;
+    };
+    config.agents = config.agents.map((agent) => ({ ...agent, root: join(fixture.root, agent.root) }));
+    writeFileSync(runtimeConfig, JSON.stringify(config));
+    expect(
+      await runCli(["start", "1", "--profile", "solo", "--config", runtimeConfig, "--coord-root", fixture.runtime], {
+        processRunner: successfulStartGit,
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    const order = buildOrder(paths, start, cursors, "codex", "R1.join", null);
+    writeAction(fixture.runtime, agentRuntimePaths(paths, "codex").action, order);
+
+    const clone = join(fixture.root, "clone-codex");
+    execFileSync("git", ["init", "-q"], { cwd: clone });
+    execFileSync("git", ["config", "coord.workspaceConfig", runtimeConfig], { cwd: clone });
+    execFileSync("git", ["config", "consensus.agentId", "codex"], { cwd: clone });
+
+    const chunks: string[] = [];
+    expect(
+      await runCli(["next", "--issue", "1"], {
+        io: { cwd: clone, stdout: (message) => chunks.push(message) },
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    expect(chunks.join("")).toContain(order.actionId);
+    expect(chunks.join("")).toContain("codex");
+  });
+
   it("refuses to drop the final active agent", async () => {
     const fixture = setup();
     await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {

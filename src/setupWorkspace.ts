@@ -23,6 +23,18 @@ import {
 } from "./state.js";
 import type { WorkspaceLocation } from "./workspace.js";
 
+/** Pane command names that `tmux display-message` reports for each harness. */
+export const agentHarnessProcess = (agent: string): string => {
+  switch (agent) {
+    case "cursor":
+      return "agent";
+    case "antigravity":
+      return "agy";
+    default:
+      return agent;
+  }
+};
+
 /**
  * Everything `coord install` does to an agent clone and to the owner runtime.
  *
@@ -228,8 +240,9 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
       // Config-relative, so a workspace directory can be moved with its clones.
       root: relativeFrom(input.workspaceDir, agentCloneDirectory(input.cloneRoot, input.project, agent)),
       launcher: `start-${agent}.sh`,
-      delivery: agent === "claude" ? "nudge" : "pull",
-      harnessProcess: agent
+      // both: driver pastes a short action path; agents can also pull via `coord next`.
+      delivery: "both",
+      harnessProcess: agentHarnessProcess(agent)
     })),
     branch: declared.branch ?? "issue-{issue}/{agent}",
     baseBranch: input.baseBranch,
