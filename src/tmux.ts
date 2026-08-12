@@ -47,12 +47,21 @@ export const nudgePreludeKeys = (agentId: string): readonly string[] => {
 };
 
 /**
- * Shell command that attaches a new tmux client focused on one agent window.
- * Each OS terminal runs its own client, so owners avoid Ctrl-b n switching.
+ * Shell command that attaches a dedicated tmux client focused on one agent window.
+ *
+ * Uses a linked session name per agent so each Terminal keeps its own current
+ * window. Semicolons are single-quoted (`';`) so macOS Terminal/do-script
+ * cannot turn them into shell command separators (which would skip select-window
+ * and leave every client on the last window, usually antigravity).
  */
 export const agentClientAttachCommand = (session: string, agentId: string): string => {
   const window = safeName(agentId);
-  return `tmux attach-session -t ${session} \\; select-window -t ${session}:${window}`;
+  const client = `${session}-${window}`;
+  return [
+    `tmux new-session -A -s ${client} -t ${session}`,
+    `select-window -t ${window}`,
+    "set-option destroy-unattached on"
+  ].join(" ';' ");
 };
 
 export type OwnerTerminalLaunch = { agentId: string; command: string };
@@ -63,10 +72,12 @@ const appleScriptString = (value: string): string => `"${value.replace(/\\/g, "\
 /** Open one macOS Terminal.app window per agent, each attached to that agent's tmux window. */
 export const openDarwinTerminalWindows: OwnerTerminalOpener = async (launches) => {
   for (const launch of launches) {
+    const title = launch.agentId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const script = [
       'tell application "Terminal"',
       "  activate",
       `  do script ${appleScriptString(launch.command)}`,
+      `  set custom title of front window to "${title}"`,
       "end tell"
     ].join("\n");
     const result = await new Promise<TmuxResult>((resolvePromise, reject) => {
