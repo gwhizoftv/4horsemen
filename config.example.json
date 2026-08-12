@@ -7,26 +7,38 @@
       "root": "../coordination-claude",
       "launcher": "start-claude.sh",
       "delivery": "nudge",
-      "harnessProcess": "claude"
+      "harnessProcess": "claude",
+      "nudgePrelude": [],
+      "nudgeSubmit": ["Enter"],
+      "terminalProfile": "Pro"
     },
     {
       "id": "codex",
       "root": "../coordination-codex",
       "launcher": "start-codex.sh",
       "delivery": "pull",
-      "harnessProcess": "codex"
+      "harnessProcess": "codex",
+      "nudgePrelude": ["i"],
+      "nudgeSubmit": ["C-j"],
+      "terminalProfile": "Grass"
     },
     {
       "id": "cursor",
       "root": "../coordination-cursor",
       "launcher": "start-cursor.sh",
-      "delivery": "pull"
+      "delivery": "pull",
+      "nudgePrelude": [],
+      "nudgeSubmit": ["Enter"],
+      "terminalProfile": "Ocean"
     },
     {
       "id": "antigravity",
       "root": "../coordination-antigravity",
       "launcher": "start-antigravity.sh",
-      "delivery": "pull"
+      "delivery": "pull",
+      "nudgePrelude": [],
+      "nudgeSubmit": ["Enter"],
+      "terminalProfile": "Red Sands"
     }
   ],
   "branch": "issue-{issue}/{agent}",

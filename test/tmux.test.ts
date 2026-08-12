@@ -44,45 +44,80 @@ describe("tmux boundary", () => {
     expect(calls[2]?.args.slice(-1)).toEqual(["Enter"]);
   });
 
-  it("skips the vim prelude for Claude, Codex, and Antigravity", async () => {
+  it("uses per-agent nudgePrelude and nudgeSubmit for Codex vim", async () => {
     expect(nudgePreludeKeys("claude")).toEqual([]);
-    expect(nudgePreludeKeys("codex")).toEqual([]);
+    expect(nudgePreludeKeys("codex")).toEqual(["i"]);
     expect(nudgePreludeKeys("antigravity")).toEqual([]);
-    expect(nudgePreludeKeys("cursor")).toEqual([]);
     const calls: Array<{ args: readonly string[] }> = [];
     const runner: TmuxRunner = async (args) => {
       calls.push({ args });
-      if (args[0] === "display-message") return ok("0\tagy\t0\n");
+      if (args[0] === "display-message") return ok("0\tcodex\t0\n");
       return ok();
     };
     const controller = new TmuxController(runner);
     expect(
       await controller.nudge(
         1,
-        { id: "antigravity", root: "/clone", launcher: "start-antigravity.sh", delivery: "both", harnessProcess: "agy" },
+        {
+          id: "codex",
+          root: "/clone",
+          launcher: "start-codex.sh",
+          delivery: "both",
+          harnessProcess: "codex",
+          nudgePrelude: ["i"],
+          nudgeSubmit: ["C-j"],
+          terminalProfile: "Grass"
+        },
         "/runtime/action.md"
       )
     ).toBe("sent");
-    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "send-keys", "send-keys"]);
-    expect(calls[1]?.args[1]).toBe("-l");
-    expect(calls[1]?.args.at(-1)).toContain("/runtime/action.md");
+    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "send-keys", "send-keys", "send-keys"]);
+    expect(calls[1]?.args.slice(-1)).toEqual(["i"]);
+    expect(calls[2]?.args[1]).toBe("-l");
+    expect(calls[3]?.args.slice(-1)).toEqual(["C-j"]);
   });
 
-  it("builds one attach command per agent window", () => {
+  it("honors explicit empty prelude over Codex defaults", async () => {
+    const calls: Array<{ args: readonly string[] }> = [];
+    const runner: TmuxRunner = async (args) => {
+      calls.push({ args });
+      if (args[0] === "display-message") return ok("0\tcodex\t0\n");
+      return ok();
+    };
+    const controller = new TmuxController(runner);
+    await controller.nudge(
+      1,
+      {
+        id: "codex",
+        root: "/clone",
+        launcher: "start-codex.sh",
+        delivery: "both",
+        nudgePrelude: [],
+        nudgeSubmit: ["Enter"]
+      },
+      "/a"
+    );
+    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "send-keys", "send-keys"]);
+    expect(calls[1]?.args[1]).toBe("-l");
+  });
+
+  it("builds one attach command per agent window with terminal profiles", () => {
     const controller = new TmuxController(async () => ok(), null, async () => undefined);
     expect(controller.agentAttachLaunches(7, [
-      { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both" },
-      { id: "codex", root: "/x", launcher: "start-codex.sh", delivery: "both" }
+      { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both", terminalProfile: "Pro" },
+      { id: "codex", root: "/x", launcher: "start-codex.sh", delivery: "both", terminalProfile: "Grass" }
     ])).toEqual([
       {
         agentId: "claude",
         command:
-          "tmux new-session -A -s coord-7-claude -t coord-7 ';' select-window -t claude ';' set-option destroy-unattached on"
+          "tmux new-session -A -s coord-7-claude -t coord-7 ';' select-window -t claude ';' set-option destroy-unattached on",
+        terminalProfile: "Pro"
       },
       {
         agentId: "codex",
         command:
-          "tmux new-session -A -s coord-7-codex -t coord-7 ';' select-window -t codex ';' set-option destroy-unattached on"
+          "tmux new-session -A -s coord-7-codex -t coord-7 ';' select-window -t codex ';' set-option destroy-unattached on",
+        terminalProfile: "Grass"
       }
     ]);
   });
