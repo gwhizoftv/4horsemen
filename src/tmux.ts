@@ -35,11 +35,15 @@ export const harnessLooksReady = (foreground: string, expected?: string): boolea
 };
 
 /**
- * Keys to send before the nudge text. Vim-normal prompts need `a` to append;
- * Antigravity does not use vim mode, so a leading `a` would corrupt its input.
+ * Keys to send before the nudge text. Happy-path harnesses (Claude Code,
+ * Cursor agent, Codex, Antigravity) are not vim-normal prompts — a leading
+ * `a` is typed literally ("aRead and execute…"). Keep this empty unless an
+ * agent is known to need a vim append prelude.
  */
-export const nudgePreludeKeys = (agentId: string): readonly string[] =>
-  agentId === "antigravity" ? [] : ["a"];
+export const nudgePreludeKeys = (agentId: string): readonly string[] => {
+  void agentId;
+  return [];
+};
 
 export const resolveAgentLauncher = (agent: AgentConfig): string => {
   const root = resolve(agent.root);
