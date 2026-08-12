@@ -362,7 +362,7 @@ export const doctor = (options: DoctorOptions): DoctorReport => {
   const coordRoot = resolve(options.coordRoot);
   const project = options.project ?? (options.productRoot === undefined ? undefined : productName(resolve(options.productRoot)));
   if (project === undefined) throw new Error("doctor requires --product or --project.");
-  const workspace = resolveWorkspaceLocation(coordRoot, project);
+  const workspace = resolveWorkspaceLocation(coordRoot, project, { acceptUnreadableFlat: true });
   if (workspace === null) {
     throw new Error(`No installed workspace for '${project}' under ${coordRoot}. Run coord onboard or coord install first.`);
   }

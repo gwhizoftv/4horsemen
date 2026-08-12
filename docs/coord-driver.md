@@ -168,17 +168,18 @@ sequence. Completed historical gates and immutable product pins are retained.
 
 ## Owner controls
 
-Every command after `start` requires an explicit `--coord-root` so the
-safety-critical external state location remains visible at the call site.
-`COORD_ISSUE` may replace `--issue`.
+Every issue command accepts either an explicit workspace `--coord-root` or an
+onboarded `--product`. Product resolution uses the same flat/nested and legacy
+runtime lookup as `coord N`, so owner controls cannot accidentally target the
+outer root of a nested product. `COORD_ISSUE` may replace `--issue`.
 
 ```bash
-./coord drop cursor --coord-root /absolute/owner/runtime --issue 42
-./coord pause --coord-root /absolute/owner/runtime --issue 42
-./coord resume --coord-root /absolute/owner/runtime --issue 42
-./coord restart-action --agent codex --coord-root /absolute/owner/runtime --issue 42
-./coord answer <question-id> <retry|revise|abandon> --coord-root /absolute/owner/runtime --issue 42
-./coord abandon --coord-root /absolute/owner/runtime --issue 42
+coord drop cursor --product /path/to/app --issue 42
+coord pause --product /path/to/app --issue 42
+coord resume --product /path/to/app --issue 42
+coord restart-action --agent codex --product /path/to/app --issue 42
+coord answer <question-id> <retry|revise|abandon> --product /path/to/app --issue 42
+coord abandon --product /path/to/app --issue 42
 ```
 
 `drop` refuses the final agent, clears only the dropped agent's local action and

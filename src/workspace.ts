@@ -50,8 +50,17 @@ const sameExistingPath = (left: string, right: string): boolean => {
   }
 };
 
+const hasFlatRuntimeState = (coordRoot: string): boolean => {
+  if (!existsSync(coordRoot)) return false;
+  return readdirSync(coordRoot).some((entry) => entry === "mirror.git" || /^issue-[1-9][0-9]*$/.test(entry));
+};
+
 /** Resolve an installed config, preferring a matching flat workspace. */
-export const resolveWorkspaceLocation = (coordRoot: string, project: string): WorkspaceLocation | null => {
+export const resolveWorkspaceLocation = (
+  coordRoot: string,
+  project: string,
+  options: { acceptUnreadableFlat?: boolean } = {}
+): WorkspaceLocation | null => {
   assertProject(project);
   const flat = location(coordRoot, project, "flat");
   const flatProject = projectAt(flat.configPath);
@@ -60,9 +69,9 @@ export const resolveWorkspaceLocation = (coordRoot: string, project: string): Wo
   const nested = location(coordRoot, project, "nested");
   if (existsSync(nested.configPath)) return nested;
 
-  // A malformed lone flat config is returned so doctor can classify it as a
-  // startCompatibility finding rather than hiding it behind "not installed".
-  if (flatProject.kind === "invalid") return flat;
+  // Doctor explicitly opts in so it can classify the broken config. Mutating
+  // callers must not adopt an unreadable flat slot as the requested product.
+  if (flatProject.kind === "invalid" && options.acceptUnreadableFlat === true) return flat;
   return null;
 };
 
@@ -76,6 +85,7 @@ export const selectWorkspaceLocation = (coordRoot: string, project: string): Wor
   const nested = location(coordRoot, project, "nested");
   if (existsSync(nested.configPath)) return nested;
   if (flatProject.kind !== "missing") return nested;
+  if (hasFlatRuntimeState(resolve(coordRoot))) return nested;
 
   const workspaces = containedPath(resolve(coordRoot), "workspaces");
   if (existsSync(workspaces)) {

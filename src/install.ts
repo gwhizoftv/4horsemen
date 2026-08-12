@@ -41,7 +41,6 @@ import {
 import { agentIdSchema } from "./protocol.js";
 import {
   clearOwnerWorkspace,
-  clearOwnerWorkspaceLocator,
   flatConfigPath,
   recordOwnerWorkspace,
   resolveWorkspaceLocation,
@@ -458,6 +457,13 @@ const otherWorkspaceConfigs = (coordRoot: string, selectedConfig: string): strin
   return paths;
 };
 
+const flatRuntimeTargets = (coordRoot: string): string[] => {
+  if (!existsSync(coordRoot)) return [];
+  return readdirSync(coordRoot)
+    .filter((entry) => entry === "mirror.git" || /^issue-[1-9][0-9]*$/.test(entry))
+    .map((entry) => join(coordRoot, entry));
+};
+
 /**
  * Conservative by default: clear the wiring coordination added, and nothing
  * else. Clones, runtime state, and the coordination checkout survive unless the
@@ -588,9 +594,10 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
   }
 
   if (options.wipeRuntime) {
-    // Nested workspaces are intrinsically scoped. A flat workspace is the
-    // outer runtime itself, so its preflight above protects nested products.
-    const targets = [workspaceDir];
+    // Nested workspaces are intrinsically scoped. A flat workspace shares its
+    // outer directory with nested siblings, so wipe only the flat product's
+    // mirror and issue roots — never coordRoot itself, even with --force.
+    const targets = workspace.layout === "flat" ? flatRuntimeTargets(coordRoot) : [workspaceDir];
     for (const target of targets) {
       if (!existsSync(target)) continue;
       effects.changes.push(`wipe ${target}`);
@@ -652,6 +659,6 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
         ""
       ].join("\n")
     );
-  } else clearOwnerWorkspaceLocator(productRoot);
+  }
   return { install: installed, doctor: report };
 };

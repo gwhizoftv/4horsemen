@@ -149,10 +149,10 @@ Usage:
   coord start <issue> --product <path> [--profile <solo|reviewed|consensus>]
   coord start <issue> --config <path> --coord-root <external-path> [--profile <solo|reviewed|consensus>]
   coord run --issue <issue> [--product <path> | --coord-root <path>]
-  coord next --issue <issue> --coord-root <path> --agent <agent>
-  coord answer <question-id> <retry|revise|abandon> --issue <issue> --coord-root <path>
-  coord drop <agent> --issue <issue> --coord-root <path>
-  coord pause|resume|restart-action|abandon --issue <issue> --coord-root <path>
+  coord next --issue <issue> [--product <path> | --coord-root <path>] --agent <agent>
+  coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
+  coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
+  coord pause|resume|restart-action|abandon --issue <issue> [--product <path> | --coord-root <path>]
 
 Called by the agent-clone hooks, not by operators:
   coord hook-verify --clone <path> --phase <precommit|prepush>
@@ -371,6 +371,26 @@ const existingIssueRuntime = (resolution: StartResolution, issue: number): Issue
     throw new Error(`Issue ${issue} runtime at ${current.issueRoot} belongs to a different workspace.`);
   }
   return null;
+};
+
+/** Resolve existing state either explicitly or through an onboarded product. */
+const existingContext = (parsed: ParsedArgs, io: CliIo): IssueRuntimePaths => {
+  if (!parsed.flags.has("product")) return context(parsed, io);
+  if (parsed.flags.has("coord-root")) {
+    throw new Error("Use --product or --coord-root for an issue command, not both.");
+  }
+  const issueValue = parsed.flags.get("issue") ?? io.env.COORD_ISSUE;
+  if (issueValue === undefined) throw new Error("--issue or COORD_ISSUE is required.");
+  const issue = parseIssue(issueValue);
+  const resolution = resolveStart(
+    { positionals: [], flags: new Map([["product", requireFlag(parsed, "product")]]) },
+    io
+  );
+  const paths = existingIssueRuntime(resolution, issue);
+  if (paths === null) {
+    throw new Error(`No runtime state exists for issue ${issue} and this product. Run coord ${issue}.`);
+  }
+  return paths;
 };
 
 const defaultStartEffects = async (input: {
@@ -626,28 +646,14 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     if (command === "run") {
       allowedFlags(parsed, ["issue", "coord-root", "product"]);
       if (parsed.positionals.length !== 0) throw new Error("run takes no positional arguments.");
-      const issueValue = parsed.flags.get("issue") ?? io.env.COORD_ISSUE;
-      if (issueValue === undefined) throw new Error("--issue or COORD_ISSUE is required.");
-      const issue = parseIssue(issueValue);
-      if (parsed.flags.has("product")) {
-        if (parsed.flags.has("coord-root")) throw new Error("run accepts --product or --coord-root, not both.");
-        const resolution = resolveStart(
-          { positionals: [], flags: new Map([["product", requireFlag(parsed, "product")]]) },
-          io
-        );
-        const existing = existingIssueRuntime(resolution, issue);
-        if (existing === null) throw new Error(`No runtime state exists for issue ${issue} and this product. Run coord ${issue}.`);
-        await makeRunLoop(existing).run();
-      } else {
-        await makeRunLoop(context(parsed, io)).run();
-      }
+      await makeRunLoop(existingContext(parsed, io)).run();
       return 0;
     }
 
     if (command === "next") {
-      allowedFlags(parsed, ["issue", "coord-root", "agent"]);
+      allowedFlags(parsed, ["issue", "coord-root", "product", "agent"]);
       if (parsed.positionals.length !== 0) throw new Error("next takes no positional arguments.");
-      const paths = context(parsed, io);
+      const paths = existingContext(parsed, io);
       const agent = parsed.flags.get("agent") ?? io.env.COORD_AGENT;
       if (agent === undefined) throw new Error("--agent or COORD_AGENT is required.");
       const start = readStartState(paths);
@@ -664,11 +670,11 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "answer") {
-      allowedFlags(parsed, ["issue", "coord-root"]);
+      allowedFlags(parsed, ["issue", "coord-root", "product"]);
       if (parsed.positionals.length !== 2) {
         throw new Error("answer requires <question-id> and one of retry, revise, or abandon.");
       }
-      const paths = context(parsed, io);
+      const paths = existingContext(parsed, io);
       const questionId = parsed.positionals[0] as string;
       const answer = parsed.positionals[1] as string;
       if (!(answer === "retry" || answer === "revise" || answer === "abandon")) {
@@ -733,9 +739,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "drop") {
-      allowedFlags(parsed, ["issue", "coord-root"]);
+      allowedFlags(parsed, ["issue", "coord-root", "product"]);
       if (parsed.positionals.length !== 1) throw new Error("drop requires exactly one agent id.");
-      const paths = context(parsed, io);
+      const paths = existingContext(parsed, io);
       const agent = parsed.positionals[0] as string;
       const now = new Date().toISOString();
       mutateCursorsState(paths, (current) => {
@@ -758,9 +764,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "pause" || command === "resume") {
-      allowedFlags(parsed, ["issue", "coord-root"]);
+      allowedFlags(parsed, ["issue", "coord-root", "product"]);
       if (parsed.positionals.length !== 0) throw new Error(`${command} takes no positional arguments.`);
-      const paths = context(parsed, io);
+      const paths = existingContext(parsed, io);
       const paused = command === "pause";
       const now = new Date().toISOString();
       mutateCursorsState(paths, (current) => {
@@ -772,9 +778,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "restart-action") {
-      allowedFlags(parsed, ["issue", "coord-root", "agent"]);
+      allowedFlags(parsed, ["issue", "coord-root", "product", "agent"]);
       if (parsed.positionals.length !== 0) throw new Error("restart-action takes no positional arguments.");
-      const paths = context(parsed, io);
+      const paths = existingContext(parsed, io);
       const requestedAgent = parsed.flags.has("agent") ? requireFlag(parsed, "agent") : null;
       const now = new Date().toISOString();
       mutateCursorsState(paths, (current) => {
@@ -796,9 +802,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "abandon") {
-      allowedFlags(parsed, ["issue", "coord-root"]);
+      allowedFlags(parsed, ["issue", "coord-root", "product"]);
       if (parsed.positionals.length !== 0) throw new Error("abandon takes no positional arguments.");
-      const paths = context(parsed, io);
+      const paths = existingContext(parsed, io);
       const now = new Date().toISOString();
       mutateCursorsState(paths, (current) => {
         appendJournal(paths, { type: "abandoned", details: {} }, now);

@@ -86,6 +86,21 @@ describe("workspace layout", () => {
       layout: "nested",
       configPath: nestedConfigPath(root, "beta")
     });
+    expect(resolveWorkspaceLocation(root, "beta")).toBeNull();
+    expect(resolveWorkspaceLocation(root, "beta", { acceptUnreadableFlat: true })?.configPath).toBe(
+      join(root, "config.json")
+    );
+  });
+
+  it("nests when flat runtime state remains after its config is removed", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-layout-"));
+    roots.push(root);
+    mkdirSync(join(root, "issue-1"));
+    mkdirSync(join(root, "mirror.git"));
+    expect(selectWorkspaceLocation(root, "beta")).toMatchObject({
+      layout: "nested",
+      configPath: nestedConfigPath(root, "beta")
+    });
   });
 
   it("uses a safe owner-only locator rather than an agent-wiring key", () => {

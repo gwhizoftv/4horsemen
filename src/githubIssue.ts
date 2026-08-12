@@ -7,7 +7,10 @@ const issueResponseSchema = z
   .object({
     number: z.number().int().positive(),
     title: z.string(),
-    body: z.string(),
+    body: z
+      .string()
+      .nullable()
+      .transform((body) => body ?? ""),
     url: z.string().url()
   })
   .strict();

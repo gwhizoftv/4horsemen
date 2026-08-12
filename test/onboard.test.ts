@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCli, type CliRunLoop } from "../src/cli.js";
@@ -68,8 +68,12 @@ describe("coord onboard", () => {
   it("applies the happy-path defaults without changing the tracked product tree", async () => {
     const fixture = product();
     const output: string[] = [];
+    const aliasParent = join(fixture.workspaceRoot, "aliases");
+    const productAlias = join(aliasParent, "myserver");
+    mkdirSync(aliasParent);
+    symlinkSync(fixture.productRoot, productAlias, "dir");
     expect(
-      await runCli(["onboard", fixture.productRoot], {
+      await runCli(["onboard", productAlias], {
         io: { stdout: (message) => output.push(message), stderr: (message) => output.push(message) }
       })
     ).toBe(0);
@@ -77,6 +81,12 @@ describe("coord onboard", () => {
     const coordRoot = join(dirname(fixture.productRoot), "coord-runtime");
     const configPath = join(coordRoot, "config.json");
     expect(existsSync(configPath)).toBe(true);
+    expect(existsSync(join(aliasParent, "coord-runtime"))).toBe(false);
+    expect(
+      await runCli(["onboard", fixture.productRoot], {
+        io: { stdout: (message) => output.push(message), stderr: (message) => output.push(message) }
+      })
+    ).toBe(0);
     expect(existsSync(join(coordRoot, "workspaces"))).toBe(false);
     const config = JSON.parse(readFileSync(configPath, "utf8")) as {
       profile: string;
@@ -196,6 +206,18 @@ describe("coord onboard", () => {
     expect(flat.mirror).not.toBe(nested.mirror);
     expect(flat.tmuxNamespace).toBeNull();
     expect(nested.tmuxNamespace).not.toBeNull();
+    expect(
+      await runCli(["pause", "--issue", "42", "--product", second.productRoot], {
+        io: { stdout: () => undefined }
+      })
+    ).toBe(0);
+    expect(readCursorsState(nested).paused).toBe(true);
+    expect(
+      await runCli(["resume", "--issue", "42", "--product", second.productRoot], {
+        io: { stdout: () => undefined }
+      })
+    ).toBe(0);
+    expect(readCursorsState(nested).paused).toBe(false);
 
     expect(
       await runCli(["43", "--product", second.productRoot], {
@@ -224,6 +246,12 @@ describe("coord onboard", () => {
       })
     ).toBe(0);
     expect(resumedRoot).toBe(legacy.issueRoot);
+    expect(
+      await runCli(["pause", "--issue", "43", "--product", second.productRoot], {
+        io: { stdout: () => undefined }
+      })
+    ).toBe(0);
+    expect(readCursorsState(legacy).paused).toBe(true);
 
     uninstall({
       coordRoot: sharedRoot,
@@ -255,6 +283,36 @@ describe("coord onboard", () => {
       expect(result.doctor.exitCode).not.toBe(0);
       expect(result.doctor.findings.map((finding) => finding.class)).toContain("toolchain");
       expect(localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBeNull();
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("keeps a valid locator when a later re-onboard doctor check fails", () => {
+    const fixture = product();
+    const first = onboard({
+      installRoot: repoRoot,
+      productRoot: fixture.productRoot,
+      agents: ["claude"],
+      profile: "solo",
+      log: silence().log
+    });
+    expect(first.doctor.exitCode).toBe(0);
+    const locator = localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY);
+    expect(locator).not.toBeNull();
+
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = "/usr/bin:/bin";
+      const second = onboard({
+        installRoot: repoRoot,
+        productRoot: fixture.productRoot,
+        agents: ["claude"],
+        profile: "solo",
+        log: silence().log
+      });
+      expect(second.doctor.exitCode).not.toBe(0);
+      expect(localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBe(locator);
     } finally {
       process.env.PATH = originalPath;
     }

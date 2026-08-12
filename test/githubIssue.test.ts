@@ -75,4 +75,23 @@ describe("GitHub issue snapshots", () => {
       })
     ).rejects.toThrow(/issue 8 while issue 7/);
   });
+
+  it("normalizes an empty GitHub issue body to an empty string", async () => {
+    const snapshot = await fetchGitHubIssue({
+      origin: "https://github.com/acme/app.git",
+      issue: 3,
+      cwd: "/tmp",
+      runner: async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({
+          number: 3,
+          title: "Body optional",
+          body: null,
+          url: "https://github.com/acme/app/issues/3"
+        }),
+        stderr: ""
+      })
+    });
+    expect(snapshot.body).toBe("");
+  });
 });

@@ -350,7 +350,7 @@ describe("coord uninstall — scope", () => {
     expect(git(claude, "config", "--local", "--get", "consensus.agentId")).toBe("claude");
   });
 
-  it("scopes --wipe-runtime to this product unless forced", () => {
+  it("flat --wipe-runtime never deletes the outer root or nested siblings", () => {
     const first = product();
     installOnce(first);
     const second = makeProduct("go", "otherserver");
@@ -371,9 +371,16 @@ describe("coord uninstall — scope", () => {
     // Two products share one runtime; both workspaces live under it.
     const otherWorkspace = dirname(nestedConfigPath(first.coordRoot, "otherserver"));
     expect(existsSync(otherWorkspace)).toBe(true);
+    mkdirSync(join(first.coordRoot, "issue-1"));
+    mkdirSync(join(first.coordRoot, "mirror.git"));
 
     expect(() => uninstallOnce(first, { wipeRuntime: true })).toThrow(/other workspace/);
     expect(existsSync(otherWorkspace)).toBe(true);
+    uninstallOnce(first, { wipeRuntime: true, force: true });
+    expect(existsSync(first.coordRoot)).toBe(true);
+    expect(existsSync(nestedConfigPath(first.coordRoot, "otherserver"))).toBe(true);
+    expect(existsSync(join(first.coordRoot, "issue-1"))).toBe(false);
+    expect(existsSync(join(first.coordRoot, "mirror.git"))).toBe(false);
   });
 
   it("refuses --delete-coordination because no install owns the checkout", () => {

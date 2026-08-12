@@ -141,9 +141,10 @@ Four scoping rules matter:
 - By default only the workspace config is deleted; an empty nested workspace
   directory may also be removed. Issue snapshots and run state stay unless
   `--wipe-runtime` is explicit.
-- `--wipe-runtime` is scoped to this project's workspace and issue runtimes. If
-  the runtime holds other products it refuses unless you add `--force`, because
-  those products' in-flight issue state would otherwise go with it.
+- `--wipe-runtime` is scoped to this product. For a flat product it removes only
+  outer `issue-N` directories and `mirror.git`, never the outer coord root or
+  nested sibling workspaces—even with `--force`. Without force, a shared flat
+  runtime is still refused as an extra confirmation boundary.
 - Every refusal — dirty clones, checkout ownership — is decided before anything
   is unwired, so a refused uninstall leaves the workspace byte-for-byte intact.
 - `--delete-coordination` requires that this install *created* the coordination
@@ -268,7 +269,9 @@ and tmux namespace all stay inside that workspace, so the same issue number in
 two repositories cannot collide. Flat resolution wins for a matching product;
 existing nested installs remain supported by onboard/install, start, doctor,
 and uninstall. The first flat product is never moved or overwritten merely
-because a second product is added.
+because a second product is added. Outer `issue-N` or `mirror.git` left by a
+config-only flat uninstall also occupies the flat slot, so another product
+cannot inherit the old control plane.
 
 At every new start, coordination reads the requested issue with `gh issue view
 --repo <owner/repo>` derived from the configured origin. The canonical

@@ -123,9 +123,11 @@ when it names the workspace being removed.
 Finally onboard runs the existing doctor API against the resolved workspace,
 prints the full report, and returns doctor's non-zero class-specific exit code
 on any finding. The owner locator is written only after doctor succeeds, so a
-failed onboard cannot make numeric dispatch appear healthy. The installed
-agent wiring remains available for explicit doctor/repair rather than being
-partially rolled back after a diagnostic failure.
+failed first onboard cannot make numeric dispatch appear healthy. A failed
+re-onboard leaves an already valid locator intact rather than turning a
+transient doctor failure into a discovery failure. The installed agent wiring
+remains available for explicit doctor/repair rather than being partially rolled
+back after a diagnostic failure.
 
 ### 4. Profile and extra digest inputs live in config
 
@@ -427,12 +429,27 @@ templating another wrapper is intentionally avoided.
   selected product; reject dual matches.
 - **A second product overwrites the flat config or shares issue state.** Treat a
   mismatched flat config as an occupied slot and put all config, mirror, and
-  issue state for the next product under its nested workspace.
+  issue state for the next product under its nested workspace. Leftover outer
+  `issue-N` or `mirror.git` state also occupies the flat slot after a config-only
+  uninstall.
+- **A flat runtime wipe deletes nested products.** Never recursively remove the
+  outer coord root. Wipe a flat product by deleting only its outer `issue-N`
+  directories and `mirror.git`, even when `--force` bypasses a shared-runtime
+  refusal.
+- **Nested owner controls target the outer runtime.** Let every issue command
+  accept `--product` and reuse the same workspace/legacy resolver as numeric
+  start and run.
 - **Issue edits silently rebind an active run.** Fetch only on a new start and
   persist the exact canonical bytes; resume trusts immutable `start.json` and
   the stored snapshot.
 - **Onboard registers unhealthy wiring.** Run doctor before publishing the
-  owner locator and propagate its class-specific exit code.
+  owner locator and propagate its class-specific exit code; preserve a locator
+  from an earlier healthy onboard when a later doctor run fails.
+- **GitHub-only issue lookup removes an old capability.** This is a deliberate
+  owner decision required by R5: products whose configured origin is not on
+  `github.com` can no longer start. There is no local snapshot bypass because
+  it would defeat the issue-first invariant; doctor reports the incompatibility
+  before an issue is started.
 - **Bootstrap destroys developer work.** Permit clone or clean fast-forward
   only; refuse dirty/diverged/foreign roots and unrelated PATH entries without
   reset, clean, or overwrite.
@@ -467,4 +484,8 @@ with the review-agreed corrections above: a safe doctor-gated owner locator,
 workspace-scoped nested state, mandatory origin-bound issue bytes, persistent
 profiles, and a resumable numeric command. This yields the requested daily
 flow without a second installer, registry, digest scheme, or protocol, while
-keeping explicit commands and existing nested installations compatible.
+keeping explicit commands and existing nested installations compatible. The
+owner explicitly accepts the capability regression that non-`github.com`
+products cannot start under the GitHub-issue-first R5 contract; restoring such
+products requires a future authenticated issue-provider design, not an
+arbitrary snapshot escape hatch.
