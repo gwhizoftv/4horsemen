@@ -121,8 +121,15 @@ pnpm build
 `pnpm test:e2e` runs the four-agent temporary-origin canary. `pnpm check` runs
 both tiers.
 
-Pull-only agents can fetch their current action without seeing internal step,
-gate, evidence, or global cursor state:
+Pull-capable agents can fetch their current action without seeing internal step,
+gate, evidence, or global cursor state. From an agent clone after onboard:
+
+```sh
+coord next --issue 42
+```
+
+`coord.workspaceConfig` and `consensus.agentId` supply the runtime and caller.
+Explicit forms remain available:
 
 ```sh
 COORD_AGENT=codex coord next --issue 42 --coord-root /path/to/runtime

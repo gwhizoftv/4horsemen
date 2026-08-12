@@ -23,6 +23,15 @@ export type PaneState = { alive: boolean; foreground: string; ownerTyping: boole
 
 const safeName = (value: string): string => value.replace(/[^A-Za-z0-9_-]/g, "-");
 
+/** True when the pane looks ready for a short action paste. */
+export const harnessLooksReady = (foreground: string, expected?: string): boolean => {
+  if (expected === undefined || expected === "") return true;
+  if (foreground === expected) return true;
+  // Claude Code sometimes reports its version string as the pane command.
+  if (expected === "claude" && /^\d+(?:\.\d+)*$/.test(foreground)) return true;
+  return false;
+};
+
 export const resolveAgentLauncher = (agent: AgentConfig): string => {
   const root = resolve(agent.root);
   if (isAbsolute(agent.launcher)) throw new Error(`Launcher for ${agent.id} must be relative to its agent clone.`);
@@ -145,15 +154,15 @@ export class TmuxController {
     actionPath: string,
     assertAuthority: () => void = () => undefined
   ): Promise<"sent" | "disabled" | "busy" | "gone"> {
-    if (agent.id !== "claude" || (agent.delivery !== "nudge" && agent.delivery !== "both")) return "disabled";
+    if (agent.delivery !== "nudge" && agent.delivery !== "both") return "disabled";
     const target = this.target(issue, agent.id);
     const pane = await this.inspectPane(target);
     assertAuthority();
     if (!pane.alive) return "gone";
     if (pane.ownerTyping) return "busy";
-    if (agent.harnessProcess !== undefined && pane.foreground !== agent.harnessProcess) return "busy";
+    if (!harnessLooksReady(pane.foreground, agent.harnessProcess)) return "busy";
     const buffer = `coord-${issue}-${safeName(agent.id)}`;
-    const text = `Read your current coordinator action at ${actionPath}`;
+    const text = `Read and execute your current coordinator action at ${actionPath}`;
     const loaded = await this.runner(["load-buffer", "-b", buffer, "-"], text);
     assertAuthority();
     if (loaded.exitCode !== 0) throw new Error(`tmux load-buffer failed: ${loaded.stderr}`);

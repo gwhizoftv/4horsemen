@@ -5,9 +5,10 @@ import { clearCompletion, readAction } from "./action.js";
 import { doctor, renderDoctorReport } from "./doctor.js";
 import { fetchGitHubIssue, renderGitHubIssueSnapshot } from "./githubIssue.js";
 import { sha256 } from "./hash.js";
-import { renderHookScope, resolveWorkspaceConfig, runVerifyPhase } from "./hookPolicy.js";
+import { renderHookScope, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { install, onboard, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
+import { localConfigGet, worktreeRoot } from "./gitExec.js";
 import {
   agentRuntimePaths,
   assertNoSymlink,
@@ -37,7 +38,7 @@ import {
 } from "./state.js";
 import type { WorkflowProfile } from "./steps.js";
 import { resolveAgentLauncher, TmuxController } from "./tmux.js";
-import { resolveWorkspaceFromProduct, type WorkspaceLocation } from "./workspace.js";
+import { resolveWorkspaceFromProduct, workspaceLocationFromConfig, type WorkspaceLocation } from "./workspace.js";
 
 export type CliIo = {
   stdout: (message: string) => void;
@@ -149,7 +150,7 @@ Usage:
   coord start <issue> --product <path> [--profile <solo|reviewed|consensus>]
   coord start <issue> --config <path> --coord-root <external-path> [--profile <solo|reviewed|consensus>]
   coord run --issue <issue> [--product <path> | --coord-root <path>]
-  coord next --issue <issue> [--product <path> | --coord-root <path>] --agent <agent>
+  coord next --issue <issue> [--product <path> | --coord-root <path>] [--agent <agent>]
   coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
   coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
   coord pause|resume|restart-action|abandon --issue <issue> [--product <path> | --coord-root <path>]
@@ -160,6 +161,9 @@ Called by the agent-clone hooks, not by operators:
 
 Happy path: bootstrap once, onboard a product once, create GitHub issue N, then run
 \`coord N\` from that onboarded product. Agents author plans on issue-N/<agent>.
+
+From an agent clone, \`coord next --issue N\` resolves the runtime via
+coord.workspaceConfig and the caller via consensus.agentId (or --agent / COORD_AGENT).
 
 install remains the advanced explicit interface. Onboard and install leave the product's
 tracked tree untouched; a fresh human clone receives no coordination hooks or metadata.
@@ -391,6 +395,63 @@ const existingContext = (parsed: ParsedArgs, io: CliIo): IssueRuntimePaths => {
     throw new Error(`No runtime state exists for issue ${issue} and this product. Run coord ${issue}.`);
   }
   return paths;
+};
+
+/**
+ * Agent-facing next resolution: product, explicit coord-root, or the calling
+ * agent clone's coord.workspaceConfig.
+ */
+const nextContext = (
+  parsed: ParsedArgs,
+  io: CliIo
+): { paths: IssueRuntimePaths; agent: string } => {
+  const issueValue = parsed.flags.get("issue") ?? io.env.COORD_ISSUE;
+  if (issueValue === undefined) throw new Error("--issue or COORD_ISSUE is required.");
+  const issue = parseIssue(issueValue);
+  const flagAgent = parsed.flags.get("agent") ?? io.env.COORD_AGENT;
+
+  if (parsed.flags.has("product") || parsed.flags.has("coord-root")) {
+    const paths = existingContext(parsed, io);
+    if (flagAgent === undefined) throw new Error("--agent or COORD_AGENT is required.");
+    return { paths, agent: flagAgent };
+  }
+
+  const cloneRoot = worktreeRoot(io.cwd);
+  if (cloneRoot === null) {
+    throw new Error(
+      "coord next needs --product, --coord-root, or to be run from an agent clone with coord.workspaceConfig set."
+    );
+  }
+  const configPath = localConfigGet(cloneRoot, WORKSPACE_CONFIG_KEY);
+  if (configPath === null) {
+    throw new Error(
+      `This worktree has no local ${WORKSPACE_CONFIG_KEY}. Run from an agent clone, or pass --product / --coord-root.`
+    );
+  }
+  const workspace = workspaceLocationFromConfig(configPath);
+  const config = readConfig(workspace.configPath);
+  const resolution: StartResolution = {
+    configPath: workspace.configPath,
+    config,
+    runtimeRoot: workspace.workspaceRoot,
+    workspace,
+    profile: workflowProfile(config.profile)
+  };
+  const paths = existingIssueRuntime(resolution, issue);
+  if (paths === null) {
+    throw new Error(`No runtime state exists for issue ${issue} under ${workspace.workspaceRoot}. Run coord ${issue}.`);
+  }
+  const configuredAgent = localConfigGet(cloneRoot, "consensus.agentId");
+  const agent = flagAgent ?? configuredAgent ?? undefined;
+  if (agent === undefined) {
+    throw new Error("--agent, COORD_AGENT, or consensus.agentId in this clone is required.");
+  }
+  if (configuredAgent !== null && flagAgent !== undefined && configuredAgent !== flagAgent) {
+    throw new Error(
+      `Requested agent '${flagAgent}' does not match this clone's consensus.agentId '${configuredAgent}'.`
+    );
+  }
+  return { paths, agent };
 };
 
 const defaultStartEffects = async (input: {
@@ -653,9 +714,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     if (command === "next") {
       allowedFlags(parsed, ["issue", "coord-root", "product", "agent"]);
       if (parsed.positionals.length !== 0) throw new Error("next takes no positional arguments.");
-      const paths = existingContext(parsed, io);
-      const agent = parsed.flags.get("agent") ?? io.env.COORD_AGENT;
-      if (agent === undefined) throw new Error("--agent or COORD_AGENT is required.");
+      const { paths, agent } = nextContext(parsed, io);
       const start = readStartState(paths);
       if (!start.originalRoster.includes(agent)) throw new Error(`Unknown agent ${agent}.`);
       const actionPath = agentRuntimePaths(paths, agent).action;

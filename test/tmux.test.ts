@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveAgentLauncher, TmuxController, type TmuxResult, type TmuxRunner } from "../src/tmux.js";
+import { harnessLooksReady, resolveAgentLauncher, TmuxController, type TmuxResult, type TmuxRunner } from "../src/tmux.js";
 
 const ok = (stdout = ""): TmuxResult => ({ exitCode: 0, stdout, stderr: "" });
 const roots: string[] = [];
@@ -17,18 +17,18 @@ describe("tmux boundary", () => {
     expect(new TmuxController(runner, "a1b2c3").sessionName(42)).toBe("coord-42-a1b2c3");
   });
 
-  it("uses a buffer-based nudge only for the supported Claude harness", async () => {
+  it("nudges any agent with nudge or both delivery using a buffer paste", async () => {
     const calls: Array<{ args: readonly string[]; input?: string }> = [];
     const runner: TmuxRunner = async (args, input) => {
       calls.push({ args, ...(input === undefined ? {} : { input }) });
-      if (args[0] === "display-message") return ok("0\tclaude\t0\n");
+      if (args[0] === "display-message") return ok("0\tagent\t0\n");
       return ok();
     };
     const controller = new TmuxController(runner);
     expect(
       await controller.nudge(
         1,
-        { id: "claude", root: "/clone", launcher: "start-claude.sh", delivery: "nudge", harnessProcess: "claude" },
+        { id: "cursor", root: "/clone", launcher: "start-cursor.sh", delivery: "both", harnessProcess: "agent" },
         "/runtime/action.md"
       )
     ).toBe("sent");
@@ -36,16 +36,22 @@ describe("tmux boundary", () => {
     expect(calls[1]?.input).toContain("/runtime/action.md");
   });
 
-  it("keeps Codex, Cursor, and Antigravity pull-only", async () => {
+  it("treats pull-only agents as nudge-disabled", async () => {
     let called = false;
     const controller = new TmuxController(async () => {
       called = true;
       return ok();
     });
-    expect(await controller.nudge(1, { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" }, "/a")).toBe(
+    expect(await controller.nudge(1, { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "pull" }, "/a")).toBe(
       "disabled"
     );
     expect(called).toBe(false);
+  });
+
+  it("accepts Claude version strings as a ready harness", () => {
+    expect(harnessLooksReady("2.1.228", "claude")).toBe(true);
+    expect(harnessLooksReady("claude", "claude")).toBe(true);
+    expect(harnessLooksReady("node", "claude")).toBe(false);
   });
 
   it("does not insert while the owner is in pane mode or the harness is gone", async () => {
