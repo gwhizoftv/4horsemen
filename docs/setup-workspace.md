@@ -141,7 +141,16 @@ coord uninstall --coord-root /path/to/coord-runtime --product /path/to/app
   # --dry-run
 ```
 
-By default it clears the agent-clone hook wiring, the managed exclude block, the
+To reuse a GitHub issue number without closing it (reset clones + delete
+`issue-N/<agent>` origin branches + local issue runtime + tmux):
+
+```bash
+coord wipe-issue N --product /path/to/app
+  # --force    # discard dirty clone worktrees
+  # --dry-run
+```
+
+By default uninstall clears the agent-clone hook wiring, the managed exclude block, the
 launchers, and the clone's coordination git config, restores any hook that was
 displaced at install time, and deletes the workspace **config file**. It removes
 the managed `.gitignore` block and the generated `AGENTS.md` from the product
