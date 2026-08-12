@@ -1,3 +1,5 @@
+
+
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,6 +49,8 @@ export const git = (cwd: string, ...args: string[]): string =>
       GIT_COMMITTER_EMAIL: "fixture@example.com"
     }
   }).trim();
+
+process.env.COORD_TEST_REGISTRY = join(tmpdir(), "coord-test-registry.json");
 
 export type GitAttempt = { exitCode: number; stdout: string; stderr: string };
 

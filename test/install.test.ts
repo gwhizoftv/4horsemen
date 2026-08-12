@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { install, uninstall } from "../src/install.js";
 import { readConfig } from "../src/state.js";
-import { workspaceConfigPath } from "../src/setupWorkspace.js";
+import { resolveWorkspaceLocation } from "../src/paths.js";
 import {
   declaredChecks,
   ensureBuilt,
@@ -131,7 +131,7 @@ describe("coord install — emitted config", () => {
     const fixture = product();
     const result = installOnce(fixture);
     expect(result.configPath.startsWith(fixture.coordRoot)).toBe(true);
-    expect(result.configPath).toBe(workspaceConfigPath(fixture.coordRoot, "myserver"));
+    expect(result.configPath).toBe(resolveWorkspaceLocation(fixture.coordRoot, "myserver"));
     expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
   });
 

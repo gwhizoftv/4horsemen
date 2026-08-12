@@ -1,8 +1,9 @@
 import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DOCTOR_CODES, doctor, renderDoctorReport } from "../src/doctor.js";
 import { install } from "../src/install.js";
+import { DOCTOR_CODES, doctor, renderDoctorReport } from "../src/doctor.js";
+import { resolveWorkspaceLocation } from "../src/paths.js";
 import {
   declaredChecks,
   ensureBuilt,
@@ -114,7 +115,7 @@ describe("coord doctor", () => {
       dryRun: false,
       log: silence().log
     });
-    const configPath = join(fixture.coordRoot, "workspaces", "myserver", "config.json");
+    const configPath = resolveWorkspaceLocation(fixture.coordRoot, "myserver").configPath;
     editConfig(configPath, (config) => {
       (config.coordination as Record<string, unknown>).commit = "a".repeat(40);
     });

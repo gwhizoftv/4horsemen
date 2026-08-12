@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, unlinkSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clearCompletion, readAction } from "./action.js";
@@ -13,8 +13,10 @@ import {
   containedPath,
   createIssueRuntime,
   issueRuntimePaths,
-  resolveSafeCoordRoot,
-  type IssueRuntimePaths
+  resolveWorkspaceLocation,
+  readRegistry,
+  type IssueRuntimePaths,
+  type WorkspaceLocation
 } from "./paths.js";
 import { gitShaSchema } from "./protocol.js";
 import { CoordinatorRunLoop, deterministicWinner, githubRepositoryFromOrigin, runArgv, type ProcessRunner } from "./runLoop.js";
@@ -33,6 +35,9 @@ import {
   type CoordinatorConfig,
   type CursorsState
 } from "./state.js";
+import { localConfigGet, worktreeRoot } from "./gitExec.js";
+import { productName } from "./setupWorkspace.js";
+import { WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import type { WorkflowProfile } from "./steps.js";
 import { resolveAgentLauncher, TmuxController } from "./tmux.js";
 
@@ -119,11 +124,47 @@ const parseIssue = (value: string): number => {
   return issue;
 };
 
+const resolveActiveWorkspace = (parsed: ParsedArgs, io: CliIo): { workspace: WorkspaceLocation; configPath: string; profile: string } => {
+  const explicitCoordRoot = parsed.flags.get("coord-root");
+  let coordRoot: string;
+  let project: string;
+  let profile = "consensus";
+  
+  // 1. Check if we're in an agent clone
+  const cloneConfig = localConfigGet(io.cwd, WORKSPACE_CONFIG_KEY);
+  if (cloneConfig !== null && existsSync(cloneConfig)) {
+    project = readConfig(cloneConfig).project;
+    coordRoot = explicitCoordRoot ?? dirname(cloneConfig);
+    if (coordRoot.endsWith("workspaces")) coordRoot = dirname(coordRoot);
+  } else {
+    // 2. We're in the product root
+    const wtree = worktreeRoot(io.cwd);
+    if (wtree === null) throw new Error("Not inside a git repository.");
+    const productRoot = resolve(wtree);
+    const registry = readRegistry();
+    const entry = registry[productRoot];
+    if (entry !== undefined) {
+      project = readConfig(entry.configPath).project;
+      profile = entry.profile;
+      coordRoot = explicitCoordRoot ?? dirname(entry.configPath);
+      if (coordRoot.endsWith("workspaces")) coordRoot = dirname(coordRoot);
+    } else {
+      if (explicitCoordRoot === undefined) throw new Error("No installed workspace found in registry for this directory. Please specify --coord-root.");
+      project = productName(resolve(io.cwd));
+      coordRoot = explicitCoordRoot;
+    }
+  }
+
+  const workspace = resolveWorkspaceLocation(resolve(io.cwd, coordRoot), project);
+  const explicitConfigPath = parsed.flags.get("config");
+  return { workspace, configPath: explicitConfigPath ? resolve(io.cwd, explicitConfigPath) : workspace.configPath, profile };
+};
+
 const context = (parsed: ParsedArgs, io: CliIo): IssueRuntimePaths => {
-  const coordRoot = requireFlag(parsed, "coord-root");
+  const { workspace } = resolveActiveWorkspace(parsed, io);
   const issueValue = parsed.flags.get("issue") ?? io.env.COORD_ISSUE;
   if (issueValue === undefined) throw new Error("--issue or COORD_ISSUE is required.");
-  return issueRuntimePaths(resolve(io.cwd, coordRoot), parseIssue(issueValue));
+  return issueRuntimePaths(workspace, parseIssue(issueValue));
 };
 
 const allowedFlags = (parsed: ParsedArgs, allowed: readonly string[]): void => {
@@ -309,14 +350,57 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     (dependencies.makeRunLoop === undefined
       ? defaultStartEffects
       : async () => ({ cleanup: async () => undefined }));
-  const [command, ...rest] = argv;
+  const [rawCommand, ...rawRest] = argv;
+  let command = rawCommand;
+  let rest = rawRest;
+  
   if (command === undefined || command === "--help" || command === "-h" || command === "help") {
     io.stdout(help);
     return 0;
   }
+  
+  let implicitRun = false;
+  if (/^\d+$/.test(command)) {
+    rest = [command, ...rawRest];
+    command = "start";
+    implicitRun = true;
+  }
 
   try {
     const parsed = parseArgs(rest, booleanFlags[command] ?? []);
+
+    if (command === "onboard") {
+      allowedFlags(parsed, ["coord-root", "agents", "profile", "clone-root", "dry-run"]);
+      if (parsed.positionals.length !== 0) throw new Error("onboard takes no positional arguments.");
+      const wtree = worktreeRoot(io.cwd);
+      if (wtree === null) throw new Error("Not inside a git repository. Run coord onboard from a product checkout.");
+      const productRoot = resolve(wtree);
+      const coordRoot = parsed.flags.has("coord-root") ? resolve(io.cwd, requireFlag(parsed, "coord-root")) : resolve(dirname(productRoot), "coord-runtime");
+      const cloneRoot = parsed.flags.has("clone-root") ? resolve(io.cwd, requireFlag(parsed, "clone-root")) : dirname(productRoot);
+      const agents = parsed.flags.has("agents") ? requireFlag(parsed, "agents").split(",").map((a) => a.trim()).filter((a) => a !== "") : ["claude", "codex", "cursor", "antigravity"];
+      const profile = parsed.flags.get("profile") ?? "consensus";
+      
+      install({
+        installRoot: coordinatorSourceRoot,
+        productRoot,
+        coordRoot,
+        agents,
+        profile,
+        cloneRoot,
+        writeProduct: true,
+        vendor: false,
+        bootstrap: false,
+        dryRun: flagIsSet(parsed, "dry-run"),
+        log: io.stdout
+      });
+      
+      const doc = doctor({ coordRoot, productRoot });
+      if (doc.exitCode !== 0) {
+        io.stderr(renderDoctorReport(doc));
+        return doc.exitCode;
+      }
+      return 0;
+    }
 
     if (command === "install") {
       allowedFlags(parsed, [
@@ -415,12 +499,12 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       allowedFlags(parsed, ["profile", "config", "coord-root"]);
       if (parsed.positionals.length !== 1) throw new Error("start requires exactly one issue number.");
       const issue = parseIssue(parsed.positionals[0] as string);
-      const profileValue = requireFlag(parsed, "profile");
+      const { workspace, configPath, profile: resolvedProfile } = resolveActiveWorkspace(parsed, io);
+      const profileValue = parsed.flags.get("profile") ?? resolvedProfile;
       if (!(profileValue === "solo" || profileValue === "reviewed" || profileValue === "consensus")) {
         throw new Error("--profile must be solo, reviewed, or consensus.");
       }
-      const profile: WorkflowProfile = profileValue;
-      const configPath = resolve(io.cwd, requireFlag(parsed, "config"));
+      const profile: WorkflowProfile = profileValue as WorkflowProfile;
       const config = readConfig(configPath);
       const agents = config.agents.map((agent) => ({ ...agent, root: resolve(dirname(configPath), agent.root) }));
       const roster = profile === "solo" ? agents.slice(0, 1) : agents;
@@ -431,15 +515,24 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         );
       }
       for (const agent of roster) resolveAgentLauncher(agent);
-      const coordRoot = resolveSafeCoordRoot({
-        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
-        agentRoots: agents.map((agent) => agent.root),
-        create: false
-      });
-      const paths = issueRuntimePaths(coordRoot, issue);
+      const paths = issueRuntimePaths(workspace, issue);
       if (existsSync(paths.issueRoot)) {
+        if (implicitRun) {
+           await makeRunLoop(paths).run();
+           return 0;
+        }
         throw new Error(`Runtime state already exists for issue ${issue}. Use resume or abandon it explicitly.`);
       }
+
+      // Automatically fetch GitHub issue into snapshot.md
+      mkdirSync(paths.issueRoot, { recursive: true, mode: 0o700 });
+      const issueContent = await runner(["gh", "issue", "view", String(issue), "--json", "title,body"], io.cwd);
+      if (issueContent.exitCode === 0) {
+        const snapshot = JSON.parse(issueContent.stdout);
+        const snapshotContent = `# ${snapshot.title}\n\n${snapshot.body}\n`;
+        writeFileSync(containedPath(paths.issueRoot, "snapshot.md"), snapshotContent, "utf8");
+      }
+
       const digest = automationDigestMaterial(configPath, config, issue);
       const baselineResult = await runner(["git", "ls-remote", "--exit-code", config.origin, `refs/heads/${config.baseBranch}`], io.cwd);
       if (baselineResult.exitCode !== 0) throw new Error(`Cannot resolve origin baseline: ${baselineResult.stderr.trim()}`);
@@ -474,7 +567,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           automationDigestSources: digest.sources,
           trustedSourceCommit: trustedSourceCommit.data,
           origin: config.origin,
-          coordRoot,
+          coordRoot: workspace.coordRoot,
           configPath,
           agents: roster,
           checks: config.checks,
@@ -498,7 +591,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       } catch (error) {
         throw new Error(
           `Issue ${issue} was started durably at ${paths.issueRoot}, but its initial tick failed; ` +
-            `resume with coord run --issue ${issue} --coord-root ${coordRoot}: ${
+            `resume with coord run --issue ${issue}: ${
               error instanceof Error ? error.message : String(error)
             }`
         );

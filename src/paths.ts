@@ -1,5 +1,6 @@
-import { lstatSync, mkdirSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { lstatSync, mkdirSync, realpathSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve, sep, join } from "node:path";
+import { homedir } from "node:os";
 
 export class PathSafetyError extends Error {
   override readonly name = "PathSafetyError";
@@ -111,14 +112,84 @@ export type IssueRuntimePaths = {
   agents: string;
 };
 
-export const issueRuntimePaths = (coordRoot: string, issue: number): IssueRuntimePaths => {
+export type WorkspaceLocation = {
+  coordRoot: string;
+  workspaceRoot: string;
+  configPath: string;
+};
+
+export const resolveWorkspaceLocation = (coordRoot: string, project: string): WorkspaceLocation => {
+  const root = resolve(coordRoot);
+  const flatConfig = containedPath(root, "config.json");
+  const nestedWorkspace = containedPath(root, "workspaces", project);
+  const nestedConfig = containedPath(nestedWorkspace, "config.json");
+
+  let flatExists = false;
+  try {
+    flatExists = lstatSync(flatConfig).isFile();
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+  }
+
+  let nestedExists = false;
+  try {
+    nestedExists = lstatSync(nestedConfig).isFile();
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+  }
+
+  let hasOtherWorkspaces = false;
+  try {
+    const workspacesDir = containedPath(root, "workspaces");
+    hasOtherWorkspaces = lstatSync(workspacesDir).isDirectory();
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+  }
+
+  if (flatExists && nestedExists) {
+    throw new PathSafetyError(`Ambiguous workspace layout: found both ${flatConfig} and ${nestedConfig}. Please remove one.`);
+  }
+
+  if (flatExists) {
+    return {
+      coordRoot: root,
+      workspaceRoot: root,
+      configPath: flatConfig
+    };
+  }
+
+  if (nestedExists) {
+    return {
+      coordRoot: root,
+      workspaceRoot: nestedWorkspace,
+      configPath: nestedConfig
+    };
+  }
+
+  // If neither exists, decide which to create
+  if (hasOtherWorkspaces) {
+    return {
+      coordRoot: root,
+      workspaceRoot: nestedWorkspace,
+      configPath: nestedConfig
+    };
+  } else {
+    return {
+      coordRoot: root,
+      workspaceRoot: root,
+      configPath: flatConfig
+    };
+  }
+};
+
+export const issueRuntimePaths = (workspace: WorkspaceLocation, issue: number): IssueRuntimePaths => {
   if (!Number.isInteger(issue) || issue < 1) {
     throw new PathSafetyError("Issue must be a positive integer.");
   }
-  const root = resolve(coordRoot);
+  const root = resolve(workspace.workspaceRoot);
   const issueRoot = containedPath(root, `issue-${issue}`);
   return {
-    coordRoot: root,
+    coordRoot: resolve(workspace.coordRoot),
     mirror: containedPath(root, "mirror.git"),
     issueRoot,
     start: containedPath(issueRoot, "start.json"),
@@ -163,4 +234,24 @@ export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly st
     mkdirSync(runtime.root, { recursive: true, mode: 0o700 });
     assertNoSymlink(paths.coordRoot, runtime.root);
   }
+};
+
+export type ProductRegistry = Record<string, { configPath: string; profile: string }>;
+
+export const getRegistryPath = (): string => process.env.COORD_TEST_REGISTRY || join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "coordination", "registry.json");
+
+export const readRegistry = (): ProductRegistry => {
+  const path = getRegistryPath();
+  if (!existsSync(path)) return {};
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as ProductRegistry;
+  } catch {
+    return {};
+  }
+};
+
+export const writeRegistry = (registry: ProductRegistry): void => {
+  const path = getRegistryPath();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(registry, null, 2) + "\n", "utf8");
 };
