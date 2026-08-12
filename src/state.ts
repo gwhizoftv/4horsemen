@@ -148,6 +148,7 @@ export const coordinatorConfigSchema = z
     agents: z.array(agentConfigSchema).min(1),
     branch: z.string().refine((value) => value.includes("{issue}") && value.includes("{agent}")),
     baseBranch: z.string().min(1).default("main"),
+    profile: workflowProfileSchema.default("consensus"),
     maxRevisionRounds: z.literal(DEFAULT_MAX_REVISION_ROUNDS).default(DEFAULT_MAX_REVISION_ROUNDS),
     prPolicy: prPolicySchema.default("owner-only"),
     digestPaths: z
@@ -157,8 +158,7 @@ export const coordinatorConfigSchema = z
           .min(1)
           .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "digest path must be confined")
       )
-      .min(1)
-      .default([".plans/issue-{issue}/plan.md"]),
+      .default([]),
     checks: z.array(checkCommandSchema).min(1),
     pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000),
     toolchain: z.string().min(1).optional(),
@@ -204,7 +204,6 @@ export const workspaceDeclarationSchema = z
           .min(1)
           .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "digest path must be confined")
       )
-      .min(1)
       .optional(),
     pollIntervalMs: z.number().int().min(100).max(60_000).optional()
   })

@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { install, uninstall } from "../src/install.js";
 import { readConfig } from "../src/state.js";
-import { workspaceConfigPath } from "../src/setupWorkspace.js";
+import { nestedConfigPath } from "../src/workspace.js";
 import {
   declaredChecks,
   ensureBuilt,
@@ -131,7 +131,7 @@ describe("coord install — emitted config", () => {
     const fixture = product();
     const result = installOnce(fixture);
     expect(result.configPath.startsWith(fixture.coordRoot)).toBe(true);
-    expect(result.configPath).toBe(workspaceConfigPath(fixture.coordRoot, "myserver"));
+    expect(result.configPath).toBe(join(fixture.coordRoot, "config.json"));
     expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
   });
 
@@ -350,7 +350,7 @@ describe("coord uninstall — scope", () => {
     expect(git(claude, "config", "--local", "--get", "consensus.agentId")).toBe("claude");
   });
 
-  it("scopes --wipe-runtime to this product unless forced", () => {
+  it("flat --wipe-runtime never deletes the outer root or nested siblings", () => {
     const first = product();
     installOnce(first);
     const second = makeProduct("go", "otherserver");
@@ -369,11 +369,18 @@ describe("coord uninstall — scope", () => {
       log: silence().log
     });
     // Two products share one runtime; both workspaces live under it.
-    const otherWorkspace = join(first.coordRoot, "workspaces", "otherserver");
+    const otherWorkspace = dirname(nestedConfigPath(first.coordRoot, "otherserver"));
     expect(existsSync(otherWorkspace)).toBe(true);
+    mkdirSync(join(first.coordRoot, "issue-1"));
+    mkdirSync(join(first.coordRoot, "mirror.git"));
 
-    expect(() => uninstallOnce(first, { wipeRuntime: true })).toThrow(/also holds workspaces/);
+    expect(() => uninstallOnce(first, { wipeRuntime: true })).toThrow(/other workspace/);
     expect(existsSync(otherWorkspace)).toBe(true);
+    uninstallOnce(first, { wipeRuntime: true, force: true });
+    expect(existsSync(first.coordRoot)).toBe(true);
+    expect(existsSync(nestedConfigPath(first.coordRoot, "otherserver"))).toBe(true);
+    expect(existsSync(join(first.coordRoot, "issue-1"))).toBe(false);
+    expect(existsSync(join(first.coordRoot, "mirror.git"))).toBe(false);
   });
 
   it("refuses --delete-coordination because no install owns the checkout", () => {

@@ -3,14 +3,15 @@
   "origin": "https://github.com/example/myserver.git",
   "toolchain": "go",
   "agents": [
-    { "id": "claude", "root": "../../../myserver-claude", "launcher": "start-claude.sh", "delivery": "nudge", "harnessProcess": "claude" },
-    { "id": "codex", "root": "../../../myserver-codex", "launcher": "start-codex.sh", "delivery": "pull", "harnessProcess": "codex" }
+    { "id": "claude", "root": "../myserver-claude", "launcher": "start-claude.sh", "delivery": "nudge", "harnessProcess": "claude" },
+    { "id": "codex", "root": "../myserver-codex", "launcher": "start-codex.sh", "delivery": "pull", "harnessProcess": "codex" }
   ],
   "branch": "issue-{issue}/{agent}",
   "baseBranch": "main",
+  "profile": "reviewed",
   "maxRevisionRounds": 3,
   "prPolicy": "owner-only",
-  "digestPaths": [".plans/issue-{issue}/plan.md"],
+  "digestPaths": [],
   "pollIntervalMs": 1000,
 
   "verify": {

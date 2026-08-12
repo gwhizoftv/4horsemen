@@ -47,10 +47,13 @@ export const resolveAgentLauncher = (agent: AgentConfig): string => {
 };
 
 export class TmuxController {
-  constructor(private readonly runner: TmuxRunner = runTmux) {}
+  constructor(
+    private readonly runner: TmuxRunner = runTmux,
+    private readonly namespace: string | null = null
+  ) {}
 
   sessionName(issue: number): string {
-    return `coord-${issue}`;
+    return `coord-${issue}${this.namespace === null ? "" : `-${safeName(this.namespace)}`}`;
   }
 
   target(issue: number, agent: string): string {

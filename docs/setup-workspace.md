@@ -14,7 +14,7 @@
 | Launcher | none | `start-<agent>.sh` |
 | Day-to-day git | exactly as before onboarding | gated |
 
-A default `coord install` leaves the product's tracked tree byte-for-byte
+A default `coord onboard` or `coord install` leaves the product's tracked tree byte-for-byte
 unchanged: `git status` in the product master is empty afterwards. Everything
 coordination adds lives in each agent clone's untracked per-clone state
 (`.git/hooks/`, `.git/info/exclude`, local git config) or under `--coord-root`.
@@ -22,7 +22,54 @@ coordination adds lives in each agent clone's untracked per-clone state
 If the product already has its own hooks for its own humans, coordination leaves
 them alone. "No hooks for humans" means none *from coordination*.
 
-## Install
+## Bootstrap once
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gwhizoftv/coordination/main/scripts/bootstrap.sh | sh
+```
+
+The POSIX shell bootstrap clones a complete install to
+`${COORD_INSTALL_ROOT:-$HOME/.local/share/coordination}`, runs `pnpm install
+--frozen-lockfile` and `pnpm build`, and creates the managed
+`$HOME/.local/bin/coord` symlink. `--root` overrides the environment and
+`--no-path` skips the symlink. A rerun fast-forwards a clean `main` checkout;
+it refuses dirty, diverged, non-worktree, or foreign launcher paths without
+resetting or deleting anything.
+
+Only a checkout created by bootstrap receives ownership metadata under its
+`.git/` directory. Building a developer checkout never makes uninstall the
+owner of that checkout.
+
+## Onboard a product
+
+```sh
+coord onboard /path/to/app
+```
+
+The default coord root and clone root are the product's parent directory:
+
+```text
+/path/to/app/
+/path/to/app-claude/
+/path/to/app-codex/
+/path/to/app-cursor/
+/path/to/app-antigravity/
+/path/to/coord-runtime/config.json
+```
+
+Onboard is a preset over the same installer described below. It selects the
+four standard agents and consensus profile, creates the agent wiring, runs
+doctor, and returns doctor's class-specific non-zero status on any finding.
+Only after doctor succeeds does it record `coord.ownerWorkspaceConfig` in the
+product worktree's **local** Git config. It does not set the three agent-wiring
+keys on that product. The locator is untracked and does not appear in a fresh
+human clone.
+
+Overrides kept on the simple command are `--coord-root`, `--clone-root`,
+`--agents`, and `--profile`. Use advanced install for policy declarations,
+vendoring, tracked product changes, origin/base overrides, or dry runs.
+
+## Advanced install
 
 ```bash
 coord install \
@@ -46,8 +93,8 @@ coord install \
 | 3 | Write `start-<agent>.sh`; add the managed block to each clone's `.git/info/exclude` |
 | 4 | Record `consensus.*`, `coord.installRoot`, `coord.cliEntry`, `coord.workspaceConfig` in each clone |
 | 5 | Install fail-closed shims into each agent clone's `.git/hooks/` |
-| 6 | Emit the workspace config under `--coord-root` |
-| 7 | Print the `coord doctor` / `coord start` / `coord run` next steps — nothing is auto-started |
+| 6 | Emit the selected flat or nested workspace config under `--coord-root` |
+| 7 | Print explicit `coord doctor` / `coord start` / `coord run` next steps — nothing is auto-started |
 
 Not written by default: the product's `githooks/`, `.gitignore`, `package.json`,
 `AGENTS.md`, or `scripts/setup_*`.
@@ -91,11 +138,13 @@ installation is left in place and reported rather than deleted.
 
 Four scoping rules matter:
 
-- The workspace **directory** is not deleted. It is also where you keep this
-  project's plan and digest material, so only the file coordination wrote goes.
-- `--wipe-runtime` is scoped to this project's workspace and issue runtimes. If
-  the runtime holds other products it refuses unless you add `--force`, because
-  those products' in-flight issue state would otherwise go with it.
+- By default only the workspace config is deleted; an empty nested workspace
+  directory may also be removed. Issue snapshots and run state stay unless
+  `--wipe-runtime` is explicit.
+- `--wipe-runtime` is scoped to this product. For a flat product it removes only
+  outer `issue-N` directories and `mirror.git`, never the outer coord root or
+  nested sibling workspaces—even with `--force`. Without force, a shared flat
+  runtime is still refused as an extra confirmation boundary.
 - Every refusal — dirty clones, checkout ownership — is decided before anything
   is unwired, so a refused uninstall leaves the workspace byte-for-byte intact.
 - `--delete-coordination` requires that this install *created* the coordination
@@ -200,20 +249,37 @@ narrowing was declared, so every push is in scope — absence never quietly
 shrinks what gets gated. Two projects can legitimately declare different lists
 without either editing a hook body.
 
-## Where the config lives, and why
+## Workspace layouts and issue input
 
-The workspace config is written to
-`<coord-root>/workspaces/<project>/config.json`, not into the product tree.
+A fresh single-product runtime is flat:
 
-`digestPaths` resolve relative to the config file, so the automation material
-whose digest the coordinator records sits beside the config, in the
-owner-controlled runtime. That is the point: a `verify` or digest input inside
-the product tree would let an agent supply argument vectors the coordinator or
-another agent's clone then executes.
+```text
+<coord-root>/
+  config.json
+  mirror.git/
+  issue-42/
+    github-issue.json
+    start.json
+    ...
+```
 
-Place each issue's owner-authored plan at
-`<coord-root>/workspaces/<project>/.plans/issue-<n>/plan.md` before
-`coord start <n>`.
+If a different flat product already occupies that root, the next product uses
+`<coord-root>/workspaces/<project>/`. Its config, mirror, issue directories,
+and tmux namespace all stay inside that workspace, so the same issue number in
+two repositories cannot collide. Flat resolution wins for a matching product;
+existing nested installs remain supported by onboard/install, start, doctor,
+and uninstall. The first flat product is never moved or overwritten merely
+because a second product is added. Outer `issue-N` or `mirror.git` left by a
+config-only flat uninstall also occupies the flat slot, so another product
+cannot inherit the old control plane.
+
+At every new start, coordination reads the requested issue with `gh issue view
+--repo <owner/repo>` derived from the configured origin. The canonical
+`github-issue.json` snapshot is mandatory digest material together with the
+exact config bytes. `digestPaths` is only a list of optional additional,
+config-relative inputs and may be empty. The owner does **not** write a plan
+before start. After launch, each agent creates `.plans/issue-<n>/plan.md` on its
+own issue branch as R2 evidence.
 
 ## Doctor
 

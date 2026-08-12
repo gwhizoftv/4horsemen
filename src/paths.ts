@@ -1,5 +1,6 @@
 import { lstatSync, mkdirSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 export class PathSafetyError extends Error {
   override readonly name = "PathSafetyError";
@@ -103,11 +104,13 @@ export const resolveSafeCoordRoot = (options: SafeCoordRootOptions): string => {
 
 export type IssueRuntimePaths = {
   coordRoot: string;
+  tmuxNamespace: string | null;
   mirror: string;
   issueRoot: string;
   start: string;
   cursors: string;
   journal: string;
+  issueSnapshot: string;
   agents: string;
 };
 
@@ -119,11 +122,14 @@ export const issueRuntimePaths = (coordRoot: string, issue: number): IssueRuntim
   const issueRoot = containedPath(root, `issue-${issue}`);
   return {
     coordRoot: root,
+    tmuxNamespace:
+      basename(dirname(root)) === "workspaces" ? createHash("sha256").update(root).digest("hex").slice(0, 10) : null,
     mirror: containedPath(root, "mirror.git"),
     issueRoot,
     start: containedPath(issueRoot, "start.json"),
     cursors: containedPath(issueRoot, "cursors.json"),
     journal: containedPath(issueRoot, "journal.jsonl"),
+    issueSnapshot: containedPath(issueRoot, "github-issue.json"),
     agents: containedPath(issueRoot, "agents")
   };
 };
