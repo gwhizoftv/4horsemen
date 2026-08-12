@@ -350,7 +350,16 @@ describe("coord uninstall — scope", () => {
     expect(git(claude, "config", "--local", "--get", "consensus.agentId")).toBe("claude");
   });
 
-  it("flat --wipe-runtime never deletes the outer root or nested siblings", () => {
+  it("flat --wipe-runtime deletes the outer root when it is the sole workspace", () => {
+    const fixture = product();
+    installOnce(fixture);
+    mkdirSync(join(fixture.coordRoot, "issue-1"));
+    mkdirSync(join(fixture.coordRoot, "mirror.git"));
+    uninstallOnce(fixture, { wipeRuntime: true });
+    expect(existsSync(fixture.coordRoot)).toBe(false);
+  });
+
+  it("flat --wipe-runtime never deletes nested siblings when forced on a shared root", () => {
     const first = product();
     installOnce(first);
     const second = makeProduct("go", "otherserver");

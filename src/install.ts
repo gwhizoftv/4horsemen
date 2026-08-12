@@ -594,10 +594,16 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
   }
 
   if (options.wipeRuntime) {
-    // Nested workspaces are intrinsically scoped. A flat workspace shares its
-    // outer directory with nested siblings, so wipe only the flat product's
-    // mirror and issue roots — never coordRoot itself, even with --force.
-    const targets = workspace.layout === "flat" ? flatRuntimeTargets(coordRoot) : [workspaceDir];
+    // Config for this product is already gone. If nothing else claims the outer
+    // root, wipe the whole coord-runtime folder (what operators expect). Shared
+    // roots still only drop this product's scoped targets so siblings survive.
+    const others = otherWorkspaceConfigs(coordRoot, configPath);
+    const targets =
+      others.length === 0
+        ? [coordRoot]
+        : workspace.layout === "flat"
+          ? flatRuntimeTargets(coordRoot)
+          : [workspaceDir];
     for (const target of targets) {
       if (!existsSync(target)) continue;
       effects.changes.push(`wipe ${target}`);
