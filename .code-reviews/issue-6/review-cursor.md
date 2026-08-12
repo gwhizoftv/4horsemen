@@ -1,127 +1,156 @@
-# Code review: Cursor plan for issue 6
+# Code review: Cursor implementation for issue 6
 
-- Reviewed head: `origin/issue-6/cursor` @ `14fdbdc` (plan commit `34c803f`;
-  this review file updates after peer plans landed)
+- Reviewed head: `origin/issue-6/cursor` @ `eac4dcd`
 - Baseline: `origin/main` @ `f9d0084`
-- Scope: `.plans/issue-6/plan.md`
-- Reviewer: Cursor (self-review for peer comparison)
-- Also compared against: `origin/issue-6/claude` @ `51b9fe7`,
-  `origin/issue-6/codex` @ `c36a641`
+- Scope: `git diff f9d0084...eac4dcd` — bootstrap, onboard, workspace layout,
+  GitHub-issue digest, `coord N`
+- Reviewer: Cursor (implementation self-review for peers)
 
 ## Verdict
 
-Cursor’s plan is a complete R1–R8 sketch but **should not be the revision
-trunk.** Claude is stronger on registry placement, uninstall safety,
-start-or-resume, and offline start; Codex is stronger on nested run-state
-isolation. Keep this plan as a peer artifact only.
+Happy-path pieces land correctly: non-wiring owner locator, mandatory
+`github-issue` digest source, config `profile`, start-or-resume for `coord N`,
+`gh --repo` before runtime effects, and flat wipe refusal. Several
+multi-product / upgrade defects remain and should be fixed before this is the
+merge trunk without patches.
 
 ## Findings
 
-### 1. `.plans/issue-6/plan.md:69`
+### 1. `src/cli.ts:366`
 
-**Rule.** When more than one product shares an outer `coord-root`, issue run
-directories and the bare mirror must not collide on GitHub issue numbers.
+**Rule.** Nested products may place new run state under `workspaceRoot`, but
+existing issue runtimes created under the outer `<coord-root>/issue-N` (main /
+issue-4 layout) must still resolve for resume, or migrate once. Silent path
+changes must not orphan durable `start.json`.
 
-**Failure.** The plan keeps “Issue runtimes stay at `<coord-root>/issue-<n>/`”
-for both layouts. Two products on one runtime that both run `#42` share or
-refuse the same `issue-42/` tree and `mirror.git`.
+**Failure.** `startIssue` always uses `location.workspaceRoot`. For a nested
+install from `main`, that is `…/workspaces/<project>`, so `coord N` looks under
+`workspaces/<project>/issue-N`, misses `<coord-root>/issue-N/start.json`, and
+either creates a second runtime or leaves `coord run --coord-root <outer>` on
+the old path while start used the new one.
 
 **Test.**
 
 ```ts
-it("two products on one runtime can both start issue 42", () => {
-  onboard(appA, { coordRoot });
-  onboard(appB, { coordRoot });
-  start(42, { product: appA });
-  start(42, { product: appB });
-  expect(readStart(appA, 42).origin).not.toBe(readStart(appB, 42).origin);
+it("nested product resumes a pre-migration coord-root issue runtime", async () => {
+  // workspaces/app/config.json + coordRoot/issue-7/start.json (main layout)
+  await expect(coordN(7, { product: app })).resolves.toBeDefined();
+  expect(existsSync(join(coordRoot, "issue-7", "start.json"))).toBe(true);
+  expect(existsSync(join(coordRoot, "workspaces/app/issue-7"))).toBe(false);
 });
 ```
 
 ---
 
-### 2. `.plans/issue-6/plan.md:76`
+### 2. `src/cli.ts:472` / `src/tmux.ts:53`
 
-**Rule.** Product→runtime discovery for `coord N` must work for the `coord` on
-`PATH` after bootstrap, independent of which checkout ran `onboard`.
+**Rule.** Two products sharing an outer runtime must be able to start the same
+GitHub issue number without sharing control-plane identity (tmux session) or
+destroying each other's sessions.
 
-**Failure.** Registry under `<install-root>/registry/products/` means onboard
-from a developer checkout writes one registry, while `~/.local/bin/coord` reads
-another and reports the product as not onboarded.
+**Failure.** Disk state is scoped to `workspaceRoot`, but
+`tmux.startSession(input.issue)` names the session `coord-<n>` only. Product B
+starting `#42` while A's `coord-42` exists throws “tmux session already exists”;
+cleanup via `stopSession(issue)` can kill the wrong product's session.
 
 **Test.**
 
 ```ts
-it("PATH coord sees products onboarded by a different install root", () => {
-  onboardWith(installRootA, product);
-  expect(() => resolveProduct(installRootB, product)).not.toThrow();
+it("two products can start issue 42 without tmux session collision", async () => {
+  await startIssue({ issue: 42, product: appA, resumeIfPresent: false, /* fake tmux */ });
+  await expect(startIssue({ issue: 42, product: appB, resumeIfPresent: false }))
+    .resolves.toBeDefined();
 });
 ```
 
 ---
 
-### 3. `.plans/issue-6/plan.md:106`
+### 3. `src/workspace.ts:99`
 
-**Rule.** The GitHub issue work statement must be a mandatory digest input even
-when `digestPaths` is customized or emptied by `--declare`.
+**Rule.** A second product must not inherit leftover outer `issue-*` /
+`mirror.git` from a previous flat install. Flat occupancy detection must cover
+run-state leftovers after config-only uninstall.
 
-**Failure.** Defaulting `digestPaths` to `["issues/issue-{issue}.md"]` and
-relying on materialise-then-hash means `--declare` with `digestPaths: []` can
-drop the issue from the digest while still satisfying schema.
+**Failure.** After flat uninstall without `--wipe-runtime`, `config.json` is
+gone but `issue-*` and `mirror.git` remain. `chooseWorkspaceLocation` for
+another project sees no flat config and no `workspaces/`, chooses flat again,
+and reuses the previous product's run state and mirror.
 
 **Test.**
 
 ```ts
-it("declare with empty digestPaths still binds the GitHub issue", async () => {
-  onboard(product, { declare: { digestPaths: [], checks: […] } });
-  const started = await coordN(7, { issueFixture: { title: "T", body: "B" } });
-  expect(started.automationDigestSources.some((s) => s.id === "github-issue" || s.id.includes("issue"))).toBe(true);
+it("refuses or nests when outer issue roots remain after flat uninstall", () => {
+  // uninstall A without wipe; leftover issue-1/ + mirror.git
+  expect(chooseWorkspaceLocation(coordRoot, "other").layout).not.toBe("flat");
 });
 ```
 
 ---
 
-### 4. `.plans/issue-6/plan.md:112`
+### 4. `src/doctor.ts:395`
 
-**Rule.** `coord N` after an interrupted start must resume, not demand a longer
-explicit `coord run` invocation as the only path.
+**Rule.** Flat-first doctor resolve must still diagnose the **requested**
+product, not whichever `config.json` sits at the outer root.
 
-**Failure.** The plan defines `coord N` as start then run, with `start`
-unchanged. Existing runtime ⇒ “already exists” error, so the daily command
-fails after `Ctrl-C`. Claude’s start-or-resume decision is the correct daily
-behaviour.
+**Failure.** When `resolveInstalledWorkspace(coordRoot, projectB)` is null but
+`coordRoot/config.json` exists for product A, doctor picks the flat file.
+`coord doctor --product B` reports A's findings or a false healthy status.
 
 **Test.**
 
 ```ts
-it("coord N resumes when issue runtime already exists", async () => {
-  await coordN(5, { issueFixture });
-  await expect(coordN(5, { issueFixture })).resolves.toBeDefined();
+it("doctor for product B does not read product A's flat config", () => {
+  // only flat config for "alpha"
+  expect(() => doctor({ coordRoot, productRoot: beta })).toThrow(/No installed workspace/);
 });
 ```
 
 ---
 
-### 5. `.plans/issue-6/plan.md:170`
+### 5. `src/cli.ts:132`
 
-**Rule.** Doctor must not require the GitHub issue snapshot file to exist
-before the first `coord start` / `coord N`.
+**Rule.** Owner commands that touch issue state (`run`, `pause`, `abandon`, …)
+must resolve the same `workspaceRoot` that `start` / `coord N` used.
 
-**Failure.** If doctor still treats missing `digestPaths` files as
-`startCompatibility` failures, onboard’s “doctor failure ⇒ onboard non-zero”
-gate fails on every healthy fresh onboard before any issue is started.
+**Failure.** Nested start writes under `workspaces/<project>/`. Operators reuse
+the outer `--coord-root` on `coord run`; `context()` builds
+`<outer>/issue-N` and misses the live runtime.
 
 **Test.**
 
 ```ts
-it("doctor passes after onboard with no issues/ tree yet", () => {
-  onboard(product);
-  expect(doctor({ coordRoot, productRoot: product }).exitCode).toBe(0);
+it("coord run with --product finds nested issue state", async () => {
+  await coordN(3, { product: nestedApp });
+  await expect(runCli(["run", "--issue", "3", "--product", nestedApp], …)).resolves.toBe(0);
 });
 ```
 
-## Trunk recommendation
+---
 
-Prefer **`issue-6/claude`**, porting Codex’s `workspaceRoot` run-state isolation
-and discarding Cursor’s install-root registry in favour of Claude’s XDG state
-registry (or an equivalently machine-global, install-root-independent store).
+### 6. `src/cli.ts:602`
+
+**Rule.** If onboard exits non-zero because doctor failed, the owner locator
+must not leave `coord N` able to resolve a known-broken install as healthy
+wiring.
+
+**Failure.** `onboard()` / `install` writes `coord.ownerWorkspaceConfig` before
+doctor runs. Doctor failure returns non-zero but the locator remains, so the
+next `coord 42` resolves the product and fails later with a worse message than
+“onboard did not finish.”
+
+**Test.**
+
+```ts
+it("clears or ignores owner locator when onboard doctor fails", async () => {
+  await expect(onboardBroken()).rejects.toMatchObject({ /* non-zero */ });
+  expect(readOwnerWorkspaceConfig(product)).toBeNull();
+});
+```
+
+## What landed correctly
+
+- `coord.ownerWorkspaceConfig` (not agent wiring keys)
+- Digest sources: `config` + `github-issue` + optional `digestPaths` (default `[]`)
+- `coord N` start-or-resume; explicit `start` still refuses
+- Profile on config; flat wipe does not `rm` the coord-root
+- Issue fetch uses `gh … --repo` before creating runtime
