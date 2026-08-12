@@ -106,12 +106,35 @@ describe("effectful run loop", () => {
     const action = readAction(agentRuntimePaths(paths, "codex").action);
     expect(action.requiredPath).toBe(".signals/issue-1/joined-codex.json");
     expect(action.body).not.toContain("gate-1-join");
+    expect(action.body).toContain('"artifact": "join"');
   });
 
   it("clears malformed completion and reissues the same action with a concrete correction", async () => {
     const { paths } = fixture();
-    const loop = new CoordinatorRunLoop(paths, { tmux: null });
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    let literalNudges = 0;
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
+      if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { tmux });
     await loop.runTick();
+    const firstNudges = literalNudges;
+    expect(firstNudges).toBeGreaterThan(0);
     const runtime = agentRuntimePaths(paths, "codex");
     const actionId = readCursorsState(paths).agents.codex?.actionId;
     writeFileSync(runtime.complete, "not-a-sha\n");
@@ -119,6 +142,8 @@ describe("effectful run loop", () => {
     expect(readCursorsState(paths).agents.codex).toMatchObject({ actionId, status: "ordered", attempt: 2 });
     expect(readAction(runtime.action).body).toContain("complete must contain a 40-character lowercase Git SHA");
     expect(readJournal(paths).at(-1)?.type).toBe("verify-result");
+    await loop.runTick();
+    expect(literalNudges).toBeGreaterThan(firstNudges);
   });
 
   it("preserves completion and emits no artifact verdict on transient fetch failure", async () => {

@@ -260,7 +260,7 @@ export const buildOrder = (
   const binding = jsonSteps.includes(stepId)
     ? `\n\nUse protocolVersion 1, issue ${start.issue}, issueSessionId \`${start.issueSessionId}\`, and agent \`${agent}\`.` +
       (stepId === "R1.join"
-        ? ` Set baselineSha to \`${start.baselineSha}\` and automationDigest to \`${start.automationDigest}\`.`
+        ? ` Include \`"artifact": "join"\`. Set baselineSha to \`${start.baselineSha}\` and automationDigest to \`${start.automationDigest}\`.`
         : ` Set inputSetHash to \`${computeInputSetHash(inputs)}\` when that field is required.`)
     : "";
   return {
@@ -555,6 +555,10 @@ export class CoordinatorRunLoop {
       cursor.actionId,
       outstanding
     );
+    // Allow maybeRetryNudge to deliver the rewritten action.md; same actionId
+    // would otherwise stay in nudgedActions and never get a second paste.
+    this.nudgedActions.delete(cursor.actionId);
+    this.verbose(`reissued ${agent} action ${cursor.actionId}: ${outstanding.join("; ")}`);
     return this.mutate(cursors, (current) => {
       appendJournal(
         this.paths,
