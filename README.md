@@ -8,11 +8,18 @@ merges a pull request.
 ## Happy path
 
 Install coordination once, onboard each product once, and then drive work from
-GitHub issues:
+GitHub issues. **This repository is private** — do not use anonymous
+`curl … raw.githubusercontent.com … | sh` (it 404s without a public raw URL).
 
 ```sh
-# Once per machine. Add ~/.local/bin to PATH if the script prints that hint.
-curl -fsSL https://raw.githubusercontent.com/gwhizoftv/coordination/main/scripts/bootstrap.sh | sh
+# Once per machine (GitHub CLI must already reach this private repo).
+gh auth login          # if needed
+gh auth setup-git      # so git clone/https works for private remotes
+
+gh repo clone gwhizoftv/coordination /tmp/coordination-src
+sh /tmp/coordination-src/scripts/bootstrap.sh --source /tmp/coordination-src
+# Optional: rm -rf /tmp/coordination-src
+# Add ~/.local/bin to PATH if the script prints that hint.
 
 # Once per product.
 coord onboard /path/to/app
@@ -22,6 +29,11 @@ cd /path/to/app
 gh issue create --title "Describe the work" --body "Acceptance criteria…"
 coord 42
 ```
+
+Bootstrap installs a complete checkout under `~/.local/share/coordination` and
+links `~/.local/bin/coord`. `--source` may be a local clone (as above) or any
+git URL your credentials can read. Public forks may still use
+`curl -fsSL <raw-bootstrap-url> | sh` if the raw file is world-readable.
 
 `coord onboard` defaults to four agents (`claude,codex,cursor,antigravity`),
 the consensus profile, sibling agent clones, and

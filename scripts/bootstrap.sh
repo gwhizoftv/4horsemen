@@ -1,4 +1,11 @@
 #!/bin/sh
+# Install or update a complete coordination checkout and optionally link
+# ~/.local/bin/coord.
+#
+# Private repos: do not rely on anonymous curl|sh from raw.githubusercontent.com
+# (404 without public raw access). Clone with gh/git, then:
+#   sh /path/to/clone/scripts/bootstrap.sh --source /path/to/clone
+# Public forks may still pipe a world-readable raw URL into sh.
 set -eu
 
 die() {
@@ -33,8 +40,11 @@ Usage: bootstrap.sh [--root <path>] [--source <git-url-or-path>] [--no-path]
 
 Defaults:
   --root   $COORD_INSTALL_ROOT or ~/.local/share/coordination
-  --source https://github.com/gwhizoftv/coordination.git
+  --source $COORD_SOURCE or https://github.com/gwhizoftv/coordination.git
   PATH     install ~/.local/bin/coord unless --no-path is supplied
+
+Private repositories: clone with gh/git first, then pass --source <local-path>.
+Anonymous curl to raw.githubusercontent.com will 404 when the repo is private.
 EOF
       exit 0
       ;;

@@ -24,21 +24,34 @@ them alone. "No hooks for humans" means none *from coordination*.
 
 ## Bootstrap once
 
+Private repositories (the usual case for this package) cannot be fetched with
+anonymous `curl` to `raw.githubusercontent.com` — that URL returns **404**
+without public raw access. Prefer GitHub CLI + a local `--source`:
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/gwhizoftv/coordination/main/scripts/bootstrap.sh | sh
+gh auth login          # if needed
+gh auth setup-git      # private HTTPS remotes via gh credentials
+
+gh repo clone gwhizoftv/coordination /tmp/coordination-src
+sh /tmp/coordination-src/scripts/bootstrap.sh --source /tmp/coordination-src
+# Optional: rm -rf /tmp/coordination-src
 ```
 
-The POSIX shell bootstrap clones a complete install to
-`${COORD_INSTALL_ROOT:-$HOME/.local/share/coordination}`, runs `pnpm install
---frozen-lockfile` and `pnpm build`, and creates the managed
-`$HOME/.local/bin/coord` symlink. `--root` overrides the environment and
-`--no-path` skips the symlink. A rerun fast-forwards a clean `main` checkout;
-it refuses dirty, diverged, non-worktree, or foreign launcher paths without
-resetting or deleting anything.
+The POSIX shell bootstrap clones or updates a complete install at
+`${COORD_INSTALL_ROOT:-$HOME/.local/share/coordination}` (override with
+`--root`), runs `pnpm install --frozen-lockfile` and `pnpm build`, and creates
+the managed `$HOME/.local/bin/coord` symlink unless `--no-path` is set.
+`--source` accepts a local path or git URL. A rerun fast-forwards a clean
+`main` checkout; it refuses dirty, diverged, non-worktree, or foreign launcher
+paths without resetting or deleting anything.
 
 Only a checkout created by bootstrap receives ownership metadata under its
 `.git/` directory. Building a developer checkout never makes uninstall the
 owner of that checkout.
+
+Public forks that expose `scripts/bootstrap.sh` on a world-readable raw URL may
+still use `curl -fsSL <url> | sh`. That path is optional, not the default for
+this private repository.
 
 ## Onboard a product
 
