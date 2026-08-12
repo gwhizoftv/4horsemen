@@ -103,6 +103,7 @@ export type RunLoopDependencies = {
   sleep?: (milliseconds: number) => Promise<void>;
   actionId?: () => string;
   log?: (message: string) => void;
+  verbose?: (message: string) => void;
 };
 
 const inputFromSubmission = (submission: AcceptedSubmission, kind: string, usePin = false): BoundInput => ({
@@ -303,6 +304,7 @@ export class CoordinatorRunLoop {
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly actionId: () => string;
   private readonly log: (message: string) => void;
+  private readonly verbose: (message: string) => void;
   /** Action ids that received a successful tmux paste in this process. */
   private readonly nudgedActions = new Set<string>();
 
@@ -316,6 +318,7 @@ export class CoordinatorRunLoop {
     this.sleep = dependencies.sleep ?? ((milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)));
     this.actionId = dependencies.actionId ?? createActionId;
     this.log = dependencies.log ?? ((message) => process.stdout.write(`${message}\n`));
+    this.verbose = dependencies.verbose ?? (() => undefined);
   }
 
   async initializeEffects(): Promise<void> {
@@ -387,13 +390,19 @@ export class CoordinatorRunLoop {
       this.authority(next);
       if (result === "sent") {
         this.nudgedActions.add(order.actionId);
+        this.verbose(`nudged ${agent} (${stepId}) → ${runtime.action}`);
         next = this.mutate(next, (current) => {
           appendJournal(this.paths, { type: "nudged", agent, actionId: order.actionId, details: {} }, this.now());
           return current;
         });
       } else if (result === "gone") {
+        this.verbose(`nudge skipped for ${agent}: harness gone`);
         next = this.mutate(next, (current) => replaceCursor(current, agent, { status: "harness-gone" }, this.now()));
+      } else {
+        this.verbose(`nudge deferred for ${agent}: ${result}`);
       }
+    } else {
+      this.verbose(`ordered ${agent} (${stepId}) → ${runtime.action}`);
     }
     return next;
   }
@@ -413,14 +422,17 @@ export class CoordinatorRunLoop {
     this.authority(cursors);
     if (result === "sent") {
       this.nudgedActions.add(actionId);
+      this.verbose(`nudged ${agent} (retry) → ${runtime.action}`);
       return this.mutate(cursors, (current) => {
         appendJournal(this.paths, { type: "nudged", agent, actionId, details: { retry: true } }, this.now());
         return current;
       });
     }
     if (result === "gone") {
+      this.verbose(`nudge retry skipped for ${agent}: harness gone`);
       return this.mutate(cursors, (current) => replaceCursor(current, agent, { status: "harness-gone" }, this.now()));
     }
+    this.verbose(`nudge retry deferred for ${agent}: ${result}`);
     return cursors;
   }
 
@@ -885,6 +897,17 @@ export class CoordinatorRunLoop {
         }
         if (decisions.every((decision) => decision.type === "owner-action-required")) break;
       }
+      const waiting = cursors.activeRoster
+        .map((agent) => {
+          const cursor = cursors.agents[agent];
+          if (cursor === undefined) return null;
+          if (cursor.status === "idle" && cursor.actionId === null) return null;
+          return `${agent}=${cursor.status}${cursor.outstanding.length > 0 ? `(${cursor.outstanding[0]})` : ""}`;
+        })
+        .filter((item): item is string => item !== null);
+      this.verbose(
+        `tick ${cursors.issueCursor.stepId ?? "done"} roster=${cursors.activeRoster.join(",")} waiting=${waiting.join(";") || "none"}`
+      );
       return cursors;
     } catch (error) {
       if (error instanceof StateConflictError) return readCursorsState(this.paths);

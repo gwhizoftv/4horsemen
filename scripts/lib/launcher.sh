@@ -24,7 +24,9 @@ launcher_command() {
       printf 'exec claude --permission-mode auto\n'
       ;;
     codex)
-      printf 'exec codex\n'
+      # complete lives under coord-runtime (outside the clone). workspace-write
+      # still prompts for that path; agent clones need unattended out-of-tree writes.
+      printf 'exec codex --ask-for-approval never --sandbox danger-full-access\n'
       ;;
     antigravity)
       # agy installs into ~/.local/bin, which a login shell does not always
@@ -87,6 +89,9 @@ fi
 
 echo "=== $label agent | branch scheme issue-<n>/$agent | shared: $shared ==="
 git status -sb || true
+echo "When an issue is running, fetch your coordinator action with:"
+echo "  coord next --issue <n>"
+echo "(uses this clone's coord.workspaceConfig + consensus.agentId)."
 
 $command
 EOF

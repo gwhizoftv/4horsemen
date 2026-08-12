@@ -2,7 +2,14 @@ import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { harnessLooksReady, resolveAgentLauncher, TmuxController, type TmuxResult, type TmuxRunner } from "../src/tmux.js";
+import {
+  harnessLooksReady,
+  nudgePreludeKeys,
+  resolveAgentLauncher,
+  TmuxController,
+  type TmuxResult,
+  type TmuxRunner
+} from "../src/tmux.js";
 
 const ok = (stdout = ""): TmuxResult => ({ exitCode: 0, stdout, stderr: "" });
 const roots: string[] = [];
@@ -17,7 +24,7 @@ describe("tmux boundary", () => {
     expect(new TmuxController(runner, "a1b2c3").sessionName(42)).toBe("coord-42-a1b2c3");
   });
 
-  it("nudges any agent with nudge or both delivery using a buffer paste", async () => {
+  it("types the nudge with send-keys -l and a vim prelude for non-agy agents", async () => {
     const calls: Array<{ args: readonly string[]; input?: string }> = [];
     const runner: TmuxRunner = async (args, input) => {
       calls.push({ args, ...(input === undefined ? {} : { input }) });
@@ -32,16 +39,31 @@ describe("tmux boundary", () => {
         "/runtime/action.md"
       )
     ).toBe("sent");
-    expect(calls.map((call) => call.args[0])).toEqual([
-      "display-message",
-      "send-keys",
-      "load-buffer",
-      "paste-buffer",
-      "send-keys"
-    ]);
+    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "send-keys", "send-keys", "send-keys"]);
     expect(calls[1]?.args.slice(1)).toEqual(["-t", "coord-1:cursor.0", "a"]);
-    expect(calls[2]?.input).toContain("/runtime/action.md");
-    expect(calls[4]?.args.slice(-1)).toEqual(["Enter"]);
+    expect(calls[2]?.args).toEqual(["send-keys", "-l", "-t", "coord-1:cursor.0", expect.stringContaining("/runtime/action.md")]);
+    expect(calls[3]?.args.slice(-1)).toEqual(["Enter"]);
+  });
+
+  it("skips the vim prelude for Antigravity and still types the action path", async () => {
+    const calls: Array<{ args: readonly string[] }> = [];
+    const runner: TmuxRunner = async (args) => {
+      calls.push({ args });
+      if (args[0] === "display-message") return ok("0\tagy\t0\n");
+      return ok();
+    };
+    expect(nudgePreludeKeys("antigravity")).toEqual([]);
+    const controller = new TmuxController(runner);
+    expect(
+      await controller.nudge(
+        1,
+        { id: "antigravity", root: "/clone", launcher: "start-antigravity.sh", delivery: "both", harnessProcess: "agy" },
+        "/runtime/action.md"
+      )
+    ).toBe("sent");
+    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "send-keys", "send-keys"]);
+    expect(calls[1]?.args[1]).toBe("-l");
+    expect(calls[1]?.args.at(-1)).toContain("/runtime/action.md");
   });
 
   it("treats pull-only agents as nudge-disabled", async () => {
