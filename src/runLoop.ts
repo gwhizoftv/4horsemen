@@ -22,14 +22,16 @@ import {
 } from "./state.js";
 import {
   STEP_DEFINITIONS,
+  coordMergesPullRequest,
   type BoundInput,
   type EvidenceObservation,
   type InternalOrder,
   type MachineDecision,
   type WorkflowStepId
 } from "./steps.js";
-import { TmuxController } from "./tmux.js";
+import { renderIssueReport } from "./issueReport.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
+import { TmuxController } from "./tmux.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
 export type ProcessRunner = (argv: readonly string[], cwd: string) => Promise<ProcessResult>;
@@ -54,8 +56,16 @@ export const runArgv: ProcessRunner = (argv, cwd) =>
     child.once("close", (code) => resolvePromise({ exitCode: code ?? 1, stdout, stderr }));
   });
 
-export type PullRequestInput = { repository: string; base: string; head: string; title: string; body: string };
+export type PullRequestInput = {
+  repository: string;
+  base: string;
+  head: string;
+  title: string;
+  body: string;
+  draft: boolean;
+};
 export type PullRequestOpener = (input: PullRequestInput) => Promise<{ url: string }>;
+export type PullRequestMerger = (input: { url: string }) => Promise<void>;
 
 export const openDraftPullRequest: PullRequestOpener = async (input) => {
   const existing = await runArgv(
@@ -77,7 +87,7 @@ export const openDraftPullRequest: PullRequestOpener = async (input) => {
       "create",
       "--repo",
       input.repository,
-      "--draft",
+      ...(input.draft ? ["--draft"] : []),
       "--base",
       input.base,
       "--head",
@@ -89,8 +99,17 @@ export const openDraftPullRequest: PullRequestOpener = async (input) => {
     ],
     process.cwd()
   );
-  if (result.exitCode !== 0) throw new Error(`draft PR creation failed: ${result.stderr.trim()}`);
+  if (result.exitCode !== 0) throw new Error(`PR creation failed: ${result.stderr.trim()}`);
   return { url: result.stdout.trim() };
+};
+
+export const mergePullRequest: PullRequestMerger = async (input) => {
+  const ready = await runArgv(["gh", "pr", "ready", input.url], process.cwd());
+  if (ready.exitCode !== 0 && !/not a draft/i.test(`${ready.stderr}${ready.stdout}`)) {
+    throw new Error(`marking PR ready failed: ${ready.stderr.trim() || ready.stdout.trim()}`);
+  }
+  const merged = await runArgv(["gh", "pr", "merge", input.url, "--merge", "--delete-branch"], process.cwd());
+  if (merged.exitCode !== 0) throw new Error(`PR merge failed: ${merged.stderr.trim() || merged.stdout.trim()}`);
 };
 
 export { githubRepositoryFromOrigin } from "./githubIssue.js";
@@ -100,6 +119,7 @@ export type RunLoopDependencies = {
   tmux?: TmuxController | null;
   processRunner?: ProcessRunner;
   pullRequestOpener?: PullRequestOpener;
+  pullRequestMerger?: PullRequestMerger;
   now?: () => string;
   sleep?: (milliseconds: number) => Promise<void>;
   actionId?: () => string;
@@ -308,6 +328,7 @@ export class CoordinatorRunLoop {
   private readonly tmux: TmuxController | null;
   private readonly processRunner: ProcessRunner;
   private readonly pullRequestOpener: PullRequestOpener;
+  private readonly pullRequestMerger: PullRequestMerger;
   private readonly now: () => string;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly actionId: () => string;
@@ -322,6 +343,7 @@ export class CoordinatorRunLoop {
     this.tmux = dependencies.tmux === undefined ? new TmuxController(undefined, paths.tmuxNamespace, undefined, undefined, undefined, paths.terminalGroup) : dependencies.tmux;
     this.processRunner = dependencies.processRunner ?? runArgv;
     this.pullRequestOpener = dependencies.pullRequestOpener ?? openDraftPullRequest;
+    this.pullRequestMerger = dependencies.pullRequestMerger ?? mergePullRequest;
     this.now = dependencies.now ?? (() => new Date().toISOString());
     this.sleep = dependencies.sleep ?? ((milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)));
     this.actionId = dependencies.actionId ?? createActionId;
@@ -508,7 +530,7 @@ export class CoordinatorRunLoop {
               }
             : current.selection;
       const publication =
-        accepted.stepId === "R7.finalize" && start.prPolicy === "coord-open-unmerged" && accepted.productPin !== undefined
+        accepted.stepId === "R7.finalize" && accepted.productPin !== undefined
           ? {
               status: "pending" as const,
               finalSha: accepted.productPin,
@@ -689,30 +711,42 @@ export class CoordinatorRunLoop {
   }
 
   private async publishAcceptedFinalization(start: StartState, cursors: CursorsState): Promise<CursorsState> {
-    if (start.prPolicy !== "coord-open-unmerged") return cursors;
     if (cursors.publication.status !== "pending" && cursors.publication.status !== "failed") return cursors;
     const { finalSha, branch } = cursors.publication;
     const authority = this.authority(cursors, true);
+    let openedUrl = cursors.publication.url;
     try {
       if (finalSha === null || branch === null) throw new Error("Pending publication is missing its final pin or branch.");
       const repository = githubRepositoryFromOrigin(start.origin);
       if (repository === null) throw new Error(`Cannot derive a GitHub repository from origin ${start.origin}.`);
       await this.mirror.publishBranch(finalSha, branch);
       this.authority(authority, true);
+      const draft = !coordMergesPullRequest(start.prPolicy);
       const result = await this.pullRequestOpener({
         repository,
         base: start.baseBranch,
         head: branch,
         title: `Issue ${start.issue}: coordinated implementation`,
-        body: `Automated draft PR for issue ${start.issue}. Merge remains owner-only. Final pin: ${finalSha}.`
+        body: draft
+          ? `Draft PR for issue ${start.issue}. Owner merges. Final pin: ${finalSha}.`
+          : `PR for issue ${start.issue}. Coordinator merges. Final pin: ${finalSha}.`,
+        draft
       });
+      openedUrl = result.url;
       this.authority(authority, true);
+      if (coordMergesPullRequest(start.prPolicy)) {
+        await this.pullRequestMerger({ url: result.url });
+        this.authority(authority, true);
+      }
       return this.mutate(authority, (current) => {
         appendJournal(
           this.paths,
           { type: "pr-created", agent: current.selection.reviser ?? undefined, details: { url: result.url, branch, finalSha } },
           this.now()
         );
+        if (coordMergesPullRequest(start.prPolicy)) {
+          appendJournal(this.paths, { type: "pr-merged", details: { url: result.url, branch, finalSha } }, this.now());
+        }
         return cursorsStateSchema.parse({
           ...current,
           publication: {
@@ -734,7 +768,7 @@ export class CoordinatorRunLoop {
       return this.mutate(latest, (current) => {
         appendJournal(
           this.paths,
-          { type: "publication-failed", details: { error: message, branch, finalSha } },
+          { type: "publication-failed", details: { error: message, branch, finalSha, url: openedUrl } },
           this.now()
         );
         return cursorsStateSchema.parse({
@@ -743,7 +777,7 @@ export class CoordinatorRunLoop {
             status: "failed",
             finalSha,
             branch,
-            url: null,
+            url: openedUrl,
             error: message,
             attempts: current.publication.attempts + 1
           },
@@ -941,11 +975,17 @@ export class CoordinatorRunLoop {
   async run(signal?: AbortSignal): Promise<void> {
     const start = readStartState(this.paths);
     const beforeEffects = readCursorsState(this.paths);
-    if (beforeEffects.completed || beforeEffects.abandoned || beforeEffects.paused) return;
+    if (beforeEffects.completed || beforeEffects.abandoned || beforeEffects.paused) {
+      this.log(renderIssueReport(start, beforeEffects).trimEnd());
+      return;
+    }
     await this.initializeEffects();
     while (signal?.aborted !== true) {
       const cursors = await this.runTick();
-      if (cursors.completed || cursors.abandoned || cursors.paused) return;
+      if (cursors.completed || cursors.abandoned || cursors.paused) {
+        this.log(renderIssueReport(start, cursors).trimEnd());
+        return;
+      }
       await this.sleep(start.pollIntervalMs);
     }
   }

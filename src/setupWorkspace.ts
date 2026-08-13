@@ -282,7 +282,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     baseBranch: input.baseBranch,
     profile: input.profile,
     maxRevisionRounds: 3,
-    prPolicy: declared.prPolicy ?? "owner-only",
+    prPolicy: declared.prPolicy ?? "coord-open-unmerged",
     digestPaths: declared.digestPaths ?? [],
     checks,
     pollIntervalMs: declared.pollIntervalMs ?? 1_000,

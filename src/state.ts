@@ -16,6 +16,7 @@ import { agentIdSchema, digestSchema, gitShaSchema, issueSchema, issueSessionIdS
 import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.js";
 import {
   DEFAULT_MAX_REVISION_ROUNDS,
+  DEFAULT_PR_POLICY,
   type EvidenceId,
   type GateId,
   type PrPolicy,
@@ -26,7 +27,7 @@ import {
 export const RUNTIME_FORMAT_VERSION = 2;
 
 const workflowProfileSchema = z.enum(["solo", "reviewed", "consensus"]);
-const prPolicySchema = z.enum(["owner-only", "coord-open-unmerged"]);
+const prPolicySchema = z.enum(["owner-only", "coord-open-unmerged", "coord-merged"]);
 const deliverySchema = z.enum(["pull", "nudge", "both"]);
 const stepIdSchema = z.enum([
   "R1.join",
@@ -156,7 +157,7 @@ export const coordinatorConfigSchema = z
     baseBranch: z.string().min(1).default("main"),
     profile: workflowProfileSchema.default("consensus"),
     maxRevisionRounds: z.literal(DEFAULT_MAX_REVISION_ROUNDS).default(DEFAULT_MAX_REVISION_ROUNDS),
-    prPolicy: prPolicySchema.default("owner-only"),
+    prPolicy: prPolicySchema.default(DEFAULT_PR_POLICY),
     digestPaths: z
       .array(
         z
@@ -383,7 +384,8 @@ export const journalEventSchema = z
       "final-check",
       "publication-pending",
       "publication-failed",
-      "pr-created"
+      "pr-created",
+      "pr-merged"
     ]),
     agent: agentIdSchema.optional(),
     actionId: z.string().uuid().optional(),
