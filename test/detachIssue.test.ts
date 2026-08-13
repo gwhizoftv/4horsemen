@@ -84,6 +84,24 @@ describe("detachAllOwnerUiSync", () => {
     expect(outcome.terminalClose).toBe("closed");
   });
 
+  it("closes only unique grouped title ids when terminalGroup is set", () => {
+    const closed: string[] = [];
+    const outcome = detachAllOwnerUiSync({
+      agentIds: ["claude", "cursor"],
+      terminalGroup: "abc12def00",
+      listSessions: () => ["coord-1", "coord-1-claude"],
+      killSession: () => undefined,
+      terminalCloser: (titles) => {
+        closed.push(...titles);
+      },
+      log: () => undefined
+    });
+    expect(closed).toEqual(["coord-1-abc12def00/claude", "coord-1-abc12def00/cursor"]);
+    expect(closed).not.toContain("claude");
+    expect(closed).not.toContain("coord-1/claude");
+    expect(outcome.terminalClose).toBe("closed");
+  });
+
   it("does not close Terminal windows when no tmux sessions remain", () => {
     const closed: string[] = [];
     const outcome = detachAllOwnerUiSync({
