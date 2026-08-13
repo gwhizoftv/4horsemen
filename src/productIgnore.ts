@@ -18,6 +18,15 @@ import { dirname } from "node:path";
 export const MANAGED_BLOCK_BEGIN = "# >>> coordination managed block — coord install >>>";
 export const MANAGED_BLOCK_END = "# <<< coordination managed block — coord install <<<";
 
+/** HTML-comment delimiters so the protocol block is not a markdown heading. */
+export const AGENTS_PROTOCOL_BEGIN = "<!-- coordination protocol — coord install -->";
+export const AGENTS_PROTOCOL_END = "<!-- /coordination protocol -->";
+
+export type BlockMarkers = { begin: string; end: string };
+
+export const IGNORE_BLOCK_MARKERS: BlockMarkers = { begin: MANAGED_BLOCK_BEGIN, end: MANAGED_BLOCK_END };
+export const AGENTS_PROTOCOL_MARKERS: BlockMarkers = { begin: AGENTS_PROTOCOL_BEGIN, end: AGENTS_PROTOCOL_END };
+
 /**
  * Per-clone ignore rules. Launchers, tool directories, and generated indexes
  * are agent-local: they exist only because coordination put them there, so a
@@ -27,6 +36,8 @@ export const DEFAULT_CLONE_IGNORES: readonly string[] = [
   "/start-*.sh",
   "tags",
   "directory_tree.md",
+  "/AGENTS.md",
+  "CLAUDE.md",
   ".claude/",
   ".codex/",
   ".cursor/",
@@ -53,48 +64,71 @@ type BlockLocation = { found: false } | { found: true; before: string; after: st
  * the rest of the file as ours. Assuming ownership there silently deleted every
  * line below a marker whose terminator a human had removed.
  */
-const locateBlock = (content: string, path: string): BlockLocation => {
-  const beginIndex = content.indexOf(MANAGED_BLOCK_BEGIN);
+const locateBlock = (content: string, path: string, markers: BlockMarkers = IGNORE_BLOCK_MARKERS): BlockLocation => {
+  const beginIndex = content.indexOf(markers.begin);
   if (beginIndex === -1) return { found: false };
-  const endIndex = content.indexOf(MANAGED_BLOCK_END, beginIndex);
+  const endIndex = content.indexOf(markers.end, beginIndex);
   if (endIndex === -1) {
     throw new ManagedBlockError(
       `${path} has a coordination begin marker with no matching end marker, so the managed region cannot be identified.\n` +
         `  Refusing to guess where it ends; the lines below it are not coordination's to remove.\n` +
-        `  Fix: restore the '${MANAGED_BLOCK_END}' line, or delete the begin marker and its block by hand.`
+        `  Fix: restore the '${markers.end}' line, or delete the begin marker and its block by hand.`
     );
   }
   return {
     found: true,
     before: content.slice(0, beginIndex),
-    after: content.slice(endIndex + MANAGED_BLOCK_END.length)
+    after: content.slice(endIndex + markers.end.length)
   };
 };
 
 export type ManagedBlockResult = { changed: boolean; content: string };
 
 /**
- * Insert or refresh the managed block. Every byte outside the region — blank
- * lines, grouping, trailing whitespace — is preserved exactly, so that
- * install/uninstall is an identity on a file coordination does not own.
+ * Insert or refresh a delimited block. Every byte outside the region is
+ * preserved exactly.
  */
-export const applyManagedBlock = (existing: string, lines: readonly string[], path = "<ignore file>"): ManagedBlockResult => {
-  const block = renderManagedBlock(lines);
-  const located = locateBlock(existing, path);
+export const applyDelimitedBlock = (
+  existing: string,
+  block: string,
+  path: string,
+  markers: BlockMarkers
+): ManagedBlockResult => {
+  const located = locateBlock(existing, path, markers);
   if (located.found) {
     const content = `${located.before}${block}${located.after}`;
     return { changed: content !== existing, content };
   }
-  // One blank line of separation, and only when the file does not already end
-  // with a newline of its own to build on.
   const separator = existing === "" ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
   const content = `${existing}${separator}${block}\n`;
   return { changed: true, content };
 };
 
+/**
+ * Insert or refresh the managed block. Every byte outside the region — blank
+ * lines, grouping, trailing whitespace — is preserved exactly, so that
+ * install/uninstall is an identity on a file coordination does not own.
+ */
+export const applyManagedBlock = (
+  existing: string,
+  lines: readonly string[],
+  path = "<ignore file>",
+  markers: BlockMarkers = IGNORE_BLOCK_MARKERS
+): ManagedBlockResult => {
+  const block =
+    markers.begin === MANAGED_BLOCK_BEGIN && markers.end === MANAGED_BLOCK_END
+      ? renderManagedBlock(lines)
+      : [markers.begin, ...lines, markers.end].join("\n");
+  return applyDelimitedBlock(existing, block, path, markers);
+};
+
 /** Remove the managed block and the one separator `applyManagedBlock` added. */
-export const removeManagedBlock = (existing: string, path = "<ignore file>"): ManagedBlockResult => {
-  const located = locateBlock(existing, path);
+export const removeManagedBlock = (
+  existing: string,
+  path = "<ignore file>",
+  markers: BlockMarkers = IGNORE_BLOCK_MARKERS
+): ManagedBlockResult => {
+  const located = locateBlock(existing, path, markers);
   if (!located.found) return { changed: false, content: existing };
   const before = located.before.endsWith("\n") ? located.before.slice(0, -1) : located.before;
   const after = located.after.startsWith("\n") ? located.after.slice(1) : located.after;

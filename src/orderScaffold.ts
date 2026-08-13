@@ -130,7 +130,40 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
   }
 };
 
+const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
+  switch (ctx.stepId) {
+    case "R2.plan":
+      return (
+        "\n\nRequired markdown headings for this action (also in AGENTS.md; the list here is authoritative " +
+        "for this step and may change). Each heading needs a non-empty body " +
+        "(accepted aliases in parentheses):\n\n" +
+        "## Exact File Map\n" +
+        "(or File Map / File Creation Order / Proposed Architecture)\n\n" +
+        "## Tests\n" +
+        "(or Test / Validation)\n\n" +
+        "## Alternatives Rejected\n" +
+        "(or Alternatives)\n\n" +
+        "## Risks and Mitigations\n" +
+        "(or Risks)\n\n" +
+        "## Conclusion\n"
+      );
+    case "R3.review":
+      return (
+        "\n\nRequired markdown headings for this action (also in AGENTS.md; the list here is authoritative " +
+        "for this step and may change). Each heading needs a non-empty body:\n\n" +
+        "## Findings\n" +
+        "(or Review Findings)\n\n" +
+        "## Verdict\n" +
+        "(or Conclusion)\n"
+      );
+    default:
+      return "";
+  }
+};
+
 export const renderArtifactScaffold = (ctx: ArtifactScaffoldContext): string => {
+  const markdown = markdownHeadingScaffold(ctx);
+  if (markdown !== "") return markdown;
   const value = artifactScaffoldValue(ctx);
   if (value === null) return "";
   const json = JSON.stringify(value, null, 2);

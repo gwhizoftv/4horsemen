@@ -59,7 +59,7 @@ export const harnessPromptReady = (paneText: string, agentId: string): boolean =
   if (/trust this folder/i.test(plain)) return false;
   switch (agentId) {
     case "claude":
-      return /❯|auto mode|-- INSERT --/i.test(plain);
+      return /❯|auto mode|-- INSERT --|-- NORMAL --|-- VISUAL/i.test(plain);
     case "cursor":
       return /Add a follow-up|Run Everything|Auto ·/i.test(plain);
     case "antigravity":
@@ -76,12 +76,28 @@ export const harnessPromptReady = (paneText: string, agentId: string): boolean =
   }
 };
 
+/**
+ * Vim-mode TUIs swallow the first nudge character in NORMAL. Enter insert with
+ * `a` when INSERT is not visible. Codex keeps its configured `i` prelude.
+ * Antigravity has no vim mode. Claude/Cursor often omit a mode indicator —
+ * still send `a` unless INSERT is shown. Do not toggle the operator's vim setting.
+ */
+export const vimInsertPrelude = (paneText: string, agentId: string): readonly string[] => {
+  if (agentId === "antigravity" || agentId === "codex") return [];
+  const plain = stripAnsi(paneText);
+  if (/--\s*INSERT\s*--/i.test(plain) || /Vim:\s*Insert/i.test(plain)) return [];
+  if (/--\s*VISUAL(?:\s+LINE)?\s*--/i.test(plain)) return ["Escape", "a"];
+  return ["a"];
+};
+
 /** Resolve configured or default prelude/submit keys for an agent nudge. */
 export const resolveNudgeKeys = (
-  agent: AgentConfig
+  agent: AgentConfig,
+  paneText = ""
 ): { prelude: readonly string[]; submit: readonly string[] } => {
   const defaults = agentOwnerUiDefaults(agent.id);
-  const prelude = agent.nudgePrelude ?? defaults.nudgePrelude;
+  const configuredPrelude = agent.nudgePrelude ?? defaults.nudgePrelude;
+  const prelude = configuredPrelude.length === 0 ? vimInsertPrelude(paneText, agent.id) : configuredPrelude;
   let rawSubmit = agent.nudgeSubmit ?? defaults.nudgeSubmit;
   // #28 applied Escape+Enter to Antigravity; there Escape cancels.
   if (
@@ -513,7 +529,7 @@ export class TmuxController {
     const text = `Read and execute your current coordinator action at ${actionPath}`;
     // Some harnesses (notably agy) ignore tmux paste-buffer; literal send-keys
     // reaches the input widget. Prelude/submit keys come from agent config.
-    const { prelude: preludeKeys, submit: submitKeys } = resolveNudgeKeys(agent);
+    const { prelude: preludeKeys, submit: submitKeys } = resolveNudgeKeys(agent, paneText);
     for (const key of preludeKeys) {
       const prelude = await this.runner(["send-keys", "-t", target, key]);
       assertAuthority();
