@@ -152,7 +152,8 @@ Per-agent config controls owner UI:
   can use a different look (defaults: Pro/Grass/Ocean/Red Sands)
 
 Nudge waits until the pane shows an idle prompt (not Claude's trust dialog,
-Antigravity splash, or an in-flight Antigravity turn with `esc to cancel`).
+Antigravity splash, account-verification overlay, or an in-flight Antigravity
+turn with `esc to cancel`).
 If the first delivery is skipped (trust UI, wrong foreground name, splash),
 the run loop retries until one successful delivery per action. Cursor panes
 that report as `node` are treated as ready when `harnessProcess` is `agent`.
