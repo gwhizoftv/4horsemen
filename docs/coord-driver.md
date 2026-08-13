@@ -71,6 +71,10 @@ owner-provided start input.
 
 ## Starting and running
 
+Confirm the installed driver with `coord --version` (or `-V`). Pre-1.0 releases
+use `0.0.N` and bump the patch on every shipped change so a merge is visible
+after reinstall/refresh.
+
 After `coord onboard`, the daily command is:
 
 ```sh

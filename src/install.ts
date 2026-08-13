@@ -85,7 +85,8 @@ export type InstallResult = {
   clones: string[];
 };
 
-const packageVersion = (installRoot: string): string => {
+/** Package version from installRoot/package.json (pre-1.0: bump 0.0.N on every ship). */
+export const packageVersion = (installRoot: string): string => {
   const parsed = JSON.parse(readFileSync(join(installRoot, "package.json"), "utf8")) as { version?: string };
   return parsed.version ?? "0.0.0";
 };
