@@ -10,7 +10,7 @@
   "baseBranch": "main",
   "profile": "reviewed",
   "maxRevisionRounds": 3,
-  "prPolicy": "owner-only",
+  "prPolicy": "coord-open-unmerged",
   "digestPaths": [],
   "pollIntervalMs": 1000,
 

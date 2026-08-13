@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { clearCompletion } from "../src/action.js";
 import { computeInputSetHash } from "../src/evidence.js";
+import { BareMirror } from "../src/mirror.js";
 import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder, CoordinatorRunLoop } from "../src/runLoop.js";
 import {
@@ -66,6 +67,7 @@ describe("four-agent coordinator canary", () => {
       const runtimeRoot = join(root, "runtime");
       const paths = issueRuntimePaths(runtimeRoot, 1);
       createIssueRuntime(paths, agents);
+      const githubOrigin = "https://github.com/example/fixture.git";
       initializeOperationalState(paths, {
         issue: 1,
         issueSessionId: `issue-1:${baselineSha}`,
@@ -80,7 +82,8 @@ describe("four-agent coordinator canary", () => {
         automationDigestScheme: "sha256-length-prefixed-v1",
         automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }],
         trustedSourceCommit: "c".repeat(40),
-        origin,
+        // Publication needs a github.com origin for gh; fetch/push still use the local bare via the injected mirror.
+        origin: githubOrigin,
         coordRoot: runtimeRoot,
         configPath: join(root, "config.json"),
         agents: agents.map((id) => ({ id, root: clones.get(id) as string, launcher: `start-${id}.sh`, delivery: "pull" })),
@@ -89,8 +92,15 @@ describe("four-agent coordinator canary", () => {
       });
 
       const checkArgv: string[][] = [];
+      const mirror = new BareMirror(paths.mirror, origin);
       const loop = new CoordinatorRunLoop(paths, {
         tmux: null,
+        mirror,
+        pullRequestOpener: async (input) => {
+          expect(input.draft).toBe(true);
+          expect(input.head).toBe("issue-1/cursor-final");
+          return { url: "https://github.com/example/fixture/pull/1" };
+        },
         processRunner: async (argv) => {
           checkArgv.push([...argv]);
           return { exitCode: 0, stdout: "", stderr: "" };
@@ -380,6 +390,12 @@ Implement the selected product files.
       }
       const final = await loop.runTick();
       expect(final.completed).toBe(true);
+      expect(final.publication).toMatchObject({
+        status: "completed",
+        finalSha,
+        branch: "issue-1/cursor-final",
+        url: "https://github.com/example/fixture/pull/1"
+      });
       expect(checkArgv).toEqual([["node", "-e", "process.exit(0)"]]);
       expect(final.accepted.find((submission) => submission.stepId === "R7.finalize")?.productPin).toBe(finalSha);
     },

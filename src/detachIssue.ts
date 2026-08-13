@@ -137,6 +137,11 @@ export const detachIssue = async (options: DetachIssueOptions): Promise<DetachIs
     titleGroup
   );
 
+  // Close Terminal windows first while titles/names still match. Killing tmux
+  // first leaves idle bash shells and can clear custom titles, so close fails.
+  const titles = ownerTerminalTitlesToClose(options.issue, options.agentIds, titleGroup);
+  const closed = closeTitles(titles, closer, dryRun, log);
+
   const names = await tmux.listIssueSessions(options.issue);
   for (const name of names) {
     log(`${dryRun ? "would kill" : "killing"} tmux session ${name}\n`);
@@ -145,8 +150,6 @@ export const detachIssue = async (options: DetachIssueOptions): Promise<DetachIs
     await tmux.killIssueSessions(options.issue);
   }
 
-  const titles = ownerTerminalTitlesToClose(options.issue, options.agentIds, titleGroup);
-  const closed = closeTitles(titles, closer, dryRun, log);
   return { killedSessions: names, ...closed };
 };
 
@@ -185,15 +188,6 @@ export const detachAllOwnerUiSync = (options: DetachAllOwnerUiOptions): DetachIs
       ? [...options.issues]
       : discoverCoordIssues(listed, namespace);
 
-  const killedSessions: string[] = [];
-  for (const issue of issues) {
-    for (const name of filterSessionsForIssue(listed, issue, namespace)) {
-      log(`${dryRun ? "would kill" : "killing"} tmux session ${name}\n`);
-      if (!dryRun) killSession(name);
-      killedSessions.push(name);
-    }
-  }
-
   if (issues.length === 0) {
     return { killedSessions: [], closedTerminalTitles: [], terminalClose: "skipped" };
   }
@@ -208,5 +202,15 @@ export const detachAllOwnerUiSync = (options: DetachAllOwnerUiOptions): DetachIs
 
   const closer = resolveTerminalCloser(options.terminalCloser);
   const closed = closeTitles([...titles], closer, dryRun, log);
+
+  const killedSessions: string[] = [];
+  for (const issue of issues) {
+    for (const name of filterSessionsForIssue(listed, issue, namespace)) {
+      log(`${dryRun ? "would kill" : "killing"} tmux session ${name}\n`);
+      if (!dryRun) killSession(name);
+      killedSessions.push(name);
+    }
+  }
+
   return { killedSessions, ...closed };
 };

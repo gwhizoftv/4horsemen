@@ -90,6 +90,7 @@ describe("coord install — two-mode footprint", () => {
     expect(git(clone, "config", "--local", "--get", "consensus.agentId")).toBe("claude");
     expect(git(clone, "config", "--local", "--get", "coord.installRoot")).toBe(repoRoot);
     expect(git(clone, "config", "--local", "--get", "coord.workspaceConfig")).toBe(result.configPath);
+    expect(readConfig(result.configPath).prPolicy).toBe("coord-open-unmerged");
     expect(readFileSync(join(clone, ".git", "info", "exclude"), "utf8")).toContain("/start-*.sh");
   });
 });

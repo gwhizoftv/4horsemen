@@ -5,6 +5,28 @@ import type { TmuxResult, TmuxRunner } from "../src/tmux.js";
 const ok = (stdout = ""): TmuxResult => ({ exitCode: 0, stdout, stderr: "" });
 
 describe("detachIssue", () => {
+  it("closes Terminal windows before killing tmux so titles still match", async () => {
+    const order: string[] = [];
+    const runner: TmuxRunner = async (args) => {
+      if (args[0] === "list-sessions") return ok("coord-2\n");
+      if (args[0] === "kill-session") {
+        order.push(`kill:${args[2] ?? ""}`);
+        return ok();
+      }
+      return ok();
+    };
+    await detachIssue({
+      issue: 2,
+      agentIds: ["claude"],
+      tmuxRunner: runner,
+      terminalCloser: (titles) => {
+        order.push(`close:${titles.join(",")}`);
+      },
+      log: () => undefined
+    });
+    expect(order).toEqual(["close:coord-2/claude", "kill:coord-2"]);
+  });
+
   it("kills issue tmux sessions and closes matching Terminal titles", async () => {
     const killed: string[] = [];
     const closed: string[] = [];

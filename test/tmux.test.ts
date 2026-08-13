@@ -306,13 +306,15 @@ describe("tmux boundary", () => {
     expect(script).not.toContain("window of newTab");
   });
 
-  it("builds Terminal close AppleScript that matches only the unique title ids", () => {
+  it("builds Terminal close AppleScript that closes matching windows by id", () => {
     const titles = ownerTerminalTitlesToClose(1, ["claude", "cursor"], "abc12def00");
     const script = ownerTerminalCloseAppleScript(titles);
     expect(script).toContain('set wanted to {"coord-1-abc12def00/claude", "coord-1-abc12def00/cursor"}');
-    expect(script).toContain("set t to custom title of tb");
-    expect(script).toContain("if wanted contains t then set end of tabsToClose to tb");
-    expect(script).toContain("close tb");
+    expect(script).toContain("set t to custom title of tb as text");
+    expect(script).toContain("if wname contains (titleText as text) then set shouldClose to true");
+    expect(script).toContain("set end of windowIds to wid");
+    expect(script).toContain("close (first window whose id is wid)");
+    expect(script).not.toContain("close tb");
     expect(script).not.toContain('"claude"');
     expect(script).not.toContain("coord-1/claude");
     expect(script).not.toContain("front window");

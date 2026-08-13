@@ -43,6 +43,7 @@ import {
   type OpenOwnerAgentClientsResult
 } from "./tmux.js";
 import { resolveWorkspaceFromProduct, workspaceLocationFromConfig, type WorkspaceLocation } from "./workspace.js";
+import { renderIssueReport } from "./issueReport.js";
 import { wipeIssue } from "./wipeIssue.js";
 import { detachIssue } from "./detachIssue.js";
 
@@ -167,6 +168,7 @@ Usage:
   coord start <issue> --product <path> [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord start <issue> --config <path> --coord-root <external-path> [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord run --issue <issue> [--product <path> | --coord-root <path>] [-v|--verbose]
+  coord status --issue <issue> [--product <path> | --coord-root <path>]
   coord next --issue <issue> [--product <path> | --coord-root <path>] [--agent <agent>]
   coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
   coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
@@ -186,11 +188,13 @@ From an agent clone, \`coord next --issue N\` resolves the runtime via
 coord.workspaceConfig and the caller via consensus.agentId (or --agent / COORD_AGENT).
 Use \`-v\` / \`--verbose\` on \`coord N\`, start, or run for tick-level progress logs.
 \`coord --version\` prints the package version (pre-1.0: \`0.0.N\`, bump on every ship).
+\`coord status\` prints the chosen agent, final pin, published branch, and PR URL.
 
 On macOS, starting an issue opens one Terminal.app window per agent, each attached
 to that agent's tmux window (no Ctrl-b n). Re-open later with \`coord attach N\`.
 \`coord detach N\` closes those Terminal windows and kills the issue tmux sessions
-without wiping runtime or branches. \`coord uninstall\` also tears down owner
+without wiping runtime or branches. A completed \`coord N\` / \`coord run\` does the
+same teardown automatically. \`coord uninstall\` also tears down owner
 tmux/Terminals for the workspace agents. \`coord wipe-issue N\` resets agent clones,
 deletes origin issue-N/<agent> branches, wipes local issue runtime and tmux/Terminals,
 and leaves the GitHub issue open.
@@ -513,6 +517,26 @@ const defaultStartEffects = async (input: {
   return { cleanup: async () => tmux.stopSession(input.issue) };
 };
 
+const detachCompletedIssue = async (paths: IssueRuntimePaths, io: CliIo): Promise<void> => {
+  const cursors = readCursorsState(paths);
+  if (!cursors.completed) return;
+  const start = readStartState(paths);
+  const outcome = await detachIssue({
+    issue: start.issue,
+    agentIds: start.agents.map((agent) => agent.id),
+    tmuxNamespace: paths.tmuxNamespace,
+    terminalGroup: paths.terminalGroup,
+    log: io.stdout
+  });
+  io.stdout(
+    `Issue ${start.issue} complete: killed ${outcome.killedSessions.length} tmux session(s)` +
+      (outcome.terminalClose === "closed"
+        ? `, closed ${outcome.closedTerminalTitles.length} Terminal window(s)`
+        : "") +
+      ".\n"
+  );
+};
+
 export const runCli = async (argv: readonly string[], dependencies: CliDependencies = {}): Promise<number> => {
   const io: CliIo = { ...defaultIo, ...dependencies.io };
   const runner = dependencies.processRunner ?? runArgv;
@@ -639,6 +663,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         io.stdout(`Tip: coord attach ${issue} opens one Terminal window per agent.\n`);
       }
       await makeRunLoop(paths).run();
+      await detachCompletedIssue(paths, io);
       return 0;
     }
 
@@ -841,7 +866,17 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       allowedFlags(parsed, ["issue", "coord-root", "product", "verbose"]);
       if (parsed.positionals.length !== 0) throw new Error("run takes no positional arguments.");
       verboseState.enabled = flagIsSet(parsed, "verbose");
-      await makeRunLoop(existingContext(parsed, io)).run();
+      const paths = existingContext(parsed, io);
+      await makeRunLoop(paths).run();
+      await detachCompletedIssue(paths, io);
+      return 0;
+    }
+
+    if (command === "status") {
+      allowedFlags(parsed, ["issue", "coord-root", "product"]);
+      if (parsed.positionals.length !== 0) throw new Error("status takes no positional arguments.");
+      const paths = existingContext(parsed, io);
+      io.stdout(renderIssueReport(readStartState(paths), readCursorsState(paths)));
       return 0;
     }
 

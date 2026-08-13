@@ -26,7 +26,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-const fixture = (options: { prPolicy?: "owner-only" | "coord-open-unmerged"; origin?: string } = {}) => {
+const fixture = (options: { prPolicy?: "owner-only" | "coord-open-unmerged" | "coord-merged"; origin?: string } = {}) => {
   const root = mkdtempSync(join(tmpdir(), "coord-loop-"));
   roots.push(root);
   const paths = issueRuntimePaths(root, 1);
@@ -56,6 +56,47 @@ const fixture = (options: { prPolicy?: "owner-only" | "coord-open-unmerged"; ori
     pollIntervalMs: 100
   });
   return { root, paths };
+};
+
+const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], finalSha = "f".repeat(40)) => {
+  const now = "2026-08-11T17:00:00.000Z";
+  const current = readCursorsState(paths);
+  writeCursorsState(
+    paths,
+    cursorsStateSchema.parse({
+      ...current,
+      issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
+      reviser: "codex",
+      selection: {
+        planAgents: ["claude"],
+        implementationAgent: "codex",
+        implementationPin: "e".repeat(40),
+        reviser: "codex"
+      },
+      accepted: [
+        {
+          stepId: "R7.finalize",
+          agent: "codex",
+          round: null,
+          submissionSha: "e".repeat(40),
+          productPin: finalSha,
+          checkResults: [{ name: "check", argv: ["pnpm", "check"], exitCode: 0 }],
+          path: ".signals/issue-1/finalization-ready-codex.json",
+          acceptedAt: now
+        }
+      ],
+      publication: {
+        status: "pending",
+        finalSha,
+        branch: "issue-1/codex-final",
+        url: null,
+        error: null,
+        attempts: 0
+      },
+      updatedAt: now
+    })
+  );
+  return { finalSha, now };
 };
 
 describe("effectful run loop", () => {
@@ -421,6 +462,82 @@ describe("effectful run loop", () => {
     expect(pushes).toBe(2);
     expect(opens).toBe(2);
     expect(readJournal(paths).filter((event) => event.type === "pr-created")).toHaveLength(1);
+  });
+
+  it("opens a draft PR under legacy owner-only", async () => {
+    const { paths } = fixture({ prPolicy: "owner-only", origin: "https://github.com/example/project.git" });
+    seedPendingPublication(paths);
+    const mirror = new BareMirror(paths.mirror, "https://github.com/example/project.git", async () => ({
+      exitCode: 0,
+      stdout: Buffer.alloc(0),
+      stderr: ""
+    }));
+    const opened: boolean[] = [];
+    const result = await new CoordinatorRunLoop(paths, {
+      tmux: null,
+      mirror,
+      pullRequestOpener: async (input) => {
+        opened.push(input.draft);
+        return { url: "https://github.com/example/project/pull/2" };
+      }
+    }).runTick();
+    expect(opened).toEqual([true]);
+    expect(result.publication).toMatchObject({
+      status: "completed",
+      url: "https://github.com/example/project/pull/2",
+      branch: "issue-1/codex-final"
+    });
+  });
+
+  it("opens a ready PR and merges it under coord-merged", async () => {
+    const { paths } = fixture({ prPolicy: "coord-merged", origin: "https://github.com/example/project.git" });
+    seedPendingPublication(paths);
+    const mirror = new BareMirror(paths.mirror, "https://github.com/example/project.git", async () => ({
+      exitCode: 0,
+      stdout: Buffer.alloc(0),
+      stderr: ""
+    }));
+    let merges = 0;
+    const result = await new CoordinatorRunLoop(paths, {
+      tmux: null,
+      mirror,
+      pullRequestOpener: async (input) => {
+        expect(input.draft).toBe(false);
+        return { url: "https://github.com/example/project/pull/3" };
+      },
+      pullRequestMerger: async (input) => {
+        expect(input.url).toBe("https://github.com/example/project/pull/3");
+        merges += 1;
+      }
+    }).runTick();
+    expect(merges).toBe(1);
+    expect(result.publication.status).toBe("completed");
+    expect(readJournal(paths).map((event) => event.type)).toEqual(
+      expect.arrayContaining(["pr-created", "pr-merged"])
+    );
+  });
+
+  it("keeps the PR URL when coord-merged merge fails so the owner can finish it", async () => {
+    const { paths } = fixture({ prPolicy: "coord-merged", origin: "https://github.com/example/project.git" });
+    seedPendingPublication(paths);
+    const mirror = new BareMirror(paths.mirror, "https://github.com/example/project.git", async () => ({
+      exitCode: 0,
+      stdout: Buffer.alloc(0),
+      stderr: ""
+    }));
+    const result = await new CoordinatorRunLoop(paths, {
+      tmux: null,
+      mirror,
+      pullRequestOpener: async () => ({ url: "https://github.com/example/project/pull/4" }),
+      pullRequestMerger: async () => {
+        throw new Error("protected branch");
+      }
+    }).runTick();
+    expect(result.publication).toMatchObject({
+      status: "failed",
+      url: "https://github.com/example/project/pull/4",
+      error: "protected branch"
+    });
   });
 
   it("records an invalid persisted publication origin as a retryable failure", async () => {

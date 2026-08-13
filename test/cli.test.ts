@@ -159,6 +159,25 @@ describe("CLI", () => {
     expect(readFileSync(runtime.action, "utf8")).toBe(action);
   });
 
+  it("prints chosen pin and PR fields from coord status", async () => {
+    const fixture = setup();
+    expect(
+      await runCli(
+        ["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+        { processRunner: resolvableStartGit, makeRunLoop: fakeLoop }
+      )
+    ).toBe(0);
+    const output: string[] = [];
+    expect(
+      await runCli(["status", "--issue", "1", "--coord-root", fixture.runtime], {
+        io: { stdout: (message) => output.push(message) }
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Issue 1:");
+    expect(output.join("")).toContain("Final pin (PR head):");
+    expect(output.join("")).toContain("Policy: owner-only");
+  });
+
   it("binds the digest to the mandatory GitHub issue independently of optional paths", async () => {
     const fixture = setup();
     const config = readConfig(fixture.configPath);
@@ -400,6 +419,25 @@ describe("CLI", () => {
     ).toBe(0);
     expect(chunks.join("")).toContain(order.actionId);
     expect(chunks.join("")).toContain("codex");
+  });
+
+  it("detaches tmux/Terminal UI after a completed coord N run", async () => {
+    const fixture = setup();
+    await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      processRunner: successfulStartGit,
+      makeRunLoop: fakeLoop
+    });
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const current = readCursorsState(paths);
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...current, completed: true }));
+    const output: string[] = [];
+    expect(
+      await runCli(["1", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stdout: (message) => output.push(message) },
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Issue 1 complete: killed");
   });
 
   it("refuses to drop the final active agent", async () => {

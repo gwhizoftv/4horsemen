@@ -45,7 +45,7 @@
   "baseBranch": "main",
   "profile": "consensus",
   "maxRevisionRounds": 3,
-  "prPolicy": "owner-only",
+  "prPolicy": "coord-open-unmerged",
   "digestPaths": [],
   "pollIntervalMs": 1000,
   "checks": [
