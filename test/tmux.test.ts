@@ -358,6 +358,12 @@ describe("tmux boundary", () => {
     expect(
       harnessPromptReady("Antigravity CLI\n> \nRunning...\nesc to cancel · Gemini", "antigravity")
     ).toBe(false);
+    expect(
+      harnessPromptReady(
+        "⚠ Verifying your account...\nWe're finishing verifying your account eligibility.\nThis usually takes a moment. Please try again shortly.\n> Accept-edits mode: file edits auto-approved",
+        "antigravity"
+      )
+    ).toBe(false);
     expect(resolveNudgeKeys({ id: "antigravity", root: "/a", launcher: "x", delivery: "both" }).submit).toEqual([
       "Enter"
     ]);
@@ -425,6 +431,29 @@ describe("tmux boundary", () => {
     const calls: Array<{ args: readonly string[] }> = [];
     const controller = new TmuxController(
       runnerWithPrompt(calls, "0\tagy\t0\n", "Antigravity CLI\nnvm…\n"),
+      null,
+      null,
+      null,
+      noopSleep
+    );
+    expect(
+      await controller.nudge(
+        1,
+        { id: "antigravity", root: "/clone", launcher: "start-antigravity.sh", delivery: "both", harnessProcess: "agy" },
+        "/runtime/action.md"
+      )
+    ).toBe("busy");
+    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "capture-pane"]);
+  });
+
+  it("returns busy while Antigravity is verifying the account", async () => {
+    const calls: Array<{ args: readonly string[] }> = [];
+    const controller = new TmuxController(
+      runnerWithPrompt(
+        calls,
+        "0\tagy\t0\n",
+        "⚠ Verifying your account...\nWe're finishing verifying your account eligibility.\nPlease try again shortly.\n> Accept-edits mode: file edits auto-approved\n"
+      ),
       null,
       null,
       null,

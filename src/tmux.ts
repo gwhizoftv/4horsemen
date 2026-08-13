@@ -65,6 +65,8 @@ export const harnessPromptReady = (paneText: string, agentId: string): boolean =
     case "antigravity":
       // Escape cancels an in-flight turn; do not nudge while working.
       if (/esc to cancel|Generating\.\.\.|Running\.\.\.|Working\.\.\./i.test(plain)) return false;
+      // Account-verify overlay still shows `>` / Accept-edits; keys are discarded.
+      if (/Verifying your account|account eligibility|Please try again shortly/i.test(plain)) return false;
       return (/>|shortcuts|Accept-edits/i.test(plain) && /Antigravity|Gemini|accept-edits/i.test(plain));
     case "codex":
       // Codex accepts keys once the process is up; avoid blocking on transient UI.
