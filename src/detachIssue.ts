@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import type { TmuxRunner, OwnerTerminalCloser } from "./tmux.js";
+import type { TmuxRunner, OwnerTerminalCloser, TmuxResult } from "./tmux.js";
 import {
   closeDarwinTerminalWindows,
   ownerTerminalTitlesToClose,
@@ -9,6 +9,40 @@ import {
 import { platform } from "node:os";
 
 export type DetachIssueLogger = (message: string) => void;
+
+/** Vitest sets this; refuse live owner-UI side effects so unit tests cannot kill dogfood sessions. */
+const underVitest = (): boolean => process.env.VITEST !== undefined;
+
+const vitestNoopTmuxRunner: TmuxRunner = async (): Promise<TmuxResult> => ({
+  exitCode: 0,
+  stdout: "",
+  stderr: ""
+});
+
+const resolveTmuxRunner = (injected: TmuxRunner | undefined): TmuxRunner | undefined => {
+  if (injected !== undefined) return injected;
+  // Default runner would spawn real tmux; never do that from the test suite.
+  return underVitest() ? vitestNoopTmuxRunner : undefined;
+};
+
+const resolveTerminalCloser = (injected: OwnerTerminalCloser | null | undefined): OwnerTerminalCloser | null => {
+  if (injected !== undefined) return injected;
+  if (underVitest()) return null;
+  return platform() === "darwin" ? closeDarwinTerminalWindows : null;
+};
+
+const listSessionsLive = (): string[] => {
+  const listed = spawnSync("tmux", ["list-sessions", "-F", "#{session_name}"], { encoding: "utf8" });
+  if ((listed.status ?? 1) !== 0) return [];
+  return listed.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((name) => name !== "");
+};
+
+const killSessionLive = (name: string): void => {
+  spawnSync("tmux", ["kill-session", "-t", name]);
+};
 
 export type DetachIssueOptions = {
   issue: number;
@@ -56,15 +90,6 @@ export const filterSessionsForIssue = (
   return sessionNames.filter((name) => name === prefix || name.startsWith(`${prefix}-`));
 };
 
-const listSessionsSync = (): string[] => {
-  const listed = spawnSync("tmux", ["list-sessions", "-F", "#{session_name}"], { encoding: "utf8" });
-  if ((listed.status ?? 1) !== 0) return [];
-  return listed.stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((name) => name !== "");
-};
-
 const closeTitles = (
   titles: readonly string[],
   closer: OwnerTerminalCloser | null,
@@ -100,10 +125,13 @@ const closeTitles = (
 export const detachIssue = async (options: DetachIssueOptions): Promise<DetachIssueResult> => {
   const log = options.log ?? (() => undefined);
   const dryRun = options.dryRun === true;
-  const tmux =
-    options.terminalCloser === undefined
-      ? new TmuxController(options.tmuxRunner, options.tmuxNamespace ?? null, null)
-      : new TmuxController(options.tmuxRunner, options.tmuxNamespace ?? null, null, options.terminalCloser);
+  const closer = resolveTerminalCloser(options.terminalCloser);
+  const tmux = new TmuxController(
+    resolveTmuxRunner(options.tmuxRunner),
+    options.tmuxNamespace ?? null,
+    null,
+    closer
+  );
 
   const names = await tmux.listIssueSessions(options.issue);
   for (const name of names) {
@@ -114,16 +142,7 @@ export const detachIssue = async (options: DetachIssueOptions): Promise<DetachIs
   }
 
   const titles = ownerTerminalTitlesToClose(options.issue, options.agentIds);
-  const closed = closeTitles(
-    titles,
-    options.terminalCloser === undefined
-      ? platform() === "darwin"
-        ? closeDarwinTerminalWindows
-        : null
-      : options.terminalCloser,
-    dryRun,
-    log
-  );
+  const closed = closeTitles(titles, closer, dryRun, log);
   return { killedSessions: names, ...closed };
 };
 
@@ -149,7 +168,10 @@ export const detachAllOwnerUiSync = (options: DetachAllOwnerUiOptions): DetachIs
   const log = options.log ?? (() => undefined);
   const dryRun = options.dryRun === true;
   const namespace = options.tmuxNamespace ?? null;
-  const listed = (options.listSessions ?? listSessionsSync)();
+  // Under Vitest, default to an empty session list / no-op kill so uninstall
+  // fixtures cannot discover and destroy the operator's live coord sessions.
+  const listed = (options.listSessions ?? (underVitest() ? () => [] : listSessionsLive))();
+  const killSession = options.killSession ?? (underVitest() ? () => undefined : killSessionLive);
   const issues =
     options.issues !== undefined && options.issues.length > 0
       ? [...options.issues]
@@ -159,7 +181,7 @@ export const detachAllOwnerUiSync = (options: DetachAllOwnerUiOptions): DetachIs
   for (const issue of issues) {
     for (const name of filterSessionsForIssue(listed, issue, namespace)) {
       log(`${dryRun ? "would kill" : "killing"} tmux session ${name}\n`);
-      if (!dryRun) (options.killSession ?? ((session) => spawnSync("tmux", ["kill-session", "-t", session])))(name);
+      if (!dryRun) killSession(name);
       killedSessions.push(name);
     }
   }
@@ -176,12 +198,7 @@ export const detachAllOwnerUiSync = (options: DetachAllOwnerUiOptions): DetachIs
     }
   }
 
-  const closer =
-    options.terminalCloser === undefined
-      ? platform() === "darwin"
-        ? closeDarwinTerminalWindows
-        : null
-      : options.terminalCloser;
+  const closer = resolveTerminalCloser(options.terminalCloser);
   const closed = closeTitles([...titles], closer, dryRun, log);
   return { killedSessions, ...closed };
 };

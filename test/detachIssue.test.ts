@@ -98,4 +98,28 @@ describe("detachAllOwnerUiSync", () => {
     expect(outcome.killedSessions).toEqual([]);
     expect(closed).toEqual(["claude"]);
   });
+
+  it("does not discover or kill live tmux when injectors are omitted under Vitest", () => {
+    expect(process.env.VITEST).toBeTruthy();
+    const outcome = detachAllOwnerUiSync({
+      agentIds: ["claude", "cursor", "antigravity"],
+      log: () => undefined
+    });
+    expect(outcome.killedSessions).toEqual([]);
+    // Default Terminal closer is also suppressed under Vitest.
+    expect(outcome.terminalClose).toBe("unsupported");
+  });
+});
+
+describe("detachIssue Vitest safety", () => {
+  it("does not call live tmux when tmuxRunner is omitted under Vitest", async () => {
+    expect(process.env.VITEST).toBeTruthy();
+    const outcome = await detachIssue({
+      issue: 99,
+      agentIds: ["claude"],
+      log: () => undefined
+    });
+    expect(outcome.killedSessions).toEqual([]);
+    expect(outcome.terminalClose).toBe("unsupported");
+  });
 });
