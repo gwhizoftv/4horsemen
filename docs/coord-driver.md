@@ -123,9 +123,11 @@ tmux attach -t coord-42
 
 On macOS, `coord start` / a fresh `coord N` also opens one Terminal.app window per
 agent, each attached to that agent's tmux window (separate clients — no Ctrl-b n).
-Windows are titled `coord-N/<agent>`. Re-open those views later with `coord attach N`.
-`coord detach N` kills the issue tmux sessions and closes those Terminal windows
-without wiping runtime, clones, or branches.
+Windows are titled `coord-N/<agent>` (older builds used bare `<agent>`). Re-open
+those views later with `coord attach N`. `coord detach N` kills the issue tmux
+sessions and closes matching Terminal windows (both title forms) without wiping
+runtime, clones, or branches. `coord uninstall` also tears down owner tmux and
+Terminal windows for that workspace's agents.
 
 `coord wipe-issue N` is the owner reset for reusing a GitHub issue number: it
 checks out each agent clone on the base branch, deletes local and origin

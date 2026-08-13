@@ -188,7 +188,8 @@ Use \`-v\` / \`--verbose\` on \`coord N\`, start, or run for tick-level progress
 On macOS, starting an issue opens one Terminal.app window per agent, each attached
 to that agent's tmux window (no Ctrl-b n). Re-open later with \`coord attach N\`.
 \`coord detach N\` closes those Terminal windows and kills the issue tmux sessions
-without wiping runtime or branches. \`coord wipe-issue N\` resets agent clones,
+without wiping runtime or branches. \`coord uninstall\` also tears down owner
+tmux/Terminals for the workspace agents. \`coord wipe-issue N\` resets agent clones,
 deletes origin issue-N/<agent> branches, wipes local issue runtime and tmux/Terminals,
 and leaves the GitHub issue open.
 

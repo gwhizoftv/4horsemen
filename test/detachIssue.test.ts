@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detachIssue } from "../src/detachIssue.js";
+import { detachAllOwnerUiSync, detachIssue, discoverCoordIssues } from "../src/detachIssue.js";
 import type { TmuxResult, TmuxRunner } from "../src/tmux.js";
 
 const ok = (stdout = ""): TmuxResult => ({ exitCode: 0, stdout, stderr: "" });
@@ -29,8 +29,8 @@ describe("detachIssue", () => {
     });
     expect(outcome.killedSessions).toEqual(["coord-2", "coord-2-claude"]);
     expect(killed).toEqual(["coord-2", "coord-2-claude"]);
-    expect(outcome.closedTerminalTitles).toEqual(["coord-2/claude", "coord-2/codex"]);
-    expect(closed).toEqual(["coord-2/claude", "coord-2/codex"]);
+    expect(outcome.closedTerminalTitles).toEqual(["coord-2/claude", "claude", "coord-2/codex", "codex"]);
+    expect(closed).toEqual(["coord-2/claude", "claude", "coord-2/codex", "codex"]);
     expect(outcome.terminalClose).toBe("closed");
   });
 
@@ -59,5 +59,43 @@ describe("detachIssue", () => {
     expect(killed).toEqual([]);
     expect(closed).toEqual([]);
     expect(outcome.terminalClose).toBe("skipped");
+  });
+});
+
+describe("detachAllOwnerUiSync", () => {
+  it("discovers issues from tmux and closes legacy plus coord-N titles", () => {
+    expect(discoverCoordIssues(["coord-1", "coord-1-claude", "coord-2-cursor", "other"])).toEqual([1, 2]);
+    const killed: string[] = [];
+    const closed: string[] = [];
+    const outcome = detachAllOwnerUiSync({
+      agentIds: ["claude", "cursor"],
+      listSessions: () => ["coord-1", "coord-1-claude", "coord-1-cursor"],
+      killSession: (name) => {
+        killed.push(name);
+      },
+      terminalCloser: (titles) => {
+        closed.push(...titles);
+      },
+      log: () => undefined
+    });
+    expect(killed).toEqual(["coord-1", "coord-1-claude", "coord-1-cursor"]);
+    expect(outcome.killedSessions).toEqual(killed);
+    expect(closed).toEqual(["claude", "coord-1/claude", "cursor", "coord-1/cursor"]);
+    expect(outcome.terminalClose).toBe("closed");
+  });
+
+  it("still closes legacy bare titles when no tmux sessions remain", () => {
+    const closed: string[] = [];
+    const outcome = detachAllOwnerUiSync({
+      agentIds: ["claude"],
+      listSessions: () => [],
+      killSession: () => undefined,
+      terminalCloser: (titles) => {
+        closed.push(...titles);
+      },
+      log: () => undefined
+    });
+    expect(outcome.killedSessions).toEqual([]);
+    expect(closed).toEqual(["claude"]);
   });
 });

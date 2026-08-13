@@ -1,5 +1,12 @@
+import { spawnSync } from "node:child_process";
 import type { TmuxRunner, OwnerTerminalCloser } from "./tmux.js";
-import { TmuxController } from "./tmux.js";
+import {
+  closeDarwinTerminalWindows,
+  ownerTerminalTitlesToClose,
+  ownerTerminalWindowTitle,
+  TmuxController
+} from "./tmux.js";
+import { platform } from "node:os";
 
 export type DetachIssueLogger = (message: string) => void;
 
@@ -19,6 +26,71 @@ export type DetachIssueResult = {
   closedTerminalTitles: string[];
   terminalClose: "closed" | "unsupported" | "failed" | "skipped";
   terminalError?: string;
+};
+
+const sessionPrefix = (issue: number, namespace: string | null): string =>
+  `coord-${issue}${namespace === null || namespace === "" ? "" : `-${namespace.replace(/[^A-Za-z0-9_-]/g, "-")}`}`;
+
+/** Parse issue numbers from live tmux session names for this namespace. */
+export const discoverCoordIssues = (sessionNames: readonly string[], namespace: string | null = null): number[] => {
+  const issues = new Set<number>();
+  for (const name of sessionNames) {
+    if (namespace !== null && namespace !== "") {
+      const safe = namespace.replace(/[^A-Za-z0-9_-]/g, "-");
+      const matched = name.match(new RegExp(`^coord-(\\d+)-${safe}(?:-|$)`));
+      if (matched?.[1] !== undefined) issues.add(Number(matched[1]));
+      continue;
+    }
+    const matched = name.match(/^coord-(\d+)(?:-|$)/);
+    if (matched?.[1] !== undefined) issues.add(Number(matched[1]));
+  }
+  return [...issues].sort((left, right) => left - right);
+};
+
+export const filterSessionsForIssue = (
+  sessionNames: readonly string[],
+  issue: number,
+  namespace: string | null = null
+): string[] => {
+  const prefix = sessionPrefix(issue, namespace);
+  return sessionNames.filter((name) => name === prefix || name.startsWith(`${prefix}-`));
+};
+
+const listSessionsSync = (): string[] => {
+  const listed = spawnSync("tmux", ["list-sessions", "-F", "#{session_name}"], { encoding: "utf8" });
+  if ((listed.status ?? 1) !== 0) return [];
+  return listed.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((name) => name !== "");
+};
+
+const closeTitles = (
+  titles: readonly string[],
+  closer: OwnerTerminalCloser | null,
+  dryRun: boolean,
+  log: DetachIssueLogger
+): Pick<DetachIssueResult, "closedTerminalTitles" | "terminalClose" | "terminalError"> => {
+  if (titles.length === 0) {
+    return { closedTerminalTitles: [], terminalClose: "skipped" };
+  }
+  if (dryRun) {
+    log(`would close Terminal window(s): ${titles.join(", ")}\n`);
+    return { closedTerminalTitles: [...titles], terminalClose: "skipped" };
+  }
+  if (closer === null) {
+    log("Terminal window close is unavailable on this platform; tmux sessions were torn down.\n");
+    return { closedTerminalTitles: [...titles], terminalClose: "unsupported" };
+  }
+  try {
+    closer(titles);
+    log(`closed Terminal window(s): ${titles.join(", ")}\n`);
+    return { closedTerminalTitles: [...titles], terminalClose: "closed" };
+  } catch (error) {
+    const terminalError = error instanceof Error ? error.message : String(error);
+    log(`could not close Terminal windows (${terminalError}).\n`);
+    return { closedTerminalTitles: [...titles], terminalClose: "failed", terminalError };
+  }
 };
 
 /**
@@ -41,29 +113,75 @@ export const detachIssue = async (options: DetachIssueOptions): Promise<DetachIs
     await tmux.killIssueSessions(options.issue);
   }
 
-  const titles = tmux.ownerTerminalTitles(options.issue, options.agentIds);
-  if (titles.length === 0) {
-    return { killedSessions: names, closedTerminalTitles: [], terminalClose: "skipped" };
-  }
-  if (dryRun) {
-    log(`would close Terminal window(s): ${titles.join(", ")}\n`);
-    return { killedSessions: names, closedTerminalTitles: titles, terminalClose: "skipped" };
+  const titles = ownerTerminalTitlesToClose(options.issue, options.agentIds);
+  const closed = closeTitles(
+    titles,
+    options.terminalCloser === undefined
+      ? platform() === "darwin"
+        ? closeDarwinTerminalWindows
+        : null
+      : options.terminalCloser,
+    dryRun,
+    log
+  );
+  return { killedSessions: names, ...closed };
+};
+
+export type DetachAllOwnerUiOptions = {
+  agentIds: readonly string[];
+  tmuxNamespace?: string | null;
+  /** When set, only these issues; otherwise discover from live tmux sessions. */
+  issues?: readonly number[];
+  dryRun?: boolean;
+  log?: DetachIssueLogger;
+  terminalCloser?: OwnerTerminalCloser | null;
+  /** Inject session list (tests). */
+  listSessions?: () => string[];
+  /** Inject session killer (tests). */
+  killSession?: (name: string) => void;
+};
+
+/**
+ * Sync UI teardown for uninstall: kill discovered (or listed) issue tmux
+ * sessions and close legacy + `coord-N/<agent>` Terminal titles.
+ */
+export const detachAllOwnerUiSync = (options: DetachAllOwnerUiOptions): DetachIssueResult => {
+  const log = options.log ?? (() => undefined);
+  const dryRun = options.dryRun === true;
+  const namespace = options.tmuxNamespace ?? null;
+  const listed = (options.listSessions ?? listSessionsSync)();
+  const issues =
+    options.issues !== undefined && options.issues.length > 0
+      ? [...options.issues]
+      : discoverCoordIssues(listed, namespace);
+
+  const killedSessions: string[] = [];
+  for (const issue of issues) {
+    for (const name of filterSessionsForIssue(listed, issue, namespace)) {
+      log(`${dryRun ? "would kill" : "killing"} tmux session ${name}\n`);
+      if (!dryRun) (options.killSession ?? ((session) => spawnSync("tmux", ["kill-session", "-t", session])))(name);
+      killedSessions.push(name);
+    }
   }
 
-  const closed = tmux.closeOwnerAgentClients(options.issue, options.agentIds);
-  if (closed.status === "closed") {
-    log(`closed Terminal window(s): ${closed.titles.join(", ")}\n`);
-    return { killedSessions: names, closedTerminalTitles: [...closed.titles], terminalClose: "closed" };
+  const titles = new Set<string>();
+  for (const agentId of options.agentIds) {
+    titles.add(agentId.replace(/[^A-Za-z0-9_-]/g, "-"));
+    for (const issue of issues) titles.add(ownerTerminalWindowTitle(issue, agentId));
   }
-  if (closed.status === "unsupported") {
-    log("Terminal window close is unavailable on this platform; tmux sessions were torn down.\n");
-    return { killedSessions: names, closedTerminalTitles: [...closed.titles], terminalClose: "unsupported" };
+  // If tmux is already gone, still close legacy bare agent titles.
+  if (issues.length === 0) {
+    for (const agentId of options.agentIds) {
+      titles.add(agentId.replace(/[^A-Za-z0-9_-]/g, "-"));
+    }
   }
-  log(`could not close Terminal windows (${closed.error ?? "unknown error"}).\n`);
-  return {
-    killedSessions: names,
-    closedTerminalTitles: [...closed.titles],
-    terminalClose: "failed",
-    ...(closed.error === undefined ? {} : { terminalError: closed.error })
-  };
+
+  const closer =
+    options.terminalCloser === undefined
+      ? platform() === "darwin"
+        ? closeDarwinTerminalWindows
+        : null
+      : options.terminalCloser;
+  const closed = closeTitles([...titles], closer, dryRun, log);
+  return { killedSessions, ...closed };
 };

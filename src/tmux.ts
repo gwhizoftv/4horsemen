@@ -133,6 +133,25 @@ const appleScriptString = (value: string): string => `"${value.replace(/\\/g, "\
 export const ownerTerminalWindowTitle = (issue: number, agentId: string): string =>
   `coord-${issue}/${safeName(agentId)}`;
 
+/**
+ * Titles to close for an issue's agents: current `coord-N/<agent>` plus legacy
+ * bare `<agent>` titles used before the unique title format shipped.
+ */
+export const ownerTerminalTitlesToClose = (issue: number, agentIds: readonly string[]): string[] => {
+  const titles: string[] = [];
+  const seen = new Set<string>();
+  const add = (title: string): void => {
+    if (seen.has(title)) return;
+    seen.add(title);
+    titles.push(title);
+  };
+  for (const agentId of agentIds) {
+    add(ownerTerminalWindowTitle(issue, agentId));
+    add(safeName(agentId));
+  }
+  return titles;
+};
+
 /** Open one macOS Terminal.app window per agent, each attached to that agent's tmux window. */
 export const openDarwinTerminalWindows: OwnerTerminalOpener = async (launches) => {
   for (const launch of launches) {
@@ -252,7 +271,7 @@ export class TmuxController {
   }
 
   ownerTerminalTitles(issue: number, agentIds: readonly string[]): string[] {
-    return agentIds.map((agentId) => ownerTerminalWindowTitle(issue, agentId));
+    return ownerTerminalTitlesToClose(issue, agentIds);
   }
 
   /** List the primary issue session and any linked per-agent client sessions. */
@@ -282,7 +301,7 @@ export class TmuxController {
     issue: number,
     agentIds: readonly string[]
   ): { status: "closed" | "unsupported" | "failed"; titles: readonly string[]; error?: string } {
-    const titles = this.ownerTerminalTitles(issue, agentIds);
+    const titles = ownerTerminalTitlesToClose(issue, agentIds);
     if (this.ownerTerminalCloser === null) return { status: "unsupported", titles };
     try {
       this.ownerTerminalCloser(titles);

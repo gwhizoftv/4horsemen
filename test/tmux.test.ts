@@ -6,6 +6,7 @@ import {
   harnessLooksReady,
   harnessPromptReady,
   nudgePreludeKeys,
+  ownerTerminalTitlesToClose,
   resolveAgentLauncher,
   resolveNudgeKeys,
   TmuxController,
@@ -235,9 +236,18 @@ describe("tmux boundary", () => {
     });
     expect(controller.closeOwnerAgentClients(4, ["claude", "cursor"])).toEqual({
       status: "closed",
-      titles: ["coord-4/claude", "coord-4/cursor"]
+      titles: ["coord-4/claude", "claude", "coord-4/cursor", "cursor"]
     });
-    expect(closed).toEqual(["coord-4/claude", "coord-4/cursor"]);
+    expect(closed).toEqual(["coord-4/claude", "claude", "coord-4/cursor", "cursor"]);
+  });
+
+  it("includes legacy bare agent titles when closing", () => {
+    expect(ownerTerminalTitlesToClose(1, ["claude", "antigravity"])).toEqual([
+      "coord-1/claude",
+      "claude",
+      "coord-1/antigravity",
+      "antigravity"
+    ]);
   });
 
   it("treats pull-only agents as nudge-disabled", async () => {

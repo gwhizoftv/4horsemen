@@ -91,72 +91,76 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     );
   }
 
-  for (const { agent, root, branch } of clones) {
-    if (!existsSync(root)) {
-      log(`skip missing clone for ${agent}: ${root}\n`);
-      continue;
-    }
-    log(`${dryRun ? "would reset" : "resetting"} ${agent} clone ${root}\n`);
-    if (!dryRun) {
-      gitOrThrow(root, "fetch", "--prune", "origin");
-      const onBranch = git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
-      if (onBranch === branch) {
-        gitOrThrow(root, "checkout", "--detach", "HEAD");
-      }
-      if (git(root, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`).exitCode === 0) {
-        gitOrThrow(root, "branch", "-D", branch);
-        result.deletedLocalBranches.push(branch);
-        log(`deleted local ${branch}\n`);
-      }
-      gitOrThrow(root, "checkout", "-B", base, `origin/${base}`);
-      if (force) {
-        gitOrThrow(root, "reset", "--hard", `origin/${base}`);
-        git(root, "clean", "-fd");
-      }
-    } else if (git(root, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`).exitCode === 0) {
-      result.deletedLocalBranches.push(branch);
-    }
-    result.resetClones.push(root);
-  }
-
-  const productRoot = options.config.coordination?.productRoot;
-  const pushCwd =
-    productRoot !== undefined && existsSync(productRoot)
-      ? productRoot
-      : clones.find(({ root }) => existsSync(root))?.root;
-  if (pushCwd === undefined) {
-    throw new Error("No product or agent clone available to delete remote branches from.");
-  }
-
-  for (const { branch } of clones) {
-    const remote = git(pushCwd, "ls-remote", "--exit-code", "--heads", "origin", branch);
-    if (remote.exitCode !== 0) {
-      result.missingRemoteBranches.push(branch);
-      log(`remote ${branch} already absent\n`);
-      continue;
-    }
-    log(`${dryRun ? "would delete" : "deleting"} origin/${branch}\n`);
-    if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch);
-    result.deletedRemoteBranches.push(branch);
-  }
-
   const paths = issueRuntimePaths(options.coordRoot, options.issue);
-  if (existsSync(paths.issueRoot)) {
-    log(`${dryRun ? "would wipe" : "wiping"} runtime ${paths.issueRoot}\n`);
-    if (!dryRun) rmSync(paths.issueRoot, { recursive: true, force: true });
-    result.wipedRuntime = paths.issueRoot;
-  }
+  try {
+    for (const { agent, root, branch } of clones) {
+      if (!existsSync(root)) {
+        log(`skip missing clone for ${agent}: ${root}\n`);
+        continue;
+      }
+      log(`${dryRun ? "would reset" : "resetting"} ${agent} clone ${root}\n`);
+      if (!dryRun) {
+        gitOrThrow(root, "fetch", "--prune", "origin");
+        const onBranch = git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+        if (onBranch === branch) {
+          gitOrThrow(root, "checkout", "--detach", "HEAD");
+        }
+        if (git(root, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`).exitCode === 0) {
+          gitOrThrow(root, "branch", "-D", branch);
+          result.deletedLocalBranches.push(branch);
+          log(`deleted local ${branch}\n`);
+        }
+        gitOrThrow(root, "checkout", "-B", base, `origin/${base}`);
+        if (force) {
+          gitOrThrow(root, "reset", "--hard", `origin/${base}`);
+          git(root, "clean", "-fd");
+        }
+      } else if (git(root, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`).exitCode === 0) {
+        result.deletedLocalBranches.push(branch);
+      }
+      result.resetClones.push(root);
+    }
 
-  const ui = await detachIssue({
-    issue: options.issue,
-    agentIds: options.config.agents.map((agent) => agent.id),
-    tmuxNamespace: paths.tmuxNamespace,
-    dryRun,
-    log,
-    ...(options.terminalCloser === undefined ? {} : { terminalCloser: options.terminalCloser })
-  });
-  result.killedSessions = ui.killedSessions;
-  result.closedTerminalTitles = ui.closedTerminalTitles;
+    const productRoot = options.config.coordination?.productRoot;
+    const pushCwd =
+      productRoot !== undefined && existsSync(productRoot)
+        ? productRoot
+        : clones.find(({ root }) => existsSync(root))?.root;
+    if (pushCwd === undefined) {
+      log("skip remote branch deletes: no product or agent clone available\n");
+    } else {
+      for (const { branch } of clones) {
+        const remote = git(pushCwd, "ls-remote", "--exit-code", "--heads", "origin", branch);
+        if (remote.exitCode !== 0) {
+          result.missingRemoteBranches.push(branch);
+          log(`remote ${branch} already absent\n`);
+          continue;
+        }
+        log(`${dryRun ? "would delete" : "deleting"} origin/${branch}\n`);
+        if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch);
+        result.deletedRemoteBranches.push(branch);
+      }
+    }
+
+    if (existsSync(paths.issueRoot)) {
+      log(`${dryRun ? "would wipe" : "wiping"} runtime ${paths.issueRoot}\n`);
+      if (!dryRun) rmSync(paths.issueRoot, { recursive: true, force: true });
+      result.wipedRuntime = paths.issueRoot;
+    }
+  } finally {
+    // Always tear down UI once wipe has begun (after dirty check), even if clone
+    // remotes fail or were already removed by uninstall --delete-clones.
+    const ui = await detachIssue({
+      issue: options.issue,
+      agentIds: options.config.agents.map((agent) => agent.id),
+      tmuxNamespace: paths.tmuxNamespace,
+      dryRun,
+      log,
+      ...(options.terminalCloser === undefined ? {} : { terminalCloser: options.terminalCloser })
+    });
+    result.killedSessions = ui.killedSessions;
+    result.closedTerminalTitles = ui.closedTerminalTitles;
+  }
 
   return result;
 };
