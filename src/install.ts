@@ -47,6 +47,7 @@ import {
   selectWorkspaceLocation
 } from "./workspace.js";
 import { doctor, type DoctorReport } from "./doctor.js";
+import { detachAllOwnerUiSync } from "./detachIssue.js";
 
 /**
  * `coord install` / `coord uninstall`.
@@ -575,6 +576,20 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
       effects.changes.push(`delete clone ${clone}`);
       if (!options.dryRun) rmSync(clone, { recursive: true, force: true });
       effects.log(`${options.dryRun ? "would delete" : "deleted"} clone ${clone}\n`);
+    }
+  }
+
+  // Tear down owner Terminals + tmux before deleting config (need agent ids).
+  {
+    const ui = detachAllOwnerUiSync({
+      agentIds: config.agents.map((agent) => agent.id),
+      dryRun: options.dryRun,
+      log: effects.log
+    });
+    if (ui.killedSessions.length > 0 || ui.closedTerminalTitles.length > 0) {
+      effects.changes.push(
+        `detach owner UI (${ui.killedSessions.length} tmux session(s), ${ui.closedTerminalTitles.length} Terminal title(s))`
+      );
     }
   }
 
