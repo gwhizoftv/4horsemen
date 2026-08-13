@@ -105,6 +105,12 @@ export const resolveSafeCoordRoot = (options: SafeCoordRootOptions): string => {
 export type IssueRuntimePaths = {
   coordRoot: string;
   tmuxNamespace: string | null;
+  /**
+   * Stable short id for this workspace root. Always set (flat and nested) so
+   * Terminal window titles for the same issue number cannot collide across
+   * products sharing one outer coord-runtime.
+   */
+  terminalGroup: string;
   mirror: string;
   issueRoot: string;
   start: string;
@@ -114,16 +120,22 @@ export type IssueRuntimePaths = {
   agents: string;
 };
 
+/** Short stable fingerprint of a workspace root for Terminal title grouping. */
+export const workspaceTerminalGroup = (coordRoot: string): string =>
+  createHash("sha256").update(resolve(coordRoot)).digest("hex").slice(0, 10);
+
 export const issueRuntimePaths = (coordRoot: string, issue: number): IssueRuntimePaths => {
   if (!Number.isInteger(issue) || issue < 1) {
     throw new PathSafetyError("Issue must be a positive integer.");
   }
   const root = resolve(coordRoot);
   const issueRoot = containedPath(root, `issue-${issue}`);
+  const terminalGroup = workspaceTerminalGroup(root);
   return {
     coordRoot: root,
-    tmuxNamespace:
-      basename(dirname(root)) === "workspaces" ? createHash("sha256").update(root).digest("hex").slice(0, 10) : null,
+    // Nested workspaces also namespace tmux sessions; flat keeps legacy coord-N.
+    tmuxNamespace: basename(dirname(root)) === "workspaces" ? terminalGroup : null,
+    terminalGroup,
     mirror: containedPath(root, "mirror.git"),
     issueRoot,
     start: containedPath(issueRoot, "start.json"),

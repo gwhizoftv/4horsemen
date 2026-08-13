@@ -47,6 +47,8 @@ export type DetachIssueOptions = {
   issue: number;
   agentIds: readonly string[];
   tmuxNamespace?: string | null;
+  /** Workspace fingerprint for Terminal titles (always preferred over tmuxNamespace). */
+  terminalGroup?: string | null;
   dryRun?: boolean;
   log?: DetachIssueLogger;
   tmuxRunner?: TmuxRunner;
@@ -125,11 +127,14 @@ export const detachIssue = async (options: DetachIssueOptions): Promise<DetachIs
   const log = options.log ?? (() => undefined);
   const dryRun = options.dryRun === true;
   const closer = resolveTerminalCloser(options.terminalCloser);
+  const titleGroup = options.terminalGroup ?? options.tmuxNamespace ?? null;
   const tmux = new TmuxController(
     resolveTmuxRunner(options.tmuxRunner),
     options.tmuxNamespace ?? null,
     null,
-    closer
+    closer,
+    undefined,
+    titleGroup
   );
 
   const names = await tmux.listIssueSessions(options.issue);
@@ -140,7 +145,7 @@ export const detachIssue = async (options: DetachIssueOptions): Promise<DetachIs
     await tmux.killIssueSessions(options.issue);
   }
 
-  const titles = ownerTerminalTitlesToClose(options.issue, options.agentIds, options.tmuxNamespace ?? null);
+  const titles = ownerTerminalTitlesToClose(options.issue, options.agentIds, titleGroup);
   const closed = closeTitles(titles, closer, dryRun, log);
   return { killedSessions: names, ...closed };
 };
@@ -148,6 +153,8 @@ export const detachIssue = async (options: DetachIssueOptions): Promise<DetachIs
 export type DetachAllOwnerUiOptions = {
   agentIds: readonly string[];
   tmuxNamespace?: string | null;
+  /** Workspace fingerprint for Terminal titles. */
+  terminalGroup?: string | null;
   /** When set, only these issues; otherwise discover from live tmux sessions. */
   issues?: readonly number[];
   dryRun?: boolean;
@@ -191,9 +198,10 @@ export const detachAllOwnerUiSync = (options: DetachAllOwnerUiOptions): DetachIs
     return { killedSessions: [], closedTerminalTitles: [], terminalClose: "skipped" };
   }
 
+  const titleGroup = options.terminalGroup ?? namespace;
   const titles = new Set<string>();
   for (const issue of issues) {
-    for (const title of ownerTerminalTitlesToClose(issue, options.agentIds, namespace)) {
+    for (const title of ownerTerminalTitlesToClose(issue, options.agentIds, titleGroup)) {
       titles.add(title);
     }
   }

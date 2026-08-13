@@ -205,7 +205,9 @@ describe("coord onboard", () => {
     expect(flat.issueRoot).not.toBe(nested.issueRoot);
     expect(flat.mirror).not.toBe(nested.mirror);
     expect(flat.tmuxNamespace).toBeNull();
+    expect(flat.terminalGroup).toMatch(/^[a-f0-9]{10}$/);
     expect(nested.tmuxNamespace).not.toBeNull();
+    expect(nested.terminalGroup).toBe(nested.tmuxNamespace);
     expect(
       await runCli(["pause", "--issue", "42", "--product", second.productRoot], {
         io: { stdout: () => undefined }

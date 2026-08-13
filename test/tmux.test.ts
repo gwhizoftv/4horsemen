@@ -6,6 +6,8 @@ import {
   harnessLooksReady,
   harnessPromptReady,
   nudgePreludeKeys,
+  ownerTerminalCloseAppleScript,
+  ownerTerminalOpenAppleScript,
   ownerTerminalTitlesToClose,
   resolveAgentLauncher,
   resolveNudgeKeys,
@@ -254,6 +256,42 @@ describe("tmux boundary", () => {
     expect(nested.agentAttachLaunches(7, [
       { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both", terminalProfile: "Pro" }
     ])[0]?.windowTitle).toBe("coord-7-abc12def00/claude");
+    // Flat tmux sessions stay coord-N, but titles still get an explicit group id.
+    const flatGrouped = new TmuxController(
+      async () => ok(),
+      null,
+      async () => undefined,
+      null,
+      async () => undefined,
+      "flatgroup01"
+    );
+    expect(flatGrouped.sessionName(1)).toBe("coord-1");
+    expect(flatGrouped.agentAttachLaunches(1, [
+      { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both", terminalProfile: "Pro" }
+    ])[0]?.windowTitle).toBe("coord-1-flatgroup01/claude");
+  });
+
+  it("builds Terminal open AppleScript that makes a dedicated window (never front window)", () => {
+    const script = ownerTerminalOpenAppleScript({
+      agentId: "claude",
+      command: "tmux new-session -A -s coord-1-claude -t coord-1",
+      terminalProfile: "Pro",
+      windowTitle: "coord-1/claude"
+    });
+    expect(script).toContain("set newWin to make new window");
+    expect(script).toContain('set newTab to do script "tmux new-session -A -s coord-1-claude -t coord-1" in newWin');
+    expect(script).toContain('set custom title of newWin to "coord-1/claude"');
+    expect(script).not.toContain("front window");
+    expect(script).not.toContain("window of newTab");
+    expect(script).not.toContain("whose tabs contains");
+    expect(script).toContain('set current settings of newTab to settings set "Pro"');
+  });
+
+  it("builds Terminal close AppleScript that only matches exact custom titles", () => {
+    const script = ownerTerminalCloseAppleScript(["coord-1/claude", "coord-1/cursor"]);
+    expect(script).toContain('set wanted to {"coord-1/claude", "coord-1/cursor"}');
+    expect(script).toContain("if wanted contains t then set end of closable to w");
+    expect(script).not.toContain("front window");
   });
 
   it("treats pull-only agents as nudge-disabled", async () => {

@@ -504,7 +504,7 @@ const defaultStartEffects = async (input: {
 }): Promise<{ cleanup: () => Promise<void> }> => {
   const mirror = new BareMirror(input.paths.mirror, input.origin);
   await mirror.initialize();
-  const tmux = new TmuxController(undefined, input.paths.tmuxNamespace);
+  const tmux = new TmuxController(undefined, input.paths.tmuxNamespace, undefined, undefined, undefined, input.paths.terminalGroup);
   await tmux.startSession(input.issue, input.agents);
   const opened = await tmux.openOwnerAgentClients(input.issue, input.agents);
   reportOwnerAgentClients(opened, input.log ?? ((message) => process.stdout.write(message)));
@@ -771,7 +771,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         throw new Error(`No runtime state exists for issue ${issue}. Start it with coord ${issue} first.`);
       }
       const start = readStartState(paths);
-      const tmux = new TmuxController(undefined, paths.tmuxNamespace);
+      const tmux = new TmuxController(undefined, paths.tmuxNamespace, undefined, undefined, undefined, paths.terminalGroup);
       const session = tmux.sessionName(issue);
       const present = await runArgv(["tmux", "has-session", "-t", session], io.cwd);
       if (present.exitCode !== 0) {
@@ -795,6 +795,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         issue,
         agentIds,
         tmuxNamespace: paths?.tmuxNamespace ?? null,
+        terminalGroup: paths?.terminalGroup ?? null,
         dryRun: flagIsSet(parsed, "dry-run"),
         log: io.stdout
       });

@@ -10,7 +10,7 @@ import {
   writeCloneHooks,
   type HookMode
 } from "./hookSync.js";
-import { resolveSafeCoordRoot } from "./paths.js";
+import { resolveSafeCoordRoot, workspaceTerminalGroup } from "./paths.js";
 import { clearManagedIgnoreFile, DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile } from "./productIgnore.js";
 import {
   agentCloneDirectory,
@@ -583,6 +583,9 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
   {
     const ui = detachAllOwnerUiSync({
       agentIds: config.agents.map((agent) => agent.id),
+      tmuxNamespace:
+        workspace.layout === "nested" ? workspaceTerminalGroup(workspace.workspaceRoot) : null,
+      terminalGroup: workspaceTerminalGroup(workspace.workspaceRoot),
       dryRun: options.dryRun,
       log: effects.log
     });
