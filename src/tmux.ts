@@ -63,6 +63,8 @@ export const harnessPromptReady = (paneText: string, agentId: string): boolean =
     case "cursor":
       return /Add a follow-up|Run Everything|Auto ·/i.test(plain);
     case "antigravity":
+      // Escape cancels an in-flight turn; do not nudge while working.
+      if (/esc to cancel|Generating\.\.\.|Running\.\.\.|Working\.\.\./i.test(plain)) return false;
       return (/>|shortcuts|Accept-edits/i.test(plain) && /Antigravity|Gemini|accept-edits/i.test(plain));
     case "codex":
       // Codex accepts keys once the process is up; avoid blocking on transient UI.
@@ -78,12 +80,24 @@ export const resolveNudgeKeys = (
 ): { prelude: readonly string[]; submit: readonly string[] } => {
   const defaults = agentOwnerUiDefaults(agent.id);
   const prelude = agent.nudgePrelude ?? defaults.nudgePrelude;
-  const rawSubmit = agent.nudgeSubmit ?? defaults.nudgeSubmit;
-  // #26/#27 left many runtimes on bare Enter/C-m, which do not submit these TUIs.
-  const submit =
-    rawSubmit.length === 1 && (rawSubmit[0] === "Enter" || rawSubmit[0] === "C-m")
-      ? defaults.nudgeSubmit
-      : rawSubmit;
+  let rawSubmit = agent.nudgeSubmit ?? defaults.nudgeSubmit;
+  // #28 applied Escape+Enter to Antigravity; there Escape cancels.
+  if (
+    agent.id === "antigravity" &&
+    rawSubmit.length === 2 &&
+    rawSubmit[0] === "Escape" &&
+    rawSubmit[1] === "Enter"
+  ) {
+    rawSubmit = defaults.nudgeSubmit;
+  }
+  // #26/#27 left many Claude/Cursor runtimes on bare Enter/C-m.
+  // Antigravity wants bare Enter; only upgrade stale C-m there.
+  const staleBareSubmit =
+    rawSubmit.length === 1 &&
+    (agent.id === "antigravity"
+      ? rawSubmit[0] === "C-m"
+      : rawSubmit[0] === "Enter" || rawSubmit[0] === "C-m");
+  const submit = staleBareSubmit ? defaults.nudgeSubmit : rawSubmit;
   return { prelude, submit };
 };
 

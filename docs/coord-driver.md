@@ -140,18 +140,19 @@ as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`
 Per-agent config controls owner UI:
 
 - `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert)
-- `nudgeSubmit` — tmux keys after the text (Claude/Cursor/Antigravity default:
-  `Escape` then `Enter`, which live-tests need to dismiss autocomplete / leave
-  multiline; Codex default: `C-j` then `C-m`. Stale single `Enter`/`C-m` configs
-  are upgraded to the agent default)
+- `nudgeSubmit` — tmux keys after the text (Claude/Cursor default: `Escape` then
+  `Enter` to dismiss autocomplete; Antigravity default: `Enter` only — Escape
+  cancels there; Codex default: `C-j` then `C-m`. Stale single `Enter`/`C-m` on
+  Claude/Cursor, and mistaken Escape+Enter on Antigravity, are upgraded)
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Pro/Grass/Ocean/Red Sands)
 
-Nudge waits until the pane shows an idle prompt (not Claude's trust dialog or
-Antigravity splash). If the first delivery is skipped (trust UI, wrong
-foreground name, splash), the run loop retries until one successful delivery per
-action. Cursor panes that report as `node` are treated as ready when
-`harnessProcess` is `agent`. Use `coord N -v` for tick-level progress logs.
+Nudge waits until the pane shows an idle prompt (not Claude's trust dialog,
+Antigravity splash, or an in-flight Antigravity turn with `esc to cancel`).
+If the first delivery is skipped (trust UI, wrong foreground name, splash),
+the run loop retries until one successful delivery per action. Cursor panes
+that report as `node` are treated as ready when `harnessProcess` is `agent`.
+Use `coord N -v` for tick-level progress logs.
 
 ## Agent completion contract
 

@@ -38,8 +38,8 @@ export const agentHarnessProcess = (agent: string): string => {
 /**
  * Default per-agent owner UI for nudges and macOS Terminal windows.
  *
- * Claude/Cursor/Antigravity need Escape then Enter after `send-keys -l`: bare
- * Enter/`C-m` often inserts a newline or is swallowed by autocomplete (live-tested).
+ * Claude/Cursor need Escape then Enter after `send-keys -l` (autocomplete /
+ * multiline). Antigravity submits on Enter; Escape means cancel there.
  * Codex uses vim insert (`i`) and submits with `C-j` then `C-m`.
  * Operators override via config.json.
  */
@@ -54,7 +54,7 @@ export const agentOwnerUiDefaults = (
     case "cursor":
       return { nudgePrelude: [], nudgeSubmit: ["Escape", "Enter"], terminalProfile: "Ocean" };
     case "antigravity":
-      return { nudgePrelude: [], nudgeSubmit: ["Escape", "Enter"], terminalProfile: "Red Sands" };
+      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Red Sands" };
     default:
       return { nudgePrelude: [], nudgeSubmit: ["Escape", "Enter"], terminalProfile: "Basic" };
   }
