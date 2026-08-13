@@ -92,6 +92,16 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
   return { exitCode: 0, stdout: execFileSync(command, args, { cwd, encoding: "utf8" }), stderr: "" };
 };
 
+describe("CLI version", () => {
+  it("prints package.json version for --version, -V, and version", async () => {
+    for (const argv of [["--version"], ["-V"], ["version"]] as const) {
+      const lines: string[] = [];
+      expect(await runCli([...argv], { io: { stdout: (message) => lines.push(message) } })).toBe(0);
+      expect(lines.join("").trim()).toBe("0.0.1");
+    }
+  });
+});
+
 describe("CLI", () => {
   it("requires the external coord root explicitly rather than accepting COORD_ROOT", async () => {
     const fixture = setup();

@@ -6,7 +6,7 @@ import { doctor, renderDoctorReport } from "./doctor.js";
 import { fetchGitHubIssue, renderGitHubIssueSnapshot } from "./githubIssue.js";
 import { sha256 } from "./hash.js";
 import { renderHookScope, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
-import { install, onboard, uninstall } from "./install.js";
+import { install, onboard, packageVersion, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
 import {
@@ -155,6 +155,7 @@ const allowedFlags = (parsed: ParsedArgs, allowed: readonly string[]): void => {
 const help = `coord — owner-side workflow driver
 
 Usage:
+  coord --version | -V | version
   coord onboard <product> [--coord-root <path>] [--agents <a,b,c>] [--profile <p>]
   coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord install --product <path> --coord-root <external-path> --agents <a,b,c> [--profile <p>]
@@ -184,6 +185,7 @@ Happy path: bootstrap once, onboard a product once, create GitHub issue N, then 
 From an agent clone, \`coord next --issue N\` resolves the runtime via
 coord.workspaceConfig and the caller via consensus.agentId (or --agent / COORD_AGENT).
 Use \`-v\` / \`--verbose\` on \`coord N\`, start, or run for tick-level progress logs.
+\`coord --version\` prints the package version (pre-1.0: \`0.0.N\`, bump on every ship).
 
 On macOS, starting an issue opens one Terminal.app window per agent, each attached
 to that agent's tmux window (no Ctrl-b n). Re-open later with \`coord attach N\`.
@@ -615,6 +617,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   const [command, ...rest] = argv;
   if (command === undefined || command === "--help" || command === "-h" || command === "help") {
     io.stdout(help);
+    return 0;
+  }
+  if (command === "--version" || command === "-V" || command === "version") {
+    io.stdout(`${packageVersion(coordinatorSourceRoot)}\n`);
     return 0;
   }
 
