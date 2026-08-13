@@ -1,7 +1,11 @@
 export const DEFAULT_MAX_REVISION_ROUNDS = 3;
 
 export type WorkflowProfile = "solo" | "reviewed" | "consensus";
-export type PrPolicy = "owner-only" | "coord-open-unmerged";
+/** `owner-only` is a legacy alias of `coord-open-unmerged` (opens a PR; owner merges). */
+export type PrPolicy = "owner-only" | "coord-open-unmerged" | "coord-merged";
+export const DEFAULT_PR_POLICY: PrPolicy = "coord-open-unmerged";
+
+export const coordMergesPullRequest = (policy: PrPolicy): boolean => policy === "coord-merged";
 
 export type EvidenceId =
   | "join-published"

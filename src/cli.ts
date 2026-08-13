@@ -43,6 +43,7 @@ import {
   type OpenOwnerAgentClientsResult
 } from "./tmux.js";
 import { resolveWorkspaceFromProduct, workspaceLocationFromConfig, type WorkspaceLocation } from "./workspace.js";
+import { renderIssueReport } from "./issueReport.js";
 import { wipeIssue } from "./wipeIssue.js";
 import { detachIssue } from "./detachIssue.js";
 
@@ -166,6 +167,7 @@ Usage:
   coord start <issue> --product <path> [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord start <issue> --config <path> --coord-root <external-path> [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord run --issue <issue> [--product <path> | --coord-root <path>] [-v|--verbose]
+  coord status --issue <issue> [--product <path> | --coord-root <path>]
   coord next --issue <issue> [--product <path> | --coord-root <path>] [--agent <agent>]
   coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
   coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
@@ -184,6 +186,7 @@ Happy path: bootstrap once, onboard a product once, create GitHub issue N, then 
 From an agent clone, \`coord next --issue N\` resolves the runtime via
 coord.workspaceConfig and the caller via consensus.agentId (or --agent / COORD_AGENT).
 Use \`-v\` / \`--verbose\` on \`coord N\`, start, or run for tick-level progress logs.
+\`coord status\` prints the chosen agent, final pin, published branch, and PR URL.
 
 On macOS, starting an issue opens one Terminal.app window per agent, each attached
 to that agent's tmux window (no Ctrl-b n). Re-open later with \`coord attach N\`.
@@ -836,6 +839,14 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (parsed.positionals.length !== 0) throw new Error("run takes no positional arguments.");
       verboseState.enabled = flagIsSet(parsed, "verbose");
       await makeRunLoop(existingContext(parsed, io)).run();
+      return 0;
+    }
+
+    if (command === "status") {
+      allowedFlags(parsed, ["issue", "coord-root", "product"]);
+      if (parsed.positionals.length !== 0) throw new Error("status takes no positional arguments.");
+      const paths = existingContext(parsed, io);
+      io.stdout(renderIssueReport(readStartState(paths), readCursorsState(paths)));
       return 0;
     }
 

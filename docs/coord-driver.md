@@ -3,9 +3,10 @@
 ## Authority and safety model
 
 `coord` is an owner-local control-plane process. Owner commands take effect
-directly and are journaled; there are no signed drop/override artifacts. The
-driver may open a draft, unmerged PR only when configured with
-`coord-open-unmerged`. It has no merge command or merge effect.
+directly and are journaled; there are no signed drop/override artifacts. After
+finalization the driver opens a pull request. Default `prPolicy` is
+`coord-open-unmerged` (draft PR; owner merges). `coord-merged` opens a ready PR
+and merges it. Legacy `owner-only` is the same as `coord-open-unmerged`.
 
 The coordinator never writes agent clones. Agents publish work to their own
 `issue-<n>/<agent>` origin branches. The coordinator fetches those branches
@@ -22,7 +23,7 @@ within derived runtime paths are rejected.
   issue-<n>/
     github-issue.json immutable start-time GitHub title/body snapshot
     start.json       immutable session/config baseline
-    cursors.json     current internal cursor and dropped roster
+    cursors.json     workflow pointers (not the Cursor agent): step, roster, pins
     journal.jsonl    append-only owner/effect audit
     agents/<agent>/
       action.md      restricted public order
@@ -52,7 +53,8 @@ Start from `config.example.json`:
 - `profile`: persisted default (`solo`, `reviewed`, or `consensus`) used by
   product-resolved start and `coord N`
 - `maxRevisionRounds`: fixed at 3 or less; no round 4 is possible
-- `prPolicy`: `owner-only` or `coord-open-unmerged`
+- `prPolicy`: `coord-open-unmerged` (default; draft PR, owner merges),
+  `coord-merged` (coord merges), or legacy `owner-only` (same as open-unmerged)
 - `digestPaths`: optional additional config-relative, confined source
   templates; the list may be empty
 - `checks[]`: explicit argv arrays executed in a clean worktree at the final
@@ -241,9 +243,10 @@ Finalization binds the accepted consensus/product pin to a separate cleanup
 pin. From consensus to cleanup, only deletion of the current issue's
 `.plans/**`, `.signals/**`, and `.code-reviews/**` files is allowed. The driver
 then materializes a clean detached worktree at the cleanup pin and runs every
-configured argv check. Any verifier or check failure blocks PR creation. A
-successful `coord-open-unmerged` run records accepted R7 and its check results
-first, then uses a durable retryable publication outbox. That policy may push
-an owner-visible `issue-<n>/<agent>-final` head to origin and create or reconcile
-one draft PR. Publication failures never discard accepted finalization.
-`owner-only` performs no origin write, and only the owner can merge any PR.
+configured argv check. Any verifier or check failure blocks PR creation. After
+accepted R7 the driver pushes `issue-<n>/<chosen-agent>-final` at the cleanup
+pin and opens a PR. `coord-open-unmerged` (and legacy `owner-only`) leaves that
+PR as a draft for the owner to merge. `coord-merged` marks it ready and merges
+it. Publication failures never discard accepted finalization. `coord status`
+and a completed `coord N` print the chosen agent, final pin, published branch,
+and PR URL.
