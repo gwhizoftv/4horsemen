@@ -35,7 +35,7 @@ const initClone = (path: string, origin: string): void => {
 };
 
 describe("wipeIssue", () => {
-  it("resets clones, deletes local and remote issue branches, and wipes runtime", () => {
+  it("resets clones, deletes local and remote issue branches, and wipes runtime", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "coord-wipe-"));
     roots.push(workspace);
     const origin = join(workspace, "origin.git");
@@ -89,11 +89,12 @@ describe("wipeIssue", () => {
     writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
     mkdirSync(join(coordRoot, "issue-9", "agents"), { recursive: true });
 
-    const outcome = wipeIssue({
+    const outcome = await wipeIssue({
       issue: 9,
       config,
       configPath,
       coordRoot,
+      terminalCloser: null,
       log: () => undefined
     });
 
@@ -108,7 +109,7 @@ describe("wipeIssue", () => {
     expect(tryGit(product, "ls-remote", "--exit-code", "--heads", "origin", "issue-9/codex").exitCode).not.toBe(0);
   });
 
-  it("refuses dirty clones without --force", () => {
+  it("refuses dirty clones without --force", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "coord-wipe-dirty-"));
     roots.push(workspace);
     const origin = join(workspace, "origin.git");
@@ -146,9 +147,9 @@ describe("wipeIssue", () => {
     });
     writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 
-    expect(() =>
-      wipeIssue({ issue: 3, config, configPath, coordRoot, log: () => undefined })
-    ).toThrow(/Nothing has been changed/);
+    await expect(
+      wipeIssue({ issue: 3, config, configPath, coordRoot, terminalCloser: null, log: () => undefined })
+    ).rejects.toThrow(/uncommitted changes/);
     expect(existsSync(join(claude, "dirty.txt"))).toBe(true);
   });
 });

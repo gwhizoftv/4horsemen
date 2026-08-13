@@ -1,5 +1,5 @@
 import { constants, accessSync, lstatSync, realpathSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { platform } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import type { AgentConfig } from "./state.js";
@@ -77,15 +77,26 @@ export const agentClientAttachCommand = (session: string, agentId: string): stri
   ].join(" ';' ");
 };
 
-export type OwnerTerminalLaunch = { agentId: string; command: string; terminalProfile: string };
+export type OwnerTerminalLaunch = {
+  agentId: string;
+  command: string;
+  terminalProfile: string;
+  /** Unique Terminal.app custom title so detach/wipe can close the window. */
+  windowTitle: string;
+};
 export type OwnerTerminalOpener = (launches: readonly OwnerTerminalLaunch[]) => Promise<void>;
+export type OwnerTerminalCloser = (titles: readonly string[]) => void;
 
 const appleScriptString = (value: string): string => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+
+/** Stable Terminal.app custom title for an issue's owner agent window. */
+export const ownerTerminalWindowTitle = (issue: number, agentId: string): string =>
+  `coord-${issue}/${safeName(agentId)}`;
 
 /** Open one macOS Terminal.app window per agent, each attached to that agent's tmux window. */
 export const openDarwinTerminalWindows: OwnerTerminalOpener = async (launches) => {
   for (const launch of launches) {
-    const title = launch.agentId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const title = launch.windowTitle.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const profile = launch.terminalProfile.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const script = [
       'tell application "Terminal"',
@@ -109,6 +120,36 @@ export const openDarwinTerminalWindows: OwnerTerminalOpener = async (launches) =
     if (result.exitCode !== 0) {
       throw new Error(`osascript failed for ${launch.agentId}: ${result.stderr || `exit ${result.exitCode}`}`);
     }
+  }
+};
+
+/**
+ * Close Terminal.app windows whose custom titles match (no activate — avoid focus steal).
+ * Collect windows first, then close, so AppleScript does not mutate while iterating.
+ */
+export const closeDarwinTerminalWindows: OwnerTerminalCloser = (titles) => {
+  if (titles.length === 0) return;
+  const list = titles.map((title) => appleScriptString(title)).join(", ");
+  const script = [
+    'tell application "Terminal"',
+    `  set wanted to {${list}}`,
+    "  set closable to {}",
+    "  repeat with w in windows",
+    "    try",
+    "      set t to custom title of w",
+    "      if wanted contains t then set end of closable to w",
+    "    end try",
+    "  end repeat",
+    "  repeat with w in closable",
+    "    try",
+    "      close w",
+    "    end try",
+    "  end repeat",
+    "end tell"
+  ].join("\n");
+  const result = spawnSync("osascript", ["-e", script], { encoding: "utf8" });
+  if ((result.status ?? 1) !== 0) {
+    throw new Error(`osascript failed to close Terminal windows: ${(result.stderr ?? "").trim() || `exit ${result.status}`}`);
   }
 };
 
@@ -145,7 +186,9 @@ export class TmuxController {
     private readonly runner: TmuxRunner = runTmux,
     private readonly namespace: string | null = null,
     private readonly ownerTerminalOpener: OwnerTerminalOpener | null =
-      platform() === "darwin" ? openDarwinTerminalWindows : null
+      platform() === "darwin" ? openDarwinTerminalWindows : null,
+    private readonly ownerTerminalCloser: OwnerTerminalCloser | null =
+      platform() === "darwin" ? closeDarwinTerminalWindows : null
   ) {}
 
   sessionName(issue: number): string {
@@ -161,8 +204,54 @@ export class TmuxController {
     return agents.map((agent) => ({
       agentId: agent.id,
       command: agentClientAttachCommand(session, agent.id),
-      terminalProfile: resolveTerminalProfile(agent)
+      terminalProfile: resolveTerminalProfile(agent),
+      windowTitle: ownerTerminalWindowTitle(issue, agent.id)
     }));
+  }
+
+  ownerTerminalTitles(issue: number, agentIds: readonly string[]): string[] {
+    return agentIds.map((agentId) => ownerTerminalWindowTitle(issue, agentId));
+  }
+
+  /** List the primary issue session and any linked per-agent client sessions. */
+  async listIssueSessions(issue: number): Promise<string[]> {
+    const session = this.sessionName(issue);
+    const listed = await this.runner(["list-sessions", "-F", "#{session_name}"]);
+    if (listed.exitCode !== 0) return [];
+    return listed.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((name) => name === session || name.startsWith(`${session}-`));
+  }
+
+  async killIssueSessions(issue: number): Promise<string[]> {
+    const names = await this.listIssueSessions(issue);
+    for (const name of names) {
+      await this.runner(["kill-session", "-t", name]);
+    }
+    return names;
+  }
+
+  /**
+   * Close owner Terminal.app windows for this issue (Darwin). No-op elsewhere.
+   * Failures are returned so detach/wipe can continue after tmux teardown.
+   */
+  closeOwnerAgentClients(
+    issue: number,
+    agentIds: readonly string[]
+  ): { status: "closed" | "unsupported" | "failed"; titles: readonly string[]; error?: string } {
+    const titles = this.ownerTerminalTitles(issue, agentIds);
+    if (this.ownerTerminalCloser === null) return { status: "unsupported", titles };
+    try {
+      this.ownerTerminalCloser(titles);
+      return { status: "closed", titles };
+    } catch (error) {
+      return {
+        status: "failed",
+        titles,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
   }
 
   /**

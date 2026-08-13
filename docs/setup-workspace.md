@@ -142,13 +142,23 @@ coord uninstall --coord-root /path/to/coord-runtime --product /path/to/app
 ```
 
 To reuse a GitHub issue number without closing it (reset clones + delete
-`issue-N/<agent>` origin branches + local issue runtime + tmux):
+`issue-N/<agent>` origin branches + local issue runtime + tmux/Terminals):
 
 ```bash
 coord wipe-issue N --product /path/to/app
   # --force    # discard dirty clone worktrees
   # --dry-run
 ```
+
+To close owner Terminal windows and kill issue tmux sessions without wiping
+runtime or branches:
+
+```bash
+coord detach N --product /path/to/app
+```
+
+Re-open Terminal views afterward with `coord attach N` (while the issue runtime
+and tmux session exist — resume with `coord N` first if needed).
 
 By default uninstall clears the agent-clone hook wiring, the managed exclude block, the
 launchers, and the clone's coordination git config, restores any hook that was

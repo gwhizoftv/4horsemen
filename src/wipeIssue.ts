@@ -1,12 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { detachIssue } from "./detachIssue.js";
 import { git, gitOrThrow } from "./gitExec.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
 import { issueRuntimePaths } from "./paths.js";
 import { cloneIsDirty } from "./setupWorkspace.js";
 import type { CoordinatorConfig } from "./state.js";
-import { TmuxController } from "./tmux.js";
+import type { OwnerTerminalCloser } from "./tmux.js";
 
 export type WipeIssueLogger = (message: string) => void;
 
@@ -18,6 +19,7 @@ export type WipeIssueOptions = {
   force?: boolean;
   dryRun?: boolean;
   log?: WipeIssueLogger;
+  terminalCloser?: OwnerTerminalCloser | null;
 };
 
 export type WipeIssueResult = {
@@ -27,6 +29,7 @@ export type WipeIssueResult = {
   missingRemoteBranches: string[];
   wipedRuntime: string | null;
   killedSessions: string[];
+  closedTerminalTitles: string[];
 };
 
 const branchFor = (template: string, issue: number, agent: string): string =>
@@ -57,8 +60,9 @@ const deleteRemoteBranch = (cwd: string, origin: string, branch: string): void =
 /**
  * Reset agent clones and delete per-agent origin branches for one issue.
  * Leaves the GitHub issue open. Does not uninstall the product.
+ * Also tears down tmux + owner Terminal windows via detachIssue.
  */
-export const wipeIssue = (options: WipeIssueOptions): WipeIssueResult => {
+export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueResult> => {
   const force = options.force === true;
   const dryRun = options.dryRun === true;
   const log = options.log ?? (() => undefined);
@@ -69,7 +73,8 @@ export const wipeIssue = (options: WipeIssueOptions): WipeIssueResult => {
     deletedRemoteBranches: [],
     missingRemoteBranches: [],
     wipedRuntime: null,
-    killedSessions: []
+    killedSessions: [],
+    closedTerminalTitles: []
   };
 
   const clones = options.config.agents.map((agent) => ({
@@ -142,21 +147,16 @@ export const wipeIssue = (options: WipeIssueOptions): WipeIssueResult => {
     result.wipedRuntime = paths.issueRoot;
   }
 
-  const tmux = new TmuxController(undefined, paths.tmuxNamespace);
-  const session = tmux.sessionName(options.issue);
-  const listed = spawnSync("tmux", ["list-sessions", "-F", "#{session_name}"], { encoding: "utf8" });
-  const names =
-    listed.status === 0
-      ? listed.stdout
-          .split("\n")
-          .map((line) => line.trim())
-          .filter((name) => name === session || name.startsWith(`${session}-`))
-      : [];
-  for (const name of names) {
-    log(`${dryRun ? "would kill" : "killing"} tmux session ${name}\n`);
-    if (!dryRun) spawnSync("tmux", ["kill-session", "-t", name], { encoding: "utf8" });
-    result.killedSessions.push(name);
-  }
+  const ui = await detachIssue({
+    issue: options.issue,
+    agentIds: options.config.agents.map((agent) => agent.id),
+    tmuxNamespace: paths.tmuxNamespace,
+    dryRun,
+    log,
+    ...(options.terminalCloser === undefined ? {} : { terminalCloser: options.terminalCloser })
+  });
+  result.killedSessions = ui.killedSessions;
+  result.closedTerminalTitles = ui.closedTerminalTitles;
 
   return result;
 };

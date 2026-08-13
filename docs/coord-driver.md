@@ -123,13 +123,15 @@ tmux attach -t coord-42
 
 On macOS, `coord start` / a fresh `coord N` also opens one Terminal.app window per
 agent, each attached to that agent's tmux window (separate clients — no Ctrl-b n).
-Re-open those views later with `coord attach N`.
+Windows are titled `coord-N/<agent>`. Re-open those views later with `coord attach N`.
+`coord detach N` kills the issue tmux sessions and closes those Terminal windows
+without wiping runtime, clones, or branches.
 
 `coord wipe-issue N` is the owner reset for reusing a GitHub issue number: it
 checks out each agent clone on the base branch, deletes local and origin
-`issue-N/<agent>` branches, removes `coord-runtime/issue-N`, and kills matching
-tmux sessions. It does **not** close the GitHub issue or uninstall the product.
-Dirty clones refuse unless `--force`.
+`issue-N/<agent>` branches, removes `coord-runtime/issue-N`, and runs the same
+UI teardown as `detach`. It does **not** close the GitHub issue or uninstall the
+product. Dirty clones refuse unless `--force`.
 
 Nudge delivery uses literal `send-keys -l` (not paste-buffer — some TUIs such
 as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`.
