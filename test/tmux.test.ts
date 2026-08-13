@@ -12,6 +12,7 @@ import {
   resolveAgentLauncher,
   resolveNudgeKeys,
   TmuxController,
+  vimInsertPrelude,
   type TmuxResult,
   type TmuxRunner
 } from "../src/tmux.js";
@@ -73,17 +74,35 @@ describe("tmux boundary", () => {
       "capture-pane",
       "send-keys",
       "send-keys",
+      "send-keys",
       "send-keys"
     ]);
-    expect(calls[2]?.args).toEqual(["send-keys", "-l", "-t", "coord-1:cursor.0", expect.stringContaining("/runtime/action.md")]);
-    expect(calls[3]?.args.slice(-1)).toEqual(["Escape"]);
-    expect(calls[4]?.args.slice(-1)).toEqual(["Enter"]);
+    expect(calls[2]?.args.slice(-1)).toEqual(["a"]);
+    expect(calls[3]?.args).toEqual(["send-keys", "-l", "-t", "coord-1:cursor.0", expect.stringContaining("/runtime/action.md")]);
+    expect(calls[4]?.args.slice(-1)).toEqual(["Escape"]);
+    expect(calls[5]?.args.slice(-1)).toEqual(["Enter"]);
   });
 
   it("uses per-agent nudgePrelude and nudgeSubmit for Codex vim", async () => {
     expect(nudgePreludeKeys("claude")).toEqual([]);
     expect(nudgePreludeKeys("codex")).toEqual(["i"]);
     expect(nudgePreludeKeys("antigravity")).toEqual([]);
+    expect(vimInsertPrelude("❯\n-- NORMAL --", "claude")).toEqual(["a"]);
+    expect(vimInsertPrelude("❯\n-- INSERT --", "claude")).toEqual([]);
+    expect(vimInsertPrelude("❯\n-- VISUAL --", "claude")).toEqual(["Escape", "a"]);
+    expect(vimInsertPrelude("❯ auto mode", "claude")).toEqual(["a"]);
+    expect(vimInsertPrelude("Add a follow-up", "cursor")).toEqual(["a"]);
+    expect(vimInsertPrelude(">", "antigravity")).toEqual([]);
+    expect(vimInsertPrelude("Vim: Normal", "codex")).toEqual([]);
+    expect(resolveNudgeKeys({ id: "claude", root: "/c", launcher: "x", delivery: "both" }, "❯").prelude).toEqual([
+      "a"
+    ]);
+    expect(
+      resolveNudgeKeys({ id: "claude", root: "/c", launcher: "x", delivery: "both" }, "❯\n-- INSERT --").prelude
+    ).toEqual([]);
+    expect(resolveNudgeKeys({ id: "antigravity", root: "/a", launcher: "x", delivery: "both" }, ">").prelude).toEqual(
+      []
+    );
     expect(resolveNudgeKeys({ id: "claude", root: "/c", launcher: "x", delivery: "both" }).submit).toEqual([
       "Escape",
       "Enter"
@@ -346,6 +365,7 @@ describe("tmux boundary", () => {
   it("defers nudge until the TUI shows an idle prompt", () => {
     expect(harnessPromptReady("❯ \nauto mode on", "claude")).toBe(true);
     expect(harnessPromptReady("Do you trust this folder?\n❯ 1. Yes", "claude")).toBe(false);
+    expect(harnessPromptReady("❯\n-- NORMAL --", "claude")).toBe(true);
     expect(harnessPromptReady("Antigravity CLI\nnvm use…", "antigravity")).toBe(false);
     expect(harnessPromptReady("Antigravity CLI\n> \n? for shortcuts · Gemini", "antigravity")).toBe(true);
     expect(

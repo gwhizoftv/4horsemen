@@ -11,6 +11,7 @@ import {
   localConfigUnset,
   worktreeRoot
 } from "./gitExec.js";
+import { liftCloneAgentsProtocol } from "./agentsProtocol.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { isPathInside } from "./paths.js";
 import { DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile, clearManagedIgnoreFile } from "./productIgnore.js";
@@ -388,6 +389,7 @@ const syncAgentClone = (input: {
   baseBranch: string;
   options: EffectOptions;
 }): boolean => {
+  liftCloneAgentsProtocol(input.clone, input.options);
   if (hasUncommittedChanges(input.clone)) {
     input.options.log(`clone ${input.clone} has uncommitted work; not syncing\n`);
     return false;

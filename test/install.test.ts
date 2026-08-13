@@ -92,6 +92,11 @@ describe("coord install — two-mode footprint", () => {
     expect(git(clone, "config", "--local", "--get", "coord.workspaceConfig")).toBe(result.configPath);
     expect(readConfig(result.configPath).prPolicy).toBe("coord-open-unmerged");
     expect(readFileSync(join(clone, ".git", "info", "exclude"), "utf8")).toContain("/start-*.sh");
+    const agentsMd = readFileSync(join(clone, "AGENTS.md"), "utf8");
+    expect(agentsMd).toContain("## Exact File Map");
+    expect(agentsMd).toContain("action.md");
+    expect(existsSync(join(clone, "CLAUDE.md"))).toBe(true);
+    expect(readFileSync(join(clone, "CLAUDE.md"), "utf8")).toContain("@AGENTS.md");
   });
 });
 
@@ -157,11 +162,15 @@ describe("coord install — opt-in product changes", () => {
     expect(git(fixture.productRoot, "status", "--porcelain")).not.toBe("");
   });
 
-  it("never overwrites a human-authored AGENTS.md", () => {
+  it("preserves human AGENTS.md text and appends the protocol block with --write-product", () => {
     const fixture = product();
     writeFileSync(join(fixture.productRoot, "AGENTS.md"), "# ours\n");
     installOnce(fixture, { writeProduct: true });
-    expect(readFileSync(join(fixture.productRoot, "AGENTS.md"), "utf8")).toBe("# ours\n");
+    const agents = readFileSync(join(fixture.productRoot, "AGENTS.md"), "utf8");
+    expect(agents.startsWith("# ours\n")).toBe(true);
+    expect(agents).toContain("coordination protocol");
+    expect(agents).toContain("## Exact File Map");
+    expect(agents).toContain("action.md");
   });
 });
 

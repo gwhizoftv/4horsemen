@@ -1,6 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import {
+  clearAgentsProtocolFile,
+  clearClaudeAgentsShim,
+  liftCloneAgentsProtocol,
+  writeClaudeAgentsShim,
+  writeCloneAgentsProtocol,
+  writeProductAgentsProtocol
+} from "./agentsProtocol.js";
 import { git, localConfigGet } from "./gitExec.js";
 import {
   canonicalSourceDigest,
@@ -304,6 +312,8 @@ export const install = (options: InstallOptions): InstallResult => {
       options: effects
     });
     writeCloneExclude(clone, effects);
+    writeCloneAgentsProtocol({ clone, installRoot, options: effects });
+    writeClaudeAgentsShim(clone, agent, effects);
     configureCloneIdentity(
       clone,
       {
@@ -360,12 +370,13 @@ export const install = (options: InstallOptions): InstallResult => {
       effects.changes.push(`update ${ignorePath}`);
       effects.log(`${options.dryRun ? "would update" : "updated"} ${ignorePath}\n`);
     }
-    writeProductAgentsMd({
+    writeProductAgentsProtocol({
       productRoot,
       installRoot,
       project,
       baseBranch,
       toolchain: declared?.toolchain ?? proposal.toolchain,
+      createdFile: stamp.wroteAgentsMd,
       options: effects
     });
     if (options.vendor) {
@@ -398,33 +409,6 @@ export const install = (options: InstallOptions): InstallResult => {
   );
 
   return { configPath, changes: effects.changes, clones };
-};
-
-const writeProductAgentsMd = (input: {
-  productRoot: string;
-  installRoot: string;
-  project: string;
-  baseBranch: string;
-  toolchain: string | undefined;
-  options: EffectOptions;
-}): void => {
-  const target = join(input.productRoot, "AGENTS.md");
-  if (existsSync(target)) {
-    input.options.log(`AGENTS.md already exists in ${input.productRoot}; leaving it alone\n`);
-    return;
-  }
-  const template = join(input.installRoot, "templates", "product", "AGENTS.md");
-  const rendered = readFileSync(template, "utf8")
-    .replaceAll("{{PROJECT}}", input.project)
-    .replaceAll("{{BASE_BRANCH}}", input.baseBranch)
-    .replaceAll("{{TOOLCHAIN}}", input.toolchain ?? "declared in the owner workspace config");
-  input.options.changes.push(`write ${target}`);
-  if (input.options.dryRun) {
-    input.options.log(`would write ${target}\n`);
-    return;
-  }
-  writeFileSync(target, rendered, "utf8");
-  input.options.log(`wrote ${target}\n`);
 };
 
 // ------------------------------------------------------------- uninstall ----
@@ -535,6 +519,8 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
     }
     clearCloneIdentity(clone, effects);
     clearCloneExclude(clone, effects);
+    liftCloneAgentsProtocol(clone, effects);
+    clearClaudeAgentsShim(clone, agent.id, effects);
     const launcher = join(clone, agent.launcher);
     if (existsSync(launcher)) {
       effects.changes.push(`remove ${launcher}`);
@@ -561,12 +547,22 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
 
   // Only the AGENTS.md this install created, and only while it is still the
   // template we wrote; a human's file, or one they have since edited, stays.
+  // Protocol appended into a pre-existing human AGENTS.md is removed.
   if (stamp?.wroteAgentsMd === true) {
     const agentsMd = join(stamp.productRoot, "AGENTS.md");
     if (existsSync(agentsMd)) {
       effects.changes.push(`remove ${agentsMd}`);
       if (!options.dryRun) rmSync(agentsMd);
       effects.log(`${options.dryRun ? "would remove" : "removed"} ${agentsMd}\n`);
+    }
+  } else if (stamp?.wroteProductIgnore === true) {
+    const agentsMd = join(stamp.productRoot, "AGENTS.md");
+    const outcome = clearAgentsProtocolFile(agentsMd, { dryRun: options.dryRun });
+    if (outcome.changed) {
+      effects.changes.push(`remove AGENTS.md protocol from ${agentsMd}`);
+      effects.log(
+        `${options.dryRun ? "would remove" : "removed"} AGENTS.md protocol from ${agentsMd}\n`
+      );
     }
   }
 

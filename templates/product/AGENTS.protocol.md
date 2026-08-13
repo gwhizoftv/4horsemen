@@ -1,17 +1,3 @@
-# Agent workflow — coordination (workflow driver)
-
-This repository implements the **coordination driver** only. It is separate from
-the `testapp` app repo so hooks and tests stay decoupled.
-
-- Design: `.plans/issue-1/workflow-algorithm.md`
-- Plan: `.plans/issue-1/plan.md`
-- GitHub issue **#1** on this repo (created by workspace scaffold)
-- Owner-driven workflow; no `automation/` barriers.
-
-Branches: `issue-<n>/<agent>`. Never commit on `main` or peer branches.
-Runtime state lives outside all clones:
-`/Volumes/4TB-SOURCE/REPOS/coord/coord-runtime` (`coord start --coord-root ...`).
-
 ## Plans and reviews
 
 This file is the protocol. Follow it when writing coordinator artifacts.
@@ -62,7 +48,3 @@ publication. They can be a stricter suite than the commit hook (for
 example full `pnpm check` including a build, while `verify.precommit` is
 `pnpm check:fast`). Name the live argv in Tests; do not infer them from
 tracked hook files.
-
-In this repository, `verify.precommit` is `pnpm check:fast` (lint, typecheck,
-fast tests — no Vite build). Full `pnpm check` (build + check:fast + e2e) is
-what the coordinator `checks` gate. Run `pnpm check:fast` before commits.

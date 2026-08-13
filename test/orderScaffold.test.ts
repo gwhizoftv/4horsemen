@@ -30,21 +30,61 @@ describe("orderScaffold", () => {
     expect(rendered).toContain('"artifact": "join"');
   });
 
-  it("skips markdown-only steps", () => {
-    expect(
-      renderArtifactScaffold({
-        stepId: "R2.plan",
-        issue: 1,
-        issueSessionId: "s",
-        agent: "claude",
-        baselineSha: "a".repeat(40),
-        automationDigest: "b".repeat(64),
-        inputs: [],
-        eligibleChoices: [],
-        expectedSelectedAgents: [],
-        round: null,
-        approvedPaths: []
-      })
-    ).toBe("");
+  it("renders JSON for implementation-ready", () => {
+    const rendered = renderArtifactScaffold({
+      stepId: "R4.implement",
+      issue: 1,
+      issueSessionId: "s",
+      agent: "claude",
+      baselineSha: "a".repeat(40),
+      automationDigest: "b".repeat(64),
+      inputs: [],
+      eligibleChoices: [],
+      expectedSelectedAgents: [],
+      round: null,
+      approvedPaths: []
+    });
+    expect(rendered).toContain("```json");
+    expect(rendered).toContain('"artifact": "implementation-ready"');
+  });
+
+  it("lists required plan headings for R2.plan", () => {
+    const rendered = renderArtifactScaffold({
+      stepId: "R2.plan",
+      issue: 1,
+      issueSessionId: "s",
+      agent: "claude",
+      baselineSha: "a".repeat(40),
+      automationDigest: "b".repeat(64),
+      inputs: [],
+      eligibleChoices: [],
+      expectedSelectedAgents: [],
+      round: null,
+      approvedPaths: []
+    });
+    expect(rendered).toContain("## Exact File Map");
+    expect(rendered).toContain("## Tests");
+    expect(rendered).toContain("## Alternatives Rejected");
+    expect(rendered).toContain("## Risks and Mitigations");
+    expect(rendered).toContain("## Conclusion");
+    expect(rendered).toContain("AGENTS.md");
+  });
+
+  it("lists required review headings for R3.review", () => {
+    const rendered = renderArtifactScaffold({
+      stepId: "R3.review",
+      issue: 1,
+      issueSessionId: "s",
+      agent: "codex",
+      baselineSha: "a".repeat(40),
+      automationDigest: "b".repeat(64),
+      inputs: [],
+      eligibleChoices: [],
+      expectedSelectedAgents: [],
+      round: null,
+      approvedPaths: []
+    });
+    expect(rendered).toContain("## Findings");
+    expect(rendered).toContain("## Verdict");
   });
 });
