@@ -4,18 +4,49 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   harnessLooksReady,
+  harnessPromptReady,
   nudgePreludeKeys,
   resolveAgentLauncher,
+  resolveNudgeKeys,
   TmuxController,
   type TmuxResult,
   type TmuxRunner
 } from "../src/tmux.js";
 
 const ok = (stdout = ""): TmuxResult => ({ exitCode: 0, stdout, stderr: "" });
+const noopSleep = async (): Promise<void> => undefined;
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+const promptFor = (agentId: string): string => {
+  switch (agentId) {
+    case "claude":
+      return "❯ \nauto mode on\n";
+    case "cursor":
+      return "→ Add a follow-up\nAuto · 1%\nRun Everything\n";
+    case "antigravity":
+      return "Antigravity CLI\n> \n? for shortcuts accept-edits · Gemini\n";
+    case "codex":
+      return "codex ready\n";
+    default:
+      return "ready\n";
+  }
+};
+
+const runnerWithPrompt = (
+  calls: Array<{ args: readonly string[] }>,
+  display = "0\tagent\t0\n",
+  prompt = promptFor("cursor")
+): TmuxRunner => {
+  return async (args) => {
+    calls.push({ args });
+    if (args[0] === "display-message") return ok(display);
+    if (args[0] === "capture-pane") return ok(prompt);
+    return ok();
+  };
+};
 
 describe("tmux boundary", () => {
   it("keeps flat session names stable and namespaces nested workspaces", () => {
@@ -24,14 +55,9 @@ describe("tmux boundary", () => {
     expect(new TmuxController(runner, "a1b2c3").sessionName(42)).toBe("coord-42-a1b2c3");
   });
 
-  it("types the nudge with send-keys -l and no vim prelude for Cursor", async () => {
-    const calls: Array<{ args: readonly string[]; input?: string }> = [];
-    const runner: TmuxRunner = async (args, input) => {
-      calls.push({ args, ...(input === undefined ? {} : { input }) });
-      if (args[0] === "display-message") return ok("0\tagent\t0\n");
-      return ok();
-    };
-    const controller = new TmuxController(runner);
+  it("types the nudge with send-keys -l and Escape+Enter for Cursor", async () => {
+    const calls: Array<{ args: readonly string[] }> = [];
+    const controller = new TmuxController(runnerWithPrompt(calls), null, null, null, noopSleep);
     expect(
       await controller.nudge(
         1,
@@ -39,22 +65,38 @@ describe("tmux boundary", () => {
         "/runtime/action.md"
       )
     ).toBe("sent");
-    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "send-keys", "send-keys"]);
-    expect(calls[1]?.args).toEqual(["send-keys", "-l", "-t", "coord-1:cursor.0", expect.stringContaining("/runtime/action.md")]);
-    expect(calls[2]?.args.slice(-1)).toEqual(["C-m"]);
+    expect(calls.map((call) => call.args[0])).toEqual([
+      "display-message",
+      "capture-pane",
+      "send-keys",
+      "send-keys",
+      "send-keys"
+    ]);
+    expect(calls[2]?.args).toEqual(["send-keys", "-l", "-t", "coord-1:cursor.0", expect.stringContaining("/runtime/action.md")]);
+    expect(calls[3]?.args.slice(-1)).toEqual(["Escape"]);
+    expect(calls[4]?.args.slice(-1)).toEqual(["Enter"]);
   });
 
   it("uses per-agent nudgePrelude and nudgeSubmit for Codex vim", async () => {
     expect(nudgePreludeKeys("claude")).toEqual([]);
     expect(nudgePreludeKeys("codex")).toEqual(["i"]);
     expect(nudgePreludeKeys("antigravity")).toEqual([]);
+    expect(resolveNudgeKeys({ id: "claude", root: "/c", launcher: "x", delivery: "both" }).submit).toEqual([
+      "Escape",
+      "Enter"
+    ]);
+    expect(resolveNudgeKeys({ id: "claude", root: "/c", launcher: "x", delivery: "both", nudgeSubmit: ["C-m"] }).submit).toEqual([
+      "Escape",
+      "Enter"
+    ]);
     const calls: Array<{ args: readonly string[] }> = [];
-    const runner: TmuxRunner = async (args) => {
-      calls.push({ args });
-      if (args[0] === "display-message") return ok("0\tcodex\t0\n");
-      return ok();
-    };
-    const controller = new TmuxController(runner);
+    const controller = new TmuxController(
+      runnerWithPrompt(calls, "0\tcodex\t0\n", promptFor("codex")),
+      null,
+      null,
+      null,
+      noopSleep
+    );
     expect(
       await controller.nudge(
         1,
@@ -71,21 +113,29 @@ describe("tmux boundary", () => {
         "/runtime/action.md"
       )
     ).toBe("sent");
-    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "send-keys", "send-keys", "send-keys", "send-keys"]);
-    expect(calls[1]?.args.slice(-1)).toEqual(["i"]);
-    expect(calls[2]?.args[1]).toBe("-l");
-    expect(calls[3]?.args.slice(-1)).toEqual(["C-j"]);
-    expect(calls[4]?.args.slice(-1)).toEqual(["C-m"]);
+    expect(calls.map((call) => call.args[0])).toEqual([
+      "display-message",
+      "capture-pane",
+      "send-keys",
+      "send-keys",
+      "send-keys",
+      "send-keys"
+    ]);
+    expect(calls[2]?.args.slice(-1)).toEqual(["i"]);
+    expect(calls[3]?.args[1]).toBe("-l");
+    expect(calls[4]?.args.slice(-1)).toEqual(["C-j"]);
+    expect(calls[5]?.args.slice(-1)).toEqual(["C-m"]);
   });
 
   it("honors explicit empty prelude over Codex defaults", async () => {
     const calls: Array<{ args: readonly string[] }> = [];
-    const runner: TmuxRunner = async (args) => {
-      calls.push({ args });
-      if (args[0] === "display-message") return ok("0\tcodex\t0\n");
-      return ok();
-    };
-    const controller = new TmuxController(runner);
+    const controller = new TmuxController(
+      runnerWithPrompt(calls, "0\tcodex\t0\n", promptFor("codex")),
+      null,
+      null,
+      null,
+      noopSleep
+    );
     await controller.nudge(
       1,
       {
@@ -94,13 +144,20 @@ describe("tmux boundary", () => {
         launcher: "start-codex.sh",
         delivery: "both",
         nudgePrelude: [],
-        nudgeSubmit: ["C-m"]
+        nudgeSubmit: ["C-j", "C-m"]
       },
       "/a"
     );
-    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "send-keys", "send-keys"]);
-    expect(calls[1]?.args[1]).toBe("-l");
-    expect(calls[2]?.args.slice(-1)).toEqual(["C-m"]);
+    expect(calls.map((call) => call.args[0])).toEqual([
+      "display-message",
+      "capture-pane",
+      "send-keys",
+      "send-keys",
+      "send-keys"
+    ]);
+    expect(calls[2]?.args[1]).toBe("-l");
+    expect(calls[3]?.args.slice(-1)).toEqual(["C-j"]);
+    expect(calls[4]?.args.slice(-1)).toEqual(["C-m"]);
   });
 
   it("builds one attach command per agent window with terminal profiles", () => {
@@ -206,12 +263,36 @@ describe("tmux boundary", () => {
     expect(harnessLooksReady("agy", "agy")).toBe(true);
   });
 
+  it("defers nudge until the TUI shows an idle prompt", () => {
+    expect(harnessPromptReady("❯ \nauto mode on", "claude")).toBe(true);
+    expect(harnessPromptReady("Do you trust this folder?\n❯ 1. Yes", "claude")).toBe(false);
+    expect(harnessPromptReady("Antigravity CLI\nnvm use…", "antigravity")).toBe(false);
+    expect(harnessPromptReady("Antigravity CLI\n> \n? for shortcuts · Gemini", "antigravity")).toBe(true);
+    expect(harnessPromptReady("Add a follow-up\nAuto ·\nRun Everything", "cursor")).toBe(true);
+  });
+
+  it("returns busy when Antigravity process is up but splash has no prompt yet", async () => {
+    const calls: Array<{ args: readonly string[] }> = [];
+    const controller = new TmuxController(
+      runnerWithPrompt(calls, "0\tagy\t0\n", "Antigravity CLI\nnvm…\n"),
+      null,
+      null,
+      null,
+      noopSleep
+    );
+    expect(
+      await controller.nudge(
+        1,
+        { id: "antigravity", root: "/clone", launcher: "start-antigravity.sh", delivery: "both", harnessProcess: "agy" },
+        "/runtime/action.md"
+      )
+    ).toBe("busy");
+    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "capture-pane"]);
+  });
+
   it("nudges Cursor when tmux reports the pane command as node", async () => {
-    const runner: TmuxRunner = async (args) => {
-      if (args[0] === "display-message") return ok("0\tnode\t0\n");
-      return ok();
-    };
-    const controller = new TmuxController(runner);
+    const calls: Array<{ args: readonly string[] }> = [];
+    const controller = new TmuxController(runnerWithPrompt(calls, "0\tnode\t0\n"), null, null, null, noopSleep);
     expect(
       await controller.nudge(
         1,
@@ -222,7 +303,7 @@ describe("tmux boundary", () => {
   });
 
   it("does not insert while the owner is in pane mode or the harness is gone", async () => {
-    const busy = new TmuxController(async () => ok("0\tclaude\t1\n"));
+    const busy = new TmuxController(async () => ok("0\tclaude\t1\n"), null, null, null, noopSleep);
     expect(
       await busy.nudge(
         1,
@@ -230,7 +311,7 @@ describe("tmux boundary", () => {
         "/a"
       )
     ).toBe("busy");
-    const gone = new TmuxController(async () => ({ exitCode: 1, stdout: "", stderr: "missing" }));
+    const gone = new TmuxController(async () => ({ exitCode: 1, stdout: "", stderr: "missing" }), null, null, null, noopSleep);
     expect(
       await gone.nudge(1, { id: "claude", root: "/clone", launcher: "start-claude.sh", delivery: "nudge" }, "/a")
     ).toBe("gone");

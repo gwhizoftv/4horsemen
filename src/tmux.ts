@@ -25,6 +25,15 @@ export type PaneState = { alive: boolean; foreground: string; ownerTyping: boole
 
 const safeName = (value: string): string => value.replace(/[^A-Za-z0-9_-]/g, "-");
 
+/** Strip CSI / OSC sequences so readiness checks can match visible TUI text. */
+export const stripAnsi = (text: string): string => {
+  const esc = String.fromCharCode(0x1b);
+  const bel = String.fromCharCode(0x07);
+  return text
+    .replace(new RegExp(`${esc}\\[[0-9;?]*[ -/]*[@-~]`, "g"), "")
+    .replace(new RegExp(`${esc}\\][^${bel}${esc}]*(?:${bel}|${esc}\\\\)`, "g"), "")
+    .replace(new RegExp(`${esc}.`, "g"), "");
+};
 /** True when the pane looks ready for a short action paste. */
 export const harnessLooksReady = (foreground: string, expected?: string): boolean => {
   if (expected === undefined || expected === "") return true;
@@ -40,17 +49,48 @@ export const harnessLooksReady = (foreground: string, expected?: string): boolea
   return false;
 };
 
+/**
+ * True when the TUI has an idle prompt that can accept typed input.
+ * Process-name readiness alone is not enough: Antigravity/`agy` can be foreground
+ * during splash while keys are discarded; Claude may still be on the trust dialog.
+ */
+export const harnessPromptReady = (paneText: string, agentId: string): boolean => {
+  const plain = stripAnsi(paneText);
+  if (/trust this folder/i.test(plain)) return false;
+  switch (agentId) {
+    case "claude":
+      return /❯|auto mode|-- INSERT --/i.test(plain);
+    case "cursor":
+      return /Add a follow-up|Run Everything|Auto ·/i.test(plain);
+    case "antigravity":
+      return (/>|shortcuts|Accept-edits/i.test(plain) && /Antigravity|Gemini|accept-edits/i.test(plain));
+    case "codex":
+      // Codex accepts keys once the process is up; avoid blocking on transient UI.
+      return true;
+    default:
+      return true;
+  }
+};
+
 /** Resolve configured or default prelude/submit keys for an agent nudge. */
 export const resolveNudgeKeys = (
   agent: AgentConfig
 ): { prelude: readonly string[]; submit: readonly string[] } => {
   const defaults = agentOwnerUiDefaults(agent.id);
   const prelude = agent.nudgePrelude ?? defaults.nudgePrelude;
-  // Bare tmux "Enter" often does not submit after send-keys -l in these TUIs.
   const rawSubmit = agent.nudgeSubmit ?? defaults.nudgeSubmit;
-  const submit = rawSubmit.map((key) => (key === "Enter" ? "C-m" : key));
+  // #26/#27 left many runtimes on bare Enter/C-m, which do not submit these TUIs.
+  const submit =
+    rawSubmit.length === 1 && (rawSubmit[0] === "Enter" || rawSubmit[0] === "C-m")
+      ? defaults.nudgeSubmit
+      : rawSubmit;
   return { prelude, submit };
 };
+
+/** Delay after typing nudge text before the first submit key (lets autocomplete engage). */
+export const NUDGE_AFTER_TEXT_MS = 300;
+/** Delay between successive submit keys (Escape must land before Enter). */
+export const NUDGE_BETWEEN_SUBMIT_MS = 150;
 
 /** Resolve macOS Terminal.app profile name for an owner attach window. */
 export const resolveTerminalProfile = (agent: AgentConfig): string =>
@@ -188,7 +228,9 @@ export class TmuxController {
     private readonly ownerTerminalOpener: OwnerTerminalOpener | null =
       platform() === "darwin" ? openDarwinTerminalWindows : null,
     private readonly ownerTerminalCloser: OwnerTerminalCloser | null =
-      platform() === "darwin" ? closeDarwinTerminalWindows : null
+      platform() === "darwin" ? closeDarwinTerminalWindows : null,
+    private readonly sleep: (ms: number) => Promise<void> = (ms) =>
+      new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
   ) {}
 
   sessionName(issue: number): string {
@@ -353,6 +395,12 @@ export class TmuxController {
     return { alive: dead !== "1", foreground, ownerTyping: inMode === "1" };
   }
 
+  async capturePane(target: string): Promise<string> {
+    const captured = await this.runner(["capture-pane", "-ep", "-t", target, "-S", "-40"]);
+    if (captured.exitCode !== 0) return "";
+    return captured.stdout;
+  }
+
   async nudge(
     issue: number,
     agent: AgentConfig,
@@ -366,6 +414,9 @@ export class TmuxController {
     if (!pane.alive) return "gone";
     if (pane.ownerTyping) return "busy";
     if (!harnessLooksReady(pane.foreground, agent.harnessProcess)) return "busy";
+    const paneText = await this.capturePane(target);
+    assertAuthority();
+    if (!harnessPromptReady(paneText, agent.id)) return "busy";
     const text = `Read and execute your current coordinator action at ${actionPath}`;
     // Some harnesses (notably agy) ignore tmux paste-buffer; literal send-keys
     // reaches the input widget. Prelude/submit keys come from agent config.
@@ -378,10 +429,14 @@ export class TmuxController {
     const typed = await this.runner(["send-keys", "-l", "-t", target, text]);
     assertAuthority();
     if (typed.exitCode !== 0) throw new Error(`tmux send-keys text failed: ${typed.stderr}`);
-    // Give the TUI a beat to accept literal input before CR/submit.
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+    // Autocomplete/multiline handlers need a beat before Escape; then gap before Enter.
+    await this.sleep(NUDGE_AFTER_TEXT_MS);
     assertAuthority();
-    for (const key of submitKeys) {
+    for (const [index, key] of submitKeys.entries()) {
+      if (index > 0) {
+        await this.sleep(NUDGE_BETWEEN_SUBMIT_MS);
+        assertAuthority();
+      }
       const submit = await this.runner(["send-keys", "-t", target, key]);
       assertAuthority();
       if (submit.exitCode !== 0) throw new Error(`tmux send-keys submit failed: ${submit.stderr}`);

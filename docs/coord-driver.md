@@ -138,15 +138,18 @@ as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`
 Per-agent config controls owner UI:
 
 - `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert)
-- `nudgeSubmit` — tmux keys after the text (default `C-m`; Codex also sends `C-j`.
-  Bare `Enter` is unreliable after `send-keys -l` in these TUIs)
+- `nudgeSubmit` — tmux keys after the text (Claude/Cursor/Antigravity default:
+  `Escape` then `Enter`, which live-tests need to dismiss autocomplete / leave
+  multiline; Codex default: `C-j` then `C-m`. Stale single `Enter`/`C-m` configs
+  are upgraded to the agent default)
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Pro/Grass/Ocean/Red Sands)
 
-If the first delivery is skipped (trust UI, wrong foreground name), the run loop
-retries until one successful delivery per action. Cursor panes that report as
-`node` are treated as ready when `harnessProcess` is `agent`. Use `coord N -v`
-for tick-level progress logs.
+Nudge waits until the pane shows an idle prompt (not Claude's trust dialog or
+Antigravity splash). If the first delivery is skipped (trust UI, wrong
+foreground name, splash), the run loop retries until one successful delivery per
+action. Cursor panes that report as `node` are treated as ready when
+`harnessProcess` is `agent`. Use `coord N -v` for tick-level progress logs.
 
 ## Agent completion contract
 
