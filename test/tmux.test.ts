@@ -243,20 +243,37 @@ describe("tmux boundary", () => {
     expect(closed).toEqual(["coord-4/claude", "coord-4/cursor"]);
   });
 
-  it("scopes Terminal titles with the tmux namespace and never uses bare agent names", () => {
-    expect(ownerTerminalTitlesToClose(1, ["claude", "antigravity"])).toEqual([
-      "coord-1/claude",
-      "coord-1/antigravity"
-    ]);
-    expect(ownerTerminalTitlesToClose(1, ["claude"], "abc12def00")).toEqual([
+  it("closeOwnerAgentClients uses the unique group ids when titleGroup is set", () => {
+    const closed: string[] = [];
+    const controller = new TmuxController(
+      async () => ok(),
+      null,
+      null,
+      (titles) => {
+        closed.push(...titles);
+      },
+      async () => undefined,
+      "abc12def00"
+    );
+    expect(controller.closeOwnerAgentClients(4, ["claude", "cursor"])).toEqual({
+      status: "closed",
+      titles: ["coord-4-abc12def00/claude", "coord-4-abc12def00/cursor"]
+    });
+    expect(closed).toEqual(["coord-4-abc12def00/claude", "coord-4-abc12def00/cursor"]);
+  });
+
+  it("scopes Terminal titles with workspace group id and closes only those exact ids", () => {
+    expect(ownerTerminalTitlesToClose(1, ["claude", "antigravity"], "abc12def00")).toEqual([
       "coord-1-abc12def00/claude",
-      "coord-1/claude"
+      "coord-1-abc12def00/antigravity"
     ]);
+    // Ungrouped / bare names must never be in the close list when a group is set.
+    expect(ownerTerminalTitlesToClose(1, ["claude"], "abc12def00")).not.toContain("coord-1/claude");
+    expect(ownerTerminalTitlesToClose(1, ["claude"], "abc12def00")).not.toContain("claude");
     const nested = new TmuxController(async () => ok(), "abc12def00", async () => undefined);
     expect(nested.agentAttachLaunches(7, [
       { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both", terminalProfile: "Pro" }
     ])[0]?.windowTitle).toBe("coord-7-abc12def00/claude");
-    // Flat tmux sessions stay coord-N, but titles still get an explicit group id.
     const flatGrouped = new TmuxController(
       async () => ok(),
       null,
@@ -269,28 +286,35 @@ describe("tmux boundary", () => {
     expect(flatGrouped.agentAttachLaunches(1, [
       { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both", terminalProfile: "Pro" }
     ])[0]?.windowTitle).toBe("coord-1-flatgroup01/claude");
+    expect(flatGrouped.ownerTerminalTitles(1, ["claude", "cursor"])).toEqual([
+      "coord-1-flatgroup01/claude",
+      "coord-1-flatgroup01/cursor"
+    ]);
   });
 
-  it("builds Terminal open AppleScript that makes a dedicated window (never front window)", () => {
+  it("builds Terminal open AppleScript that titles the new tab with the unique id", () => {
     const script = ownerTerminalOpenAppleScript({
       agentId: "claude",
       command: "tmux new-session -A -s coord-1-claude -t coord-1",
       terminalProfile: "Pro",
-      windowTitle: "coord-1/claude"
+      windowTitle: "coord-1-abc12def00/claude"
     });
-    expect(script).toContain("set newWin to make new window");
-    expect(script).toContain('set newTab to do script "tmux new-session -A -s coord-1-claude -t coord-1" in newWin');
-    expect(script).toContain('set custom title of newWin to "coord-1/claude"');
+    expect(script).toContain('set newTab to do script "tmux new-session -A -s coord-1-claude -t coord-1"');
+    expect(script).toContain('set custom title of newTab to "coord-1-abc12def00/claude"');
+    expect(script).not.toContain("make new window");
     expect(script).not.toContain("front window");
     expect(script).not.toContain("window of newTab");
-    expect(script).not.toContain("whose tabs contains");
-    expect(script).toContain('set current settings of newTab to settings set "Pro"');
   });
 
-  it("builds Terminal close AppleScript that only matches exact custom titles", () => {
-    const script = ownerTerminalCloseAppleScript(["coord-1/claude", "coord-1/cursor"]);
-    expect(script).toContain('set wanted to {"coord-1/claude", "coord-1/cursor"}');
-    expect(script).toContain("if wanted contains t then set end of closable to w");
+  it("builds Terminal close AppleScript that matches only the unique title ids", () => {
+    const titles = ownerTerminalTitlesToClose(1, ["claude", "cursor"], "abc12def00");
+    const script = ownerTerminalCloseAppleScript(titles);
+    expect(script).toContain('set wanted to {"coord-1-abc12def00/claude", "coord-1-abc12def00/cursor"}');
+    expect(script).toContain("set t to custom title of tb");
+    expect(script).toContain("if wanted contains t then set end of tabsToClose to tb");
+    expect(script).toContain("close tb");
+    expect(script).not.toContain('"claude"');
+    expect(script).not.toContain("coord-1/claude");
     expect(script).not.toContain("front window");
   });
 

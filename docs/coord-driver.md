@@ -123,12 +123,11 @@ tmux attach -t coord-42
 
 On macOS, `coord start` / a fresh `coord N` also opens one Terminal.app window per
 agent, each attached to that agent's tmux window (separate clients — no Ctrl-b n).
-Windows are titled `coord-N-<group>/<agent>`, where `<group>` is a stable
-10-hex fingerprint of the workspace root (so coordination and testapp issue 1
-never share titles). Each attach creates a dedicated Terminal window
-(`make new window`) and titles that window only — bare `do script` is avoided
-because it can open a tab inside an already open window and then retitle/close
-the wrong tabs. Re-open those views
+Windows are titled on the **tab** as `coord-N-<group>/<agent>`, where `<group>`
+is a stable 10-hex fingerprint of the workspace root. Attach uses `do script`
+and sets that tab's custom title only. Detach/wipe close **only tabs whose
+title exactly matches those ids** — never bare agent names and never
+ungrouped `coord-N/<agent>`. Re-open those views
 later with `coord attach N`. `coord detach N` kills the issue tmux sessions and
 closes matching scoped titles without wiping runtime, clones, or branches.
 `coord uninstall` tears down owner tmux/Terminal only for discovered issues; with

@@ -135,18 +135,22 @@ export type OwnerTerminalLaunch = {
   agentId: string;
   command: string;
   terminalProfile: string;
-  /** Unique Terminal.app custom title so detach/wipe can close the window. */
+  /**
+   * Unique tab custom title including workspace group id
+   * (`coord-N-<group>/<agent>`). Close scans only for these exact strings.
+   */
   windowTitle: string;
 };
 export type OwnerTerminalOpener = (launches: readonly OwnerTerminalLaunch[]) => Promise<void>;
+/** Close tabs whose custom title is in this exact list (unique group ids). */
 export type OwnerTerminalCloser = (titles: readonly string[]) => void;
 
 const appleScriptString = (value: string): string => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
 /**
- * Stable Terminal.app custom title for an issue's owner agent window.
- * Always embeds a workspace group id when provided so two products sharing an
- * issue number do not collide (`coord-1-<group>/claude`).
+ * Stable Terminal.app custom title for an issue's owner agent tab.
+ * Always pass `group` (= workspace terminalGroup) so titles are unique across
+ * products; close must match these exact strings only.
  */
 export const ownerTerminalWindowTitle = (
   issue: number,
@@ -161,8 +165,9 @@ export const ownerTerminalWindowTitle = (
 };
 
 /**
- * Titles to close for an issue's agents. Never includes bare `<agent>` names.
- * When grouped, also match the ungrouped `coord-N/<agent>` form for migration.
+ * Exact titles to close for an issue. Only the unique grouped form when `group`
+ * is set — never bare agent names and never ungrouped `coord-N/<agent>`
+ * (those collide across products).
  */
 export const ownerTerminalTitlesToClose = (
   issue: number,
@@ -178,29 +183,22 @@ export const ownerTerminalTitlesToClose = (
   };
   for (const agentId of agentIds) {
     add(ownerTerminalWindowTitle(issue, agentId, group));
-    if (group !== null && group !== "") {
-      add(ownerTerminalWindowTitle(issue, agentId, null));
-    }
   }
   return titles;
 };
 
 /**
- * Build the Terminal.app AppleScript that opens one owner attach window.
- * Exported for tests — real osascript is Darwin-only and not exercised in CI.
- *
- * Always `make new window` first: bare `do script` can open a tab inside an
- * already-open window, and then any window-level title/close hits the operator's
- * other tabs. Never use `front window` or `window of newTab` (-10006).
+ * Open one attach tab via `do script` and set that tab's custom title to the
+ * unique group id title. Does not use `make new window` (-10000),
+ * `window of newTab` (-10006), or `front window`.
  */
 export const ownerTerminalOpenAppleScript = (launch: OwnerTerminalLaunch): string => {
   const title = launch.windowTitle.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   const profile = launch.terminalProfile.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   return [
     'tell application "Terminal"',
-    "  set newWin to make new window",
-    `  set newTab to do script ${appleScriptString(launch.command)} in newWin`,
-    `  set custom title of newWin to "${title}"`,
+    `  set newTab to do script ${appleScriptString(launch.command)}`,
+    `  set custom title of newTab to "${title}"`,
     "  try",
     `    set current settings of newTab to settings set "${profile}"`,
     "  end try",
@@ -208,7 +206,6 @@ export const ownerTerminalOpenAppleScript = (launch: OwnerTerminalLaunch): strin
   ].join("\n");
 };
 
-/** Open one macOS Terminal.app window per agent, each attached to that agent's tmux window. */
 export const openDarwinTerminalWindows: OwnerTerminalOpener = async (launches) => {
   for (const launch of launches) {
     const script = ownerTerminalOpenAppleScript(launch);
@@ -228,41 +225,40 @@ export const openDarwinTerminalWindows: OwnerTerminalOpener = async (launches) =
 };
 
 /**
- * Build Terminal.app AppleScript that closes windows whose custom titles match.
- * Only whole windows we titled ourselves (via make new window) — never tabs
- * inside an unrelated multi-tab window.
+ * Close tabs whose custom title is exactly in `titles` (must be unique group
+ * ids from ownerTerminalTitlesToClose). Never matches bare agent names.
  */
 export const ownerTerminalCloseAppleScript = (titles: readonly string[]): string => {
   const list = titles.map((title) => appleScriptString(title)).join(", ");
   return [
     'tell application "Terminal"',
     `  set wanted to {${list}}`,
-    "  set closable to {}",
+    "  set tabsToClose to {}",
     "  repeat with w in windows",
     "    try",
-    "      set t to custom title of w",
-    "      if wanted contains t then set end of closable to w",
+    "      repeat with tb in tabs of w",
+    "        try",
+    "          set t to custom title of tb",
+    "          if wanted contains t then set end of tabsToClose to tb",
+    "        end try",
+    "      end repeat",
     "    end try",
     "  end repeat",
-    "  repeat with w in closable",
+    "  repeat with tb in tabsToClose",
     "    try",
-    "      close w",
+    "      close tb",
     "    end try",
     "  end repeat",
     "end tell"
   ].join("\n");
 };
 
-/**
- * Close Terminal.app windows whose custom titles match (no activate — avoid focus steal).
- * Collect windows first, then close, so AppleScript does not mutate while iterating.
- */
 export const closeDarwinTerminalWindows: OwnerTerminalCloser = (titles) => {
   if (titles.length === 0) return;
   const script = ownerTerminalCloseAppleScript(titles);
   const result = spawnSync("osascript", ["-e", script], { encoding: "utf8" });
   if ((result.status ?? 1) !== 0) {
-    throw new Error(`osascript failed to close Terminal windows: ${(result.stderr ?? "").trim() || `exit ${result.status}`}`);
+    throw new Error(`osascript failed to close Terminal tabs: ${(result.stderr ?? "").trim() || `exit ${result.status}`}`);
   }
 };
 
@@ -356,8 +352,8 @@ export class TmuxController {
   }
 
   /**
-   * Close owner Terminal.app windows for this issue (Darwin). No-op elsewhere.
-   * Failures are returned so detach/wipe can continue after tmux teardown.
+   * Close owner Terminal.app tabs whose custom titles match this issue's unique
+   * group ids. Failures are returned so detach/wipe can continue after tmux teardown.
    */
   closeOwnerAgentClients(
     issue: number,
