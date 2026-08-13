@@ -227,28 +227,42 @@ export const openDarwinTerminalWindows: OwnerTerminalOpener = async (launches) =
 };
 
 /**
- * Close tabs whose custom title is exactly in `titles` (must be unique group
- * ids from ownerTerminalTitlesToClose). Never matches bare agent names.
+ * Close whole Terminal windows that own our unique titles.
+ *
+ * Matching only `custom title of tab` + `close tb` is unreliable: after the
+ * attached tmux client exits, Terminal keeps an idle shell and often clears or
+ * ignores the custom title while the window name still shows
+ * `coord-N-<group>/<agent>`. Closing the window by id (after collecting matches)
+ * tears down that leftover shell. Never matches bare agent names.
  */
 export const ownerTerminalCloseAppleScript = (titles: readonly string[]): string => {
   const list = titles.map((title) => appleScriptString(title)).join(", ");
   return [
     'tell application "Terminal"',
     `  set wanted to {${list}}`,
-    "  set tabsToClose to {}",
+    "  set windowIds to {}",
     "  repeat with w in windows",
     "    try",
+    "      set wid to id of w",
+    "      set wname to name of w as text",
+    "      set shouldClose to false",
     "      repeat with tb in tabs of w",
     "        try",
-    "          set t to custom title of tb",
-    "          if wanted contains t then set end of tabsToClose to tb",
+    "          set t to custom title of tb as text",
+    "          if wanted contains t then set shouldClose to true",
     "        end try",
     "      end repeat",
+    "      if shouldClose is false then",
+    "        repeat with titleText in wanted",
+    "          if wname contains (titleText as text) then set shouldClose to true",
+    "        end repeat",
+    "      end if",
+    "      if shouldClose then set end of windowIds to wid",
     "    end try",
     "  end repeat",
-    "  repeat with tb in tabsToClose",
+    "  repeat with wid in windowIds",
     "    try",
-    "      close tb",
+    "      close (first window whose id is wid)",
     "    end try",
     "  end repeat",
     "end tell"

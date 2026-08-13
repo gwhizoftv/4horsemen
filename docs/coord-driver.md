@@ -130,8 +130,10 @@ is a stable 10-hex fingerprint of the workspace root. Attach uses `do script`
 and sets that tab's custom title only. Detach/wipe close **only tabs whose
 title exactly matches those ids** — never bare agent names and never
 ungrouped `coord-N/<agent>`. Re-open those views
-later with `coord attach N`. `coord detach N` kills the issue tmux sessions and
-closes matching scoped titles without wiping runtime, clones, or branches.
+later with `coord attach N`. `coord detach N` closes matching Terminal windows
+(by unique title / window name) then kills the issue tmux sessions, without
+wiping runtime, clones, or branches. When `coord N` / `coord run` finishes with
+a completed workflow, it runs the same teardown automatically.
 `coord uninstall` tears down owner tmux/Terminal only for discovered issues; with
 no sessions it is a no-op (it never closes bare agent-named tabs).
 
