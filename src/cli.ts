@@ -188,7 +188,8 @@ Use \`-v\` / \`--verbose\` on \`coord N\`, start, or run for tick-level progress
 On macOS, starting an issue opens one Terminal.app window per agent, each attached
 to that agent's tmux window (no Ctrl-b n). Re-open later with \`coord attach N\`.
 \`coord detach N\` closes those Terminal windows and kills the issue tmux sessions
-without wiping runtime or branches. \`coord uninstall\` also tears down owner
+without wiping runtime or branches. A completed \`coord N\` / \`coord run\` does the
+same teardown automatically. \`coord uninstall\` also tears down owner
 tmux/Terminals for the workspace agents. \`coord wipe-issue N\` resets agent clones,
 deletes origin issue-N/<agent> branches, wipes local issue runtime and tmux/Terminals,
 and leaves the GitHub issue open.
@@ -511,6 +512,26 @@ const defaultStartEffects = async (input: {
   return { cleanup: async () => tmux.stopSession(input.issue) };
 };
 
+const detachCompletedIssue = async (paths: IssueRuntimePaths, io: CliIo): Promise<void> => {
+  const cursors = readCursorsState(paths);
+  if (!cursors.completed) return;
+  const start = readStartState(paths);
+  const outcome = await detachIssue({
+    issue: start.issue,
+    agentIds: start.agents.map((agent) => agent.id),
+    tmuxNamespace: paths.tmuxNamespace,
+    terminalGroup: paths.terminalGroup,
+    log: io.stdout
+  });
+  io.stdout(
+    `Issue ${start.issue} complete: killed ${outcome.killedSessions.length} tmux session(s)` +
+      (outcome.terminalClose === "closed"
+        ? `, closed ${outcome.closedTerminalTitles.length} Terminal window(s)`
+        : "") +
+      ".\n"
+  );
+};
+
 export const runCli = async (argv: readonly string[], dependencies: CliDependencies = {}): Promise<number> => {
   const io: CliIo = { ...defaultIo, ...dependencies.io };
   const runner = dependencies.processRunner ?? runArgv;
@@ -633,6 +654,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         io.stdout(`Tip: coord attach ${issue} opens one Terminal window per agent.\n`);
       }
       await makeRunLoop(paths).run();
+      await detachCompletedIssue(paths, io);
       return 0;
     }
 
@@ -835,7 +857,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       allowedFlags(parsed, ["issue", "coord-root", "product", "verbose"]);
       if (parsed.positionals.length !== 0) throw new Error("run takes no positional arguments.");
       verboseState.enabled = flagIsSet(parsed, "verbose");
-      await makeRunLoop(existingContext(parsed, io)).run();
+      const paths = existingContext(parsed, io);
+      await makeRunLoop(paths).run();
+      await detachCompletedIssue(paths, io);
       return 0;
     }
 

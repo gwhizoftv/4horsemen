@@ -392,6 +392,25 @@ describe("CLI", () => {
     expect(chunks.join("")).toContain("codex");
   });
 
+  it("detaches tmux/Terminal UI after a completed coord N run", async () => {
+    const fixture = setup();
+    await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      processRunner: successfulStartGit,
+      makeRunLoop: fakeLoop
+    });
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const current = readCursorsState(paths);
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...current, completed: true }));
+    const output: string[] = [];
+    expect(
+      await runCli(["1", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stdout: (message) => output.push(message) },
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Issue 1 complete: killed");
+  });
+
   it("refuses to drop the final active agent", async () => {
     const fixture = setup();
     await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
