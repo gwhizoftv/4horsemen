@@ -145,30 +145,29 @@ const appleScriptString = (value: string): string => `"${value.replace(/\\/g, "\
 
 /**
  * Stable Terminal.app custom title for an issue's owner agent window.
- * Nested workspaces embed the tmux namespace so two products sharing an issue
- * number do not collide (`coord-34/<agent>` vs `coord-34-<hash>/<agent>`).
+ * Always embeds a workspace group id when provided so two products sharing an
+ * issue number do not collide (`coord-1-<group>/claude`).
  */
 export const ownerTerminalWindowTitle = (
   issue: number,
   agentId: string,
-  namespace: string | null = null
+  group: string | null = null
 ): string => {
   const session =
-    namespace === null || namespace === ""
+    group === null || group === ""
       ? `coord-${issue}`
-      : `coord-${issue}-${safeName(namespace)}`;
+      : `coord-${issue}-${safeName(group)}`;
   return `${session}/${safeName(agentId)}`;
 };
 
 /**
- * Titles to close for an issue's agents. Never includes bare `<agent>` names —
- * those collide with unrelated Terminal tabs and other products.
- * When namespaced, also match the pre-namespace `coord-N/<agent>` form.
+ * Titles to close for an issue's agents. Never includes bare `<agent>` names.
+ * When grouped, also match the ungrouped `coord-N/<agent>` form for migration.
  */
 export const ownerTerminalTitlesToClose = (
   issue: number,
   agentIds: readonly string[],
-  namespace: string | null = null
+  group: string | null = null
 ): string[] => {
   const titles: string[] = [];
   const seen = new Set<string>();
@@ -178,8 +177,8 @@ export const ownerTerminalTitlesToClose = (
     titles.push(title);
   };
   for (const agentId of agentIds) {
-    add(ownerTerminalWindowTitle(issue, agentId, namespace));
-    if (namespace !== null && namespace !== "") {
+    add(ownerTerminalWindowTitle(issue, agentId, group));
+    if (group !== null && group !== "") {
       add(ownerTerminalWindowTitle(issue, agentId, null));
     }
   }
@@ -304,8 +303,15 @@ export class TmuxController {
     private readonly ownerTerminalCloser: OwnerTerminalCloser | null =
       platform() === "darwin" ? closeDarwinTerminalWindows : null,
     private readonly sleep: (ms: number) => Promise<void> = (ms) =>
-      new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
+      new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
+    /** Workspace fingerprint for Terminal titles; defaults to tmux namespace. */
+    private readonly titleGroup: string | null = null
   ) {}
+
+  /** Group id embedded in Terminal custom titles for this workspace. */
+  private terminalTitleGroup(): string | null {
+    return this.titleGroup ?? this.namespace;
+  }
 
   sessionName(issue: number): string {
     return `coord-${issue}${this.namespace === null ? "" : `-${safeName(this.namespace)}`}`;
@@ -317,16 +323,17 @@ export class TmuxController {
 
   agentAttachLaunches(issue: number, agents: readonly AgentConfig[]): OwnerTerminalLaunch[] {
     const session = this.sessionName(issue);
+    const group = this.terminalTitleGroup();
     return agents.map((agent) => ({
       agentId: agent.id,
       command: agentClientAttachCommand(session, agent.id),
       terminalProfile: resolveTerminalProfile(agent),
-      windowTitle: ownerTerminalWindowTitle(issue, agent.id, this.namespace)
+      windowTitle: ownerTerminalWindowTitle(issue, agent.id, group)
     }));
   }
 
   ownerTerminalTitles(issue: number, agentIds: readonly string[]): string[] {
-    return ownerTerminalTitlesToClose(issue, agentIds, this.namespace);
+    return ownerTerminalTitlesToClose(issue, agentIds, this.terminalTitleGroup());
   }
 
   /** List the primary issue session and any linked per-agent client sessions. */
@@ -356,7 +363,7 @@ export class TmuxController {
     issue: number,
     agentIds: readonly string[]
   ): { status: "closed" | "unsupported" | "failed"; titles: readonly string[]; error?: string } {
-    const titles = ownerTerminalTitlesToClose(issue, agentIds, this.namespace);
+    const titles = ownerTerminalTitlesToClose(issue, agentIds, this.terminalTitleGroup());
     if (this.ownerTerminalCloser === null) return { status: "unsupported", titles };
     try {
       this.ownerTerminalCloser(titles);

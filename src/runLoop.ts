@@ -319,7 +319,7 @@ export class CoordinatorRunLoop {
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
     this.mirror = dependencies.mirror ?? new BareMirror(paths.mirror, start.origin);
-    this.tmux = dependencies.tmux === undefined ? new TmuxController(undefined, paths.tmuxNamespace) : dependencies.tmux;
+    this.tmux = dependencies.tmux === undefined ? new TmuxController(undefined, paths.tmuxNamespace, undefined, undefined, undefined, paths.terminalGroup) : dependencies.tmux;
     this.processRunner = dependencies.processRunner ?? runArgv;
     this.pullRequestOpener = dependencies.pullRequestOpener ?? openDraftPullRequest;
     this.now = dependencies.now ?? (() => new Date().toISOString());

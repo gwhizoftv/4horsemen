@@ -154,6 +154,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
       issue: options.issue,
       agentIds: options.config.agents.map((agent) => agent.id),
       tmuxNamespace: paths.tmuxNamespace,
+      terminalGroup: paths.terminalGroup,
       dryRun,
       log,
       ...(options.terminalCloser === undefined ? {} : { terminalCloser: options.terminalCloser })

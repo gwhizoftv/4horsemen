@@ -256,6 +256,19 @@ describe("tmux boundary", () => {
     expect(nested.agentAttachLaunches(7, [
       { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both", terminalProfile: "Pro" }
     ])[0]?.windowTitle).toBe("coord-7-abc12def00/claude");
+    // Flat tmux sessions stay coord-N, but titles still get an explicit group id.
+    const flatGrouped = new TmuxController(
+      async () => ok(),
+      null,
+      async () => undefined,
+      null,
+      async () => undefined,
+      "flatgroup01"
+    );
+    expect(flatGrouped.sessionName(1)).toBe("coord-1");
+    expect(flatGrouped.agentAttachLaunches(1, [
+      { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both", terminalProfile: "Pro" }
+    ])[0]?.windowTitle).toBe("coord-1-flatgroup01/claude");
   });
 
   it("builds Terminal open AppleScript that makes a dedicated window (never front window)", () => {
