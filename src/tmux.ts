@@ -186,22 +186,33 @@ export const ownerTerminalTitlesToClose = (
   return titles;
 };
 
+/**
+ * Build the Terminal.app AppleScript that opens one owner attach window.
+ * Exported for tests — real osascript is Darwin-only and not exercised in CI.
+ *
+ * Always `make new window` first: bare `do script` can open a tab inside an
+ * already-open window, and then any window-level title/close hits the operator's
+ * other tabs. Never use `front window` or `window of newTab` (-10006).
+ */
+export const ownerTerminalOpenAppleScript = (launch: OwnerTerminalLaunch): string => {
+  const title = launch.windowTitle.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const profile = launch.terminalProfile.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return [
+    'tell application "Terminal"',
+    "  set newWin to make new window",
+    `  set newTab to do script ${appleScriptString(launch.command)} in newWin`,
+    `  set custom title of newWin to "${title}"`,
+    "  try",
+    `    set current settings of newTab to settings set "${profile}"`,
+    "  end try",
+    "end tell"
+  ].join("\n");
+};
+
 /** Open one macOS Terminal.app window per agent, each attached to that agent's tmux window. */
 export const openDarwinTerminalWindows: OwnerTerminalOpener = async (launches) => {
   for (const launch of launches) {
-    const title = launch.windowTitle.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-    const profile = launch.terminalProfile.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-    // Title the window that owns the new tab — never `front window`, which can
-    // retitle an unrelated Terminal tab the operator already had open.
-    const script = [
-      'tell application "Terminal"',
-      `  set newTab to do script ${appleScriptString(launch.command)}`,
-      `  set custom title of (window of newTab) to "${title}"`,
-      "  try",
-      `    set current settings of newTab to settings set "${profile}"`,
-      "  end try",
-      "end tell"
-    ].join("\n");
+    const script = ownerTerminalOpenAppleScript(launch);
     const result = await new Promise<TmuxResult>((resolvePromise, reject) => {
       const child = spawn("osascript", ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
       let stdout = "";
@@ -218,13 +229,13 @@ export const openDarwinTerminalWindows: OwnerTerminalOpener = async (launches) =
 };
 
 /**
- * Close Terminal.app windows whose custom titles match (no activate — avoid focus steal).
- * Collect windows first, then close, so AppleScript does not mutate while iterating.
+ * Build Terminal.app AppleScript that closes windows whose custom titles match.
+ * Only whole windows we titled ourselves (via make new window) — never tabs
+ * inside an unrelated multi-tab window.
  */
-export const closeDarwinTerminalWindows: OwnerTerminalCloser = (titles) => {
-  if (titles.length === 0) return;
+export const ownerTerminalCloseAppleScript = (titles: readonly string[]): string => {
   const list = titles.map((title) => appleScriptString(title)).join(", ");
-  const script = [
+  return [
     'tell application "Terminal"',
     `  set wanted to {${list}}`,
     "  set closable to {}",
@@ -241,6 +252,15 @@ export const closeDarwinTerminalWindows: OwnerTerminalCloser = (titles) => {
     "  end repeat",
     "end tell"
   ].join("\n");
+};
+
+/**
+ * Close Terminal.app windows whose custom titles match (no activate — avoid focus steal).
+ * Collect windows first, then close, so AppleScript does not mutate while iterating.
+ */
+export const closeDarwinTerminalWindows: OwnerTerminalCloser = (titles) => {
+  if (titles.length === 0) return;
+  const script = ownerTerminalCloseAppleScript(titles);
   const result = spawnSync("osascript", ["-e", script], { encoding: "utf8" });
   if ((result.status ?? 1) !== 0) {
     throw new Error(`osascript failed to close Terminal windows: ${(result.stderr ?? "").trim() || `exit ${result.status}`}`);
