@@ -3,7 +3,6 @@ import type { TmuxRunner, OwnerTerminalCloser, TmuxResult } from "./tmux.js";
 import {
   closeDarwinTerminalWindows,
   ownerTerminalTitlesToClose,
-  ownerTerminalWindowTitle,
   TmuxController
 } from "./tmux.js";
 import { platform } from "node:os";
@@ -141,7 +140,7 @@ export const detachIssue = async (options: DetachIssueOptions): Promise<DetachIs
     await tmux.killIssueSessions(options.issue);
   }
 
-  const titles = ownerTerminalTitlesToClose(options.issue, options.agentIds);
+  const titles = ownerTerminalTitlesToClose(options.issue, options.agentIds, options.tmuxNamespace ?? null);
   const closed = closeTitles(titles, closer, dryRun, log);
   return { killedSessions: names, ...closed };
 };
@@ -162,7 +161,9 @@ export type DetachAllOwnerUiOptions = {
 
 /**
  * Sync UI teardown for uninstall: kill discovered (or listed) issue tmux
- * sessions and close legacy + `coord-N/<agent>` Terminal titles.
+ * sessions and close matching `coord-N[/<ns>]/<agent>` Terminal titles.
+ * With no matching sessions/issues, this is a pure no-op — it must not close
+ * bare agent-named Terminal tabs (that path hit unrelated windows with no tmux).
  */
 export const detachAllOwnerUiSync = (options: DetachAllOwnerUiOptions): DetachIssueResult => {
   const log = options.log ?? (() => undefined);
@@ -186,15 +187,14 @@ export const detachAllOwnerUiSync = (options: DetachAllOwnerUiOptions): DetachIs
     }
   }
 
-  const titles = new Set<string>();
-  for (const agentId of options.agentIds) {
-    titles.add(agentId.replace(/[^A-Za-z0-9_-]/g, "-"));
-    for (const issue of issues) titles.add(ownerTerminalWindowTitle(issue, agentId));
-  }
-  // If tmux is already gone, still close legacy bare agent titles.
   if (issues.length === 0) {
-    for (const agentId of options.agentIds) {
-      titles.add(agentId.replace(/[^A-Za-z0-9_-]/g, "-"));
+    return { killedSessions: [], closedTerminalTitles: [], terminalClose: "skipped" };
+  }
+
+  const titles = new Set<string>();
+  for (const issue of issues) {
+    for (const title of ownerTerminalTitlesToClose(issue, options.agentIds, namespace)) {
+      titles.add(title);
     }
   }
 

@@ -236,18 +236,24 @@ describe("tmux boundary", () => {
     });
     expect(controller.closeOwnerAgentClients(4, ["claude", "cursor"])).toEqual({
       status: "closed",
-      titles: ["coord-4/claude", "claude", "coord-4/cursor", "cursor"]
+      titles: ["coord-4/claude", "coord-4/cursor"]
     });
-    expect(closed).toEqual(["coord-4/claude", "claude", "coord-4/cursor", "cursor"]);
+    expect(closed).toEqual(["coord-4/claude", "coord-4/cursor"]);
   });
 
-  it("includes legacy bare agent titles when closing", () => {
+  it("scopes Terminal titles with the tmux namespace and never uses bare agent names", () => {
     expect(ownerTerminalTitlesToClose(1, ["claude", "antigravity"])).toEqual([
       "coord-1/claude",
-      "claude",
-      "coord-1/antigravity",
-      "antigravity"
+      "coord-1/antigravity"
     ]);
+    expect(ownerTerminalTitlesToClose(1, ["claude"], "abc12def00")).toEqual([
+      "coord-1-abc12def00/claude",
+      "coord-1/claude"
+    ]);
+    const nested = new TmuxController(async () => ok(), "abc12def00", async () => undefined);
+    expect(nested.agentAttachLaunches(7, [
+      { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both", terminalProfile: "Pro" }
+    ])[0]?.windowTitle).toBe("coord-7-abc12def00/claude");
   });
 
   it("treats pull-only agents as nudge-disabled", async () => {
