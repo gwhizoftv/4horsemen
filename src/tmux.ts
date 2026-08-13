@@ -63,6 +63,8 @@ export const harnessPromptReady = (paneText: string, agentId: string): boolean =
     case "cursor":
       return /Add a follow-up|Run Everything|Auto ·/i.test(plain);
     case "antigravity":
+      // Escape cancels an in-flight turn; do not nudge while working.
+      if (/esc to cancel|Generating\.\.\.|Running\.\.\.|Working\.\.\./i.test(plain)) return false;
       return (/>|shortcuts|Accept-edits/i.test(plain) && /Antigravity|Gemini|accept-edits/i.test(plain));
     case "codex":
       // Codex accepts keys once the process is up; avoid blocking on transient UI.
@@ -78,12 +80,24 @@ export const resolveNudgeKeys = (
 ): { prelude: readonly string[]; submit: readonly string[] } => {
   const defaults = agentOwnerUiDefaults(agent.id);
   const prelude = agent.nudgePrelude ?? defaults.nudgePrelude;
-  const rawSubmit = agent.nudgeSubmit ?? defaults.nudgeSubmit;
-  // #26/#27 left many runtimes on bare Enter/C-m, which do not submit these TUIs.
-  const submit =
-    rawSubmit.length === 1 && (rawSubmit[0] === "Enter" || rawSubmit[0] === "C-m")
-      ? defaults.nudgeSubmit
-      : rawSubmit;
+  let rawSubmit = agent.nudgeSubmit ?? defaults.nudgeSubmit;
+  // #28 applied Escape+Enter to Antigravity; there Escape cancels.
+  if (
+    agent.id === "antigravity" &&
+    rawSubmit.length === 2 &&
+    rawSubmit[0] === "Escape" &&
+    rawSubmit[1] === "Enter"
+  ) {
+    rawSubmit = defaults.nudgeSubmit;
+  }
+  // #26/#27 left many Claude/Cursor runtimes on bare Enter/C-m.
+  // Antigravity wants bare Enter; only upgrade stale C-m there.
+  const staleBareSubmit =
+    rawSubmit.length === 1 &&
+    (agent.id === "antigravity"
+      ? rawSubmit[0] === "C-m"
+      : rawSubmit[0] === "Enter" || rawSubmit[0] === "C-m");
+  const submit = staleBareSubmit ? defaults.nudgeSubmit : rawSubmit;
   return { prelude, submit };
 };
 
@@ -129,15 +143,33 @@ export type OwnerTerminalCloser = (titles: readonly string[]) => void;
 
 const appleScriptString = (value: string): string => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
-/** Stable Terminal.app custom title for an issue's owner agent window. */
-export const ownerTerminalWindowTitle = (issue: number, agentId: string): string =>
-  `coord-${issue}/${safeName(agentId)}`;
+/**
+ * Stable Terminal.app custom title for an issue's owner agent window.
+ * Nested workspaces embed the tmux namespace so two products sharing an issue
+ * number do not collide (`coord-34/<agent>` vs `coord-34-<hash>/<agent>`).
+ */
+export const ownerTerminalWindowTitle = (
+  issue: number,
+  agentId: string,
+  namespace: string | null = null
+): string => {
+  const session =
+    namespace === null || namespace === ""
+      ? `coord-${issue}`
+      : `coord-${issue}-${safeName(namespace)}`;
+  return `${session}/${safeName(agentId)}`;
+};
 
 /**
- * Titles to close for an issue's agents: current `coord-N/<agent>` plus legacy
- * bare `<agent>` titles used before the unique title format shipped.
+ * Titles to close for an issue's agents. Never includes bare `<agent>` names —
+ * those collide with unrelated Terminal tabs and other products.
+ * When namespaced, also match the pre-namespace `coord-N/<agent>` form.
  */
-export const ownerTerminalTitlesToClose = (issue: number, agentIds: readonly string[]): string[] => {
+export const ownerTerminalTitlesToClose = (
+  issue: number,
+  agentIds: readonly string[],
+  namespace: string | null = null
+): string[] => {
   const titles: string[] = [];
   const seen = new Set<string>();
   const add = (title: string): void => {
@@ -146,8 +178,10 @@ export const ownerTerminalTitlesToClose = (issue: number, agentIds: readonly str
     titles.push(title);
   };
   for (const agentId of agentIds) {
-    add(ownerTerminalWindowTitle(issue, agentId));
-    add(safeName(agentId));
+    add(ownerTerminalWindowTitle(issue, agentId, namespace));
+    if (namespace !== null && namespace !== "") {
+      add(ownerTerminalWindowTitle(issue, agentId, null));
+    }
   }
   return titles;
 };
@@ -157,11 +191,12 @@ export const openDarwinTerminalWindows: OwnerTerminalOpener = async (launches) =
   for (const launch of launches) {
     const title = launch.windowTitle.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const profile = launch.terminalProfile.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    // Title the window that owns the new tab — never `front window`, which can
+    // retitle an unrelated Terminal tab the operator already had open.
     const script = [
       'tell application "Terminal"',
-      "  activate",
       `  set newTab to do script ${appleScriptString(launch.command)}`,
-      `  set custom title of front window to "${title}"`,
+      `  set custom title of (window of newTab) to "${title}"`,
       "  try",
       `    set current settings of newTab to settings set "${profile}"`,
       "  end try",
@@ -266,12 +301,12 @@ export class TmuxController {
       agentId: agent.id,
       command: agentClientAttachCommand(session, agent.id),
       terminalProfile: resolveTerminalProfile(agent),
-      windowTitle: ownerTerminalWindowTitle(issue, agent.id)
+      windowTitle: ownerTerminalWindowTitle(issue, agent.id, this.namespace)
     }));
   }
 
   ownerTerminalTitles(issue: number, agentIds: readonly string[]): string[] {
-    return ownerTerminalTitlesToClose(issue, agentIds);
+    return ownerTerminalTitlesToClose(issue, agentIds, this.namespace);
   }
 
   /** List the primary issue session and any linked per-agent client sessions. */
@@ -301,7 +336,7 @@ export class TmuxController {
     issue: number,
     agentIds: readonly string[]
   ): { status: "closed" | "unsupported" | "failed"; titles: readonly string[]; error?: string } {
-    const titles = ownerTerminalTitlesToClose(issue, agentIds);
+    const titles = ownerTerminalTitlesToClose(issue, agentIds, this.namespace);
     if (this.ownerTerminalCloser === null) return { status: "unsupported", titles };
     try {
       this.ownerTerminalCloser(titles);

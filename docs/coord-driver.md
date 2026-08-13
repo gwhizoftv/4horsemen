@@ -123,11 +123,13 @@ tmux attach -t coord-42
 
 On macOS, `coord start` / a fresh `coord N` also opens one Terminal.app window per
 agent, each attached to that agent's tmux window (separate clients — no Ctrl-b n).
-Windows are titled `coord-N/<agent>` (older builds used bare `<agent>`). Re-open
-those views later with `coord attach N`. `coord detach N` kills the issue tmux
-sessions and closes matching Terminal windows (both title forms) without wiping
-runtime, clones, or branches. `coord uninstall` also tears down owner tmux and
-Terminal windows for that workspace's agents.
+Windows are titled `coord-N/<agent>` (flat) or `coord-N-<namespace>/<agent>`
+(nested), so two products sharing an issue number do not collide. Titles are set
+on the new window only — never on Terminal's front window. Re-open those views
+later with `coord attach N`. `coord detach N` kills the issue tmux sessions and
+closes matching scoped titles without wiping runtime, clones, or branches.
+`coord uninstall` tears down owner tmux/Terminal only for discovered issues; with
+no sessions it is a no-op (it never closes bare agent-named tabs).
 
 `coord wipe-issue N` is the owner reset for reusing a GitHub issue number: it
 checks out each agent clone on the base branch, deletes local and origin
@@ -140,18 +142,19 @@ as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`
 Per-agent config controls owner UI:
 
 - `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert)
-- `nudgeSubmit` — tmux keys after the text (Claude/Cursor/Antigravity default:
-  `Escape` then `Enter`, which live-tests need to dismiss autocomplete / leave
-  multiline; Codex default: `C-j` then `C-m`. Stale single `Enter`/`C-m` configs
-  are upgraded to the agent default)
+- `nudgeSubmit` — tmux keys after the text (Claude/Cursor default: `Escape` then
+  `Enter` to dismiss autocomplete; Antigravity default: `Enter` only — Escape
+  cancels there; Codex default: `C-j` then `C-m`. Stale single `Enter`/`C-m` on
+  Claude/Cursor, and mistaken Escape+Enter on Antigravity, are upgraded)
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Pro/Grass/Ocean/Red Sands)
 
-Nudge waits until the pane shows an idle prompt (not Claude's trust dialog or
-Antigravity splash). If the first delivery is skipped (trust UI, wrong
-foreground name, splash), the run loop retries until one successful delivery per
-action. Cursor panes that report as `node` are treated as ready when
-`harnessProcess` is `agent`. Use `coord N -v` for tick-level progress logs.
+Nudge waits until the pane shows an idle prompt (not Claude's trust dialog,
+Antigravity splash, or an in-flight Antigravity turn with `esc to cancel`).
+If the first delivery is skipped (trust UI, wrong foreground name, splash),
+the run loop retries until one successful delivery per action. Cursor panes
+that report as `node` are treated as ready when `harnessProcess` is `agent`.
+Use `coord N -v` for tick-level progress logs.
 
 ## Agent completion contract
 

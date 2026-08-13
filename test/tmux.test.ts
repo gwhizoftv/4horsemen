@@ -236,18 +236,24 @@ describe("tmux boundary", () => {
     });
     expect(controller.closeOwnerAgentClients(4, ["claude", "cursor"])).toEqual({
       status: "closed",
-      titles: ["coord-4/claude", "claude", "coord-4/cursor", "cursor"]
+      titles: ["coord-4/claude", "coord-4/cursor"]
     });
-    expect(closed).toEqual(["coord-4/claude", "claude", "coord-4/cursor", "cursor"]);
+    expect(closed).toEqual(["coord-4/claude", "coord-4/cursor"]);
   });
 
-  it("includes legacy bare agent titles when closing", () => {
+  it("scopes Terminal titles with the tmux namespace and never uses bare agent names", () => {
     expect(ownerTerminalTitlesToClose(1, ["claude", "antigravity"])).toEqual([
       "coord-1/claude",
-      "claude",
-      "coord-1/antigravity",
-      "antigravity"
+      "coord-1/antigravity"
     ]);
+    expect(ownerTerminalTitlesToClose(1, ["claude"], "abc12def00")).toEqual([
+      "coord-1-abc12def00/claude",
+      "coord-1/claude"
+    ]);
+    const nested = new TmuxController(async () => ok(), "abc12def00", async () => undefined);
+    expect(nested.agentAttachLaunches(7, [
+      { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both", terminalProfile: "Pro" }
+    ])[0]?.windowTitle).toBe("coord-7-abc12def00/claude");
   });
 
   it("treats pull-only agents as nudge-disabled", async () => {
@@ -278,13 +284,108 @@ describe("tmux boundary", () => {
     expect(harnessPromptReady("Do you trust this folder?\n❯ 1. Yes", "claude")).toBe(false);
     expect(harnessPromptReady("Antigravity CLI\nnvm use…", "antigravity")).toBe(false);
     expect(harnessPromptReady("Antigravity CLI\n> \n? for shortcuts · Gemini", "antigravity")).toBe(true);
+    expect(
+      harnessPromptReady(
+        "Antigravity CLI\n> \nGenerating...\nesc to cancel · Gemini",
+        "antigravity"
+      )
+    ).toBe(false);
+    expect(
+      harnessPromptReady("Antigravity CLI\n> \nWorking...\nesc to cancel · Gemini", "antigravity")
+    ).toBe(false);
+    expect(
+      harnessPromptReady("Antigravity CLI\n> \nRunning...\nesc to cancel · Gemini", "antigravity")
+    ).toBe(false);
+    expect(resolveNudgeKeys({ id: "antigravity", root: "/a", launcher: "x", delivery: "both" }).submit).toEqual([
+      "Enter"
+    ]);
+    expect(
+      resolveNudgeKeys({
+        id: "antigravity",
+        root: "/a",
+        launcher: "x",
+        delivery: "both",
+        nudgeSubmit: ["Escape", "Enter"]
+      }).submit
+    ).toEqual(["Enter"]);
+    expect(
+      resolveNudgeKeys({
+        id: "antigravity",
+        root: "/a",
+        launcher: "x",
+        delivery: "both",
+        nudgeSubmit: ["C-m"]
+      }).submit
+    ).toEqual(["Enter"]);
     expect(harnessPromptReady("Add a follow-up\nAuto ·\nRun Everything", "cursor")).toBe(true);
+  });
+
+  it("submits Antigravity nudges with Enter only", async () => {
+    const calls: Array<{ args: readonly string[] }> = [];
+    const controller = new TmuxController(
+      runnerWithPrompt(calls, "0\tagy\t0\n", promptFor("antigravity")),
+      null,
+      null,
+      null,
+      noopSleep
+    );
+    expect(
+      await controller.nudge(
+        1,
+        {
+          id: "antigravity",
+          root: "/clone",
+          launcher: "start-antigravity.sh",
+          delivery: "both",
+          harnessProcess: "agy",
+          nudgeSubmit: ["Escape", "Enter"]
+        },
+        "/runtime/action.md"
+      )
+    ).toBe("sent");
+    expect(calls.map((call) => call.args[0])).toEqual([
+      "display-message",
+      "capture-pane",
+      "send-keys",
+      "send-keys"
+    ]);
+    expect(calls[2]?.args).toEqual([
+      "send-keys",
+      "-l",
+      "-t",
+      "coord-1:antigravity.0",
+      expect.stringContaining("/runtime/action.md")
+    ]);
+    expect(calls[3]?.args.slice(-1)).toEqual(["Enter"]);
   });
 
   it("returns busy when Antigravity process is up but splash has no prompt yet", async () => {
     const calls: Array<{ args: readonly string[] }> = [];
     const controller = new TmuxController(
       runnerWithPrompt(calls, "0\tagy\t0\n", "Antigravity CLI\nnvm…\n"),
+      null,
+      null,
+      null,
+      noopSleep
+    );
+    expect(
+      await controller.nudge(
+        1,
+        { id: "antigravity", root: "/clone", launcher: "start-antigravity.sh", delivery: "both", harnessProcess: "agy" },
+        "/runtime/action.md"
+      )
+    ).toBe("busy");
+    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "capture-pane"]);
+  });
+
+  it("returns busy while Antigravity shows esc to cancel", async () => {
+    const calls: Array<{ args: readonly string[] }> = [];
+    const controller = new TmuxController(
+      runnerWithPrompt(
+        calls,
+        "0\tagy\t0\n",
+        "Antigravity CLI\n> \nGenerating...\nesc to cancel · Gemini\n"
+      ),
       null,
       null,
       null,

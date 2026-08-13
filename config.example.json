@@ -37,7 +37,7 @@
       "launcher": "start-antigravity.sh",
       "delivery": "pull",
       "nudgePrelude": [],
-      "nudgeSubmit": ["Escape", "Enter"],
+      "nudgeSubmit": ["Enter"],
       "terminalProfile": "Red Sands"
     }
   ],

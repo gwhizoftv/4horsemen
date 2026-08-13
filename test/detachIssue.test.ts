@@ -29,8 +29,8 @@ describe("detachIssue", () => {
     });
     expect(outcome.killedSessions).toEqual(["coord-2", "coord-2-claude"]);
     expect(killed).toEqual(["coord-2", "coord-2-claude"]);
-    expect(outcome.closedTerminalTitles).toEqual(["coord-2/claude", "claude", "coord-2/codex", "codex"]);
-    expect(closed).toEqual(["coord-2/claude", "claude", "coord-2/codex", "codex"]);
+    expect(outcome.closedTerminalTitles).toEqual(["coord-2/claude", "coord-2/codex"]);
+    expect(closed).toEqual(["coord-2/claude", "coord-2/codex"]);
     expect(outcome.terminalClose).toBe("closed");
   });
 
@@ -63,7 +63,7 @@ describe("detachIssue", () => {
 });
 
 describe("detachAllOwnerUiSync", () => {
-  it("discovers issues from tmux and closes legacy plus coord-N titles", () => {
+  it("discovers issues from tmux and closes only scoped coord-N titles", () => {
     expect(discoverCoordIssues(["coord-1", "coord-1-claude", "coord-2-cursor", "other"])).toEqual([1, 2]);
     const killed: string[] = [];
     const closed: string[] = [];
@@ -80,14 +80,14 @@ describe("detachAllOwnerUiSync", () => {
     });
     expect(killed).toEqual(["coord-1", "coord-1-claude", "coord-1-cursor"]);
     expect(outcome.killedSessions).toEqual(killed);
-    expect(closed).toEqual(["claude", "coord-1/claude", "cursor", "coord-1/cursor"]);
+    expect(closed).toEqual(["coord-1/claude", "coord-1/cursor"]);
     expect(outcome.terminalClose).toBe("closed");
   });
 
-  it("still closes legacy bare titles when no tmux sessions remain", () => {
+  it("does not close Terminal windows when no tmux sessions remain", () => {
     const closed: string[] = [];
     const outcome = detachAllOwnerUiSync({
-      agentIds: ["claude"],
+      agentIds: ["claude", "cursor"],
       listSessions: () => [],
       killSession: () => undefined,
       terminalCloser: (titles) => {
@@ -96,6 +96,32 @@ describe("detachAllOwnerUiSync", () => {
       log: () => undefined
     });
     expect(outcome.killedSessions).toEqual([]);
-    expect(closed).toEqual(["claude"]);
+    expect(closed).toEqual([]);
+    expect(outcome.closedTerminalTitles).toEqual([]);
+    expect(outcome.terminalClose).toBe("skipped");
+  });
+
+  it("does not discover or kill live tmux when injectors are omitted under Vitest", () => {
+    expect(process.env.VITEST).toBeTruthy();
+    const outcome = detachAllOwnerUiSync({
+      agentIds: ["claude", "cursor", "antigravity"],
+      log: () => undefined
+    });
+    expect(outcome.killedSessions).toEqual([]);
+    expect(outcome.closedTerminalTitles).toEqual([]);
+    expect(outcome.terminalClose).toBe("skipped");
+  });
+});
+
+describe("detachIssue Vitest safety", () => {
+  it("does not call live tmux when tmuxRunner is omitted under Vitest", async () => {
+    expect(process.env.VITEST).toBeTruthy();
+    const outcome = await detachIssue({
+      issue: 99,
+      agentIds: ["claude"],
+      log: () => undefined
+    });
+    expect(outcome.killedSessions).toEqual([]);
+    expect(outcome.terminalClose).toBe("unsupported");
   });
 });
