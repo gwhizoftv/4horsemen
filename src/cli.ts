@@ -44,6 +44,7 @@ import {
 } from "./tmux.js";
 import { resolveWorkspaceFromProduct, workspaceLocationFromConfig, type WorkspaceLocation } from "./workspace.js";
 import { wipeIssue } from "./wipeIssue.js";
+import { detachIssue } from "./detachIssue.js";
 
 export type CliIo = {
   stdout: (message: string) => void;
@@ -120,7 +121,8 @@ const parseArgs = (args: readonly string[], booleans: readonly string[] = []): P
 const booleanFlags: Record<string, readonly string[]> = {
   install: ["write-product", "vendor", "bootstrap-coordination", "dry-run"],
   uninstall: ["delete-clones", "wipe-runtime", "delete-coordination", "force", "dry-run"],
-  "wipe-issue": ["force", "dry-run"]
+  "wipe-issue": ["force", "dry-run"],
+  detach: ["dry-run"]
 };
 
 const flagIsSet = (parsed: ParsedArgs, name: string): boolean => parsed.flags.get(name) === "true";
@@ -169,6 +171,7 @@ Usage:
   coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
   coord pause|resume|restart-action|abandon --issue <issue> [--product <path> | --coord-root <path>]
   coord attach <issue> [--product <path> | --coord-root <path>]
+  coord detach <issue> [--product <path> | --coord-root <path>] [--dry-run]
   coord wipe-issue <issue> [--product <path> | --config <path> --coord-root <path>] [--force] [--dry-run]
 
 Called by the agent-clone hooks, not by operators:
@@ -184,8 +187,10 @@ Use \`-v\` / \`--verbose\` on \`coord N\`, start, or run for tick-level progress
 
 On macOS, starting an issue opens one Terminal.app window per agent, each attached
 to that agent's tmux window (no Ctrl-b n). Re-open later with \`coord attach N\`.
-\`coord wipe-issue N\` resets agent clones, deletes origin issue-N/<agent> branches,
-wipes local issue runtime and tmux sessions, and leaves the GitHub issue open.
+\`coord detach N\` closes those Terminal windows and kills the issue tmux sessions
+without wiping runtime or branches. \`coord wipe-issue N\` resets agent clones,
+deletes origin issue-N/<agent> branches, wipes local issue runtime and tmux/Terminals,
+and leaves the GitHub issue open.
 
 install remains the advanced explicit interface. Onboard and install leave the product's
 tracked tree untouched; a fresh human clone receives no coordination hooks or metadata.
@@ -775,12 +780,39 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       return 0;
     }
 
+    if (command === "detach") {
+      allowedFlags(parsed, ["product", "config", "coord-root", ...(booleanFlags.detach ?? [])]);
+      if (parsed.positionals.length !== 1) throw new Error("detach requires exactly one issue number.");
+      const issue = parseIssue(parsed.positionals[0] as string);
+      const resolution = resolveStart(parsed, io);
+      const paths = existingIssueRuntime(resolution, issue);
+      const agentIds =
+        paths === null
+          ? resolution.config.agents.map((agent) => agent.id)
+          : readStartState(paths).agents.map((agent) => agent.id);
+      const outcome = await detachIssue({
+        issue,
+        agentIds,
+        tmuxNamespace: paths?.tmuxNamespace ?? null,
+        dryRun: flagIsSet(parsed, "dry-run"),
+        log: io.stdout
+      });
+      io.stdout(
+        `Detached issue ${issue}: killed ${outcome.killedSessions.length} tmux session(s)` +
+          (outcome.terminalClose === "closed"
+            ? `, closed ${outcome.closedTerminalTitles.length} Terminal window(s)`
+            : "") +
+          ". Runtime left intact.\n"
+      );
+      return 0;
+    }
+
     if (command === "wipe-issue") {
       allowedFlags(parsed, ["product", "config", "coord-root", ...(booleanFlags["wipe-issue"] ?? [])]);
       if (parsed.positionals.length !== 1) throw new Error("wipe-issue requires exactly one issue number.");
       const issue = parseIssue(parsed.positionals[0] as string);
       const resolution = resolveStart(parsed, io);
-      const outcome = wipeIssue({
+      const outcome = await wipeIssue({
         issue,
         config: resolution.config,
         configPath: resolution.configPath,

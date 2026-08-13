@@ -57,7 +57,7 @@ describe("tmux boundary", () => {
 
   it("types the nudge with send-keys -l and Escape+Enter for Cursor", async () => {
     const calls: Array<{ args: readonly string[] }> = [];
-    const controller = new TmuxController(runnerWithPrompt(calls), null, null, noopSleep);
+    const controller = new TmuxController(runnerWithPrompt(calls), null, null, null, noopSleep);
     expect(
       await controller.nudge(
         1,
@@ -92,6 +92,7 @@ describe("tmux boundary", () => {
     const calls: Array<{ args: readonly string[] }> = [];
     const controller = new TmuxController(
       runnerWithPrompt(calls, "0\tcodex\t0\n", promptFor("codex")),
+      null,
       null,
       null,
       noopSleep
@@ -132,6 +133,7 @@ describe("tmux boundary", () => {
       runnerWithPrompt(calls, "0\tcodex\t0\n", promptFor("codex")),
       null,
       null,
+      null,
       noopSleep
     );
     await controller.nudge(
@@ -168,13 +170,15 @@ describe("tmux boundary", () => {
         agentId: "claude",
         command:
           "tmux new-session -A -s coord-7-claude -t coord-7 ';' select-window -t claude ';' set-option destroy-unattached on",
-        terminalProfile: "Pro"
+        terminalProfile: "Pro",
+        windowTitle: "coord-7/claude"
       },
       {
         agentId: "codex",
         command:
           "tmux new-session -A -s coord-7-codex -t coord-7 ';' select-window -t codex ';' set-option destroy-unattached on",
-        terminalProfile: "Grass"
+        terminalProfile: "Grass",
+        windowTitle: "coord-7/codex"
       }
     ]);
   });
@@ -203,6 +207,37 @@ describe("tmux boundary", () => {
       expect(result.commands[0]).toContain("select-window -t claude");
       expect(result.commands[0]).toContain("coord-1-claude");
     }
+  });
+
+  it("lists and kills primary plus linked issue sessions", async () => {
+    const calls: string[][] = [];
+    const runner: TmuxRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "list-sessions") {
+        return ok("coord-3\ncoord-3-claude\ncoord-3-codex\ncoord-9\n");
+      }
+      return ok();
+    };
+    const controller = new TmuxController(runner, null, null, null);
+    expect(await controller.listIssueSessions(3)).toEqual(["coord-3", "coord-3-claude", "coord-3-codex"]);
+    expect(await controller.killIssueSessions(3)).toEqual(["coord-3", "coord-3-claude", "coord-3-codex"]);
+    expect(calls.filter((args) => args[0] === "kill-session").map((args) => args[2])).toEqual([
+      "coord-3",
+      "coord-3-claude",
+      "coord-3-codex"
+    ]);
+  });
+
+  it("closes owner Terminal windows by issue title via injected closer", () => {
+    const closed: string[] = [];
+    const controller = new TmuxController(async () => ok(), null, null, (titles) => {
+      closed.push(...titles);
+    });
+    expect(controller.closeOwnerAgentClients(4, ["claude", "cursor"])).toEqual({
+      status: "closed",
+      titles: ["coord-4/claude", "coord-4/cursor"]
+    });
+    expect(closed).toEqual(["coord-4/claude", "coord-4/cursor"]);
   });
 
   it("treats pull-only agents as nudge-disabled", async () => {
@@ -242,6 +277,7 @@ describe("tmux boundary", () => {
       runnerWithPrompt(calls, "0\tagy\t0\n", "Antigravity CLI\nnvm…\n"),
       null,
       null,
+      null,
       noopSleep
     );
     expect(
@@ -256,7 +292,7 @@ describe("tmux boundary", () => {
 
   it("nudges Cursor when tmux reports the pane command as node", async () => {
     const calls: Array<{ args: readonly string[] }> = [];
-    const controller = new TmuxController(runnerWithPrompt(calls, "0\tnode\t0\n"), null, null, noopSleep);
+    const controller = new TmuxController(runnerWithPrompt(calls, "0\tnode\t0\n"), null, null, null, noopSleep);
     expect(
       await controller.nudge(
         1,
@@ -267,7 +303,7 @@ describe("tmux boundary", () => {
   });
 
   it("does not insert while the owner is in pane mode or the harness is gone", async () => {
-    const busy = new TmuxController(async () => ok("0\tclaude\t1\n"), null, null, noopSleep);
+    const busy = new TmuxController(async () => ok("0\tclaude\t1\n"), null, null, null, noopSleep);
     expect(
       await busy.nudge(
         1,
@@ -275,7 +311,7 @@ describe("tmux boundary", () => {
         "/a"
       )
     ).toBe("busy");
-    const gone = new TmuxController(async () => ({ exitCode: 1, stdout: "", stderr: "missing" }), null, null, noopSleep);
+    const gone = new TmuxController(async () => ({ exitCode: 1, stdout: "", stderr: "missing" }), null, null, null, noopSleep);
     expect(
       await gone.nudge(1, { id: "claude", root: "/clone", launcher: "start-claude.sh", delivery: "nudge" }, "/a")
     ).toBe("gone");
