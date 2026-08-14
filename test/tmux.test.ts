@@ -10,6 +10,7 @@ import {
   ownerTerminalOpenAppleScript,
   ownerTerminalTitlesToClose,
   resolveAgentLauncher,
+  NUDGE_BEFORE_ANTIGRAVITY_MS,
   resolveNudgeKeys,
   TmuxController,
   vimInsertPrelude,
@@ -61,7 +62,10 @@ describe("tmux boundary", () => {
 
   it("types the nudge with send-keys -l and Escape+Enter for Cursor", async () => {
     const calls: Array<{ args: readonly string[] }> = [];
-    const controller = new TmuxController(runnerWithPrompt(calls), null, null, null, noopSleep);
+    const slept: number[] = [];
+    const controller = new TmuxController(runnerWithPrompt(calls), null, null, null, async (ms) => {
+      slept.push(ms);
+    });
     expect(
       await controller.nudge(
         1,
@@ -81,6 +85,7 @@ describe("tmux boundary", () => {
     expect(calls[3]?.args).toEqual(["send-keys", "-l", "-t", "coord-1:cursor.0", expect.stringContaining("/runtime/action.md")]);
     expect(calls[4]?.args.slice(-1)).toEqual(["Escape"]);
     expect(calls[5]?.args.slice(-1)).toEqual(["Enter"]);
+    expect(slept).not.toContain(NUDGE_BEFORE_ANTIGRAVITY_MS);
   });
 
   it("uses per-agent nudgePrelude and nudgeSubmit for Codex vim", async () => {
@@ -412,12 +417,15 @@ describe("tmux boundary", () => {
 
   it("submits Antigravity nudges with Enter only", async () => {
     const calls: Array<{ args: readonly string[] }> = [];
+    const slept: number[] = [];
     const controller = new TmuxController(
       runnerWithPrompt(calls, "0\tagy\t0\n", promptFor("antigravity")),
       null,
       null,
       null,
-      noopSleep
+      async (ms) => {
+        slept.push(ms);
+      }
     );
     expect(
       await controller.nudge(
@@ -433,20 +441,52 @@ describe("tmux boundary", () => {
         "/runtime/action.md"
       )
     ).toBe("sent");
+    expect(slept[0]).toBe(NUDGE_BEFORE_ANTIGRAVITY_MS);
     expect(calls.map((call) => call.args[0])).toEqual([
       "display-message",
+      "capture-pane",
       "capture-pane",
       "send-keys",
       "send-keys"
     ]);
-    expect(calls[2]?.args).toEqual([
+    expect(calls[3]?.args).toEqual([
       "send-keys",
       "-l",
       "-t",
       "coord-1:antigravity.0",
       expect.stringContaining("/runtime/action.md")
     ]);
-    expect(calls[3]?.args.slice(-1)).toEqual(["Enter"]);
+    expect(calls[4]?.args.slice(-1)).toEqual(["Enter"]);
+  });
+
+  it("returns busy when Antigravity verify overlay appears during the pre-nudge wait", async () => {
+    const calls: Array<{ args: readonly string[] }> = [];
+    const slept: number[] = [];
+    let captures = 0;
+    const runner: TmuxRunner = async (args) => {
+      calls.push({ args });
+      if (args[0] === "display-message") return ok("0\tagy\t0\n");
+      if (args[0] === "capture-pane") {
+        captures += 1;
+        if (captures === 1) return ok(promptFor("antigravity"));
+        return ok(
+          "⚠ Verifying your account...\nWe're finishing verifying your account eligibility.\nPlease try again shortly.\n> Accept-edits mode: file edits auto-approved\n"
+        );
+      }
+      return ok();
+    };
+    const controller = new TmuxController(runner, null, null, null, async (ms) => {
+      slept.push(ms);
+    });
+    expect(
+      await controller.nudge(
+        1,
+        { id: "antigravity", root: "/clone", launcher: "start-antigravity.sh", delivery: "both", harnessProcess: "agy" },
+        "/runtime/action.md"
+      )
+    ).toBe("busy");
+    expect(slept).toEqual([NUDGE_BEFORE_ANTIGRAVITY_MS]);
+    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "capture-pane", "capture-pane"]);
   });
 
   it("returns busy when Antigravity process is up but splash has no prompt yet", async () => {

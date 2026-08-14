@@ -161,7 +161,9 @@ Per-agent config controls owner UI:
 
 Nudge waits until the pane shows an idle prompt (not Claude's trust dialog,
 Antigravity splash, account-verification overlay, or an in-flight Antigravity
-turn with `esc to cancel`).
+turn with `esc to cancel`). Antigravity then waits 2.5s and recaptures: tmux
+sessions often paint the verify overlay after `>` looks idle, which discards
+a typed nudge.
 If the first delivery is skipped (trust UI, wrong foreground name, splash),
 the run loop retries until one successful delivery per action. Cursor panes
 that report as `node` are treated as ready when `harnessProcess` is `agent`.
