@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { computeInputSetHash, evaluateEvidence, type EvidenceMirror } from "../src/evidence.js";
+import {
+  computeInputSetHash,
+  evaluateEvidence,
+  extractApprovedPaths,
+  isFileMapPath,
+  type EvidenceMirror
+} from "../src/evidence.js";
 import type { EvidenceId, InternalOrder, WorkflowStepId } from "../src/steps.js";
 
 const sha = (character: string): string => character.repeat(40);
@@ -36,6 +42,46 @@ const mirror = (blob: string | null, overrides: Partial<EvidenceMirror> = {}): E
   ...overrides
 });
 
+describe("plan file-map path extraction", () => {
+  it("accepts nested repository paths including monorepo prefixes", () => {
+    expect(isFileMapPath("packages/core/src/domain/model.ts")).toBe(true);
+    expect(isFileMapPath("apps/web/src/session/mapSessionVideo.test.ts")).toBe(true);
+    expect(isFileMapPath("src/product.ts")).toBe(true);
+    expect(isFileMapPath("test/product.test.ts")).toBe(true);
+    expect(isFileMapPath("cmd/coord/main.go")).toBe(true);
+    expect(isFileMapPath("packages/core/src/**")).toBe(true);
+    expect(isFileMapPath("apps/web/")).toBe(true);
+    expect(isFileMapPath("package.json")).toBe(true);
+  });
+
+  it("rejects identifiers, escapes, and coordination prefixes", () => {
+    expect(isFileMapPath("VIDEO_DOMAINS")).toBe(false);
+    expect(isFileMapPath("toDomain")).toBe(false);
+    expect(isFileMapPath("workouts")).toBe(false);
+    expect(isFileMapPath("/abs/path.ts")).toBe(false);
+    expect(isFileMapPath("packages/../secret.ts")).toBe(false);
+    expect(isFileMapPath(".plans/issue-1/plan.md")).toBe(false);
+    expect(isFileMapPath(".signals/issue-1/joined-codex.json")).toBe(false);
+    expect(isFileMapPath(".code-reviews/issue-1/review.md")).toBe(false);
+  });
+
+  it("keeps monorepo file-map paths and drops bare identifiers from a plan", () => {
+    const plan = `# Plan
+- \`packages/core/src/domain/model.ts\`
+- \`apps/web/src/session/mapSessionVideo.test.ts\`
+- \`VIDEO_DOMAINS\`
+- \`toDomain\`
+- \`workouts\`
+- \`SessionVideo.tsx\`
+`;
+    expect(extractApprovedPaths(plan)).toEqual([
+      "SessionVideo.tsx",
+      "apps/web/src/session/mapSessionVideo.test.ts",
+      "packages/core/src/domain/model.ts"
+    ]);
+  });
+});
+
 describe("evidence evaluation", () => {
   it("validates a plan at the submitted SHA and extracts its approved file map", async () => {
     const plan = `# Plan
@@ -61,6 +107,66 @@ Implement it.
       status: "satisfied",
       approvedPaths: ["src/product.ts", "test/product.test.ts"]
     });
+  });
+
+  it("extracts monorepo file-map paths from a plan and ignores identifiers", async () => {
+    const plan = `# Plan
+
+## Exact File Map
+- \`packages/core/src/domain/model.ts\`
+- \`apps/web/src/session/mapSessionVideo.test.ts\`
+- \`VIDEO_DOMAINS\`
+- \`toDomain\`
+
+## Tests
+Run tests.
+
+## Alternatives Rejected
+None.
+
+## Risks and Mitigations
+Keep pins immutable.
+
+## Conclusion
+Implement it.
+`;
+    const result = await evaluateEvidence(order(), sha("c"), mirror(plan));
+    expect(result).toMatchObject({
+      status: "satisfied",
+      approvedPaths: [
+        "apps/web/src/session/mapSessionVideo.test.ts",
+        "packages/core/src/domain/model.ts"
+      ]
+    });
+  });
+
+  it("accepts implementation changes under an extracted packages/ file-map entry", async () => {
+    const inputs = [{ agent: "codex", commitSha: sha("2"), path: ".plans/issue-1/plan.md", kind: "selected-plan" }];
+    const approvedPaths = ["packages/core/src/domain/model.ts"];
+    const action = order({
+      stepId: "R4.implement",
+      evidenceId: "implementation-pinned",
+      requiredPath: ".signals/issue-1/implementation-ready-codex.json",
+      inputs,
+      approvedPaths
+    });
+    const blob = JSON.stringify({
+      protocolVersion: 1,
+      artifact: "implementation-ready",
+      issue: 1,
+      issueSessionId: action.issueSessionId,
+      agent: "codex",
+      inputSetHash: computeInputSetHash(inputs),
+      implementationCommitSha: sha("d"),
+      approvedPaths
+    });
+    expect(
+      await evaluateEvidence(
+        action,
+        sha("e"),
+        mirror(blob, { changedPaths: async () => ["packages/core/src/domain/model.ts"] })
+      )
+    ).toMatchObject({ status: "satisfied", productPin: sha("d") });
   });
 
   it("returns retry without an artifact verdict when origin fetch fails", async () => {
