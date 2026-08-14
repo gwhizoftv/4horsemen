@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { install, uninstall } from "../src/install.js";
+import { assertInstallDeletionAllowed, install, uninstall } from "../src/install.js";
 import { readConfig } from "../src/state.js";
 import { nestedConfigPath } from "../src/workspace.js";
 import {
@@ -187,6 +187,66 @@ const uninstallOnce = (fixture: ProductFixture, overrides: Partial<Parameters<ty
     ...overrides
   });
 
+const expectCoordinationDeletionRefused = (
+  fixture: ProductFixture,
+  installed: ReturnType<typeof install>
+): void => {
+  const owned = readConfig(installed.configPath).coordination?.ownsInstallRoot === true;
+  expect(() => uninstallOnce(fixture, { deleteCoordination: true })).toThrow(
+    owned ? /test run \(VITEST is set\) must not delete/ : /not create the coordination checkout/
+  );
+  expect(existsSync(join(repoRoot, "package.json"))).toBe(true);
+};
+
+describe("install deletion guard", () => {
+  it("refuses to delete an install while VITEST is set", () => {
+    expect(() =>
+      assertInstallDeletionAllowed("/tmp/coord-install", {
+        force: false,
+        cwd: "/elsewhere",
+        env: { VITEST: "true" }
+      })
+    ).toThrow(/test run \(VITEST is set\) must not delete/);
+  });
+
+  it("does not treat --force as a test-run escape hatch", () => {
+    expect(() =>
+      assertInstallDeletionAllowed("/tmp/coord-install", {
+        force: true,
+        cwd: "/elsewhere",
+        env: { VITEST: "true" }
+      })
+    ).toThrow(/test run \(VITEST is set\) must not delete/);
+  });
+
+  it("allows a disposable install when COORD_ALLOW_DELETE_INSTALL is set", () => {
+    expect(() =>
+      assertInstallDeletionAllowed("/tmp/coord-install", {
+        force: false,
+        cwd: "/elsewhere",
+        env: { VITEST: "true", COORD_ALLOW_DELETE_INSTALL: "1" }
+      })
+    ).not.toThrow();
+  });
+
+  it("refuses to delete the install that contains cwd unless --force", () => {
+    expect(() =>
+      assertInstallDeletionAllowed("/tmp/coord-install", {
+        force: false,
+        cwd: "/tmp/coord-install/src",
+        env: {}
+      })
+    ).toThrow(/current working directory/);
+    expect(() =>
+      assertInstallDeletionAllowed("/tmp/coord-install", {
+        force: true,
+        cwd: "/tmp/coord-install/src",
+        env: {}
+      })
+    ).not.toThrow();
+  });
+});
+
 describe("coord uninstall", () => {
   it("clears the wiring and the workspace entry, and keeps the clone", () => {
     const fixture = product();
@@ -238,9 +298,8 @@ describe("coord uninstall", () => {
 
   it("refuses --delete-coordination for a checkout it did not create", () => {
     const fixture = product();
-    installOnce(fixture);
-    expect(() => uninstallOnce(fixture, { deleteCoordination: true })).toThrow(/not create the coordination checkout/);
-    expect(existsSync(join(repoRoot, "package.json"))).toBe(true);
+    const installed = installOnce(fixture);
+    expectCoordinationDeletionRefused(fixture, installed);
   });
 });
 
@@ -404,8 +463,7 @@ describe("coord uninstall — scope", () => {
 
   it("refuses --delete-coordination because no install owns the checkout", () => {
     const fixture = product();
-    installOnce(fixture, { bootstrap: false });
-    expect(() => uninstallOnce(fixture, { deleteCoordination: true })).toThrow(/not create the coordination checkout/);
-    expect(existsSync(join(repoRoot, "package.json"))).toBe(true);
+    const installed = installOnce(fixture, { bootstrap: false });
+    expectCoordinationDeletionRefused(fixture, installed);
   });
 });

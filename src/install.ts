@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
   clearAgentsProtocolFile,
@@ -18,7 +18,7 @@ import {
   writeCloneHooks,
   type HookMode
 } from "./hookSync.js";
-import { resolveSafeCoordRoot, workspaceTerminalGroup } from "./paths.js";
+import { isPathInside, resolveSafeCoordRoot, workspaceTerminalGroup } from "./paths.js";
 import { clearManagedIgnoreFile, DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile } from "./productIgnore.js";
 import {
   agentCloneDirectory,
@@ -109,6 +109,43 @@ const bootstrapOwnsInstallRoot = (installRoot: string): boolean => {
     return parsed.version === 1 && parsed.ownsInstallRoot === true;
   } catch {
     return false;
+  }
+};
+
+const existingRealpath = (path: string): string => {
+  const resolved = resolve(path);
+  return existsSync(resolved) ? realpathSync(resolved) : resolved;
+};
+
+export type InstallDeletionContext = {
+  force: boolean;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+};
+
+/**
+ * Last line of defence before `rmSync` of a coordination checkout.
+ *
+ * Tests use this repository as `installRoot`. A bootstrap-owned live install
+ * (`.git/coord-bootstrap.json`) would otherwise make `--delete-coordination`
+ * delete the tree vitest is running in. `--force` is the dirty-clone override
+ * and must not be that escape hatch; `COORD_ALLOW_DELETE_INSTALL=1` is.
+ */
+export const assertInstallDeletionAllowed = (installRoot: string, context: InstallDeletionContext): void => {
+  const root = existingRealpath(installRoot);
+  const env = context.env ?? process.env;
+  if (env.VITEST !== undefined && env.COORD_ALLOW_DELETE_INSTALL !== "1") {
+    throw new Error(
+      `Refusing --delete-coordination: a test run (VITEST is set) must not delete the coordination install at ${root}. ` +
+        "Install/uninstall tests must use a disposable fixture, not the tree under test. Nothing has been changed."
+    );
+  }
+  const cwd = existingRealpath(context.cwd ?? process.cwd());
+  if (!context.force && isPathInside(root, cwd)) {
+    throw new Error(
+      `Refusing --delete-coordination: the current working directory ${cwd} is inside the coordination install ${root}. ` +
+        "cd elsewhere, or re-run with --force if deleting this install is intentional. Nothing has been changed."
+    );
   }
 };
 
@@ -424,6 +461,8 @@ export type UninstallOptions = {
   force: boolean;
   dryRun: boolean;
   log: Logger;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
 };
 
 export type UninstallResult = { changes: string[]; kept: string[] };
@@ -491,6 +530,13 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
         `${stamp?.installRoot ?? "<unknown>"}, so removing it would delete something installed independently. ` +
         "Running bootstrap commands inside an existing checkout is not ownership of it. Nothing has been changed."
     );
+  }
+  if (options.deleteCoordination && stamp !== undefined) {
+    assertInstallDeletionAllowed(stamp.installRoot, {
+      force: options.force,
+      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      ...(options.env === undefined ? {} : { env: options.env })
+    });
   }
   if (options.wipeRuntime && workspace.layout === "flat" && !options.force) {
     const others = otherWorkspaceConfigs(coordRoot, configPath);
@@ -628,6 +674,11 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
   }
 
   if (options.deleteCoordination && stamp !== undefined) {
+    assertInstallDeletionAllowed(stamp.installRoot, {
+      force: options.force,
+      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      ...(options.env === undefined ? {} : { env: options.env })
+    });
     effects.changes.push(`delete coordination install ${stamp.installRoot}`);
     if (!options.dryRun) rmSync(stamp.installRoot, { recursive: true, force: true });
     effects.log(`${options.dryRun ? "would delete" : "deleted"} coordination install ${stamp.installRoot}\n`);
