@@ -123,6 +123,11 @@ export const resolveNudgeKeys = (
 export const NUDGE_AFTER_TEXT_MS = 300;
 /** Delay between successive submit keys (Escape must land before Enter). */
 export const NUDGE_BETWEEN_SUBMIT_MS = 150;
+/**
+ * Antigravity under tmux often paints `⚠ Verifying your account...` a beat after
+ * the idle `>` prompt. Typing then discards the nudge. Wait, then recapture.
+ */
+export const NUDGE_BEFORE_ANTIGRAVITY_MS = 2500;
 
 /** Resolve macOS Terminal.app profile name for an owner attach window. */
 export const resolveTerminalProfile = (agent: AgentConfig): string =>
@@ -523,9 +528,16 @@ export class TmuxController {
     if (!pane.alive) return "gone";
     if (pane.ownerTyping) return "busy";
     if (!harnessLooksReady(pane.foreground, agent.harnessProcess)) return "busy";
-    const paneText = await this.capturePane(target);
+    let paneText = await this.capturePane(target);
     assertAuthority();
     if (!harnessPromptReady(paneText, agent.id)) return "busy";
+    if (agent.id === "antigravity") {
+      await this.sleep(NUDGE_BEFORE_ANTIGRAVITY_MS);
+      assertAuthority();
+      paneText = await this.capturePane(target);
+      assertAuthority();
+      if (!harnessPromptReady(paneText, agent.id)) return "busy";
+    }
     const text = `Read and execute your current coordinator action at ${actionPath}`;
     // Some harnesses (notably agy) ignore tmux paste-buffer; literal send-keys
     // reaches the input widget. Prelude/submit keys come from agent config.
