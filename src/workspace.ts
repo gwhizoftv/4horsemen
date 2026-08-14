@@ -55,6 +55,17 @@ const hasFlatRuntimeState = (coordRoot: string): boolean => {
   return readdirSync(coordRoot).some((entry) => entry === "mirror.git" || /^issue-[1-9][0-9]*$/.test(entry));
 };
 
+/** Issue numbers with runtime directories under this workspace root. */
+export const listIssueNumbersInWorkspace = (workspaceRoot: string): number[] => {
+  if (!existsSync(workspaceRoot)) return [];
+  const issues: number[] = [];
+  for (const entry of readdirSync(workspaceRoot)) {
+    const matched = entry.match(/^issue-([1-9][0-9]*)$/);
+    if (matched?.[1] !== undefined) issues.push(Number(matched[1]));
+  }
+  return issues.sort((left, right) => left - right);
+};
+
 /** Resolve an installed config, preferring a matching flat workspace. */
 export const resolveWorkspaceLocation = (
   coordRoot: string,
