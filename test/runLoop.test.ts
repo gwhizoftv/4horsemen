@@ -154,6 +154,44 @@ describe("effectful run loop", () => {
     expect(action.body).toContain(`"automationDigest": "${start.automationDigest}"`);
   });
 
+  it("logs RN phase changes on the default log sink", async () => {
+    const { paths } = fixture();
+    const messages: string[] = [];
+    const loop = new CoordinatorRunLoop(paths, {
+      tmux: null,
+      log: (message) => messages.push(message)
+    });
+    await loop.runTick();
+    expect(messages).toEqual(["Issue 1: R1.join"]);
+
+    const now = "2026-08-11T17:00:00.000Z";
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        accepted: current.activeRoster.map((agent) => ({
+          stepId: "R1.join" as const,
+          agent,
+          round: null,
+          submissionSha: "c".repeat(40),
+          path: `.signals/issue-1/joined-${agent}.json`,
+          acceptedAt: now
+        })),
+        agents: Object.fromEntries(
+          current.activeRoster.map((agent) => {
+            const cursor = current.agents[agent];
+            if (cursor === undefined) throw new Error(`missing cursor ${agent}`);
+            return [
+              agent,
+              { ...cursor, status: "waiting-peer", actionId: null, submissionSha: null, outstanding: [] }
+            ];
+          })
+        )
+      })
+    );
+    await loop.runTick();
+    expect(messages).toEqual(["Issue 1: R1.join", "Issue 1: R1.join → R2.plan"]);
+  });
+
   it("clears malformed completion and reissues the same action with a concrete correction", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);

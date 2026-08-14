@@ -186,7 +186,8 @@ Happy path: bootstrap once, onboard a product once, create GitHub issue N, then 
 
 From an agent clone, \`coord next --issue N\` resolves the runtime via
 coord.workspaceConfig and the caller via consensus.agentId (or --agent / COORD_AGENT).
-Use \`-v\` / \`--verbose\` on \`coord N\`, start, or run for tick-level progress logs.
+Use \`-v\` / \`--verbose\` on \`coord N\`, start, or run for tick-level nudge logs.
+Phase changes (R1.join → R2.plan, …) always print.
 \`coord --version\` prints the package version (pre-1.0: \`0.0.N\`, bump on every ship).
 \`coord status\` prints the chosen agent, final pin, published branch, and PR URL.
 

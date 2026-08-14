@@ -167,7 +167,8 @@ a typed nudge.
 If the first delivery is skipped (trust UI, wrong foreground name, splash),
 the run loop retries until one successful delivery per action. Cursor panes
 that report as `node` are treated as ready when `harnessProcess` is `agent`.
-Use `coord N -v` for tick-level progress logs.
+Phase changes (R1.join → R2.plan, and later RN steps) always print.
+Use `coord N -v` for tick-level nudge and roster logs.
 
 ## Agent completion contract
 

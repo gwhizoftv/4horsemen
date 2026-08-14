@@ -164,6 +164,11 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
   }
 };
 
+export const describeWorkflowStep = (stepId: WorkflowStepId | null, round: number | null): string => {
+  if (stepId === null) return "complete";
+  return round === null ? stepId : `${stepId} (round ${round})`;
+};
+
 const consensusSteps: readonly WorkflowStepId[] = [
   "R1.join",
   "R2.plan",

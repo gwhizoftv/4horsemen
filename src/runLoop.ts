@@ -23,6 +23,7 @@ import {
 import {
   STEP_DEFINITIONS,
   coordMergesPullRequest,
+  describeWorkflowStep,
   type BoundInput,
   type EvidenceObservation,
   type InternalOrder,
@@ -336,6 +337,8 @@ export class CoordinatorRunLoop {
   private readonly verbose: (message: string) => void;
   /** Action ids that received a successful tmux paste in this process. */
   private readonly nudgedActions = new Set<string>();
+  /** Last RN/round announced on `log`, so resume and first prepare do not repeat. */
+  private loggedPhaseKey: string | null = null;
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
@@ -379,6 +382,19 @@ export class CoordinatorRunLoop {
     mutation: (current: CursorsState) => CursorsState
   ): CursorsState {
     return requireStateMutation(this.paths, cursors.stateRevision, mutation);
+  }
+
+  private logPhase(
+    issue: number,
+    stepId: WorkflowStepId | null,
+    round: number | null,
+    from?: WorkflowStepId
+  ): void {
+    const key = `${stepId ?? "complete"}:${round ?? ""}`;
+    if (from === undefined && this.loggedPhaseKey === key) return;
+    this.loggedPhaseKey = key;
+    const to = describeWorkflowStep(stepId, round);
+    this.log(from === undefined ? `Issue ${issue}: ${to}` : `Issue ${issue}: ${from} → ${to}`);
   }
 
   private async prepareAction(
@@ -790,15 +806,19 @@ export class CoordinatorRunLoop {
   private async applyDecisions(start: StartState, cursors: CursorsState, decisions: readonly MachineDecision[]): Promise<CursorsState> {
     let next = cursors;
     for (const decision of decisions) {
-      if (decision.type === "prepare-action") next = await this.prepareAction(start, next, decision.agent, decision.stepId, decision.round);
-      else if (decision.type === "accept-submission") next = this.accept(start, next, decision);
+      if (decision.type === "prepare-action") {
+        this.logPhase(start.issue, decision.stepId, decision.round);
+        next = await this.prepareAction(start, next, decision.agent, decision.stepId, decision.round);
+      } else if (decision.type === "accept-submission") next = this.accept(start, next, decision);
       else if (decision.type === "reissue-action") next = await this.reissue(start, next, decision.agent, decision.outstanding);
       else if (decision.type === "retry-verification") {
         next = this.mutate(next, (current) =>
           replaceCursor(current, decision.agent, { status: "intent", outstanding: [...decision.outstanding] }, this.now())
         );
-      } else if (decision.type === "advance-step") next = this.advance(next, decision);
-      else if (decision.type === "owner-action-required") {
+      } else if (decision.type === "advance-step") {
+        this.logPhase(start.issue, decision.to, decision.round, decision.from);
+        next = this.advance(next, decision);
+      } else if (decision.type === "owner-action-required") {
         if (next.ownerQuestion === null) {
           next = this.mutate(next, (current) => {
             const id = this.actionId();
@@ -979,6 +999,7 @@ export class CoordinatorRunLoop {
       this.log(renderIssueReport(start, beforeEffects).trimEnd());
       return;
     }
+    this.logPhase(start.issue, beforeEffects.issueCursor.stepId, beforeEffects.issueCursor.round);
     await this.initializeEffects();
     while (signal?.aborted !== true) {
       const cursors = await this.runTick();
