@@ -12,6 +12,10 @@ import { fileURLToPath } from "node:url";
  * `templates/`, `scripts/lib/launcher.sh`, and a build. Substituting a
  * hand-built stand-in would leave the real hook bodies untested, which is where
  * the failures this issue is about have historically lived.
+ *
+ * That also means `--delete-coordination` against a fixture stamped from this
+ * tree would delete the checkout under test if the tree is bootstrap-owned
+ * (`~/.local/share/coordination`). Uninstall refuses that while `VITEST` is set.
  */
 export const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
