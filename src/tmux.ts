@@ -299,10 +299,55 @@ export const closeDarwinTerminalWindows: OwnerTerminalCloser = (titles) => {
   }
 };
 
+export const ownerTerminalListOpenAppleScript = (titles: readonly string[]): string => {
+  const list = titles.map((title) => appleScriptString(title)).join(", ");
+  return [
+    'tell application "Terminal"',
+    `  set wanted to {${list}}`,
+    "  set found to {}",
+    "  repeat with w in windows",
+    "    try",
+    "      set wname to name of w as text",
+    "      repeat with tb in tabs of w",
+    "        try",
+    "          set t to custom title of tb as text",
+    "          if wanted contains t then set end of found to t",
+    "        end try",
+    "      end repeat",
+    "      repeat with titleText in wanted",
+    "        if wname contains (titleText as text) then set end of found to (titleText as text)",
+    "      end repeat",
+    "    end try",
+    "  end repeat",
+    "  set AppleScript's text item delimiters to linefeed",
+    "  return found as text",
+    "end tell"
+  ].join("\n");
+};
+
+export const listOpenDarwinTerminalTitles: OwnerTerminalTitleProbe = (titles) => {
+  if (titles.length === 0) return [];
+  const result = spawnSync("osascript", ["-e", ownerTerminalListOpenAppleScript(titles)], { encoding: "utf8" });
+  if ((result.status ?? 1) !== 0) return [];
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((title) => title !== "" && titles.includes(title));
+};
+
+const defaultOwnerTerminalTitleProbe = (): OwnerTerminalTitleProbe | null => {
+  if (process.env.VITEST !== undefined) return (titles) => [...titles];
+  return platform() === "darwin" ? listOpenDarwinTerminalTitles : null;
+};
+
 export type OpenOwnerAgentClientsResult =
   | { status: "opened"; count: number }
+  | { status: "already-open"; count: number }
   | { status: "unsupported"; commands: readonly string[] }
   | { status: "failed"; error: string; commands: readonly string[] };
+
+/** Return the subset of `titles` that currently exist as Terminal.app windows/tabs. */
+export type OwnerTerminalTitleProbe = (titles: readonly string[]) => string[];
 
 export const resolveAgentLauncher = (agent: AgentConfig): string => {
   const root = resolve(agent.root);
@@ -338,7 +383,8 @@ export class TmuxController {
     private readonly sleep: (ms: number) => Promise<void> = (ms) =>
       new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
     /** Workspace fingerprint for Terminal titles; defaults to tmux namespace. */
-    private readonly titleGroup: string | null = null
+    private readonly titleGroup: string | null = null,
+    private readonly titleProbe: OwnerTerminalTitleProbe | null = defaultOwnerTerminalTitleProbe()
   ) {}
 
   /** Group id embedded in Terminal custom titles for this workspace. */
@@ -413,14 +459,25 @@ export class TmuxController {
   /**
    * Open one owner OS terminal per agent, each attached to that agent's window.
    * Failures are returned (not thrown) so issue startup can continue detached.
+   * `onlyMissing` skips titles already open so resume does not duplicate windows.
    */
-  async openOwnerAgentClients(issue: number, agents: readonly AgentConfig[]): Promise<OpenOwnerAgentClientsResult> {
+  async openOwnerAgentClients(
+    issue: number,
+    agents: readonly AgentConfig[],
+    options: { onlyMissing?: boolean } = {}
+  ): Promise<OpenOwnerAgentClientsResult> {
     const launches = this.agentAttachLaunches(issue, agents);
     const commands = launches.map((launch) => launch.command);
     if (this.ownerTerminalOpener === null) return { status: "unsupported", commands };
+    const toOpen = (() => {
+      if (options.onlyMissing !== true) return launches;
+      const present = this.titleProbe?.(launches.map((item) => item.windowTitle)) ?? [];
+      return launches.filter((launch) => !present.includes(launch.windowTitle));
+    })();
+    if (toOpen.length === 0) return { status: "already-open", count: launches.length };
     try {
-      await this.ownerTerminalOpener(launches);
-      return { status: "opened", count: launches.length };
+      await this.ownerTerminalOpener(toOpen);
+      return { status: "opened", count: toOpen.length };
     } catch (error) {
       return {
         status: "failed",
@@ -488,7 +545,28 @@ export class TmuxController {
       const present = await this.runner(["list-windows", "-t", session, "-F", "#{window_name}"]);
       assertAuthority();
       if (present.exitCode !== 0) throw new Error(`cannot inspect tmux session ${session}: ${present.stderr}`);
-      if (present.stdout.split("\n").includes(safeName(agent.id))) continue;
+      const windowNames = present.stdout
+        .split("\n")
+        .map((name) => name.trim())
+        .filter((name) => name !== "");
+      if (windowNames.includes(safeName(agent.id))) {
+        const pane = await this.inspectPane(target);
+        assertAuthority();
+        if (pane.alive) continue;
+        const launcher = resolveAgentLauncher(agent);
+        const respawned = await this.runner([
+          "respawn-pane",
+          "-k",
+          "-t",
+          target,
+          "-c",
+          resolve(agent.root),
+          launcher
+        ]);
+        assertAuthority();
+        if (respawned.exitCode !== 0) throw new Error(`cannot relaunch ${agent.id} in ${target}: ${respawned.stderr}`);
+        continue;
+      }
       const launcher = resolveAgentLauncher(agent);
       const created = await this.runner(["new-window", "-d", "-t", session, "-n", safeName(agent.id), "-c", resolve(agent.root), launcher]);
       assertAuthority();

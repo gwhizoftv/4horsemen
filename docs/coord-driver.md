@@ -127,14 +127,16 @@ workspaces append the workspace hash printed by tmux/start diagnostics:
 tmux attach -t coord-42
 ```
 
-On macOS, `coord start` / a fresh `coord N` also opens one Terminal.app window per
+On macOS, `coord start` / `coord N` also opens one Terminal.app window per
 agent, each attached to that agent's tmux window (separate clients — no Ctrl-b n).
-Windows are titled on the **tab** as `coord-N-<group>/<agent>`, where `<group>`
+A resume of `coord N` recreates missing tmux sessions and dead agent panes, and
+opens Terminal windows that are not already open. Windows are titled on the **tab**
+as `coord-N-<group>/<agent>`, where `<group>`
 is a stable 10-hex fingerprint of the workspace root. Attach uses `do script`
 and sets that tab's custom title only. Detach/wipe close **only tabs whose
 title exactly matches those ids** — never bare agent names and never
 ungrouped `coord-N/<agent>`. Re-open those views
-later with `coord attach N`. `coord detach N` closes matching Terminal windows
+later with `coord attach N` while the coordinator is already running. `coord detach N` closes matching Terminal windows
 (by unique title / window name) then kills the issue tmux sessions, without
 wiping runtime, clones, or branches. When `coord N` / `coord run` finishes with
 a completed workflow, it runs the same teardown automatically.

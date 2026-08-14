@@ -192,6 +192,31 @@ describe("effectful run loop", () => {
     expect(messages).toEqual(["Issue 1: R1.join", "Issue 1: R1.join → R2.plan"]);
   });
 
+  it("reopens missing Terminal windows when resuming a live issue", async () => {
+    const { paths } = fixture();
+    const launched: string[] = [];
+    const messages: string[] = [];
+    const tmux = new TmuxController(
+      async (args) => {
+        if (args[0] === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
+        if (args[0] === "list-windows") return { exitCode: 0, stdout: "claude\ncodex\n", stderr: "" };
+        if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tclaude\t0\n", stderr: "" };
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      null,
+      async (launches) => {
+        launched.push(...launches.map((launch) => launch.agentId));
+      },
+      null,
+      async () => undefined,
+      null,
+      () => []
+    );
+    await new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) }).initializeEffects();
+    expect(launched).toEqual(["claude", "codex"]);
+    expect(messages.join("\n")).toContain("Opened 2 Terminal window(s)");
+  });
+
   it("clears malformed completion and reissues the same action with a concrete correction", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);

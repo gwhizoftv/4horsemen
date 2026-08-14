@@ -224,6 +224,55 @@ describe("tmux boundary", () => {
     expect(launched).toEqual(["claude", "cursor"]);
   });
 
+  it("opens only missing owner terminals on resume", async () => {
+    const launched: string[] = [];
+    const controller = new TmuxController(
+      async () => ok(),
+      null,
+      async (launches) => {
+        for (const launch of launches) launched.push(launch.agentId);
+      },
+      null,
+      noopSleep,
+      null,
+      (titles) => titles.filter((title) => title.endsWith("/claude"))
+    );
+    await expect(
+      controller.openOwnerAgentClients(
+        1,
+        [
+          { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both" },
+          { id: "cursor", root: "/u", launcher: "start-cursor.sh", delivery: "both" }
+        ],
+        { onlyMissing: true }
+      )
+    ).resolves.toEqual({ status: "opened", count: 1 });
+    expect(launched).toEqual(["cursor"]);
+  });
+
+  it("skips Terminal open when every resume title is already present", async () => {
+    const launched: string[] = [];
+    const controller = new TmuxController(
+      async () => ok(),
+      null,
+      async (launches) => {
+        for (const launch of launches) launched.push(launch.agentId);
+      },
+      null,
+      noopSleep,
+      null,
+      (titles) => [...titles]
+    );
+    await expect(
+      controller.openOwnerAgentClients(
+        1,
+        [{ id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both" }],
+        { onlyMissing: true }
+      )
+    ).resolves.toEqual({ status: "already-open", count: 1 });
+    expect(launched).toEqual([]);
+  });
+
   it("returns unsupported when no opener is configured", async () => {
     const controller = new TmuxController(async () => ok(), null, null);
     const result = await controller.openOwnerAgentClients(1, [
@@ -234,6 +283,42 @@ describe("tmux boundary", () => {
       expect(result.commands[0]).toContain("select-window -t claude");
       expect(result.commands[0]).toContain("coord-1-claude");
     }
+  });
+
+  it("ensureSession recreates missing agent windows and respawns a dead pane", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-ensure-"));
+    roots.push(root);
+    const clone = join(root, "clone");
+    mkdirSync(clone);
+    writeFileSync(join(clone, "start-claude.sh"), "#!/bin/sh\n", { mode: 0o700 });
+    const calls: string[][] = [];
+    let windows = "";
+    let paneDead = "1";
+    const runner: TmuxRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "list-windows") return ok(windows);
+      if (args[0] === "display-message") return ok(`${paneDead}\tclaude\t0\n`);
+      if (args[0] === "new-window") {
+        windows = "claude";
+        return ok();
+      }
+      if (args[0] === "respawn-pane") {
+        paneDead = "0";
+        return ok();
+      }
+      return ok();
+    };
+    const controller = new TmuxController(runner, null, null, null);
+    const agent = { id: "claude", root: clone, launcher: "start-claude.sh", delivery: "both" as const };
+    await controller.ensureSession(3, [agent]);
+    expect(calls.some((args) => args[0] === "new-window")).toBe(true);
+    calls.length = 0;
+    await controller.ensureSession(3, [agent]);
+    expect(calls.some((args) => args[0] === "respawn-pane")).toBe(true);
+    calls.length = 0;
+    await controller.ensureSession(3, [agent]);
+    expect(calls.some((args) => args[0] === "new-window" || args[0] === "respawn-pane")).toBe(false);
   });
 
   it("lists and kills primary plus linked issue sessions", async () => {
