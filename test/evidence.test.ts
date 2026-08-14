@@ -237,6 +237,119 @@ Implement it.
     expect(result.outstanding.join(" ")).toContain("docs/unapproved.md");
   });
 
+  it.each(["automation", "automation/", "automation/**"] as const)(
+    "accepts Git's per-file listing for a deleted directory when the map names %s",
+    async (mapEntry) => {
+      const inputs = [{ agent: "codex", commitSha: sha("2"), path: ".plans/issue-1/plan.md", kind: "selected-plan" }];
+      const action = order({
+        stepId: "R4.implement",
+        evidenceId: "implementation-pinned",
+        requiredPath: ".signals/issue-1/implementation-ready-codex.json",
+        inputs,
+        approvedPaths: [mapEntry]
+      });
+      const blob = JSON.stringify({
+        protocolVersion: 1,
+        artifact: "implementation-ready",
+        issue: 1,
+        issueSessionId: action.issueSessionId,
+        agent: "codex",
+        inputSetHash: computeInputSetHash(inputs),
+        implementationCommitSha: sha("d"),
+        approvedPaths: [mapEntry]
+      });
+      const result = await evaluateEvidence(
+        action,
+        sha("e"),
+        mirror(blob, {
+          changedPaths: async () => ["automation/src/foo.ts", "automation/package.json"]
+        })
+      );
+      expect(result).toMatchObject({ status: "satisfied", productPin: sha("d") });
+    }
+  );
+
+  it("does not let an implementation rewrite the bound file map to a directory prefix", async () => {
+    const inputs = [{ agent: "codex", commitSha: sha("2"), path: ".plans/issue-1/plan.md", kind: "selected-plan" }];
+    const action = order({
+      stepId: "R4.implement",
+      evidenceId: "implementation-pinned",
+      requiredPath: ".signals/issue-1/implementation-ready-codex.json",
+      inputs,
+      approvedPaths: ["automation"]
+    });
+    const blob = JSON.stringify({
+      protocolVersion: 1,
+      artifact: "implementation-ready",
+      issue: 1,
+      issueSessionId: action.issueSessionId,
+      agent: "codex",
+      inputSetHash: computeInputSetHash(inputs),
+      implementationCommitSha: sha("d"),
+      approvedPaths: ["automation/"]
+    });
+    const result = await evaluateEvidence(action, sha("e"), mirror(blob));
+    expect(result.status).toBe("rejected");
+    expect(result.outstanding.join(" ")).toContain("do not match the selected plan file map");
+  });
+
+  it("does not treat a file map entry as a prefix of a sibling path", async () => {
+    const inputs = [{ agent: "codex", commitSha: sha("2"), path: ".plans/issue-1/plan.md", kind: "selected-plan" }];
+    const action = order({
+      stepId: "R4.implement",
+      evidenceId: "implementation-pinned",
+      requiredPath: ".signals/issue-1/implementation-ready-codex.json",
+      inputs,
+      approvedPaths: ["src/product.ts"]
+    });
+    const blob = JSON.stringify({
+      protocolVersion: 1,
+      artifact: "implementation-ready",
+      issue: 1,
+      issueSessionId: action.issueSessionId,
+      agent: "codex",
+      inputSetHash: computeInputSetHash(inputs),
+      implementationCommitSha: sha("d"),
+      approvedPaths: ["src/product.ts"]
+    });
+    const result = await evaluateEvidence(
+      action,
+      sha("e"),
+      mirror(blob, { changedPaths: async () => ["src/product.ts.bak", "src/other.ts"] })
+    );
+    expect(result.status).toBe("rejected");
+    expect(result.outstanding.join(" ")).toContain("src/product.ts.bak");
+    expect(result.outstanding.join(" ")).toContain("src/other.ts");
+  });
+
+  it("does not treat a directory glob as a string prefix of a sibling name", async () => {
+    const inputs = [{ agent: "codex", commitSha: sha("2"), path: ".plans/issue-1/plan.md", kind: "selected-plan" }];
+    const action = order({
+      stepId: "R4.implement",
+      evidenceId: "implementation-pinned",
+      requiredPath: ".signals/issue-1/implementation-ready-codex.json",
+      inputs,
+      approvedPaths: ["automation/**"]
+    });
+    const blob = JSON.stringify({
+      protocolVersion: 1,
+      artifact: "implementation-ready",
+      issue: 1,
+      issueSessionId: action.issueSessionId,
+      agent: "codex",
+      inputSetHash: computeInputSetHash(inputs),
+      implementationCommitSha: sha("d"),
+      approvedPaths: ["automation/**"]
+    });
+    const result = await evaluateEvidence(
+      action,
+      sha("e"),
+      mirror(blob, { changedPaths: async () => ["automation-extra/foo.ts"] })
+    );
+    expect(result.status).toBe("rejected");
+    expect(result.outstanding.join(" ")).toContain("automation-extra/foo.ts");
+  });
+
   it("rejects a coordination signal commit used as its own product pin", async () => {
     const inputs = [{ agent: "codex", commitSha: sha("2"), path: ".plans/issue-1/plan.md", kind: "selected-plan" }];
     const action = order({
