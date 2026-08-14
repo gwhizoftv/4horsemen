@@ -70,22 +70,43 @@ const checkPlan = (raw: string): string[] => {
     .map((headings) => `plan is missing a non-empty ${headings[0]} section`);
 };
 
-const extractApprovedPaths = (raw: string): string[] => {
+/** One path segment: letters, digits, and the punctuation git trees actually use. */
+const FILE_MAP_SEGMENT = /^[A-Za-z0-9_.@+-]+$/;
+
+/**
+ * True when a backticked plan token is a repository-relative file-map path.
+ *
+ * Nested paths (`packages/…`, `apps/…`, `src/…`) and directory globs (`dir/`,
+ * `dir/**`) are accepted regardless of the first directory name. A single
+ * segment is kept only when it looks like a root file (`package.json`), so
+ * identifiers (`VIDEO_DOMAINS`, `toDomain`) are not treated as paths.
+ */
+export const isFileMapPath = (candidate: string): boolean => {
+  if (
+    candidate.includes(" ") ||
+    candidate.startsWith("/") ||
+    candidate.split("/").includes("..") ||
+    candidate.startsWith(".plans/") ||
+    candidate.startsWith(".signals/") ||
+    candidate.startsWith(".code-reviews/")
+  ) {
+    return false;
+  }
+  const glob = candidate.endsWith("/**");
+  const directory = !glob && candidate.endsWith("/");
+  const body = glob ? candidate.slice(0, -3) : directory ? candidate.slice(0, -1) : candidate;
+  if (body === "" || body.startsWith("/") || body.endsWith("/") || body.includes("//")) return false;
+  const segments = body.split("/");
+  if (!segments.every((segment) => FILE_MAP_SEGMENT.test(segment))) return false;
+  if (segments.length >= 2 || glob || directory) return true;
+  return body.includes(".");
+};
+
+export const extractApprovedPaths = (raw: string): string[] => {
   const paths = new Set<string>();
   for (const match of raw.matchAll(/`([^`\n]+)`/g)) {
     const candidate = match[1];
-    if (
-      candidate !== undefined &&
-      !candidate.includes(" ") &&
-      !candidate.startsWith("/") &&
-      !candidate.startsWith(".plans/") &&
-      !candidate.startsWith(".signals/") &&
-      !candidate.startsWith(".code-reviews/") &&
-      !candidate.split("/").includes("..") &&
-      /^(?:src|test|docs|scripts|githooks)\/|^[A-Za-z0-9_.-]+$/.test(candidate)
-    ) {
-      paths.add(candidate);
-    }
+    if (candidate !== undefined && isFileMapPath(candidate)) paths.add(candidate);
   }
   return [...paths].sort();
 };
