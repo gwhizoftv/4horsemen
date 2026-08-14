@@ -97,11 +97,17 @@ const checkReview = (raw: string): string[] => {
   return missing;
 };
 
+const approvedTreeRoot = (pattern: string): string => {
+  if (pattern.endsWith("/**")) return pattern.slice(0, -3).replace(/\/+$/, "");
+  if (pattern.endsWith("/")) return pattern.slice(0, -1);
+  return pattern;
+};
+
+/** Git records a directory delete as a change to every file under it. A map entry names that tree. */
 const matchesApprovedPath = (path: string, approved: readonly string[]): boolean =>
   approved.some((pattern) => {
-    if (pattern.endsWith("/**")) return path.startsWith(pattern.slice(0, -3));
-    if (pattern.endsWith("/")) return path.startsWith(pattern);
-    return path === pattern;
+    const root = approvedTreeRoot(pattern);
+    return root.length > 0 && (path === root || path.startsWith(`${root}/`));
   });
 
 const isCurrentIssueCoordinationPath = (path: string, issue: number): boolean =>
