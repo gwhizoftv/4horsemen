@@ -191,10 +191,11 @@ Phase changes (R1.join → R2.plan, …) always print.
 \`coord --version\` prints the package version (pre-1.0: \`0.0.N\`, bump on every ship).
 \`coord status\` prints the chosen agent, final pin, published branch, and PR URL.
 
-On macOS, starting an issue opens one Terminal.app window per agent, each attached
-to that agent's tmux window (no Ctrl-b n). Re-open later with \`coord attach N\`.
-\`coord detach N\` closes those Terminal windows and kills the issue tmux sessions
-without wiping runtime or branches. A completed \`coord N\` / \`coord run\` does the
+On macOS, starting or resuming an issue opens one Terminal.app window per agent
+when those windows are not already open, each attached to that agent's tmux
+window (no Ctrl-b n). \`coord attach N\` re-opens them while the coordinator is
+already running. \`coord detach N\` closes those Terminal windows and kills the
+issue tmux sessions without wiping runtime or branches. A completed \`coord N\` / \`coord run\` does the
 same teardown automatically. \`coord uninstall\` also tears down owner
 tmux/Terminals for the workspace agents. \`coord wipe-issue N\` resets agent clones,
 deletes origin issue-N/<agent> branches, wipes local issue runtime and tmux/Terminals,
@@ -494,6 +495,7 @@ const reportOwnerAgentClients = (result: OpenOwnerAgentClientsResult, log: (mess
     log(`Opened ${result.count} Terminal window(s), one per agent tmux client.\n`);
     return;
   }
+  if (result.status === "already-open") return;
   log(
     result.status === "failed"
       ? `Could not open Terminal windows (${result.error}). Attach manually:\n`
@@ -660,9 +662,6 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const resolution = resolveStart(parsed, io);
       const existing = existingIssueRuntime(resolution, issue);
       const paths = existing ?? (await startIssue(issue, resolution));
-      if (existing !== null) {
-        io.stdout(`Tip: coord attach ${issue} opens one Terminal window per agent.\n`);
-      }
       await makeRunLoop(paths).run();
       await detachCompletedIssue(paths, io);
       return 0;

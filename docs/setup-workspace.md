@@ -157,8 +157,8 @@ runtime or branches:
 coord detach N --product /path/to/app
 ```
 
-Re-open Terminal views afterward with `coord attach N` (while the issue runtime
-and tmux session exist — resume with `coord N` first if needed).
+Re-open Terminal views afterward with `coord N` (recreates tmux/agents and
+missing windows) or `coord attach N` while the coordinator is already running.
 
 By default uninstall clears the agent-clone hook wiring, the managed exclude block, the
 launchers, and the clone's coordination git config, restores any hook that was

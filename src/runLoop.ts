@@ -363,6 +363,13 @@ export class CoordinatorRunLoop {
     if (this.tmux !== null) {
       await this.tmux.ensureSession(start.issue, start.agents, () => this.authority(authority));
       this.authority(authority);
+      const opened = await this.tmux.openOwnerAgentClients(start.issue, start.agents, { onlyMissing: true });
+      this.authority(authority);
+      if (opened.status === "opened" && opened.count > 0) {
+        this.log(`Opened ${opened.count} Terminal window(s), one per agent tmux client.`);
+      } else if (opened.status === "failed") {
+        this.log(`Could not open Terminal windows (${opened.error}). Attach manually with coord attach ${start.issue}.`);
+      }
     }
   }
 

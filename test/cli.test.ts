@@ -438,6 +438,7 @@ describe("CLI", () => {
       })
     ).toBe(0);
     expect(output.join("")).toContain("Issue 1 complete: killed");
+    expect(output.join("")).not.toContain("Tip: coord attach");
   });
 
   it("refuses to drop the final active agent", async () => {
