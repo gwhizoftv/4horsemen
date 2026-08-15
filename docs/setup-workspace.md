@@ -168,7 +168,7 @@ the managed `.gitignore` block and the generated `AGENTS.md` from the product
 ignore lines or a human-authored `AGENTS.md`. A hook file edited after
 installation is left in place and reported rather than deleted.
 
-Four scoping rules matter:
+Five scoping rules matter:
 
 - By default only the workspace config is deleted; an empty nested workspace
   directory may also be removed. Issue snapshots and run state stay unless
@@ -179,6 +179,8 @@ Four scoping rules matter:
   this product's targets and keeps the outer directory—even with `--force`.
   Without force, a shared flat runtime is still refused as an extra confirmation
   boundary.
+- Owner tmux/Terminal teardown is limited to `issue-*` directories under this
+  workspace. Uninstall must not kill another product's `coord-N` sessions.
 - Every refusal — dirty clones, checkout ownership — is decided before anything
   is unwired, so a refused uninstall leaves the workspace byte-for-byte intact.
 - `--delete-coordination` requires that this install *created* the coordination

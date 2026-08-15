@@ -85,13 +85,14 @@ describe("detachIssue", () => {
 });
 
 describe("detachAllOwnerUiSync", () => {
-  it("discovers issues from tmux and closes only scoped coord-N titles", () => {
+  it("discovers issues from tmux only when a namespace scopes the names", () => {
     expect(discoverCoordIssues(["coord-1", "coord-1-claude", "coord-2-cursor", "other"])).toEqual([1, 2]);
     const killed: string[] = [];
     const closed: string[] = [];
     const outcome = detachAllOwnerUiSync({
       agentIds: ["claude", "cursor"],
-      listSessions: () => ["coord-1", "coord-1-claude", "coord-1-cursor"],
+      tmuxNamespace: "abc12def00",
+      listSessions: () => ["coord-1-abc12def00", "coord-1-abc12def00-claude", "coord-1-abc12def00-cursor"],
       killSession: (name) => {
         killed.push(name);
       },
@@ -100,10 +101,64 @@ describe("detachAllOwnerUiSync", () => {
       },
       log: () => undefined
     });
-    expect(killed).toEqual(["coord-1", "coord-1-claude", "coord-1-cursor"]);
+    expect(killed).toEqual(["coord-1-abc12def00", "coord-1-abc12def00-claude", "coord-1-abc12def00-cursor"]);
     expect(outcome.killedSessions).toEqual(killed);
-    expect(closed).toEqual(["coord-1/claude", "coord-1/cursor"]);
+    expect(closed).toEqual(["coord-1-abc12def00/claude", "coord-1-abc12def00/cursor"]);
     expect(outcome.terminalClose).toBe("closed");
+  });
+
+  it("does not kill another product's un-namespaced sessions when issues are listed", () => {
+    const killed: string[] = [];
+    const closed: string[] = [];
+    const outcome = detachAllOwnerUiSync({
+      agentIds: ["claude", "codex", "cursor", "antigravity"],
+      terminalGroup: "625172f2b5",
+      issues: [1],
+      listSessions: () => [
+        "coord-1",
+        "coord-1-claude",
+        "coord-385",
+        "coord-385-claude",
+        "coord-385-codex",
+        "coord-385-cursor",
+        "coord-385-antigravity"
+      ],
+      killSession: (name) => {
+        killed.push(name);
+      },
+      terminalCloser: (titles) => {
+        closed.push(...titles);
+      },
+      log: () => undefined
+    });
+    expect(outcome.killedSessions).toEqual(["coord-1", "coord-1-claude"]);
+    expect(closed).toEqual([
+      "coord-1-625172f2b5/claude",
+      "coord-1-625172f2b5/codex",
+      "coord-1-625172f2b5/cursor",
+      "coord-1-625172f2b5/antigravity"
+    ]);
+    expect(closed.join(" ")).not.toContain("coord-385");
+  });
+
+  it("does not discover un-namespaced coord sessions when no issue list is given", () => {
+    const killed: string[] = [];
+    const closed: string[] = [];
+    const outcome = detachAllOwnerUiSync({
+      agentIds: ["claude", "cursor"],
+      listSessions: () => ["coord-385", "coord-385-claude"],
+      killSession: (name) => {
+        killed.push(name);
+      },
+      terminalCloser: (titles) => {
+        closed.push(...titles);
+      },
+      log: () => undefined
+    });
+    expect(killed).toEqual([]);
+    expect(closed).toEqual([]);
+    expect(outcome.killedSessions).toEqual([]);
+    expect(outcome.terminalClose).toBe("skipped");
   });
 
   it("closes only unique grouped title ids when terminalGroup is set", () => {
@@ -111,6 +166,7 @@ describe("detachAllOwnerUiSync", () => {
     const outcome = detachAllOwnerUiSync({
       agentIds: ["claude", "cursor"],
       terminalGroup: "abc12def00",
+      issues: [1],
       listSessions: () => ["coord-1", "coord-1-claude"],
       killSession: () => undefined,
       terminalCloser: (titles) => {

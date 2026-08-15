@@ -9,7 +9,8 @@ import {
   recordOwnerWorkspace,
   resolveWorkspaceFromProduct,
   resolveWorkspaceLocation,
-  selectWorkspaceLocation
+  selectWorkspaceLocation,
+  listIssueNumbersInWorkspace
 } from "../src/workspace.js";
 import { makeProduct, type ProductFixture } from "./support/workspaceFixture.js";
 
@@ -101,6 +102,7 @@ describe("workspace layout", () => {
       layout: "nested",
       configPath: nestedConfigPath(root, "beta")
     });
+    expect(listIssueNumbersInWorkspace(root)).toEqual([1]);
   });
 
   it("uses a safe owner-only locator rather than an agent-wiring key", () => {

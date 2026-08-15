@@ -170,10 +170,11 @@ export type DetachAllOwnerUiOptions = {
 };
 
 /**
- * Sync UI teardown for uninstall: kill discovered (or listed) issue tmux
- * sessions and close matching `coord-N[/<ns>]/<agent>` Terminal titles.
- * With no matching sessions/issues, this is a pure no-op — it must not close
- * bare agent-named Terminal tabs (that path hit unrelated windows with no tmux).
+ * Sync UI teardown for uninstall: kill this workspace's issue tmux sessions
+ * and close matching `coord-N[-<group>]/<agent>` Terminal titles.
+ * Pass `issues` from this workspace's `issue-*` dirs. Without a namespace,
+ * do not discover issue numbers from the global tmux list — that killed other
+ * products' `coord-N` sessions. With no matching issues, this is a no-op.
  */
 export const detachAllOwnerUiSync = (options: DetachAllOwnerUiOptions): DetachIssueResult => {
   const log = options.log ?? (() => undefined);
@@ -183,10 +184,14 @@ export const detachAllOwnerUiSync = (options: DetachAllOwnerUiOptions): DetachIs
   // fixtures cannot discover and destroy the operator's live coord sessions.
   const listed = (options.listSessions ?? (underVitest() ? () => [] : listSessionsLive))();
   const killSession = options.killSession ?? (underVitest() ? () => undefined : killSessionLive);
+  // Flat workspaces share un-namespaced `coord-N` session names. Never invent
+  // issue numbers from the global tmux list unless a namespace scopes them.
   const issues =
-    options.issues !== undefined && options.issues.length > 0
+    options.issues !== undefined
       ? [...options.issues]
-      : discoverCoordIssues(listed, namespace);
+      : namespace !== null && namespace !== ""
+        ? discoverCoordIssues(listed, namespace)
+        : [];
 
   if (issues.length === 0) {
     return { killedSessions: [], closedTerminalTitles: [], terminalClose: "skipped" };

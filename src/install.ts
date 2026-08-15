@@ -50,6 +50,7 @@ import { agentIdSchema } from "./protocol.js";
 import {
   clearOwnerWorkspace,
   flatConfigPath,
+  listIssueNumbersInWorkspace,
   recordOwnerWorkspace,
   resolveWorkspaceLocation,
   selectWorkspaceLocation
@@ -629,6 +630,7 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
       tmuxNamespace:
         workspace.layout === "nested" ? workspaceTerminalGroup(workspace.workspaceRoot) : null,
       terminalGroup: workspaceTerminalGroup(workspace.workspaceRoot),
+      issues: listIssueNumbersInWorkspace(workspace.workspaceRoot),
       dryRun: options.dryRun,
       log: effects.log
     });
