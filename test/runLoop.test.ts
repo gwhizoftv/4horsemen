@@ -7,7 +7,7 @@ import { readAction, writeAction } from "../src/action.js";
 import { computeInputSetHash } from "../src/evidence.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
-import { buildOrder, CoordinatorRunLoop, deterministicWinner, githubRepositoryFromOrigin } from "../src/runLoop.js";
+import { buildOrder, CoordinatorRunLoop, deterministicWinner, githubRepositoryFromOrigin, resolveApprovedPaths } from "../src/runLoop.js";
 import {
   cursorsStateSchema,
   dropAgent,
@@ -136,6 +136,48 @@ describe("effectful run loop", () => {
     expect(deterministicWinner(ballots, "R3.plan-ballot", ["claude", "codex"])).toBe("claude");
     const reduced = dropAgent(ballots, "claude");
     expect(deterministicWinner(reduced, "R3.plan-ballot", ["codex"])).toBe("codex");
+  });
+
+  it("re-extracts brace-expanded plan paths when binding implement actions", async () => {
+    const { paths } = fixture();
+    const plan = `# Plan
+## Exact File Map
+- \`scripts/setup_{claude,codex}.sh\`
+- \`src/product.ts\`
+`;
+    const now = "2026-08-11T17:00:00.000Z";
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
+        selection: { ...current.selection, planAgents: ["codex"] },
+        accepted: [
+          {
+            stepId: "R2.plan",
+            agent: "codex",
+            round: null,
+            submissionSha: "c".repeat(40),
+            path: ".plans/issue-1/plan.md",
+            approvedPaths: ["src/product.ts"],
+            acceptedAt: now
+          },
+          {
+            stepId: "R3.publish-selection",
+            agent: "codex",
+            round: null,
+            submissionSha: "d".repeat(40),
+            path: ".plans/issue-1/selection.json",
+            selectedAgents: ["codex"],
+            acceptedAt: now
+          }
+        ]
+      })
+    );
+    const cursors = readCursorsState(paths);
+    const approved = await resolveApprovedPaths({ readBlob: async () => plan }, cursors, "R4.implement");
+    expect(approved).toEqual(["scripts/setup_claude.sh", "scripts/setup_codex.sh", "src/product.ts"]);
+    const order = buildOrder(paths, readStartState(paths), cursors, "codex", "R4.implement", null, undefined, [], approved);
+    expect(order.approvedPaths).toEqual(approved);
   });
 
   it("prepares opaque actions for simultaneous agents", async () => {

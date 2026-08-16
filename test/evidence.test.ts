@@ -80,6 +80,29 @@ describe("plan file-map path extraction", () => {
       "packages/core/src/domain/model.ts"
     ]);
   });
+
+  it("expands a single bash brace group in backticked file-map paths", () => {
+    const plan = `# Plan
+- \`scripts/setup_{antigravity,claude,codex,cursor}.sh\`
+- \`scripts/start_isolated_{antigravity,claude,codex}_agents.sh\`
+- \`scripts/start_isolated_cursor_agents.sh\`
+`;
+    expect(extractApprovedPaths(plan)).toEqual([
+      "scripts/setup_antigravity.sh",
+      "scripts/setup_claude.sh",
+      "scripts/setup_codex.sh",
+      "scripts/setup_cursor.sh",
+      "scripts/start_isolated_antigravity_agents.sh",
+      "scripts/start_isolated_claude_agents.sh",
+      "scripts/start_isolated_codex_agents.sh",
+      "scripts/start_isolated_cursor_agents.sh"
+    ]);
+  });
+
+  it("does not treat nested or empty brace groups as file-map paths", () => {
+    expect(extractApprovedPaths("- `scripts/{a,{b,c}}.sh`\n")).toEqual([]);
+    expect(extractApprovedPaths("- `scripts/{a,}.sh`\n")).toEqual([]);
+  });
 });
 
 describe("evidence evaluation", () => {
