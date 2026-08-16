@@ -1,0 +1,28 @@
+name: version-bump
+
+# Merge gate: every PR into main must advance package.json past origin/main (0.0.N).
+# Also enforced locally by test/versionBump.test.ts inside pnpm check:fast / precommit.
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch PR base for version compare
+        run: git fetch --no-tags origin "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+      - run: pnpm install --frozen-lockfile
+      - name: Require package.json version > PR base
+        env:
+          COORD_VERSION_BASE_REF: origin/${{ github.base_ref }}
+        run: pnpm run check:version-bump

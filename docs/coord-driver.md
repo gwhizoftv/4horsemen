@@ -73,7 +73,11 @@ owner-provided start input.
 
 Confirm the installed driver with `coord --version` (or `-V`). Pre-1.0 releases
 use `0.0.N` and bump the patch on every shipped change so a merge is visible
-after reinstall/refresh.
+after reinstall/refresh. That bump is mechanical: `pnpm check:fast` (precommit)
+fails on a non-`main` branch whose `package.json` version is not strictly greater
+than `origin/main`, and the `version-bump` GitHub Action enforces the same on
+every PR into `main`. Concurrent PRs must claim distinct next versions (e.g.
+`0.0.3` then `0.0.4`).
 
 After `coord onboard`, the daily command is:
 
