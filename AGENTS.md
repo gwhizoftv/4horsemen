@@ -81,4 +81,4 @@ tracked hook files.
 
 In this repository, `verify.precommit` is `pnpm check:fast` (lint, typecheck,
 fast tests — no Vite build). Full `pnpm check` (build + check:fast + e2e) is
-what the coordinator `checks` gate. Run `pnpm check:fast` before commits.
+what the coordinator `checks` gate. Run `pnpm check:fast` before commits. On non-`main` branches that suite also requires `package.json` version to be strictly greater than `origin/main` (pre-1.0 ship gate).
