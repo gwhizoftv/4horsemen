@@ -102,11 +102,29 @@ export const isFileMapPath = (candidate: string): boolean => {
   return body.includes(".");
 };
 
+/**
+ * Expand one bash-style brace group (`dir/{a,b}.sh` → `dir/a.sh`, `dir/b.sh`).
+ * Nested or malformed braces are left unchanged so `isFileMapPath` can reject them.
+ */
+export const expandFileMapBraces = (candidate: string): string[] => {
+  const matched = /^([^{}\n]*)\{([^{}\n]+)\}([^{}\n]*)$/.exec(candidate);
+  if (matched === null) return [candidate];
+  const prefix = matched[1] ?? "";
+  const body = matched[2] ?? "";
+  const suffix = matched[3] ?? "";
+  const alternatives = body.split(",");
+  if (alternatives.length < 2 || alternatives.some((part) => part === "")) return [candidate];
+  return alternatives.map((part) => `${prefix}${part}${suffix}`);
+};
+
 export const extractApprovedPaths = (raw: string): string[] => {
   const paths = new Set<string>();
   for (const match of raw.matchAll(/`([^`\n]+)`/g)) {
     const candidate = match[1];
-    if (candidate !== undefined && isFileMapPath(candidate)) paths.add(candidate);
+    if (candidate === undefined) continue;
+    for (const expanded of expandFileMapBraces(candidate)) {
+      if (isFileMapPath(expanded)) paths.add(expanded);
+    }
   }
   return [...paths].sort();
 };

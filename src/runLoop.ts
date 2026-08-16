@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, rmSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { clearCompletion, createActionId, readCompletion, writeAction } from "./action.js";
-import { evaluateEvidence, type EvidenceMirror } from "./evidence.js";
+import { evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
 import { BareMirror, hermeticGitEnv } from "./mirror.js";
 import { renderArtifactScaffold } from "./orderScaffold.js";
@@ -231,11 +231,15 @@ export const deriveBoundInputs = (
   return [];
 };
 
-const approvedPathsForOrder = (cursors: CursorsState, stepId: WorkflowStepId): string[] => {
-  if (stepId !== "R4.implement" && stepId !== "R6.revise") return [];
+const selectedPlanAgents = (cursors: CursorsState): string[] => {
   const selection = acceptedAt(cursors, "R3.publish-selection", false).at(-1);
   const selected = cursors.selection.planAgents.filter((agent) => cursors.activeRoster.includes(agent));
-  const selectedAgents = selected.length > 0 ? selected : (selection?.selectedAgents ?? cursors.activeRoster);
+  return selected.length > 0 ? selected : (selection?.selectedAgents ?? [...cursors.activeRoster]);
+};
+
+const approvedPathsForOrder = (cursors: CursorsState, stepId: WorkflowStepId): string[] => {
+  if (stepId !== "R4.implement" && stepId !== "R6.revise") return [];
+  const selectedAgents = selectedPlanAgents(cursors);
   return [
     ...new Set(
       acceptedAt(cursors, "R2.plan")
@@ -243,6 +247,29 @@ const approvedPathsForOrder = (cursors: CursorsState, stepId: WorkflowStepId): s
         .flatMap((submission) => submission.approvedPaths ?? [])
     )
   ].sort();
+};
+
+/**
+ * Re-extract the selected plan file map so extractor upgrades apply mid-issue
+ * without wiping frozen plan-acceptance paths.
+ */
+export const resolveApprovedPaths = async (
+  mirror: Pick<EvidenceMirror, "readBlob">,
+  cursors: CursorsState,
+  stepId: WorkflowStepId
+): Promise<string[]> => {
+  const frozen = approvedPathsForOrder(cursors, stepId);
+  if (stepId !== "R4.implement" && stepId !== "R6.revise") return frozen;
+  const selectedAgents = selectedPlanAgents(cursors);
+  const plans = acceptedAt(cursors, "R2.plan").filter((submission) => selectedAgents.includes(submission.agent));
+  if (plans.length === 0) return frozen;
+  const paths = new Set<string>();
+  for (const plan of plans) {
+    const blob = await mirror.readBlob(plan.submissionSha, plan.path);
+    if (blob === null) continue;
+    for (const path of extractApprovedPaths(blob)) paths.add(path);
+  }
+  return paths.size > 0 ? [...paths].sort() : frozen;
 };
 
 export const buildOrder = (
@@ -253,7 +280,8 @@ export const buildOrder = (
   stepId: WorkflowStepId,
   round: number | null,
   actionId = createActionId(),
-  outstanding: readonly string[] = []
+  outstanding: readonly string[] = [],
+  approvedPathOverride?: readonly string[]
 ): InternalOrder => {
   const definition = STEP_DEFINITIONS[stepId];
   const runtime = agentRuntimePaths(paths, agent);
@@ -267,7 +295,8 @@ export const buildOrder = (
   const selectedImplementationSubmission = acceptedAt(cursors, "R4.implement").find(
     (submission) => submission.agent === selectedImplementation
   );
-  const approvedPaths = approvedPathsForOrder(cursors, stepId);
+  const approvedPaths =
+    approvedPathOverride === undefined ? approvedPathsForOrder(cursors, stepId) : [...approvedPathOverride];
   const eligibleChoices =
     stepId === "R3.plan-ballot"
       ? planChoices
@@ -413,7 +442,9 @@ export class CoordinatorRunLoop {
   ): Promise<CursorsState> {
     const cursor = cursors.agents[agent];
     if (cursor === undefined) throw new Error(`Unknown agent ${agent}.`);
-    const order = buildOrder(this.paths, start, cursors, agent, stepId, round, this.actionId());
+    const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
+    this.authority(cursors);
+    const order = buildOrder(this.paths, start, cursors, agent, stepId, round, this.actionId(), [], approvedPaths);
     const runtime = agentRuntimePaths(this.paths, agent);
     let next = this.mutate(cursors, (current) => {
       writeAction(this.paths.coordRoot, runtime.action, order);
@@ -609,16 +640,11 @@ export class CoordinatorRunLoop {
     if (cursor === undefined || cursor.stepId === null || cursor.actionId === null) return cursors;
     const runtime = agentRuntimePaths(this.paths, agent);
     const actionId = cursor.actionId;
-    const order = buildOrder(
-      this.paths,
-      start,
-      cursors,
-      agent,
-      cursor.stepId,
-      cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
-      actionId,
-      outstanding
-    );
+    const stepId = cursor.stepId;
+    const round = stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+    const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
+    this.authority(cursors);
+    const order = buildOrder(this.paths, start, cursors, agent, stepId, round, actionId, outstanding, approvedPaths);
     // Clear so an immediate (or later) nudge can deliver the rewritten action.md.
     this.nudgedActions.delete(actionId);
     this.verbose(`reissued ${agent} action ${actionId}: ${outstanding.join("; ")}`);
@@ -892,6 +918,8 @@ export class CoordinatorRunLoop {
           }
         }
         if (harnessGone) {
+          const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
+          this.authority(cursors);
           const order = buildOrder(
             this.paths,
             start,
@@ -900,7 +928,8 @@ export class CoordinatorRunLoop {
             cursor.stepId,
             cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
             cursor.actionId,
-            cursor.outstanding
+            cursor.outstanding,
+            approvedPaths
           );
           const fetched = await this.mirror.fetchBranch(order.branch);
           this.authority(cursors);
@@ -946,6 +975,8 @@ export class CoordinatorRunLoop {
         );
         return replaceCursor(current, agent, { status: "verifying", submissionSha: completion.sha }, this.now());
       });
+      const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
+      this.authority(cursors);
       const order = buildOrder(
         this.paths,
         start,
@@ -954,7 +985,8 @@ export class CoordinatorRunLoop {
         cursor.stepId,
         cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
         cursor.actionId,
-        cursor.outstanding
+        cursor.outstanding,
+        approvedPaths
       );
       let observation = await evaluateEvidence(order, completion.sha, this.mirror as EvidenceMirror, () =>
         this.authority(cursors)
