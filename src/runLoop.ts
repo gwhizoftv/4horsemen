@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, rmSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { clearCompletion, createActionId, readCompletion, writeAction } from "./action.js";
+import { clearCompletion, createActionId, readAction, readCompletion, writeAction } from "./action.js";
 import { evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
 import { BareMirror, hermeticGitEnv } from "./mirror.js";
@@ -491,6 +491,39 @@ export class CoordinatorRunLoop {
     return next;
   }
 
+  /**
+   * Rewrite an in-flight action with freshly resolved approvedPaths so mid-issue
+   * extractor upgrades apply without waiting for a failed verify→reissue cycle.
+   */
+  private async rewriteOrderedAction(
+    start: StartState,
+    cursors: CursorsState,
+    agent: string,
+    actionId: string
+  ): Promise<{ cursors: CursorsState; pathsChanged: boolean }> {
+    const cursor = cursors.agents[agent];
+    if (cursor === undefined || cursor.stepId === null) return { cursors, pathsChanged: false };
+    const runtime = agentRuntimePaths(this.paths, agent);
+    if (!existsSync(runtime.action)) return { cursors, pathsChanged: false };
+    const previous = readAction(runtime.action).body;
+    const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
+    this.authority(cursors);
+    const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+    const order = buildOrder(
+      this.paths,
+      start,
+      cursors,
+      agent,
+      cursor.stepId,
+      round,
+      actionId,
+      cursor.outstanding,
+      approvedPaths
+    );
+    writeAction(this.paths.coordRoot, runtime.action, order);
+    return { cursors, pathsChanged: readAction(runtime.action).body !== previous };
+  }
+
   private async maybeRetryNudge(
     start: StartState,
     cursors: CursorsState,
@@ -498,11 +531,20 @@ export class CoordinatorRunLoop {
     actionId: string,
     reason: "retry" | "reissue" = "retry"
   ): Promise<CursorsState> {
-    if (this.tmux === null || this.nudgedActions.has(actionId)) return cursors;
     const config = start.agents.find((candidate) => candidate.id === agent);
     if (config === undefined) return cursors;
     const runtime = agentRuntimePaths(this.paths, agent);
     if (!existsSync(runtime.action)) return cursors;
+
+    // Retry (not reissue) must refresh bound paths before the nudge gate: an
+    // already-nudged actionId otherwise keeps a pre-upgrade approvedPaths list.
+    if (reason === "retry") {
+      const rewritten = await this.rewriteOrderedAction(start, cursors, agent, actionId);
+      cursors = rewritten.cursors;
+      if (rewritten.pathsChanged) this.nudgedActions.delete(actionId);
+    }
+
+    if (this.tmux === null || this.nudgedActions.has(actionId)) return cursors;
     const result = await this.tmux.nudge(start.issue, config, runtime.action, () => this.authority(cursors));
     this.authority(cursors);
     if (result === "sent") {
