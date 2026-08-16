@@ -87,4 +87,24 @@ describe("orderScaffold", () => {
     expect(rendered).toContain("## Findings");
     expect(rendered).toContain("## Verdict");
   });
+
+  it("lists required comparison headings for R5.compare", () => {
+    const rendered = renderArtifactScaffold({
+      stepId: "R5.compare",
+      issue: 1,
+      issueSessionId: "s",
+      agent: "cursor",
+      baselineSha: "a".repeat(40),
+      automationDigest: "b".repeat(64),
+      inputs: [],
+      eligibleChoices: [],
+      expectedSelectedAgents: [],
+      round: null,
+      approvedPaths: []
+    });
+    expect(rendered).toContain("## Comparison");
+    expect(rendered).toContain("(or Findings)");
+    expect(rendered).toContain("no em dash or subtitle");
+    expect(rendered).not.toContain("```json");
+  });
 });

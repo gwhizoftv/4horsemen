@@ -258,7 +258,11 @@ export const evaluateEvidence = async (
   }
   if (order.evidenceId === "comparison-published") {
     const errors: string[] = [];
-    if (!markdownSection(blob, ["Comparison", "Findings"])) errors.push("comparison is missing a Comparison or Findings section");
+    if (!markdownSection(blob, ["Comparison", "Findings"])) {
+      errors.push(
+        "comparison is missing a Comparison or Findings section (use a heading line that is exactly `## Comparison` or `## Findings`, with no subtitle on that line)"
+      );
+    }
     for (const input of order.inputs) {
       if (!blob.includes(input.commitSha)) errors.push(`comparison does not cite implementation pin ${input.commitSha}`);
     }
