@@ -180,6 +180,127 @@ describe("effectful run loop", () => {
     expect(order.approvedPaths).toEqual(approved);
   });
 
+  it("rewrites a stale implement action on retry after an extractor upgrade", async () => {
+    const { paths } = fixture();
+    const plan = `# Plan
+## Exact File Map
+- \`scripts/setup_{claude,codex}.sh\`
+- \`src/product.ts\`
+`;
+    const now = "2026-08-11T17:00:00.000Z";
+    const actionId = "10000000-0000-4000-8000-000000000001";
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
+        selection: { ...current.selection, planAgents: ["codex"] },
+        agents: {
+          ...current.agents,
+          claude: {
+            ...current.agents.claude!,
+            stepId: "R4.implement",
+            evidenceId: "implementation-pinned",
+            actionId: null,
+            status: "waiting-peer",
+            attempt: 1,
+            submissionSha: null,
+            outstanding: [],
+            updatedAt: now
+          },
+          codex: {
+            ...current.agents.codex!,
+            stepId: "R4.implement",
+            evidenceId: "implementation-pinned",
+            actionId,
+            status: "ordered",
+            attempt: 1,
+            submissionSha: null,
+            outstanding: ["implementation changes paths outside the approved file map: scripts/setup_codex.sh"],
+            updatedAt: now
+          }
+        },
+        accepted: [
+          {
+            stepId: "R2.plan",
+            agent: "codex",
+            round: null,
+            submissionSha: "c".repeat(40),
+            path: ".plans/issue-1/plan.md",
+            approvedPaths: ["src/product.ts"],
+            acceptedAt: now
+          },
+          {
+            stepId: "R3.publish-selection",
+            agent: "codex",
+            round: null,
+            submissionSha: "d".repeat(40),
+            path: ".plans/issue-1/selection.json",
+            selectedAgents: ["codex"],
+            acceptedAt: now
+          }
+        ]
+      })
+    );
+    const stale = buildOrder(
+      paths,
+      readStartState(paths),
+      readCursorsState(paths),
+      "codex",
+      "R4.implement",
+      null,
+      actionId,
+      ["implementation changes paths outside the approved file map: scripts/setup_codex.sh"],
+      ["src/product.ts"]
+    );
+    writeAction(paths.coordRoot, agentRuntimePaths(paths, "codex").action, stale);
+    expect(readAction(agentRuntimePaths(paths, "codex").action).body).toMatch(
+      /"approvedPaths": \[\s*"src\/product\.ts"\s*\]/
+    );
+
+    const mirror = {
+      path: paths.mirror,
+      async initialize() {},
+      async fetchBranch() {
+        return { ok: false as const, details: "unused" };
+      },
+      async readBlob() {
+        return plan;
+      },
+      async changedPaths() {
+        return [];
+      },
+      async materializeWorktree() {},
+      async removeWorktree() {},
+      async publishBranch() {}
+    };
+    let literalNudges = 0;
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
+      if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { tmux, mirror: mirror as never });
+    await loop.runTick();
+    const body = readAction(agentRuntimePaths(paths, "codex").action).body;
+    expect(body).toContain("scripts/setup_claude.sh");
+    expect(body).toContain("scripts/setup_codex.sh");
+    expect(literalNudges).toBeGreaterThan(0);
+  });
+
   it("prepares opaque actions for simultaneous agents", async () => {
     const { paths } = fixture();
     const loop = new CoordinatorRunLoop(paths, { tmux: null });
