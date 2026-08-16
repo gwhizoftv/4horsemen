@@ -156,6 +156,15 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
         "## Verdict\n" +
         "(or Conclusion)\n"
       );
+    case "R5.compare":
+      return (
+        "\n\nRequired markdown headings for this action (also in AGENTS.md; the list here is authoritative " +
+        "for this step and may change). Use a heading line that is exactly the section name " +
+        "(no em dash or subtitle on the same line). Each heading needs a non-empty body:\n\n" +
+        "## Comparison\n" +
+        "(or Findings)\n\n" +
+        "Cite every bound implementation pin SHA from the inputs list below.\n"
+      );
     default:
       return "";
   }

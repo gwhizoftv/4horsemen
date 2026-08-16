@@ -47,6 +47,22 @@ A **review** (`.plans/issue-<n>/review.md`) must include:
 
 Aliases: Review Findings; Conclusion (for Verdict).
 
+A **comparison** (`.code-reviews/issue-<n>/comparison.md`) must include a heading
+line that is exactly one of:
+
+```markdown
+## Comparison
+```
+
+or
+
+```markdown
+## Findings
+```
+
+No subtitle on that same line (e.g. `# Comparison — issue 12` fails). Cite every
+bound implementation pin SHA from the current `action.md`.
+
 ## Checks that actually run
 
 Do not plan against a tracked `githooks/` tree. Git in an agent clone
