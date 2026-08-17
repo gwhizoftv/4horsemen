@@ -9,7 +9,9 @@ A **plan** (`.plans/issue-<n>/plan.md`) must include every heading below,
 each with a non-empty body:
 
 ```markdown
-## Exact File Map
+## Exact File List to be changed or deleted
+
+## Exact file list to be created
 
 ## Tests
 
@@ -20,31 +22,32 @@ each with a non-empty body:
 ## Conclusion
 ```
 
-Aliases the validator also accepts: File Map / File Creation Order /
-Proposed Architecture; Test / Validation; Alternatives; Risks.
-
-A **review** (`.plans/issue-<n>/review.md`) must include:
+A **plan review** (`.plans/issue-<n>/review.md`) must include:
 
 ```markdown
 ## Findings
 
+## Conclusion
+```
+
+A **code review** (`.plans/issue-<n>/review.md`) must include:
+
+```markdown
+## Findings
+
+- File path and line number
+- the rule that must hold
+- a concrete failure that follows from breaking the rule
+- optionally, the smallest test or bucfix sketch, if a test cannot express it.
+- The rule and the failure are the deliverable.
+- delete the sketch and the finding must still be actionable.
+- Prefer a test over a fix.
+
 ## Verdict
 ```
 
-Aliases: Review Findings; Conclusion (for Verdict).
-
 ## Checks that actually run
 
-Do not plan against a tracked `githooks/` tree. Git in an agent clone
-leaves `core.hooksPath` unset. `.git/hooks/<name>` is a shim that execs
-`$(git config --local coord.installRoot)/githooks/<name>`. Those bodies
-run `verify.precommit` / `verify.prepush` from the workspace config
-(`git config --local coord.workspaceConfig`).
+Don’t modify the product githooks/ as the way to satisfy checks. Follow the named commands in the action or plan.
 
-An empty list for a phase means that phase runs no commands and exits 0,
-even if the hook printed that checks were required. Coordinator `checks`
-run later in a throwaway worktree at the approved commit and gate
-publication. They can be a stricter suite than the commit hook (for
-example full `pnpm check` including a build, while `verify.precommit` is
-`pnpm check:fast`). Name the live argv in Tests; do not infer them from
-tracked hook files.
+Passing the clone’s commit/push hooks is not enough for final acceptance. The coordinator may run a stricter check list on the approved commit before the PR. In plans, name real commands; do not guess them from tracked hook files.
