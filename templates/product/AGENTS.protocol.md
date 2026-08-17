@@ -46,6 +46,24 @@ A **code review** (`.plans/issue-<n>/review.md`) must include:
 ## Verdict
 ```
 
+Aliases: Review Findings; Conclusion (for Verdict).
+
+A **comparison** (`.code-reviews/issue-<n>/comparison.md`) must include a heading
+line that is exactly one of:
+
+```markdown
+## Comparison
+```
+
+or
+
+```markdown
+## Findings
+```
+
+No subtitle on that same line (e.g. `# Comparison — issue 12` fails). Cite every
+bound implementation pin SHA from the current `action.md`.
+
 ## Checks that actually run
 
 Don’t modify the product githooks/ as the way to satisfy checks. Follow the named commands in the action or plan.

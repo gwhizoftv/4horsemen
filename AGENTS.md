@@ -47,6 +47,22 @@ A **review** (`.plans/issue-<n>/review.md`) must include:
 
 Aliases: Review Findings; Conclusion (for Verdict).
 
+A **comparison** (`.code-reviews/issue-<n>/comparison.md`) must include a heading
+line that is exactly one of:
+
+```markdown
+## Comparison
+```
+
+or
+
+```markdown
+## Findings
+```
+
+No subtitle on that same line (e.g. `# Comparison — issue 12` fails). Cite every
+bound implementation pin SHA from the current `action.md`.
+
 ## Checks that actually run
 
 Do not plan against a tracked `githooks/` tree. Git in an agent clone
@@ -65,4 +81,4 @@ tracked hook files.
 
 In this repository, `verify.precommit` is `pnpm check:fast` (lint, typecheck,
 fast tests — no Vite build). Full `pnpm check` (build + check:fast + e2e) is
-what the coordinator `checks` gate. Run `pnpm check:fast` before commits.
+what the coordinator `checks` gate. Run `pnpm check:fast` before commits. On non-`main` branches that suite also requires `package.json` version to be strictly greater than `origin/main` (pre-1.0 ship gate).
