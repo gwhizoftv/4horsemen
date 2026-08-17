@@ -141,8 +141,10 @@ coord uninstall --coord-root /path/to/coord-runtime --product /path/to/app
   # --dry-run
 ```
 
-To reuse a GitHub issue number without closing it (reset clones + delete
-`issue-N/<agent>` origin branches + local issue runtime + tmux/Terminals):
+To reuse a GitHub issue number without closing it (reset clones + delete origin
+`issue-N/<agent>` and `*-final` branches + leftover tracking refs, keeping any
+product-local issue branch that has owner commits or uncommitted work
++ local issue runtime + tmux/Terminals):
 
 ```bash
 coord wipe-issue N --product /path/to/app

@@ -198,8 +198,9 @@ already running. \`coord detach N\` closes those Terminal windows and kills the
 issue tmux sessions without wiping runtime or branches. A completed \`coord N\` / \`coord run\` does the
 same teardown automatically. \`coord uninstall\` also tears down owner
 tmux/Terminals for the workspace agents. \`coord wipe-issue N\` resets agent clones,
-deletes origin issue-N/<agent> branches, wipes local issue runtime and tmux/Terminals,
-and leaves the GitHub issue open.
+deletes origin issue-N/<agent> and *-final branches plus leftover tracking refs
+(keeping product-local issue branches that have owner commits or uncommitted work),
+wipes local issue runtime and tmux/Terminals, and leaves the GitHub issue open.
 
 install remains the advanced explicit interface. Onboard and install leave the product's
 tracked tree untouched; a fresh human clone receives no coordination hooks or metadata.

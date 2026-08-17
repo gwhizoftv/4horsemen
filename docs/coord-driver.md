@@ -148,10 +148,15 @@ a completed workflow, it runs the same teardown automatically.
 no sessions it is a no-op (it never closes bare agent-named tabs).
 
 `coord wipe-issue N` is the owner reset for reusing a GitHub issue number: it
-checks out each agent clone on the base branch, deletes local and origin
-`issue-N/<agent>` branches, removes `coord-runtime/issue-N`, and runs the same
-UI teardown as `detach`. It does **not** close the GitHub issue or uninstall the
-product. Dirty clones refuse unless `--force`.
+checks out each agent clone on the base branch, deletes origin `issue-N/<agent>`
+and `*-final` branches, and drops leftover `refs/remotes/origin/issue-N/*`
+tracking refs in clones, the product worktree, and `coord-runtime/mirror.git`.
+A local `issue-N/*` branch in the product is kept when it has uncommitted work
+or commits that are not just a checkout of the clone. Removes
+`coord-runtime/issue-N`, and runs the same UI teardown as `detach`. It does
+**not** close the GitHub issue or uninstall the product. Dirty clones refuse
+unless `--force`. Clone-local skip-worktree on `AGENTS.md` is lifted so checkout
+onto the base branch can proceed.
 
 Nudge delivery uses literal `send-keys -l` (not paste-buffer — some TUIs such
 as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`.
