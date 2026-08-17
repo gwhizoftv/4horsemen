@@ -93,8 +93,10 @@ describe("coord install — two-mode footprint", () => {
     expect(readConfig(result.configPath).prPolicy).toBe("coord-open-unmerged");
     expect(readFileSync(join(clone, ".git", "info", "exclude"), "utf8")).toContain("/start-*.sh");
     const agentsMd = readFileSync(join(clone, "AGENTS.md"), "utf8");
-    expect(agentsMd).toContain("## Exact File Map");
+    expect(agentsMd).toContain("## Exact File List to be changed or deleted");
+    expect(agentsMd).toContain("## Exact file list to be created");
     expect(agentsMd).toContain("action.md");
+    expect(agentsMd).toContain("skip-worktree");
     expect(existsSync(join(clone, "CLAUDE.md"))).toBe(true);
     expect(readFileSync(join(clone, "CLAUDE.md"), "utf8")).toContain("@AGENTS.md");
   });
@@ -128,7 +130,7 @@ describe("coord install — emitted config", () => {
     expect(config.project).toBe("myserver");
     expect(config.checks).toEqual(declaredChecks);
     expect(config.coordination?.installRoot).toBe(repoRoot);
-    expect(config.coordination?.version).toBe("0.0.5");
+    expect(config.coordination?.version).toBe("0.0.6");
     expect(config.coordination?.vendored).toBe(false);
     expect(config.agents[0]?.launcher).toBe("start-claude.sh");
   });
@@ -169,7 +171,7 @@ describe("coord install — opt-in product changes", () => {
     const agents = readFileSync(join(fixture.productRoot, "AGENTS.md"), "utf8");
     expect(agents.startsWith("# ours\n")).toBe(true);
     expect(agents).toContain("coordination protocol");
-    expect(agents).toContain("## Exact File Map");
+    expect(agents).toContain("## Exact File List to be changed or deleted");
     expect(agents).toContain("action.md");
   });
 });

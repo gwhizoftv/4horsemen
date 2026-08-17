@@ -132,6 +132,34 @@ Implement it.
     });
   });
 
+  it("accepts the split changed/created file-list headings", async () => {
+    const plan = `# Plan
+
+## Exact File List to be changed or deleted
+- \`src/product.ts\`
+
+## Exact file list to be created
+- \`test/product.test.ts\`
+
+## Tests
+Run tests.
+
+## Alternatives Rejected
+None.
+
+## Risks and Mitigations
+Keep pins immutable.
+
+## Conclusion
+Implement it.
+`;
+    const result = await evaluateEvidence(order(), sha("c"), mirror(plan));
+    expect(result).toMatchObject({
+      status: "satisfied",
+      approvedPaths: ["src/product.ts", "test/product.test.ts"]
+    });
+  });
+
   it("extracts monorepo file-map paths from a plan and ignores identifiers", async () => {
     const plan = `# Plan
 

@@ -62,7 +62,8 @@ describe("orderScaffold", () => {
       round: null,
       approvedPaths: []
     });
-    expect(rendered).toContain("## Exact File Map");
+    expect(rendered).toContain("## Exact File List to be changed or deleted");
+    expect(rendered).toContain("## Exact file list to be created");
     expect(rendered).toContain("## Tests");
     expect(rendered).toContain("## Alternatives Rejected");
     expect(rendered).toContain("## Risks and Mitigations");
@@ -85,7 +86,8 @@ describe("orderScaffold", () => {
       approvedPaths: []
     });
     expect(rendered).toContain("## Findings");
-    expect(rendered).toContain("## Verdict");
+    expect(rendered).toContain("## Conclusion");
+    expect(rendered).toContain("Plan-review findings must state");
   });
 
   it("lists required comparison headings for R5.compare", () => {
@@ -105,6 +107,7 @@ describe("orderScaffold", () => {
     expect(rendered).toContain("## Comparison");
     expect(rendered).toContain("(or Findings)");
     expect(rendered).toContain("no em dash or subtitle");
+    expect(rendered).toContain("file path and line number");
     expect(rendered).not.toContain("```json");
   });
 });
