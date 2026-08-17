@@ -19,6 +19,9 @@ git obligations. This file describes the rules that apply to **agent clones**
 - Commit messages start with your agent label, e.g. `Claude: fix login redirect`.
 - No `--no-verify`, no force-push, no editing `core.hooksPath` to get around a
   hook. If a hook blocks you, fix the state it names.
+- Do not clear `skip-worktree` on `AGENTS.md` or strip its protocol block to
+  “fix” git status; coordination sets that bit on purpose. Escalate if the
+  file looks wrong.
 
 ## Verification
 

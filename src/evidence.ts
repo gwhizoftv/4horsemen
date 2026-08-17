@@ -58,8 +58,14 @@ const markdownSection = (raw: string, alternatives: readonly string[]): boolean 
   alternatives.some((heading) => new RegExp(`^#{1,6}\\s+${heading}\\s*$`, "im").test(raw));
 
 const checkPlan = (raw: string): string[] => {
+  // Legacy "Exact File Map" (and aliases) still satisfy both of the split list headings.
+  const fileListAliases = [
+    "(?:Exact )?File (?:Map|Creation Order)",
+    "Proposed Architecture"
+  ] as const;
   const required: readonly (readonly string[])[] = [
-    ["(?:Exact )?File (?:Map|Creation Order)", "Proposed Architecture"],
+    ["Exact File List to be changed or deleted", ...fileListAliases],
+    ["Exact file list to be created", ...fileListAliases],
     ["Tests?", "Validation"],
     ["Alternatives?(?: Rejected)?"],
     ["Risks?(?: and Mitigations)?"],

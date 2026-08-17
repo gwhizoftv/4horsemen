@@ -17,13 +17,21 @@ Runtime state lives outside all clones:
 This file is the protocol. Follow it when writing coordinator artifacts.
 The required response format for the current step also appears in that step's
 `action.md` and may change each time — match the headings or JSON scaffold
-listed there. The validator checks the published file, not this document.
+listed there. The coordinator accepts only the published artifact. If this file
+and `action.md` disagree on format, `action.md` wins.
+
+Do not clear `skip-worktree` on `AGENTS.md`, strip this protocol block, or
+replace the file to “fix” git status. Coordination sets that bit so the
+clone-local protocol section stays hidden. If `AGENTS.md` looks wrong, escalate;
+do not change index flags.
 
 A **plan** (`.plans/issue-<n>/plan.md`) must include every heading below,
 each with a non-empty body:
 
 ```markdown
-## Exact File Map
+## Exact File List to be changed or deleted
+
+## Exact file list to be created
 
 ## Tests
 
@@ -34,10 +42,31 @@ each with a non-empty body:
 ## Conclusion
 ```
 
-Aliases the validator also accepts: File Map / File Creation Order /
-Proposed Architecture; Test / Validation; Alternatives; Risks.
+Accepted aliases for the file lists: Exact File Map / File Map / File Creation
+Order / Proposed Architecture (a single legacy file-map heading still satisfies
+both list sections). Also accepted: Test / Validation; Alternatives; Risks.
 
-A **review** (`.plans/issue-<n>/review.md`) must include:
+A **plan review** (`.plans/issue-<n>/review.md`) must include:
+
+```markdown
+## Findings
+
+## Conclusion
+```
+
+Plan-review findings must state, in order: the plan claim or section; the rule
+that must hold; a concrete failure if the plan is followed as written; then
+optionally the smallest correction. The rule and the failure are the
+deliverable: delete any sketch and the finding must still be actionable.
+
+A **code review** finding (when reviewing implementation or revision) must
+state, in order: file path and line number; the rule that must hold; a concrete
+failure that follows from breaking it; then optionally the smallest
+illustrative test — or a fix sketch if a test cannot express it. The rule and
+the failure are the deliverable: delete the sketch and the finding must still
+be actionable. Prefer a test over a fix.
+
+Code-review style write-ups use:
 
 ```markdown
 ## Findings
@@ -45,10 +74,10 @@ A **review** (`.plans/issue-<n>/review.md`) must include:
 ## Verdict
 ```
 
-Aliases: Review Findings; Conclusion (for Verdict).
+(`Conclusion` is accepted as an alias for Verdict.)
 
-A **comparison** (`.code-reviews/issue-<n>/comparison.md`) must include a heading
-line that is exactly one of:
+A **comparison** (`.code-reviews/issue-<n>/comparison.md`) must include a
+heading line that is exactly one of:
 
 ```markdown
 ## Comparison
@@ -65,20 +94,15 @@ bound implementation pin SHA from the current `action.md`.
 
 ## Checks that actually run
 
-Do not plan against a tracked `githooks/` tree. Git in an agent clone
-leaves `core.hooksPath` unset. `.git/hooks/<name>` is a shim that execs
-`$(git config --local coord.installRoot)/githooks/<name>`. Those bodies
-run `verify.precommit` / `verify.prepush` from the workspace config
-(`git config --local coord.workspaceConfig`).
+Do not modify the product `githooks/` tree as the way to satisfy checks. Follow
+the named commands in the action or plan.
 
-An empty list for a phase means that phase runs no commands and exits 0,
-even if the hook printed that checks were required. Coordinator `checks`
-run later in a throwaway worktree at the approved commit and gate
-publication. They can be a stricter suite than the commit hook (for
-example full `pnpm check` including a build, while `verify.precommit` is
-`pnpm check:fast`). Name the live argv in Tests; do not infer them from
-tracked hook files.
+Passing the clone’s commit/push hooks is not enough for final acceptance. The
+coordinator may run a stricter check list on the approved commit before the PR.
+In plans, name real commands; do not guess them from tracked hook files.
 
 In this repository, `verify.precommit` is `pnpm check:fast` (lint, typecheck,
 fast tests — no Vite build). Full `pnpm check` (build + check:fast + e2e) is
-what the coordinator `checks` gate. Run `pnpm check:fast` before commits. On non-`main` branches that suite also requires `package.json` version to be strictly greater than `origin/main` (pre-1.0 ship gate).
+what the coordinator `checks` gate. Run `pnpm check:fast` before commits. On
+non-`main` branches that suite also requires `package.json` version to be
+strictly greater than `origin/main` (pre-1.0 ship gate).

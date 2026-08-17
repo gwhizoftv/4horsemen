@@ -137,8 +137,10 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
         "\n\nRequired markdown headings for this action (also in AGENTS.md; the list here is authoritative " +
         "for this step and may change). Each heading needs a non-empty body " +
         "(accepted aliases in parentheses):\n\n" +
-        "## Exact File Map\n" +
-        "(or File Map / File Creation Order / Proposed Architecture)\n\n" +
+        "## Exact File List to be changed or deleted\n" +
+        "(or Exact File Map / File Map / File Creation Order / Proposed Architecture)\n\n" +
+        "## Exact file list to be created\n" +
+        "(or Exact File Map / File Map / File Creation Order / Proposed Architecture)\n\n" +
         "## Tests\n" +
         "(or Test / Validation)\n\n" +
         "## Alternatives Rejected\n" +
@@ -153,8 +155,11 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
         "for this step and may change). Each heading needs a non-empty body:\n\n" +
         "## Findings\n" +
         "(or Review Findings)\n\n" +
-        "## Verdict\n" +
-        "(or Conclusion)\n"
+        "## Conclusion\n" +
+        "(or Verdict)\n\n" +
+        "Plan-review findings must state, in order: the plan claim or section; the rule that must hold; " +
+        "a concrete failure if the plan is followed as written; then optionally the smallest correction. " +
+        "The rule and the failure are the deliverable.\n"
       );
     case "R5.compare":
       return (
@@ -163,7 +168,10 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
         "(no em dash or subtitle on the same line). Each heading needs a non-empty body:\n\n" +
         "## Comparison\n" +
         "(or Findings)\n\n" +
-        "Cite every bound implementation pin SHA from the inputs list below.\n"
+        "Cite every bound implementation pin SHA from the inputs list below.\n\n" +
+        "When a finding reviews implementation code, state in order: file path and line number; " +
+        "the rule that must hold; a concrete failure that follows from breaking it; then optionally " +
+        "the smallest illustrative test — or a fix sketch if a test cannot express it. Prefer a test over a fix.\n"
       );
     default:
       return "";
