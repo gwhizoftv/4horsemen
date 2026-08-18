@@ -62,7 +62,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     evidenceId: "join-published",
     participants: "all",
     requiredPath: (issue, agent) => `.signals/issue-${issue}/joined-${agent}.json`,
-    task: "Publish the join artifact for this issue."
+    task: "Publish the join artifact for this issue. Coordination already checked this clone out on your issue branch; do not clear skip-worktree on AGENTS.md or switch branches to make checkout work."
   },
   "R2.plan": {
     id: "R2.plan",

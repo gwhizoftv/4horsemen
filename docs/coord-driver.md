@@ -158,6 +158,11 @@ or commits that are not just a checkout of the clone. Removes
 unless `--force`. Clone-local skip-worktree on `AGENTS.md` is lifted so checkout
 onto the base branch can proceed.
 
+On `coord N` start (and resume), coordination lifts that skip-worktree bit,
+checks each agent clone out on `issue-N/<agent>` at the issue baseline (or the
+existing issue branch, without resetting it), then restores the protocol overlay.
+Agents do not switch branches under skip-worktree `AGENTS.md`. Dirty clones refuse.
+
 Nudge delivery uses literal `send-keys -l` (not paste-buffer — some TUIs such
 as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`.
 Per-agent config controls owner UI:
