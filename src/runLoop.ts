@@ -1,7 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, rmSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { clearCompletion, createActionId, readAction, readCompletion, writeAction } from "./action.js";
+import { clearCompletion, createActionId, readCompletion, writeAction } from "./action.js";
+import {
+  AGENT_OBSERVABILITY_WATCHDOG_MS,
+  decideLifecycleNudge,
+  markActionInjectionDeferred,
+  markActionInjected,
+  markActionWorkflowComplete,
+  markObservabilityDegraded,
+  orderAgentAction
+} from "./agentLifecycle.js";
 import { evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
 import { BareMirror, hermeticGitEnv } from "./mirror.js";
@@ -35,6 +44,7 @@ import { renderIssueReport } from "./issueReport.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import { TmuxController } from "./tmux.js";
+import { sha256OfFile } from "./hash.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
 export type ProcessRunner = (argv: readonly string[], cwd: string) => Promise<ProcessResult>;
@@ -128,12 +138,12 @@ export type RunLoopDependencies = {
   actionId?: () => string;
   log?: (message: string) => void;
   verbose?: (message: string) => void;
-  /** Minimum time after a sent nudge before another send for the same actionId. */
+  /** @deprecated The timer is now an observability watchdog, never resend authority. */
   nudgeRetryMs?: number;
 };
 
-/** Re-nudge an unanswered ordered action after this many ms (pane still idle). */
-export const NUDGE_RETRY_MS = 45_000;
+/** Kept as a public compatibility alias; elapsed time no longer authorizes a nudge. */
+export const NUDGE_RETRY_MS = AGENT_OBSERVABILITY_WATCHDOG_MS;
 
 const inputFromSubmission = (submission: AcceptedSubmission, kind: string, usePin = false): BoundInput => ({
   agent: submission.agent,
@@ -371,9 +381,7 @@ export class CoordinatorRunLoop {
   private readonly actionId: () => string;
   private readonly log: (message: string) => void;
   private readonly verbose: (message: string) => void;
-  /** Last successful tmux send per actionId in this process (ms from `now()`). */
-  private readonly lastNudgeAtMs = new Map<string, number>();
-  private readonly nudgeRetryMs: number;
+  private readonly observabilityWatchdogMs: number;
   /** Last RN/round announced on `log`, so resume and first prepare do not repeat. */
   private loggedPhaseKey: string | null = null;
 
@@ -389,22 +397,7 @@ export class CoordinatorRunLoop {
     this.actionId = dependencies.actionId ?? createActionId;
     this.log = dependencies.log ?? ((message) => process.stdout.write(`${message}\n`));
     this.verbose = dependencies.verbose ?? (() => undefined);
-    this.nudgeRetryMs = dependencies.nudgeRetryMs ?? NUDGE_RETRY_MS;
-  }
-
-  private markNudged(actionId: string): void {
-    this.lastNudgeAtMs.set(actionId, Date.parse(this.now()));
-  }
-
-  private clearNudged(actionId: string): void {
-    this.lastNudgeAtMs.delete(actionId);
-  }
-
-  private nudgeCooldownElapsed(actionId: string): boolean {
-    const last = this.lastNudgeAtMs.get(actionId);
-    if (last === undefined) return true;
-    const elapsed = Date.parse(this.now()) - last;
-    return Number.isFinite(elapsed) && elapsed >= this.nudgeRetryMs;
+    this.observabilityWatchdogMs = dependencies.nudgeRetryMs ?? AGENT_OBSERVABILITY_WATCHDOG_MS;
   }
 
   async initializeEffects(): Promise<void> {
@@ -511,26 +504,37 @@ export class CoordinatorRunLoop {
       );
     });
     const config = start.agents.find((candidate) => candidate.id === agent);
+    const actionDigest = sha256OfFile(runtime.action);
+    orderAgentAction(this.paths, agent, order.actionId, actionDigest, this.now());
     if (this.tmux !== null && config !== undefined) {
+      const injectionStartedAt = this.now();
       const result = await this.tmux.nudge(
         start.issue,
         config,
         runtime.action,
         () => this.authority(next),
-        order.actionId
+        order.actionId,
+        actionDigest
       );
       this.authority(next);
       if (result === "sent") {
-        this.markNudged(order.actionId);
+        markActionInjected(this.paths, agent, order.actionId, actionDigest, injectionStartedAt);
         this.verbose(`nudged ${agent} (${stepId}) → ${runtime.action}`);
         next = this.mutate(next, (current) => {
-          appendJournal(this.paths, { type: "nudged", agent, actionId: order.actionId, details: {} }, this.now());
+          appendJournal(
+            this.paths,
+            { type: "nudged", agent, actionId: order.actionId, details: { actionDigest } },
+            this.now()
+          );
           return current;
         });
       } else if (result === "gone") {
         this.verbose(`nudge skipped for ${agent}: harness gone`);
         next = this.mutate(next, (current) => replaceCursor(current, agent, { status: "harness-gone" }, this.now()));
       } else {
+        if (result === "busy") {
+          markActionInjectionDeferred(this.paths, agent, order.actionId, actionDigest, this.now());
+        }
         this.verbose(`nudge deferred for ${agent}: ${result}`);
       }
     } else {
@@ -539,75 +543,78 @@ export class CoordinatorRunLoop {
     return next;
   }
 
-  /**
-   * Rewrite an in-flight action with freshly resolved approvedPaths so mid-issue
-   * extractor upgrades apply without waiting for a failed verify→reissue cycle.
-   */
-  private async rewriteOrderedAction(
-    start: StartState,
-    cursors: CursorsState,
-    agent: string,
-    actionId: string
-  ): Promise<{ cursors: CursorsState; pathsChanged: boolean }> {
-    const cursor = cursors.agents[agent];
-    if (cursor === undefined || cursor.stepId === null) return { cursors, pathsChanged: false };
-    const runtime = agentRuntimePaths(this.paths, agent);
-    if (!existsSync(runtime.action)) return { cursors, pathsChanged: false };
-    const previous = readAction(runtime.action).body;
-    const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
-    this.authority(cursors);
-    const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
-    const order = buildOrder(
-      this.paths,
-      start,
-      cursors,
-      agent,
-      cursor.stepId,
-      round,
-      actionId,
-      cursor.outstanding,
-      approvedPaths
-    );
-    writeAction(this.paths.coordRoot, runtime.action, order);
-    return { cursors, pathsChanged: readAction(runtime.action).body !== previous };
-  }
-
-  private async maybeRetryNudge(
+  private async maybeLifecycleNudge(
     start: StartState,
     cursors: CursorsState,
     agent: string,
     actionId: string,
-    reason: "retry" | "reissue" = "retry"
+    reason: "idle" | "reissue" = "idle"
   ): Promise<CursorsState> {
     const config = start.agents.find((candidate) => candidate.id === agent);
     if (config === undefined) return cursors;
     const runtime = agentRuntimePaths(this.paths, agent);
     if (!existsSync(runtime.action)) return cursors;
+    const actionDigest = sha256OfFile(runtime.action);
+    orderAgentAction(this.paths, agent, actionId, actionDigest, this.now());
 
-    // Retry (not reissue) must refresh bound paths before the nudge gate: an
-    // already-nudged actionId otherwise keeps a pre-upgrade approvedPaths list.
-    if (reason === "retry") {
-      const rewritten = await this.rewriteOrderedAction(start, cursors, agent, actionId);
-      cursors = rewritten.cursors;
-      if (rewritten.pathsChanged) this.clearNudged(actionId);
+    if (reason === "idle") {
+      const degraded = markObservabilityDegraded(
+        this.paths,
+        agent,
+        this.now(),
+        this.observabilityWatchdogMs
+      );
+      if (degraded.changed) {
+        appendJournal(
+          this.paths,
+          {
+            type: "agent-observability-degraded",
+            agent,
+            actionId,
+            details: { actionDigest, watchdogMs: this.observabilityWatchdogMs }
+          },
+          this.now()
+        );
+        this.verbose(`agent lifecycle degraded for ${agent}; duplicate nudge suppressed`);
+      }
+      const entry = degraded.state.agents[agent];
+      if (entry === undefined) return cursors;
+      // An action that is still only ordered has never been sent. Retrying a
+      // prior busy readiness rejection cannot create a duplicate; tmux
+      // must still positively prove the pane is prompt-ready below. Once a
+      // send succeeds, only a lifecycle idle transition can authorize more.
+      if (entry.action?.delivery !== "ordered" || entry.action.retryableInjectionAt === null) {
+        const decision = decideLifecycleNudge(entry, actionId, actionDigest);
+        if (decision.kind === "wait") {
+          this.verbose(`nudge deferred for ${agent}: ${decision.reason}`);
+          return cursors;
+        }
+      }
     }
 
-    if (this.tmux === null || !this.nudgeCooldownElapsed(actionId)) return cursors;
+    if (this.tmux === null) return cursors;
+    const injectionStartedAt = this.now();
     const result = await this.tmux.nudge(
       start.issue,
       config,
       runtime.action,
       () => this.authority(cursors),
-      actionId
+      actionId,
+      actionDigest
     );
     this.authority(cursors);
     if (result === "sent") {
-      this.markNudged(actionId);
+      markActionInjected(this.paths, agent, actionId, actionDigest, injectionStartedAt);
       this.verbose(`nudged ${agent} (${reason}) → ${runtime.action}`);
       return this.mutate(cursors, (current) => {
         appendJournal(
           this.paths,
-          { type: "nudged", agent, actionId, details: reason === "retry" ? { retry: true } : { reissue: true } },
+          {
+            type: "nudged",
+            agent,
+            actionId,
+            details: { actionDigest, ...(reason === "idle" ? { idle: true } : { reissue: true }) }
+          },
           this.now()
         );
         return current;
@@ -616,6 +623,9 @@ export class CoordinatorRunLoop {
     if (result === "gone") {
       this.verbose(`nudge ${reason} skipped for ${agent}: harness gone`);
       return this.mutate(cursors, (current) => replaceCursor(current, agent, { status: "harness-gone" }, this.now()));
+    }
+    if (result === "busy") {
+      markActionInjectionDeferred(this.paths, agent, actionId, actionDigest, this.now());
     }
     this.verbose(`nudge ${reason} deferred for ${agent}: ${result}`);
     return cursors;
@@ -646,7 +656,7 @@ export class CoordinatorRunLoop {
     const withoutPrior = cursors.accepted.filter(
       (item) => !(item.stepId === accepted.stepId && item.agent === accepted.agent && item.round === accepted.round)
     );
-    return this.mutate(cursors, (current) => {
+    const next = this.mutate(cursors, (current) => {
       if (decision.reviser !== undefined && !current.activeRoster.includes(decision.reviser)) {
         throw new Error(`authorized reviser ${decision.reviser} is not active`);
       }
@@ -724,6 +734,8 @@ export class CoordinatorRunLoop {
         updatedAt: this.now()
       });
     });
+    markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
+    return next;
   }
 
   private async reissue(
@@ -741,8 +753,6 @@ export class CoordinatorRunLoop {
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
     this.authority(cursors);
     const order = buildOrder(this.paths, start, cursors, agent, stepId, round, actionId, outstanding, approvedPaths);
-    // Clear so an immediate (or later) nudge can deliver the rewritten action.md.
-    this.clearNudged(actionId);
     this.verbose(`reissued ${agent} action ${actionId}: ${outstanding.join("; ")}`);
     const next = this.mutate(cursors, (current) => {
       appendJournal(
@@ -759,7 +769,7 @@ export class CoordinatorRunLoop {
         this.now()
       );
     });
-    return this.maybeRetryNudge(start, next, agent, actionId, "reissue");
+    return this.maybeLifecycleNudge(start, next, agent, actionId, "reissue");
   }
 
   private advance(cursors: CursorsState, decision: Extract<MachineDecision, { type: "advance-step" }>): CursorsState {
@@ -1010,7 +1020,7 @@ export class CoordinatorRunLoop {
               replaceCursor(current, agent, { status: "harness-gone" }, this.now())
             );
           } else if (cursor.status === "ordered") {
-            cursors = await this.maybeRetryNudge(start, cursors, agent, cursor.actionId);
+            cursors = await this.maybeLifecycleNudge(start, cursors, agent, cursor.actionId);
           }
         }
         if (harnessGone) {

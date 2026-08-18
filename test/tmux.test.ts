@@ -73,7 +73,8 @@ describe("tmux boundary", () => {
         { id: "cursor", root: "/clone", launcher: "start-cursor.sh", delivery: "both", harnessProcess: "agent" },
         "/runtime/action.md",
         () => undefined,
-        "11111111-1111-4111-8111-111111111111"
+        "11111111-1111-4111-8111-111111111111",
+        "a".repeat(64)
       )
     ).toBe("sent");
     expect(calls.map((call) => call.args[0])).toEqual([
@@ -89,7 +90,7 @@ describe("tmux boundary", () => {
       "-l",
       "-t",
       "coord-1:cursor.0",
-      "Read and execute coordinator action 11111111-1111-4111-8111-111111111111 at /runtime/action.md"
+      `Read and execute coordinator action 11111111-1111-4111-8111-111111111111 digest ${"a".repeat(64)} at /runtime/action.md`
     ]);
     expect(calls[5]?.args.slice(-1)).toEqual(["Enter"]);
     expect(slept).not.toContain(NUDGE_BEFORE_ANTIGRAVITY_MS);
@@ -346,6 +347,7 @@ describe("tmux boundary", () => {
     const agent = { id: "claude", root: clone, launcher: "start-claude.sh", delivery: "both" as const };
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "new-window")).toBe(true);
+    expect(calls).toContainEqual(["set-environment", "-t", "coord-3", "COORD_ISSUE", "3"]);
     calls.length = 0;
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "respawn-pane")).toBe(true);

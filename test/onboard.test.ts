@@ -70,10 +70,12 @@ describe("coord onboard", () => {
     const output: string[] = [];
     const aliasParent = join(fixture.workspaceRoot, "aliases");
     const productAlias = join(aliasParent, "myserver");
+    const home = join(fixture.workspaceRoot, "home");
     mkdirSync(aliasParent);
     symlinkSync(fixture.productRoot, productAlias, "dir");
     expect(
       await runCli(["onboard", productAlias], {
+        home,
         io: { stdout: (message) => output.push(message), stderr: (message) => output.push(message) }
       })
     ).toBe(0);
@@ -84,6 +86,7 @@ describe("coord onboard", () => {
     expect(existsSync(join(aliasParent, "coord-runtime"))).toBe(false);
     expect(
       await runCli(["onboard", fixture.productRoot], {
+        home,
         io: { stdout: (message) => output.push(message), stderr: (message) => output.push(message) }
       })
     ).toBe(0);

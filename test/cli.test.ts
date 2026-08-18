@@ -97,7 +97,7 @@ describe("CLI version", () => {
     for (const argv of [["--version"], ["-V"], ["version"]] as const) {
       const lines: string[] = [];
       expect(await runCli([...argv], { io: { stdout: (message) => lines.push(message) } })).toBe(0);
-      expect(lines.join("").trim()).toBe("0.0.9");
+      expect(lines.join("").trim()).toBe("0.0.10");
     }
   });
 });
@@ -302,30 +302,23 @@ describe("CLI", () => {
     expect(existsSync(join(fixture.runtime, "issue-1"))).toBe(false);
   });
 
-  it("cleans the snapshot and launched effects when a later startup write fails", async () => {
+  it("materializes lifecycle state before launching agents and removes it when launch fails", async () => {
     const fixture = setup();
     const paths = issueRuntimePaths(fixture.runtime, 1);
-    let cleanups = 0;
     const errors: string[] = [];
     expect(
       await runCli(["start", "1", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
         processRunner: successfulStartGit,
         startEffects: async () => {
-          // Force initializeOperationalState to fail after github-issue.json
-          // has been atomically materialized.
-          mkdirSync(paths.start, { recursive: true });
-          return {
-            cleanup: async () => {
-              cleanups += 1;
-            }
-          };
+          expect(existsSync(paths.start)).toBe(true);
+          expect(existsSync(paths.agentLifecycle)).toBe(true);
+          throw new Error("launch after lifecycle handshake failed");
         },
         makeRunLoop: fakeLoop
       })
     ).toBe(2);
-    expect(errors.join("")).toContain("Runtime state already exists");
-    expect(cleanups).toBe(1);
+    expect(errors.join("")).toContain("launch after lifecycle handshake failed");
     expect(existsSync(paths.issueRoot)).toBe(false);
   });
 
@@ -699,5 +692,35 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     expect(scope.join("")).toBe("prefix\tcmd/\nfile\tgo.mod\nfile\tgo.sum\n");
 
     expect(await runCli(["hook-verify", "--clone", clone, "--phase", "precommit"], { io: { stdout: () => undefined } })).toBe(0);
+  });
+
+  it("keeps the observational agent-event bridge fail-open", async () => {
+    const output: string[] = [];
+    const errors: string[] = [];
+    expect(
+      await runCli(["agent-event", "--vendor", "codex"], {
+        io: {
+          stdin: () => "not-json",
+          stdout: (message) => output.push(message),
+          stderr: (message) => errors.push(message)
+        }
+      })
+    ).toBe(0);
+    expect(output.join("")).toBe("{}\n");
+    expect(errors.join("")).toContain("agent-event");
+  });
+
+  it("returns a non-continuing response for Antigravity Stop hooks", async () => {
+    const output: string[] = [];
+    expect(
+      await runCli(["agent-event", "--vendor", "antigravity", "--event", "Stop"], {
+        io: {
+          stdin: () => JSON.stringify({ conversationId: "session", fullyIdle: true }),
+          stdout: (message) => output.push(message),
+          stderr: () => undefined
+        }
+      })
+    ).toBe(0);
+    expect(JSON.parse(output.join(""))).toEqual({ decision: "allow" });
   });
 });

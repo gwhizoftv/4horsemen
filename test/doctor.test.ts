@@ -86,6 +86,14 @@ describe("coord doctor", () => {
     expect(launcherFindings.map((item) => item.code)).not.toContain(DOCTOR_CODES.hooks);
   });
 
+  it("reports missing CLI lifecycle hooks separately from Git hooks", () => {
+    const { fixture, clone } = installed();
+    rmSync(join(clone, ".claude", "settings.local.json"));
+    const findings = report(fixture).findings;
+    expect(findings.map((item) => item.code)).toContain(DOCTOR_CODES.lifecycleHooks);
+    expect(findings.map((item) => item.code)).not.toContain(DOCTOR_CODES.hooks);
+  });
+
   it("reports a missing or crossed agent identity", () => {
     const { fixture, clone } = installed();
     git(clone, "config", "--local", "--unset", "consensus.agentId");

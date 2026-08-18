@@ -371,6 +371,8 @@ export const journalEventSchema = z
       "started",
       "action-prepared",
       "nudged",
+      "agent-lifecycle",
+      "agent-observability-degraded",
       "intent-seen",
       "verify-result",
       "gate-advanced",
@@ -571,7 +573,7 @@ const processIsAlive = (pid: number): boolean => {
   }
 };
 
-const acquireExclusiveLock = (lockPath: string): number => {
+export const acquireExclusiveLock = (lockPath: string): number => {
   for (let attempt = 0; attempt < 250; attempt += 1) {
     try {
       const handle = openSync(lockPath, "wx", 0o600);

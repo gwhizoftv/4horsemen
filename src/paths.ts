@@ -115,6 +115,8 @@ export type IssueRuntimePaths = {
   issueRoot: string;
   start: string;
   cursors: string;
+  /** CLI lifecycle observations; deliberately separate from workflow authority. */
+  agentLifecycle: string;
   journal: string;
   issueSnapshot: string;
   agents: string;
@@ -140,6 +142,7 @@ export const issueRuntimePaths = (coordRoot: string, issue: number): IssueRuntim
     issueRoot,
     start: containedPath(issueRoot, "start.json"),
     cursors: containedPath(issueRoot, "cursors.json"),
+    agentLifecycle: containedPath(issueRoot, "agent-lifecycle.json"),
     journal: containedPath(issueRoot, "journal.jsonl"),
     issueSnapshot: containedPath(issueRoot, "github-issue.json"),
     agents: containedPath(issueRoot, "agents")

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { clearCompletion } from "../src/action.js";
+import { observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { computeInputSetHash } from "../src/evidence.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
@@ -17,6 +18,7 @@ import {
   writeCursorsState
 } from "../src/state.js";
 import type { InternalOrder, WorkflowStepId } from "../src/steps.js";
+import { TmuxController } from "../src/tmux.js";
 
 const agents = ["claude", "codex", "cursor", "antigravity"] as const;
 const activeAfterDrop = ["claude", "codex", "cursor"] as const;
@@ -401,4 +403,76 @@ Implement the selected product files.
     },
     30_000
   );
+});
+
+describe("lifecycle nudge canary", () => {
+  it("does not pile a second prompt after 45 seconds and permits one after the matching turn stops", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-e2e-"));
+    roots.push(root);
+    const paths = issueRuntimePaths(root, 1);
+    createIssueRuntime(paths, ["codex"]);
+    initializeOperationalState(paths, {
+      issue: 1,
+      issueSessionId: `issue-1:${"a".repeat(40)}`,
+      baselineSha: "a".repeat(40),
+      profile: "solo",
+      originalRoster: ["codex"],
+      branchTemplate: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      maxRevisionRounds: 3,
+      prPolicy: "owner-only",
+      automationDigest: "b".repeat(64),
+      automationDigestScheme: "sha256-length-prefixed-v1",
+      automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }],
+      trustedSourceCommit: "c".repeat(40),
+      origin: "https://github.com/example/fixture.git",
+      coordRoot: root,
+      configPath: join(root, "config.json"),
+      agents: [
+        {
+          id: "codex",
+          root: join(root, "clone-codex"),
+          launcher: "start-codex.sh",
+          delivery: "both",
+          harnessProcess: "codex"
+        }
+      ],
+      checks: [{ name: "true", argv: ["true"] }],
+      pollIntervalMs: 100
+    });
+    let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
+    let submittedPrompts = 0;
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\t0\n", stderr: "" };
+      if (args[0] === "send-keys" && args.includes("-l")) submittedPrompts += 1;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { tmux, now: () => new Date(nowMs).toISOString() });
+    await loop.runTick();
+    expect(submittedPrompts).toBe(1);
+    nowMs += 45_000;
+    await loop.runTick();
+    expect(submittedPrompts).toBe(1);
+
+    const action = readAgentLifecycle(paths).agents.codex!.action!;
+    observeAgentLifecycle(paths, "codex", {
+      kind: "prompt-submitted",
+      eventName: "UserPromptSubmit",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      actionId: action.actionId,
+      actionDigest: action.actionDigest
+    });
+    observeAgentLifecycle(paths, "codex", {
+      kind: "stopped",
+      eventName: "Stop",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      backgroundActive: false
+    });
+    await loop.runTick();
+    expect(submittedPrompts).toBe(2);
+    await loop.runTick();
+    expect(submittedPrompts).toBe(2);
+  });
 });

@@ -178,10 +178,12 @@ export const NUDGE_BETWEEN_SUBMIT_MS = 150;
  */
 export const NUDGE_BEFORE_ANTIGRAVITY_MS = 2500;
 
-export const renderNudgeText = (actionPath: string, actionId?: string): string =>
+export const renderNudgeText = (actionPath: string, actionId?: string, actionDigest?: string): string =>
   actionId === undefined
     ? `Read and execute your current coordinator action at ${actionPath}`
-    : `Read and execute coordinator action ${actionId} at ${actionPath}`;
+    : actionDigest === undefined
+      ? `Read and execute coordinator action ${actionId} at ${actionPath}`
+      : `Read and execute coordinator action ${actionId} digest ${actionDigest} at ${actionPath}`;
 
 /** Resolve macOS Terminal.app profile name for an owner attach window. */
 export const resolveTerminalProfile = (agent: AgentConfig): string =>
@@ -555,6 +557,10 @@ export class TmuxController {
     const created = await this.runner(["new-session", "-d", "-s", session, "-n", "control"]);
     if (created.exitCode !== 0) throw new Error(`tmux session creation failed: ${created.stderr}`);
     try {
+      const environment = await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(issue)]);
+      if (environment.exitCode !== 0) {
+        throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
+      }
       for (const agent of agents) {
         const launcher = resolveAgentLauncher(agent);
         const target = `${session}:${safeName(agent.id)}`;
@@ -593,6 +599,11 @@ export class TmuxController {
       const created = await this.runner(["new-session", "-d", "-s", session, "-n", "control"]);
       assertAuthority();
       if (created.exitCode !== 0) throw new Error(`tmux session creation failed: ${created.stderr}`);
+    }
+    const environment = await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(issue)]);
+    assertAuthority();
+    if (environment.exitCode !== 0) {
+      throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
     }
     for (const agent of agents) {
       const target = `${session}:${safeName(agent.id)}`;
@@ -677,7 +688,8 @@ export class TmuxController {
     agent: AgentConfig,
     actionPath: string,
     assertAuthority: () => void = () => undefined,
-    actionId?: string
+    actionId?: string,
+    actionDigest?: string
   ): Promise<"sent" | "disabled" | "busy" | "gone"> {
     if (agent.delivery !== "nudge" && agent.delivery !== "both") return "disabled";
     const target = this.target(issue, agent.id);
@@ -693,7 +705,7 @@ export class TmuxController {
       assertAuthority();
       if (!harnessPromptReady(paneText, agent.id)) return "busy";
     }
-    const text = renderNudgeText(actionPath, actionId);
+    const text = renderNudgeText(actionPath, actionId, actionDigest);
     // Some harnesses (notably agy) ignore tmux paste-buffer; literal send-keys
     // reaches the input widget. Prelude/submit keys come from agent config.
     const { prelude: preludeKeys, submit: submitKeys } = resolveNudgeKeys(agent, paneText);

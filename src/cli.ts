@@ -2,6 +2,8 @@ import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clearCompletion, readAction } from "./action.js";
+import { handleAgentEvent, lifecycleVendorSchema } from "./agentEvent.js";
+import { initializeAgentLifecycle, readAgentLifecycle } from "./agentLifecycle.js";
 import { doctor, renderDoctorReport } from "./doctor.js";
 import { fetchGitHubIssue, renderGitHubIssueSnapshot } from "./githubIssue.js";
 import { sha256 } from "./hash.js";
@@ -53,6 +55,7 @@ export type CliIo = {
   stderr: (message: string) => void;
   env: NodeJS.ProcessEnv;
   cwd: string;
+  stdin: () => string;
 };
 
 export type CliRunLoop = {
@@ -64,6 +67,8 @@ export type CliRunLoop = {
 export type CliDependencies = {
   io?: Partial<CliIo>;
   processRunner?: ProcessRunner;
+  /** Test/embedding override for user-global vendor settings. */
+  home?: string | null;
   makeRunLoop?: (paths: IssueRuntimePaths) => CliRunLoop;
   startEffects?: (input: {
     paths: IssueRuntimePaths;
@@ -78,7 +83,8 @@ const defaultIo: CliIo = {
   stdout: (message) => process.stdout.write(message),
   stderr: (message) => process.stderr.write(message),
   env: process.env,
-  cwd: process.cwd()
+  cwd: process.cwd(),
+  stdin: () => readFileSync(0, "utf8")
 };
 
 type ParsedArgs = { positionals: string[]; flags: Map<string, string> };
@@ -181,6 +187,7 @@ Usage:
 Called by the agent-clone hooks, not by operators:
   coord hook-verify --clone <path> --phase <precommit|prepush>
   coord hook-scope --clone <path>
+  coord agent-event --vendor <codex|claude|cursor|antigravity> [--clone <path>] [--event <name>]
 
 Happy path: bootstrap once, onboard a product once, create GitHub issue N, then run
 \`coord N\` from that onboarded product. Agents author plans on issue-N/<agent>.
@@ -604,9 +611,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     });
 
     let effects: { cleanup: () => Promise<void> } | null = null;
+    createIssueRuntime(paths, roster.map((agent) => agent.id));
     try {
-      effects = await startEffects({ paths, issue, origin: config.origin, agents: roster, log: io.stdout });
-      createIssueRuntime(paths, roster.map((agent) => agent.id));
       atomicWriteJson(paths.coordRoot, paths.issueSnapshot, snapshot);
       initializeOperationalState(paths, {
         issue,
@@ -629,6 +635,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         checks: config.checks,
         pollIntervalMs: config.pollIntervalMs
       });
+      initializeAgentLifecycle(paths, roster.map((agent) => agent.id));
+      // Start the CLIs only after their owner runtime exists. SessionStart
+      // hooks can then establish a durable handshake instead of racing start.
+      effects = await startEffects({ paths, issue, origin: config.origin, agents: roster, log: io.stdout });
     } catch (error) {
       rmSync(paths.issueRoot, { recursive: true, force: true });
       if (effects !== null) {
@@ -696,6 +706,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         profile,
         ...(parsed.flags.has("coord-root") ? { coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")) } : {}),
         ...(parsed.flags.has("clone-root") ? { cloneRoot: resolve(io.cwd, requireFlag(parsed, "clone-root")) } : {}),
+        ...(dependencies.home === undefined ? {} : { home: dependencies.home }),
         log: io.stdout
       });
       (result.doctor.exitCode === 0 ? io.stdout : io.stderr)(renderDoctorReport(result.doctor));
@@ -738,6 +749,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         vendor: flagIsSet(parsed, "vendor"),
         bootstrap: flagIsSet(parsed, "bootstrap-coordination"),
         dryRun: flagIsSet(parsed, "dry-run"),
+        ...(dependencies.home === undefined ? {} : { home: dependencies.home }),
         log: io.stdout
       });
       return 0;
@@ -755,6 +767,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         deleteCoordination: flagIsSet(parsed, "delete-coordination"),
         force: flagIsSet(parsed, "force"),
         dryRun: flagIsSet(parsed, "dry-run"),
+        ...(dependencies.home === undefined ? {} : { home: dependencies.home }),
         log: io.stdout
       });
       return 0;
@@ -770,6 +783,37 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       });
       (report.exitCode === 0 ? io.stdout : io.stderr)(renderDoctorReport(report));
       return report.exitCode;
+    }
+
+    if (command === "agent-event") {
+      allowedFlags(parsed, ["vendor", "clone", "agent", "issue", "event"]);
+      if (parsed.positionals.length !== 0) throw new Error("agent-event takes no positional arguments.");
+      // Lifecycle hooks are observational. A broken/missing runtime must never
+      // block the vendor prompt or turn-stop path.
+      let response = "{}";
+      try {
+        const vendor = lifecycleVendorSchema.parse(requireFlag(parsed, "vendor"));
+        const explicitEvent = parsed.flags.has("event") ? requireFlag(parsed, "event") : undefined;
+        const raw = JSON.parse(io.stdin()) as unknown;
+        handleAgentEvent({
+          vendor,
+          raw,
+          ...(parsed.flags.has("clone") ? { clone: resolve(io.cwd, requireFlag(parsed, "clone")) } : {}),
+          ...(parsed.flags.has("agent") ? { agent: requireFlag(parsed, "agent") } : {}),
+          ...(parsed.flags.has("issue") ? { issue: parseIssue(requireFlag(parsed, "issue")) } : {}),
+          ...(explicitEvent === undefined ? {} : { explicitEvent }),
+          environmentIssue: io.env.COORD_ISSUE
+        });
+        // Antigravity declares a Stop response object. Any decision other than
+        // "continue" permits the stop, so acknowledge without changing flow.
+        if (vendor === "antigravity" && explicitEvent?.toLowerCase() === "stop") {
+          response = JSON.stringify({ decision: "allow" });
+        }
+      } catch (error) {
+        io.stderr(`coord agent-event: ${error instanceof Error ? error.message : String(error)}\n`);
+      }
+      io.stdout(`${response}\n`);
+      return 0;
     }
 
     if (command === "hook-verify") {
@@ -888,7 +932,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       allowedFlags(parsed, ["issue", "coord-root", "product"]);
       if (parsed.positionals.length !== 0) throw new Error("status takes no positional arguments.");
       const paths = existingContext(parsed, io);
-      io.stdout(renderIssueReport(readStartState(paths), readCursorsState(paths)));
+      io.stdout(renderIssueReport(readStartState(paths), readCursorsState(paths), readAgentLifecycle(paths)));
       return 0;
     }
 
