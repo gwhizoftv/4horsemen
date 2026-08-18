@@ -96,6 +96,7 @@ describe("coord install — two-mode footprint", () => {
     expect(agentsMd).toContain("## Exact File List to be changed or deleted");
     expect(agentsMd).toContain("## Exact file list to be created");
     expect(agentsMd).toContain("action.md");
+    expect(agentsMd).toContain("If `actionId` in the front matter has changed");
     expect(agentsMd).toContain("skip-worktree");
     expect(existsSync(join(clone, "CLAUDE.md"))).toBe(true);
     expect(readFileSync(join(clone, "CLAUDE.md"), "utf8")).toContain("@AGENTS.md");
@@ -130,7 +131,7 @@ describe("coord install — emitted config", () => {
     expect(config.project).toBe("myserver");
     expect(config.checks).toEqual(declaredChecks);
     expect(config.coordination?.installRoot).toBe(repoRoot);
-    expect(config.coordination?.version).toBe("0.0.8");
+    expect(config.coordination?.version).toBe("0.0.9");
     expect(config.coordination?.vendored).toBe(false);
     expect(config.agents[0]?.launcher).toBe("start-claude.sh");
   });

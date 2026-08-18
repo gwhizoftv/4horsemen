@@ -1,7 +1,7 @@
-import { constants, accessSync, lstatSync, realpathSync } from "node:fs";
+import { constants, accessSync, existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
-import { platform } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { homedir, platform } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import type { AgentConfig } from "./state.js";
 import { assertNoSymlink, containedPath, isPathInside } from "./paths.js";
 import { agentNudgeKeyDefaults, agentOwnerUiDefaults } from "./setupWorkspace.js";
@@ -21,7 +21,12 @@ export const runTmux: TmuxRunner = (args, input) =>
     child.stdin.end(input ?? "");
   });
 
-export type PaneState = { alive: boolean; foreground: string; ownerTyping: boolean };
+export type PaneState = {
+  alive: boolean;
+  foreground: string;
+  ownerTyping: boolean;
+  inputOff: boolean;
+};
 
 const safeName = (value: string): string => value.replace(/[^A-Za-z0-9_-]/g, "-");
 
@@ -61,7 +66,10 @@ export const harnessPromptReady = (paneText: string, agentId: string): boolean =
     case "claude":
       return /❯|auto mode|-- INSERT --|-- NORMAL --|-- VISUAL/i.test(plain);
     case "cursor":
-      return /Add a follow-up|Run Everything|Auto ·/i.test(plain);
+      // Composer placeholder copy changes; do not match it. Block only on
+      // in-flight turn chrome. Process readiness is `harnessLooksReady`.
+      if (/esc to cancel|Generating|Running\.\.\.|Working\.\.\.|Thinking/i.test(plain)) return false;
+      return true;
     case "antigravity":
       // Escape cancels an in-flight turn; do not nudge while working.
       if (/esc to cancel|Generating\.\.\.|Running\.\.\.|Working\.\.\./i.test(plain)) return false;
@@ -79,8 +87,9 @@ export const harnessPromptReady = (paneText: string, agentId: string): boolean =
 /**
  * Vim-mode TUIs swallow the first nudge character in NORMAL. Enter insert with
  * `a` when INSERT is not visible. Codex keeps its configured `i` prelude.
- * Antigravity has no vim mode. Claude/Cursor often omit a mode indicator —
- * still send `a` unless INSERT is shown. Do not toggle the operator's vim setting.
+ * Antigravity has no vim mode. Cursor uses `a` only when `editor.vimMode` is on
+ * (see `readCursorVimMode`). Claude often omits a mode indicator — still send
+ * `a` unless INSERT is shown. Do not toggle the operator's vim setting.
  */
 export const vimInsertPrelude = (paneText: string, agentId: string): readonly string[] => {
   if (agentId === "antigravity" || agentId === "codex") return [];
@@ -90,11 +99,51 @@ export const vimInsertPrelude = (paneText: string, agentId: string): readonly st
   return ["a"];
 };
 
+const readVimModeFlag = (path: string): boolean | undefined => {
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const editor = (parsed as { editor?: unknown }).editor;
+    if (editor === null || typeof editor !== "object" || Array.isArray(editor)) return undefined;
+    const vimMode = (editor as { vimMode?: unknown }).vimMode;
+    return typeof vimMode === "boolean" ? vimMode : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Cursor CLI `editor.vimMode` from the home config, then clone overlays.
+ * Tests (`VITEST`) skip the home file so the suite does not depend on the host.
+ */
+export const readCursorVimMode = (agentRoot: string): boolean => {
+  let vimMode = false;
+  if (process.env.VITEST === undefined) {
+    vimMode = readVimModeFlag(join(homedir(), ".cursor/cli-config.json")) ?? vimMode;
+  }
+  vimMode = readVimModeFlag(join(agentRoot, ".cursor/cli-config.json")) ?? vimMode;
+  vimMode = readVimModeFlag(join(agentRoot, ".cursor/cli.json")) ?? vimMode;
+  return vimMode;
+};
+
+const cursorNudgePrelude = (agent: AgentConfig, paneText: string): readonly string[] => {
+  const configured = agent.nudgePrelude;
+  if (configured !== undefined && configured.length > 0) return configured;
+  if (!readCursorVimMode(agent.root)) return [];
+  return vimInsertPrelude(paneText, "cursor");
+};
+
 /** Resolve configured or default prelude/submit keys for an agent nudge. */
 export const resolveNudgeKeys = (
   agent: AgentConfig,
   paneText = ""
 ): { prelude: readonly string[]; submit: readonly string[] } => {
+  // Escape dismisses Cursor's composer (issue 384). vim `a` comes from
+  // `editor.vimMode` / a non-empty `nudgePrelude`, not from composer copy.
+  if (agent.id === "cursor") {
+    return { prelude: cursorNudgePrelude(agent, paneText), submit: ["Enter"] };
+  }
   const defaults = agentOwnerUiDefaults(agent.id);
   const configuredPrelude = agent.nudgePrelude ?? defaults.nudgePrelude;
   const prelude = configuredPrelude.length === 0 ? vimInsertPrelude(paneText, agent.id) : configuredPrelude;
@@ -128,6 +177,11 @@ export const NUDGE_BETWEEN_SUBMIT_MS = 150;
  * the idle `>` prompt. Typing then discards the nudge. Wait, then recapture.
  */
 export const NUDGE_BEFORE_ANTIGRAVITY_MS = 2500;
+
+export const renderNudgeText = (actionPath: string, actionId?: string): string =>
+  actionId === undefined
+    ? `Read and execute your current coordinator action at ${actionPath}`
+    : `Read and execute coordinator action ${actionId} at ${actionPath}`;
 
 /** Resolve macOS Terminal.app profile name for an owner attach window. */
 export const resolveTerminalProfile = (agent: AgentConfig): string =>
@@ -580,11 +634,36 @@ export class TmuxController {
       "-p",
       "-t",
       target,
-      "#{pane_dead}\t#{pane_current_command}\t#{pane_in_mode}"
+      "#{pane_dead}\t#{pane_current_command}\t#{pane_in_mode}\t#{pane_input_off}"
     ]);
-    if (inspected.exitCode !== 0) return { alive: false, foreground: "", ownerTyping: false };
-    const [dead = "1", foreground = "", inMode = "0"] = inspected.stdout.trim().split("\t");
-    return { alive: dead !== "1", foreground, ownerTyping: inMode === "1" };
+    if (inspected.exitCode !== 0) {
+      return { alive: false, foreground: "", ownerTyping: false, inputOff: false };
+    }
+    const [dead = "1", foreground = "", inMode = "0", inputOff = "0"] = inspected.stdout.trim().split("\t");
+    return {
+      alive: dead !== "1",
+      foreground,
+      ownerTyping: inMode === "1",
+      inputOff: inputOff === "1"
+    };
+  }
+
+  /**
+   * tmux copy-mode / disabled input can appear after the original readiness
+   * check. Re-read before every send-keys so we never inject into a pane that
+   * will drop or mis-route the key.
+   */
+  private async injectionGate(
+    target: string,
+    agent: AgentConfig,
+    assertAuthority: () => void
+  ): Promise<"ok" | "busy" | "gone"> {
+    const pane = await this.inspectPane(target);
+    assertAuthority();
+    if (!pane.alive) return "gone";
+    if (pane.ownerTyping || pane.inputOff) return "busy";
+    if (!harnessLooksReady(pane.foreground, agent.harnessProcess)) return "busy";
+    return "ok";
   }
 
   async capturePane(target: string): Promise<string> {
@@ -597,15 +676,13 @@ export class TmuxController {
     issue: number,
     agent: AgentConfig,
     actionPath: string,
-    assertAuthority: () => void = () => undefined
+    assertAuthority: () => void = () => undefined,
+    actionId?: string
   ): Promise<"sent" | "disabled" | "busy" | "gone"> {
     if (agent.delivery !== "nudge" && agent.delivery !== "both") return "disabled";
     const target = this.target(issue, agent.id);
-    const pane = await this.inspectPane(target);
-    assertAuthority();
-    if (!pane.alive) return "gone";
-    if (pane.ownerTyping) return "busy";
-    if (!harnessLooksReady(pane.foreground, agent.harnessProcess)) return "busy";
+    const initial = await this.injectionGate(target, agent, assertAuthority);
+    if (initial !== "ok") return initial;
     let paneText = await this.capturePane(target);
     assertAuthority();
     if (!harnessPromptReady(paneText, agent.id)) return "busy";
@@ -616,18 +693,24 @@ export class TmuxController {
       assertAuthority();
       if (!harnessPromptReady(paneText, agent.id)) return "busy";
     }
-    const text = `Read and execute your current coordinator action at ${actionPath}`;
+    const text = renderNudgeText(actionPath, actionId);
     // Some harnesses (notably agy) ignore tmux paste-buffer; literal send-keys
     // reaches the input widget. Prelude/submit keys come from agent config.
     const { prelude: preludeKeys, submit: submitKeys } = resolveNudgeKeys(agent, paneText);
-    for (const key of preludeKeys) {
-      const prelude = await this.runner(["send-keys", "-t", target, key]);
+    const send = async (args: readonly string[], fail: string): Promise<"sent" | "busy" | "gone"> => {
+      const gate = await this.injectionGate(target, agent, assertAuthority);
+      if (gate !== "ok") return gate;
+      const result = await this.runner(["send-keys", ...args]);
       assertAuthority();
-      if (prelude.exitCode !== 0) throw new Error(`tmux send-keys prelude failed: ${prelude.stderr}`);
+      if (result.exitCode !== 0) throw new Error(`${fail}${result.stderr}`);
+      return "sent";
+    };
+    for (const key of preludeKeys) {
+      const prelude = await send(["-t", target, key], "tmux send-keys prelude failed: ");
+      if (prelude !== "sent") return prelude;
     }
-    const typed = await this.runner(["send-keys", "-l", "-t", target, text]);
-    assertAuthority();
-    if (typed.exitCode !== 0) throw new Error(`tmux send-keys text failed: ${typed.stderr}`);
+    const typed = await send(["-l", "-t", target, text], "tmux send-keys text failed: ");
+    if (typed !== "sent") return typed;
     // Autocomplete/multiline handlers need a beat before Escape; then gap before Enter.
     await this.sleep(NUDGE_AFTER_TEXT_MS);
     assertAuthority();
@@ -636,9 +719,8 @@ export class TmuxController {
         await this.sleep(NUDGE_BETWEEN_SUBMIT_MS);
         assertAuthority();
       }
-      const submit = await this.runner(["send-keys", "-t", target, key]);
-      assertAuthority();
-      if (submit.exitCode !== 0) throw new Error(`tmux send-keys submit failed: ${submit.stderr}`);
+      const submit = await send(["-t", target, key], "tmux send-keys submit failed: ");
+      if (submit !== "sent") return submit;
     }
     return "sent";
   }

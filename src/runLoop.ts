@@ -128,7 +128,12 @@ export type RunLoopDependencies = {
   actionId?: () => string;
   log?: (message: string) => void;
   verbose?: (message: string) => void;
+  /** Minimum time after a sent nudge before another send for the same actionId. */
+  nudgeRetryMs?: number;
 };
+
+/** Re-nudge an unanswered ordered action after this many ms (pane still idle). */
+export const NUDGE_RETRY_MS = 45_000;
 
 const inputFromSubmission = (submission: AcceptedSubmission, kind: string, usePin = false): BoundInput => ({
   agent: submission.agent,
@@ -366,8 +371,9 @@ export class CoordinatorRunLoop {
   private readonly actionId: () => string;
   private readonly log: (message: string) => void;
   private readonly verbose: (message: string) => void;
-  /** Action ids that received a successful tmux paste in this process. */
-  private readonly nudgedActions = new Set<string>();
+  /** Last successful tmux send per actionId in this process (ms from `now()`). */
+  private readonly lastNudgeAtMs = new Map<string, number>();
+  private readonly nudgeRetryMs: number;
   /** Last RN/round announced on `log`, so resume and first prepare do not repeat. */
   private loggedPhaseKey: string | null = null;
 
@@ -383,6 +389,22 @@ export class CoordinatorRunLoop {
     this.actionId = dependencies.actionId ?? createActionId;
     this.log = dependencies.log ?? ((message) => process.stdout.write(`${message}\n`));
     this.verbose = dependencies.verbose ?? (() => undefined);
+    this.nudgeRetryMs = dependencies.nudgeRetryMs ?? NUDGE_RETRY_MS;
+  }
+
+  private markNudged(actionId: string): void {
+    this.lastNudgeAtMs.set(actionId, Date.parse(this.now()));
+  }
+
+  private clearNudged(actionId: string): void {
+    this.lastNudgeAtMs.delete(actionId);
+  }
+
+  private nudgeCooldownElapsed(actionId: string): boolean {
+    const last = this.lastNudgeAtMs.get(actionId);
+    if (last === undefined) return true;
+    const elapsed = Date.parse(this.now()) - last;
+    return Number.isFinite(elapsed) && elapsed >= this.nudgeRetryMs;
   }
 
   async initializeEffects(): Promise<void> {
@@ -490,10 +512,16 @@ export class CoordinatorRunLoop {
     });
     const config = start.agents.find((candidate) => candidate.id === agent);
     if (this.tmux !== null && config !== undefined) {
-      const result = await this.tmux.nudge(start.issue, config, runtime.action, () => this.authority(next));
+      const result = await this.tmux.nudge(
+        start.issue,
+        config,
+        runtime.action,
+        () => this.authority(next),
+        order.actionId
+      );
       this.authority(next);
       if (result === "sent") {
-        this.nudgedActions.add(order.actionId);
+        this.markNudged(order.actionId);
         this.verbose(`nudged ${agent} (${stepId}) → ${runtime.action}`);
         next = this.mutate(next, (current) => {
           appendJournal(this.paths, { type: "nudged", agent, actionId: order.actionId, details: {} }, this.now());
@@ -561,14 +589,20 @@ export class CoordinatorRunLoop {
     if (reason === "retry") {
       const rewritten = await this.rewriteOrderedAction(start, cursors, agent, actionId);
       cursors = rewritten.cursors;
-      if (rewritten.pathsChanged) this.nudgedActions.delete(actionId);
+      if (rewritten.pathsChanged) this.clearNudged(actionId);
     }
 
-    if (this.tmux === null || this.nudgedActions.has(actionId)) return cursors;
-    const result = await this.tmux.nudge(start.issue, config, runtime.action, () => this.authority(cursors));
+    if (this.tmux === null || !this.nudgeCooldownElapsed(actionId)) return cursors;
+    const result = await this.tmux.nudge(
+      start.issue,
+      config,
+      runtime.action,
+      () => this.authority(cursors),
+      actionId
+    );
     this.authority(cursors);
     if (result === "sent") {
-      this.nudgedActions.add(actionId);
+      this.markNudged(actionId);
       this.verbose(`nudged ${agent} (${reason}) → ${runtime.action}`);
       return this.mutate(cursors, (current) => {
         appendJournal(
@@ -708,7 +742,7 @@ export class CoordinatorRunLoop {
     this.authority(cursors);
     const order = buildOrder(this.paths, start, cursors, agent, stepId, round, actionId, outstanding, approvedPaths);
     // Clear so an immediate (or later) nudge can deliver the rewritten action.md.
-    this.nudgedActions.delete(actionId);
+    this.clearNudged(actionId);
     this.verbose(`reissued ${agent} action ${actionId}: ${outstanding.join("; ")}`);
     const next = this.mutate(cursors, (current) => {
       appendJournal(

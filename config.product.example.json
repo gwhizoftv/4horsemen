@@ -30,7 +30,7 @@
   "coordination": {
     "installRoot": "/Volumes/4TB-SOURCE/REPOS/coord/coordination",
     "cliEntry": "/Volumes/4TB-SOURCE/REPOS/coord/coordination/dist/main.js",
-    "version": "0.0.8",
+    "version": "0.0.9",
     "commit": "0000000000000000000000000000000000000000",
     "canonicalDigest": "0000000000000000000000000000000000000000000000000000000000000000",
     "installedAt": "2026-08-11T17:40:00Z",

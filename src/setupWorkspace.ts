@@ -39,10 +39,11 @@ export const agentHarnessProcess = (agent: string): string => {
 /**
  * Default per-agent owner UI for nudges and macOS Terminal windows.
  *
- * Claude/Cursor need Escape then Enter after `send-keys -l` (autocomplete /
- * multiline). Antigravity submits on Enter; Escape means cancel there.
- * Codex uses vim insert (`i`) and submits with `C-j` then `C-m`.
- * Operators override via config.json.
+ * Claude needs Escape then Enter after `send-keys -l` (autocomplete / multiline).
+ * Cursor and Antigravity submit on Enter; Escape dismisses Cursor's composer
+ * and cancels Antigravity. Cursor types vim `a` only when CLI `editor.vimMode`
+ * is on. Codex uses vim insert (`i`) and `C-j` then `C-m`.
+ * Operators override via config.json (Cursor's Escape+Enter is still upgraded).
  */
 export const agentOwnerUiDefaults = (
   agent: string
@@ -53,7 +54,7 @@ export const agentOwnerUiDefaults = (
     case "claude":
       return { nudgePrelude: [], nudgeSubmit: ["Escape", "Enter"], terminalProfile: "Pro" };
     case "cursor":
-      return { nudgePrelude: [], nudgeSubmit: ["Escape", "Enter"], terminalProfile: "Ocean" };
+      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Ocean" };
     case "antigravity":
       return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Red Sands" };
     default:
