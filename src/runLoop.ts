@@ -11,6 +11,7 @@ import { decide } from "./machine.js";
 import {
   appendJournal,
   cursorsStateSchema,
+  readConfig,
   readCursorsState,
   readStartState,
   replaceCursor,
@@ -32,6 +33,7 @@ import {
 } from "./steps.js";
 import { renderIssueReport } from "./issueReport.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
+import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import { TmuxController } from "./tmux.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
@@ -386,6 +388,24 @@ export class CoordinatorRunLoop {
   async initializeEffects(): Promise<void> {
     const start = readStartState(this.paths);
     const authority = readCursorsState(this.paths);
+    this.authority(authority);
+    let installRoot: string | null = null;
+    if (existsSync(start.configPath)) {
+      try {
+        installRoot = readConfig(start.configPath).coordination?.installRoot ?? null;
+      } catch {
+        installRoot = null;
+      }
+    }
+    prepareAgentIssueBranches({
+      agents: start.agents,
+      issue: start.issue,
+      branchTemplate: start.branchTemplate,
+      baselineSha: start.baselineSha,
+      baseBranch: start.baseBranch,
+      installRoot,
+      log: (message) => this.log(message.trimEnd())
+    });
     this.authority(authority);
     await this.mirror.initialize();
     this.authority(authority);

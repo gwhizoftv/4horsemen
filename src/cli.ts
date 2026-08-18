@@ -9,6 +9,7 @@ import { renderHookScope, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONF
 import { install, onboard, packageVersion, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
+import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import {
   agentRuntimePaths,
   assertNoSymlink,
@@ -591,6 +592,16 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
     const trustedSourceCommit = gitShaSchema.safeParse(trustedSourceResult.stdout.trim());
     if (!trustedSourceCommit.success) throw new Error("Coordinator source checkout returned an invalid trusted commit SHA.");
+
+    prepareAgentIssueBranches({
+      agents: roster,
+      issue,
+      branchTemplate: config.branch,
+      baselineSha: parsedBaseline.data,
+      baseBranch: config.baseBranch,
+      installRoot: config.coordination?.installRoot ?? coordinatorSourceRoot,
+      log: io.stdout
+    });
 
     let effects: { cleanup: () => Promise<void> } | null = null;
     try {
