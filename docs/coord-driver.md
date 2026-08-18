@@ -24,6 +24,7 @@ within derived runtime paths are rejected.
     github-issue.json immutable start-time GitHub title/body snapshot
     start.json       immutable session/config baseline
     cursors.json     workflow pointers (not the Cursor agent): step, roster, pins
+    agent-lifecycle.json  coordinator-owned CLI delivery/activity observations
     journal.jsonl    append-only owner/effect audit
     agents/<agent>/
       action.md      restricted public order
@@ -188,20 +189,57 @@ injection (`busy` / `gone`) instead of typing into a pane that changed after
 the original readiness check. Antigravity then waits 2.5s and recaptures: tmux
 sessions often paint the verify overlay after `>` looks idle, which discards
 a typed nudge.
-If the first delivery is skipped (trust UI, wrong foreground name, splash),
-the run loop retries until one successful send. After a send, if the agent
-stays ordered with no `complete`, it sends again on a 45s cooldown whenever
-the pane still looks idle. `send-keys` success is not treated as a finished
-turn. Cursor panes that report as `node` are treated as ready when
+If the first delivery is skipped, the action remains ordered. It is eligible
+again only after a positive lifecycle observation says the CLI became idle or
+the CLI session was replaced. After a successful send, the coordinator records
+only `injected`. Native CLI hooks separately establish `accepted`, `queued`,
+`working`, `idle`, or `failed`. The 45-second interval is now a hook-health
+watchdog: missing observations change health to `degraded`, print an operator
+remedy on normal output, and suppress duplicates instead of authorizing another
+send. One nudge is allowed per new eligible idle transition.
+
+There is one narrowly scoped recovery for a successful tmux write whose
+keystrokes never reached the CLI: no hook may have correlated a turn, pending
+input and background work must be absent, and a fresh pane capture must show a
+vendor-ready prompt that does not contain the exact action UUID. Only that
+positive proof returns the action to `ordered`; elapsed time or a missing
+`complete` file alone never authorizes a duplicate.
+
+Cursor panes that report as `node` are treated as ready when
 `harnessProcess` is `agent`. Cursor's composer placeholder text is not a
 stable idle hint. Cursor submit is Enter when vim is off (Escape dismisses
 that composer) and Escape then Enter when `editor.vimMode` is on or
 `nudgePrelude` is a non-empty override. Prelude `a` is sent only in that
 vim case, and only if the pane is not already INSERT (home
-`~/.cursor/cli-config.json`, then clone `.cursor/cli.json`). Typed nudge
-text includes the opaque `actionId` so retries are not byte-identical.
+`~/.cursor/cli-config.json`, then clone `.cursor/cli.json`). Typed nudge text
+includes both the opaque `actionId` and the SHA-256 digest of the exact
+`action.md`. A delayed hook for an older rewrite therefore cannot accept the
+current action accidentally.
 Phase changes (R1.join → R2.plan, and later RN steps) always print.
 Use `coord N -v` for tick-level nudge and roster logs.
+
+### CLI lifecycle state
+
+The model never writes `waiting.json`, `working.json`, or equivalent state.
+The vendor CLI produces deterministic hook/status payloads, `coord agent-event`
+validates them, and the coordinator persists only normalized fields. Delivery
+(`ordered`, `injected`, `accepted`), execution (`unknown`, `queued`, `working`,
+`idle`, `failed`), and observability health (`unknown`, `healthy`, `degraded`)
+are separate axes. They are stored outside `cursors.json` so a hook arriving
+during Git/tmux work cannot invalidate the workflow authority revision.
+
+Correlation uses the configured clone identity, issue, action UUID and digest,
+plus the vendor session/conversation and turn/generation identifiers. A new
+session invalidates observations from the replaced process. Antigravity queue
+depth, pending tool confirmations and `fullyIdle: false`, and Claude background
+tasks/session crons, keep an agent non-idle even after a stop callback. `coord
+status` prints all three axes and any pending/background indicators.
+
+While an implementation or revision action remains in flight, each poll
+re-resolves the approved file map from the pinned plan evidence and rewrites
+`action.md` with the same action UUID. If an extractor upgrade changes those
+paths, the changed action digest invalidates stale hook correlation and the
+coordinator still applies the lifecycle idle gate before injecting it.
 
 ## Agent completion contract
 

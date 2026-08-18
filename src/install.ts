@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import {
   clearAgentsProtocolFile,
   clearClaudeAgentsShim,
@@ -57,6 +58,12 @@ import {
 } from "./workspace.js";
 import { doctor, type DoctorReport } from "./doctor.js";
 import { detachAllOwnerUiSync } from "./detachIssue.js";
+import {
+  removeAgentLifecycleHooks,
+  removeAntigravityStatusLine,
+  syncAgentLifecycleHooks,
+  syncAntigravityStatusLine
+} from "./agentHookSync.js";
 
 /**
  * `coord install` / `coord uninstall`.
@@ -86,6 +93,8 @@ export type InstallOptions = {
   dryRun: boolean;
   log: Logger;
   now?: string;
+  /** Test/embedding override for the one Antigravity user-global setting. */
+  home?: string | null;
 };
 
 export type InstallResult = {
@@ -366,6 +375,7 @@ export const install = (options: InstallOptions): InstallResult => {
       },
       effects
     );
+    syncAgentLifecycleHooks({ clone, agent, cliEntry, options: effects });
     const hooks = writeCloneHooks({
       clone,
       installRoot,
@@ -399,6 +409,11 @@ export const install = (options: InstallOptions): InstallResult => {
     } else if (hooks.repairedMode.length === 0) {
       effects.log(`hooks already current in ${hooks.hooksDir}\n`);
     }
+  }
+
+  const lifecycleHome = options.home === undefined ? homedir() : options.home;
+  if (agents.includes("antigravity") && lifecycleHome !== null) {
+    syncAntigravityStatusLine({ home: lifecycleHome, cliEntry, options: effects });
   }
 
   // ---- optional, opt-in: tracked changes in the product --------------------
@@ -464,6 +479,7 @@ export type UninstallOptions = {
   log: Logger;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  home?: string | null;
 };
 
 export type UninstallResult = { changes: string[]; kept: string[] };
@@ -551,6 +567,7 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
 
   for (const { agent, clone } of clonePaths) {
     if (!existsSync(clone)) continue;
+    removeAgentLifecycleHooks({ clone, agent: agent.id, options: effects });
     const removal = removeCloneHooks(clone, { dryRun: options.dryRun });
     if (removal.removed.length > 0) {
       effects.changes.push(`remove hooks ${removal.removed.join(", ")} from ${clone}`);
@@ -575,6 +592,12 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
       if (!options.dryRun) rmSync(launcher);
       effects.log(`${options.dryRun ? "would remove" : "removed"} ${launcher}\n`);
     }
+  }
+
+  const lifecycleHome = options.home === undefined ? homedir() : options.home;
+  if (config.agents.some((agent) => agent.id === "antigravity") && lifecycleHome !== null) {
+    const statusLine = removeAntigravityStatusLine({ home: lifecycleHome, options: effects });
+    if (statusLine.kept) kept.push("Antigravity status line was edited after installation and was left in place");
   }
 
   if (stamp?.wroteProductIgnore === true && existsSync(join(stamp.productRoot, ".gitignore"))) {
@@ -698,6 +721,7 @@ export type OnboardOptions = {
   agents?: readonly string[];
   profile?: string;
   log: Logger;
+  home?: string | null;
 };
 
 export type OnboardResult = { install: InstallResult; doctor: DoctorReport };
@@ -717,7 +741,8 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     vendor: false,
     bootstrap: false,
     dryRun: false,
-    log: options.log
+    log: options.log,
+    ...(options.home === undefined ? {} : { home: options.home })
   });
   const report = doctor({ coordRoot, productRoot });
   if (report.exitCode === 0) {

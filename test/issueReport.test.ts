@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderIssueReport } from "../src/issueReport.js";
+import { initialAgentLifecycle } from "../src/agentLifecycle.js";
 import type { CursorsState, StartState } from "../src/state.js";
 
 const pin = "f".repeat(40);
@@ -97,5 +98,19 @@ describe("issue report", () => {
     expect(text).toContain(`Final pin (PR head): ${pin}`);
     expect(text).toContain("legacy owner-only");
     expect(text).toContain("not from issue-1/<agent>");
+  });
+
+  it("shows delivery, execution, health, queue, and background state", () => {
+    const lifecycle = initialAgentLifecycle(["cursor"], "2026-08-13T00:00:00.000Z");
+    lifecycle.agents.cursor = {
+      ...lifecycle.agents.cursor!,
+      execution: "queued",
+      health: "healthy",
+      pendingInputCount: 2,
+      backgroundActive: true
+    };
+    expect(renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle)).toContain(
+      "Agent cursor: none / queued / healthy, pending=2, background-active"
+    );
   });
 });

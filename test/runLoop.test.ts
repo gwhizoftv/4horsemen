@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readAction, writeAction } from "../src/action.js";
+import { observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { computeInputSetHash } from "../src/evidence.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
@@ -187,7 +188,7 @@ describe("effectful run loop", () => {
     expect(order.approvedPaths).toEqual(approved);
   });
 
-  it("rewrites a stale implement action on retry after an extractor upgrade", async () => {
+  it("refreshes in-flight approved paths and reinjects only after positive idle evidence", async () => {
     const { paths } = fixture();
     const plan = `# Plan
 ## Exact File Map
@@ -277,6 +278,11 @@ describe("effectful run loop", () => {
     expect(readAction(agentRuntimePaths(paths, "codex").action).body).toMatch(
       /"approvedPaths": \[\s*"src\/product\.ts"\s*\]/
     );
+    observeAgentLifecycle(paths, "codex", {
+      kind: "session-start",
+      eventName: "SessionStart",
+      sessionId: "session-1"
+    });
 
     const mirror = {
       path: paths.mirror,
@@ -424,7 +430,7 @@ describe("effectful run loop", () => {
     expect(literalNudges).toBeGreaterThan(firstNudges);
   });
 
-  it("re-nudges an unanswered ordered action after the cooldown and not before", async () => {
+  it("uses 45 seconds only as a health watchdog and nudges once after a positive idle transition", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);
     writeFileSync(
@@ -442,20 +448,25 @@ describe("effectful run loop", () => {
     );
     let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
     let literalNudges = 0;
+    let paneText = "";
+    const messages: string[] = [];
     const tmux = new TmuxController(async (args) => {
       if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: paneText, stderr: "" };
       if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
       return { exitCode: 0, stdout: "", stderr: "" };
     });
     const loop = new CoordinatorRunLoop(paths, {
       tmux,
       now: () => new Date(nowMs).toISOString(),
-      nudgeRetryMs: NUDGE_RETRY_MS
+      nudgeRetryMs: NUDGE_RETRY_MS,
+      log: (message) => messages.push(message)
     });
     await loop.runTick();
     expect(literalNudges).toBe(1);
     const actionId = readCursorsState(paths).agents.codex?.actionId;
     expect(actionId).toMatch(/^[0-9a-f-]{36}$/);
+    paneText = actionId as string;
     await loop.runTick();
     expect(literalNudges).toBe(1);
     nowMs += NUDGE_RETRY_MS - 1;
@@ -463,11 +474,145 @@ describe("effectful run loop", () => {
     expect(literalNudges).toBe(1);
     nowMs += 1;
     await loop.runTick();
+    expect(literalNudges).toBe(1);
+    expect(readAgentLifecycle(paths).agents.codex?.health).toBe("degraded");
+    expect(messages.join("\n")).toContain("Restart codex's CLI");
+    const action = readAgentLifecycle(paths).agents.codex?.action;
+    expect(action).not.toBeNull();
+    observeAgentLifecycle(
+      paths,
+      "codex",
+      {
+        kind: "prompt-submitted",
+        eventName: "UserPromptSubmit",
+        sessionId: "session-1",
+        turnId: "turn-1",
+        actionId: action!.actionId,
+        actionDigest: action!.actionDigest
+      },
+      new Date(nowMs + 1).toISOString()
+    );
+    observeAgentLifecycle(
+      paths,
+      "codex",
+      {
+        kind: "stopped",
+        eventName: "Stop",
+        sessionId: "session-1",
+        turnId: "turn-1",
+        backgroundActive: false
+      },
+      new Date(nowMs + 2).toISOString()
+    );
+    await loop.runTick();
+    expect(literalNudges).toBe(2);
+    await loop.runTick();
     expect(literalNudges).toBe(2);
     expect(readCursorsState(paths).agents.codex).toMatchObject({ actionId, status: "ordered" });
     const nudged = readJournal(paths).filter((event) => event.type === "nudged" && event.agent === "codex");
     expect(nudged).toHaveLength(2);
-    expect(nudged[1]?.details).toEqual({ retry: true });
+    expect(nudged[1]?.details).toMatchObject({ idle: true, actionDigest: action!.actionDigest });
+  });
+
+  it("retries an action that a busy pane never injected", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    let busy = true;
+    let literalNudges = 0;
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") {
+        return { exitCode: 0, stdout: busy ? "0\tcodex\t1\n" : "0\tcodex\t0\n", stderr: "" };
+      }
+      if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { tmux });
+    await loop.runTick();
+    expect(literalNudges).toBe(0);
+    expect(readAgentLifecycle(paths).agents.codex?.action?.delivery).toBe("ordered");
+
+    busy = false;
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+    expect(readAgentLifecycle(paths).agents.codex?.action?.delivery).toBe("injected");
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+  });
+
+  it("retries once when a later ready prompt proves an injected action is absent", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    let literalNudges = 0;
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: "Codex\nready\n", stderr: "" };
+      if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { tmux });
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+    const action = readAgentLifecycle(paths).agents.codex!.action!;
+    observeAgentLifecycle(paths, "codex", {
+      kind: "stopped",
+      eventName: "Stop",
+      sessionId: "session-1",
+      turnId: "unrelated-turn",
+      backgroundActive: false
+    });
+    expect(readAgentLifecycle(paths).agents.codex?.execution).toBe("queued");
+
+    await loop.runTick();
+    expect(literalNudges).toBe(2);
+    expect(readAgentLifecycle(paths).agents.codex?.action).toMatchObject({
+      actionId: action.actionId,
+      actionDigest: action.actionDigest,
+      delivery: "injected"
+    });
+    await loop.runTick();
+    expect(literalNudges).toBe(2);
+  });
+
+  it("does not degrade pull-only agents that are intentionally never injected", async () => {
+    const { paths } = fixture();
+    let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
+    const tmux = new TmuxController(async (args) =>
+      args[0] === "display-message"
+        ? { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" }
+        : { exitCode: 0, stdout: "", stderr: "" }
+    );
+    const loop = new CoordinatorRunLoop(paths, { tmux, now: () => new Date(nowMs).toISOString() });
+    await loop.runTick();
+    nowMs += NUDGE_RETRY_MS;
+    await loop.runTick();
+    expect(readAgentLifecycle(paths).agents.codex?.health).toBe("unknown");
+    expect(readJournal(paths).some((event) => event.type === "agent-observability-degraded")).toBe(false);
   });
 
   it("preserves completion and emits no artifact verdict on transient fetch failure", async () => {

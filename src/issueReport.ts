@@ -1,4 +1,5 @@
 import type { CursorsState, StartState } from "./state.js";
+import type { AgentLifecycleState } from "./agentLifecycle.js";
 import { coordMergesPullRequest } from "./steps.js";
 
 const finalization = (cursors: CursorsState) =>
@@ -8,7 +9,11 @@ const finalization = (cursors: CursorsState) =>
  * What the owner needs after a run: who won, which commit is the PR head,
  * which branch coord pushed, and whether they still have to merge.
  */
-export const renderIssueReport = (start: StartState, cursors: CursorsState): string => {
+export const renderIssueReport = (
+  start: StartState,
+  cursors: CursorsState,
+  lifecycle?: AgentLifecycleState
+): string => {
   const r7 = finalization(cursors);
   const pin = cursors.publication.finalSha ?? r7?.productPin ?? null;
   const chosen = cursors.selection.implementationAgent ?? r7?.agent ?? cursors.selection.reviser;
@@ -50,6 +55,17 @@ export const renderIssueReport = (start: StartState, cursors: CursorsState): str
   }
   if (cursors.publication.error !== null && cursors.publication.status === "failed") {
     lines.push(`Error: ${cursors.publication.error}`);
+  }
+  if (lifecycle !== undefined) {
+    for (const agent of start.agents) {
+      const entry = lifecycle.agents[agent.id];
+      if (entry === undefined) continue;
+      const queue = entry.pendingInputCount === null ? "" : `, pending=${entry.pendingInputCount}`;
+      const background = entry.backgroundActive === true ? ", background-active" : "";
+      lines.push(
+        `Agent ${agent.id}: ${entry.action?.delivery ?? "none"} / ${entry.execution} / ${entry.health}${queue}${background}`
+      );
+    }
   }
   return `${lines.join("\n")}\n`;
 };

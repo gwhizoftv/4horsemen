@@ -170,6 +170,13 @@ the managed `.gitignore` block and the generated `AGENTS.md` from the product
 ignore lines or a human-authored `AGENTS.md`. A hook file edited after
 installation is left in place and reported rather than deleted.
 
+The same conservative rule applies to CLI lifecycle hooks. Uninstall removes
+only entries carrying coordination's lifecycle marker. Other Codex, Claude,
+Cursor, and Antigravity hooks remain in their original arrays/objects. If the
+owner replaces the managed Antigravity status-line command after installation,
+uninstall leaves that new command and its recovery metadata in place rather
+than guessing what to restore.
+
 Five scoping rules matter:
 
 - By default only the workspace config is deleted; an empty nested workspace
@@ -231,6 +238,54 @@ maintains. The bodies it writes stay harmless to humans for the reason above —
 they resolve identity from coordination wiring a human clone does not have — so
 a developer who enables the committed hooks out of curiosity gets a
 pass-through, not a blocked repository. There is a test for exactly that.
+
+### Agent CLI lifecycle hooks
+
+Git hooks enforce repository policy; CLI lifecycle hooks answer a different
+question: whether an action was merely typed, accepted, queued, working, or
+stopped. `coord install` adds a marked command entry to each agent clone's
+local vendor configuration:
+
+```text
+<codex-clone>/.codex/hooks.json
+<claude-clone>/.claude/settings.local.json
+<cursor-clone>/.cursor/hooks.json
+<antigravity-clone>/.agents/hooks.json
+```
+
+Existing documents and unrelated hook entries are merged, never replaced.
+Invalid JSON and a third-party Antigravity hook already using coordination's
+reserved name are refused. Reinstall repairs only marked entries; uninstall
+removes only those entries. These clone-local directories are already excluded
+from agent Git status and are never copied into a fresh human clone.
+
+The commands pipe vendor JSON to the internal, fail-open `coord agent-event`
+bridge. The callback validates the clone's `consensus.agentId` and
+`coord.workspaceConfig`, the issue inherited from the tmux session, the runtime
+roster, and the action path/UUID/digest before updating owner runtime. Hook
+failures are diagnostic and do not block a prompt or prevent a CLI from
+stopping.
+
+Antigravity exposes `pending_input_count`, `agent_state`, and background task
+count only through its user-global status line. Install therefore writes a
+marked multiplexer under `~/.gemini/antigravity-cli/`: it forwards the payload
+to `coord agent-event` asynchronously, then invokes the owner's previous
+status-line command with the same payload and returns that command's display
+output. With no previous command it prints a small `coord lifecycle` label.
+The receiver routes the official payload's workspace `cwd` through clone-local
+configuration; if the hook environment has no issue number, exactly one active
+issue containing that agent may supply it, while an ambiguous match is ignored.
+The previous setting is kept in coordinator-owned recovery metadata and
+restored on uninstall only while the managed command is still selected.
+
+Restart Codex/Claude after install if their current session predates the hook
+file. Codex may also require reviewing the new project hook in `/hooks`.
+`coord status` reports `degraded` when an injected action receives no lifecycle
+observation, and the run loop prints the corresponding CLI-restart remedy on
+normal output once per degradation; `coord doctor` reports missing or modified
+static hook wiring. A custom agent id with nudge delivery is also a doctor
+finding until it has a supported lifecycle-vendor mapping; use pull delivery
+rather than promising hook-gated reinjection for an uninstrumented CLI.
 
 ## What runs, and whose it is
 
@@ -351,6 +406,7 @@ in the install root is reported even though the commit has not moved.
 | 17 | `installDrift` | the install root moved, its canonical hook bytes changed without a commit, or a clone points elsewhere |
 | 18 | `verifyUndeclared` | no `verify` declared, so every agent commit would block |
 | 19 | `cloneMissing` | an agent clone is absent, or is no longer a git worktree |
+| 20 | `lifecycleHooks` | vendor lifecycle hooks are missing or differ from their managed definitions |
 
 ## Transient evidence on agent branches
 

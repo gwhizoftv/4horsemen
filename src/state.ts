@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
+  fstatSync,
   fsyncSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   renameSync,
   unlinkSync,
   writeFileSync
@@ -371,6 +373,8 @@ export const journalEventSchema = z
       "started",
       "action-prepared",
       "nudged",
+      "agent-lifecycle",
+      "agent-observability-degraded",
       "intent-seen",
       "verify-result",
       "gate-advanced",
@@ -521,6 +525,39 @@ export const readJournal = (paths: IssueRuntimePaths): JournalEvent[] => {
   });
 };
 
+/** Read only the final journal record; append cost must not grow with issue age. */
+const nextJournalSequence = (path: string): number => {
+  if (!existsSync(path)) return 0;
+  const handle = openSync(path, "r");
+  try {
+    let position = fstatSync(handle).size;
+    if (position === 0) return 0;
+    let suffix = Buffer.alloc(0);
+    while (position > 0) {
+      const start = Math.max(0, position - 4096);
+      const chunk = Buffer.alloc(position - start);
+      readSync(handle, chunk, 0, chunk.length, start);
+      suffix = Buffer.concat([chunk, suffix]);
+      position = start;
+      const text = suffix.toString("utf8").replace(/\n+$/, "");
+      const boundary = text.lastIndexOf("\n");
+      if (boundary < 0 && position > 0) continue;
+      const line = text.slice(boundary + 1);
+      if (line === "") return 0;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line) as unknown;
+      } catch (error) {
+        throw new Error(`Invalid final journal line: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return journalEventSchema.parse(parsed).sequence + 1;
+    }
+    return 0;
+  } finally {
+    closeSync(handle);
+  }
+};
+
 export const appendJournal = (
   paths: IssueRuntimePaths,
   input: JournalEventInput,
@@ -530,11 +567,10 @@ export const appendJournal = (
   const lockPath = `${paths.journal}.lock`;
   const lock = acquireExclusiveLock(lockPath);
   try {
-    const existing = readJournal(paths);
     const event = journalEventSchema.parse({
       ...input,
       formatVersion: RUNTIME_FORMAT_VERSION,
-      sequence: existing.length,
+      sequence: nextJournalSequence(paths.journal),
       at: now
     });
     assertNoSymlink(paths.coordRoot, dirname(paths.journal));
@@ -571,7 +607,7 @@ const processIsAlive = (pid: number): boolean => {
   }
 };
 
-const acquireExclusiveLock = (lockPath: string): number => {
+export const acquireExclusiveLock = (lockPath: string): number => {
   for (let attempt = 0; attempt < 250; attempt += 1) {
     try {
       const handle = openSync(lockPath, "wx", 0o600);

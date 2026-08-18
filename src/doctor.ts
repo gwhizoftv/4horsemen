@@ -7,6 +7,7 @@ import { githubRepositoryFromOrigin } from "./githubIssue.js";
 import { productName } from "./setupWorkspace.js";
 import { readConfig, type CoordinatorConfig } from "./state.js";
 import { resolveWorkspaceLocation } from "./workspace.js";
+import { inspectAgentLifecycleHooks } from "./agentHookSync.js";
 
 /**
  * `coord doctor` — say exactly which part of an install is wrong.
@@ -28,7 +29,8 @@ export const DOCTOR_CODES = {
   toolchain: 16,
   installDrift: 17,
   verifyUndeclared: 18,
-  cloneMissing: 19
+  cloneMissing: 19,
+  lifecycleHooks: 20
 } as const;
 
 export type DoctorClass = keyof typeof DOCTOR_CODES;
@@ -297,6 +299,43 @@ const checkClone = (input: {
           clone,
           `Vendored hook bodies were copied at ${drift.recordedCommit.slice(0, 12)} but the install is at ${drift.installCommit.slice(0, 12)}.`,
           "Re-run coord install --vendor to refresh the copies."
+        )
+      );
+    }
+
+    const lifecycle = inspectAgentLifecycleHooks({
+      clone,
+      agent: input.agent.id,
+      cliEntry: stamp.cliEntry
+    });
+    if (
+      lifecycle.kind === "unsupported" &&
+      (input.agent.delivery === "nudge" || input.agent.delivery === "both")
+    ) {
+      findings.push(
+        finding(
+          "lifecycleHooks",
+          clone,
+          `Agent '${input.agent.id}' has nudge delivery enabled but no supported lifecycle-hook vendor mapping.`,
+          "Use a supported vendor agent id (claude, codex, cursor, or antigravity), or set delivery to pull so hook-gated nudging is not promised."
+        )
+      );
+    } else if (lifecycle.kind === "missing") {
+      findings.push(
+        finding(
+          "lifecycleHooks",
+          lifecycle.path ?? clone,
+          "Coordinator CLI lifecycle hooks are missing, so prompt acceptance and agent activity are unobservable.",
+          "Re-run coord install, then restart this agent CLI so it reloads hooks."
+        )
+      );
+    } else if (lifecycle.kind === "modified") {
+      findings.push(
+        finding(
+          "lifecycleHooks",
+          lifecycle.path ?? clone,
+          "Coordinator CLI lifecycle hooks differ from the installed command definitions.",
+          "Preserve any third-party entries, then re-run coord install to repair only coordinator-managed entries."
         )
       );
     }
