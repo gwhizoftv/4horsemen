@@ -54,6 +54,9 @@ Push the commit containing the artifact to \`${order.branch}\`. Then write that
 exact 40-character lowercase commit SHA as the sole contents of:
 
 \`${order.completePath}\`
+
+After writing that SHA, keep this file. If \`actionId\` in the front matter
+changes, execute the new action even if you were not nudged.
 `;
 };
 

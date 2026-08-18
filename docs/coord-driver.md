@@ -168,21 +168,36 @@ as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`
 Per-agent config controls owner UI:
 
 - `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert)
-- `nudgeSubmit` — tmux keys after the text (Claude/Cursor default: `Escape` then
-  `Enter` to dismiss autocomplete; Antigravity default: `Enter` only — Escape
-  cancels there; Codex default: `C-j` then `C-m`. Stale single `Enter`/`C-m` on
-  Claude/Cursor, and mistaken Escape+Enter on Antigravity, are upgraded)
+- `nudgeSubmit` — tmux keys after the text (Claude default: `Escape` then
+  `Enter` to dismiss autocomplete; Cursor and Antigravity default: `Enter` only —
+  Escape dismisses Cursor's composer and cancels Antigravity; Codex default:
+  `C-j` then `C-m`. Stale single `Enter`/`C-m` on Claude, mistaken Escape+Enter
+  on Cursor/Antigravity, and stale `C-m` on Antigravity, are upgraded)
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Pro/Grass/Ocean/Red Sands)
 
 Nudge waits until the pane shows an idle prompt (not Claude's trust dialog,
 Antigravity splash, account-verification overlay, or an in-flight Antigravity
-turn with `esc to cancel`). Antigravity then waits 2.5s and recaptures: tmux
+turn with `esc to cancel`). Before the prelude, the action text, and every
+submit key, the driver re-reads `pane_dead`, `pane_current_command`,
+`pane_in_mode`, and `pane_input_off`. If the pane is dead, in copy/mode, has
+input off, or the foreground command is no longer the harness, it skips that
+injection (`busy` / `gone`) instead of typing into a pane that changed after
+the original readiness check. Antigravity then waits 2.5s and recaptures: tmux
 sessions often paint the verify overlay after `>` looks idle, which discards
 a typed nudge.
 If the first delivery is skipped (trust UI, wrong foreground name, splash),
-the run loop retries until one successful delivery per action. Cursor panes
-that report as `node` are treated as ready when `harnessProcess` is `agent`.
+the run loop retries until one successful send. After a send, if the agent
+stays ordered with no `complete`, it sends again on a 45s cooldown whenever
+the pane still looks idle. `send-keys` success is not treated as a finished
+turn. Cursor panes that report as `node` are treated as ready when
+`harnessProcess` is `agent`. Cursor's composer placeholder text is not a
+stable idle hint. Submit is always Enter (Escape dismisses that composer).
+Prelude `a` is sent only when Cursor CLI `editor.vimMode` is true (home
+`~/.cursor/cli-config.json`, then clone `.cursor/cli.json`) or when
+`nudgePrelude` is a non-empty override — and then only if the pane is not
+already INSERT. Typed nudge text includes the opaque `actionId` so retries
+are not byte-identical.
 Phase changes (R1.join → R2.plan, and later RN steps) always print.
 Use `coord N -v` for tick-level nudge and roster logs.
 

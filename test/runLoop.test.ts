@@ -7,7 +7,14 @@ import { readAction, writeAction } from "../src/action.js";
 import { computeInputSetHash } from "../src/evidence.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
-import { buildOrder, CoordinatorRunLoop, deterministicWinner, githubRepositoryFromOrigin, resolveApprovedPaths } from "../src/runLoop.js";
+import {
+  buildOrder,
+  CoordinatorRunLoop,
+  deterministicWinner,
+  githubRepositoryFromOrigin,
+  NUDGE_RETRY_MS,
+  resolveApprovedPaths
+} from "../src/runLoop.js";
 import {
   cursorsStateSchema,
   dropAgent,
@@ -415,6 +422,52 @@ describe("effectful run loop", () => {
     expect(readJournal(paths).some((event) => event.type === "verify-result")).toBe(true);
     expect(readJournal(paths).some((event) => event.type === "nudged" && event.details.reissue === true)).toBe(true);
     expect(literalNudges).toBeGreaterThan(firstNudges);
+  });
+
+  it("re-nudges an unanswered ordered action after the cooldown and not before", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
+    let literalNudges = 0;
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
+      if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, {
+      tmux,
+      now: () => new Date(nowMs).toISOString(),
+      nudgeRetryMs: NUDGE_RETRY_MS
+    });
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+    const actionId = readCursorsState(paths).agents.codex?.actionId;
+    expect(actionId).toMatch(/^[0-9a-f-]{36}$/);
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+    nowMs += NUDGE_RETRY_MS - 1;
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+    nowMs += 1;
+    await loop.runTick();
+    expect(literalNudges).toBe(2);
+    expect(readCursorsState(paths).agents.codex).toMatchObject({ actionId, status: "ordered" });
+    const nudged = readJournal(paths).filter((event) => event.type === "nudged" && event.agent === "codex");
+    expect(nudged).toHaveLength(2);
+    expect(nudged[1]?.details).toEqual({ retry: true });
   });
 
   it("preserves completion and emits no artifact verdict on transient fetch failure", async () => {

@@ -28,7 +28,7 @@
       "launcher": "start-cursor.sh",
       "delivery": "pull",
       "nudgePrelude": [],
-      "nudgeSubmit": ["Escape", "Enter"],
+      "nudgeSubmit": ["Enter"],
       "terminalProfile": "Ocean"
     },
     {
