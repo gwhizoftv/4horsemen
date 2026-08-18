@@ -170,10 +170,12 @@ Per-agent config controls owner UI:
 
 - `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert)
 - `nudgeSubmit` — tmux keys after the text (Claude default: `Escape` then
-  `Enter` to dismiss autocomplete; Cursor and Antigravity default: `Enter` only —
-  Escape dismisses Cursor's composer and cancels Antigravity; Codex default:
-  `C-j` then `C-m`. Stale single `Enter`/`C-m` on Claude, mistaken Escape+Enter
-  on Cursor/Antigravity, and stale `C-m` on Antigravity, are upgraded)
+  `Enter` to dismiss autocomplete; Cursor without vim and Antigravity default:
+  `Enter` only — Escape dismisses a non-vim Cursor composer and cancels
+  Antigravity; Cursor with `editor.vimMode` uses `Escape` then `Enter` so
+  INSERT does not treat Enter as a newline; Codex default: `C-j` then `C-m`.
+  Stale single `Enter`/`C-m` on Claude, mistaken Escape+Enter on non-vim
+  Cursor/Antigravity, and stale `C-m` on Antigravity, are upgraded)
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Pro/Grass/Ocean/Red Sands)
 
@@ -189,23 +191,30 @@ sessions often paint the verify overlay after `>` looks idle, which discards
 a typed nudge.
 If the first delivery is skipped, the action remains ordered. It is eligible
 again only after a positive lifecycle observation says the CLI became idle or
-the CLI session was replaced; pane text and a missing `complete` file are not
-retry evidence. After a successful send, the coordinator records only
-`injected`. Native CLI hooks separately establish `accepted`, `queued`,
+the CLI session was replaced. After a successful send, the coordinator records
+only `injected`. Native CLI hooks separately establish `accepted`, `queued`,
 `working`, `idle`, or `failed`. The 45-second interval is now a hook-health
-watchdog: missing observations change health to `degraded` and suppress
-duplicates instead of authorizing another send. One nudge is allowed per new
-eligible idle transition.
+watchdog: missing observations change health to `degraded`, print an operator
+remedy on normal output, and suppress duplicates instead of authorizing another
+send. One nudge is allowed per new eligible idle transition.
+
+There is one narrowly scoped recovery for a successful tmux write whose
+keystrokes never reached the CLI: no hook may have correlated a turn, pending
+input and background work must be absent, and a fresh pane capture must show a
+vendor-ready prompt that does not contain the exact action UUID. Only that
+positive proof returns the action to `ordered`; elapsed time or a missing
+`complete` file alone never authorizes a duplicate.
 
 Cursor panes that report as `node` are treated as ready when
 `harnessProcess` is `agent`. Cursor's composer placeholder text is not a
-stable idle hint. Submit is always Enter (Escape dismisses that composer).
-Prelude `a` is sent only when Cursor CLI `editor.vimMode` is true (home
-`~/.cursor/cli-config.json`, then clone `.cursor/cli.json`) or when
-`nudgePrelude` is a non-empty override — and then only if the pane is not
-already INSERT. Typed nudge text includes both the opaque `actionId` and the
-SHA-256 digest of the exact `action.md`. A delayed hook for an older rewrite
-therefore cannot accept the current action accidentally.
+stable idle hint. Cursor submit is Enter when vim is off (Escape dismisses
+that composer) and Escape then Enter when `editor.vimMode` is on or
+`nudgePrelude` is a non-empty override. Prelude `a` is sent only in that
+vim case, and only if the pane is not already INSERT (home
+`~/.cursor/cli-config.json`, then clone `.cursor/cli.json`). Typed nudge text
+includes both the opaque `actionId` and the SHA-256 digest of the exact
+`action.md`. A delayed hook for an older rewrite therefore cannot accept the
+current action accidentally.
 Phase changes (R1.join → R2.plan, and later RN steps) always print.
 Use `coord N -v` for tick-level nudge and roster logs.
 
@@ -225,6 +234,12 @@ session invalidates observations from the replaced process. Antigravity queue
 depth, pending tool confirmations and `fullyIdle: false`, and Claude background
 tasks/session crons, keep an agent non-idle even after a stop callback. `coord
 status` prints all three axes and any pending/background indicators.
+
+While an implementation or revision action remains in flight, each poll
+re-resolves the approved file map from the pinned plan evidence and rewrites
+`action.md` with the same action UUID. If an extractor upgrade changes those
+paths, the changed action digest invalidates stale hook correlation and the
+coordinator still applies the lifecycle idle gate before injecting it.
 
 ## Agent completion contract
 

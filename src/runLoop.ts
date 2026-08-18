@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, rmSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { clearCompletion, createActionId, readCompletion, writeAction } from "./action.js";
+import { clearCompletion, createActionId, readAction, readCompletion, writeAction } from "./action.js";
 import {
   AGENT_OBSERVABILITY_WATCHDOG_MS,
   decideLifecycleNudge,
   markActionInjectionDeferred,
   markActionInjected,
   markActionWorkflowComplete,
+  markInjectedActionAbsent,
   markObservabilityDegraded,
   orderAgentAction
 } from "./agentLifecycle.js";
@@ -543,6 +544,39 @@ export class CoordinatorRunLoop {
     return next;
   }
 
+  /** Refresh bound paths on an in-flight implement/revise order after extractor upgrades. */
+  private async rewriteOrderedAction(
+    start: StartState,
+    cursors: CursorsState,
+    agent: string,
+    actionId: string
+  ): Promise<CursorsState> {
+    const cursor = cursors.agents[agent];
+    if (cursor === undefined || cursor.stepId === null) return cursors;
+    const runtime = agentRuntimePaths(this.paths, agent);
+    if (!existsSync(runtime.action)) return cursors;
+    const previous = readAction(runtime.action).body;
+    const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
+    this.authority(cursors);
+    const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+    const order = buildOrder(
+      this.paths,
+      start,
+      cursors,
+      agent,
+      cursor.stepId,
+      round,
+      actionId,
+      cursor.outstanding,
+      approvedPaths
+    );
+    writeAction(this.paths.coordRoot, runtime.action, order);
+    if (readAction(runtime.action).body !== previous) {
+      this.verbose(`refreshed ${agent} action ${actionId} with current approved paths`);
+    }
+    return cursors;
+  }
+
   private async maybeLifecycleNudge(
     start: StartState,
     cursors: CursorsState,
@@ -552,8 +586,13 @@ export class CoordinatorRunLoop {
   ): Promise<CursorsState> {
     const config = start.agents.find((candidate) => candidate.id === agent);
     if (config === undefined) return cursors;
+    if (config.delivery !== "nudge" && config.delivery !== "both") return cursors;
     const runtime = agentRuntimePaths(this.paths, agent);
     if (!existsSync(runtime.action)) return cursors;
+
+    if (reason === "idle") {
+      cursors = await this.rewriteOrderedAction(start, cursors, agent, actionId);
+    }
     const actionDigest = sha256OfFile(runtime.action);
     orderAgentAction(this.paths, agent, actionId, actionDigest, this.now());
 
@@ -575,7 +614,10 @@ export class CoordinatorRunLoop {
           },
           this.now()
         );
-        this.verbose(`agent lifecycle degraded for ${agent}; duplicate nudge suppressed`);
+        this.log(
+          `Issue ${start.issue}: lifecycle observability degraded for ${agent}; duplicate nudge suppressed. ` +
+            `Restart ${agent}'s CLI so it loads coordinator lifecycle hooks.`
+        );
       }
       const entry = degraded.state.agents[agent];
       if (entry === undefined) return cursors;
@@ -586,8 +628,43 @@ export class CoordinatorRunLoop {
       if (entry.action?.delivery !== "ordered" || entry.action.retryableInjectionAt === null) {
         const decision = decideLifecycleNudge(entry, actionId, actionDigest);
         if (decision.kind === "wait") {
-          this.verbose(`nudge deferred for ${agent}: ${decision.reason}`);
-          return cursors;
+          const injected = entry.action;
+          const observedAfterInjection =
+            injected !== null &&
+            injected !== undefined &&
+            injected.injectedAt !== null &&
+            entry.lastEventAt !== null &&
+            Date.parse(entry.lastEventAt) >= Date.parse(injected.injectedAt);
+          const tmux = this.tmux;
+          const canProveLostInjection =
+            tmux !== null &&
+            injected?.delivery === "injected" &&
+            injected.turnId === null &&
+            (entry.pendingInputCount ?? 0) === 0 &&
+            entry.backgroundActive !== true &&
+            ((entry.execution === "queued" && observedAfterInjection) ||
+              (entry.execution === "unknown" && entry.health === "degraded"));
+          if (
+            !canProveLostInjection ||
+            tmux === null ||
+            !(await tmux.actionAbsentAtReadyPrompt(start.issue, config, actionId, () => this.authority(cursors)))
+          ) {
+            this.verbose(`nudge deferred for ${agent}: ${decision.reason}`);
+            return cursors;
+          }
+          this.authority(cursors);
+          markInjectedActionAbsent(this.paths, agent, actionId, actionDigest, this.now());
+          appendJournal(
+            this.paths,
+            {
+              type: "agent-lifecycle",
+              agent,
+              actionId,
+              details: { actionDigest, event: "prompt-ready-action-absent", execution: entry.execution }
+            },
+            this.now()
+          );
+          this.verbose(`retrying ${agent}: ready prompt no longer contains action ${actionId}`);
         }
       }
     }

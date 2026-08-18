@@ -97,7 +97,7 @@ describe("CLI version", () => {
     for (const argv of [["--version"], ["-V"], ["version"]] as const) {
       const lines: string[] = [];
       expect(await runCli([...argv], { io: { stdout: (message) => lines.push(message) } })).toBe(0);
-      expect(lines.join("").trim()).toBe("0.0.10");
+      expect(lines.join("").trim()).toBe("0.0.11");
     }
   });
 });
@@ -710,12 +710,12 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     expect(errors.join("")).toContain("agent-event");
   });
 
-  it("returns a non-continuing response for Antigravity Stop hooks", async () => {
+  it("returns a non-continuing response even when an Antigravity Stop observation is rejected", async () => {
     const output: string[] = [];
     expect(
       await runCli(["agent-event", "--vendor", "antigravity", "--event", "Stop"], {
         io: {
-          stdin: () => JSON.stringify({ conversationId: "session", fullyIdle: true }),
+          stdin: () => "not-json",
           stdout: (message) => output.push(message),
           stderr: () => undefined
         }

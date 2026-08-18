@@ -2,15 +2,15 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
 import {
-  observeAgentLifecycle,
+  observeAgentLifecycleWithResult,
   type LifecycleObservation,
   type AgentLifecycleState
 } from "./agentLifecycle.js";
 import { localConfigGet } from "./gitExec.js";
 import { resolveWorkspaceConfig } from "./hookPolicy.js";
 import { agentRuntimePaths, issueRuntimePaths } from "./paths.js";
-import { appendJournal, readStartState } from "./state.js";
-import { workspaceLocationFromConfig } from "./workspace.js";
+import { appendJournal, readCursorsState, readStartState } from "./state.js";
+import { listIssueNumbersInWorkspace, workspaceLocationFromConfig } from "./workspace.js";
 
 export const lifecycleVendorSchema = z.enum(["codex", "claude", "cursor", "antigravity"]);
 export type LifecycleVendor = z.infer<typeof lifecycleVendorSchema>;
@@ -195,7 +195,12 @@ export const normalizeAgentEvent = (
   }
   if (normalizedName === "stop") {
     const fullyIdle = boolField(raw, "fullyIdle") ?? false;
-    return { kind: "stopped", ...common, backgroundActive: !fullyIdle };
+    return {
+      kind: "stopped",
+      ...common,
+      backgroundActive: !fullyIdle,
+      allowInjectedIdle: fullyIdle
+    };
   }
   return null;
 };
@@ -247,11 +252,27 @@ export const handleAgentEvent = (input: HandleAgentEventInput): HandleAgentEvent
   if (agent === null || agent === undefined || (configuredAgent !== null && agent !== configuredAgent)) {
     throw new Error("Lifecycle hook agent identity does not match the configured clone.");
   }
-  const envIssue = input.environmentIssue === undefined ? NaN : Number(input.environmentIssue);
-  const issue =
-    input.issue ?? (Number.isInteger(envIssue) && envIssue > 0 ? envIssue : undefined) ?? issueFromRaw(raw);
-  if (issue === null || issue === undefined) return { observed: false, issue: null, agent, state: null };
   const workspace = workspaceLocationFromConfig(resolved.configPath);
+  const envIssue = input.environmentIssue === undefined ? NaN : Number(input.environmentIssue);
+  let issue =
+    input.issue ??
+    (Number.isInteger(envIssue) && envIssue > 0 ? envIssue : undefined) ??
+    issueFromRaw(raw);
+  if (issue === null || issue === undefined) {
+    const activeIssues = listIssueNumbersInWorkspace(workspace.workspaceRoot).filter((candidate) => {
+      const candidatePaths = issueRuntimePaths(workspace.workspaceRoot, candidate);
+      if (!existsSync(candidatePaths.start) || !existsSync(candidatePaths.cursors)) return false;
+      try {
+        const start = readStartState(candidatePaths);
+        const cursors = readCursorsState(candidatePaths);
+        return start.originalRoster.includes(agent) && !cursors.completed && !cursors.abandoned;
+      } catch {
+        return false;
+      }
+    });
+    issue = activeIssues.length === 1 ? activeIssues[0] : null;
+  }
+  if (issue === null || issue === undefined) return { observed: false, issue: null, agent, state: null };
   const paths = issueRuntimePaths(workspace.workspaceRoot, issue);
   if (!existsSync(paths.start)) return { observed: false, issue, agent, state: null };
   const start = readStartState(paths);
@@ -265,22 +286,24 @@ export const handleAgentEvent = (input: HandleAgentEventInput): HandleAgentEvent
     throw new Error("Lifecycle prompt names an action path outside the configured agent runtime.");
   }
   const now = input.now ?? new Date().toISOString();
-  const state = observeAgentLifecycle(paths, agent, observation, now);
-  appendJournal(
-    paths,
-    {
-      type: "agent-lifecycle",
-      agent,
-      ...(observation.actionId === undefined ? {} : { actionId: observation.actionId }),
-      details: {
-        vendor: input.vendor,
-        event: observation.eventName,
-        kind: observation.kind,
-        execution: state.agents[agent]?.execution ?? "unknown",
-        health: state.agents[agent]?.health ?? "unknown"
-      }
-    },
-    now
-  );
-  return { observed: true, issue, agent, state };
+  const result = observeAgentLifecycleWithResult(paths, agent, observation, now);
+  if (result.changed) {
+    appendJournal(
+      paths,
+      {
+        type: "agent-lifecycle",
+        agent,
+        ...(observation.actionId === undefined ? {} : { actionId: observation.actionId }),
+        details: {
+          vendor: input.vendor,
+          event: observation.eventName,
+          kind: observation.kind,
+          execution: result.state.agents[agent]?.execution ?? "unknown",
+          health: result.state.agents[agent]?.health ?? "unknown"
+        }
+      },
+      now
+    );
+  }
+  return { observed: true, issue, agent, state: result.state };
 };

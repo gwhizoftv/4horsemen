@@ -21,6 +21,53 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+const runtimeFixture = (agent: "codex" | "antigravity") => {
+  const root = mkdtempSync(join(tmpdir(), "coord-agent-event-"));
+  roots.push(root);
+  const clone = join(root, "clone");
+  mkdirSync(clone);
+  execFileSync("git", ["init", "-q"], { cwd: clone });
+  const configPath = join(root, "config.json");
+  const configuredAgent = { id: agent, root: clone, launcher: `start-${agent}.sh`, delivery: "both" as const };
+  writeFileSync(
+    configPath,
+    `${JSON.stringify({
+      project: "fixture",
+      origin: "https://github.com/example/fixture.git",
+      branch: "issue-{issue}/{agent}",
+      agents: [configuredAgent],
+      checks: [{ name: "true", argv: ["true"] }]
+    })}\n`
+  );
+  execFileSync("git", ["config", "--local", "coord.workspaceConfig", configPath], { cwd: clone });
+  execFileSync("git", ["config", "--local", "consensus.agentId", agent], { cwd: clone });
+  const paths = issueRuntimePaths(root, 86);
+  createIssueRuntime(paths, [agent]);
+  initializeOperationalState(paths, {
+    issue: 86,
+    issueSessionId: `issue-86:${"b".repeat(40)}`,
+    baselineSha: "b".repeat(40),
+    profile: "solo",
+    originalRoster: [agent],
+    branchTemplate: "issue-{issue}/{agent}",
+    baseBranch: "main",
+    maxRevisionRounds: 3,
+    prPolicy: "coord-open-unmerged",
+    automationDigest: "c".repeat(64),
+    automationDigestScheme: "sha256-length-prefixed-v1",
+    automationDigestSources: [{ id: "config", sha256: "c".repeat(64) }],
+    trustedSourceCommit: "d".repeat(40),
+    origin: "https://github.com/example/fixture.git",
+    coordRoot: root,
+    configPath,
+    agents: [configuredAgent],
+    checks: [{ name: "true", argv: ["true"] }],
+    pollIntervalMs: 1000
+  });
+  initializeAgentLifecycle(paths, [agent]);
+  return { clone, paths };
+};
+
 describe("vendor lifecycle event normalization", () => {
   it("extracts the action UUID, digest, path, and issue from the exact nudge", () => {
     expect(extractPromptActionIdentity(prompt)).toEqual({
@@ -117,51 +164,13 @@ describe("vendor lifecycle event normalization", () => {
     expect(
       normalizeAgentEvent("antigravity", { conversationId: "agy-1", fullyIdle: false }, "Stop")
     ).toMatchObject({ kind: "stopped", backgroundActive: true });
+    expect(
+      normalizeAgentEvent("antigravity", { conversationId: "agy-1", fullyIdle: true }, "Stop")
+    ).toMatchObject({ kind: "stopped", backgroundActive: false, allowInjectedIdle: true });
   });
 
   it("routes a hook through clone identity into the separate lifecycle state", () => {
-    const root = mkdtempSync(join(tmpdir(), "coord-agent-event-"));
-    roots.push(root);
-    const clone = join(root, "clone");
-    mkdirSync(clone);
-    execFileSync("git", ["init", "-q"], { cwd: clone });
-    const configPath = join(root, "config.json");
-    writeFileSync(
-      configPath,
-      `${JSON.stringify({
-        project: "fixture",
-        origin: "https://github.com/example/fixture.git",
-        branch: "issue-{issue}/{agent}",
-        agents: [{ id: "codex", root: clone, launcher: "start-codex.sh", delivery: "both" }],
-        checks: [{ name: "true", argv: ["true"] }]
-      })}\n`
-    );
-    execFileSync("git", ["config", "--local", "coord.workspaceConfig", configPath], { cwd: clone });
-    execFileSync("git", ["config", "--local", "consensus.agentId", "codex"], { cwd: clone });
-    const paths = issueRuntimePaths(root, 86);
-    createIssueRuntime(paths, ["codex"]);
-    initializeOperationalState(paths, {
-      issue: 86,
-      issueSessionId: `issue-86:${"b".repeat(40)}`,
-      baselineSha: "b".repeat(40),
-      profile: "solo",
-      originalRoster: ["codex"],
-      branchTemplate: "issue-{issue}/{agent}",
-      baseBranch: "main",
-      maxRevisionRounds: 3,
-      prPolicy: "coord-open-unmerged",
-      automationDigest: "c".repeat(64),
-      automationDigestScheme: "sha256-length-prefixed-v1",
-      automationDigestSources: [{ id: "config", sha256: "c".repeat(64) }],
-      trustedSourceCommit: "d".repeat(40),
-      origin: "https://github.com/example/fixture.git",
-      coordRoot: root,
-      configPath,
-      agents: [{ id: "codex", root: clone, launcher: "start-codex.sh", delivery: "both" }],
-      checks: [{ name: "true", argv: ["true"] }],
-      pollIntervalMs: 1000
-    });
-    initializeAgentLifecycle(paths, ["codex"]);
+    const { clone, paths } = runtimeFixture("codex");
     orderAgentAction(paths, "codex", actionId, digest);
     markActionInjected(paths, "codex", actionId, digest);
     const exactPrompt = `Read and execute coordinator action ${actionId} digest ${digest} at ${paths.issueRoot}/agents/codex/action.md`;
@@ -181,6 +190,27 @@ describe("vendor lifecycle event normalization", () => {
       execution: "working",
       health: "healthy",
       action: { delivery: "accepted", sessionId: "session-1", turnId: "turn-1" }
+    });
+  });
+
+  it("routes Antigravity status-line queue depth from payload cwd without flags or issue env", () => {
+    const { clone, paths } = runtimeFixture("antigravity");
+    const result = handleAgentEvent({
+      vendor: "antigravity",
+      explicitEvent: "status-line",
+      raw: {
+        cwd: clone,
+        conversation_id: "agy-1",
+        agent_state: "working",
+        pending_input_count: 2,
+        task_count: 0
+      }
+    });
+    expect(result.observed).toBe(true);
+    expect(readAgentLifecycle(paths).agents.antigravity).toMatchObject({
+      execution: "queued",
+      sessionId: "agy-1",
+      pendingInputCount: 2
     });
   });
 });

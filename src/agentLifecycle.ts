@@ -67,6 +67,8 @@ export type LifecycleObservation = {
   execution?: "unknown" | "queued" | "working" | "idle" | "failed";
   pendingInputCount?: number;
   backgroundActive?: boolean;
+  /** Vendor proves a fully-idle stop even without a prompt-submit hook. */
+  allowInjectedIdle?: boolean;
 };
 
 const emptyEntry = (now: string): AgentLifecycleEntry => ({
@@ -226,6 +228,7 @@ export const markActionInjected = (
       agent,
       {
         ...current,
+        health: acceptedDuringAttempt ? "healthy" : "unknown",
         action: {
           ...action,
           delivery: acceptedDuringAttempt ? "accepted" : "injected",
@@ -235,6 +238,46 @@ export const markActionInjected = (
           sessionId: acceptedDuringAttempt ? action.sessionId : null,
           turnId: acceptedDuringAttempt ? action.turnId : null,
           lastNudgedIdleEpoch: current.idleEpoch
+        }
+      },
+      now
+    );
+  });
+
+/** A ready pane that no longer contains the correlated prompt proves the send was lost. */
+export const markInjectedActionAbsent = (
+  paths: IssueRuntimePaths,
+  agent: string,
+  actionId: string,
+  actionDigest: string,
+  now = new Date().toISOString()
+): AgentLifecycleState =>
+  mutateAgentLifecycle(paths, (state) => {
+    const current = state.agents[agent];
+    const action = current?.action;
+    if (
+      current === undefined ||
+      action === null ||
+      action.actionId !== actionId ||
+      action.actionDigest !== actionDigest ||
+      action.delivery !== "injected" ||
+      action.turnId !== null
+    ) {
+      return state;
+    }
+    return replaceEntry(
+      state,
+      agent,
+      {
+        ...current,
+        action: {
+          ...action,
+          delivery: "ordered",
+          injectedAt: null,
+          retryableInjectionAt: now,
+          acceptedAt: null,
+          sessionId: null,
+          turnId: null
         }
       },
       now
@@ -337,9 +380,12 @@ export const applyLifecycleObservation = (
         lastNudgedIdleEpoch: null
       };
     }
-    execution = "idle";
-    pendingInputCount = 0;
-    backgroundActive = false;
+    // SessionStart carries no activity fields and therefore establishes idle.
+    // Antigravity status-line does carry them; never erase the queue/activity
+    // values from the very observation that announced the replacement.
+    execution = observation.execution ?? "idle";
+    pendingInputCount = observation.pendingInputCount ?? 0;
+    backgroundActive = observation.backgroundActive ?? false;
   } else if (observation.kind === "session-start") {
     // A delayed startup callback may arrive after tmux already injected the
     // first prompt. Establish health/session identity without reopening that
@@ -371,7 +417,8 @@ export const applyLifecycleObservation = (
 
   if (observation.kind === "working") execution = "working";
   if (observation.kind === "failed") {
-    const injectedAwaitingAcceptance = action?.delivery === "injected" && action.turnId === null;
+    const injectedAwaitingAcceptance =
+      action?.delivery === "injected" && action.turnId === null && observation.allowInjectedIdle !== true;
     execution =
       injectedAwaitingAcceptance || (pendingInputCount ?? 0) > 0 || backgroundActive === true
         ? "queued"
@@ -384,7 +431,8 @@ export const applyLifecycleObservation = (
     const stoppedTurn = observation.turnId ?? null;
     const stoppingOlderTurn =
       currentActionTurn !== null && stoppedTurn !== null && currentActionTurn !== stoppedTurn;
-    const injectedAwaitingAcceptance = action?.delivery === "injected" && action.turnId === null;
+    const injectedAwaitingAcceptance =
+      action?.delivery === "injected" && action.turnId === null && observation.allowInjectedIdle !== true;
     if (
       (pendingInputCount ?? 0) > 0 ||
       backgroundActive === true ||
@@ -420,19 +468,42 @@ export const applyLifecycleObservation = (
   });
 };
 
+const semanticallyEqual = (left: AgentLifecycleEntry, right: AgentLifecycleEntry): boolean => {
+  const normalize = (entry: AgentLifecycleEntry) => ({ ...entry, updatedAt: "", lastEventAt: null });
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+};
+
+export type LifecycleObservationResult = { changed: boolean; state: AgentLifecycleState };
+
+export const observeAgentLifecycleWithResult = (
+  paths: IssueRuntimePaths,
+  agent: string,
+  observation: LifecycleObservation,
+  now = new Date().toISOString()
+): LifecycleObservationResult => {
+  let changed = false;
+  const state = mutateAgentLifecycle(paths, (state) => {
+    const current = state.agents[agent];
+    if (current === undefined) throw new Error(`Unknown lifecycle agent ${agent}.`);
+    const next = applyLifecycleObservation(current, observation, now);
+    if (next === current) return state;
+    const expectedAfter = current.action?.injectedAt ?? current.action?.orderedAt ?? null;
+    const heartbeatNeeded =
+      expectedAfter !== null &&
+      (current.lastEventAt === null || Date.parse(current.lastEventAt) < Date.parse(expectedAfter));
+    if (semanticallyEqual(current, next) && !heartbeatNeeded) return state;
+    changed = true;
+    return replaceEntry(state, agent, next, now);
+  });
+  return { changed, state };
+};
+
 export const observeAgentLifecycle = (
   paths: IssueRuntimePaths,
   agent: string,
   observation: LifecycleObservation,
   now = new Date().toISOString()
-): AgentLifecycleState =>
-  mutateAgentLifecycle(paths, (state) => {
-    const current = state.agents[agent];
-    if (current === undefined) throw new Error(`Unknown lifecycle agent ${agent}.`);
-    const next = applyLifecycleObservation(current, observation, now);
-    if (next === current) return state;
-    return replaceEntry(state, agent, next, now);
-  });
+): AgentLifecycleState => observeAgentLifecycleWithResult(paths, agent, observation, now).state;
 
 export type NudgeDecision = { kind: "send"; reason: "eligible-idle" } | { kind: "wait"; reason: string };
 

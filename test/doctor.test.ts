@@ -94,6 +94,20 @@ describe("coord doctor", () => {
     expect(findings.map((item) => item.code)).not.toContain(DOCTOR_CODES.hooks);
   });
 
+  it("reports nudge delivery for an agent id with no lifecycle vendor mapping", () => {
+    const { fixture, clone, configPath } = installed();
+    editConfig(configPath, (config) => {
+      const agent = (config.agents as Array<Record<string, unknown>>)[0];
+      if (agent === undefined) throw new Error("missing fixture agent");
+      agent.id = "claude-a";
+    });
+    git(clone, "config", "--local", "consensus.agentId", "claude-a");
+
+    const lifecycle = report(fixture).findings.find((item) => item.class === "lifecycleHooks");
+    expect(lifecycle?.message).toContain("no supported lifecycle-hook vendor mapping");
+    expect(lifecycle?.remediation).toContain("delivery to pull");
+  });
+
   it("reports a missing or crossed agent identity", () => {
     const { fixture, clone } = installed();
     git(clone, "config", "--local", "--unset", "consensus.agentId");

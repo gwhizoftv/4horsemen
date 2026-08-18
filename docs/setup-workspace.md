@@ -269,15 +269,23 @@ stopping.
 Antigravity exposes `pending_input_count`, `agent_state`, and background task
 count only through its user-global status line. Install therefore writes a
 marked multiplexer under `~/.gemini/antigravity-cli/`: it forwards the payload
-to `coord agent-event`, then invokes the owner's previous status-line command
-with the same payload and returns that command's display output. The previous
-setting is kept in coordinator-owned recovery metadata and restored on
-uninstall only while the managed command is still selected.
+to `coord agent-event` asynchronously, then invokes the owner's previous
+status-line command with the same payload and returns that command's display
+output. With no previous command it prints a small `coord lifecycle` label.
+The receiver routes the official payload's workspace `cwd` through clone-local
+configuration; if the hook environment has no issue number, exactly one active
+issue containing that agent may supply it, while an ambiguous match is ignored.
+The previous setting is kept in coordinator-owned recovery metadata and
+restored on uninstall only while the managed command is still selected.
 
 Restart Codex/Claude after install if their current session predates the hook
 file. Codex may also require reviewing the new project hook in `/hooks`.
 `coord status` reports `degraded` when an injected action receives no lifecycle
-observation; `coord doctor` reports missing or modified static hook wiring.
+observation, and the run loop prints the corresponding CLI-restart remedy on
+normal output once per degradation; `coord doctor` reports missing or modified
+static hook wiring. A custom agent id with nudge delivery is also a doctor
+finding until it has a supported lifecycle-vendor mapping; use pull delivery
+rather than promising hook-gated reinjection for an uninstrumented CLI.
 
 ## What runs, and whose it is
 

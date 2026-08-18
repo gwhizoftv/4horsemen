@@ -134,15 +134,23 @@ const cursorNudgePrelude = (agent: AgentConfig, paneText: string): readonly stri
   return vimInsertPrelude(paneText, "cursor");
 };
 
+/** Vim INSERT treats bare Enter as a newline; leave insert, then submit. */
+const cursorUsesVimKeys = (agent: AgentConfig): boolean =>
+  readCursorVimMode(agent.root) || (agent.nudgePrelude !== undefined && agent.nudgePrelude.length > 0);
+
 /** Resolve configured or default prelude/submit keys for an agent nudge. */
 export const resolveNudgeKeys = (
   agent: AgentConfig,
   paneText = ""
 ): { prelude: readonly string[]; submit: readonly string[] } => {
-  // Escape dismisses Cursor's composer (issue 384). vim `a` comes from
-  // `editor.vimMode` / a non-empty `nudgePrelude`, not from composer copy.
+  // Without vim, Escape dismisses Cursor's composer (issue 384). With vim,
+  // Enter is a newline in INSERT — Escape then Enter (issue 84). vim `a`
+  // comes from `editor.vimMode` / a non-empty `nudgePrelude`.
   if (agent.id === "cursor") {
-    return { prelude: cursorNudgePrelude(agent, paneText), submit: ["Enter"] };
+    return {
+      prelude: cursorNudgePrelude(agent, paneText),
+      submit: cursorUsesVimKeys(agent) ? ["Escape", "Enter"] : ["Enter"]
+    };
   }
   const defaults = agentOwnerUiDefaults(agent.id);
   const configuredPrelude = agent.nudgePrelude ?? defaults.nudgePrelude;
@@ -157,7 +165,7 @@ export const resolveNudgeKeys = (
   ) {
     rawSubmit = defaults.nudgeSubmit;
   }
-  // #26/#27 left many Claude/Cursor runtimes on bare Enter/C-m.
+  // #26/#27 left many Claude runtimes on bare Enter/C-m.
   // Antigravity wants bare Enter; only upgrade stale C-m there.
   const staleBareSubmit =
     rawSubmit.length === 1 &&
@@ -681,6 +689,22 @@ export class TmuxController {
     const captured = await this.runner(["capture-pane", "-ep", "-t", target, "-S", "-40"]);
     if (captured.exitCode !== 0) return "";
     return captured.stdout;
+  }
+
+  /** Positive recovery evidence: a live, ready prompt whose viewport lacks this action UUID. */
+  async actionAbsentAtReadyPrompt(
+    issue: number,
+    agent: AgentConfig,
+    actionId: string,
+    assertAuthority: () => void = () => undefined
+  ): Promise<boolean> {
+    const target = this.target(issue, agent.id);
+    const gate = await this.injectionGate(target, agent, assertAuthority);
+    if (gate !== "ok") return false;
+    const captured = await this.runner(["capture-pane", "-ep", "-t", target, "-S", "-40"]);
+    assertAuthority();
+    if (captured.exitCode !== 0) return false;
+    return harnessPromptReady(captured.stdout, agent.id) && !captured.stdout.includes(actionId);
   }
 
   async nudge(

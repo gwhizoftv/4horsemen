@@ -313,8 +313,12 @@ const renderStatusLineWrapper = (cliEntry: string, previousStatusLine: unknown):
     `# ${AGENT_LIFECYCLE_HOOK_MARKER}`,
     "set -u",
     "payload=\"$(cat)\"",
-    `printf '%s' "$payload" | /usr/bin/env node ${shellQuote(resolve(cliEntry))} agent-event --vendor antigravity --event status-line >/dev/null 2>&1 || true`,
-    ...(downstream === null ? [] : [`printf '%s' "$payload" | /bin/sh -c ${shellQuote(downstream)}`]),
+    // Status rendering must not wait for a cold Node process. The receiver is
+    // observational and owns its own lock, so forwarding can finish async.
+    `(printf '%s' "$payload" | /usr/bin/env node ${shellQuote(resolve(cliEntry))} agent-event --vendor antigravity --event status-line >/dev/null 2>&1) &`,
+    ...(downstream === null
+      ? ["printf '%s\\n' 'coord lifecycle'"]
+      : [`printf '%s' "$payload" | /bin/sh -c ${shellQuote(downstream)}`]),
     ""
   ].join("\n");
 };
@@ -344,9 +348,7 @@ export const syncAntigravityStatusLine = (input: {
   const plannedStatusLine = {
     ...priorObject,
     type: "command",
-    command: paths.wrapper,
-    enabled: true,
-    ...(!ownership.hadStatusLine ? { stack_with_default: true } : {})
+    command: paths.wrapper
   };
   const plannedSettings = { ...settings, statusLine: plannedStatusLine };
   const wrapper = renderStatusLineWrapper(input.cliEntry, ownership.previousStatusLine);

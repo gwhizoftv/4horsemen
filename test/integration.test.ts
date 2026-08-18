@@ -442,14 +442,17 @@ describe("lifecycle nudge canary", () => {
     });
     let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
     let submittedPrompts = 0;
+    let paneText = "";
     const tmux = new TmuxController(async (args) => {
       if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: paneText, stderr: "" };
       if (args[0] === "send-keys" && args.includes("-l")) submittedPrompts += 1;
       return { exitCode: 0, stdout: "", stderr: "" };
     });
     const loop = new CoordinatorRunLoop(paths, { tmux, now: () => new Date(nowMs).toISOString() });
     await loop.runTick();
     expect(submittedPrompts).toBe(1);
+    paneText = readAgentLifecycle(paths).agents.codex!.action!.actionId;
     nowMs += 45_000;
     await loop.runTick();
     expect(submittedPrompts).toBe(1);

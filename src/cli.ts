@@ -794,6 +794,11 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       try {
         const vendor = lifecycleVendorSchema.parse(requireFlag(parsed, "vendor"));
         const explicitEvent = parsed.flags.has("event") ? requireFlag(parsed, "event") : undefined;
+        // Establish the fail-open Stop response before parsing or validating
+        // the observation. Coordinator state errors must never trap the CLI.
+        if (vendor === "antigravity" && explicitEvent?.toLowerCase() === "stop") {
+          response = JSON.stringify({ decision: "allow" });
+        }
         const raw = JSON.parse(io.stdin()) as unknown;
         handleAgentEvent({
           vendor,
@@ -804,11 +809,6 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           ...(explicitEvent === undefined ? {} : { explicitEvent }),
           environmentIssue: io.env.COORD_ISSUE
         });
-        // Antigravity declares a Stop response object. Any decision other than
-        // "continue" permits the stop, so acknowledge without changing flow.
-        if (vendor === "antigravity" && explicitEvent?.toLowerCase() === "stop") {
-          response = JSON.stringify({ decision: "allow" });
-        }
       } catch (error) {
         io.stderr(`coord agent-event: ${error instanceof Error ? error.message : String(error)}\n`);
       }

@@ -9,6 +9,7 @@ import {
   initializeAgentLifecycle,
   markActionInjected,
   markObservabilityDegraded,
+  observeAgentLifecycleWithResult,
   orderAgentAction,
   readAgentLifecycle
 } from "../src/agentLifecycle.js";
@@ -93,6 +94,61 @@ describe("agent lifecycle policy", () => {
       sessionId: "agy-1"
     });
     expect(failedPriorTurn.execution).toBe("queued");
+  });
+
+  it("lets Antigravity fully-idle Stop end an injected action without a prompt-submit hook", () => {
+    const injected = {
+      ...entry(),
+      execution: "working" as const,
+      sessionId: "agy-1",
+      action: {
+        actionId,
+        actionDigest: digest,
+        delivery: "injected" as const,
+        orderedAt: now,
+        injectedAt: now,
+        retryableInjectionAt: null,
+        acceptedAt: null,
+        sessionId: null,
+        turnId: null,
+        lastNudgedIdleEpoch: 0,
+        workflowCompleteAt: null
+      }
+    };
+    const stopped = applyLifecycleObservation(injected, {
+      kind: "stopped",
+      eventName: "Stop",
+      sessionId: "agy-1",
+      backgroundActive: false,
+      allowInjectedIdle: true
+    });
+    expect(stopped.execution).toBe("idle");
+    expect(decideLifecycleNudge(stopped, actionId, digest).kind).toBe("send");
+  });
+
+  it("keeps queue and activity fields from a session-replacing status payload", () => {
+    const prior = applyLifecycleObservation(entry(), {
+      kind: "status",
+      eventName: "status-line",
+      sessionId: "old-session",
+      execution: "idle",
+      pendingInputCount: 0,
+      backgroundActive: false
+    });
+    const next = applyLifecycleObservation(prior, {
+      kind: "status",
+      eventName: "status-line",
+      sessionId: "new-session",
+      execution: "queued",
+      pendingInputCount: 2,
+      backgroundActive: true
+    });
+    expect(next).toMatchObject({
+      sessionId: "new-session",
+      execution: "queued",
+      pendingInputCount: 2,
+      backgroundActive: true
+    });
   });
 
   it("allows one nudge for each positive transition into idle", () => {
@@ -200,5 +256,26 @@ describe("agent lifecycle policy", () => {
     const persisted = readAgentLifecycle(paths).agents.codex!;
     expect(persisted).toMatchObject({ health: "degraded", action: { delivery: "injected" } });
     expect(decideLifecycleNudge(persisted, actionId, digest)).toEqual({ kind: "wait", reason: "unknown" });
+  });
+
+  it("does not rewrite lifecycle state for duplicate status-line renders", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
+    roots.push(root);
+    const paths = issueRuntimePaths(root, 1);
+    createIssueRuntime(paths, ["antigravity"]);
+    initializeAgentLifecycle(paths, ["antigravity"], now);
+    const observation = {
+      kind: "status" as const,
+      eventName: "status-line",
+      sessionId: "agy-1",
+      execution: "idle" as const,
+      pendingInputCount: 0,
+      backgroundActive: false
+    };
+    const first = observeAgentLifecycleWithResult(paths, "antigravity", observation, now);
+    const second = observeAgentLifecycleWithResult(paths, "antigravity", observation, later);
+    expect(first.changed).toBe(true);
+    expect(second.changed).toBe(false);
+    expect(second.state.stateRevision).toBe(first.state.stateRevision);
   });
 });

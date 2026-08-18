@@ -119,8 +119,11 @@ describe("agent lifecycle hook synchronization", () => {
     const installed = json(settings);
     const command = (installed.statusLine as Record<string, unknown>).command as string;
     expect(command).toContain("coord-agent-lifecycle-statusline.sh");
-    expect(readFileSync(command, "utf8")).toContain("/opt/owner-status");
-    expect(readFileSync(command, "utf8")).toContain("agent-event --vendor antigravity --event status-line");
+    const wrapper = readFileSync(command, "utf8");
+    expect(wrapper).toContain("/opt/owner-status");
+    expect(wrapper).toContain("agent-event --vendor antigravity --event status-line");
+    expect(wrapper).toContain(") &");
+    expect(JSON.stringify(installed)).not.toContain("stack_with_default");
 
     expect(removeAntigravityStatusLine({ home, options: effectOptions(() => undefined, false) })).toEqual({
       changed: true,

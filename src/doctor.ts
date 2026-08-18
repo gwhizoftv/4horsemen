@@ -308,7 +308,19 @@ const checkClone = (input: {
       agent: input.agent.id,
       cliEntry: stamp.cliEntry
     });
-    if (lifecycle.kind === "missing") {
+    if (
+      lifecycle.kind === "unsupported" &&
+      (input.agent.delivery === "nudge" || input.agent.delivery === "both")
+    ) {
+      findings.push(
+        finding(
+          "lifecycleHooks",
+          clone,
+          `Agent '${input.agent.id}' has nudge delivery enabled but no supported lifecycle-hook vendor mapping.`,
+          "Use a supported vendor agent id (claude, codex, cursor, or antigravity), or set delivery to pull so hook-gated nudging is not promised."
+        )
+      );
+    } else if (lifecycle.kind === "missing") {
       findings.push(
         finding(
           "lifecycleHooks",
