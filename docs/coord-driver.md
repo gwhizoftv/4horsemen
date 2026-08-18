@@ -169,10 +169,12 @@ Per-agent config controls owner UI:
 
 - `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert)
 - `nudgeSubmit` — tmux keys after the text (Claude default: `Escape` then
-  `Enter` to dismiss autocomplete; Cursor and Antigravity default: `Enter` only —
-  Escape dismisses Cursor's composer and cancels Antigravity; Codex default:
-  `C-j` then `C-m`. Stale single `Enter`/`C-m` on Claude, mistaken Escape+Enter
-  on Cursor/Antigravity, and stale `C-m` on Antigravity, are upgraded)
+  `Enter` to dismiss autocomplete; Cursor without vim and Antigravity default:
+  `Enter` only — Escape dismisses a non-vim Cursor composer and cancels
+  Antigravity; Cursor with `editor.vimMode` uses `Escape` then `Enter` so
+  INSERT does not treat Enter as a newline; Codex default: `C-j` then `C-m`.
+  Stale single `Enter`/`C-m` on Claude, mistaken Escape+Enter on non-vim
+  Cursor/Antigravity, and stale `C-m` on Antigravity, are upgraded)
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Pro/Grass/Ocean/Red Sands)
 
@@ -192,12 +194,12 @@ stays ordered with no `complete`, it sends again on a 45s cooldown whenever
 the pane still looks idle. `send-keys` success is not treated as a finished
 turn. Cursor panes that report as `node` are treated as ready when
 `harnessProcess` is `agent`. Cursor's composer placeholder text is not a
-stable idle hint. Submit is always Enter (Escape dismisses that composer).
-Prelude `a` is sent only when Cursor CLI `editor.vimMode` is true (home
-`~/.cursor/cli-config.json`, then clone `.cursor/cli.json`) or when
-`nudgePrelude` is a non-empty override — and then only if the pane is not
-already INSERT. Typed nudge text includes the opaque `actionId` so retries
-are not byte-identical.
+stable idle hint. Cursor submit is Enter when vim is off (Escape dismisses
+that composer) and Escape then Enter when `editor.vimMode` is on or
+`nudgePrelude` is a non-empty override. Prelude `a` is sent only in that
+vim case, and only if the pane is not already INSERT (home
+`~/.cursor/cli-config.json`, then clone `.cursor/cli.json`). Typed nudge
+text includes the opaque `actionId` so retries are not byte-identical.
 Phase changes (R1.join → R2.plan, and later RN steps) always print.
 Use `coord N -v` for tick-level nudge and roster logs.
 
