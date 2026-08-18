@@ -95,6 +95,35 @@ describe("tmux boundary", () => {
     expect(slept).not.toContain(NUDGE_BEFORE_ANTIGRAVITY_MS);
   });
 
+  it("submits Cursor vim INSERT with Escape then Enter, not a bare Enter", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-cursor-vim-nudge-"));
+    roots.push(root);
+    mkdirSync(join(root, ".cursor"));
+    writeFileSync(join(root, ".cursor/cli.json"), `${JSON.stringify({ editor: { vimMode: true } })}\n`);
+    const calls: Array<{ args: readonly string[] }> = [];
+    const controller = new TmuxController(
+      runnerWithPrompt(calls, "0\tagent\t0\t0\n", "Auto ·\n-- INSERT --\n"),
+      null,
+      null,
+      null,
+      noopSleep
+    );
+    expect(
+      await controller.nudge(
+        1,
+        { id: "cursor", root, launcher: "start-cursor.sh", delivery: "both", harnessProcess: "agent" },
+        "/runtime/action.md"
+      )
+    ).toBe("sent");
+    const sent = calls.filter((call) => call.args[0] === "send-keys");
+    expect(sent.map((call) => call.args.slice(-1)[0])).toEqual([
+      "Read and execute your current coordinator action at /runtime/action.md",
+      "Escape",
+      "Enter"
+    ]);
+    expect(sent.some((call) => call.args.includes("a"))).toBe(false);
+  });
+
   it("sends vim a for Cursor only when editor.vimMode is on and the pane is not INSERT", () => {
     const root = mkdtempSync(join(tmpdir(), "coord-cursor-vim-"));
     roots.push(root);
@@ -104,13 +133,13 @@ describe("tmux boundary", () => {
     expect(resolveNudgeKeys(agent, "Auto ·")).toEqual({ prelude: [], submit: ["Enter"] });
     writeFileSync(join(root, ".cursor/cli.json"), `${JSON.stringify({ editor: { vimMode: true } })}\n`);
     expect(readCursorVimMode(root)).toBe(true);
-    expect(resolveNudgeKeys(agent, "Auto ·")).toEqual({ prelude: ["a"], submit: ["Enter"] });
-    expect(resolveNudgeKeys(agent, "-- INSERT --")).toEqual({ prelude: [], submit: ["Enter"] });
+    expect(resolveNudgeKeys(agent, "Auto ·")).toEqual({ prelude: ["a"], submit: ["Escape", "Enter"] });
+    expect(resolveNudgeKeys(agent, "-- INSERT --")).toEqual({ prelude: [], submit: ["Escape", "Enter"] });
     writeFileSync(join(root, ".cursor/cli.json"), `${JSON.stringify({ editor: { vimMode: false } })}\n`);
     expect(resolveNudgeKeys(agent, "Auto ·")).toEqual({ prelude: [], submit: ["Enter"] });
     expect(
       resolveNudgeKeys({ ...agent, nudgePrelude: ["a"] }, "Auto ·")
-    ).toEqual({ prelude: ["a"], submit: ["Enter"] });
+    ).toEqual({ prelude: ["a"], submit: ["Escape", "Enter"] });
   });
 
   it("uses per-agent nudgePrelude and nudgeSubmit for Codex vim", async () => {
