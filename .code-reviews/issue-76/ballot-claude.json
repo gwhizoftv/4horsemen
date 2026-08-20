@@ -1,0 +1,32 @@
+{
+  "protocolVersion": 1,
+  "issue": 76,
+  "issueSessionId": "issue-76:f71a3f70961373a8cadfc2e601c9062b242bc4d2",
+  "agent": "claude",
+  "inputSetHash": "cd0411d6195e0870987d01e96372ea5a1526be6a233357ea11ec14f523b74f6b",
+  "artifact": "comparison-ballot",
+  "implementations": [
+    {
+      "agent": "cursor",
+      "commitSha": "2857bc3ec2a2bc096a954299d454b67dea973fbf",
+      "path": ".signals/issue-76/implementation-ready-cursor.json"
+    },
+    {
+      "agent": "antigravity",
+      "commitSha": "40647d94c0e4a1c6d9166b97fed9b9475b926ea5",
+      "path": ".signals/issue-76/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "40157df58f5fe280e10c694e8579f004536c9928",
+      "path": ".signals/issue-76/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "5402e1d02c8cca3dd9307281e242c4600dc2b83b",
+      "path": ".signals/issue-76/implementation-ready-codex.json"
+    }
+  ],
+  "choice": "codex",
+  "rationale": "Codex is the only pin with no defect I could find on the real (non-injected) manual path: it resolves agent roots against the config directory, emits a COORD_ISSUE unset that real tmux accepts, requires the workspace group for every manual name, and guards all four automated entry points including coord run and coord attach - whereas my own pin fails fatally twice on that path (unresolved relative agent roots and invalid set-environment argv, both masked by an injected manualUi), and antigravity leaves coord run unguarded, gates manual title-closing on tmux liveness, pins the unscoped coord-manual name in a test, and left config.product.example.json at 0.0.11."
+}
