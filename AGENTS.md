@@ -8,13 +8,27 @@ the `testapp` app repo so hooks and tests stay decoupled.
 - GitHub issue **#1** on this repo (created by workspace scaffold)
 - Owner-driven workflow; no `automation/` barriers.
 
-Branches: `issue-<n>/<agent>`. Never commit on `main` or peer branches.
+Branches: `issue-<n>/<agent>` for automated coordinator actions and
+`<agent>/<name>` for owner-driven manual work. Never commit on `main` or peer
+branches.
 Runtime state lives outside all clones:
 `/Volumes/4TB-SOURCE/REPOS/coord/coord-runtime` (`coord start --coord-root ...`).
 
+## Automated and manual modes
+
+When the coordinator publishes an `action.md`, follow the automated issue
+protocol below on the prepared issue branch and publish only the requested
+artifact. In owner-driven manual mode there is no issue action: the owner's
+chat message is the task authority, work belongs on your own `<agent>/<name>`
+scratch branch unless the owner explicitly supplies an issue branch, and you
+must not fabricate `.plans/`, `.signals/`, `.code-reviews/`, `action.md`, or
+`complete`. Identity, commit-prefix, verification, hook, no-main, no-peer,
+no-force, and skip-worktree rules apply in both modes.
+
 ## Plans and reviews
 
-This file is the protocol. Follow it when writing coordinator artifacts.
+This file is the automated-action protocol. Follow it when the coordinator has
+published an `action.md` and you are writing coordinator artifacts.
 The required response format for the current step also appears in that step's
 `action.md` and may change each time — match the headings or JSON scaffold
 listed there. The coordinator accepts only the published artifact. If this file
@@ -25,7 +39,8 @@ replace the file to “fix” git status. Coordination sets that bit so the
 clone-local protocol section stays hidden. If `AGENTS.md` looks wrong, escalate;
 do not change index flags.
 
-After you write `complete`, do not stop. Re-read your coordinator `action.md`.
+After you write `complete` for an automated action, do not stop. Re-read your
+coordinator `action.md`.
 If `actionId` in the front matter has changed, execute that new action even
 without a typed nudge. Delivery still comes from the coordinator; this watch
 is how you recover when a nudge did not land.

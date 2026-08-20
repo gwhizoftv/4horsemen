@@ -48,6 +48,40 @@ driver. The owner does not create a plan file first. Each agent authors and
 publishes `.plans/issue-N/plan.md` later on its own `issue-N/<agent>` branch as
 normal R2 evidence.
 
+## Owner-driven manual mode
+
+For independent tasks assigned directly in agent chats, launch the installed
+harnesses without creating a GitHub issue:
+
+```sh
+cd /path/to/onboarded/product
+coord manual
+
+# Later, close only this product's manual UI.
+coord detach manual
+```
+
+`coord manual` resolves the registered workspace (or accepts `--product`, or
+the explicit `--config` plus `--coord-root` pair), validates every configured
+launcher, creates or repairs one tmux window per agent, opens only missing macOS
+Terminal windows, and returns immediately. Repeating it reuses healthy panes,
+respawns dead panes, and does not duplicate open Terminal clients. The manual
+session and titles always use `coord-manual-<workspace-group>` so products are
+isolated.
+
+Manual mode does not read a GitHub issue, initialize a mirror, create an
+`issue-*` runtime directory, write coordinator state or `action.md`, run the
+state machine, nudge agents, perform consensus/finalization, publish a branch,
+or open a PR. The owner's chat is the only task authority. Each agent uses its
+own `<agent>/<name>` scratch branch unless the owner explicitly supplies an
+issue branch; all installed hook, verification, commit-prefix, no-main, and
+no-force rules remain active.
+
+Manual and automated issue sessions are mutually exclusive for one workspace
+because they share agent clones. Detach the active mode before starting the
+other. `coord uninstall` also closes this workspace's exact manual tmux and
+Terminal identities even when no issue runtime has ever existed.
+
 ## Product isolation
 
 > Coordination constrains **agents and the owner control plane**. It does not

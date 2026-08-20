@@ -97,8 +97,139 @@ describe("CLI version", () => {
     for (const argv of [["--version"], ["-V"], ["version"]] as const) {
       const lines: string[] = [];
       expect(await runCli([...argv], { io: { stdout: (message) => lines.push(message) } })).toBe(0);
-      expect(lines.join("").trim()).toBe("0.0.11");
+      expect(lines.join("").trim()).toBe("0.0.12");
     }
+  });
+});
+
+describe("CLI manual mode", () => {
+  it("launches every configured agent without GitHub, runtime, or run-loop effects", async () => {
+    const fixture = setup();
+    const launches: Array<{ namespace: string | null; group: string; agents: string[] }> = [];
+    const output: string[] = [];
+    const code = await runCli(["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      io: { stdout: (message) => output.push(message) },
+      processRunner: async () => {
+        throw new Error("manual mode must not query GitHub or git");
+      },
+      sessionExists: async () => false,
+      makeRunLoop: () => {
+        throw new Error("manual mode must not construct the run loop");
+      },
+      manualUi: async (input) => {
+        launches.push({
+          namespace: input.tmuxNamespace,
+          group: input.terminalGroup,
+          agents: input.agents.map((agent) => agent.id)
+        });
+        return { status: "opened", count: input.agents.length };
+      }
+    });
+    expect(code).toBe(0);
+    expect(launches).toEqual([
+      {
+        namespace: null,
+        group: expect.stringMatching(/^[a-f0-9]{10}$/),
+        agents: ["codex", "claude", "cursor"]
+      }
+    ]);
+    expect(output.join("")).toContain("Manual mode ready in coord-manual-");
+    expect(existsSync(fixture.runtime)).toBe(false);
+  });
+
+  it("is idempotent and reports already-open owner clients", async () => {
+    const fixture = setup();
+    let launches = 0;
+    const output: string[] = [];
+    const dependencies = {
+      io: { stdout: (message: string) => output.push(message) },
+      sessionExists: async () => false,
+      manualUi: async () => {
+        launches += 1;
+        return launches === 1 ? ({ status: "opened", count: 3 } as const) : ({ status: "already-open", count: 3 } as const);
+      }
+    };
+    const argv = ["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime];
+    expect(await runCli(argv, dependencies)).toBe(0);
+    expect(await runCli(argv, dependencies)).toBe(0);
+    expect(launches).toBe(2);
+    expect(output.join("").match(/Manual mode ready/g)).toHaveLength(2);
+  });
+
+  it("rejects manual launch while this workspace has a live issue session", async () => {
+    const fixture = setup();
+    mkdirSync(issueRuntimePaths(fixture.runtime, 7).issueRoot, { recursive: true });
+    const errors: string[] = [];
+    let launched = false;
+    const code = await runCli(["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      io: { stderr: (message) => errors.push(message) },
+      sessionExists: async (name) => name === "coord-7",
+      manualUi: async () => {
+        launched = true;
+        return { status: "already-open", count: 0 };
+      }
+    });
+    expect(code).toBe(2);
+    expect(launched).toBe(false);
+    expect(errors.join("")).toContain("coord detach 7");
+  });
+
+  it("rejects new and resumed automated entry points while manual UI is live", async () => {
+    const fixture = setup();
+    const isManual = async (name: string) => name.startsWith("coord-manual-");
+    const errors: string[] = [];
+    expect(
+      await runCli(["start", "7", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stderr: (message) => errors.push(message) },
+        sessionExists: isManual,
+        processRunner: async () => {
+          throw new Error("conflict must fail before issue lookup");
+        }
+      })
+    ).toBe(2);
+    expect(errors.join("")).toContain("coord detach manual");
+
+    expect(
+      await runCli(["start", "8", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stdout: () => undefined },
+        sessionExists: async () => false,
+        processRunner: successfulStartGit,
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    errors.length = 0;
+    let resumed = false;
+    expect(
+      await runCli(["run", "--issue", "8", "--coord-root", fixture.runtime], {
+        io: { stderr: (message) => errors.push(message) },
+        sessionExists: isManual,
+        makeRunLoop: () => ({
+          initializeEffects: async () => undefined,
+          runTick: async () => readCursorsState(issueRuntimePaths(fixture.runtime, 8)),
+          run: async () => {
+            resumed = true;
+          }
+        })
+      })
+    ).toBe(2);
+    expect(resumed).toBe(false);
+    expect(errors.join("")).toContain("coord detach manual");
+  });
+
+  it("dispatches exact manual teardown and advertises both manual commands", async () => {
+    const fixture = setup();
+    const output: string[] = [];
+    expect(
+      await runCli(["detach", "manual", "--config", fixture.configPath, "--coord-root", fixture.runtime, "--dry-run"], {
+        io: { stdout: (message) => output.push(message) }
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Detached manual mode");
+
+    output.length = 0;
+    expect(await runCli(["--help"], { io: { stdout: (message) => output.push(message) } })).toBe(0);
+    expect(output.join("")).toContain("coord manual");
+    expect(output.join("")).toContain("coord detach manual");
   });
 });
 

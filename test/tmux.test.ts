@@ -8,6 +8,7 @@ import {
   nudgePreludeKeys,
   ownerTerminalCloseAppleScript,
   ownerTerminalOpenAppleScript,
+  ownerTerminalWindowTitle,
   ownerTerminalTitlesToClose,
   readCursorVimMode,
   resolveAgentLauncher,
@@ -59,6 +60,24 @@ describe("tmux boundary", () => {
     const runner: TmuxRunner = async () => ok();
     expect(new TmuxController(runner).sessionName(42)).toBe("coord-42");
     expect(new TmuxController(runner, "a1b2c3").sessionName(42)).toBe("coord-42-a1b2c3");
+  });
+
+  it("always scopes manual session names and Terminal titles by workspace group", () => {
+    const runner: TmuxRunner = async () => ok();
+    const first = new TmuxController(runner, null, null, null, noopSleep, "a1b2c3d4e5");
+    const second = new TmuxController(runner, null, null, null, noopSleep, "f6e7d8c9b0");
+    expect(first.sessionName("manual")).toBe("coord-manual-a1b2c3d4e5");
+    expect(second.sessionName("manual")).toBe("coord-manual-f6e7d8c9b0");
+    expect(first.sessionName(42)).toBe("coord-42");
+    expect(ownerTerminalWindowTitle("manual", "claude", "a1b2c3d4e5")).toBe(
+      "coord-manual-a1b2c3d4e5/claude"
+    );
+    expect(ownerTerminalTitlesToClose("manual", ["claude", "codex"], "a1b2c3d4e5")).toEqual([
+      "coord-manual-a1b2c3d4e5/claude",
+      "coord-manual-a1b2c3d4e5/codex"
+    ]);
+    expect(() => new TmuxController(runner).sessionName("manual")).toThrow("workspace group id");
+    expect(() => ownerTerminalWindowTitle("manual", "claude")).toThrow("workspace group id");
   });
 
   it("types the nudge with send-keys -l and Enter for Cursor", async () => {
@@ -383,6 +402,73 @@ describe("tmux boundary", () => {
     calls.length = 0;
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "new-window" || args[0] === "respawn-pane")).toBe(false);
+  });
+
+  it("creates and repairs manual sessions without exposing COORD_ISSUE", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-manual-ensure-"));
+    roots.push(root);
+    const clone = join(root, "clone");
+    mkdirSync(clone);
+    writeFileSync(join(clone, "start-claude.sh"), "#!/bin/sh\n", { mode: 0o700 });
+    const calls: string[][] = [];
+    let sessionPresent = false;
+    let windowPresent = false;
+    let paneDead = "0";
+    const runner: TmuxRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "has-session") return sessionPresent ? ok() : { exitCode: 1, stdout: "", stderr: "missing" };
+      if (args[0] === "new-session") {
+        sessionPresent = true;
+        return ok();
+      }
+      if (args[0] === "list-windows") return ok(windowPresent ? "claude\n" : "");
+      if (args[0] === "display-message") return ok(`${paneDead}\tclaude\t0\t0\n`);
+      if (args[0] === "new-window") windowPresent = true;
+      if (args[0] === "respawn-pane") paneDead = "0";
+      return ok();
+    };
+    const controller = new TmuxController(runner, null, null, null, noopSleep, "abc12def00");
+    const agent = { id: "claude", root: clone, launcher: "start-claude.sh", delivery: "both" as const };
+    await controller.ensureSession("manual", [agent]);
+    expect(calls).toContainEqual([
+      "set-environment",
+      "-u",
+      "-t",
+      "coord-manual-abc12def00",
+      "COORD_ISSUE"
+    ]);
+    expect(calls).toContainEqual([
+      "set-environment",
+      "-t",
+      "coord-manual-abc12def00",
+      "COORD_MANUAL",
+      "1"
+    ]);
+    expect(calls.some((args) => args.includes("COORD_ISSUE") && !args.includes("-u"))).toBe(false);
+    expect(calls.filter((args) => args[0] === "new-window")).toHaveLength(1);
+
+    calls.length = 0;
+    paneDead = "1";
+    await controller.ensureSession("manual", [agent]);
+    expect(calls.filter((args) => args[0] === "respawn-pane")).toHaveLength(1);
+    expect(calls.some((args) => args[0] === "new-window")).toBe(false);
+  });
+
+  it("lists only the configured linked clients for manual teardown", async () => {
+    const runner: TmuxRunner = async (args) =>
+      args[0] === "list-sessions"
+        ? ok(
+            "coord-manual-abc12def00\n" +
+              "coord-manual-abc12def00-claude\n" +
+              "coord-manual-abc12def00-stale\n" +
+              "coord-manual-def34abc00\n"
+          )
+        : ok();
+    const controller = new TmuxController(runner, null, null, null, noopSleep, "abc12def00");
+    await expect(controller.listIssueSessions("manual", ["claude"])).resolves.toEqual([
+      "coord-manual-abc12def00",
+      "coord-manual-abc12def00-claude"
+    ]);
   });
 
   it("lists and kills primary plus linked issue sessions", async () => {

@@ -8,6 +8,7 @@ import { agentNudgeKeyDefaults, agentOwnerUiDefaults } from "./setupWorkspace.js
 
 export type TmuxResult = { exitCode: number; stdout: string; stderr: string };
 export type TmuxRunner = (args: readonly string[], input?: string) => Promise<TmuxResult>;
+export type SessionKey = number | "manual";
 
 export const runTmux: TmuxRunner = (args, input) =>
   new Promise((resolvePromise, reject) => {
@@ -240,14 +241,18 @@ const appleScriptString = (value: string): string => `"${value.replace(/\\/g, "\
  * products; close must match these exact strings only.
  */
 export const ownerTerminalWindowTitle = (
-  issue: number,
+  key: SessionKey,
   agentId: string,
   group: string | null = null
 ): string => {
-  const session =
-    group === null || group === ""
-      ? `coord-${issue}`
-      : `coord-${issue}-${safeName(group)}`;
+  if (key === "manual" && (group === null || group === "")) {
+    throw new Error("Manual Terminal titles require a workspace group id.");
+  }
+  const session = key === "manual"
+    ? `coord-manual-${safeName(group as string)}`
+    : group === null || group === ""
+      ? `coord-${key}`
+      : `coord-${key}-${safeName(group)}`;
   return `${session}/${safeName(agentId)}`;
 };
 
@@ -257,7 +262,7 @@ export const ownerTerminalWindowTitle = (
  * (those collide across products).
  */
 export const ownerTerminalTitlesToClose = (
-  issue: number,
+  key: SessionKey,
   agentIds: readonly string[],
   group: string | null = null
 ): string[] => {
@@ -269,7 +274,7 @@ export const ownerTerminalTitlesToClose = (
     titles.push(title);
   };
   for (const agentId of agentIds) {
-    add(ownerTerminalWindowTitle(issue, agentId, group));
+    add(ownerTerminalWindowTitle(key, agentId, group));
   }
   return titles;
 };
@@ -456,42 +461,51 @@ export class TmuxController {
     return this.titleGroup ?? this.namespace;
   }
 
-  sessionName(issue: number): string {
-    return `coord-${issue}${this.namespace === null ? "" : `-${safeName(this.namespace)}`}`;
+  sessionName(key: SessionKey): string {
+    if (key === "manual") {
+      const group = this.terminalTitleGroup();
+      if (group === null || group === "") throw new Error("Manual tmux sessions require a workspace group id.");
+      return `coord-manual-${safeName(group)}`;
+    }
+    return `coord-${key}${this.namespace === null ? "" : `-${safeName(this.namespace)}`}`;
   }
 
-  target(issue: number, agent: string): string {
-    return `${this.sessionName(issue)}:${safeName(agent)}.0`;
+  target(key: SessionKey, agent: string): string {
+    return `${this.sessionName(key)}:${safeName(agent)}.0`;
   }
 
-  agentAttachLaunches(issue: number, agents: readonly AgentConfig[]): OwnerTerminalLaunch[] {
-    const session = this.sessionName(issue);
+  agentAttachLaunches(key: SessionKey, agents: readonly AgentConfig[]): OwnerTerminalLaunch[] {
+    const session = this.sessionName(key);
     const group = this.terminalTitleGroup();
     return agents.map((agent) => ({
       agentId: agent.id,
       command: agentClientAttachCommand(session, agent.id),
       terminalProfile: resolveTerminalProfile(agent),
-      windowTitle: ownerTerminalWindowTitle(issue, agent.id, group)
+      windowTitle: ownerTerminalWindowTitle(key, agent.id, group)
     }));
   }
 
-  ownerTerminalTitles(issue: number, agentIds: readonly string[]): string[] {
-    return ownerTerminalTitlesToClose(issue, agentIds, this.terminalTitleGroup());
+  ownerTerminalTitles(key: SessionKey, agentIds: readonly string[]): string[] {
+    return ownerTerminalTitlesToClose(key, agentIds, this.terminalTitleGroup());
   }
 
   /** List the primary issue session and any linked per-agent client sessions. */
-  async listIssueSessions(issue: number): Promise<string[]> {
-    const session = this.sessionName(issue);
+  async listIssueSessions(key: SessionKey, agentIds?: readonly string[]): Promise<string[]> {
+    const session = this.sessionName(key);
     const listed = await this.runner(["list-sessions", "-F", "#{session_name}"]);
     if (listed.exitCode !== 0) return [];
+    const exactManualNames =
+      key === "manual" && agentIds !== undefined
+        ? new Set([session, ...agentIds.map((agentId) => `${session}-${safeName(agentId)}`)])
+        : null;
     return listed.stdout
       .split("\n")
       .map((line) => line.trim())
-      .filter((name) => name === session || name.startsWith(`${session}-`));
+      .filter((name) => exactManualNames?.has(name) ?? (name === session || name.startsWith(`${session}-`)));
   }
 
-  async killIssueSessions(issue: number): Promise<string[]> {
-    const names = await this.listIssueSessions(issue);
+  async killIssueSessions(key: SessionKey, agentIds?: readonly string[]): Promise<string[]> {
+    const names = await this.listIssueSessions(key, agentIds);
     for (const name of names) {
       await this.runner(["kill-session", "-t", name]);
     }
@@ -503,10 +517,10 @@ export class TmuxController {
    * group ids. Failures are returned so detach/wipe can continue after tmux teardown.
    */
   closeOwnerAgentClients(
-    issue: number,
+    key: SessionKey,
     agentIds: readonly string[]
   ): { status: "closed" | "unsupported" | "failed"; titles: readonly string[]; error?: string } {
-    const titles = ownerTerminalTitlesToClose(issue, agentIds, this.terminalTitleGroup());
+    const titles = ownerTerminalTitlesToClose(key, agentIds, this.terminalTitleGroup());
     if (this.ownerTerminalCloser === null) return { status: "unsupported", titles };
     try {
       this.ownerTerminalCloser(titles);
@@ -526,11 +540,11 @@ export class TmuxController {
    * `onlyMissing` skips titles already open so resume does not duplicate windows.
    */
   async openOwnerAgentClients(
-    issue: number,
+    key: SessionKey,
     agents: readonly AgentConfig[],
     options: { onlyMissing?: boolean } = {}
   ): Promise<OpenOwnerAgentClientsResult> {
-    const launches = this.agentAttachLaunches(issue, agents);
+    const launches = this.agentAttachLaunches(key, agents);
     const commands = launches.map((launch) => launch.command);
     if (this.ownerTerminalOpener === null) return { status: "unsupported", commands };
     const toOpen = (() => {
@@ -591,16 +605,16 @@ export class TmuxController {
     }
   }
 
-  async stopSession(issue: number): Promise<void> {
-    await this.runner(["kill-session", "-t", this.sessionName(issue)]);
+  async stopSession(key: SessionKey): Promise<void> {
+    await this.runner(["kill-session", "-t", this.sessionName(key)]);
   }
 
   async ensureSession(
-    issue: number,
+    key: SessionKey,
     agents: readonly AgentConfig[],
     assertAuthority: () => void = () => undefined
   ): Promise<void> {
-    const session = this.sessionName(issue);
+    const session = this.sessionName(key);
     const exists = await this.runner(["has-session", "-t", session]);
     assertAuthority();
     if (exists.exitCode !== 0) {
@@ -608,10 +622,23 @@ export class TmuxController {
       assertAuthority();
       if (created.exitCode !== 0) throw new Error(`tmux session creation failed: ${created.stderr}`);
     }
-    const environment = await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(issue)]);
+    const environment =
+      key === "manual"
+        ? await this.runner(["set-environment", "-u", "-t", session, "COORD_ISSUE"])
+        : await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(key)]);
     assertAuthority();
     if (environment.exitCode !== 0) {
-      throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
+      throw new Error(
+        `${key === "manual" ? "cannot clear coordinator issue environment" : "cannot set coordinator issue environment"} ` +
+          `in ${session}: ${environment.stderr}`
+      );
+    }
+    if (key === "manual") {
+      const manualEnvironment = await this.runner(["set-environment", "-t", session, "COORD_MANUAL", "1"]);
+      assertAuthority();
+      if (manualEnvironment.exitCode !== 0) {
+        throw new Error(`cannot set manual environment in ${session}: ${manualEnvironment.stderr}`);
+      }
     }
     for (const agent of agents) {
       const target = `${session}:${safeName(agent.id)}`;
