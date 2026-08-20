@@ -131,9 +131,38 @@ describe("coord install — emitted config", () => {
     expect(config.project).toBe("myserver");
     expect(config.checks).toEqual(declaredChecks);
     expect(config.coordination?.installRoot).toBe(repoRoot);
-    expect(config.coordination?.version).toBe("0.0.11");
+    expect(config.coordination?.version).toBe("0.0.12");
     expect(config.coordination?.vendored).toBe(false);
     expect(config.agents[0]?.launcher).toBe("start-claude.sh");
+  });
+
+  it("advertises coord manual and scopes protocol language to automated actions", () => {
+    const fixture = product();
+    const io = silence();
+    install({
+      installRoot: repoRoot,
+      productRoot: fixture.productRoot,
+      coordRoot: fixture.coordRoot,
+      agents: ["claude"],
+      profile: "solo",
+      writeProduct: true,
+      vendor: false,
+      bootstrap: false,
+      dryRun: false,
+      log: io.log,
+      declarePath: writeDeclaration(fixture.workspaceRoot, { checks: declaredChecks, verify: passingVerify })
+    });
+    expect(io.lines.join("")).toContain("coord manual");
+    const protocol = readFileSync(join(repoRoot, "templates/product/AGENTS.protocol.md"), "utf8");
+    expect(protocol).toContain("automated issue actions");
+    expect(protocol).toContain("coord manual");
+    const launcher = readFileSync(join(repoRoot, "scripts/lib/launcher.sh"), "utf8");
+    expect(launcher).toContain("owner-driven manual mode");
+    expect(launcher).toContain("scratch branch");
+    for (const script of ["setup_claude.sh", "setup_codex.sh", "setup_cursor.sh", "setup_antigravity.sh"]) {
+      const text = readFileSync(join(repoRoot, "scripts", script), "utf8");
+      expect(text).toMatch(/manual chat task|coord manual/);
+    }
   });
 
   it("records the install stamp under coord-root, never in the product tree", () => {

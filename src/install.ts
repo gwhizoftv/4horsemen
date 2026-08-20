@@ -456,6 +456,8 @@ export const install = (options: InstallOptions): InstallResult => {
       "",
       "Next steps — coord does not start anything for you:",
       `  coord doctor --coord-root ${coordRoot} --product ${productRoot}`,
+      `  coord <issue>   # automated issue workflow from an onboarded product`,
+      `  coord manual --product ${productRoot}`,
       `  coord start <issue> --config ${configPath} --coord-root ${workspace.workspaceRoot}`,
       `  COORD_ISSUE=<issue> coord run --coord-root ${workspace.workspaceRoot}`,
       ""
@@ -654,6 +656,7 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
         workspace.layout === "nested" ? workspaceTerminalGroup(workspace.workspaceRoot) : null,
       terminalGroup: workspaceTerminalGroup(workspace.workspaceRoot),
       issues: listIssueNumbersInWorkspace(workspace.workspaceRoot),
+      includeManual: true,
       dryRun: options.dryRun,
       log: effects.log
     });
@@ -755,6 +758,8 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
         `  cd ${productRoot}`,
         '  gh issue create --title "…" --body "…"',
         "  coord <issue>",
+        "Or open agent harnesses for owner-driven chat (no issue/runtime):",
+        "  coord manual",
         ""
       ].join("\n")
     );

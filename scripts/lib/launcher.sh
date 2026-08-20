@@ -89,9 +89,11 @@ fi
 
 echo "=== $label agent | branch scheme issue-<n>/$agent | shared: $shared ==="
 git status -sb || true
-echo "When an issue is running, fetch your coordinator action with:"
+echo "When an automated issue is running, fetch your coordinator action with:"
 echo "  coord next --issue <n>"
 echo "(uses this clone's coord.workspaceConfig + consensus.agentId)."
+echo "In owner-driven manual mode (coord manual), follow the owner's chat task"
+echo "on your scratch branch ($agent/<name>); do not invent coordinator artifacts."
 
 $command
 EOF

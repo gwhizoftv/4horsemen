@@ -9,9 +9,20 @@ git obligations. This file describes the rules that apply to **agent clones**
 ## Branch scheme
 
 - `{{BASE_BRANCH}}` — shared truth. Agents never commit or push to it.
-- `issue-<n>/<agent>` — an agent's working branch for issue n.
+- `issue-<n>/<agent>` — an agent's working branch for an automated issue n.
 - `issue-<n>/final` — the consensus branch, updated only by merging a reviewed
   pull request.
+- `<agent>/<name>` — agent-owned scratch branch for owner-driven `coord manual`
+  work (no issue runtime or coordinator artifacts).
+
+## Modes
+
+- **Automated issue mode** — when the coordinator has published an `action.md`
+  for an issue, follow that action and the evidence formats in AGENTS.protocol.md.
+- **Manual owner-chat mode** — when opened via `coord manual`, the owner's chat
+  message is the task. Work on your scratch branch unless the owner names an
+  issue branch. Do not invent `.plans/`, `.signals/`, `.code-reviews/`,
+  `action.md`, or `complete`.
 
 ## Rules enforced in agent clones
 
@@ -36,7 +47,8 @@ Toolchain: `{{TOOLCHAIN}}`.
 
 ## Transient evidence
 
-While an issue is in flight, agent branches carry `.plans/issue-<n>/`,
+While an automated issue is in flight, agent branches carry `.plans/issue-<n>/`,
 `.signals/issue-<n>/`, and `.code-reviews/issue-<n>/`. They are the protocol's
 evidence. R7 finalization is deletion-only cleanup of exactly those paths, so a
 merge-ready pull request contains none of them and `{{BASE_BRANCH}}` never does.
+Manual mode does not create those paths.

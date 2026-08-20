@@ -221,3 +221,70 @@ describe("detachIssue Vitest safety", () => {
     expect(outcome.terminalClose).toBe("unsupported");
   });
 });
+
+describe("manual detach", () => {
+  it("closes manual titles before killing exact grouped sessions", async () => {
+    const order: string[] = [];
+    const runner: import("../src/tmux.js").TmuxRunner = async (args) => {
+      if (args[0] === "list-sessions") {
+        return {
+          exitCode: 0,
+          stdout: "coord-manual-abc123\ncoord-manual-abc123-claude\ncoord-manual-def456\ncoord-76-abc123\n",
+          stderr: ""
+        };
+      }
+      if (args[0] === "kill-session") {
+        order.push(`kill:${args[2]}`);
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    const outcome = await detachIssue({
+      issue: "manual",
+      agentIds: ["claude", "cursor"],
+      terminalGroup: "abc123",
+      tmuxRunner: runner,
+      terminalCloser: (titles) => {
+        order.push(`close:${titles.join(",")}`);
+      },
+      log: () => undefined
+    });
+    expect(order[0]?.startsWith("close:")).toBe(true);
+    expect(outcome.closedTerminalTitles).toEqual([
+      "coord-manual-abc123/claude",
+      "coord-manual-abc123/cursor"
+    ]);
+    expect(outcome.killedSessions).toEqual(["coord-manual-abc123", "coord-manual-abc123-claude"]);
+    expect(outcome.killedSessions.join(" ")).not.toContain("def456");
+    expect(outcome.killedSessions.join(" ")).not.toContain("coord-76");
+  });
+
+  it("tears down manual UI on uninstall with no issue directories", () => {
+    const killed: string[] = [];
+    const closed: string[] = [];
+    const outcome = detachAllOwnerUiSync({
+      agentIds: ["claude", "cursor"],
+      terminalGroup: "abc123",
+      issues: [],
+      includeManual: true,
+      listSessions: () => ["coord-manual-abc123", "coord-manual-abc123-claude", "coord-manual-other"],
+      killSession: (name) => {
+        killed.push(name);
+      },
+      terminalCloser: (titles) => {
+        closed.push(...titles);
+      },
+      log: () => undefined
+    });
+    expect(killed).toEqual(["coord-manual-abc123", "coord-manual-abc123-claude"]);
+    expect(closed).toEqual(["coord-manual-abc123/claude", "coord-manual-abc123/cursor"]);
+    expect(killed.join(" ")).not.toContain("other");
+    expect(outcome.terminalClose).toBe("closed");
+  });
+
+  it("keeps discoverCoordIssues digits-only when manual sessions are present", () => {
+    expect(
+      discoverCoordIssues(["coord-1", "coord-manual-abc123", "coord-2-abc", "coord-manual-abc123-claude"])
+    ).toEqual([1, 2]);
+  });
+});

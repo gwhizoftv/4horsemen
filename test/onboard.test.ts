@@ -79,6 +79,7 @@ describe("coord onboard", () => {
         io: { stdout: (message) => output.push(message), stderr: (message) => output.push(message) }
       })
     ).toBe(0);
+    expect(output.join("")).toContain("coord manual");
 
     const coordRoot = join(dirname(fixture.productRoot), "coord-runtime");
     const configPath = join(coordRoot, "config.json");

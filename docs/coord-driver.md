@@ -145,8 +145,35 @@ later with `coord attach N` while the coordinator is already running. `coord det
 (by unique title / window name) then kills the issue tmux sessions, without
 wiping runtime, clones, or branches. When `coord N` / `coord run` finishes with
 a completed workflow, it runs the same teardown automatically.
-`coord uninstall` tears down owner tmux/Terminal only for discovered issues; with
-no sessions it is a no-op (it never closes bare agent-named tabs).
+`coord uninstall` tears down owner tmux/Terminal for this workspace's issues and
+for its `coord-manual-<group>` session (even when there are no `issue-*`
+directories); with nothing to close it is a no-op (it never closes bare
+agent-named tabs).
+
+## Manual owner-UI lifecycle
+
+`coord manual` is a launch/attach path, not a workflow profile. From an
+onboarded product (or with `--product` / `--config`+`--coord-root`) it:
+
+1. validates every configured launcher and refuses if this workspace already has
+   a live numeric issue tmux session;
+2. creates or repairs session `coord-manual-<terminalGroup>` (group is mandatory —
+   never a bare `coord-manual`);
+3. reuses healthy panes, respawns dead ones, and opens only missing Terminal
+   titles `coord-manual-<group>/<agent>`;
+4. returns immediately — no GitHub fetch, mirror, `issue-*` runtime,
+   `action.md`, nudging, checks, finalization, or PR.
+
+Owner chat is the only task authority. Agents work on `<agent>/<name>` scratch
+branches unless the owner names an issue branch; they must not invent
+coordinator evidence. `COORD_ISSUE` is cleared in the manual session so panes
+never look issue-bound.
+
+`coord detach manual` closes those exact titles then kills only that workspace's
+manual primary/linked sessions. Automated entry points (`coord N`, `start`,
+`run`) refuse while the manual session is live and tell the owner to detach.
+Conversely, `coord manual` refuses while any of this workspace's durable
+`issue-*` sessions are live.
 
 `coord wipe-issue N` is the owner reset for reusing a GitHub issue number: it
 checks out each agent clone on the base branch, deletes origin `issue-N/<agent>`

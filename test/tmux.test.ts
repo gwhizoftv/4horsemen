@@ -810,4 +810,62 @@ describe("tmux boundary", () => {
     chmodSync(notExecutable, 0o600);
     expect(() => resolveAgentLauncher({ ...base, launcher: "not-executable.sh" })).toThrow("non-executable");
   });
+
+  it("names manual sessions with a mandatory workspace group", () => {
+    const runner: TmuxRunner = async () => ok();
+    const grouped = new TmuxController(runner, null, null, null, noopSleep, "abc12def00");
+    expect(grouped.sessionName("manual")).toBe("coord-manual-abc12def00");
+    expect(grouped.sessionName(76)).toBe("coord-76");
+    expect(() => new TmuxController(runner).sessionName("manual")).toThrow("workspace group");
+    expect(ownerTerminalTitlesToClose("manual", ["claude", "cursor"], "abc12def00")).toEqual([
+      "coord-manual-abc12def00/claude",
+      "coord-manual-abc12def00/cursor"
+    ]);
+  });
+
+  it("ensureSession clears COORD_ISSUE for manual and never sets it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-manual-ensure-"));
+    roots.push(root);
+    const clone = join(root, "clone");
+    mkdirSync(clone);
+    writeFileSync(join(clone, "start-claude.sh"), "#!/bin/sh\n", { mode: 0o700 });
+    const calls: string[][] = [];
+    const runner: TmuxRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "has-session") return { exitCode: 1, stdout: "", stderr: "" };
+      if (args[0] === "list-windows") return ok("claude");
+      if (args[0] === "display-message") return ok("0\tclaude\t0\n");
+      return ok();
+    };
+    const controller = new TmuxController(runner, null, null, null, noopSleep, "grp1");
+    await controller.ensureSession("manual", [
+      { id: "claude", root: clone, launcher: "start-claude.sh", delivery: "both" }
+    ]);
+    expect(calls).toContainEqual(["set-environment", "-u", "-t", "coord-manual-grp1", "COORD_ISSUE"]);
+    expect(calls.some((args) => args.includes("COORD_ISSUE") && args[0] === "set-environment" && !args.includes("-u"))).toBe(
+      false
+    );
+  });
+
+  it("openOwnerAgentClients onlyMissing skips already-open manual titles", async () => {
+    const opened: string[] = [];
+    const controller = new TmuxController(
+      async () => ok(),
+      null,
+      async (launches) => {
+        for (const launch of launches) opened.push(launch.windowTitle);
+      },
+      null,
+      noopSleep,
+      "grp1",
+      (titles) => titles.filter((title) => title.endsWith("/claude"))
+    );
+    const agents = [
+      { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both" as const },
+      { id: "cursor", root: "/u", launcher: "start-cursor.sh", delivery: "both" as const }
+    ];
+    const result = await controller.openOwnerAgentClients("manual", agents, { onlyMissing: true });
+    expect(result).toEqual({ status: "opened", count: 1 });
+    expect(opened).toEqual(["coord-manual-grp1/cursor"]);
+  });
 });

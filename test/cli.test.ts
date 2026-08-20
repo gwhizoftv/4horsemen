@@ -97,7 +97,7 @@ describe("CLI version", () => {
     for (const argv of [["--version"], ["-V"], ["version"]] as const) {
       const lines: string[] = [];
       expect(await runCli([...argv], { io: { stdout: (message) => lines.push(message) } })).toBe(0);
-      expect(lines.join("").trim()).toBe("0.0.11");
+      expect(lines.join("").trim()).toBe("0.0.12");
     }
   });
 });
@@ -722,5 +722,127 @@ describe("CLI — install, doctor, and the hook bridge", () => {
       })
     ).toBe(0);
     expect(JSON.parse(output.join(""))).toEqual({ decision: "allow" });
+  });
+});
+
+describe("CLI manual mode", () => {
+  it("advertises manual commands in help", async () => {
+    const lines: string[] = [];
+    expect(await runCli(["--help"], { io: { stdout: (message) => lines.push(message) } })).toBe(0);
+    const help = lines.join("");
+    expect(help).toContain("coord manual");
+    expect(help).toContain("coord detach <issue|manual>");
+  });
+
+  it("launches via injected manualUi without GitHub, runtime, or run-loop effects", async () => {
+    const fixture = setup();
+    mkdirSync(fixture.runtime, { recursive: true });
+    const calls: string[][] = [];
+    let manualCalls = 0;
+    let loopBuilt = 0;
+    const output: string[] = [];
+    const code = await runCli(["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      io: {
+        cwd: fixture.root,
+        stdout: (message) => output.push(message),
+        stderr: (message) => output.push(message)
+      },
+      processRunner: async (argv) => {
+        calls.push([...argv]);
+        if (argv[0] === "tmux" && argv[1] === "has-session") {
+          return { exitCode: 1, stdout: "", stderr: "" };
+        }
+        return { exitCode: 1, stdout: "", stderr: `unexpected: ${argv.join(" ")}` };
+      },
+      makeRunLoop: () => {
+        loopBuilt += 1;
+        return fakeLoop(issueRuntimePaths(fixture.runtime, 1));
+      },
+      manualUi: async (input) => {
+        manualCalls += 1;
+        expect(input.agents.map((agent) => agent.id)).toEqual(["codex", "claude", "cursor"]);
+        expect(input.terminalGroup.length).toBeGreaterThan(0);
+        return { status: "opened", count: 3 };
+      }
+    });
+    expect(code).toBe(0);
+    expect(manualCalls).toBe(1);
+    expect(loopBuilt).toBe(0);
+    expect(calls.some((argv) => argv[0] === "gh")).toBe(false);
+    expect(existsSync(join(fixture.runtime, "issue-1"))).toBe(false);
+    expect(existsSync(join(fixture.runtime, "mirror.git"))).toBe(false);
+    expect(output.join("")).toContain("Manual mode ready");
+    expect(output.join("")).toContain("Opened 3 Terminal window");
+  });
+
+  it("refuses manual launch when an automated issue session is live", async () => {
+    const fixture = setup();
+    mkdirSync(join(fixture.runtime, "issue-7"), { recursive: true });
+    const errors: string[] = [];
+    let manualCalls = 0;
+    const code = await runCli(["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      io: {
+        cwd: fixture.root,
+        stderr: (message) => errors.push(message)
+      },
+      processRunner: async (argv) => {
+        if (argv[0] === "tmux" && argv[1] === "has-session") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        return { exitCode: 1, stdout: "", stderr: "" };
+      },
+      manualUi: async () => {
+        manualCalls += 1;
+        return { status: "opened", count: 1 };
+      }
+    });
+    expect(code).toBe(2);
+    expect(manualCalls).toBe(0);
+    expect(errors.join("")).toContain("coord detach 7");
+  });
+
+  it("refuses automated start when manual session is live", async () => {
+    const fixture = setup();
+    const errors: string[] = [];
+    let startEffects = 0;
+    const code = await runCli(
+      ["start", "3", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+      {
+        io: {
+          cwd: fixture.root,
+          stderr: (message) => errors.push(message)
+        },
+        processRunner: async (argv) => {
+          if (argv[0] === "tmux" && argv[1] === "has-session") {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          return successfulStartGit(argv);
+        },
+        startEffects: async () => {
+          startEffects += 1;
+          return { cleanup: async () => undefined };
+        },
+        makeRunLoop: (paths) => fakeLoop(paths)
+      }
+    );
+    expect(code).toBe(2);
+    expect(startEffects).toBe(0);
+    expect(errors.join("")).toContain("coord detach manual");
+  });
+
+  it("detaches manual mode with dry-run", async () => {
+    const fixture = setup();
+    const output: string[] = [];
+    const code = await runCli(
+      ["detach", "manual", "--config", fixture.configPath, "--coord-root", fixture.runtime, "--dry-run"],
+      {
+        io: {
+          cwd: fixture.root,
+          stdout: (message) => output.push(message)
+        }
+      }
+    );
+    expect(code).toBe(0);
+    expect(output.join("")).toContain("Detached manual mode");
   });
 });

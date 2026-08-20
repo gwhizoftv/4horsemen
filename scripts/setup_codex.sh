@@ -73,7 +73,8 @@ $BEGIN_MARK
 - Start your first response in a session with "Codex agent here" so the human
   knows which terminal they are in.
 - Session start: \`git checkout $SHARED_BRANCH && git pull $REMOTE_NAME $SHARED_BRANCH\`,
-  then ask the human for the issue number if you don't have one.
+  then either take the owner's manual chat task on \`codex/<name>\` or ask for
+  the automated issue number if an issue session is running.
 - If a git hook blocks an action, the hook is correct — fix the underlying
   state; NEVER use --no-verify, --force, or alter hooks/config to get around it.
 - Temp/scratch files go in .codex/tmp/ (excluded from git), never in the repo tree.

@@ -8,9 +8,21 @@ the `testapp` app repo so hooks and tests stay decoupled.
 - GitHub issue **#1** on this repo (created by workspace scaffold)
 - Owner-driven workflow; no `automation/` barriers.
 
-Branches: `issue-<n>/<agent>`. Never commit on `main` or peer branches.
-Runtime state lives outside all clones:
+Branches: `issue-<n>/<agent>` for automated issues; `<agent>/<name>` scratch
+branches for owner-driven `coord manual` work. Never commit on `main` or peer
+branches. Runtime state lives outside all clones:
 `/Volumes/4TB-SOURCE/REPOS/coord/coord-runtime` (`coord start --coord-root ...`).
+
+### Automated vs manual mode
+
+- **Automated issue mode** — when a coordinator `action.md` exists for an issue,
+  follow that action and the evidence formats below. Re-read `action.md` after
+  writing `complete` if `actionId` changes.
+- **Manual owner-chat mode** — when the owner opened the harness with
+  `coord manual`, their chat message is the task. Use your scratch branch unless
+  they name an issue branch. Do not invent `.plans/`, `.signals/`,
+  `.code-reviews/`, `action.md`, or `complete`. Identity, commit-prefix, hook,
+  verification, no-force, and no-main rules still apply.
 
 ## Plans and reviews
 

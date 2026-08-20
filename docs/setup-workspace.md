@@ -82,6 +82,13 @@ Overrides kept on the simple command are `--coord-root`, `--clone-root`,
 `--agents`, and `--profile`. Use advanced install for policy declarations,
 vendoring, tracked product changes, origin/base overrides, or dry runs.
 
+After a healthy onboard you can either create a GitHub issue and run `coord N`,
+or open the agent harnesses for owner-driven chat with `coord manual` (no issue
+runtime). Scratch work uses `<agent>/<name>` branches. Do not run manual and
+automated modes on the same workspace at once. `coord detach manual` tears down
+only that workspace's manual UI; uninstall does the same even when no `issue-*`
+directories exist.
+
 ## Advanced install
 
 ```bash

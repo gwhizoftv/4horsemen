@@ -1,8 +1,12 @@
 ## Plans and reviews
 
-This file is the protocol. Follow it when writing coordinator artifacts.
-The required response format for the current step also appears in that step's
-`action.md` and may change each time — match the headings or JSON scaffold
+This file is the protocol for **automated issue actions** only. Follow it when
+writing coordinator artifacts after the coordinator has published an `action.md`.
+Owner-driven `coord manual` chat tasks do not use these formats and must not
+invent `.plans/`, `.signals/`, `.code-reviews/`, `action.md`, or `complete`.
+
+The required response format for the current automated step also appears in that
+step's `action.md` and may change each time — match the headings or JSON scaffold
 listed there. The coordinator accepts only the published artifact. If this file
 and `action.md` disagree on format, `action.md` wins.
 

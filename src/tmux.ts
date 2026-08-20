@@ -30,6 +30,30 @@ export type PaneState = {
 
 const safeName = (value: string): string => value.replace(/[^A-Za-z0-9_-]/g, "-");
 
+/** Owner-UI session key: numeric issue or workspace-scoped manual mode. */
+export type SessionKey = number | "manual";
+
+export const isManualSessionKey = (key: SessionKey): key is "manual" => key === "manual";
+
+const requireManualGroup = (group: string | null | undefined): string => {
+  if (group === null || group === undefined || group === "") {
+    throw new Error("Manual tmux sessions require a workspace group id.");
+  }
+  return safeName(group);
+};
+
+/** Primary tmux session name for an owner-UI key (numeric or manual). */
+export const ownerUiSessionName = (
+  key: SessionKey,
+  namespace: string | null = null,
+  group: string | null = null
+): string => {
+  if (key === "manual") {
+    return `coord-manual-${requireManualGroup(group ?? namespace)}`;
+  }
+  return `coord-${key}${namespace === null || namespace === "" ? "" : `-${safeName(namespace)}`}`;
+};
+
 /** Strip CSI / OSC sequences so readiness checks can match visible TUI text. */
 export const stripAnsi = (text: string): string => {
   const esc = String.fromCharCode(0x1b);
@@ -235,29 +259,34 @@ export type OwnerTerminalCloser = (titles: readonly string[]) => void;
 const appleScriptString = (value: string): string => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
 /**
- * Stable Terminal.app custom title for an issue's owner agent tab.
+ * Stable Terminal.app custom title for an owner agent tab.
  * Always pass `group` (= workspace terminalGroup) so titles are unique across
- * products; close must match these exact strings only.
+ * products; close must match these exact strings only. Manual titles always
+ * embed the group (`coord-manual-<group>/<agent>`).
  */
 export const ownerTerminalWindowTitle = (
-  issue: number,
+  key: SessionKey,
   agentId: string,
   group: string | null = null
 ): string => {
+  if (key === "manual") {
+    return `coord-manual-${requireManualGroup(group)}/${safeName(agentId)}`;
+  }
   const session =
     group === null || group === ""
-      ? `coord-${issue}`
-      : `coord-${issue}-${safeName(group)}`;
+      ? `coord-${key}`
+      : `coord-${key}-${safeName(group)}`;
   return `${session}/${safeName(agentId)}`;
 };
 
 /**
- * Exact titles to close for an issue. Only the unique grouped form when `group`
- * is set — never bare agent names and never ungrouped `coord-N/<agent>`
- * (those collide across products).
+ * Exact titles to close for an owner-UI session. Only the unique grouped form
+ * when `group` is set for numeric issues — never bare agent names and never
+ * ungrouped `coord-N/<agent>` (those collide across products). Manual always
+ * requires the group.
  */
 export const ownerTerminalTitlesToClose = (
-  issue: number,
+  key: SessionKey,
   agentIds: readonly string[],
   group: string | null = null
 ): string[] => {
@@ -269,7 +298,7 @@ export const ownerTerminalTitlesToClose = (
     titles.push(title);
   };
   for (const agentId of agentIds) {
-    add(ownerTerminalWindowTitle(issue, agentId, group));
+    add(ownerTerminalWindowTitle(key, agentId, group));
   }
   return titles;
 };
@@ -456,32 +485,32 @@ export class TmuxController {
     return this.titleGroup ?? this.namespace;
   }
 
-  sessionName(issue: number): string {
-    return `coord-${issue}${this.namespace === null ? "" : `-${safeName(this.namespace)}`}`;
+  sessionName(key: SessionKey): string {
+    return ownerUiSessionName(key, this.namespace, this.terminalTitleGroup());
   }
 
-  target(issue: number, agent: string): string {
-    return `${this.sessionName(issue)}:${safeName(agent)}.0`;
+  target(key: SessionKey, agent: string): string {
+    return `${this.sessionName(key)}:${safeName(agent)}.0`;
   }
 
-  agentAttachLaunches(issue: number, agents: readonly AgentConfig[]): OwnerTerminalLaunch[] {
-    const session = this.sessionName(issue);
+  agentAttachLaunches(key: SessionKey, agents: readonly AgentConfig[]): OwnerTerminalLaunch[] {
+    const session = this.sessionName(key);
     const group = this.terminalTitleGroup();
     return agents.map((agent) => ({
       agentId: agent.id,
       command: agentClientAttachCommand(session, agent.id),
       terminalProfile: resolveTerminalProfile(agent),
-      windowTitle: ownerTerminalWindowTitle(issue, agent.id, group)
+      windowTitle: ownerTerminalWindowTitle(key, agent.id, group)
     }));
   }
 
-  ownerTerminalTitles(issue: number, agentIds: readonly string[]): string[] {
-    return ownerTerminalTitlesToClose(issue, agentIds, this.terminalTitleGroup());
+  ownerTerminalTitles(key: SessionKey, agentIds: readonly string[]): string[] {
+    return ownerTerminalTitlesToClose(key, agentIds, this.terminalTitleGroup());
   }
 
-  /** List the primary issue session and any linked per-agent client sessions. */
-  async listIssueSessions(issue: number): Promise<string[]> {
-    const session = this.sessionName(issue);
+  /** List the primary session and any linked per-agent client sessions. */
+  async listIssueSessions(key: SessionKey): Promise<string[]> {
+    const session = this.sessionName(key);
     const listed = await this.runner(["list-sessions", "-F", "#{session_name}"]);
     if (listed.exitCode !== 0) return [];
     return listed.stdout
@@ -490,8 +519,8 @@ export class TmuxController {
       .filter((name) => name === session || name.startsWith(`${session}-`));
   }
 
-  async killIssueSessions(issue: number): Promise<string[]> {
-    const names = await this.listIssueSessions(issue);
+  async killIssueSessions(key: SessionKey): Promise<string[]> {
+    const names = await this.listIssueSessions(key);
     for (const name of names) {
       await this.runner(["kill-session", "-t", name]);
     }
@@ -499,14 +528,14 @@ export class TmuxController {
   }
 
   /**
-   * Close owner Terminal.app tabs whose custom titles match this issue's unique
+   * Close owner Terminal.app tabs whose custom titles match this session's unique
    * group ids. Failures are returned so detach/wipe can continue after tmux teardown.
    */
   closeOwnerAgentClients(
-    issue: number,
+    key: SessionKey,
     agentIds: readonly string[]
   ): { status: "closed" | "unsupported" | "failed"; titles: readonly string[]; error?: string } {
-    const titles = ownerTerminalTitlesToClose(issue, agentIds, this.terminalTitleGroup());
+    const titles = ownerTerminalTitlesToClose(key, agentIds, this.terminalTitleGroup());
     if (this.ownerTerminalCloser === null) return { status: "unsupported", titles };
     try {
       this.ownerTerminalCloser(titles);
@@ -526,11 +555,11 @@ export class TmuxController {
    * `onlyMissing` skips titles already open so resume does not duplicate windows.
    */
   async openOwnerAgentClients(
-    issue: number,
+    key: SessionKey,
     agents: readonly AgentConfig[],
     options: { onlyMissing?: boolean } = {}
   ): Promise<OpenOwnerAgentClientsResult> {
-    const launches = this.agentAttachLaunches(issue, agents);
+    const launches = this.agentAttachLaunches(key, agents);
     const commands = launches.map((launch) => launch.command);
     if (this.ownerTerminalOpener === null) return { status: "unsupported", commands };
     const toOpen = (() => {
@@ -596,11 +625,11 @@ export class TmuxController {
   }
 
   async ensureSession(
-    issue: number,
+    key: SessionKey,
     agents: readonly AgentConfig[],
     assertAuthority: () => void = () => undefined
   ): Promise<void> {
-    const session = this.sessionName(issue);
+    const session = this.sessionName(key);
     const exists = await this.runner(["has-session", "-t", session]);
     assertAuthority();
     if (exists.exitCode !== 0) {
@@ -608,10 +637,19 @@ export class TmuxController {
       assertAuthority();
       if (created.exitCode !== 0) throw new Error(`tmux session creation failed: ${created.stderr}`);
     }
-    const environment = await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(issue)]);
-    assertAuthority();
-    if (environment.exitCode !== 0) {
-      throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
+    if (typeof key === "number") {
+      const environment = await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(key)]);
+      assertAuthority();
+      if (environment.exitCode !== 0) {
+        throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
+      }
+    } else {
+      // Drop a stale issue identity so manual panes never look issue-bound.
+      const cleared = await this.runner(["set-environment", "-u", "-t", session, "COORD_ISSUE"]);
+      assertAuthority();
+      if (cleared.exitCode !== 0) {
+        throw new Error(`cannot clear coordinator issue environment in ${session}: ${cleared.stderr}`);
+      }
     }
     for (const agent of agents) {
       const target = `${session}:${safeName(agent.id)}`;

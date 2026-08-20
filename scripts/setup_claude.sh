@@ -47,8 +47,11 @@ cat > "$CLONE_DIR/CLAUDE.md" <<EOF
 
 ## Session start checklist
 1. \`git checkout $SHARED_BRANCH && git pull $REMOTE_NAME $SHARED_BRANCH\`
-2. Ask the human for the issue number if you don't have one.
-3. \`git checkout -b issue-<n>/claude\` (or checkout your existing branch and continue)
+2. If the owner opened this window with \`coord manual\`, follow their chat task
+   on \`claude/<name>\` (do not invent coordinator artifacts). Otherwise ask for
+   the issue number if you don't have one.
+3. For an automated issue: \`git checkout -b issue-<n>/claude\` (or checkout your
+   existing branch and continue)
 
 ## Local conveniences
 - Temp/scratch files go in .claude/tmp/ (gitignored), never in the repo tree.
