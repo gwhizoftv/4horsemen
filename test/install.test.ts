@@ -2,6 +2,9 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { assertInstallDeletionAllowed, install, uninstall } from "../src/install.js";
+import { detachAllOwnerUiSync } from "../src/detachIssue.js";
+import { workspaceTerminalGroup } from "../src/paths.js";
+import { listIssueNumbersInWorkspace } from "../src/workspace.js";
 import { readConfig } from "../src/state.js";
 import { nestedConfigPath } from "../src/workspace.js";
 import {
@@ -98,8 +101,86 @@ describe("coord install — two-mode footprint", () => {
     expect(agentsMd).toContain("action.md");
     expect(agentsMd).toContain("If `actionId` in the front matter has changed");
     expect(agentsMd).toContain("skip-worktree");
+    // Manual mode is scoped in, and the safety rules are not weakened by it.
+    expect(agentsMd).toContain("coord manual");
+    expect(agentsMd).toContain("<agent>/<name>");
+    expect(agentsMd).toContain("applies only when");
+    // Scoping the protocol to automated mode must not drop any safety rule.
+    expect(agentsMd).toContain("no-force-push");
+    expect(agentsMd).toContain("no-commits-on-the-shared-branch");
+    expect(agentsMd).toContain("both modes without exception");
     expect(existsSync(join(clone, "CLAUDE.md"))).toBe(true);
     expect(readFileSync(join(clone, "CLAUDE.md"), "utf8")).toContain("@AGENTS.md");
+  });
+});
+
+describe("coord install — manual mode next steps", () => {
+  it("advertises manual mode alongside the automated commands", () => {
+    const fixture = product();
+    const output: string[] = [];
+    installOnce(fixture, { log: (message) => output.push(message) });
+    const log = output.join("");
+    expect(log).toContain("coord start <issue>");
+    expect(log).toContain("coord manual");
+    expect(log).toContain("coord detach manual");
+  });
+
+  it("tears down manual UI on uninstall even with no issue directories", () => {
+    const fixture = product();
+    installOnce(fixture);
+    // No issue-* dirs exist here; the manual branch must still be requested.
+    expect(listIssueNumbersInWorkspace(fixture.coordRoot)).toEqual([]);
+    const outcome = detachAllOwnerUiSync({
+      agentIds: ["claude"],
+      terminalGroup: workspaceTerminalGroup(fixture.coordRoot),
+      issues: listIssueNumbersInWorkspace(fixture.coordRoot),
+      includeManual: true,
+      listSessions: () => [`coord-manual-${workspaceTerminalGroup(fixture.coordRoot)}`],
+      killSession: () => undefined,
+      terminalCloser: () => undefined,
+      log: () => undefined
+    });
+    expect(outcome.killedSessions).toEqual([`coord-manual-${workspaceTerminalGroup(fixture.coordRoot)}`]);
+    uninstallOnce(fixture);
+  });
+});
+
+/**
+ * The four vendor identity scripts are standalone operator scripts: `install()`
+ * never executes them, so they cannot be asserted through an install fixture.
+ * Read the sources directly instead, or the manual-mode wording ships uncovered.
+ */
+describe("vendor identity scripts", () => {
+  const scripts = [
+    ["scripts/setup_claude.sh", "claude"],
+    ["scripts/setup_codex.sh", "codex"],
+    ["scripts/setup_cursor.sh", "cursor"],
+    ["scripts/setup_antigravity.sh", "antigravity"]
+  ] as const;
+
+  it("teach both modes and the agent's own scratch branch", () => {
+    for (const [path, agent] of scripts) {
+      const text = readFileSync(join(repoRoot, path), "utf8");
+      expect(text, path).toContain(`issue-<n>/${agent}`);
+      expect(text, path).toContain(`${agent}/<name>`);
+      expect(text, path).toMatch(/Manual|manual/);
+      expect(text, path).toContain(".plans/");
+    }
+  });
+
+  it("keep their hook and force-push guards intact", () => {
+    for (const [path] of scripts) {
+      const text = readFileSync(join(repoRoot, path), "utf8");
+      expect(text, path).toMatch(/hook is correct|hook blocks/);
+      expect(text, path).toContain("--no-verify");
+    }
+  });
+
+  it("keep the generated launcher banner two-mode aware", () => {
+    const launcher = readFileSync(join(repoRoot, "scripts/lib/launcher.sh"), "utf8");
+    expect(launcher).toContain("coord next --issue <n>");
+    expect(launcher).toContain("manual");
+    expect(launcher).toContain("$agent/<name>");
   });
 });
 
@@ -131,7 +212,7 @@ describe("coord install — emitted config", () => {
     expect(config.project).toBe("myserver");
     expect(config.checks).toEqual(declaredChecks);
     expect(config.coordination?.installRoot).toBe(repoRoot);
-    expect(config.coordination?.version).toBe("0.0.11");
+    expect(config.coordination?.version).toBe("0.0.12");
     expect(config.coordination?.vendored).toBe(false);
     expect(config.agents[0]?.launcher).toBe("start-claude.sh");
   });

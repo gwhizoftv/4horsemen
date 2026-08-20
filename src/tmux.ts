@@ -30,6 +30,34 @@ export type PaneState = {
 
 const safeName = (value: string): string => value.replace(/[^A-Za-z0-9_-]/g, "-");
 
+/** Literal key for the owner-driven manual UI (issue 76). Never an issue number. */
+export const MANUAL_SESSION_KEY = "manual";
+
+/**
+ * Owner-UI session identity: an issue number for automated work, or the manual
+ * key for owner-driven chat work. Numeric names keep their legacy form
+ * (`coord-N` flat, `coord-N-<namespace>` nested); the manual key always carries
+ * the workspace group so two products can never share one session.
+ */
+export type SessionKey = number | typeof MANUAL_SESSION_KEY;
+
+export const isManualKey = (key: SessionKey): key is typeof MANUAL_SESSION_KEY => key === MANUAL_SESSION_KEY;
+
+/**
+ * Session name for a key. The manual key requires a workspace group: a bare
+ * `coord-manual` is process-global, so a second product would address the first
+ * product's panes and tear them down on detach.
+ */
+export const ownerSessionName = (key: SessionKey, namespace: string | null, group: string | null): string => {
+  if (isManualKey(key)) {
+    if (group === null || group === "") {
+      throw new Error("Manual owner UI requires a workspace group id; refusing an unscoped coord-manual session.");
+    }
+    return `coord-${MANUAL_SESSION_KEY}-${safeName(group)}`;
+  }
+  return `coord-${key}${namespace === null || namespace === "" ? "" : `-${safeName(namespace)}`}`;
+};
+
 /** Strip CSI / OSC sequences so readiness checks can match visible TUI text. */
 export const stripAnsi = (text: string): string => {
   const esc = String.fromCharCode(0x1b);
@@ -240,14 +268,18 @@ const appleScriptString = (value: string): string => `"${value.replace(/\\/g, "\
  * products; close must match these exact strings only.
  */
 export const ownerTerminalWindowTitle = (
-  issue: number,
+  key: SessionKey,
   agentId: string,
   group: string | null = null
 ): string => {
+  if (isManualKey(key)) {
+    // Mandatory group: an ungrouped manual title would close another product's tab.
+    return `${ownerSessionName(key, null, group)}/${safeName(agentId)}`;
+  }
   const session =
     group === null || group === ""
-      ? `coord-${issue}`
-      : `coord-${issue}-${safeName(group)}`;
+      ? `coord-${key}`
+      : `coord-${key}-${safeName(group)}`;
   return `${session}/${safeName(agentId)}`;
 };
 
@@ -257,7 +289,7 @@ export const ownerTerminalWindowTitle = (
  * (those collide across products).
  */
 export const ownerTerminalTitlesToClose = (
-  issue: number,
+  key: SessionKey,
   agentIds: readonly string[],
   group: string | null = null
 ): string[] => {
@@ -269,7 +301,7 @@ export const ownerTerminalTitlesToClose = (
     titles.push(title);
   };
   for (const agentId of agentIds) {
-    add(ownerTerminalWindowTitle(issue, agentId, group));
+    add(ownerTerminalWindowTitle(key, agentId, group));
   }
   return titles;
 };
@@ -456,32 +488,32 @@ export class TmuxController {
     return this.titleGroup ?? this.namespace;
   }
 
-  sessionName(issue: number): string {
-    return `coord-${issue}${this.namespace === null ? "" : `-${safeName(this.namespace)}`}`;
+  sessionName(key: SessionKey): string {
+    return ownerSessionName(key, this.namespace, this.terminalTitleGroup());
   }
 
-  target(issue: number, agent: string): string {
-    return `${this.sessionName(issue)}:${safeName(agent)}.0`;
+  target(key: SessionKey, agent: string): string {
+    return `${this.sessionName(key)}:${safeName(agent)}.0`;
   }
 
-  agentAttachLaunches(issue: number, agents: readonly AgentConfig[]): OwnerTerminalLaunch[] {
-    const session = this.sessionName(issue);
+  agentAttachLaunches(key: SessionKey, agents: readonly AgentConfig[]): OwnerTerminalLaunch[] {
+    const session = this.sessionName(key);
     const group = this.terminalTitleGroup();
     return agents.map((agent) => ({
       agentId: agent.id,
       command: agentClientAttachCommand(session, agent.id),
       terminalProfile: resolveTerminalProfile(agent),
-      windowTitle: ownerTerminalWindowTitle(issue, agent.id, group)
+      windowTitle: ownerTerminalWindowTitle(key, agent.id, group)
     }));
   }
 
-  ownerTerminalTitles(issue: number, agentIds: readonly string[]): string[] {
-    return ownerTerminalTitlesToClose(issue, agentIds, this.terminalTitleGroup());
+  ownerTerminalTitles(key: SessionKey, agentIds: readonly string[]): string[] {
+    return ownerTerminalTitlesToClose(key, agentIds, this.terminalTitleGroup());
   }
 
-  /** List the primary issue session and any linked per-agent client sessions. */
-  async listIssueSessions(issue: number): Promise<string[]> {
-    const session = this.sessionName(issue);
+  /** List the primary session for this key and any linked per-agent client sessions. */
+  async listIssueSessions(key: SessionKey): Promise<string[]> {
+    const session = this.sessionName(key);
     const listed = await this.runner(["list-sessions", "-F", "#{session_name}"]);
     if (listed.exitCode !== 0) return [];
     return listed.stdout
@@ -490,8 +522,8 @@ export class TmuxController {
       .filter((name) => name === session || name.startsWith(`${session}-`));
   }
 
-  async killIssueSessions(issue: number): Promise<string[]> {
-    const names = await this.listIssueSessions(issue);
+  async killIssueSessions(key: SessionKey): Promise<string[]> {
+    const names = await this.listIssueSessions(key);
     for (const name of names) {
       await this.runner(["kill-session", "-t", name]);
     }
@@ -503,10 +535,10 @@ export class TmuxController {
    * group ids. Failures are returned so detach/wipe can continue after tmux teardown.
    */
   closeOwnerAgentClients(
-    issue: number,
+    key: SessionKey,
     agentIds: readonly string[]
   ): { status: "closed" | "unsupported" | "failed"; titles: readonly string[]; error?: string } {
-    const titles = ownerTerminalTitlesToClose(issue, agentIds, this.terminalTitleGroup());
+    const titles = ownerTerminalTitlesToClose(key, agentIds, this.terminalTitleGroup());
     if (this.ownerTerminalCloser === null) return { status: "unsupported", titles };
     try {
       this.ownerTerminalCloser(titles);
@@ -526,11 +558,11 @@ export class TmuxController {
    * `onlyMissing` skips titles already open so resume does not duplicate windows.
    */
   async openOwnerAgentClients(
-    issue: number,
+    key: SessionKey,
     agents: readonly AgentConfig[],
     options: { onlyMissing?: boolean } = {}
   ): Promise<OpenOwnerAgentClientsResult> {
-    const launches = this.agentAttachLaunches(issue, agents);
+    const launches = this.agentAttachLaunches(key, agents);
     const commands = launches.map((launch) => launch.command);
     if (this.ownerTerminalOpener === null) return { status: "unsupported", commands };
     const toOpen = (() => {
@@ -591,16 +623,16 @@ export class TmuxController {
     }
   }
 
-  async stopSession(issue: number): Promise<void> {
-    await this.runner(["kill-session", "-t", this.sessionName(issue)]);
+  async stopSession(key: SessionKey): Promise<void> {
+    await this.runner(["kill-session", "-t", this.sessionName(key)]);
   }
 
   async ensureSession(
-    issue: number,
+    key: SessionKey,
     agents: readonly AgentConfig[],
     assertAuthority: () => void = () => undefined
   ): Promise<void> {
-    const session = this.sessionName(issue);
+    const session = this.sessionName(key);
     const exists = await this.runner(["has-session", "-t", session]);
     assertAuthority();
     if (exists.exitCode !== 0) {
@@ -608,7 +640,13 @@ export class TmuxController {
       assertAuthority();
       if (created.exitCode !== 0) throw new Error(`tmux session creation failed: ${created.stderr}`);
     }
-    const environment = await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(issue)]);
+    // A manual session has no issue identity. Skipping the write is not enough:
+    // a tmux server started from a shell exporting COORD_ISSUE would leak that
+    // value into every pane, and `coord next` accepts COORD_ISSUE in place of
+    // --issue. Unset it so a manual harness cannot resolve a coordinator action.
+    const environment = isManualKey(key)
+      ? await this.runner(["set-environment", "-u", "COORD_ISSUE", "-t", session])
+      : await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(key)]);
     assertAuthority();
     if (environment.exitCode !== 0) {
       throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);

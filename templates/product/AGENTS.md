@@ -12,6 +12,23 @@ git obligations. This file describes the rules that apply to **agent clones**
 - `issue-<n>/<agent>` — an agent's working branch for issue n.
 - `issue-<n>/final` — the consensus branch, updated only by merging a reviewed
   pull request.
+- `<agent>/<name>` — an agent's own scratch branch, for manual owner-driven work
+  that has no issue.
+
+## Two modes
+
+**Automated (issue) mode.** The coordinator is running and has published an
+`action.md` for you. Take the task from that action, work on `issue-<n>/<agent>`,
+and publish exactly the artifacts it names.
+
+**Manual mode.** The owner started the harnesses with `coord manual`. There is
+no coordinator, no issue, and no `action.md`. The owner's chat message is the
+whole task. Work on your own `<agent>/<name>` scratch branch unless the owner
+names an issue branch, and do not invent `action.md`, `.plans/`, `.signals/`, or
+`.code-reviews/` evidence — those belong to automated actions only. Publishing
+stays an owner action.
+
+Every rule below applies identically in both modes.
 
 ## Rules enforced in agent clones
 

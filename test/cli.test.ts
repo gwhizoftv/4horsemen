@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeAction } from "../src/action.js";
-import { automationDigestMaterial, runCli, type CliRunLoop } from "../src/cli.js";
-import { agentRuntimePaths, issueRuntimePaths } from "../src/paths.js";
+import { automationDigestMaterial, runCli, type CliRunLoop, type ManualUiInput } from "../src/cli.js";
+import { agentRuntimePaths, issueRuntimePaths, workspaceTerminalGroup } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
 import { cursorsStateSchema, readConfig, readCursorsState, readStartState, writeCursorsState } from "../src/state.js";
 import { DOCTOR_CODES } from "../src/doctor.js";
@@ -97,7 +97,7 @@ describe("CLI version", () => {
     for (const argv of [["--version"], ["-V"], ["version"]] as const) {
       const lines: string[] = [];
       expect(await runCli([...argv], { io: { stdout: (message) => lines.push(message) } })).toBe(0);
-      expect(lines.join("").trim()).toBe("0.0.11");
+      expect(lines.join("").trim()).toBe("0.0.12");
     }
   });
 });
@@ -722,5 +722,270 @@ describe("CLI — install, doctor, and the hook bridge", () => {
       })
     ).toBe(0);
     expect(JSON.parse(output.join(""))).toEqual({ decision: "allow" });
+  });
+});
+
+describe("coord manual", () => {
+  const group = (runtimeRoot: string): string => workspaceTerminalGroup(runtimeRoot);
+
+  /** Records manual UI launches instead of touching tmux or Terminal.app. */
+  const recordingManualUi = (calls: ManualUiInput[], alreadyOpen = false) => async (input: ManualUiInput) => {
+    calls.push(input);
+    return {
+      session: `coord-manual-${input.terminalGroup}`,
+      opened: alreadyOpen
+        ? ({ status: "already-open", count: input.config.agents.length } as const)
+        : ({ status: "opened", count: input.config.agents.length } as const)
+    };
+  };
+
+  /** tmux probe answering "no session is live" for every has-session query. */
+  const noLiveSessions = async () => ({ exitCode: 1, stdout: "", stderr: "" });
+
+  const liveSession = (name: string) => async (argv: readonly string[]) => {
+    if (argv[0] === "tmux" && argv[1] === "has-session") {
+      return argv[3] === name
+        ? { exitCode: 0, stdout: "", stderr: "" }
+        : { exitCode: 1, stdout: "", stderr: "" };
+    }
+    return { exitCode: 1, stdout: "", stderr: `unexpected command: ${argv.join(" ")}` };
+  };
+
+  it("launches through an explicit config and creates no automated state", async () => {
+    const fixture = setup();
+    mkdirSync(fixture.runtime, { recursive: true });
+    const calls: ManualUiInput[] = [];
+    const output: string[] = [];
+    let loops = 0;
+
+    expect(
+      await runCli(["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stdout: (message) => output.push(message) },
+        processRunner: noLiveSessions,
+        manualUi: recordingManualUi(calls),
+        makeRunLoop: (paths) => {
+          loops += 1;
+          return fakeLoop(paths);
+        }
+      })
+    ).toBe(0);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.terminalGroup).toBe(group(fixture.runtime));
+    // Flat workspace: no tmux namespace, but the group is still mandatory.
+    expect(calls[0]?.tmuxNamespace).toBeNull();
+    expect(calls[0]?.config.agents.map((agent) => agent.id)).toEqual(["codex", "claude", "cursor"]);
+
+    // Requirement 4: no issue runtime, no mirror, no run loop.
+    expect(loops).toBe(0);
+    expect(existsSync(join(fixture.runtime, "mirror.git"))).toBe(false);
+    expect(readdirSync(fixture.runtime).filter((entry) => entry.startsWith("issue-"))).toEqual([]);
+    expect(output.join("")).toContain(`tmux session coord-manual-${group(fixture.runtime)}`);
+    expect(output.join("")).toContain("No issue, action, or coordinator state was created.");
+  });
+
+  it("never invokes GitHub or git while launching", async () => {
+    const fixture = setup();
+    mkdirSync(fixture.runtime, { recursive: true });
+    const commands: string[][] = [];
+    expect(
+      await runCli(["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stdout: () => undefined },
+        processRunner: async (argv) => {
+          commands.push([...argv]);
+          return { exitCode: 1, stdout: "", stderr: "" };
+        },
+        manualUi: recordingManualUi([])
+      })
+    ).toBe(0);
+    // Only tmux liveness probes are allowed on this path.
+    expect(commands.every((argv) => argv[0] === "tmux" && argv[1] === "has-session")).toBe(true);
+    expect(commands.some((argv) => argv[0] === "gh")).toBe(false);
+  });
+
+  it("is idempotent: a second launch reports the windows already open", async () => {
+    const fixture = setup();
+    mkdirSync(fixture.runtime, { recursive: true });
+    const calls: ManualUiInput[] = [];
+    const output: string[] = [];
+    const deps = {
+      io: { stdout: (message: string) => output.push(message) },
+      processRunner: noLiveSessions,
+      manualUi: recordingManualUi(calls, true)
+    };
+    const argv = ["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime];
+    expect(await runCli(argv, deps)).toBe(0);
+    expect(await runCli(argv, deps)).toBe(0);
+    expect(calls).toHaveLength(2);
+    expect(output.join("")).toContain("already open");
+  });
+
+  it("refuses to start while this workspace has a live issue session", async () => {
+    const fixture = setup();
+    mkdirSync(join(fixture.runtime, "issue-76"), { recursive: true });
+    const errors: string[] = [];
+    const calls: ManualUiInput[] = [];
+    expect(
+      await runCli(["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stdout: () => undefined, stderr: (message) => errors.push(message) },
+        processRunner: liveSession("coord-76"),
+        manualUi: recordingManualUi(calls)
+      })
+    ).not.toBe(0);
+    expect(errors.join("")).toContain("Issue 76 is running for this workspace");
+    expect(errors.join("")).toContain("coord detach 76");
+    // The guard must fire before any UI is touched.
+    expect(calls).toEqual([]);
+  });
+
+  it("does not treat another workspace's issue session as a conflict", async () => {
+    const fixture = setup();
+    mkdirSync(join(fixture.runtime, "issue-76"), { recursive: true });
+    const calls: ManualUiInput[] = [];
+    expect(
+      await runCli(["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stdout: () => undefined },
+        processRunner: liveSession("coord-76-someotherworkspace"),
+        manualUi: recordingManualUi(calls)
+      })
+    ).toBe(0);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rejects an issue flag and stray positionals", async () => {
+    const fixture = setup();
+    mkdirSync(fixture.runtime, { recursive: true });
+    for (const argv of [
+      ["manual", "--issue", "3", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+      ["manual", "extra", "--config", fixture.configPath, "--coord-root", fixture.runtime]
+    ]) {
+      const errors: string[] = [];
+      expect(
+        await runCli(argv, {
+          io: { stdout: () => undefined, stderr: (message) => errors.push(message) },
+          processRunner: noLiveSessions,
+          manualUi: recordingManualUi([])
+        })
+      ).not.toBe(0);
+      expect(errors.join("")).toMatch(/Unknown option --issue|manual takes no positional/);
+    }
+  });
+
+  it("documents manual mode in the help text", async () => {
+    const lines: string[] = [];
+    expect(await runCli(["--help"], { io: { stdout: (message) => lines.push(message) } })).toBe(0);
+    const help = lines.join("");
+    expect(help).toContain("coord manual");
+    expect(help).toContain("coord detach manual");
+    expect(help).toContain("<agent>/<name>");
+  });
+});
+
+describe("manual and automated exclusion", () => {
+  const manualLive = (runtimeRoot: string) => async (argv: readonly string[]) => {
+    if (argv[0] === "tmux" && argv[1] === "has-session") {
+      return argv[3] === `coord-manual-${workspaceTerminalGroup(runtimeRoot)}`
+        ? { exitCode: 0, stdout: "", stderr: "" }
+        : { exitCode: 1, stdout: "", stderr: "" };
+    }
+    return successfulStartGit(argv);
+  };
+
+  it("refuses coord <issue> and coord start while manual mode is live", async () => {
+    for (const argv of [["1"], ["start", "1"]]) {
+      const fixture = setup();
+      mkdirSync(fixture.runtime, { recursive: true });
+      const errors: string[] = [];
+      let loops = 0;
+      let started = 0;
+      expect(
+        await runCli([...argv, "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+          io: { stdout: () => undefined, stderr: (message) => errors.push(message) },
+          processRunner: manualLive(fixture.runtime),
+          makeRunLoop: (paths) => {
+            loops += 1;
+            return fakeLoop(paths);
+          },
+          startEffects: async () => {
+            started += 1;
+            return { cleanup: async () => undefined };
+          }
+        })
+      ).not.toBe(0);
+      expect(errors.join("")).toContain("Manual mode is active for this workspace");
+      expect(errors.join("")).toContain("coord detach manual");
+      // Fail before GitHub, runtime, and UI effects.
+      expect(started).toBe(0);
+      expect(loops).toBe(0);
+      expect(readdirSync(fixture.runtime).filter((entry) => entry.startsWith("issue-"))).toEqual([]);
+    }
+  });
+
+  it("refuses coord run while manual mode is live", async () => {
+    const fixture = setup();
+    let loops = 0;
+    expect(
+      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stdout: () => undefined },
+        processRunner: successfulStartGit,
+        startEffects: async () => ({ cleanup: async () => undefined })
+      })
+    ).toBe(0);
+
+    const errors: string[] = [];
+    expect(
+      await runCli(["run", "--issue", "1", "--coord-root", fixture.runtime], {
+        io: { stdout: () => undefined, stderr: (message) => errors.push(message) },
+        processRunner: manualLive(fixture.runtime),
+        makeRunLoop: (paths) => {
+          loops += 1;
+          return fakeLoop(paths);
+        }
+      })
+    ).not.toBe(0);
+    expect(errors.join("")).toContain("coord detach manual");
+    expect(loops).toBe(0);
+  });
+});
+
+describe("coord detach manual", () => {
+  it("tears down only this workspace's manual UI", async () => {
+    const fixture = setup();
+    mkdirSync(fixture.runtime, { recursive: true });
+    const output: string[] = [];
+    expect(
+      await runCli(["detach", "manual", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stdout: (message) => output.push(message) },
+        processRunner: async () => ({ exitCode: 1, stdout: "", stderr: "" })
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Detached manual mode");
+    expect(output.join("")).toContain("Clones and runtime left intact.");
+  });
+
+  it("still parses a numeric detach target", async () => {
+    const fixture = setup();
+    mkdirSync(fixture.runtime, { recursive: true });
+    const output: string[] = [];
+    expect(
+      await runCli(["detach", "3", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stdout: (message) => output.push(message) },
+        processRunner: async () => ({ exitCode: 1, stdout: "", stderr: "" })
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Detached issue 3");
+  });
+
+  it("rejects two positionals", async () => {
+    const fixture = setup();
+    mkdirSync(fixture.runtime, { recursive: true });
+    const errors: string[] = [];
+    expect(
+      await runCli(["detach", "manual", "extra", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stdout: () => undefined, stderr: (message) => errors.push(message) },
+        processRunner: async () => ({ exitCode: 1, stdout: "", stderr: "" })
+      })
+    ).not.toBe(0);
+    expect(errors.join("")).toContain("exactly one issue number");
   });
 });

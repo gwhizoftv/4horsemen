@@ -8,9 +8,32 @@ the `testapp` app repo so hooks and tests stay decoupled.
 - GitHub issue **#1** on this repo (created by workspace scaffold)
 - Owner-driven workflow; no `automation/` barriers.
 
-Branches: `issue-<n>/<agent>`. Never commit on `main` or peer branches.
+Branches: `issue-<n>/<agent>` for issue work, `<agent>/<name>` for manual
+scratch work. Never commit on `main` or peer branches.
 Runtime state lives outside all clones:
 `/Volumes/4TB-SOURCE/REPOS/coord/coord-runtime` (`coord start --coord-root ...`).
+
+## Two modes
+
+**Automated (issue) mode.** The coordinator is running and has published an
+`action.md` for you under your agent runtime directory. Take the task from that
+action, work on `issue-<n>/<agent>`, publish exactly the artifacts it names, and
+write the pushed commit SHA to `complete`. Everything below about plans,
+reviews, comparisons, ballots, and evidence formats belongs to this mode, and
+applies only when such an action exists.
+
+**Manual mode.** The owner started the harnesses with `coord manual`. There is
+no coordinator process, no GitHub issue, and no `action.md`. The owner's chat
+message is the whole task. Work on your own `<agent>/<name>` scratch branch
+unless the owner names an issue branch, and do not fabricate `action.md`,
+`complete`, `.plans/`, `.signals/`, or `.code-reviews/` artifacts — a
+coordinator artifact with no coordinator behind it is worse than none.
+Publishing remains an owner action.
+
+Manual and automated sessions never run against the same workspace at once;
+`coord manual` and `coord <issue>` each refuse while the other is live. The
+identity, commit-prefix, verification, hook, no-force-push, no-`main`-commit,
+and `skip-worktree` rules in this file hold in both modes without exception.
 
 ## Plans and reviews
 

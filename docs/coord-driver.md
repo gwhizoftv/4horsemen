@@ -241,6 +241,62 @@ re-resolves the approved file map from the pinned plan evidence and rewrites
 paths, the changed action digest invalidates stale hook correlation and the
 coordinator still applies the lifecycle idle gate before injecting it.
 
+## Manual mode (owner-driven, no coordinator)
+
+`coord manual` is a launch/attach lifecycle, not a second workflow profile. It
+sits entirely outside the state machine: no cursors, no rounds, no evidence, no
+publication.
+
+**Authority.** The owner's chat message in each agent window is the only task
+source. Nothing in this document's plan/review/ballot/evidence model applies,
+because no `action.md` exists to bind it. Publication remains an owner action.
+
+**Lifecycle.** `coord manual` resolves the workspace (onboarded product cwd,
+`--product`, or `--config` + `--coord-root`), refuses if this workspace has a
+live issue session, validates every configured launcher and tmux itself, then
+creates or repairs one tmux window per configured agent and opens only the
+Terminal windows that are missing. It then returns. No process is left running.
+
+**Naming.** The session is `coord-manual-<group>` and the window titles are
+`coord-manual-<group>/<agent>`, where `<group>` is the same
+`workspaceTerminalGroup` fingerprint used for issue Terminal titles. Unlike
+numeric issue sessions — which keep the legacy flat `coord-N` form — the group
+is **mandatory** for manual: a bare `coord-manual` would be process-global, so a
+second product would address the first product's panes and kill them on detach.
+Construction without a group is refused rather than silently unscoped.
+
+**Deliberately bypassed.** GitHub issue fetch and snapshot, mirror
+initialization, `issue-*` runtime creation, `github-issue.json`, `start.json`,
+`cursors.json`, `journal.jsonl`, `action.md`, `complete`, the run loop, nudging,
+consensus and finalization checks, and PR creation.
+
+**No issue identity in the session.** `ensureSession` sets `COORD_ISSUE` only
+for numeric keys; for the manual key it actively *unsets* the variable in the
+session. Skipping the write is not sufficient — a tmux server started from a
+shell that exports `COORD_ISSUE` would leak it into every pane, and `coord next`
+accepts `COORD_ISSUE` in place of `--issue`, so a manual harness could otherwise
+pull a live coordinator action.
+
+**Recovery.** Repeat `coord manual` freely. Live panes are left alone, dead
+panes are respawned with the validated launcher and clone cwd, missing windows
+are created, and already-open Terminal titles are not reopened. On a host
+without Terminal.app support the tmux session and windows are still created and
+the attach commands are printed instead.
+
+**Mode exclusion.** Manual and automated sessions share the agent clones, so
+they never run against one workspace at once. Liveness is read from tmux, never
+from a lock file: a marker would violate the no-runtime-state rule and would
+survive a crash with no session left to detach. `coord manual` probes the exact
+session names of this workspace's durable `issue-*` entries; `coord <issue>`,
+`coord start`, and `coord run` probe `coord-manual-<group>`. Each error names
+the detach command that clears it.
+
+**Teardown.** `coord detach manual` closes exactly this workspace's manual
+titles, then kills the exact manual session and its linked per-agent client
+sessions, leaving clones and runtime intact; `--dry-run` reports without acting.
+`coord uninstall` performs the same teardown for the workspace it is removing,
+including when that workspace has no `issue-*` directories at all.
+
 ## Agent completion contract
 
 An agent may push any number of intermediate commits. Only `complete` expresses

@@ -458,6 +458,10 @@ export const install = (options: InstallOptions): InstallResult => {
       `  coord doctor --coord-root ${coordRoot} --product ${productRoot}`,
       `  coord start <issue> --config ${configPath} --coord-root ${workspace.workspaceRoot}`,
       `  COORD_ISSUE=<issue> coord run --coord-root ${workspace.workspaceRoot}`,
+      "",
+      "Or drive the agents yourself, with no issue and no coordinator:",
+      `  coord manual --config ${configPath} --coord-root ${workspace.workspaceRoot}`,
+      `  coord detach manual --config ${configPath} --coord-root ${workspace.workspaceRoot}`,
       ""
     ].join("\n")
   );
@@ -654,6 +658,9 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
         workspace.layout === "nested" ? workspaceTerminalGroup(workspace.workspaceRoot) : null,
       terminalGroup: workspaceTerminalGroup(workspace.workspaceRoot),
       issues: listIssueNumbersInWorkspace(workspace.workspaceRoot),
+      // A workspace used only through `coord manual` has no issue-* dirs; its
+      // manual session and titles must still be torn down here.
+      includeManual: true,
       dryRun: options.dryRun,
       log: effects.log
     });
@@ -755,6 +762,10 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
         `  cd ${productRoot}`,
         '  gh issue create --title "…" --body "…"',
         "  coord <issue>",
+        "",
+        "Or task the agents yourself, with no issue and no coordinator:",
+        `  cd ${productRoot}`,
+        "  coord manual",
         ""
       ].join("\n")
     );

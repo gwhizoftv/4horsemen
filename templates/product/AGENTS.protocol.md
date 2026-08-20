@@ -1,3 +1,14 @@
+## When this protocol applies
+
+Everything in this file describes **automated issue mode**: it applies only when
+the coordinator has published an `action.md` for you. In manual owner-driven
+mode (`coord manual`) there is no coordinator, no issue, and no action — the
+owner's chat message is the task, you work on your own `<agent>/<name>` scratch
+branch, and you must not fabricate `action.md`, `complete`, `.plans/`,
+`.signals/`, or `.code-reviews/` artifacts. Identity, commit-prefix, hook,
+verification, no-force-push, and no-commits-on-the-shared-branch rules apply in
+both modes without exception.
+
 ## Plans and reviews
 
 This file is the protocol. Follow it when writing coordinator artifacts.

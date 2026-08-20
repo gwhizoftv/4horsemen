@@ -47,8 +47,16 @@ cat > "$CLONE_DIR/CLAUDE.md" <<EOF
 
 ## Session start checklist
 1. \`git checkout $SHARED_BRANCH && git pull $REMOTE_NAME $SHARED_BRANCH\`
-2. Ask the human for the issue number if you don't have one.
-3. \`git checkout -b issue-<n>/claude\` (or checkout your existing branch and continue)
+2. Work out which mode you are in — do not assume an issue exists:
+   - **Automated**: the coordinator published an \`action.md\` for you, or the
+     human gives you an issue number. Then
+     \`git checkout -b issue-<n>/claude\` (or continue on your existing branch)
+     and publish exactly the artifacts the action names.
+   - **Manual**: no coordinator action and no issue number — the human's chat
+     message is the task. Then \`git checkout -b claude/<name>\` and work there.
+     Do not invent \`action.md\`, \`.plans/\`, \`.signals/\`, or \`.code-reviews/\`
+     evidence; those belong to automated actions only.
+3. Ask the human only if the mode is genuinely ambiguous.
 
 ## Local conveniences
 - Temp/scratch files go in .claude/tmp/ (gitignored), never in the repo tree.

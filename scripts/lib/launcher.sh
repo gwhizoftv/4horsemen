@@ -87,11 +87,19 @@ if [[ -f pnpm-lock.yaml ]] && command -v corepack >/dev/null; then
   command -v pnpm >/dev/null && echo "pnpm: \$(pnpm --version)"
 fi
 
-echo "=== $label agent | branch scheme issue-<n>/$agent | shared: $shared ==="
+echo "=== $label agent | issue branches issue-<n>/$agent | scratch $agent/<name> | shared: $shared ==="
 git status -sb || true
-echo "When an issue is running, fetch your coordinator action with:"
-echo "  coord next --issue <n>"
-echo "(uses this clone's coord.workspaceConfig + consensus.agentId)."
+echo "Two modes — the owner picks, you do not guess:"
+echo "  automated : an issue is running. Fetch your coordinator action with"
+echo "                coord next --issue <n>"
+echo "              (uses this clone's coord.workspaceConfig + consensus.agentId),"
+echo "              work on issue-<n>/$agent, and publish the artifacts it names."
+echo "  manual    : no coordinator action exists. The owner's chat message is"
+echo "              your task. Work on your own scratch branch $agent/<name>"
+echo "              unless the owner names an issue branch. Do not invent"
+echo "              action.md, .plans, .signals, or .code-reviews evidence."
+echo "Hook rules are identical in both modes: no commits on $shared, no commits"
+echo "on a peer branch, no force-push, no --no-verify, declared checks must pass."
 
 $command
 EOF

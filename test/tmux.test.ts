@@ -8,7 +8,10 @@ import {
   nudgePreludeKeys,
   ownerTerminalCloseAppleScript,
   ownerTerminalOpenAppleScript,
+  ownerSessionName,
   ownerTerminalTitlesToClose,
+  ownerTerminalWindowTitle,
+  MANUAL_SESSION_KEY,
   readCursorVimMode,
   resolveAgentLauncher,
   NUDGE_BEFORE_ANTIGRAVITY_MS,
@@ -809,5 +812,181 @@ describe("tmux boundary", () => {
     writeFileSync(notExecutable, "#!/bin/sh\n");
     chmodSync(notExecutable, 0o600);
     expect(() => resolveAgentLauncher({ ...base, launcher: "not-executable.sh" })).toThrow("non-executable");
+  });
+});
+
+describe("manual owner UI session key", () => {
+  const group = "abc1234567";
+  const other = "def7654321";
+
+  const manualController = (runner: TmuxRunner, titleGroup: string | null = group): TmuxController =>
+    new TmuxController(runner, null, null, null, noopSleep, titleGroup);
+
+  it("always scopes the manual session to the workspace group", () => {
+    expect(ownerSessionName(MANUAL_SESSION_KEY, null, group)).toBe(`coord-manual-${group}`);
+    // A nested namespace must not change the manual name: the group decides.
+    expect(ownerSessionName(MANUAL_SESSION_KEY, "someNamespace", group)).toBe(`coord-manual-${group}`);
+    expect(ownerSessionName(MANUAL_SESSION_KEY, null, other)).toBe(`coord-manual-${other}`);
+    expect(manualController(async () => ok()).sessionName(MANUAL_SESSION_KEY)).toBe(`coord-manual-${group}`);
+  });
+
+  it("refuses an unscoped manual session rather than colliding across products", () => {
+    expect(() => ownerSessionName(MANUAL_SESSION_KEY, null, null)).toThrow("workspace group");
+    expect(() => ownerSessionName(MANUAL_SESSION_KEY, null, "")).toThrow("workspace group");
+    expect(() => ownerSessionName(MANUAL_SESSION_KEY, "nested", null)).toThrow("workspace group");
+    expect(() => manualController(async () => ok(), null).sessionName(MANUAL_SESSION_KEY)).toThrow(
+      "workspace group"
+    );
+    expect(() => ownerTerminalWindowTitle(MANUAL_SESSION_KEY, "claude", null)).toThrow("workspace group");
+  });
+
+  it("builds grouped manual Terminal titles and no bare agent names", () => {
+    expect(ownerTerminalWindowTitle(MANUAL_SESSION_KEY, "claude", group)).toBe(`coord-manual-${group}/claude`);
+    expect(ownerTerminalTitlesToClose(MANUAL_SESSION_KEY, ["claude", "codex"], group)).toEqual([
+      `coord-manual-${group}/claude`,
+      `coord-manual-${group}/codex`
+    ]);
+  });
+
+  it("keeps numeric issue naming byte-identical", () => {
+    expect(ownerSessionName(7, null, group)).toBe("coord-7");
+    expect(ownerSessionName(7, "nsp", group)).toBe("coord-7-nsp");
+    expect(new TmuxController(async () => ok(), null, null, null).sessionName(7)).toBe("coord-7");
+    expect(new TmuxController(async () => ok(), "nsp", null, null).sessionName(7)).toBe("coord-7-nsp");
+    expect(ownerTerminalWindowTitle(7, "claude", group)).toBe(`coord-7-${group}/claude`);
+    expect(ownerTerminalWindowTitle(7, "claude", null)).toBe("coord-7/claude");
+  });
+
+  it("unsets COORD_ISSUE for a manual session instead of merely skipping it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-manual-env-"));
+    roots.push(root);
+    const clone = join(root, "clone");
+    mkdirSync(clone);
+    writeFileSync(join(clone, "start-claude.sh"), "#!/bin/sh\n", { mode: 0o700 });
+    const calls: string[][] = [];
+    const runner: TmuxRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "has-session") return { exitCode: 1, stdout: "", stderr: "" };
+      if (args[0] === "list-windows") return ok("");
+      if (args[0] === "display-message") return ok("1\tclaude\t0\n");
+      return ok();
+    };
+    const agent = { id: "claude", root: clone, launcher: "start-claude.sh", delivery: "both" as const };
+    await manualController(runner).ensureSession(MANUAL_SESSION_KEY, [agent]);
+
+    const session = `coord-manual-${group}`;
+    // Not merely absent: an inherited COORD_ISSUE would let a manual harness
+    // resolve a live coordinator action through `coord next`.
+    expect(calls).toContainEqual(["set-environment", "-u", "COORD_ISSUE", "-t", session]);
+    expect(calls.some((args) => args[0] === "set-environment" && args.includes("3"))).toBe(false);
+    expect(calls.some((args) => args[0] === "new-window")).toBe(true);
+  });
+
+  it("creates, then reuses, then repairs a manual session idempotently", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-manual-ensure-"));
+    roots.push(root);
+    const clone = join(root, "clone");
+    mkdirSync(clone);
+    writeFileSync(join(clone, "start-claude.sh"), "#!/bin/sh\n", { mode: 0o700 });
+    const calls: string[][] = [];
+    let sessionExists = false;
+    let windows = "";
+    let paneDead = "0";
+    const runner: TmuxRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "has-session") return { exitCode: sessionExists ? 0 : 1, stdout: "", stderr: "" };
+      if (args[0] === "new-session") {
+        sessionExists = true;
+        return ok();
+      }
+      if (args[0] === "list-windows") return ok(windows);
+      if (args[0] === "display-message") return ok(`${paneDead}\tclaude\t0\n`);
+      if (args[0] === "new-window") {
+        windows = "claude";
+        return ok();
+      }
+      if (args[0] === "respawn-pane") {
+        paneDead = "0";
+        return ok();
+      }
+      return ok();
+    };
+    const controller = manualController(runner);
+    const agent = { id: "claude", root: clone, launcher: "start-claude.sh", delivery: "both" as const };
+
+    await controller.ensureSession(MANUAL_SESSION_KEY, [agent]);
+    expect(calls.some((args) => args[0] === "new-session")).toBe(true);
+    expect(calls.some((args) => args[0] === "new-window")).toBe(true);
+
+    // Second launch: healthy pane, nothing is recreated or restarted.
+    calls.length = 0;
+    await controller.ensureSession(MANUAL_SESSION_KEY, [agent]);
+    expect(calls.some((args) => args[0] === "new-session")).toBe(false);
+    expect(calls.some((args) => args[0] === "new-window" || args[0] === "respawn-pane")).toBe(false);
+
+    // Third launch after the harness died: exactly one respawn, no new window.
+    paneDead = "1";
+    calls.length = 0;
+    await controller.ensureSession(MANUAL_SESSION_KEY, [agent]);
+    expect(calls.filter((args) => args[0] === "respawn-pane")).toHaveLength(1);
+    expect(calls.some((args) => args[0] === "new-window")).toBe(false);
+  });
+
+  it("lists and kills only the exact manual session and its linked clients", async () => {
+    const runner: TmuxRunner = async (args) => {
+      if (args[0] === "list-sessions") {
+        return ok(
+          [
+            `coord-manual-${group}`,
+            `coord-manual-${group}-claude`,
+            `coord-manual-${other}`,
+            `coord-manual-${other}-claude`,
+            "coord-3",
+            `coord-3-${group}`
+          ].join("\n")
+        );
+      }
+      return ok();
+    };
+    expect(await manualController(runner).listIssueSessions(MANUAL_SESSION_KEY)).toEqual([
+      `coord-manual-${group}`,
+      `coord-manual-${group}-claude`
+    ]);
+  });
+
+  it("opens only the missing manual Terminal windows", async () => {
+    const opened: string[] = [];
+    const controller = new TmuxController(
+      async () => ok(),
+      null,
+      async (launches) => {
+        opened.push(...launches.map((launch) => launch.windowTitle));
+      },
+      null,
+      noopSleep,
+      group,
+      (titles) => titles.filter((title) => title.endsWith("/claude"))
+    );
+    const agents = [
+      { id: "claude", root: ".", launcher: "start-claude.sh", delivery: "both" as const },
+      { id: "codex", root: ".", launcher: "start-codex.sh", delivery: "both" as const }
+    ];
+    const result = await controller.openOwnerAgentClients(MANUAL_SESSION_KEY, agents, { onlyMissing: true });
+    expect(result).toEqual({ status: "opened", count: 1 });
+    expect(opened).toEqual([`coord-manual-${group}/codex`]);
+
+    const allPresent = new TmuxController(
+      async () => ok(),
+      null,
+      async () => undefined,
+      null,
+      noopSleep,
+      group,
+      (titles) => [...titles]
+    );
+    expect(await allPresent.openOwnerAgentClients(MANUAL_SESSION_KEY, agents, { onlyMissing: true })).toEqual({
+      status: "already-open",
+      count: 2
+    });
   });
 });

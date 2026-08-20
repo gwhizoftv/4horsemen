@@ -105,6 +105,9 @@ describe("coord onboard", () => {
     }
     expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
     expect(output.join("")).toContain("no findings");
+    // Both ways to put the onboarded agents to work are advertised.
+    expect(output.join("")).toContain("coord <issue>");
+    expect(output.join("")).toContain("coord manual");
 
     const human = join(fixture.workspaceRoot, "human");
     execFileSync("git", ["clone", "-q", fixture.originPath, human]);

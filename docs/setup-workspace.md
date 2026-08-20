@@ -82,6 +82,29 @@ Overrides kept on the simple command are `--coord-root`, `--clone-root`,
 `--agents`, and `--profile`. Use advanced install for policy declarations,
 vendoring, tracked product changes, origin/base overrides, or dry runs.
 
+### After onboarding: automated or manual
+
+An onboarded product supports two ways to put the agents to work.
+
+```bash
+cd /path/to/app
+coord 42        # automated: coordinator drives issue 42 end to end
+coord manual    # manual: open the agent windows, then task them in chat
+```
+
+`coord manual` creates no issue runtime, writes no coordinator artifact, and
+leaves no process running — it opens or repairs one window per configured agent
+and exits. Agents take the task from your chat message and work on their own
+`<agent>/<name>` scratch branch, which the installed hooks already permit; every
+other hook rule is unchanged. Repeat runs reuse healthy panes and open only
+missing windows.
+
+The manual UI is scoped to the workspace (`coord-manual-<group>` tmux session,
+`coord-manual-<group>/<agent>` window titles), so two onboarded products under
+one coordination root never touch each other's agents. Only one mode runs
+against a workspace at a time: each refuses while the other is live and names
+the detach command that clears it. Tear it down with `coord detach manual`.
+
 ## Advanced install
 
 ```bash
@@ -140,6 +163,13 @@ coord uninstall --coord-root /path/to/coord-runtime --product /path/to/app
   # --delete-coordination  # only if this install recorded bootstrap ownership
   # --dry-run
 ```
+
+Uninstall also tears down this workspace's owner UI before deleting the config:
+its issue tmux sessions and `coord-N[-<group>]/<agent>` Terminal titles, **and**
+its `coord-manual-<group>` session and titles. Manual cleanup does not depend on
+`issue-*` directories existing, so a workspace used only through `coord manual`
+is still cleaned up. Both are matched by exact workspace-scoped names — another
+product's sessions, and another product's manual session, are never touched.
 
 To reuse a GitHub issue number without closing it (reset clones + delete origin
 `issue-N/<agent>` and `*-final` branches + leftover tracking refs, keeping any

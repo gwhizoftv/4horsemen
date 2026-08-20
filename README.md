@@ -48,6 +48,43 @@ driver. The owner does not create a plan file first. Each agent authors and
 publishes `.plans/issue-N/plan.md` later on its own `issue-N/<agent>` branch as
 normal R2 evidence.
 
+## Manual mode — drive the agents yourself
+
+`coord manual` opens the same agent harnesses with no coordinator behind them:
+
+```sh
+cd /path/to/app
+coord manual          # open or repair one window per configured agent, then exit
+coord detach manual   # close that workspace's manual windows and tmux session
+```
+
+It resolves the onboarded product exactly as `coord N` does (or takes
+`--product`, or the explicit `--config` + `--coord-root` pair), validates every
+configured launcher, and returns immediately. There is **no** long-running
+process: it fetches no GitHub issue, initializes no mirror, creates no
+`issue-*` runtime directory, writes no `start.json`, `cursors.json`,
+`journal.jsonl`, `action.md`, or `complete`, never nudges an agent, runs no
+consensus or finalization checks, and opens no pull request. Your chat message
+in each window is the whole task, and publishing stays your call.
+
+Agents work on their own scratch branch `<agent>/<name>` unless you name an
+issue branch. That namespace is already what the installed hooks allow, so every
+safety gate stays exactly as it is: no commits on the shared branch, no commits
+to a peer's branch, no force-pushes, and declared checks still run.
+
+`coord manual` is idempotent — run it as often as you like. It reuses panes
+whose harness is still alive, relaunches dead ones, and opens only the Terminal
+windows that are missing. Its tmux session and window titles are scoped to the
+workspace (`coord-manual-<group>`), so two onboarded products never address one
+another's agents. `coord uninstall` tears the manual UI down too, including for
+a workspace that has only ever been used manually and has no `issue-*`
+directories.
+
+One workspace runs one mode at a time: both drive the same agent clones, so
+starting `coord manual` while an issue session is live fails and names
+`coord detach <n>`, and starting `coord N`, `coord start`, or `coord run` while
+manual mode is live fails and names `coord detach manual`.
+
 ## Product isolation
 
 > Coordination constrains **agents and the owner control plane**. It does not

@@ -60,7 +60,12 @@ globs:
   knows which terminal they are in.
 - Follow the repo-root AGENTS.md workflow exactly.
 - Session start: \`git checkout $SHARED_BRANCH && git pull $REMOTE_NAME $SHARED_BRANCH\`,
-  then ask the human for the issue number if you don't have one.
+  then establish the mode before branching. **Automated**: a coordinator
+  \`action.md\` or an issue number from the human — use \`issue-<n>/cursor\` and
+  publish exactly the artifacts the action names. **Manual**: no action and no
+  issue — the human's chat message is the task, so use \`cursor/<name>\` and do not
+  fabricate \`action.md\`, \`.plans/\`, \`.signals/\`, or \`.code-reviews/\`
+  evidence.
 - If a git hook blocks an action, the hook is correct — fix the underlying
   state; NEVER use --no-verify, --force, or alter hooks/config to get around it.
 - Put temporary files in .cursor/tmp/ (excluded from git), never in the repo tree.
