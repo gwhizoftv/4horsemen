@@ -638,6 +638,11 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     const sessions = new Map<string, number>();
     const currentIdentity = workspaceUiIdentity(resolution.runtimeRoot);
     for (const issue of listIssueNumbersInWorkspace(resolution.runtimeRoot)) {
+      const paths = issueRuntimePaths(resolution.runtimeRoot, issue);
+      // A flat root can be supplied explicitly with a config stored elsewhere.
+      // Keep incomplete issue dirs conservative, but do not let durable state
+      // that identifies another config create a cross-product false conflict.
+      if (existsSync(paths.start) && !matchesConfig(paths, resolution.configPath)) continue;
       sessions.set(sessionName(issue, currentIdentity), issue);
     }
 

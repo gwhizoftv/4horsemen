@@ -174,6 +174,34 @@ describe("CLI manual mode", () => {
     expect(errors.join("")).toContain("coord detach 7");
   });
 
+  it("ignores a live issue session durably owned by another config", async () => {
+    const fixture = setup();
+    expect(
+      await runCli(["start", "7", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stdout: () => undefined },
+        sessionExists: async () => false,
+        processRunner: successfulStartGit,
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    const paths = issueRuntimePaths(fixture.runtime, 7);
+    const start = JSON.parse(readFileSync(paths.start, "utf8")) as Record<string, unknown>;
+    writeFileSync(paths.start, JSON.stringify({ ...start, configPath: join(fixture.root, "other-config.json") }));
+
+    let launched = false;
+    expect(
+      await runCli(["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stdout: () => undefined },
+        sessionExists: async (name) => name === "coord-7",
+        manualUi: async () => {
+          launched = true;
+          return { status: "already-open", count: 3 };
+        }
+      })
+    ).toBe(0);
+    expect(launched).toBe(true);
+  });
+
   it("rejects new and resumed automated entry points while manual UI is live", async () => {
     const fixture = setup();
     const isManual = async (name: string) => name.startsWith("coord-manual-");
@@ -214,6 +242,23 @@ describe("CLI manual mode", () => {
     ).toBe(2);
     expect(resumed).toBe(false);
     expect(errors.join("")).toContain("coord detach manual");
+
+    for (const argv of [
+      ["8", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+      ["attach", "8", "--config", fixture.configPath, "--coord-root", fixture.runtime]
+    ]) {
+      errors.length = 0;
+      expect(
+        await runCli(argv, {
+          io: { stderr: (message) => errors.push(message) },
+          sessionExists: isManual,
+          makeRunLoop: () => {
+            throw new Error("conflict must fail before automated resume");
+          }
+        })
+      ).toBe(2);
+      expect(errors.join("")).toContain("coord detach manual");
+    }
   });
 
   it("dispatches exact manual teardown and advertises both manual commands", async () => {
