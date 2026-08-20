@@ -82,6 +82,46 @@ describe("detachIssue", () => {
     expect(closed).toEqual([]);
     expect(outcome.terminalClose).toBe("skipped");
   });
+
+  it("detaches only the exact workspace-scoped manual UI, closing titles first", async () => {
+    const order: string[] = [];
+    const runner: TmuxRunner = async (args) => {
+      if (args[0] === "list-sessions") {
+        return ok(
+          "coord-manual-abc12def00\n" +
+            "coord-manual-abc12def00-claude\n" +
+            "coord-manual-abc12def00-stale\n" +
+            "coord-manual-def34abc00\n" +
+            "coord-2\n"
+        );
+      }
+      if (args[0] === "kill-session") order.push(`kill:${args[2] ?? ""}`);
+      return ok();
+    };
+    const outcome = await detachIssue({
+      issue: "manual",
+      agentIds: ["claude"],
+      terminalGroup: "abc12def00",
+      tmuxRunner: runner,
+      terminalCloser: (titles) => order.push(`close:${titles.join(",")}`),
+      log: () => undefined
+    });
+    expect(order).toEqual([
+      "close:coord-manual-abc12def00/claude",
+      "kill:coord-manual-abc12def00",
+      "kill:coord-manual-abc12def00-claude"
+    ]);
+    expect(outcome.killedSessions).toEqual([
+      "coord-manual-abc12def00",
+      "coord-manual-abc12def00-claude"
+    ]);
+  });
+
+  it("refuses unscoped manual teardown", async () => {
+    await expect(
+      detachIssue({ issue: "manual", agentIds: ["claude"], tmuxRunner: async () => ok(), log: () => undefined })
+    ).rejects.toThrow("workspace group id");
+  });
 });
 
 describe("detachAllOwnerUiSync", () => {
@@ -206,6 +246,54 @@ describe("detachAllOwnerUiSync", () => {
     expect(outcome.killedSessions).toEqual([]);
     expect(outcome.closedTerminalTitles).toEqual([]);
     expect(outcome.terminalClose).toBe("skipped");
+  });
+
+  it("tears down exact manual UI with no issue directories", () => {
+    const killed: string[] = [];
+    const closed: string[] = [];
+    const outcome = detachAllOwnerUiSync({
+      agentIds: ["claude", "codex"],
+      terminalGroup: "abc12def00",
+      issues: [],
+      includeManual: true,
+      listSessions: () => [
+        "coord-manual-abc12def00",
+        "coord-manual-abc12def00-claude",
+        "coord-manual-def34abc00",
+        "coord-8"
+      ],
+      killSession: (name) => killed.push(name),
+      terminalCloser: (titles) => closed.push(...titles),
+      log: () => undefined
+    });
+    expect(killed).toEqual(["coord-manual-abc12def00", "coord-manual-abc12def00-claude"]);
+    expect(closed).toEqual([
+      "coord-manual-abc12def00/claude",
+      "coord-manual-abc12def00/codex"
+    ]);
+    expect(outcome.killedSessions).toEqual(killed);
+  });
+
+  it("reports manual teardown without mutating in dry-run mode", () => {
+    const killed: string[] = [];
+    const closed: string[] = [];
+    const logs: string[] = [];
+    const outcome = detachAllOwnerUiSync({
+      agentIds: ["claude"],
+      terminalGroup: "abc12def00",
+      issues: [],
+      includeManual: true,
+      dryRun: true,
+      listSessions: () => ["coord-manual-abc12def00"],
+      killSession: (name) => killed.push(name),
+      terminalCloser: (titles) => closed.push(...titles),
+      log: (message) => logs.push(message)
+    });
+    expect(outcome.killedSessions).toEqual(["coord-manual-abc12def00"]);
+    expect(killed).toEqual([]);
+    expect(closed).toEqual([]);
+    expect(logs.join(" ")).toContain("would close");
+    expect(logs.join(" ")).toContain("would kill");
   });
 });
 

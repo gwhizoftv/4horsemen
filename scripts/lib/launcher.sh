@@ -87,11 +87,14 @@ if [[ -f pnpm-lock.yaml ]] && command -v corepack >/dev/null; then
   command -v pnpm >/dev/null && echo "pnpm: \$(pnpm --version)"
 fi
 
-echo "=== $label agent | branch scheme issue-<n>/$agent | shared: $shared ==="
+echo "=== $label agent | branches issue-<n>/$agent or $agent/<name> | shared: $shared ==="
 git status -sb || true
-echo "When an issue is running, fetch your coordinator action with:"
+echo "Automated issue mode: fetch your coordinator action with:"
 echo "  coord next --issue <n>"
 echo "(uses this clone's coord.workspaceConfig + consensus.agentId)."
+echo "Owner-driven manual mode: wait for the owner's chat task, then work on"
+echo "  $agent/<name>"
+echo "Do not fabricate coordinator actions or evidence in manual mode."
 
 $command
 EOF

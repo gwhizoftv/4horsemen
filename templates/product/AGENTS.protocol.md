@@ -1,6 +1,12 @@
 ## Plans and reviews
 
-This file is the protocol. Follow it when writing coordinator artifacts.
+This file is the automated-action protocol. Follow it only when the coordinator
+has published an `action.md`. In owner-driven manual mode, the owner's chat
+message is the task authority; work belongs on the agent's own
+`<agent>/<name>` scratch branch unless the owner explicitly supplies an issue
+branch, and agents must not fabricate `.plans/`, `.signals/`, `.code-reviews/`,
+`action.md`, or `complete`. Installed hook, verification, identity, no-main,
+and no-force rules remain active.
 The required response format for the current step also appears in that step's
 `action.md` and may change each time — match the headings or JSON scaffold
 listed there. The coordinator accepts only the published artifact. If this file
@@ -11,7 +17,8 @@ replace the file to “fix” git status. Coordination sets that bit so the
 clone-local protocol section stays hidden. If `AGENTS.md` looks wrong, escalate;
 do not change index flags.
 
-After you write `complete`, do not stop. Re-read your coordinator `action.md`.
+After you write `complete` for an automated action, do not stop. Re-read your
+coordinator `action.md`.
 If `actionId` in the front matter has changed, execute that new action even
 without a typed nudge. Delivery still comes from the coordinator; this watch
 is how you recover when a nudge did not land.

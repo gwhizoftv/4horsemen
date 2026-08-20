@@ -51,6 +51,29 @@ const installOnce = (
 };
 
 describe("coord install — two-mode footprint", () => {
+  it("advertises owner-driven manual work after installation", () => {
+    const fixture = product();
+    const output: string[] = [];
+    installOnce(fixture, { log: (message) => output.push(message) });
+    expect(output.join("")).toContain("coord manual --product ");
+  });
+
+  it("keeps every vendor identity source manual-aware", () => {
+    const branches: Record<string, string> = {
+      claude: "claude/<name>",
+      codex: "codex/<name>",
+      cursor: "cursor/<name>",
+      antigravity: "antigravity/<name>"
+    };
+    for (const [agent, branch] of Object.entries(branches)) {
+      const source = readFileSync(join(repoRoot, `scripts/setup_${agent}.sh`), "utf8");
+      expect(source).toContain("manual chat task");
+      expect(source).toContain(branch);
+      expect(source).toContain("fabricate coordinator evidence");
+      expect(source).toContain("NEVER use --no-verify");
+    }
+  });
+
   it("leaves the product master with an empty git status", () => {
     const fixture = product();
     installOnce(fixture);
@@ -87,6 +110,9 @@ describe("coord install — two-mode footprint", () => {
 
     expect(existsSync(join(clone, ".git", "hooks", "pre-commit"))).toBe(true);
     expect(existsSync(join(clone, "start-claude.sh"))).toBe(true);
+    const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
+    expect(launcher).toContain("Owner-driven manual mode");
+    expect(launcher).toContain("claude/<name>");
     expect(git(clone, "config", "--local", "--get", "consensus.agentId")).toBe("claude");
     expect(git(clone, "config", "--local", "--get", "coord.installRoot")).toBe(repoRoot);
     expect(git(clone, "config", "--local", "--get", "coord.workspaceConfig")).toBe(result.configPath);
@@ -98,6 +124,9 @@ describe("coord install — two-mode footprint", () => {
     expect(agentsMd).toContain("action.md");
     expect(agentsMd).toContain("If `actionId` in the front matter has changed");
     expect(agentsMd).toContain("skip-worktree");
+    expect(agentsMd).toContain("owner-driven manual mode");
+    expect(agentsMd).toContain("<agent>/<name>");
+    expect(agentsMd).toContain("must not fabricate");
     expect(existsSync(join(clone, "CLAUDE.md"))).toBe(true);
     expect(readFileSync(join(clone, "CLAUDE.md"), "utf8")).toContain("@AGENTS.md");
   });
@@ -131,7 +160,7 @@ describe("coord install — emitted config", () => {
     expect(config.project).toBe("myserver");
     expect(config.checks).toEqual(declaredChecks);
     expect(config.coordination?.installRoot).toBe(repoRoot);
-    expect(config.coordination?.version).toBe("0.0.11");
+    expect(config.coordination?.version).toBe("0.0.12");
     expect(config.coordination?.vendored).toBe(false);
     expect(config.agents[0]?.launcher).toBe("start-claude.sh");
   });

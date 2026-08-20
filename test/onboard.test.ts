@@ -105,6 +105,20 @@ describe("coord onboard", () => {
     }
     expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
     expect(output.join("")).toContain("no findings");
+    expect(output.join("")).toContain("coord manual");
+
+    const manualAgents: string[][] = [];
+    expect(
+      await runCli(["manual"], {
+        io: { cwd: fixture.productRoot, stdout: () => undefined },
+        sessionExists: async () => false,
+        manualUi: async (input) => {
+          manualAgents.push(input.agents.map((agent) => agent.id));
+          return { status: "already-open", count: input.agents.length };
+        }
+      })
+    ).toBe(0);
+    expect(manualAgents).toEqual([["claude", "codex", "cursor", "antigravity"]]);
 
     const human = join(fixture.workspaceRoot, "human");
     execFileSync("git", ["clone", "-q", fixture.originPath, human]);

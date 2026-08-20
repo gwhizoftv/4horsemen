@@ -70,6 +70,35 @@ GitHub issue N from `config.origin`; optional `digestPaths` are added after
 those mandatory sources. Agent-authored plans are later protocol evidence, not
 owner-provided start input.
 
+## Owner-driven manual lifecycle
+
+`coord manual` is a launch/attach lifecycle, not a workflow profile. From an
+onboarded product it resolves the registered config; explicit callers may use
+`--product` or `--config <path> --coord-root <path>`. It validates all
+configured launchers, creates or repairs the workspace's
+`coord-manual-<group>` tmux session, reuses live agent panes, respawns dead
+panes, creates missing agent windows, opens only missing macOS Terminal clients
+titled `coord-manual-<group>/<agent>`, prints the outcome, and returns. On other
+platforms it prints tmux attach commands.
+
+There is no coordinator process after launch. Manual mode does not fetch or
+snapshot a GitHub issue, initialize the mirror, create `issue-*` runtime state,
+write `start.json`, cursors, journals, lifecycle state, `action.md`, or
+`complete`, nudge agents, run checks/consensus/finalization, publish a branch,
+or open a PR. Owner chat is the task authority and agents work on their own
+`<agent>/<name>` scratch branches without fabricating protocol evidence. Git
+hooks and all identity, verification, no-main, no-peer, commit-prefix, and
+no-force rules remain enabled.
+
+Manual startup refuses while this workspace has a live numeric issue session;
+numeric start/resume/run/attach refuses while the exact manual session is live.
+This prevents both modes from racing on the same clones. `coord detach manual`
+closes exact grouped Terminal titles before killing the exact primary and
+linked manual tmux sessions, without touching configuration, clones, runtime,
+branches, or another product. Re-run `coord manual` to recover missing/dead UI.
+Uninstall performs the same workspace-scoped cleanup even when there are no
+`issue-*` directories.
+
 ## Starting and running
 
 Confirm the installed driver with `coord --version` (or `-V`). Pre-1.0 releases
@@ -145,8 +174,9 @@ later with `coord attach N` while the coordinator is already running. `coord det
 (by unique title / window name) then kills the issue tmux sessions, without
 wiping runtime, clones, or branches. When `coord N` / `coord run` finishes with
 a completed workflow, it runs the same teardown automatically.
-`coord uninstall` tears down owner tmux/Terminal only for discovered issues; with
-no sessions it is a no-op (it never closes bare agent-named tabs).
+`coord uninstall` tears down owner tmux/Terminal for discovered issues and the
+exact workspace-grouped manual identity. It never closes bare agent-named tabs
+or another product's sessions.
 
 `coord wipe-issue N` is the owner reset for reusing a GitHub issue number: it
 checks out each agent clone on the base branch, deletes origin `issue-N/<agent>`

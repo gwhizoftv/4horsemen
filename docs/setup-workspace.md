@@ -107,7 +107,7 @@ coord install \
 | 4 | Record `consensus.*`, `coord.installRoot`, `coord.cliEntry`, `coord.workspaceConfig` in each clone |
 | 5 | Install fail-closed shims into each agent clone's `.git/hooks/` |
 | 6 | Emit the selected flat or nested workspace config under `--coord-root` |
-| 7 | Print explicit `coord doctor` / `coord start` / `coord run` next steps — nothing is auto-started |
+| 7 | Print explicit `coord doctor` / `coord manual` / `coord start` / `coord run` next steps — nothing is auto-started |
 
 Not written by default: the product's `githooks/`, `.gitignore`, `package.json`,
 `AGENTS.md`, or `scripts/setup_*`.
@@ -159,6 +159,18 @@ runtime or branches:
 coord detach N --product /path/to/app
 ```
 
+For owner-driven work with no GitHub issue or coordinator artifacts, run
+`coord manual` from the onboarded product (or pass `--product`). It creates or
+repairs the workspace-scoped `coord-manual-<group>` agent UI and returns; repeat
+launches reuse healthy panes and open only missing Terminal clients. Agents
+follow owner chat on `<agent>/<name>` scratch branches, with all installed git
+safety and verification rules still active. Automated and manual sessions may
+not share one workspace; detach the active mode first. Close manual UI with:
+
+```bash
+coord detach manual --product /path/to/app
+```
+
 Re-open Terminal views afterward with `coord N` (recreates tmux/agents and
 missing windows) or `coord attach N` while the coordinator is already running.
 
@@ -188,8 +200,10 @@ Five scoping rules matter:
   this product's targets and keeps the outer directory—even with `--force`.
   Without force, a shared flat runtime is still refused as an extra confirmation
   boundary.
-- Owner tmux/Terminal teardown is limited to `issue-*` directories under this
-  workspace. Uninstall must not kill another product's `coord-N` sessions.
+- Owner tmux/Terminal teardown is limited to issue identities under this
+  workspace plus its exact `coord-manual-<group>` identity. Manual cleanup runs
+  even with no `issue-*` directories. Uninstall must not kill another product's
+  numeric or manual sessions.
 - Every refusal — dirty clones, checkout ownership — is decided before anything
   is unwired, so a refused uninstall leaves the workspace byte-for-byte intact.
 - `--delete-coordination` requires that this install *created* the coordination
