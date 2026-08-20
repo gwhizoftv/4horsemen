@@ -1,0 +1,33 @@
+{
+  "protocolVersion": 1,
+  "issue": 76,
+  "issueSessionId": "issue-76:f71a3f70961373a8cadfc2e601c9062b242bc4d2",
+  "agent": "claude",
+  "inputSetHash": "55103e8436461610a5a987ce8522af8d52a98925909e80ac9d6731b0ff8770c4",
+  "artifact": "selection",
+  "selectedAgents": [
+    "codex"
+  ],
+  "ballots": [
+    {
+      "agent": "antigravity",
+      "commitSha": "3aa27d1d9197fe816ab3c684793c587130324b65",
+      "path": ".plans/issue-76/ballot-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "7a3eacb9d9ae186894d198a22720d6c4b4b94f84",
+      "path": ".plans/issue-76/ballot-claude.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d64aad021b03efe00f50da6a77369a19763057fd",
+      "path": ".plans/issue-76/ballot-cursor.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "19436f90856f702d1724925b1244e3c0ad4ca0c0",
+      "path": ".plans/issue-76/ballot-codex.json"
+    }
+  ]
+}
