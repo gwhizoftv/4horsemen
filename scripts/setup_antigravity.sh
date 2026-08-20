@@ -55,12 +55,13 @@ IDENTITY_CONTENT="# Agent identity — DO NOT act as any other agent
 - You are the **Antigravity** agent for the ${PROJECT_NAME} project, running
   in Google's agy CLI. Follow the repo-root AGENTS.md workflow exactly.
 - Working clone: $CLONE_DIR
-- Your branches: \`issue-<n>/antigravity\` (scratch: \`antigravity/<name>\`)
+- Your branches: \`issue-<n>/antigravity\` for automated issues (scratch: \`antigravity/<name>\` for manual work)
 - Commit message prefix: \`Antigravity: \`
 - Start your first response in a session with \"Antigravity agent here\" so the
   human knows which terminal they are in.
-- Session start: \`git checkout $SHARED_BRANCH && git pull $REMOTE_NAME $SHARED_BRANCH\`,
-  then ask the human for the issue number if you don't have one.
+- Session start: \`git checkout $SHARED_BRANCH && git pull $REMOTE_NAME $SHARED_BRANCH\`.
+  For automated issues, ask for the issue number if needed and use \`issue-<n>/antigravity\`.
+  For manual owner tasks, follow direct chat instructions on \`antigravity/<name>\`.
 - If a git hook blocks an action, the hook is correct — fix the underlying
   state; NEVER use --no-verify, --force, or alter hooks/config to get around it.
 - Temp/scratch files go in .agents/tmp/ (excluded from git), never in the repo tree.

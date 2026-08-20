@@ -97,7 +97,7 @@ describe("CLI version", () => {
     for (const argv of [["--version"], ["-V"], ["version"]] as const) {
       const lines: string[] = [];
       expect(await runCli([...argv], { io: { stdout: (message) => lines.push(message) } })).toBe(0);
-      expect(lines.join("").trim()).toBe("0.0.11");
+      expect(lines.join("").trim()).toBe("0.0.12");
     }
   });
 });
@@ -722,5 +722,55 @@ describe("CLI — install, doctor, and the hook bridge", () => {
       })
     ).toBe(0);
     expect(JSON.parse(output.join(""))).toEqual({ decision: "allow" });
+  });
+
+  it("launches manual UI and rejects conflicting automated sessions", async () => {
+    const { product, declarePath } = installedWorkspace();
+    expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
+    const configPath = join(product.coordRoot, "config.json");
+    const runtime = join(product.coordRoot, "runtime");
+
+    let manualInvoked = false;
+    expect(
+      await runCli(["manual", "--config", configPath, "--coord-root", runtime], {
+        manualUi: async () => {
+          manualInvoked = true;
+        }
+      })
+    ).toBe(0);
+    expect(manualInvoked).toBe(true);
+
+    const errors: string[] = [];
+    expect(
+      await runCli(["manual", "extra", "--config", configPath, "--coord-root", runtime], {
+        io: { stderr: (message) => errors.push(message) }
+      })
+    ).toBe(2);
+    expect(errors.join("")).toContain("manual takes no positional arguments");
+
+    // Conflict: start refuses when manual session is active
+    errors.length = 0;
+    expect(
+      await runCli(["start", "1", "--profile", "solo", "--config", configPath, "--coord-root", runtime], {
+        io: { stderr: (message) => errors.push(message) },
+        processRunner: successfulStartGit,
+        tmuxRunner: async (args) => {
+          if (args[0] === "has-session" && (args[2] === "coord-manual" || args[2]?.startsWith("coord-manual-"))) {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          return { exitCode: 1, stdout: "", stderr: "" };
+        }
+      })
+    ).toBe(2);
+    expect(errors.join("")).toContain("A manual coordination session is currently active");
+
+    // Detach manual
+    const output: string[] = [];
+    expect(
+      await runCli(["detach", "manual", "--config", configPath, "--coord-root", runtime], {
+        io: { stdout: (message) => output.push(message) }
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Detached manual coordination");
   });
 });

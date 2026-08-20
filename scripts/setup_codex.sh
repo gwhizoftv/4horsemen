@@ -68,12 +68,13 @@ $BEGIN_MARK
 ## When working in $CLONE_DIR
 - You are the **Codex** agent for the ${PROJECT_NAME} project. Follow the
   repo-root AGENTS.md workflow exactly.
-- Your branches: \`issue-<n>/codex\` (scratch: \`codex/<name>\`)
+- Your branches: \`issue-<n>/codex\` for automated issues (scratch: \`codex/<name>\` for manual work)
 - Commit message prefix: \`Codex: \`
 - Start your first response in a session with "Codex agent here" so the human
   knows which terminal they are in.
-- Session start: \`git checkout $SHARED_BRANCH && git pull $REMOTE_NAME $SHARED_BRANCH\`,
-  then ask the human for the issue number if you don't have one.
+- Session start: \`git checkout $SHARED_BRANCH && git pull $REMOTE_NAME $SHARED_BRANCH\`.
+  For automated issues, ask for the issue number if needed and use \`issue-<n>/codex\`.
+  For manual owner tasks, follow direct chat instructions on \`codex/<name>\`.
 - If a git hook blocks an action, the hook is correct — fix the underlying
   state; NEVER use --no-verify, --force, or alter hooks/config to get around it.
 - Temp/scratch files go in .codex/tmp/ (excluded from git), never in the repo tree.

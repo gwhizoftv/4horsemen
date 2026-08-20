@@ -28,6 +28,9 @@ coord onboard /path/to/app
 cd /path/to/app
 gh issue create --title "Describe the work" --body "Acceptance criteria…"
 coord 42
+
+# Or drive agents directly in chat without an issue.
+coord manual
 ```
 
 Bootstrap installs a complete checkout under `~/.local/share/coordination` and
@@ -47,6 +50,13 @@ workspace config into the automation digest, launches the agents, and runs the
 driver. The owner does not create a plan file first. Each agent authors and
 publishes `.plans/issue-N/plan.md` later on its own `issue-N/<agent>` branch as
 normal R2 evidence.
+
+`coord manual` starts or repairs the installed agent harnesses in tmux and macOS
+Terminal windows without creating an issue, writing runtime state, or running
+the coordinator state machine. Agents work directly from owner chat requests on
+their own scratch branches (`<agent>/<name>`). `coord detach manual` closes only
+that workspace's manual UI. `coord manual` and automated `coord N` sessions are
+mutually exclusive per workspace.
 
 ## Product isolation
 

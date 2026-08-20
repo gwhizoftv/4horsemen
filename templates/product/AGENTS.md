@@ -6,10 +6,21 @@ clones it normally has no coordination hooks, no Node requirement, and no new
 git obligations. This file describes the rules that apply to **agent clones**
 (`{{PROJECT}}-<agent>`) driven by the owner's coordination runtime.
 
+## Modes of operation
+
+- **Automated issue mode** (`coord <issue>`): The coordinator drives the workflow.
+  Agents read actions from `action.md`, publish coordinator artifacts, and work
+  on `issue-<n>/<agent>`.
+- **Manual mode** (`coord manual`): The owner tasks agents directly in chat.
+  No `action.md` is emitted and no coordinator state machine runs. Agents work
+  on their own scratch branches (`<agent>/<name>`) unless the owner explicitly
+  directs otherwise.
+
 ## Branch scheme
 
 - `{{BASE_BRANCH}}` — shared truth. Agents never commit or push to it.
-- `issue-<n>/<agent>` — an agent's working branch for issue n.
+- `issue-<n>/<agent>` — an agent's working branch for automated issue n.
+- `<agent>/<name>` — an agent's scratch branch for manual owner tasks.
 - `issue-<n>/final` — the consensus branch, updated only by merging a reviewed
   pull request.
 
@@ -36,7 +47,8 @@ Toolchain: `{{TOOLCHAIN}}`.
 
 ## Transient evidence
 
-While an issue is in flight, agent branches carry `.plans/issue-<n>/`,
+While an automated issue is in flight, agent branches carry `.plans/issue-<n>/`,
 `.signals/issue-<n>/`, and `.code-reviews/issue-<n>/`. They are the protocol's
 evidence. R7 finalization is deletion-only cleanup of exactly those paths, so a
 merge-ready pull request contains none of them and `{{BASE_BRANCH}}` never does.
+Manual tasks do not fabricate coordinator artifacts.

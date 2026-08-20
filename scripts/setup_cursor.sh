@@ -54,13 +54,14 @@ globs:
 
 - You are the **Cursor** agent for this repository.
 - Working clone: $CLONE_DIR
-- Your branches: \`issue-<n>/cursor\` (scratch: \`cursor/<name>\`)
+- Your branches: \`issue-<n>/cursor\` for automated issues (scratch: \`cursor/<name>\` for manual work)
 - Commit message prefix: \`Cursor: \`
 - Start your first response in a session with "Cursor agent here" so the human
   knows which terminal they are in.
 - Follow the repo-root AGENTS.md workflow exactly.
-- Session start: \`git checkout $SHARED_BRANCH && git pull $REMOTE_NAME $SHARED_BRANCH\`,
-  then ask the human for the issue number if you don't have one.
+- Session start: \`git checkout $SHARED_BRANCH && git pull $REMOTE_NAME $SHARED_BRANCH\`.
+  For automated issues, ask for the issue number if needed and use \`issue-<n>/cursor\`.
+  For manual owner tasks, follow direct chat instructions on \`cursor/<name>\`.
 - If a git hook blocks an action, the hook is correct — fix the underlying
   state; NEVER use --no-verify, --force, or alter hooks/config to get around it.
 - Put temporary files in .cursor/tmp/ (excluded from git), never in the repo tree.

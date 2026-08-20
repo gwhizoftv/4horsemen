@@ -1,8 +1,12 @@
 ## Plans and reviews
 
-This file is the protocol. Follow it when writing coordinator artifacts.
-The required response format for the current step also appears in that step's
-`action.md` and may change each time — match the headings or JSON scaffold
+This protocol applies when working on **automated coordinator issues**. In
+manual owner-driven mode (`coord manual`), follow the owner's direct chat
+instructions and do not fabricate coordinator artifacts or evidence files.
+
+When an automated issue is running, follow this protocol when writing coordinator
+artifacts. The required response format for the current step also appears in that
+step's `action.md` and may change each time — match the headings or JSON scaffold
 listed there. The coordinator accepts only the published artifact. If this file
 and `action.md` disagree on format, `action.md` wins.
 

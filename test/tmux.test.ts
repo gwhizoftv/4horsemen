@@ -59,6 +59,31 @@ describe("tmux boundary", () => {
     const runner: TmuxRunner = async () => ok();
     expect(new TmuxController(runner).sessionName(42)).toBe("coord-42");
     expect(new TmuxController(runner, "a1b2c3").sessionName(42)).toBe("coord-42-a1b2c3");
+    expect(new TmuxController(runner).sessionName("manual")).toBe("coord-manual");
+    expect(new TmuxController(runner, "a1b2c3").sessionName("manual")).toBe("coord-manual-a1b2c3");
+    expect(new TmuxController(runner, null, null, null, undefined, "grp123").sessionName("manual")).toBe("coord-manual-grp123");
+  });
+
+  it("sets COORD_ISSUE for numeric sessions and unsets it for manual sessions", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-tmux-manual-"));
+    roots.push(root);
+    const launcher = join(root, "start-codex.sh");
+    writeFileSync(launcher, "#!/bin/sh\n", { mode: 0o700 });
+    const agents = [{ id: "codex", root, launcher: "start-codex.sh", delivery: "pull" as const }];
+
+    const calls: Array<{ args: readonly string[] }> = [];
+    const runner: TmuxRunner = async (args) => {
+      calls.push({ args });
+      if (args[0] === "has-session") return { exitCode: 1, stdout: "", stderr: "" };
+      return ok();
+    };
+    const controller = new TmuxController(runner);
+    await controller.startSession(42, agents);
+    expect(calls.some((c) => c.args[0] === "set-environment" && c.args.includes("COORD_ISSUE") && c.args.includes("42"))).toBe(true);
+
+    calls.length = 0;
+    await controller.startSession("manual", agents);
+    expect(calls.some((c) => c.args[0] === "set-environment" && c.args.includes("-u") && c.args.includes("COORD_ISSUE"))).toBe(true);
   });
 
   it("types the nudge with send-keys -l and Enter for Cursor", async () => {

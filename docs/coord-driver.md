@@ -330,3 +330,29 @@ PR as a draft for the owner to merge. `coord-merged` marks it ready and merges
 it. Publication failures never discard accepted finalization. `coord status`
 and a completed `coord N` print the chosen agent, final pin, published branch,
 and PR URL.
+
+## Manual coordination (`coord manual`)
+
+`coord manual` provides an owner-driven mode where installed agent harnesses
+stay open and the owner assigns tasks directly in chat.
+
+- **Authority**: The owner's chat messages are the sole source of tasks. The
+  coordinator state machine does not run, no GitHub issue is fetched or
+  snapshotted, and no `action.md` or `complete` files are used.
+- **Working branches**: Agents work on their own scratch branches
+  (`<agent>/<name>`) unless the owner directs them to an issue branch.
+- **Safety gates**: Installed Git hooks remain fully active, enforcing clone
+  ownership, commit message prefixes, declared `verify` checks, no force pushes,
+  and no direct commits to `main` or peer branches.
+- **Session naming and isolation**: Manual tmux sessions use
+  `coord-manual[-<group>]`, and macOS Terminal windows are titled
+  `coord-manual[-<group>]/<agent>`. Multiple onboarded products maintain isolated
+  manual sessions based on their workspace fingerprint.
+- **Idempotency**: Running `coord manual` again reuses healthy panes, respawns
+  dead panes, and re-opens only missing Terminal windows.
+- **Mutual exclusion**: A workspace cannot run `coord manual` and `coord <issue>`
+  concurrently. Startup of either mode refuses with a clear detach command if the
+  opposing mode is active for that workspace.
+- **Teardown**: `coord detach manual` closes matching Terminal windows and kills
+  the workspace's manual tmux session. `coord uninstall` also tears down manual UI
+  even when no `issue-*` directories exist.

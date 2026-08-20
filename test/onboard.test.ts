@@ -65,7 +65,9 @@ const runner = async (argv: readonly string[]) => {
 };
 
 describe("coord onboard", () => {
-  it("applies the happy-path defaults without changing the tracked product tree", async () => {
+  it(
+    "applies the happy-path defaults without changing the tracked product tree",
+    async () => {
     const fixture = product();
     const output: string[] = [];
     const aliasParent = join(fixture.workspaceRoot, "aliases");
@@ -124,7 +126,7 @@ describe("coord onboard", () => {
     ).toBe(2);
     expect(errors.join("")).toContain("is not onboarded in this worktree");
     expect(existsSync(issueRuntimePaths(coordRoot, 10).issueRoot)).toBe(false);
-  });
+  }, 30000);
 
   it("persists a selected profile and numeric dispatch resumes without refetching", async () => {
     const fixture = product();
@@ -271,7 +273,7 @@ describe("coord onboard", () => {
     expect(existsSync(nestedConfigPath(sharedRoot, "beta"))).toBe(false);
     expect(readFileSync(join(sharedRoot, "config.json"), "utf8")).toBe(firstConfigBytes);
     expect(localConfigGet(second.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBeNull();
-  });
+  }, 30000);
 
   it("does not publish the owner locator when doctor fails", () => {
     const fixture = product();

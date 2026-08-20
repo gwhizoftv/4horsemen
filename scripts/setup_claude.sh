@@ -40,15 +40,15 @@ cat > "$CLONE_DIR/CLAUDE.md" <<EOF
 
 ## Your identity (do not deviate)
 - You are the **Claude** agent. Working clone: $CLONE_DIR
-- Your branches: \`issue-<n>/claude\` (scratch: \`claude/<name>\`)
+- Your branches: \`issue-<n>/claude\` for automated issues (scratch: \`claude/<name>\` for manual work)
 - Commit message prefix: \`Claude: \`
 - Start your first response in a session with "Claude agent here" so the human
   knows which terminal they are in.
 
 ## Session start checklist
 1. \`git checkout $SHARED_BRANCH && git pull $REMOTE_NAME $SHARED_BRANCH\`
-2. Ask the human for the issue number if you don't have one.
-3. \`git checkout -b issue-<n>/claude\` (or checkout your existing branch and continue)
+2. For automated issue work: ask the human for the issue number if you don't have one, then \`git checkout -b issue-<n>/claude\` (or checkout your existing branch and continue).
+3. For manual owner-driven work: follow the human's chat instructions and work on a scratch branch \`git checkout -b claude/<name>\`.
 
 ## Local conveniences
 - Temp/scratch files go in .claude/tmp/ (gitignored), never in the repo tree.

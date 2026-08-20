@@ -107,7 +107,7 @@ coord install \
 | 4 | Record `consensus.*`, `coord.installRoot`, `coord.cliEntry`, `coord.workspaceConfig` in each clone |
 | 5 | Install fail-closed shims into each agent clone's `.git/hooks/` |
 | 6 | Emit the selected flat or nested workspace config under `--coord-root` |
-| 7 | Print explicit `coord doctor` / `coord start` / `coord run` next steps — nothing is auto-started |
+| 7 | Print explicit `coord doctor` / `coord start` / `coord run` / `coord manual` next steps — nothing is auto-started |
 
 Not written by default: the product's `githooks/`, `.gitignore`, `package.json`,
 `AGENTS.md`, or `scripts/setup_*`.

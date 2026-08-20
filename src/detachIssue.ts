@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import type { TmuxRunner, OwnerTerminalCloser, TmuxResult } from "./tmux.js";
+import type { TmuxRunner, OwnerTerminalCloser, TmuxResult, SessionKey } from "./tmux.js";
 import {
   closeDarwinTerminalWindows,
   ownerTerminalTitlesToClose,
@@ -44,7 +44,7 @@ const killSessionLive = (name: string): void => {
 };
 
 export type DetachIssueOptions = {
-  issue: number;
+  issue: SessionKey;
   agentIds: readonly string[];
   tmuxNamespace?: string | null;
   /** Workspace fingerprint for Terminal titles (always preferred over tmuxNamespace). */
@@ -63,8 +63,17 @@ export type DetachIssueResult = {
   terminalError?: string;
 };
 
-const sessionPrefix = (issue: number, namespace: string | null): string =>
-  `coord-${issue}${namespace === null || namespace === "" ? "" : `-${namespace.replace(/[^A-Za-z0-9_-]/g, "-")}`}`;
+const sessionPrefix = (
+  sessionKey: SessionKey,
+  namespace: string | null,
+  terminalGroup: string | null = null
+): string => {
+  if (typeof sessionKey === "number") {
+    return `coord-${sessionKey}${namespace === null || namespace === "" ? "" : `-${namespace.replace(/[^A-Za-z0-9_-]/g, "-")}`}`;
+  }
+  const group = terminalGroup ?? namespace;
+  return group === null || group === "" ? "coord-manual" : `coord-manual-${group.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+};
 
 /** Parse issue numbers from live tmux session names for this namespace. */
 export const discoverCoordIssues = (sessionNames: readonly string[], namespace: string | null = null): number[] => {
@@ -84,10 +93,11 @@ export const discoverCoordIssues = (sessionNames: readonly string[], namespace: 
 
 export const filterSessionsForIssue = (
   sessionNames: readonly string[],
-  issue: number,
-  namespace: string | null = null
+  sessionKey: SessionKey,
+  namespace: string | null = null,
+  terminalGroup: string | null = null
 ): string[] => {
-  const prefix = sessionPrefix(issue, namespace);
+  const prefix = sessionPrefix(sessionKey, namespace, terminalGroup);
   return sessionNames.filter((name) => name === prefix || name.startsWith(`${prefix}-`));
 };
 
@@ -142,12 +152,12 @@ export const detachIssue = async (options: DetachIssueOptions): Promise<DetachIs
   const titles = ownerTerminalTitlesToClose(options.issue, options.agentIds, titleGroup);
   const closed = closeTitles(titles, closer, dryRun, log);
 
-  const names = await tmux.listIssueSessions(options.issue);
+  const names = await tmux.listIssueSessions(options.issue, options.agentIds);
   for (const name of names) {
     log(`${dryRun ? "would kill" : "killing"} tmux session ${name}\n`);
   }
   if (!dryRun && names.length > 0) {
-    await tmux.killIssueSessions(options.issue);
+    await tmux.killIssueSessions(options.issue, options.agentIds);
   }
 
   return { killedSessions: names, ...closed };
@@ -160,6 +170,8 @@ export type DetachAllOwnerUiOptions = {
   terminalGroup?: string | null;
   /** When set, only these issues; otherwise discover from live tmux sessions. */
   issues?: readonly number[];
+  /** Include workspace manual UI teardown (default: true). */
+  includeManual?: boolean;
   dryRun?: boolean;
   log?: DetachIssueLogger;
   terminalCloser?: OwnerTerminalCloser | null;
@@ -193,14 +205,22 @@ export const detachAllOwnerUiSync = (options: DetachAllOwnerUiOptions): DetachIs
         ? discoverCoordIssues(listed, namespace)
         : [];
 
-  if (issues.length === 0) {
+  const titleGroup = options.terminalGroup ?? namespace;
+  const includeManual = options.includeManual !== false;
+  const manualSessions = includeManual ? filterSessionsForIssue(listed, "manual", namespace, titleGroup) : [];
+
+  if (issues.length === 0 && manualSessions.length === 0) {
     return { killedSessions: [], closedTerminalTitles: [], terminalClose: "skipped" };
   }
 
-  const titleGroup = options.terminalGroup ?? namespace;
   const titles = new Set<string>();
   for (const issue of issues) {
     for (const title of ownerTerminalTitlesToClose(issue, options.agentIds, titleGroup)) {
+      titles.add(title);
+    }
+  }
+  if (manualSessions.length > 0) {
+    for (const title of ownerTerminalTitlesToClose("manual", options.agentIds, titleGroup)) {
       titles.add(title);
     }
   }
@@ -210,11 +230,17 @@ export const detachAllOwnerUiSync = (options: DetachAllOwnerUiOptions): DetachIs
 
   const killedSessions: string[] = [];
   for (const issue of issues) {
-    for (const name of filterSessionsForIssue(listed, issue, namespace)) {
+    for (const name of filterSessionsForIssue(listed, issue, namespace, titleGroup)) {
       log(`${dryRun ? "would kill" : "killing"} tmux session ${name}\n`);
       if (!dryRun) killSession(name);
       killedSessions.push(name);
     }
+  }
+
+  for (const name of manualSessions) {
+    log(`${dryRun ? "would kill" : "killing"} tmux session ${name}\n`);
+    if (!dryRun) killSession(name);
+    killedSessions.push(name);
   }
 
   return { killedSessions, ...closed };

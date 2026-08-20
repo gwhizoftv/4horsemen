@@ -458,6 +458,7 @@ export const install = (options: InstallOptions): InstallResult => {
       `  coord doctor --coord-root ${coordRoot} --product ${productRoot}`,
       `  coord start <issue> --config ${configPath} --coord-root ${workspace.workspaceRoot}`,
       `  COORD_ISSUE=<issue> coord run --coord-root ${workspace.workspaceRoot}`,
+      `  coord manual --config ${configPath} --coord-root ${workspace.workspaceRoot}`,
       ""
     ].join("\n")
   );
@@ -755,6 +756,9 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
         `  cd ${productRoot}`,
         '  gh issue create --title "…" --body "…"',
         "  coord <issue>",
+        "",
+        "Or task agents directly in chat without an issue:",
+        "  coord manual",
         ""
       ].join("\n")
     );

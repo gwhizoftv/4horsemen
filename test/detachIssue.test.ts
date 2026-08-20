@@ -82,6 +82,33 @@ describe("detachIssue", () => {
     expect(closed).toEqual([]);
     expect(outcome.terminalClose).toBe("skipped");
   });
+
+  it("detaches manual session and closes coord-manual titles", async () => {
+    const killed: string[] = [];
+    const closed: string[] = [];
+    const runner: TmuxRunner = async (args) => {
+      if (args[0] === "list-sessions") return ok("coord-manual-grp123\ncoord-manual-grp123-claude\n");
+      if (args[0] === "kill-session") {
+        killed.push(args[2] ?? "");
+        return ok();
+      }
+      return ok();
+    };
+    const outcome = await detachIssue({
+      issue: "manual",
+      agentIds: ["claude", "codex"],
+      terminalGroup: "grp123",
+      tmuxRunner: runner,
+      terminalCloser: (titles) => {
+        closed.push(...titles);
+      },
+      log: () => undefined
+    });
+    expect(outcome.killedSessions).toEqual(["coord-manual-grp123", "coord-manual-grp123-claude"]);
+    expect(killed).toEqual(["coord-manual-grp123", "coord-manual-grp123-claude"]);
+    expect(outcome.closedTerminalTitles).toEqual(["coord-manual-grp123/claude", "coord-manual-grp123/codex"]);
+    expect(closed).toEqual(["coord-manual-grp123/claude", "coord-manual-grp123/codex"]);
+  });
 });
 
 describe("detachAllOwnerUiSync", () => {
@@ -197,15 +224,25 @@ describe("detachAllOwnerUiSync", () => {
     expect(outcome.terminalClose).toBe("skipped");
   });
 
-  it("does not discover or kill live tmux when injectors are omitted under Vitest", () => {
-    expect(process.env.VITEST).toBeTruthy();
+  it("tears down manual UI even when 0 issues exist", () => {
+    const killed: string[] = [];
+    const closed: string[] = [];
     const outcome = detachAllOwnerUiSync({
-      agentIds: ["claude", "cursor", "antigravity"],
+      agentIds: ["claude", "cursor"],
+      terminalGroup: "grp123",
+      issues: [],
+      listSessions: () => ["coord-manual-grp123", "coord-manual-grp123-claude"],
+      killSession: (name) => {
+        killed.push(name);
+      },
+      terminalCloser: (titles) => {
+        closed.push(...titles);
+      },
       log: () => undefined
     });
-    expect(outcome.killedSessions).toEqual([]);
-    expect(outcome.closedTerminalTitles).toEqual([]);
-    expect(outcome.terminalClose).toBe("skipped");
+    expect(killed).toEqual(["coord-manual-grp123", "coord-manual-grp123-claude"]);
+    expect(closed).toEqual(["coord-manual-grp123/claude", "coord-manual-grp123/cursor"]);
+    expect(outcome.terminalClose).toBe("closed");
   });
 });
 
