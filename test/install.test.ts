@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { assertInstallDeletionAllowed, install, uninstall } from "../src/install.js";
+import { findAgentLanguageViolations } from "../src/agentLanguage.js";
 import { readConfig } from "../src/state.js";
 import { nestedConfigPath } from "../src/workspace.js";
 import {
@@ -127,6 +128,7 @@ describe("coord install — two-mode footprint", () => {
     expect(agentsMd).toContain("owner-driven manual mode");
     expect(agentsMd).toContain("<agent>/<name>");
     expect(agentsMd).toContain("must not fabricate");
+    expect(findAgentLanguageViolations(agentsMd)).toEqual([]);
     expect(existsSync(join(clone, "CLAUDE.md"))).toBe(true);
     expect(readFileSync(join(clone, "CLAUDE.md"), "utf8")).toContain("@AGENTS.md");
   });
@@ -160,7 +162,7 @@ describe("coord install — emitted config", () => {
     expect(config.project).toBe("myserver");
     expect(config.checks).toEqual(declaredChecks);
     expect(config.coordination?.installRoot).toBe(repoRoot);
-    expect(config.coordination?.version).toBe("0.0.13");
+    expect(config.coordination?.version).toBe("0.0.14");
     expect(config.coordination?.vendored).toBe(false);
     expect(config.agents[0]?.launcher).toBe("start-claude.sh");
   });

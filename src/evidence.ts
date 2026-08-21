@@ -6,14 +6,15 @@ import {
   consensusDeclarationArtifactSchema,
   finalizationArtifactSchema,
   implementationReadyArtifactSchema,
-  joinArtifactSchema,
   parseJsonWithSchema,
+  participationReadyArtifactSchema,
   planBallotArtifactSchema,
   reviserAuthorizationArtifactSchema,
   revisionReadyArtifactSchema,
   selectionArtifactSchema,
   validateCommonArtifactFields
 } from "./protocol.js";
+import { agentFacingSubject } from "./agentLanguage.js";
 import type { BoundInput, EvidenceObservation, InternalOrder } from "./steps.js";
 import type { PinValidationResult } from "./pinValidation.js";
 
@@ -208,7 +209,7 @@ const pinErrors = async (
     pin,
     tip: submissionSha,
     issue: order.issue,
-    subject: `${order.evidenceId} artifact`,
+    subject: agentFacingSubject(order.evidenceId),
     ref: order.branch
   });
   if (!phase.ok) outstanding.push(phase.details);
@@ -276,11 +277,11 @@ export const evaluateEvidence = async (
   }
 
   if (order.evidenceId === "join-published") {
-    const parsed = parseJsonWithSchema(blob, joinArtifactSchema);
-    if (!parsed.ok) return rejected(order, submissionSha, [`invalid join artifact: ${parsed.error}`]);
+    const parsed = parseJsonWithSchema(blob, participationReadyArtifactSchema);
+    if (!parsed.ok) return rejected(order, submissionSha, [`invalid participation-readiness artifact: ${parsed.error}`]);
     const errors = commonErrors(parsed.value, order);
-    if (parsed.value.baselineSha !== order.baselineSha) errors.push("join baselineSha does not match the issue baseline");
-    if (parsed.value.automationDigest !== order.automationDigest) errors.push("join automationDigest does not match");
+    if (parsed.value.baselineSha !== order.baselineSha) errors.push("participation-readiness baselineSha does not match the issue baseline");
+    if (parsed.value.automationDigest !== order.automationDigest) errors.push("participation-readiness automationDigest does not match");
     return errors.length === 0 ? satisfied(order, submissionSha) : rejected(order, submissionSha, errors);
   }
 

@@ -39,7 +39,7 @@ Toolchain: `{{TOOLCHAIN}}`.
 
 When the coordinator publishes an automated `action.md`, issue branches carry `.plans/issue-<n>/`,
 `.signals/issue-<n>/`, and `.code-reviews/issue-<n>/`. They are the protocol's
-evidence. R7 finalization is deletion-only cleanup of exactly those paths, so a
+evidence. The final cleanup step deletes exactly those paths, so a
 merge-ready pull request contains none of them and `{{BASE_BRANCH}}` never does.
 
 In owner-driven manual mode there is no coordinator action or evidence. Follow

@@ -248,6 +248,18 @@ current action accidentally.
 Phase changes (R1.join → R2.plan, and later RN steps) always print.
 Use `coord N -v` for tick-level nudge and roster logs.
 
+### Agent prompt and delivery boundary
+
+Internal step identifiers (`R1.join`, `R2.plan`, ...), gate IDs (`gate-1-join`, ...),
+evidence IDs (`join-published`, `implementation-pinned`, ...), and delivery terminology
+(`nudge`, `nudged`) exist only in coordinator state, journals, analytics, CLI operator
+diagnostics, and operator documentation.
+
+The generated `action.md`, typed prompt injection, and installed agent protocol
+overlays are strictly agent-facing: they describe only required outcomes, exact
+file paths, input commits, and completion signals. All agent-facing text is validated
+against `AGENT_FACING_BANNED_TERMS` in `src/agentLanguage.ts`.
+
 ### CLI lifecycle state
 
 The model never writes `waiting.json`, `working.json`, or equivalent state.
