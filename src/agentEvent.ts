@@ -287,7 +287,8 @@ export const handleAgentEvent = (input: HandleAgentEventInput): HandleAgentEvent
   }
   const now = input.now ?? new Date().toISOString();
   const result = observeAgentLifecycleWithResult(paths, agent, observation, now);
-  if (result.changed) {
+  const journalsTurnBoundary = observation.kind === "prompt-submitted" || observation.kind === "stopped";
+  if (result.changed || journalsTurnBoundary) {
     appendJournal(
       paths,
       {

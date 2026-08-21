@@ -188,18 +188,20 @@ good enough for ranking phases and wrong for billing.
 
 ### 2.3 Delivery and agent latency — exact, from `nudged` → `intent-seen`
 
-Pair each `(agent, actionId)` with its first `nudged` and its `intent-seen`:
+Pair each `intent-seen` with the immediately preceding unmatched `nudged` for
+the same `(agent, actionId)`, so a retry is a new delivery attempt rather than
+an overlapping wait from the action's first nudge:
 
 | agent | actions | median | max | total waited |
 | --- | ---: | ---: | ---: | ---: |
 | cursor | 8 | 64.9 s | 589.6 s | 17.2 min |
-| antigravity | 9 | 37.9 s | 725.6 s | 28.2 min |
+| antigravity | 9 | 31.6 s | 705.4 s | 16.4 min |
 | claude | 10 | 181.1 s | 991.6 s | 43.5 min |
-| codex | 12 | 248.8 s | 1152.8 s | 55.5 min |
+| codex | 12 | 130.8 s | 1152.8 s | 47.4 min |
 
-Codex is the pacing agent at the median and the worst tail (19 min on one
-action). Since gates wait for everyone, the 64.5-min run is bounded below by the
-per-phase max of these, not the mean.
+Claude is the pacing agent at the median; Codex has the worst tail (19 min on
+one action). Since gates wait for everyone, the 64.5-min run is bounded below by
+the per-phase max of these, not the mean.
 
 ### 2.4 Coordinator-side verification — exact, and already cheap
 
@@ -389,15 +391,15 @@ coord analytics --issue <n> --coord-root <path>
 The reader never changes workflow state, fetches Git, or writes vendor files.
 It reports four metrics:
 
-- **Phase count** — named workflow intervals closed by `gate-advanced`.
-  Revision rounds and retries remain distinct intervals. Actions prepared in
-  each interval are shown separately.
+- **Phase count** — named workflow intervals, including the active `R1.join`
+  interval before the first `gate-advanced`. Revision rounds and retries remain
+  distinct intervals. Actions prepared in each interval are shown separately.
 - **Time** — the run begins at `started.at`; completed phase intervals end at
   their `gate-advanced.at`. An unfinished final interval is labelled
   `in-progress`. An end before its start reports `invalid`, never a negative
-  duration. Per-agent waits pair the first `nudged` with `intent-seen` for the
-  same `(agent, actionId)`; the displayed median uses the upper middle value,
-  matching the issue-76 acceptance table.
+  duration. Per-agent waits pair each `intent-seen` with the immediately
+  preceding unmatched `nudged` for the same `(agent, actionId)`; the displayed
+  median uses the upper middle value, matching the issue-76 acceptance table.
 - **Token count** — `input`, `output`, `cacheRead`, `cacheWrite`, and
   `reasoning` when the vendor reports it. Claude uses de-duplicated per-message
   `usage`. Codex uses `last_token_usage` deltas and never sums cumulative
@@ -410,7 +412,9 @@ It reports four metrics:
 ### Exact attribution
 
 `agent-lifecycle` journal rows carry `agent`, top-level `actionId`, and Phase 1
-adds `sessionId` and `turnId` to `details`. An action belongs to the interval
+adds `sessionId` and `turnId` to `details`. `prompt-submitted` and `stopped`
+boundaries are journaled even when they do not change lifecycle state, so every
+attempted action can be checked for identity. An action belongs to the interval
 containing its `action-prepared` record.
 
 - Claude transcripts are located at
@@ -418,34 +422,43 @@ containing its `action-prepared` record.
   inherit their turn by walking `parentUuid` to the nearest `user` record and
   reading its `promptId`.
 - Codex transcripts are located beneath
-  `~/.codex/sessions/YYYY/MM/DD/*-<sessionId>.jsonl`. Token records use the
-  `turn_id` on `token_count`; tool counts use `item_completed.turn_id`.
-  `custom_tool_call` alone is not treated as exact because it has no supported
-  top-level turn key.
+  `~/.codex/sessions/YYYY/MM/DD/*-<sessionId>.jsonl`. Current `token_count`
+  records do **not** carry `turn_id` or consistently carry `ordinal`; token
+  deltas are assigned only when their timestamp lies inside exactly one
+  complete, same-session coordinator `prompt-submitted` → `stopped` window.
+  Tool counts use `item_completed.turn_id`; `Extension` is a tool item, while
+  `EnteredReviewMode` and `ExitedReviewMode` are controls. `custom_tool_call`
+  alone is not treated as exact because it has no supported top-level turn key.
 
 The coordinator resolves these paths beneath configured vendor roots; it never
 opens a path supplied by a hook. The parser snapshots the file's initial byte
 length and reads no appended bytes.
 
-Only a record without an exact turn key may use the matching action's
-`prompt-submitted` → `stopped` window, and that slice is labelled `partial`.
-Records matching neither an exact turn nor exactly one window are reported as
-`unassigned`; they are never silently folded into a phase.
+The complete coordinator window is the supported Codex token route. Other
+records without an exact turn key may use the same window only as a labelled
+`partial` fallback. Records matching neither an exact turn nor exactly one
+complete window are reported as `unassigned`; they are never silently folded
+into a phase. Missing identity on any attempted action and any measured
+unassigned record lower coverage.
 
 ### Coverage
 
-Every transcript-backed row carries one of:
+Token and tool coverage are tracked independently so an unknown tool item
+cannot erase valid token measurements. Every transcript-backed metric carries
+one of:
 
 - `complete` — the supported file was read to a stable final newline;
-- `partial` — a timestamp fallback was used or the file grew/ended truncated;
-- `unsupported` — a metric-bearing record has an unknown or malformed schema;
+- `partial` — a fallback was used, a record was unassigned, the file
+  grew/ended truncated, or some metric records were malformed;
+- `unsupported` — the file contains no supported records for that metric;
 - `unavailable` — the session/store is missing or unreadable.
 
-Absent data is `null`/`unavailable`, never zero. A readable supported transcript
-with usage records but no tool records has a real tool count of zero. A
-cross-roster token total appears only when every active agent has complete
-coverage. There is never a cross-roster tool total because vendor invocation
-semantics differ.
+Absent data is `null`/`unavailable`, never zero. Valid rows remain visible under
+`partial` coverage when a sibling record is malformed. A readable supported
+transcript with usage records but no tool records has a real tool count of zero.
+A cross-roster token total appears only when every active agent has complete
+token coverage and no measured token record is unassigned. There is never a
+cross-roster tool total because vendor invocation semantics differ.
 
 Historical journals without `sessionId` remain useful: the command reports
 phase count, time, and agent wait, and omits token/tool sections rather than

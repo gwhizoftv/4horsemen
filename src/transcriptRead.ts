@@ -24,6 +24,8 @@ export type TranscriptUsage = {
   turnId: string;
   tokens: TokenUsage;
   toolCalls: number;
+  tokenRecords: number;
+  toolRecords: number;
 };
 
 export type UnattributedTranscriptUsage = {
@@ -31,6 +33,9 @@ export type UnattributedTranscriptUsage = {
   at: string | null;
   tokens: TokenUsage;
   toolCalls: number;
+  tokenRecords: number;
+  toolRecords: number;
+  windowAttribution: "exact" | "fallback";
 };
 
 export type TranscriptReadResult = {
@@ -39,6 +44,10 @@ export type TranscriptReadResult = {
   path: string | null;
   coverage: AnalyticsCoverage;
   reason: string | null;
+  tokenCoverage: AnalyticsCoverage;
+  tokenReason: string | null;
+  toolCoverage: AnalyticsCoverage;
+  toolReason: string | null;
   turns: TranscriptUsage[];
   unattributed: UnattributedTranscriptUsage[];
 };
@@ -50,6 +59,17 @@ type UsageSample = {
   turnId: string | null;
   tokens: TokenUsage;
   toolCalls: number;
+  tokenRecords: number;
+  toolRecords: number;
+  windowAttribution: "exact" | "fallback";
+};
+
+type ParsedSamples = {
+  samples: UsageSample[];
+  tokenRecords: number;
+  validTokenRecords: number;
+  tokenReasons: string[];
+  toolReasons: string[];
 };
 
 const emptyTokens = (): TokenUsage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: null });
@@ -165,7 +185,7 @@ const readBoundedJsonl = (path: string): BoundedJsonl => {
     }
   }
   if (malformedInterior) {
-    return { records, coverage: "unsupported", reason: "transcript contains a malformed interior record" };
+    return { records, coverage: "partial", reason: "transcript contains a malformed interior record" };
   }
   if (!completeFinalLine || bytesRead < initialSize || finalSize > initialSize) {
     return { records, coverage: "partial", reason: "transcript was growing or ended with a truncated record" };
@@ -173,7 +193,7 @@ const readBoundedJsonl = (path: string): BoundedJsonl => {
   return { records, coverage: "complete", reason: null };
 };
 
-const claudeSamples = (records: readonly JsonObject[]): { samples: UsageSample[]; unsupported: boolean } => {
+const claudeSamples = (records: readonly JsonObject[]): ParsedSamples => {
   const byUuid = new Map<string, JsonObject>();
   for (const record of records) {
     const uuid = string(record.uuid);
@@ -196,7 +216,10 @@ const claudeSamples = (records: readonly JsonObject[]): { samples: UsageSample[]
   const samples: UsageSample[] = [];
   const usageIds = new Set<string>();
   const toolIds = new Set<string>();
-  let unsupported = false;
+  let tokenRecords = 0;
+  let validTokenRecords = 0;
+  const tokenReasons = new Set<string>();
+  const toolReasons = new Set<string>();
   for (const [recordIndex, record] of records.entries()) {
     if (record.type !== "assistant") continue;
     const message = object(record.message);
@@ -206,20 +229,22 @@ const claudeSamples = (records: readonly JsonObject[]): { samples: UsageSample[]
     const messageId = string(message.id);
     const usage = object(message.usage);
     if (usage !== null) {
-      if (messageId === null) unsupported = true;
+      if (messageId === null) tokenReasons.add("usage record has no stable message id");
       const recordId = messageId ?? `claude-usage-line-${recordIndex}`;
       if (!usageIds.has(recordId)) {
         usageIds.add(recordId);
+        tokenRecords += 1;
         const input = nonnegativeInteger(usage.input_tokens);
         const output = nonnegativeInteger(usage.output_tokens);
         const cacheRead = nonnegativeInteger(usage.cache_read_input_tokens);
         const cacheWrite = nonnegativeInteger(usage.cache_creation_input_tokens);
         if (input === null || output === null || cacheRead === null || cacheWrite === null) {
-          unsupported = true;
+          tokenReasons.add("usage record has invalid token counters");
         } else {
           const outputDetails = object(usage.output_tokens_details);
           const reasoning = outputDetails === null ? { value: 0, valid: true } : optionalCounter(outputDetails.thinking_tokens);
-          if (!reasoning.valid) unsupported = true;
+          if (!reasoning.valid) tokenReasons.add("usage record has an invalid reasoning-token counter");
+          validTokenRecords += 1;
           samples.push({
             recordId: `usage:${recordId}`,
             at,
@@ -231,7 +256,10 @@ const claudeSamples = (records: readonly JsonObject[]): { samples: UsageSample[]
               cacheWrite,
               reasoning: outputDetails === null || outputDetails.thinking_tokens === undefined ? null : reasoning.value
             },
-            toolCalls: 0
+            toolCalls: 0,
+            tokenRecords: 1,
+            toolRecords: 0,
+            windowAttribution: "fallback"
           });
         }
       }
@@ -242,14 +270,29 @@ const claudeSamples = (records: readonly JsonObject[]): { samples: UsageSample[]
       const content = object(contentValue);
       if (content?.type !== "tool_use") continue;
       const vendorId = string(content.id);
-      if (vendorId === null) unsupported = true;
+      if (vendorId === null) toolReasons.add("tool record has no stable id");
       const recordId = vendorId ?? `claude-tool-line-${recordIndex}-${contentIndex}`;
       if (toolIds.has(recordId)) continue;
       toolIds.add(recordId);
-      samples.push({ recordId: `tool:${recordId}`, at, turnId, tokens: emptyTokens(), toolCalls: 1 });
+      samples.push({
+        recordId: `tool:${recordId}`,
+        at,
+        turnId,
+        tokens: emptyTokens(),
+        toolCalls: 1,
+        tokenRecords: 0,
+        toolRecords: 1,
+        windowAttribution: "fallback"
+      });
     }
   }
-  return { samples, unsupported };
+  return {
+    samples,
+    tokenRecords,
+    validTokenRecords,
+    tokenReasons: [...tokenReasons],
+    toolReasons: [...toolReasons]
+  };
 };
 
 const codexToolTypes = new Set([
@@ -261,16 +304,27 @@ const codexToolTypes = new Set([
   "DynamicToolCall",
   "CustomToolCall",
   "FunctionCall",
-  "LocalShellCall"
+  "LocalShellCall",
+  "Extension"
 ]);
-const codexNonToolTypes = new Set(["Reasoning", "UserMessage", "AgentMessage", "ContextCompaction"]);
+const codexNonToolTypes = new Set([
+  "Reasoning",
+  "UserMessage",
+  "AgentMessage",
+  "ContextCompaction",
+  "EnteredReviewMode",
+  "ExitedReviewMode"
+]);
 
-const codexSamples = (records: readonly JsonObject[]): { samples: UsageSample[]; unsupported: boolean } => {
+const codexSamples = (records: readonly JsonObject[]): ParsedSamples => {
   const samples: UsageSample[] = [];
   const recordIds = new Set<string>();
   const fallbackCustomTools: UsageSample[] = [];
   let exactToolCount = 0;
-  let unsupported = false;
+  let tokenRecords = 0;
+  let validTokenRecords = 0;
+  const tokenReasons = new Set<string>();
+  const toolReasons = new Set<string>();
 
   for (const [index, record] of records.entries()) {
     const payload = object(record.payload);
@@ -278,10 +332,15 @@ const codexSamples = (records: readonly JsonObject[]): { samples: UsageSample[];
     const at = string(record.timestamp);
     const ordinal = nonnegativeInteger(record.ordinal);
     if (record.type === "event_msg" && payload.type === "token_count") {
+      const vendorId = string(record.id) ?? string(payload.id) ?? (ordinal === null ? null : String(ordinal));
+      const recordId = `token:${vendorId ?? `line-${index}`}`;
+      if (recordIds.has(recordId)) continue;
+      recordIds.add(recordId);
+      tokenRecords += 1;
       const info = object(payload.info);
       const usage = info === null ? null : object(info.last_token_usage);
       if (usage === null) {
-        unsupported = true;
+        tokenReasons.add("token_count record has no last_token_usage");
         continue;
       }
       const inputTotal = nonnegativeInteger(usage.input_tokens);
@@ -297,13 +356,10 @@ const codexSamples = (records: readonly JsonObject[]): { samples: UsageSample[];
         !reasoning.valid ||
         inputTotal < cacheRead.value + cacheWrite.value
       ) {
-        unsupported = true;
+        tokenReasons.add("token_count record has invalid token counters");
         continue;
       }
-      if (ordinal === null) unsupported = true;
-      const recordId = `token:${ordinal ?? index}`;
-      if (recordIds.has(recordId)) continue;
-      recordIds.add(recordId);
+      validTokenRecords += 1;
       samples.push({
         recordId,
         at,
@@ -315,7 +371,10 @@ const codexSamples = (records: readonly JsonObject[]): { samples: UsageSample[];
           cacheWrite: cacheWrite.value,
           reasoning: usage.reasoning_output_tokens === undefined ? null : reasoning.value
         },
-        toolCalls: 0
+        toolCalls: 0,
+        tokenRecords: 1,
+        toolRecords: 0,
+        windowAttribution: "exact"
       });
       continue;
     }
@@ -324,16 +383,16 @@ const codexSamples = (records: readonly JsonObject[]): { samples: UsageSample[];
       const item = object(payload.item);
       const itemType = item === null ? null : string(item.type);
       if (itemType === null) {
-        unsupported = true;
+        toolReasons.add("item_completed record has no item type");
         continue;
       }
       if (codexNonToolTypes.has(itemType)) continue;
       if (!codexToolTypes.has(itemType)) {
-        unsupported = true;
+        toolReasons.add(`unrecognized item_completed type ${itemType}`);
         continue;
       }
       const vendorId = item === null ? null : string(item.id);
-      if (vendorId === null) unsupported = true;
+      if (vendorId === null) toolReasons.add("tool item has no stable id");
       const recordId = `tool:${vendorId ?? ordinal ?? index}`;
       if (recordIds.has(recordId)) continue;
       recordIds.add(recordId);
@@ -343,7 +402,10 @@ const codexSamples = (records: readonly JsonObject[]): { samples: UsageSample[];
         at,
         turnId: string(payload.turn_id),
         tokens: emptyTokens(),
-        toolCalls: 1
+        toolCalls: 1,
+        tokenRecords: 0,
+        toolRecords: 1,
+        windowAttribution: "fallback"
       });
       continue;
     }
@@ -352,13 +414,16 @@ const codexSamples = (records: readonly JsonObject[]): { samples: UsageSample[];
     // Use it only when the session has no authoritative item_completed tools.
     if (record.type === "response_item" && payload.type === "custom_tool_call") {
       const vendorId = string(payload.id) ?? string(payload.call_id);
-      if (vendorId === null) unsupported = true;
+      if (vendorId === null) toolReasons.add("custom tool record has no stable id");
       fallbackCustomTools.push({
         recordId: `custom-tool:${vendorId ?? ordinal ?? index}`,
         at,
         turnId: null,
         tokens: emptyTokens(),
-        toolCalls: 1
+        toolCalls: 1,
+        tokenRecords: 0,
+        toolRecords: 1,
+        windowAttribution: "fallback"
       });
     }
   }
@@ -369,7 +434,13 @@ const codexSamples = (records: readonly JsonObject[]): { samples: UsageSample[];
       samples.push(sample);
     }
   }
-  return { samples, unsupported };
+  return {
+    samples,
+    tokenRecords,
+    validTokenRecords,
+    tokenReasons: [...tokenReasons],
+    toolReasons: [...toolReasons]
+  };
 };
 
 const aggregateSamples = (samples: readonly UsageSample[]): Pick<TranscriptReadResult, "turns" | "unattributed"> => {
@@ -381,17 +452,24 @@ const aggregateSamples = (samples: readonly UsageSample[]): Pick<TranscriptReadR
         recordId: sample.recordId,
         at: sample.at,
         tokens: sample.tokens,
-        toolCalls: sample.toolCalls
+        toolCalls: sample.toolCalls,
+        tokenRecords: sample.tokenRecords,
+        toolRecords: sample.toolRecords,
+        windowAttribution: sample.windowAttribution
       });
       continue;
     }
     const current = turns.get(sample.turnId) ?? {
       turnId: sample.turnId,
       tokens: emptyTokens(),
-      toolCalls: 0
+      toolCalls: 0,
+      tokenRecords: 0,
+      toolRecords: 0
     };
     current.tokens = addTokens(current.tokens, sample.tokens);
     current.toolCalls += sample.toolCalls;
+    current.tokenRecords += sample.tokenRecords;
+    current.toolRecords += sample.toolRecords;
     turns.set(sample.turnId, current);
   }
   return {
@@ -414,6 +492,10 @@ export const readTranscript = (input: ReadTranscriptInput): TranscriptReadResult
     path: null,
     coverage: "unavailable",
     reason,
+    tokenCoverage: "unavailable",
+    tokenReason: reason,
+    toolCoverage: "unavailable",
+    toolReason: reason,
     turns: [],
     unattributed: []
   });
@@ -442,7 +524,52 @@ export const readTranscript = (input: ReadTranscriptInput): TranscriptReadResult
   }
   const parsed = input.vendor === "claude" ? claudeSamples(bounded.records) : codexSamples(bounded.records);
   const aggregated = aggregateSamples(parsed.samples);
-  const coverage = parsed.unsupported ? "unsupported" : bounded.coverage;
-  const reason = parsed.unsupported ? "transcript contains an unsupported metric record" : bounded.reason;
-  return { vendor: input.vendor, sessionId: input.sessionId, path, coverage, reason, ...aggregated };
+  const tokenCoverage: AnalyticsCoverage =
+    bounded.coverage !== "complete"
+      ? "partial"
+      : parsed.tokenRecords === 0 || parsed.validTokenRecords === 0
+      ? "unsupported"
+      : parsed.tokenReasons.length > 0
+        ? "partial"
+        : "complete";
+  const toolCoverage: AnalyticsCoverage =
+    parsed.toolReasons.length > 0 || bounded.coverage !== "complete" ? "partial" : "complete";
+  const tokenReason = [
+    bounded.reason,
+    parsed.tokenRecords === 0
+      ? "transcript has no token metric records"
+      : parsed.validTokenRecords === 0
+        ? "transcript has no supported token metric records"
+        : null,
+    ...parsed.tokenReasons
+  ]
+    .filter((value): value is string => value !== null)
+    .join("; ");
+  const toolReason = [bounded.reason, ...parsed.toolReasons]
+    .filter((value): value is string => value !== null)
+    .join("; ");
+  const coverage =
+    tokenCoverage === "unsupported"
+      ? "unsupported"
+      : tokenCoverage === "partial" || toolCoverage === "partial"
+        ? "partial"
+        : "complete";
+  const reason = [
+    tokenReason === "" ? null : `tokens: ${tokenReason}`,
+    toolReason === "" ? null : `tools: ${toolReason}`
+  ]
+    .filter((value): value is string => value !== null)
+    .join("; ");
+  return {
+    vendor: input.vendor,
+    sessionId: input.sessionId,
+    path,
+    coverage,
+    reason: reason === "" ? null : reason,
+    tokenCoverage,
+    tokenReason: tokenReason === "" ? null : tokenReason,
+    toolCoverage,
+    toolReason: toolReason === "" ? null : toolReason,
+    ...aggregated
+  };
 };

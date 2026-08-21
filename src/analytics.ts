@@ -33,19 +33,24 @@ export type PhaseUsageAnalytics = {
   round: number | null;
   tokens: TokenUsage | null;
   toolCalls: number | null;
-  coverage: AnalyticsCoverage;
+  tokenCoverage: AnalyticsCoverage;
+  toolCoverage: AnalyticsCoverage;
 };
 
 export type AgentUsageAnalytics = {
   agent: string;
   vendor: TranscriptVendor | null;
-  coverage: AnalyticsCoverage;
-  reason: string | null;
+  tokenCoverage: AnalyticsCoverage;
+  tokenReason: string | null;
+  toolCoverage: AnalyticsCoverage;
+  toolReason: string | null;
   phases: PhaseUsageAnalytics[];
   unassigned: {
     tokens: TokenUsage;
     toolCalls: number;
     records: number;
+    tokenRecords: number;
+    toolRecords: number;
   };
 };
 
@@ -103,10 +108,15 @@ const coverageRank: Record<AnalyticsCoverage, number> = {
   unavailable: 3
 };
 
-const combineTranscriptCoverage = (results: readonly TranscriptReadResult[]): AnalyticsCoverage => {
-  if (results.length === 0 || results.every((result) => result.coverage === "unavailable")) return "unavailable";
-  if (results.some((result) => result.coverage === "unsupported")) return "unsupported";
-  if (results.some((result) => result.coverage !== "complete")) return "partial";
+const combineTranscriptCoverage = (
+  results: readonly TranscriptReadResult[],
+  metric: "tokenCoverage" | "toolCoverage"
+): AnalyticsCoverage => {
+  if (results.length === 0 || results.every((result) => result[metric] === "unavailable")) return "unavailable";
+  if (results.every((result) => result[metric] === "unsupported" || result[metric] === "unavailable")) {
+    return results.some((result) => result[metric] === "unsupported") ? "unsupported" : "unavailable";
+  }
+  if (results.some((result) => result[metric] !== "complete")) return "partial";
   return "complete";
 };
 
@@ -137,6 +147,8 @@ const derivePhases = (start: StartState, journal: readonly JournalEvent[], now: 
   const gates = journal.filter((event) => event.type === "gate-advanced");
   const phases: PhaseAnalytics[] = [];
   let phaseStart = started;
+  let activeName: string | null = "R1.join";
+  let activeRound: number | null = null;
   for (const gate of gates) {
     const details = object(gate.details);
     const name = string(details?.from);
@@ -147,7 +159,7 @@ const derivePhases = (start: StartState, journal: readonly JournalEvent[], now: 
     phases.push({
       index: phases.length,
       name,
-      round: name.startsWith("R6.") ? integer(details?.round) : null,
+      round: name.startsWith("R6.") ? activeRound : null,
       startedAt: phaseStart,
       endedAt: gate.at,
       durationMs: valid ? endMs - startMs : null,
@@ -155,10 +167,9 @@ const derivePhases = (start: StartState, journal: readonly JournalEvent[], now: 
       actions: 0
     });
     phaseStart = gate.at;
+    activeName = string(details?.to);
+    activeRound = activeName?.startsWith("R6.") === true ? integer(details?.round) : null;
   }
-  const finalGate = gates.at(-1);
-  const finalDetails = finalGate === undefined ? null : object(finalGate.details);
-  const activeName = finalDetails === null ? null : string(finalDetails.to);
   if (activeName !== null) {
     const startMs = milliseconds(phaseStart);
     const endMs = milliseconds(now);
@@ -166,7 +177,7 @@ const derivePhases = (start: StartState, journal: readonly JournalEvent[], now: 
     phases.push({
       index: phases.length,
       name: activeName,
-      round: activeName.startsWith("R6.") ? integer(finalDetails?.round) : null,
+      round: activeName.startsWith("R6.") ? activeRound : null,
       startedAt: phaseStart,
       endedAt: now,
       durationMs: valid ? endMs - startMs : null,
@@ -229,20 +240,21 @@ const deriveActionTurns = (journal: readonly JournalEvent[], phases: readonly Ph
 const deriveWaits = (roster: readonly string[], journal: readonly JournalEvent[]): WaitAnalytics[] => {
   const waits = new Map<string, number[]>();
   for (const agent of roster) waits.set(agent, []);
-  const firstNudge = new Map<string, number>();
+  const pendingNudge = new Map<string, number>();
   for (const event of journal) {
     if (event.actionId === undefined || event.agent === undefined) continue;
     const key = `${event.agent}\u0000${event.actionId}`;
     if (event.type === "nudged") {
       const at = milliseconds(event.at);
-      if (at !== null && !firstNudge.has(key)) firstNudge.set(key, at);
+      if (at !== null) pendingNudge.set(key, at);
     } else if (event.type === "intent-seen") {
-      const from = firstNudge.get(key);
+      const from = pendingNudge.get(key);
       const to = milliseconds(event.at);
       if (from !== undefined && to !== null && to >= from) {
         const values = waits.get(event.agent) ?? [];
         values.push(to - from);
         waits.set(event.agent, values);
+        pendingNudge.delete(key);
       }
     }
   }
@@ -273,17 +285,20 @@ const unavailableUsage = (
 ): AgentUsageAnalytics => ({
   agent,
   vendor,
-  coverage: "unavailable",
-  reason,
+  tokenCoverage: "unavailable",
+  tokenReason: reason,
+  toolCoverage: "unavailable",
+  toolReason: reason,
   phases: phases.map((phase) => ({
     phaseIndex: phase.index,
     phase: phase.name,
     round: phase.round,
     tokens: null,
     toolCalls: null,
-    coverage: "unavailable"
+    tokenCoverage: "unavailable",
+    toolCoverage: "unavailable"
   })),
-  unassigned: { tokens: emptyTokens(), toolCalls: 0, records: 0 }
+  unassigned: { tokens: emptyTokens(), toolCalls: 0, records: 0, tokenRecords: 0, toolRecords: 0 }
 });
 
 export type BuildAnalyticsInput = {
@@ -310,7 +325,11 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
   const runValid = startMs !== null && endMs !== null && endMs >= startMs;
   const runState: MetricState = !runValid ? "invalid" : terminalGate === undefined ? "in-progress" : "complete";
   const turns = deriveActionTurns(input.journal, phases);
-  const hasSessionIdentity = turns.length > 0;
+  const hasSessionIdentity = input.journal.some((event) => {
+    if (event.type !== "agent-lifecycle") return false;
+    const details = object(event.details);
+    return string(details?.sessionId) !== null || string(details?.turnId) !== null;
+  });
 
   let usage: AnalyticsReport["usage"] = null;
   if (hasSessionIdentity) {
@@ -327,39 +346,85 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
         agents.push(unavailableUsage(agent, vendor, phases, "no journaled session identity for this agent"));
         continue;
       }
+      const attemptedActions = new Set(
+        input.journal
+          .filter((event) => event.type === "nudged" && event.agent === agent && event.actionId !== undefined)
+          .map((event) => event.actionId as string)
+      );
+      const boundActions = new Set(agentTurns.map((turn) => turn.actionId));
+      const missingIdentity = [...attemptedActions].filter((actionId) => !boundActions.has(actionId));
       const results = sessions.map((sessionId) =>
         readTranscript({ vendor, sessionId, root: input.transcriptRoots?.[vendor] ?? null })
       );
-      let coverage = combineTranscriptCoverage(results);
-      let reason = results
-        .filter((result) => result.reason !== null)
-        .map((result) => `${result.sessionId}: ${result.reason}`)
-        .join("; ");
+      let tokenCoverage = combineTranscriptCoverage(results, "tokenCoverage");
+      let toolCoverage = combineTranscriptCoverage(results, "toolCoverage");
+      const tokenReasons = results
+        .filter((result) => result.tokenReason !== null)
+        .map((result) => `${result.sessionId}: ${result.tokenReason}`);
+      const toolReasons = results
+        .filter((result) => result.toolReason !== null)
+        .map((result) => `${result.sessionId}: ${result.toolReason}`);
+      if (missingIdentity.length > 0) {
+        tokenCoverage = worseCoverage(tokenCoverage, "partial");
+        toolCoverage = worseCoverage(toolCoverage, "partial");
+        const identityReason = `${missingIdentity.length} attempted action(s) have no complete session/turn identity`;
+        tokenReasons.push(identityReason);
+        toolReasons.push(identityReason);
+      }
       const phaseUsage: PhaseUsageAnalytics[] = phases.map((phase) => ({
         phaseIndex: phase.index,
         phase: phase.name,
         round: phase.round,
         tokens: emptyTokens(),
         toolCalls: 0,
-        coverage
+        tokenCoverage,
+        toolCoverage
       }));
       let unassignedTokens = emptyTokens();
       let unassignedTools = 0;
       let unassignedRecords = 0;
-      let fallbackUsed = false;
+      let unassignedTokenRecords = 0;
+      let unassignedToolRecords = 0;
+      let tokenFallbackUsed = false;
+      let toolFallbackUsed = false;
 
-      const assign = (phaseIndex: number | null, tokens: TokenUsage, toolCalls: number, fallback: boolean): void => {
-        if (fallback) fallbackUsed = true;
+      const assign = (
+        phaseIndex: number | null,
+        record: {
+          tokens: TokenUsage;
+          toolCalls: number;
+          tokenRecords: number;
+          toolRecords: number;
+        },
+        exact: boolean
+      ): void => {
         if (phaseIndex === null || phaseUsage[phaseIndex] === undefined) {
-          unassignedTokens = addTokens(unassignedTokens, tokens);
-          unassignedTools += toolCalls;
-          unassignedRecords += 1;
+          if (record.tokenRecords > 0) {
+            unassignedTokens = addTokens(unassignedTokens, record.tokens);
+            unassignedTokenRecords += record.tokenRecords;
+            tokenCoverage = worseCoverage(tokenCoverage, "partial");
+          }
+          if (record.toolRecords > 0) {
+            unassignedTools += record.toolCalls;
+            unassignedToolRecords += record.toolRecords;
+            toolCoverage = worseCoverage(toolCoverage, "partial");
+          }
+          unassignedRecords += record.tokenRecords + record.toolRecords;
           return;
         }
         const bucket = phaseUsage[phaseIndex];
-        bucket.tokens = addTokens(bucket.tokens ?? emptyTokens(), tokens);
-        bucket.toolCalls = (bucket.toolCalls ?? 0) + toolCalls;
-        if (fallback) bucket.coverage = worseCoverage(bucket.coverage, "partial");
+        if (record.tokenRecords > 0) bucket.tokens = addTokens(bucket.tokens ?? emptyTokens(), record.tokens);
+        if (record.toolRecords > 0) bucket.toolCalls = (bucket.toolCalls ?? 0) + record.toolCalls;
+        if (!exact && record.tokenRecords > 0) {
+          tokenFallbackUsed = true;
+          tokenCoverage = worseCoverage(tokenCoverage, "partial");
+          bucket.tokenCoverage = worseCoverage(bucket.tokenCoverage, "partial");
+        }
+        if (!exact && record.toolRecords > 0) {
+          toolFallbackUsed = true;
+          toolCoverage = worseCoverage(toolCoverage, "partial");
+          bucket.toolCoverage = worseCoverage(bucket.toolCoverage, "partial");
+        }
       };
 
       for (const result of results) {
@@ -367,7 +432,8 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
           const action = agentTurns.find(
             (turn) => turn.sessionId === result.sessionId && turn.turnId === turnUsage.turnId
           );
-          assign(action?.phaseIndex ?? null, turnUsage.tokens, turnUsage.toolCalls, false);
+          const phaseIndex = action?.phaseIndex ?? null;
+          assign(phaseIndex, turnUsage, phaseIndex !== null);
         }
         for (const record of result.unattributed) {
           const at = record.at === null ? null : milliseconds(record.at);
@@ -381,46 +447,63 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
                     at >= turn.startedMs &&
                     at <= turn.endedMs
                 );
-          assign(matching.length === 1 ? (matching[0]?.phaseIndex ?? null) : null, record.tokens, record.toolCalls, matching.length === 1);
+          const phaseIndex = matching.length === 1 ? (matching[0]?.phaseIndex ?? null) : null;
+          const exact = matching.length === 1 && phaseIndex !== null && record.windowAttribution === "exact";
+          assign(phaseIndex, record, exact);
         }
       }
-      if (fallbackUsed) {
-        coverage = worseCoverage(coverage, "partial");
-        reason = [reason, "one or more records used a timestamp-window fallback"].filter((value) => value !== "").join("; ");
+      if (unassignedTokenRecords > 0) tokenReasons.push("one or more measured token records are unassigned");
+      if (unassignedToolRecords > 0) toolReasons.push("one or more measured tool records are unassigned");
+      if (tokenFallbackUsed) {
+        tokenReasons.push("one or more token records used a non-exact attribution fallback");
+      }
+      if (toolFallbackUsed) {
+        toolReasons.push("one or more tool records used a non-exact attribution fallback");
       }
       for (const phase of phaseUsage) {
-        phase.coverage = worseCoverage(phase.coverage, coverage);
-        if (coverage === "unavailable" || coverage === "unsupported") {
-          phase.tokens = null;
-          phase.toolCalls = null;
-        }
+        phase.tokenCoverage = worseCoverage(phase.tokenCoverage, tokenCoverage);
+        phase.toolCoverage = worseCoverage(phase.toolCoverage, toolCoverage);
+        if (tokenCoverage === "unavailable" || tokenCoverage === "unsupported") phase.tokens = null;
+        if (toolCoverage === "unavailable" || toolCoverage === "unsupported") phase.toolCalls = null;
       }
+      const tokenReason = [...new Set(tokenReasons)].join("; ");
+      const toolReason = [...new Set(toolReasons)].join("; ");
       agents.push({
         agent,
         vendor,
-        coverage,
-        reason: reason === "" ? null : reason,
+        tokenCoverage,
+        tokenReason: tokenReason === "" ? null : tokenReason,
+        toolCoverage,
+        toolReason: toolReason === "" ? null : toolReason,
         phases: phaseUsage,
-        unassigned: { tokens: unassignedTokens, toolCalls: unassignedTools, records: unassignedRecords }
+        unassigned: {
+          tokens: unassignedTokens,
+          toolCalls: unassignedTools,
+          records: unassignedRecords,
+          tokenRecords: unassignedTokenRecords,
+          toolRecords: unassignedToolRecords
+        }
       });
     }
 
-    const tokenTotal = agents.every((agent) => agent.coverage === "complete")
-      ? agents.reduce(
-          (total, agent) =>
-            agent.phases.reduce(
-              (phaseTotal, phase) => addTokens(phaseTotal, phase.tokens ?? emptyTokens()),
-              total
-            ),
-          emptyTokens()
-        )
-      : null;
+    const tokenTotal =
+      phases.length > 0 &&
+      agents.every((agent) => agent.tokenCoverage === "complete" && agent.unassigned.tokenRecords === 0)
+        ? agents.reduce(
+            (total, agent) =>
+              agent.phases.reduce(
+                (phaseTotal, phase) => addTokens(phaseTotal, phase.tokens ?? emptyTokens()),
+                total
+              ),
+            emptyTokens()
+          )
+        : null;
     usage = { agents: agents.sort((left, right) => left.agent.localeCompare(right.agent)), tokenTotal };
   }
 
   return {
     issue: input.start.issue,
-    phaseCount: phases.filter((phase) => phase.state === "complete" || phase.state === "invalid").length,
+    phaseCount: phases.length,
     run: {
       startedAt,
       endedAt,
@@ -446,6 +529,9 @@ const formatTokens = (tokens: TokenUsage | null): string => {
   );
 };
 
+const formatPhase = (phase: Pick<PhaseUsageAnalytics, "phase" | "round">): string =>
+  `${phase.phase}${phase.round === null ? "" : ` round ${phase.round}`}`;
+
 export const renderAnalytics = (report: AnalyticsReport): string => {
   const lines = [
     `Issue ${report.issue} analytics`,
@@ -469,13 +555,15 @@ export const renderAnalytics = (report: AnalyticsReport): string => {
   if (report.usage !== null) {
     lines.push("", "Token count");
     for (const agent of report.usage.agents) {
-      lines.push(`- ${agent.agent}: coverage=${agent.coverage}${agent.reason === null ? "" : ` (${agent.reason})`}`);
+      lines.push(
+        `- ${agent.agent}: coverage=${agent.tokenCoverage}${agent.tokenReason === null ? "" : ` (${agent.tokenReason})`}`
+      );
       for (const phase of agent.phases) {
-        lines.push(`  - ${phase.phase}: ${formatTokens(phase.tokens)}; coverage=${phase.coverage}`);
+        lines.push(`  - ${formatPhase(phase)}: ${formatTokens(phase.tokens)}; coverage=${phase.tokenCoverage}`);
       }
-      if (agent.unassigned.records > 0) {
+      if (agent.unassigned.tokenRecords > 0) {
         lines.push(
-          `  - unassigned: ${formatTokens(agent.unassigned.tokens)}; records=${agent.unassigned.records}`
+          `  - unassigned: ${formatTokens(agent.unassigned.tokens)}; records=${agent.unassigned.tokenRecords}`
         );
       }
     }
@@ -487,13 +575,17 @@ export const renderAnalytics = (report: AnalyticsReport): string => {
       "Tool count"
     );
     for (const agent of report.usage.agents) {
-      lines.push(`- ${agent.agent}: coverage=${agent.coverage}`);
+      lines.push(
+        `- ${agent.agent}: coverage=${agent.toolCoverage}${agent.toolReason === null ? "" : ` (${agent.toolReason})`}`
+      );
       for (const phase of agent.phases) {
         lines.push(
-          `  - ${phase.phase}: ${phase.toolCalls === null ? "unavailable" : phase.toolCalls}; coverage=${phase.coverage}`
+          `  - ${formatPhase(phase)}: ${phase.toolCalls === null ? "unavailable" : phase.toolCalls}; coverage=${phase.toolCoverage}`
         );
       }
-      if (agent.unassigned.records > 0) lines.push(`  - unassigned: ${agent.unassigned.toolCalls}`);
+      if (agent.unassigned.toolRecords > 0) {
+        lines.push(`  - unassigned: ${agent.unassigned.toolCalls}; records=${agent.unassigned.toolRecords}`);
+      }
     }
     lines.push("Cross-roster tool total: intentionally not reported");
   }

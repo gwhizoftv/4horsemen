@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,6 +60,12 @@ const transcriptRoots = (): { claude: string; codex: string } => {
   return { claude, codex };
 };
 
+const removeBrokenClaudeRecord = (roots: { claude: string }): void => {
+  const path = join(roots.claude, "projects", "fixture", "session-claude.jsonl");
+  const records = readFileSync(path, "utf8").trim().split("\n");
+  writeFileSync(path, `${records.slice(0, -1).join("\n")}\n`);
+};
+
 describe("analytics aggregation", () => {
   it("reconstructs phase/time metrics and joins per-turn tokens and tools to actions", () => {
     const report = buildAnalytics({ start, journal: readJournalFixture(), transcriptRoots: transcriptRoots() });
@@ -79,7 +85,8 @@ describe("analytics aggregation", () => {
     const claude = report.usage?.agents.find((agent) => agent.agent === "claude");
     const codex = report.usage?.agents.find((agent) => agent.agent === "codex");
     expect(claude).toMatchObject({
-      coverage: "complete",
+      tokenCoverage: "partial",
+      toolCoverage: "partial",
       phases: [
         {
           phase: "R1.join",
@@ -88,27 +95,22 @@ describe("analytics aggregation", () => {
         },
         { phase: "R2.plan", tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, toolCalls: 0 }
       ],
-      unassigned: { toolCalls: 1, records: 2 }
+      unassigned: { toolCalls: 1, records: 2, tokenRecords: 1, toolRecords: 1 }
     });
     expect(codex).toMatchObject({
-      coverage: "complete",
+      tokenCoverage: "complete",
+      toolCoverage: "partial",
       phases: [
         { phase: "R1.join", tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, toolCalls: 0 },
         {
           phase: "R2.plan",
-          tokens: { input: 20, output: 20, cacheRead: 70, cacheWrite: 10, reasoning: 5 },
+          tokens: { input: 30, output: 28, cacheRead: 100, cacheWrite: 10, reasoning: 8 },
           toolCalls: 1
         }
       ],
-      unassigned: { toolCalls: 1, records: 1 }
+      unassigned: { toolCalls: 1, records: 1, tokenRecords: 0, toolRecords: 1 }
     });
-    expect(report.usage?.tokenTotal).toEqual({
-      input: 23,
-      output: 25,
-      cacheRead: 77,
-      cacheWrite: 21,
-      reasoning: 7
-    });
+    expect(report.usage?.tokenTotal).toBeNull();
     expect(renderAnalytics(report)).toContain("Cross-roster tool total: intentionally not reported");
   });
 
@@ -121,6 +123,164 @@ describe("analytics aggregation", () => {
     expect(renderAnalytics(report)).not.toContain("Token count");
   });
 
+  it("keeps complete token totals independent from partial tool coverage", () => {
+    const roots = transcriptRoots();
+    removeBrokenClaudeRecord(roots);
+    const report = buildAnalytics({ start, journal: readJournalFixture(), transcriptRoots: roots });
+    const codex = report.usage?.agents.find((agent) => agent.agent === "codex");
+
+    expect(codex).toMatchObject({ tokenCoverage: "complete", toolCoverage: "partial" });
+    expect(report.usage?.tokenTotal).toEqual({
+      input: 33,
+      output: 33,
+      cacheRead: 107,
+      cacheWrite: 21,
+      reasoning: 10
+    });
+  });
+
+  it("degrades coverage when any attempted action lacks session and turn identity", () => {
+    const roots = transcriptRoots();
+    removeBrokenClaudeRecord(roots);
+    const missingActionId = "33333333-3333-4333-8333-333333333333";
+    const journal = readJournalFixture();
+    journal.splice(
+      -1,
+      0,
+      journalEventSchema.parse({
+        formatVersion: 2,
+        sequence: 12,
+        at: "2026-08-21T00:02:10.000Z",
+        type: "action-prepared",
+        agent: "claude",
+        actionId: missingActionId,
+        details: { requiredPath: ".plans/issue-89/review.md" }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 2,
+        sequence: 13,
+        at: "2026-08-21T00:02:11.000Z",
+        type: "nudged",
+        agent: "claude",
+        actionId: missingActionId,
+        details: {}
+      })
+    );
+    const report = buildAnalytics({ start, journal, activeRoster: ["claude"], transcriptRoots: roots });
+    const claude = report.usage?.agents[0];
+
+    expect(claude).toMatchObject({ tokenCoverage: "partial", toolCoverage: "partial" });
+    expect(claude?.tokenReason).toContain("1 attempted action(s) have no complete session/turn identity");
+    expect(report.usage?.tokenTotal).toBeNull();
+  });
+
+  it("emits the active R1 interval before the first gate", () => {
+    const journal = readJournalFixture().filter((event) => event.sequence <= 5);
+    const report = buildAnalytics({
+      start,
+      journal,
+      activeRoster: ["claude"],
+      now: "2026-08-21T00:00:30.000Z",
+      transcriptRoots: transcriptRoots()
+    });
+
+    expect(report).toMatchObject({
+      phaseCount: 1,
+      run: { state: "in-progress", durationMs: 30_000 },
+      phases: [{ name: "R1.join", state: "in-progress", actions: 1 }]
+    });
+    expect(report.usage?.agents[0]?.phases[0]).toMatchObject({
+      phase: "R1.join",
+      tokens: { input: 3, output: 5 }
+    });
+    expect(report.usage?.tokenTotal).toBeNull();
+  });
+
+  it("pairs every retry response with the immediately preceding nudge", () => {
+    const actionId = "44444444-4444-4444-8444-444444444444";
+    const journal = [
+      journalEventSchema.parse({
+        formatVersion: 2,
+        sequence: 0,
+        at: "2026-08-21T00:00:00.000Z",
+        type: "started",
+        details: { issue: 89, profile: "consensus" }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 2,
+        sequence: 1,
+        at: "2026-08-21T00:00:00.000Z",
+        type: "nudged",
+        agent: "codex",
+        actionId,
+        details: {}
+      }),
+      journalEventSchema.parse({
+        formatVersion: 2,
+        sequence: 2,
+        at: "2026-08-21T00:00:10.000Z",
+        type: "intent-seen",
+        agent: "codex",
+        actionId,
+        submissionSha: "a".repeat(40),
+        details: {}
+      }),
+      journalEventSchema.parse({
+        formatVersion: 2,
+        sequence: 3,
+        at: "2026-08-21T00:00:20.000Z",
+        type: "nudged",
+        agent: "codex",
+        actionId,
+        details: {}
+      }),
+      journalEventSchema.parse({
+        formatVersion: 2,
+        sequence: 4,
+        at: "2026-08-21T00:00:25.000Z",
+        type: "intent-seen",
+        agent: "codex",
+        actionId,
+        submissionSha: "b".repeat(40),
+        details: {}
+      })
+    ];
+    const report = buildAnalytics({ start, journal, activeRoster: ["codex"], now: "2026-08-21T00:00:30.000Z" });
+    expect(report.waits).toEqual([{ agent: "codex", count: 2, medianMs: 10_000, maxMs: 10_000 }]);
+  });
+
+  it("retains entry rounds on repeated R6 phases and labels usage rows", () => {
+    const actionId = "55555555-5555-4555-8555-555555555555";
+    const raw = [
+      { sequence: 0, at: "2026-08-21T00:00:00.000Z", type: "started", details: { issue: 89, profile: "consensus" } },
+      { sequence: 1, at: "2026-08-21T00:00:00.500Z", type: "gate-advanced", details: { from: "R1.join", to: "R6.revise", round: 1 } },
+      { sequence: 2, at: "2026-08-21T00:00:00.600Z", type: "action-prepared", agent: "claude", actionId, details: { requiredPath: ".code-reviews/issue-89/revise.md" } },
+      { sequence: 3, at: "2026-08-21T00:00:00.700Z", type: "nudged", agent: "claude", actionId, details: {} },
+      { sequence: 4, at: "2026-08-21T00:00:01.000Z", type: "agent-lifecycle", agent: "claude", actionId, details: { vendor: "claude", event: "UserPromptSubmit", kind: "prompt-submitted", execution: "working", health: "healthy", sessionId: "session-claude", turnId: "turn-claude-1" } },
+      { sequence: 5, at: "2026-08-21T00:00:03.500Z", type: "agent-lifecycle", agent: "claude", details: { vendor: "claude", event: "Stop", kind: "stopped", execution: "idle", health: "healthy", sessionId: "session-claude", turnId: "turn-claude-1" } },
+      { sequence: 6, at: "2026-08-21T00:00:04.000Z", type: "gate-advanced", details: { from: "R6.revise", to: "R6.ballot", round: 1 } },
+      { sequence: 7, at: "2026-08-21T00:00:05.000Z", type: "gate-advanced", details: { from: "R6.ballot", to: "R6.declare", round: 1 } },
+      { sequence: 8, at: "2026-08-21T00:00:06.000Z", type: "gate-advanced", details: { from: "R6.declare", to: "R6.revise", round: 2 } },
+      { sequence: 9, at: "2026-08-21T00:00:07.000Z", type: "gate-advanced", details: { from: "R6.revise", to: "R6.ballot", round: 2 } },
+      { sequence: 10, at: "2026-08-21T00:00:08.000Z", type: "gate-advanced", details: { from: "R6.ballot", to: "R6.declare", round: 2 } },
+      { sequence: 11, at: "2026-08-21T00:00:09.000Z", type: "gate-advanced", details: { from: "R6.declare", to: null, round: null } }
+    ];
+    const journal = raw.map((event) => journalEventSchema.parse({ formatVersion: 2, ...event }));
+    const report = buildAnalytics({ start, journal, activeRoster: ["claude"], transcriptRoots: transcriptRoots() });
+
+    expect(report.phases.filter((phase) => phase.name.startsWith("R6.")).map((phase) => [phase.name, phase.round])).toEqual([
+      ["R6.revise", 1],
+      ["R6.ballot", 1],
+      ["R6.declare", 1],
+      ["R6.revise", 2],
+      ["R6.ballot", 2],
+      ["R6.declare", 2]
+    ]);
+    const rendered = renderAnalytics(report);
+    expect(rendered.match(/R6\.revise round 1/g)).toHaveLength(3);
+    expect(rendered.match(/R6\.revise round 2/g)).toHaveLength(3);
+  });
+
   it("labels a timestamp-window attribution partial and leaves unmatched records unassigned", () => {
     const journal = readJournalFixture().map((event) =>
       event.type === "agent-lifecycle" && event.agent === "claude" && event.details.kind === "stopped"
@@ -129,8 +289,8 @@ describe("analytics aggregation", () => {
     );
     const report = buildAnalytics({ start, journal, transcriptRoots: transcriptRoots() });
     const claude = report.usage?.agents.find((agent) => agent.agent === "claude");
-    expect(claude).toMatchObject({ coverage: "partial", unassigned: { records: 0 } });
-    expect(claude?.reason).toContain("timestamp-window fallback");
+    expect(claude).toMatchObject({ tokenCoverage: "partial", toolCoverage: "partial", unassigned: { records: 0 } });
+    expect(claude?.tokenReason).toContain("non-exact attribution fallback");
     expect(report.usage?.tokenTotal).toBeNull();
   });
 
@@ -152,7 +312,7 @@ describe("analytics aggregation", () => {
       transcriptRoots: transcriptRoots()
     });
     const cursor = report.usage?.agents.find((agent) => agent.agent === "cursor");
-    expect(cursor).toMatchObject({ coverage: "unavailable" });
+    expect(cursor).toMatchObject({ tokenCoverage: "unavailable", toolCoverage: "unavailable" });
     expect(cursor?.phases.every((phase) => phase.tokens === null && phase.toolCalls === null)).toBe(true);
     expect(report.usage?.tokenTotal).toBeNull();
   });

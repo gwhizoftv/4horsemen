@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,7 +36,9 @@ describe("vendor transcript reader", () => {
       {
         turnId: "turn-claude-1",
         tokens: { input: 3, output: 5, cacheRead: 7, cacheWrite: 11, reasoning: 2 },
-        toolCalls: 1
+        toolCalls: 1,
+        tokenRecords: 1,
+        toolRecords: 1
       }
     ]);
     expect(result.unattributed).toHaveLength(2);
@@ -44,24 +46,31 @@ describe("vendor transcript reader", () => {
     expect(result.unattributed.reduce((total, row) => total + row.tokens.input, 0)).toBe(13);
   });
 
-  it("uses Codex per-turn deltas and item_completed tools, not cumulative totals or custom result records", () => {
+  it("reads live Codex token_count rows without turn_id or ordinal and classifies live item variants", () => {
     const { root } = installFixture("codex", "session-codex");
     const result = readTranscript({ vendor: "codex", sessionId: "session-codex", root });
 
-    expect(result.coverage).toBe("complete");
+    expect(result).toMatchObject({ coverage: "complete", tokenCoverage: "complete", toolCoverage: "complete" });
     expect(result.turns).toEqual([
       {
         turnId: "turn-codex-1",
-        tokens: { input: 20, output: 20, cacheRead: 70, cacheWrite: 10, reasoning: 5 },
-        toolCalls: 1
+        tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: null },
+        toolCalls: 1,
+        tokenRecords: 0,
+        toolRecords: 1
       },
       {
         turnId: "turn-codex-2",
-        tokens: { input: 10, output: 8, cacheRead: 30, cacheWrite: 0, reasoning: 3 },
-        toolCalls: 1
+        tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: null },
+        toolCalls: 1,
+        tokenRecords: 0,
+        toolRecords: 1
       }
     ]);
-    expect(result.unattributed).toEqual([]);
+    expect(result.unattributed).toHaveLength(2);
+    expect(result.unattributed.every((row) => row.windowAttribution === "exact")).toBe(true);
+    expect(result.unattributed.reduce((total, row) => total + row.tokens.input, 0)).toBe(30);
+    expect(result.unattributed.reduce((total, row) => total + row.tokens.output, 0)).toBe(28);
   });
 
   it("leaves custom_tool_call-only tools unattributed rather than guessing a turn", () => {
@@ -93,11 +102,9 @@ describe("vendor transcript reader", () => {
       path,
       `${JSON.stringify({
         timestamp: "2026-08-21T00:00:02.000Z",
-        ordinal: 1,
         type: "event_msg",
         payload: {
           type: "token_count",
-          turn_id: "turn-1",
           info: {
             last_token_usage: {
               input_tokens: 1,
@@ -112,7 +119,10 @@ describe("vendor transcript reader", () => {
     );
     expect(readTranscript({ vendor: "codex", sessionId: "usage-only", root })).toMatchObject({
       coverage: "complete",
-      turns: [{ turnId: "turn-1", toolCalls: 0 }]
+      tokenCoverage: "complete",
+      toolCoverage: "complete",
+      turns: [],
+      unattributed: [{ tokenRecords: 1, toolRecords: 0, windowAttribution: "exact" }]
     });
     expect(readTranscript({ vendor: "codex", sessionId: "missing", root })).toMatchObject({
       coverage: "unavailable",
@@ -126,15 +136,41 @@ describe("vendor transcript reader", () => {
     });
   });
 
-  it("marks final truncation partial and malformed interior records unsupported", () => {
+  it("marks final truncation and malformed interior records partial", () => {
     const partial = installFixture("codex", "partial");
     writeFileSync(partial.path, '{"timestamp":"2026-08-21T00:00:00.000Z"}');
     expect(readTranscript({ vendor: "codex", sessionId: "partial", root: partial.root }).coverage).toBe("partial");
 
-    const unsupported = installFixture("codex", "unsupported");
-    writeFileSync(unsupported.path, "not-json\n{}\n");
-    expect(readTranscript({ vendor: "codex", sessionId: "unsupported", root: unsupported.root }).coverage).toBe(
-      "unsupported"
+    const malformed = installFixture("codex", "malformed");
+    writeFileSync(malformed.path, "not-json\n{}\n");
+    expect(readTranscript({ vendor: "codex", sessionId: "malformed", root: malformed.root }).coverage).toBe(
+      "partial"
     );
+  });
+
+  it("keeps valid token rows when another token or tool row is unsupported", () => {
+    const { root, path } = installFixture("codex", "mixed");
+    const valid = readFileSync(path, "utf8");
+    writeFileSync(
+      path,
+      `${valid}${JSON.stringify({
+        timestamp: "2026-08-21T00:01:45.000Z",
+        type: "event_msg",
+        payload: { type: "token_count", info: {} }
+      })}\n${JSON.stringify({
+        timestamp: "2026-08-21T00:01:46.000Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-codex-1",
+          item: { type: "FutureControl", id: "future-1" }
+        }
+      })}\n`
+    );
+
+    const result = readTranscript({ vendor: "codex", sessionId: "mixed", root });
+    expect(result).toMatchObject({ tokenCoverage: "partial", toolCoverage: "partial" });
+    expect(result.unattributed.reduce((total, row) => total + row.tokens.input, 0)).toBe(30);
+    expect(result.turns.reduce((total, row) => total + row.toolCalls, 0)).toBe(2);
   });
 });

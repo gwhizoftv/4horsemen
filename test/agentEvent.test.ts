@@ -197,6 +197,39 @@ describe("vendor lifecycle event normalization", () => {
       actionId,
       details: { sessionId: "session-1", turnId: "turn-1" }
     });
+
+    const journalLength = readJournal(paths).length;
+    handleAgentEvent({
+      vendor: "codex",
+      clone,
+      environmentIssue: "86",
+      raw: {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "session-1",
+        turn_id: "turn-1",
+        prompt: exactPrompt
+      }
+    });
+    expect(readJournal(paths)).toHaveLength(journalLength + 1);
+    expect(readJournal(paths).at(-1)).toMatchObject({
+      type: "agent-lifecycle",
+      actionId,
+      details: { kind: "prompt-submitted", sessionId: "session-1", turnId: "turn-1" }
+    });
+
+    const stop = {
+      hook_event_name: "Stop",
+      session_id: "session-1",
+      turn_id: "turn-1"
+    };
+    handleAgentEvent({ vendor: "codex", clone, environmentIssue: "86", raw: stop });
+    const stoppedLength = readJournal(paths).length;
+    handleAgentEvent({ vendor: "codex", clone, environmentIssue: "86", raw: stop });
+    expect(readJournal(paths)).toHaveLength(stoppedLength + 1);
+    expect(readJournal(paths).at(-1)).toMatchObject({
+      type: "agent-lifecycle",
+      details: { kind: "stopped", sessionId: "session-1", turnId: "turn-1" }
+    });
   });
 
   it("journals Claude and Codex identity only when the hooks supply it", () => {
