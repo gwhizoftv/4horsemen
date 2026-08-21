@@ -11,7 +11,7 @@ import {
   readAgentLifecycle
 } from "../src/agentLifecycle.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
-import { initializeOperationalState } from "../src/state.js";
+import { initializeOperationalState, readJournal } from "../src/state.js";
 
 const actionId = "11111111-1111-4111-8111-111111111111";
 const digest = "a".repeat(64);
@@ -21,7 +21,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-const runtimeFixture = (agent: "codex" | "antigravity") => {
+const runtimeFixture = (agent: "codex" | "claude" | "antigravity") => {
   const root = mkdtempSync(join(tmpdir(), "coord-agent-event-"));
   roots.push(root);
   const clone = join(root, "clone");
@@ -191,6 +191,88 @@ describe("vendor lifecycle event normalization", () => {
       health: "healthy",
       action: { delivery: "accepted", sessionId: "session-1", turnId: "turn-1" }
     });
+    expect(readJournal(paths).at(-1)).toMatchObject({
+      type: "agent-lifecycle",
+      agent: "codex",
+      actionId,
+      details: { sessionId: "session-1", turnId: "turn-1" }
+    });
+
+    const journalLength = readJournal(paths).length;
+    handleAgentEvent({
+      vendor: "codex",
+      clone,
+      environmentIssue: "86",
+      raw: {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "session-1",
+        turn_id: "turn-1",
+        prompt: exactPrompt
+      }
+    });
+    expect(readJournal(paths)).toHaveLength(journalLength + 1);
+    expect(readJournal(paths).at(-1)).toMatchObject({
+      type: "agent-lifecycle",
+      actionId,
+      details: { kind: "prompt-submitted", sessionId: "session-1", turnId: "turn-1" }
+    });
+
+    const stop = {
+      hook_event_name: "Stop",
+      session_id: "session-1",
+      turn_id: "turn-1"
+    };
+    handleAgentEvent({ vendor: "codex", clone, environmentIssue: "86", raw: stop });
+    const stoppedLength = readJournal(paths).length;
+    handleAgentEvent({ vendor: "codex", clone, environmentIssue: "86", raw: stop });
+    expect(readJournal(paths)).toHaveLength(stoppedLength + 1);
+    expect(readJournal(paths).at(-1)).toMatchObject({
+      type: "agent-lifecycle",
+      details: { kind: "stopped", sessionId: "session-1", turnId: "turn-1" }
+    });
+  });
+
+  it("journals Claude and Codex identity only when the hooks supply it", () => {
+    const identified = runtimeFixture("claude");
+    orderAgentAction(identified.paths, "claude", actionId, digest);
+    markActionInjected(identified.paths, "claude", actionId, digest);
+    handleAgentEvent({
+      vendor: "claude",
+      clone: identified.clone,
+      environmentIssue: "86",
+      raw: {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "claude-session",
+        prompt_id: "claude-turn",
+        prompt: `Read and execute coordinator action ${actionId} digest ${digest} at ${identified.paths.issueRoot}/agents/claude/action.md`
+      }
+    });
+    expect(readJournal(identified.paths).at(-1)).toMatchObject({
+      type: "agent-lifecycle",
+      details: { sessionId: "claude-session", turnId: "claude-turn" }
+    });
+
+    const anonymous = runtimeFixture("claude");
+    handleAgentEvent({
+      vendor: "claude",
+      clone: anonymous.clone,
+      environmentIssue: "86",
+      raw: { hook_event_name: "SessionStart" }
+    });
+    const details = readJournal(anonymous.paths).at(-1)?.details;
+    expect(details).not.toHaveProperty("sessionId");
+    expect(details).not.toHaveProperty("turnId");
+
+    const anonymousCodex = runtimeFixture("codex");
+    handleAgentEvent({
+      vendor: "codex",
+      clone: anonymousCodex.clone,
+      environmentIssue: "86",
+      raw: { hook_event_name: "SessionStart" }
+    });
+    const codexDetails = readJournal(anonymousCodex.paths).at(-1)?.details;
+    expect(codexDetails).not.toHaveProperty("sessionId");
+    expect(codexDetails).not.toHaveProperty("turnId");
   });
 
   it("routes Antigravity status-line queue depth from payload cwd without flags or issue env", () => {

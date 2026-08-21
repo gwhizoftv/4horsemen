@@ -287,7 +287,8 @@ export const handleAgentEvent = (input: HandleAgentEventInput): HandleAgentEvent
   }
   const now = input.now ?? new Date().toISOString();
   const result = observeAgentLifecycleWithResult(paths, agent, observation, now);
-  if (result.changed) {
+  const journalsTurnBoundary = observation.kind === "prompt-submitted" || observation.kind === "stopped";
+  if (result.changed || journalsTurnBoundary) {
     appendJournal(
       paths,
       {
@@ -299,7 +300,9 @@ export const handleAgentEvent = (input: HandleAgentEventInput): HandleAgentEvent
           event: observation.eventName,
           kind: observation.kind,
           execution: result.state.agents[agent]?.execution ?? "unknown",
-          health: result.state.agents[agent]?.health ?? "unknown"
+          health: result.state.agents[agent]?.health ?? "unknown",
+          ...(observation.sessionId === undefined ? {} : { sessionId: observation.sessionId }),
+          ...(observation.turnId === undefined ? {} : { turnId: observation.turnId })
         }
       },
       now

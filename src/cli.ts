@@ -1,8 +1,10 @@
 import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clearCompletion, readAction } from "./action.js";
 import { handleAgentEvent, lifecycleVendorSchema } from "./agentEvent.js";
+import { buildAnalytics, renderAnalytics } from "./analytics.js";
 import { initializeAgentLifecycle, readAgentLifecycle } from "./agentLifecycle.js";
 import { doctor, renderDoctorReport } from "./doctor.js";
 import { fetchGitHubIssue, renderGitHubIssueSnapshot } from "./githubIssue.js";
@@ -32,6 +34,7 @@ import {
   mutateCursorsState,
   readConfig,
   readCursorsState,
+  readJournal,
   readStartState,
   replaceCursor,
   setPaused,
@@ -191,6 +194,7 @@ Usage:
   coord start <issue> --config <path> --coord-root <external-path> [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord run --issue <issue> [--product <path> | --coord-root <path>] [-v|--verbose]
   coord status --issue <issue> [--product <path> | --coord-root <path>]
+  coord analytics --issue <issue> [--product <path> | --coord-root <path>]
   coord next --issue <issue> [--product <path> | --coord-root <path>] [--agent <agent>]
   coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
   coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
@@ -1084,6 +1088,29 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (parsed.positionals.length !== 0) throw new Error("status takes no positional arguments.");
       const paths = existingContext(parsed, io);
       io.stdout(renderIssueReport(readStartState(paths), readCursorsState(paths), readAgentLifecycle(paths)));
+      return 0;
+    }
+
+    if (command === "analytics") {
+      allowedFlags(parsed, ["issue", "coord-root", "product"]);
+      if (parsed.positionals.length !== 0) throw new Error("analytics takes no positional arguments.");
+      const paths = existingContext(parsed, io);
+      const start = readStartState(paths);
+      const cursors = readCursorsState(paths);
+      const home = dependencies.home === undefined ? homedir() : dependencies.home;
+      io.stdout(
+        renderAnalytics(
+          buildAnalytics({
+            start,
+            journal: readJournal(paths),
+            activeRoster: cursors.activeRoster,
+            transcriptRoots: {
+              claude: home === null ? null : resolve(home, ".claude"),
+              codex: home === null ? null : resolve(home, ".codex")
+            }
+          })
+        )
+      );
       return 0;
     }
 
