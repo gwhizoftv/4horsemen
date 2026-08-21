@@ -61,8 +61,8 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     gateId: "gate-1-join",
     evidenceId: "join-published",
     participants: "all",
-    requiredPath: (issue, agent) => `.signals/issue-${issue}/joined-${agent}.json`,
-    task: "Publish the join artifact for this issue. Coordination already checked this clone out on your issue branch; do not clear skip-worktree on AGENTS.md or switch branches to make checkout work."
+    requiredPath: (issue, agent) => `.signals/issue-${issue}/participation-ready-${agent}.json`,
+    task: "Publish the participation-readiness artifact for this issue. Coordination already checked this clone out on your issue branch; do not clear skip-worktree on AGENTS.md or switch branches to make checkout work."
   },
   "R2.plan": {
     id: "R2.plan",
@@ -125,7 +125,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     gateId: "gate-5-comparison",
     evidenceId: "reviser-authorized",
     participants: "reviser",
-    requiredPath: (issue) => `.signals/issue-${issue}/reviser-authorized.json`,
+    requiredPath: (issue) => `.signals/issue-${issue}/revision-authorization.json`,
     task: "Publish the automated reviser authorization from the bound comparison ballots."
   },
   "R6.revise": {

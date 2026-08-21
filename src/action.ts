@@ -55,8 +55,9 @@ exact 40-character lowercase commit SHA as the sole contents of:
 
 \`${order.completePath}\`
 
-After writing that SHA, keep this file. If \`actionId\` in the front matter
-changes, execute the new action even if you were not nudged.
+Before waiting for more input, re-read this file. If \`actionId\` has changed,
+execute the new instructions immediately; do not wait for another coordinator
+message.
 `;
 };
 

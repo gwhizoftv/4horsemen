@@ -50,7 +50,7 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
     case "R1.join":
       return {
         ...common(ctx),
-        artifact: "join",
+        artifact: "participation-ready",
         baselineSha: ctx.baselineSha,
         automationDigest: ctx.automationDigest
       };

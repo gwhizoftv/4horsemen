@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseAction, parseCompletion, readAction, renderAction, writeAction } from "../src/action.js";
+import { findAgentLanguageViolations } from "../src/agentLanguage.js";
 import type { InternalOrder } from "../src/steps.js";
 
 const roots: string[] = [];
@@ -41,7 +42,8 @@ describe("agent actions", () => {
       requiredPath: ".plans/issue-1/review.md"
     });
     expect(raw).toContain("3".repeat(40));
-    expect(raw).toContain("If `actionId` in the front matter");
+    expect(raw).toContain("If `actionId` has changed");
+    expect(findAgentLanguageViolations(raw)).toEqual([]);
     expect(raw).not.toContain("stepId:");
     expect(raw).not.toContain("evidence:");
     expect(raw).not.toContain("gate-");

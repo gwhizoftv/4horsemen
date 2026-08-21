@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   implementationReadyArtifactSchema,
-  joinArtifactSchema,
   parseJsonWithSchema,
+  participationReadyArtifactSchema,
   revisionReadyArtifactSchema
 } from "../src/protocol.js";
 
@@ -14,16 +14,17 @@ const common = {
 };
 
 describe("published protocol schemas", () => {
-  it("accepts a strict join and rejects unknown or stale shapes", () => {
-    const join = {
+  it("accepts a strict participation-ready artifact and rejects unknown or stale shapes", () => {
+    const participation = {
       ...common,
-      artifact: "join" as const,
+      artifact: "participation-ready" as const,
       baselineSha: "a".repeat(40),
       automationDigest: "b".repeat(64)
     };
-    expect(joinArtifactSchema.parse(join)).toEqual(join);
-    expect(joinArtifactSchema.safeParse({ ...join, surprise: true }).success).toBe(false);
-    expect(joinArtifactSchema.safeParse({ ...join, baselineSha: "ABC" }).success).toBe(false);
+    expect(participationReadyArtifactSchema.parse(participation)).toEqual(participation);
+    expect(participationReadyArtifactSchema.safeParse({ ...participation, surprise: true }).success).toBe(false);
+    expect(participationReadyArtifactSchema.safeParse({ ...participation, baselineSha: "ABC" }).success).toBe(false);
+    expect(participationReadyArtifactSchema.safeParse({ ...participation, artifact: "join" }).success).toBe(false);
   });
 
   it("validates implementation pins and approved repository paths", () => {
@@ -60,7 +61,9 @@ describe("published protocol schemas", () => {
   });
 
   it("reports JSON and schema errors without returning unchecked values", () => {
-    expect(parseJsonWithSchema("{", joinArtifactSchema)).toMatchObject({ ok: false });
-    expect(parseJsonWithSchema(JSON.stringify({ nope: true }), joinArtifactSchema)).toMatchObject({ ok: false });
+    expect(parseJsonWithSchema("{", participationReadyArtifactSchema)).toMatchObject({ ok: false });
+    expect(parseJsonWithSchema(JSON.stringify({ nope: true }), participationReadyArtifactSchema)).toMatchObject({
+      ok: false
+    });
   });
 });

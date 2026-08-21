@@ -31,7 +31,7 @@ declares, as argument vectors, in the owner's workspace config:
 
 - `verify.precommit` / `verify.prepush` — run in the agent's clone by its hooks.
 - `checks` — run by the coordinator in a throwaway worktree at the exact
-  approved commit, and they gate pull-request creation.
+  approved commit, and they must pass before pull-request creation.
 
 Toolchain: `{{TOOLCHAIN}}`.
 
@@ -39,7 +39,7 @@ Toolchain: `{{TOOLCHAIN}}`.
 
 When the coordinator publishes an automated `action.md`, issue branches carry `.plans/issue-<n>/`,
 `.signals/issue-<n>/`, and `.code-reviews/issue-<n>/`. They are the protocol's
-evidence. R7 finalization is deletion-only cleanup of exactly those paths, so a
+evidence. The final cleanup step deletes exactly those paths, so a
 merge-ready pull request contains none of them and `{{BASE_BRANCH}}` never does.
 
 In owner-driven manual mode there is no coordinator action or evidence. Follow

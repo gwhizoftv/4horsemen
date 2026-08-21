@@ -248,6 +248,15 @@ current action accidentally.
 Phase changes (R1.join → R2.plan, and later RN steps) always print.
 Use `coord N -v` for tick-level nudge and roster logs.
 
+### Agent-facing language boundary
+
+Internal step ids (`R1.join`, …), gate ids, evidence ids, journal delivery
+events (`nudged`), and operator docs may keep coordinator vocabulary. Generated
+`action.md` bodies, injected prompt text from `renderNudgeText`, and the
+installed `AGENTS.md` protocol overlay must not. The single forbidden-term list
+and evidence-subject map live in `src/agentLanguage.ts`
+(`findAgentLanguageViolations`, `agentFacingSubject`).
+
 ### CLI lifecycle state
 
 The model never writes `waiting.json`, `working.json`, or equivalent state.
