@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 88,
+  "issueSessionId": "issue-88:26de98aae01426d582d17d15d1e33e1b6b3e3f90",
+  "agent": "cursor",
+  "inputSetHash": "603f351783580c1e10bf821c66e8477d223fb3776657c4d2e77f32ba578ee74d",
+  "artifact": "consensus-ballot",
+  "round": 1,
+  "revisionCommitSha": "b4aec11886c776a2ef6dc38812f34fac8693eee8",
+  "disposition": "approve",
+  "rationale": "Revision adds evaluateEvidence-backed pin-subject and correction-block tests so a reverted agentFacingSubject wiring would fail, closing the regression gap without weakening the participation-ready public contract."
+}
