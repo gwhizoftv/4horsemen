@@ -26,11 +26,12 @@ token_count records   : 19616
 ```
 
 **Zero** codex `token_count` records carry `turn_id`, at payload or record level.
-The plan has been corrected and the claim withdrawn. Codex token attribution is
-ordinal bracketing between `task_started` / `task_complete` (which do carry
-`turn_id`, 105/105 and 91/91), not a direct key. The consequence for this review
-is finding 1 below, which I had missed entirely and which is more serious than
-anything I did find.
+The plan has been corrected and the claim withdrawn. Codex token attribution
+cannot use a vendor key at all; per finding 1 it should bracket by the
+coordinator's own journaled turn window rather than by codex's `task_started` /
+`task_complete` records, which do carry `turn_id` (105/105 and 91/91) but are
+vendor-format archaeology. The consequence for this review is finding 1 below,
+which I had missed entirely and which is more serious than anything I did find.
 
 ## Summary
 
