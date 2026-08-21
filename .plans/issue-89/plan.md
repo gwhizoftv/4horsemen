@@ -46,40 +46,65 @@ review showed that is both incomplete and unnecessary:
   `~/.claude/projects/<slug>/<sessionId>.jsonl`, codex under
   `~/.codex/sessions/YYYY/MM/DD/`.
 
-So Phase 1 journals **`sessionId` only** and resolves the file by vendor locator
-under a configured root. This is one less journaled field, gives codex real
-coverage instead of fixture-only coverage, and means the coordinator never opens
-a path supplied by a hook payload.
+So Phase 1 journals **`sessionId` and `turnId`** and resolves the file by vendor
+locator under a configured root. That gives codex real coverage instead of
+fixture-only coverage, and means the coordinator never opens a path supplied by a
+hook payload.
 
 ### The join algorithm, stated once
 
-Two implementers must not pick different joins. The algorithm is:
+Two implementers must not pick different joins. Attribution is by **turn
+identity**, not by timestamp. A timestamp window is only a labelled fallback.
 
-1. `agent-lifecycle` journal rows already carry `agent` and, when present,
-   top-level `actionId` (`src/agentEvent.ts:295`). Phase 1 adds `sessionId`.
-2. An action's **turn window** runs from the `prompt-submitted` lifecycle row
-   bearing that `actionId` to the next `stopped` row for the same agent and
-   session.
-3. An action's **phase** is the `gate-advanced` interval containing its
+Phase 1 journals `sessionId` **and `turnId`** on `agent-lifecycle`. Both are
+already normalized for both vendors — codex from `turn_id`
+(`src/agentEvent.ts:96`), claude from `turn_id` or `prompt_id`
+(`src/agentEvent.ts:115`) — so persisting them is one line in the projection.
+
+1. `agent-lifecycle` rows already carry `agent` and top-level `actionId`
+   (`src/agentEvent.ts:295`). Phase 1 adds `sessionId` and `turnId`, giving
+   `(action → session, turn)` for every action.
+2. An action's **phase** is the `gate-advanced` interval containing its
    `action-prepared` event.
-4. A transcript record is attributed to an action when its timestamp falls inside
-   that action's turn window in that session — and therefore to that action's
-   phase.
-5. Records in the session that fall in **no** action window are reported as
-   `unassigned`. They are never folded into a phase and never silently dropped.
+3. A transcript record is attributed to a turn by the **per-vendor exact route**
+   below, and therefore to that turn's action and phase.
+4. Only when no turn identity resolves for a record does the reader fall back to
+   the action's turn window (`prompt-submitted` → `stopped` for that `actionId`),
+   and it must mark that slice coverage `partial`. A temporal guess is never
+   reported as exact.
+5. Records matching no turn and no window are reported `unassigned` — never
+   folded into a phase, never silently dropped.
 
-No `turnId` is journaled: `actionId` is already on the lifecycle row and is the
-identity the report needs.
+#### Per-vendor exact attribution routes
+
+Verified against the live vendor stores at plan time:
+
+| Vendor | Metric | Route | Verified |
+| --- | --- | --- | --- |
+| codex | tokens | `token_count` payload carries `turn_id` directly | 121 records, all with `turn_id` |
+| codex | tools | `item_completed` payload carries `turn_id` | 301 records, all with `turn_id` |
+| claude | tokens + tools | usage records carry **no** turn id; walk `parentUuid` to the nearest `user` record and read its `promptId` | 196/196 usage records reach a `promptId` |
+
+Two facts this table encodes, both of which cost a fallback if ignored:
+
+- **Claude usage records carry no turn identifier at all.** `promptId` appears
+  only on `user` records (95 in the sampled session). The parent walk is what
+  makes claude exact; without it, claude attribution is temporal.
+- **Codex `custom_tool_call` records carry no `turn_id`** (0 of 113), so codex
+  tool counts must be taken from `item_completed`, which does. Reading tools from
+  `custom_tool_call` would reintroduce a temporal guess for exactly the metric
+  this join exists to make exact.
 
 ## Exact File List to be changed or deleted
 
 ### Changed
 
-- `src/agentEvent.ts` — add `sessionId` to the `agent-lifecycle` journal
-  `details` projection (`src/agentEvent.ts:291`), which today is
-  `{vendor, event, kind, execution, health}`. The value is already on the
-  normalized observation for both vendors; the top-level `actionId` is already
-  journaled. This is the only write-path change in Phase 1.
+- `src/agentEvent.ts` — add `sessionId` and `turnId` to the `agent-lifecycle`
+  journal `details` projection (`src/agentEvent.ts:291`), which today is
+  `{vendor, event, kind, execution, health}`. Both values are already on the
+  normalized observation for both vendors (`src/agentEvent.ts:96` and `:115`);
+  the top-level `actionId` is already journaled. Two fields in one projection is
+  the only write-path change in Phase 1.
 - `src/cli.ts` — register `coord analytics --issue <n> [--product <path> |
   --coord-root <path>]`, with strict flag validation and the normal issue-runtime
   resolution used by existing commands; extend help text.
@@ -117,7 +142,12 @@ None.
 - `src/transcriptRead.ts` — vendor locator and bounded parser. Takes a vendor,
   `sessionId`, and a configured root (injected in tests); resolves the session
   file under that root; reads at most the file's initial byte length; returns
-  `{values, coverage, reason}` — never a bare `undefined`.
+  per-turn `{turnId, tokens, toolCalls}` rows plus `{coverage, reason}` — never a
+  bare `undefined`. Implements the per-vendor attribution routes above: codex
+  reads `turn_id` from `token_count` (tokens) and `item_completed` (tools);
+  claude resolves each record's turn by walking `parentUuid` to the nearest
+  `user` record's `promptId`. A record whose turn cannot be resolved is returned
+  unattributed rather than assigned.
 - `test/analytics.test.ts`, `test/transcriptRead.test.ts` — see Tests.
 - `test/support/fixtures/analytics-journal.jsonl` — issue-76-shaped journal
   **including** `sessionId` and `actionId` on lifecycle rows.
@@ -169,7 +199,14 @@ These go verbatim into `docs/analytics.md`; the report must not deviate.
   the token and tool sections rather than erroring**; a never-recorded metric
   reports `null` with coverage `unavailable`, never `0`; no cross-roster total is
   printed when any active agent's coverage is short of `complete`.
-- `test/transcriptRead.test.ts` — **new.** Claude and codex fixtures each yield
+- `test/transcriptRead.test.ts` — **new.** **Attribution is by turn identity:** a
+  codex fixture with two interleaved turns attributes each `token_count` to its
+  own `turn_id` and each tool to the `item_completed` `turn_id` — and a fixture
+  whose tool records are only `custom_tool_call` (no `turn_id`) returns them
+  unattributed rather than guessing; a claude fixture attributes each usage
+  record to the `promptId` reached through its `parentUuid` chain, including a
+  record two hops from its `user` parent, and a record whose chain is broken
+  returns unattributed. Claude and codex fixtures each yield
   expected per-turn token deltas and tool-call counts; **codex's cumulative
   `total_token_usage` is not summed** (a fixture with two turns proves the total
   is the delta sum, not the cumulative sum); tool **results** are not counted as
@@ -213,10 +250,15 @@ the historical issue-76 journal has no `sessionId` in it.
   payloads carry no such field, so codex coverage would be fixture-only, and it
   would have the coordinator open a payload-supplied path. Session-addressed
   vendor locators fix both.
-- **Journal `turnId`** (Codex review, finding 3): its goal — binding a transcript
-  record to an exact action — is already met, because `agent-lifecycle` rows
-  carry top-level `actionId` (`src/agentEvent.ts:295`). The action turn window
-  gives the same binding with no new field.
+- **Attribute transcript records by timestamp window alone** (my previous
+  revision, which declined Codex review finding 3): rejected on evidence. I had
+  argued the journaled `actionId` plus a turn window was sufficient, but that is
+  a temporal guess where an exact key exists. Checking the live stores:
+  codex `token_count` payloads carry `turn_id` outright, and every claude usage
+  record reaches a `promptId` through its `parentUuid` chain. `turnId` is already
+  normalized for both vendors, so persisting it costs one field and converts the
+  join from proximity to identity. The window survives only as a fallback that
+  must be reported `partial`.
 - **Debounce antigravity status ticks in Phase 1** (my earlier drafts; all three
   reviews object): the noise is real — 95% of lifecycle events, 80% of journal
   bytes — but it does **not** affect any of the four metrics, which come from
@@ -266,9 +308,21 @@ the historical issue-76 journal has no `sessionId` in it.
   than efficiency. *Mitigation:* per-vendor reporting only; the definition
   forbids a cross-roster total; Phase 2 compares a vendor against itself.
 - **A session does non-issue work inside a gate window**, so records are
-  attributed to a phase they do not belong to. *Mitigation:* the join uses the
-  action turn window, not the whole gate; records outside every window report as
-  `unassigned` rather than being absorbed.
+  attributed to a phase they do not belong to. *Mitigation:* attribution is by
+  turn identity, not proximity — codex `turn_id`, claude `promptId` via the
+  parent chain — so a record belonging to another turn cannot be absorbed. The
+  timestamp window is a fallback only, and any slice resolved that way is
+  reported `partial`.
+- **Codex tool records carry no `turn_id`** (0 of 113 `custom_tool_call`
+  records), so a reader that counts tools from them loses attribution for the
+  metric the join exists to make exact. *Mitigation:* codex tool counts come from
+  `item_completed`, which carries `turn_id` on all 301 sampled records; asserted
+  directly in `test/transcriptRead.test.ts`.
+- **A vendor changes its transcript shape**, breaking the attribution route.
+  *Mitigation:* the routes are documented per vendor in `docs/analytics.md` and
+  are the only vendor-shaped logic in the codebase, confined to
+  `src/transcriptRead.ts`; an unrecognized shape reports `unsupported`, never a
+  silent zero.
 - **Clock adjustment produces a negative interval.** *Mitigation:* monotonic
   validation; report `invalid`.
 - **Fixture journals drift from real journal shape.** *Mitigation:* fixtures are
