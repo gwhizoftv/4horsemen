@@ -299,7 +299,9 @@ export const handleAgentEvent = (input: HandleAgentEventInput): HandleAgentEvent
           event: observation.eventName,
           kind: observation.kind,
           execution: result.state.agents[agent]?.execution ?? "unknown",
-          health: result.state.agents[agent]?.health ?? "unknown"
+          health: result.state.agents[agent]?.health ?? "unknown",
+          ...(observation.sessionId === undefined ? {} : { sessionId: observation.sessionId }),
+          ...(observation.turnId === undefined ? {} : { turnId: observation.turnId })
         }
       },
       now

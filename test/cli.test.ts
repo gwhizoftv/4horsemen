@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -97,7 +97,7 @@ describe("CLI version", () => {
     for (const argv of [["--version"], ["-V"], ["version"]] as const) {
       const lines: string[] = [];
       expect(await runCli([...argv], { io: { stdout: (message) => lines.push(message) } })).toBe(0);
-      expect(lines.join("").trim()).toBe("0.0.12");
+      expect(lines.join("").trim()).toBe("0.0.13");
     }
   });
 });
@@ -275,6 +275,7 @@ describe("CLI manual mode", () => {
     expect(await runCli(["--help"], { io: { stdout: (message) => output.push(message) } })).toBe(0);
     expect(output.join("")).toContain("coord manual");
     expect(output.join("")).toContain("coord detach manual");
+    expect(output.join("")).toContain("coord analytics --issue");
   });
 });
 
@@ -352,6 +353,59 @@ describe("CLI", () => {
     expect(output.join("")).toContain("Issue 1:");
     expect(output.join("")).toContain("Final pin (PR head):");
     expect(output.join("")).toContain("Policy: owner-only");
+  });
+
+  it("prints all four analytics sections, rejects unknown flags, and fails clearly without a journal", async () => {
+    const fixture = setup();
+    expect(
+      await runCli(
+        ["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+        { processRunner: resolvableStartGit, makeRunLoop: fakeLoop }
+      )
+    ).toBe(0);
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    copyFileSync(join(process.cwd(), "test", "support", "fixtures", "analytics-journal.jsonl"), paths.journal);
+    const home = join(fixture.root, "home");
+    const transcript = join(
+      home,
+      ".codex",
+      "sessions",
+      "2026",
+      "08",
+      "21",
+      "rollout-fixture-session-codex.jsonl"
+    );
+    mkdirSync(join(transcript, ".."), { recursive: true });
+    copyFileSync(join(process.cwd(), "test", "support", "fixtures", "transcript-codex.jsonl"), transcript);
+
+    const output: string[] = [];
+    expect(
+      await runCli(["analytics", "--issue", "1", "--coord-root", fixture.runtime], {
+        home,
+        io: { stdout: (message) => output.push(message) }
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Time\n");
+    expect(output.join("")).toContain("Phase count\n");
+    expect(output.join("")).toContain("Token count\n");
+    expect(output.join("")).toContain("Tool count\n");
+
+    const errors: string[] = [];
+    expect(
+      await runCli(["analytics", "--issue", "1", "--coord-root", fixture.runtime, "--json", "true"], {
+        io: { stderr: (message) => errors.push(message) }
+      })
+    ).toBe(2);
+    expect(errors.join("")).toContain("Unknown option --json");
+
+    rmSync(paths.journal);
+    errors.length = 0;
+    expect(
+      await runCli(["analytics", "--issue", "1", "--coord-root", fixture.runtime], {
+        io: { stderr: (message) => errors.push(message) }
+      })
+    ).toBe(2);
+    expect(errors.join("")).toContain("No journal exists for issue 1");
   });
 
   it("binds the digest to the mandatory GitHub issue independently of optional paths", async () => {
@@ -841,6 +895,38 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     expect(messages.join("")).not.toContain("Invalid");
     expect(messages.join("")).not.toContain("Unknown option");
     expect(existsSync(issueRuntimePaths(runtime, 1).issueSnapshot)).toBe(true);
+  });
+
+  it("resolves analytics through an onboarded product", async () => {
+    const { product, declarePath } = installedWorkspace();
+    expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
+    execFileSync(
+      "git",
+      ["config", "--local", "coord.ownerWorkspaceConfig", join(product.coordRoot, "config.json")],
+      { cwd: product.productRoot }
+    );
+    expect(
+      await runCli(["start", "89", "--product", product.productRoot], {
+        processRunner: successfulStartGit,
+        makeRunLoop: fakeLoop,
+        startEffects: async () => ({ cleanup: async () => undefined })
+      })
+    ).toBe(0);
+    const paths = issueRuntimePaths(product.coordRoot, 89);
+    copyFileSync(join(process.cwd(), "test", "support", "fixtures", "analytics-journal.jsonl"), paths.journal);
+    const home = join(product.workspaceRoot, "analytics-home");
+    const transcript = join(home, ".claude", "projects", "fixture", "session-claude.jsonl");
+    mkdirSync(join(transcript, ".."), { recursive: true });
+    copyFileSync(join(process.cwd(), "test", "support", "fixtures", "transcript-claude.jsonl"), transcript);
+    const output: string[] = [];
+    expect(
+      await runCli(["analytics", "--issue", "89", "--product", product.productRoot], {
+        home,
+        io: { stdout: (message) => output.push(message) }
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Issue 89 analytics");
+    expect(output.join("")).toContain("Token count");
   });
 
   it("returns doctor's class-specific exit code", async () => {
