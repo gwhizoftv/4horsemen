@@ -61,7 +61,7 @@ describe("plan file-map path extraction", () => {
     expect(isFileMapPath("/abs/path.ts")).toBe(false);
     expect(isFileMapPath("packages/../secret.ts")).toBe(false);
     expect(isFileMapPath(".plans/issue-1/plan.md")).toBe(false);
-    expect(isFileMapPath(".signals/issue-1/joined-codex.json")).toBe(false);
+    expect(isFileMapPath(".signals/issue-1/participation-ready-codex.json")).toBe(false);
     expect(isFileMapPath(".code-reviews/issue-1/review.md")).toBe(false);
   });
 
@@ -239,15 +239,15 @@ Implement it.
     expect(result.outstanding.join(" ")).toContain("could not be fetched");
   });
 
-  it("checks join session, baseline, and digest fields", async () => {
+  it("checks participation-readiness session, baseline, and digest fields", async () => {
     const action = order({
       stepId: "R1.join",
       evidenceId: "join-published",
-      requiredPath: ".signals/issue-1/joined-codex.json"
+      requiredPath: ".signals/issue-1/participation-ready-codex.json"
     });
     const blob = JSON.stringify({
       protocolVersion: 1,
-      artifact: "join",
+      artifact: "participation-ready",
       issue: 1,
       issueSessionId: action.issueSessionId,
       agent: "codex",
@@ -256,7 +256,7 @@ Implement it.
     });
     expect(await evaluateEvidence(action, sha("c"), mirror(blob))).toMatchObject({
       status: "rejected",
-      outstanding: ["join baselineSha does not match the issue baseline"]
+      outstanding: ["participation-readiness baselineSha does not match the issue baseline"]
     });
   });
 
@@ -530,7 +530,7 @@ Implement it.
     const authOrder = order({
       stepId: "R5.reviser-auth",
       evidenceId: "reviser-authorized",
-      requiredPath: ".signals/issue-1/reviser-authorized.json",
+      requiredPath: ".signals/issue-1/reviser-authorization.json",
       inputs: [implementation, comparisonBallot],
       activeRoster: ["codex", "claude"],
       expectedImplementationAgent: "claude",

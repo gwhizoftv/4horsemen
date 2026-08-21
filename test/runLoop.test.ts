@@ -321,9 +321,9 @@ describe("effectful run loop", () => {
     expect(cursors.agents.claude?.status).toBe("ordered");
     expect(cursors.agents.codex?.status).toBe("ordered");
     const action = readAction(agentRuntimePaths(paths, "codex").action);
-    expect(action.requiredPath).toBe(".signals/issue-1/joined-codex.json");
+    expect(action.requiredPath).toBe(".signals/issue-1/participation-ready-codex.json");
     expect(action.body).not.toContain("gate-1-join");
-    expect(action.body).toContain('"artifact": "join"');
+    expect(action.body).toContain('"artifact": "participation-ready"');
     expect(action.body).toContain("```json");
     const start = readStartState(paths);
     expect(action.body).toContain(`"baselineSha": "${start.baselineSha}"`);
@@ -349,7 +349,7 @@ describe("effectful run loop", () => {
           agent,
           round: null,
           submissionSha: "c".repeat(40),
-          path: `.signals/issue-1/joined-${agent}.json`,
+          path: `.signals/issue-1/participation-ready-${agent}.json`,
           acceptedAt: now
         })),
         agents: Object.fromEntries(
@@ -650,7 +650,7 @@ describe("effectful run loop", () => {
           stdout: Buffer.from(
             JSON.stringify({
               protocolVersion: 1,
-              artifact: "join",
+              artifact: "participation-ready",
               issue: 1,
               issueSessionId: `issue-1:${"a".repeat(40)}`,
               agent: branch,

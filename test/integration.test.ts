@@ -160,7 +160,7 @@ describe("four-agent coordinator canary", () => {
         submit(
           agent,
           JSON.stringify({
-            ...commonArtifact(order, "join"),
+            ...commonArtifact(order, "participation-ready"),
             baselineSha,
             automationDigest: order.automationDigest
           })

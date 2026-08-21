@@ -248,6 +248,29 @@ current action accidentally.
 Phase changes (R1.join → R2.plan, and later RN steps) always print.
 Use `coord N -v` for tick-level nudge and roster logs.
 
+### Agent-facing language boundary
+
+Internal step ids (`R1.join`), gate ids (`gate-1-join`), evidence ids
+(`join-published`), and delivery vocabulary stay in cursors state, the journal,
+analytics, CLI output, and this document. They are the operator's and the
+owner's view of the workflow, and nothing here needs sanitizing.
+
+Three surfaces do reach an agent and must stay free of that vocabulary: the
+rendered `action.md` body, the typed injection text, and the protocol overlay
+installed into a clone. `src/agentLanguage.ts` holds the single banned-term list
+plus `agentFacingSubject`, which names the artifact behind an evidence id so a
+pin-lineage rejection can be reported without the id itself — those diagnostics
+are re-rendered to the agent under `Correct these outstanding items:`.
+`test/agentLanguage.test.ts` scans every entry in `STEP_DEFINITIONS`, with and
+without bound inputs and with a non-empty correction block, so a new step cannot
+be added without being covered.
+
+The checker is a test-time invariant, not a runtime guard: `outstanding` strings
+carry git output and branch names from outside the process, so a false positive
+must fail a test rather than abort a run loop. Do not "fix" the operator
+documentation or analytics tables to satisfy it; they are deliberately out of
+scope.
+
 ### CLI lifecycle state
 
 The model never writes `waiting.json`, `working.json`, or equivalent state.

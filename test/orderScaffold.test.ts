@@ -21,13 +21,13 @@ describe("orderScaffold", () => {
       issue: 1,
       issueSessionId: ctx.issueSessionId,
       agent: "antigravity",
-      artifact: "join",
+      artifact: "participation-ready",
       baselineSha: ctx.baselineSha,
       automationDigest: ctx.automationDigest
     });
     const rendered = renderArtifactScaffold(ctx);
     expect(rendered).toContain("```json");
-    expect(rendered).toContain('"artifact": "join"');
+    expect(rendered).toContain('"artifact": "participation-ready"');
   });
 
   it("renders JSON for implementation-ready", () => {

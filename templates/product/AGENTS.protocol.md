@@ -17,11 +17,9 @@ replace the file to “fix” git status. Coordination sets that bit so the
 clone-local protocol section stays hidden. If `AGENTS.md` looks wrong, escalate;
 do not change index flags.
 
-After you write `complete` for an automated action, do not stop. Re-read your
-coordinator `action.md`.
-If `actionId` in the front matter has changed, execute that new action even
-without a typed nudge. Delivery still comes from the coordinator; this watch
-is how you recover when a nudge did not land.
+After you write `complete`, do not stop. Before waiting for more input, re-read
+your `action.md`. If `actionId` in the front matter has changed, execute the new
+instructions immediately; do not wait for another coordinator message.
 
 A **plan** (`.plans/issue-<n>/plan.md`) must include every heading below,
 each with a non-empty body:
