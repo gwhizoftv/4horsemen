@@ -54,6 +54,7 @@ import {
 import { renderIssueReport } from "./issueReport.js";
 import { wipeIssue } from "./wipeIssue.js";
 import { detachIssue } from "./detachIssue.js";
+import { buildAnalyticsReport, renderAnalyticsReport } from "./analytics.js";
 
 export type CliIo = {
   stdout: (message: string) => void;
@@ -191,6 +192,7 @@ Usage:
   coord start <issue> --config <path> --coord-root <external-path> [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord run --issue <issue> [--product <path> | --coord-root <path>] [-v|--verbose]
   coord status --issue <issue> [--product <path> | --coord-root <path>]
+  coord analytics --issue <issue> [--product <path> | --coord-root <path>]
   coord next --issue <issue> [--product <path> | --coord-root <path>] [--agent <agent>]
   coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
   coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
@@ -1084,6 +1086,18 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (parsed.positionals.length !== 0) throw new Error("status takes no positional arguments.");
       const paths = existingContext(parsed, io);
       io.stdout(renderIssueReport(readStartState(paths), readCursorsState(paths), readAgentLifecycle(paths)));
+      return 0;
+    }
+
+    if (command === "analytics") {
+      allowedFlags(parsed, ["issue", "coord-root", "product"]);
+      if (parsed.positionals.length !== 0) throw new Error("analytics takes no positional arguments.");
+      const paths = existingContext(parsed, io);
+      if (!existsSync(paths.journal)) {
+        throw new Error(`No journal for issue runtime at ${paths.issueRoot}.`);
+      }
+      const start = readStartState(paths);
+      io.stdout(renderAnalyticsReport(buildAnalyticsReport({ paths, start })));
       return 0;
     }
 

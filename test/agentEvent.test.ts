@@ -11,7 +11,7 @@ import {
   readAgentLifecycle
 } from "../src/agentLifecycle.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
-import { initializeOperationalState } from "../src/state.js";
+import { initializeOperationalState, readJournal } from "../src/state.js";
 
 const actionId = "11111111-1111-4111-8111-111111111111";
 const digest = "a".repeat(64);
@@ -21,7 +21,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-const runtimeFixture = (agent: "codex" | "antigravity") => {
+const runtimeFixture = (agent: "codex" | "antigravity" | "claude") => {
   const root = mkdtempSync(join(tmpdir(), "coord-agent-event-"));
   roots.push(root);
   const clone = join(root, "clone");
@@ -191,6 +191,53 @@ describe("vendor lifecycle event normalization", () => {
       health: "healthy",
       action: { delivery: "accepted", sessionId: "session-1", turnId: "turn-1" }
     });
+    const lifecycle = readJournal(paths).filter((event) => event.type === "agent-lifecycle");
+    expect(lifecycle.at(-1)?.details).toMatchObject({
+      sessionId: "session-1",
+      turnId: "turn-1",
+      kind: "prompt-submitted"
+    });
+    expect(lifecycle.at(-1)?.actionId).toBe(actionId);
+  });
+
+  it("journals sessionId and turnId for claude when present, and omits turnId when absent", () => {
+    const { clone, paths } = runtimeFixture("claude");
+    orderAgentAction(paths, "claude", actionId, digest);
+    markActionInjected(paths, "claude", actionId, digest);
+    const exactPrompt = `Read and execute coordinator action ${actionId} digest ${digest} at ${paths.issueRoot}/agents/claude/action.md`;
+    handleAgentEvent({
+      vendor: "claude",
+      clone,
+      environmentIssue: "86",
+      raw: {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "claude-session",
+        prompt_id: "claude-turn",
+        prompt: exactPrompt
+      }
+    });
+    const withIds = readJournal(paths).filter((event) => event.type === "agent-lifecycle");
+    expect(withIds.at(-1)?.details).toMatchObject({
+      sessionId: "claude-session",
+      turnId: "claude-turn",
+      kind: "prompt-submitted"
+    });
+
+    const { clone: agyClone, paths: agyPaths } = runtimeFixture("antigravity");
+    handleAgentEvent({
+      vendor: "antigravity",
+      explicitEvent: "status-line",
+      raw: {
+        cwd: agyClone,
+        conversation_id: "agy-no-turn",
+        agent_state: "working",
+        pending_input_count: 0,
+        task_count: 1
+      }
+    });
+    const agy = readJournal(agyPaths).filter((event) => event.type === "agent-lifecycle");
+    expect(agy.at(-1)?.details.sessionId).toBe("agy-no-turn");
+    expect(agy.at(-1)?.details.turnId).toBeUndefined();
   });
 
   it("routes Antigravity status-line queue depth from payload cwd without flags or issue env", () => {

@@ -97,7 +97,7 @@ describe("CLI version", () => {
     for (const argv of [["--version"], ["-V"], ["version"]] as const) {
       const lines: string[] = [];
       expect(await runCli([...argv], { io: { stdout: (message) => lines.push(message) } })).toBe(0);
-      expect(lines.join("").trim()).toBe("0.0.12");
+      expect(lines.join("").trim()).toBe("0.0.13");
     }
   });
 });
@@ -352,6 +352,46 @@ describe("CLI", () => {
     expect(output.join("")).toContain("Issue 1:");
     expect(output.join("")).toContain("Final pin (PR head):");
     expect(output.join("")).toContain("Policy: owner-only");
+  });
+
+  it("prints analytics for an issue journal and rejects unknown flags / missing journals", async () => {
+    const fixture = setup();
+    expect(
+      await runCli(
+        ["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+        { processRunner: resolvableStartGit, makeRunLoop: fakeLoop }
+      )
+    ).toBe(0);
+    const output: string[] = [];
+    expect(
+      await runCli(["analytics", "--issue", "1", "--coord-root", fixture.runtime], {
+        io: { stdout: (message) => output.push(message) }
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Issue 1 analytics");
+    expect(output.join("")).toContain("Phases");
+    expect(output.join("")).toContain("Agent waits");
+    expect(output.join("")).toContain("Tokens / tools");
+
+    const help: string[] = [];
+    expect(await runCli(["--help"], { io: { stdout: (message) => help.push(message) } })).toBe(0);
+    expect(help.join("")).toContain("coord analytics --issue");
+
+    const errors: string[] = [];
+    expect(
+      await runCli(["analytics", "--issue", "1", "--coord-root", fixture.runtime, "--bogus", "x"], {
+        io: { stderr: (message) => errors.push(message) }
+      })
+    ).not.toBe(0);
+    expect(errors.join("")).toMatch(/Unknown option/);
+
+    const missing: string[] = [];
+    expect(
+      await runCli(["analytics", "--issue", "99", "--coord-root", fixture.runtime], {
+        io: { stderr: (message) => missing.push(message) }
+      })
+    ).not.toBe(0);
+    expect(missing.join("").length).toBeGreaterThan(0);
   });
 
   it("binds the digest to the mandatory GitHub issue independently of optional paths", async () => {
