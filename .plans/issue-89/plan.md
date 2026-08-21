@@ -81,19 +81,39 @@ Verified against the live vendor stores at plan time:
 
 | Vendor | Metric | Route | Verified |
 | --- | --- | --- | --- |
-| codex | tokens | `token_count` payload carries `turn_id` directly | 121 records, all with `turn_id` |
-| codex | tools | `item_completed` payload carries `turn_id` | 301 records, all with `turn_id` |
+| codex | tools | `item_completed` payload carries `turn_id` | 5506/5506 across 25 sessions |
+| codex | tokens | **no direct key** — `token_count` carries no `turn_id`; bracket it between the `task_started` / `task_complete` records that do | 0/19,616 `token_count` records carry `turn_id` across 180 sessions; `task_started` 105/105 and `task_complete` 91/91 do |
 | claude | tokens + tools | usage records carry **no** turn id; walk `parentUuid` to the nearest `user` record and read its `promptId` | 196/196 usage records reach a `promptId` |
 
-Two facts this table encodes, both of which cost a fallback if ignored:
+Three facts this table encodes, each of which costs a fallback if ignored:
 
 - **Claude usage records carry no turn identifier at all.** `promptId` appears
   only on `user` records (95 in the sampled session). The parent walk is what
   makes claude exact; without it, claude attribution is temporal.
 - **Codex `custom_tool_call` records carry no `turn_id`** (0 of 113), so codex
-  tool counts must be taken from `item_completed`, which does. Reading tools from
-  `custom_tool_call` would reintroduce a temporal guess for exactly the metric
-  this join exists to make exact.
+  tool counts must be taken from `item_completed`, which does.
+- **Codex `token_count` records carry no `turn_id` either.** An earlier revision
+  of this plan claimed they did; that claim came from a measurement that pooled
+  keys across payload types and is **withdrawn**. Verified precisely: 0 of 19,616
+  `token_count` records across 180 sessions carry `turn_id`, at either the
+  payload or record level; their keys are exactly `info`, `rate_limits`, `type`.
+  Codex token attribution therefore cannot use a vendor key.
+
+  **Owner direction: adding journal fields is acceptable where it makes analytics
+  more accurate or easier to generate.** That resolves this cleanly and makes the
+  plan *smaller*, not larger. Rather than reverse-engineering codex's
+  `task_started` / `task_complete` ordinal brackets — vendor-specific archaeology
+  that breaks whenever the rollout format shifts — codex `token_count` records
+  are bracketed by the **coordinator's own** journaled turn window:
+  `prompt-submitted` → `stopped` for that `actionId` and `sessionId`. Those rows
+  become reliable once they are journaled unconditionally (see
+  `src/agentEvent.ts` below), and the route is vendor-independent, so it also
+  covers any future vendor that reports usage without a turn key. A record whose
+  window is open-ended or absent reports `partial`, never `complete`.
+
+  This is the principle to apply generally: prefer a journaled coordinator fact
+  over an inferred vendor one. Fields earn their place when they remove
+  vendor-format fragility — not speculatively.
 
 ## Exact File List to be changed or deleted
 
@@ -103,8 +123,18 @@ Two facts this table encodes, both of which cost a fallback if ignored:
   journal `details` projection (`src/agentEvent.ts:291`), which today is
   `{vendor, event, kind, execution, health}`. Both values are already on the
   normalized observation for both vendors (`src/agentEvent.ts:96` and `:115`);
-  the top-level `actionId` is already journaled. Two fields in one projection is
-  the only write-path change in Phase 1.
+  the top-level `actionId` is already journaled.
+
+  **The projection must not stay inside the `result.changed` branch
+  (`src/agentEvent.ts:290`) for `prompt-submitted` and `stopped` observations.**
+  That gate drops the very rows the join needs, and it already does so today.
+  Measured on the real issue-76 journal: claude has 10 `action-prepared` but only
+  6 `prompt-submitted`; codex has 12 `prompt-submitted` but only 5 `stopped`; and
+  antigravity has **0** `prompt-submitted` against 16 `stopped`. A turn whose
+  `prompt-submitted` row was never written cannot be reconstructed, and a turn
+  with no `stopped` row leaves the window open-ended. Journal identity
+  unconditionally for those two kinds — they are cheap, bounded by action count,
+  and are not the status-tick noise the gate exists to suppress.
 - `src/cli.ts` — register `coord analytics --issue <n> [--product <path> |
   --coord-root <path>]`, with strict flag validation and the normal issue-runtime
   resolution used by existing commands; extend help text.
