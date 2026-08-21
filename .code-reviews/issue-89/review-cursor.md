@@ -6,19 +6,30 @@
 - Scope: Phase 1 analytics — journal `sessionId`/`turnId`, `src/transcriptRead.ts`,
   `src/analytics.ts`, `coord analytics --issue`, fixtures, `docs/analytics.md`,
   version `0.0.12` → `0.0.13`
-- Reviewer: Cursor (Bugbot run was backgrounded mid-flight; this review was written
-  from the same focus areas: coverage, fixtures, tests, docs, version bump)
+- Reviewer: Cursor, with [Bugbot](2c710c70-5141-48e0-8ccc-51b0827de684) findings merged in
 
 ## Verdict
 
-**Changes required before treating Phase 1 token/tool metrics as accurate.** Phase
-and wait reporting look sound (issue-76 phase minutes reproduce under the local
-oracle test). Version bump is consistent. Token/tool joins work on the synthetic
-fixtures but miss the Claude plan’s **per-phase** requirement, collapse each
-agent to a **single** `sessionId`, and leave live Codex `token_count` rows mostly
-unassigned because the parser does not recover `turn_id` from stream context.
+**Changes required before treating Phase 1 analytics as accurate.** Phase and wait
+reporting look sound on the issue-76 oracle for closed intervals, and the
+`0.0.13` bump is consistent. Do not trust run completion status, per-agent token
+nullability, multi-session joins, per-phase spend, or Codex coverage under live
+transcript shapes until the findings below are fixed.
 
 ## Findings
+
+### [P1] Mid-run journals report `runStatus: complete`
+
+**Path:** `src/analytics.ts:108-152` (`buildPhases`) and `src/analytics.ts:285-292`.
+**Rule:** A run is complete only when the terminal `gate-advanced` has
+`details.to === null` (same completion signal as `runLoop`); otherwise status is
+`in-progress` and wall-clock must not present a finished total. **Failure:**
+`buildPhases` only emits closed intervals from each gate’s `details.from`, so
+after advancing into an active phase every listed interval has `endedAt` set;
+`buildAnalyticsReport` then sets `runStatus` to `complete` and sums a truncated
+`runDurationMs`. **Test:** journal ending with `gate-advanced` `{ from: "R2.plan",
+to: "R3.review" }`; assert `runStatus === "in-progress"` and
+`runDurationMs === null`.
 
 ### [P1] Token and tool counts are not reported per phase
 
@@ -55,6 +66,27 @@ Codex token accuracy collapses outside the fixture (which plants `turn_id` on
 join that turn (stream inheritance) or coverage is explicitly `unavailable` with
 a reason that names the missing field — not a silent `complete` agent sum of
 tools only.
+
+### [P1] Missing tokens are reported as zero, not `null`
+
+**Path:** `src/analytics.ts:254-266` (`sumRows`) and `src/analytics.ts:410-420`.
+**Rule:** Missing metrics report `null`, never `0` (`docs/analytics.md`
+Coverage). **Failure:** When assigned rows have tools but no usage objects,
+`sumRows` returns a zero-filled `TokenComponents`; the agent row stores that
+object and `allComplete` treats the agent as token-covered. **Test:** assigned
+tool-only rows, no `tokens`; assert `agentUsage[].tokens === null` and
+`crossRosterTotals === null`.
+
+### [P1] One bad Codex `token_count` poisons the whole transcript
+
+**Path:** `src/transcriptRead.ts:251-306`. **Rule:** An unrecognized optional
+usage shape must mark that record unsupported or skip it; successfully parsed
+tool/token rows must still surface under `partial` coverage. **Failure:** Any
+`token_count` missing `info.last_token_usage` sets a file-level `unsupported`
+flag, and analytics then drops all token and tool data for that agent.
+**Test:** Codex fixture with one empty `token_count` plus valid `item_completed`
+and one good `token_count`; assert tools/tokens from the good lines remain and
+coverage is `partial` (or per-record skip), not wholesale `unsupported`.
 
 ### [P2] Coverage stays `complete` when unassigned usage exists
 
