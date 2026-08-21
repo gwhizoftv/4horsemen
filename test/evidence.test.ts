@@ -320,6 +320,63 @@ Implement it.
     }
   );
 
+  it.each([
+    ["implementation-pinned" as EvidenceId, "R4.implement" as WorkflowStepId, "the implementation signal"],
+    ["revision-pinned" as EvidenceId, "R6.revise" as WorkflowStepId, "the revision signal"]
+  ])(
+    "names %s in outcome language, never by its evidence id, in pin-lineage rejections",
+    async (evidenceId, stepId, subject) => {
+      const inputs = [{ agent: "codex", commitSha: sha("2"), path: ".plans/issue-1/plan.md", kind: "selected-plan" }];
+      const action = order({
+        stepId,
+        evidenceId,
+        requiredPath: ".signals/issue-1/implementation-ready-codex.json",
+        inputs,
+        approvedPaths: ["src/product.ts"],
+        ...(stepId === "R6.revise" ? { round: 1 } : {})
+      });
+      const blob = JSON.stringify(
+        stepId === "R6.revise"
+          ? {
+              protocolVersion: 1,
+              artifact: "revision-ready",
+              issue: 1,
+              issueSessionId: action.issueSessionId,
+              agent: "codex",
+              inputSetHash: computeInputSetHash(inputs),
+              round: 1,
+              revisedBranchHead: sha("d"),
+              basedOn: [sha("2")]
+            }
+          : {
+              protocolVersion: 1,
+              artifact: "implementation-ready",
+              issue: 1,
+              issueSessionId: action.issueSessionId,
+              agent: "codex",
+              inputSetHash: computeInputSetHash(inputs),
+              implementationCommitSha: sha("d"),
+              approvedPaths: ["src/product.ts"]
+            }
+      );
+      // Echo the subject the evaluator supplies, exactly as pinValidation does.
+      const result = await evaluateEvidence(
+        action,
+        sha("e"),
+        mirror(blob, {
+          validatePhasePin: async ({ subject: supplied }) => ({
+            ok: false,
+            reason: "history-rewrite",
+            details: `${supplied} pins ${sha("d")}, which is not an ancestor of current origin tip.`
+          })
+        })
+      );
+      const outstanding = result.outstanding.join(" ");
+      expect(outstanding).toContain(subject);
+      expect(outstanding).not.toContain(evidenceId);
+    }
+  );
+
   it("does not let an implementation rewrite the bound file map to a directory prefix", async () => {
     const inputs = [{ agent: "codex", commitSha: sha("2"), path: ".plans/issue-1/plan.md", kind: "selected-plan" }];
     const action = order({

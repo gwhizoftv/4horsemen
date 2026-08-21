@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { renderAction } from "../src/action.js";
+import { computeInputSetHash, evaluateEvidence, type EvidenceMirror } from "../src/evidence.js";
 import { AGENT_FACING_BANNED_TERMS, agentFacingSubject, agentFacingSubjects, findAgentLanguageViolations } from "../src/agentLanguage.js";
 import { renderAgentsProtocolBlock } from "../src/agentsProtocol.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
@@ -196,6 +197,61 @@ describe("agent-facing language", () => {
       expect(body).toContain("Correct these outstanding items:");
       expect(findAgentLanguageViolations(body), stepId).toEqual([]);
     }
+  });
+
+  it("keeps internal vocabulary out of a correction block built from real evidence output", async () => {
+    const paths = fixture();
+    seedAcceptedSubmissions(paths);
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    const stepId: WorkflowStepId = "R4.implement";
+    const order = buildOrder(paths, start, cursors, "codex", stepId, null, "b2337d85-6617-4e9f-8ace-901453764aa4");
+    const blob = JSON.stringify({
+      protocolVersion: 1,
+      artifact: "implementation-ready",
+      issue: order.issue,
+      issueSessionId: order.issueSessionId,
+      agent: "codex",
+      inputSetHash: computeInputSetHash(order.inputs),
+      implementationCommitSha: "d".repeat(40),
+      approvedPaths: [...order.approvedPaths]
+    });
+    const mirror: EvidenceMirror = {
+      fetchBranch: async () => ({ ok: true, ref: "refs/remotes/origin/issue-1/codex", tip: "f".repeat(40) }),
+      isReachable: async () => true,
+      isAncestor: async () => true,
+      readBlob: async () => blob,
+      changedPaths: async () => ["src/steps.ts"],
+      // Echo whatever subject the evaluator supplies, exactly as pinValidation does.
+      validatePhasePin: async ({ subject }) => ({
+        ok: false,
+        reason: "history-rewrite",
+        details: `${subject} pins ${"d".repeat(40)}, which is not an ancestor of current origin tip.`
+      })
+    };
+    const observation = await evaluateEvidence(order, "e".repeat(40), mirror);
+
+    // The strings under test come from the evaluator, not from this test, so a
+    // regression in `pinErrors` reaches the rendered action instead of being
+    // masked by feeding the subject map back through the renderer.
+    expect(observation.status).toBe("rejected");
+    expect(observation.outstanding.length).toBeGreaterThan(0);
+    expect(findAgentLanguageViolations(observation.outstanding.join(" "))).toEqual([]);
+
+    const reissued = renderAction(
+      buildOrder(
+        paths,
+        start,
+        cursors,
+        "codex",
+        stepId,
+        null,
+        "b2337d85-6617-4e9f-8ace-901453764aa4",
+        observation.outstanding
+      )
+    );
+    expect(reissued).toContain("Correct these outstanding items:");
+    expect(findAgentLanguageViolations(reissued)).toEqual([]);
   });
 
   it("covers every workflow step and every evidence id", () => {
