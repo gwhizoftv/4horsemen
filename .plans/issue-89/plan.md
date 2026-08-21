@@ -4,14 +4,9 @@
 - Author: Claude
 - Branch: `issue-89/claude`
 - Baseline: `origin/main` at `1bfc7f9`
-- Inputs considered:
-  - Updated issue body — **authoritative on scope**
-  - `docs/analytics.md` (this clone, untracked) — issue-76 measured baseline, §3 gap list
-  - Cursor, Codex, Antigravity `.plans/issue-89/plan.md` and the two discussions
+- Revision: incorporates the three peer reviews at `origin/issue-89/{cursor,codex,antigravity}`
 
-## Scope comes from the issue, not from my inference
-
-The updated issue body specifies the phases itself:
+## Scope comes from the issue
 
 > 1. Enhance any metrics/analytics we need to have accurate **time, token count,
 >    tool count, and phase count** for our protocol
@@ -20,113 +15,144 @@ The updated issue body specifies the phases itself:
 > …highly efficient and simple in our approach to design and implementation,
 > without over building or over engineering.
 
-That replaces the scope rule I had inferred in earlier drafts. Phase 1 admits an
-item only if it is required to produce one of those four counts accurately.
-Everything else is Phase 2 or later, and "without over building" is an explicit
-constraint I am treating as a requirement rather than a style note.
+Phase 1 admits an item only if it is required to produce one of those four
+counts accurately. "Without over building" is treated as a requirement.
 
-### Where the four metrics stand today
+### Where the four metrics stand
 
 | Metric | Source today | Gap |
 | --- | --- | --- |
-| **Phase count** | `gate-advanced` events, already journaled with `from`/`to`/`round` (`src/runLoop.ts:876`) | **None** — needs a reader |
-| **Time** | Every journal row carries `at`; phase intervals and per-agent `nudged` → `intent-seen` waits derive from it | **None** — needs a reader |
-| **Token count** | Vendor transcripts only; the coordinator records zero token telemetry | Journal identity to join on |
-| **Tool count** | Vendor transcripts only, same records | Same join |
+| **Phase count** | `gate-advanced` events (`src/runLoop.ts:876`) | **None** — needs a reader |
+| **Time** | Every journal row carries `at` | **None** — needs a reader |
+| **Token count** | Vendor transcripts only | Journal identity to join on |
+| **Tool count** | Same transcripts, same records | Same join |
 
-Two of four were never missing — `docs/analytics.md` §2.1 and §2.3 published
-those tables by hand from issue-76's existing journal. They need a reader, not a
-writer. **The whole gap is the transcript join**, which today is a wall-clock
-approximation (§2.2) because `sessionId` and `transcript_path` never reach the
-journal.
+Two of four were never missing: `docs/analytics.md` §2.1 and §2.3 published those
+tables by hand from issue-76's journal. The whole gap is the transcript join, and
+closing it yields tokens **and** tool counts from one parse.
 
-Closing that one gap yields tokens **and** tool counts from the same parse, since
-tool-use records sit in the same transcript as the usage records.
+### Resolve transcripts by session, not by a journaled path
 
-Consequently Phase 1 does not touch `src/runLoop.ts`, `src/action.ts`, or
-`src/state.ts`.
+Earlier drafts journaled a `transcriptPath` taken from the hook payload. Codex's
+review showed that is both incomplete and unnecessary:
 
-### Join at report time, not by journaling usage
+- **Incomplete.** Codex's normalization (`src/agentEvent.ts:92-109`) carries
+  `session_id` and `turn_id` but **no transcript path**, so a real codex run
+  would always report usage unavailable while a fixture passed.
+- **Unnecessary.** Both vendors already normalize `sessionId`
+  (`src/agentEvent.ts:95` for codex, `:114` for claude), and both store
+  transcripts at documented, session-addressed locations
+  (`docs/analytics.md` §1.4): claude at
+  `~/.claude/projects/<slug>/<sessionId>.jsonl`, codex under
+  `~/.codex/sessions/YYYY/MM/DD/`.
 
-Earlier drafts of this plan added a `token-usage` journal event written at each
-`Stop`. **Cursor's plan is right that this is unnecessary**, and I have adopted
-its approach: once `sessionId` and `transcriptPath` are in the journal, the
-report can join transcripts at read time. That removes the new journal event, the
-`journalEventSchema` enum change, and any write-path duplication of vendor data —
-strictly simpler for the same output, and it works retroactively on any journal
-that carries the identity fields.
+So Phase 1 journals **`sessionId` only** and resolves the file by vendor locator
+under a configured root. This is one less journaled field, gives codex real
+coverage instead of fixture-only coverage, and means the coordinator never opens
+a path supplied by a hook payload.
+
+### The join algorithm, stated once
+
+Two implementers must not pick different joins. The algorithm is:
+
+1. `agent-lifecycle` journal rows already carry `agent` and, when present,
+   top-level `actionId` (`src/agentEvent.ts:295`). Phase 1 adds `sessionId`.
+2. An action's **turn window** runs from the `prompt-submitted` lifecycle row
+   bearing that `actionId` to the next `stopped` row for the same agent and
+   session.
+3. An action's **phase** is the `gate-advanced` interval containing its
+   `action-prepared` event.
+4. A transcript record is attributed to an action when its timestamp falls inside
+   that action's turn window in that session — and therefore to that action's
+   phase.
+5. Records in the session that fall in **no** action window are reported as
+   `unassigned`. They are never folded into a phase and never silently dropped.
+
+No `turnId` is journaled: `actionId` is already on the lifecycle row and is the
+identity the report needs.
 
 ## Exact File List to be changed or deleted
 
-### Changed — Phase 1
+### Changed
 
-- `src/agentEvent.ts` — extend the `agent-lifecycle` journal projection
-  (`src/agentEvent.ts:291`) from `{vendor, event, kind, execution, health}` to
-  also carry `sessionId` and `transcriptPath` when the normalized observation
-  supplies them. The Claude hook payload already delivers `transcript_path` and
-  the code reads `session_id` beside it (`src/agentEvent.ts:114`) — this is a
-  projection change, not new plumbing. Additionally suppress the `appendJournal`
-  call when an observation is status-only **and** byte-identical to the previous
-  consecutive status tick for that agent, with lifecycle state and the watchdog
-  still updating on every observation. The debounce is admitted to Phase 1
-  because antigravity status ticks are 95% of lifecycle events and 80% of journal
-  bytes (`docs/analytics.md` §3.6), which corrupts the phase and action counts
-  Phase 1 exists to report.
-- `src/agentLifecycle.ts` — carry optional `transcriptPath` on the normalized
-  observation, alongside the `sessionId` it already has
-  (`src/agentLifecycle.ts:60`).
-- `src/cli.ts` — register `coord analytics --issue <n>` with `--json`; extend
-  help text (command surface around `src/cli.ts:904`).
-- `package.json` — bump `version` to whatever is strictly greater than
-  `origin/main` at ship time. The non-`main` gate
-  (`test/versionBump.test.ts:29`) enforces this on every push, so the exact
-  number depends on what has already shipped from this branch — do not hard-code
-  it here.
+- `src/agentEvent.ts` — add `sessionId` to the `agent-lifecycle` journal
+  `details` projection (`src/agentEvent.ts:291`), which today is
+  `{vendor, event, kind, execution, health}`. The value is already on the
+  normalized observation for both vendors; the top-level `actionId` is already
+  journaled. This is the only write-path change in Phase 1.
+- `src/cli.ts` — register `coord analytics --issue <n> [--product <path> |
+  --coord-root <path>]`, with strict flag validation and the normal issue-runtime
+  resolution used by existing commands; extend help text.
+- `docs/analytics.md` — **Changed, not created.** The file is already tracked at
+  `613e3e8`. Edit in place: add the four-metric contract (definitions below), the
+  per-vendor transcript locator and tool-record filter, the coverage rules, and
+  the deferred list. Keep the issue-76 measured tables — they are the acceptance
+  oracle. Replace the ad-hoc Python with the CLI.
+- `package.json` — bump `version` to strictly greater than `origin/main` at ship
+  time; the non-`main` gate (`test/versionBump.test.ts:29`) enforces this on
+  every push, so do not hard-code a number here.
 - `config.product.example.json` — update the pinned `"version"` (line 33) in
-  lockstep with `package.json`.
-- `test/agentEvent.test.ts`, `test/cli.test.ts` — see Tests.
+  lockstep.
+- `test/agentEvent.test.ts`, `test/cli.test.ts`, `test/install.test.ts` — see
+  Tests. **`test/install.test.ts:163` and `test/cli.test.ts:100` hard-code the
+  version literal and fail the moment `package.json` moves**; both must be
+  updated in the same commit or `check:fast` blocks it.
 
-**Not changed in Phase 1:** `src/runLoop.ts`, `src/action.ts`, `src/state.ts`,
-`src/paths.ts`, `AGENTS.md`. Each appeared in an earlier draft of this plan;
-none is required by the four metrics.
+**Not changed:** `src/runLoop.ts`, `src/action.ts`, `src/state.ts`,
+`src/agentLifecycle.ts`, `src/paths.ts`, `AGENTS.md`. No journal enum member, no
+schema version bump, no action-format change.
 
 ### Deleted
 
-None. The `renderLog` removal (`docs/analytics.md` §3.7) and the tracked
-`AGENTS.md` trim are both Phase 2 candidates — the trim in particular is a
-*change whose effect Phase 1 is supposed to measure*, so shipping it inside
-Phase 1 would destroy its own before-reading.
+None.
 
 ## Exact file list to be created
 
-- `src/analytics.ts` — the reader. Journal-only sections always available:
-  **phase count** and actions per phase from `gate-advanced` and
-  `action-prepared`; **time** as phase wall-clock from `started` +
-  `gate-advanced.at`, run total, and per-agent `nudged` → `intent-seen` waits.
-  Transcript-joined sections when journaled identity permits: **token count** and
-  **tool count** per phase per agent. Human summary by default; `--json` for
-  before/after comparison. Every reported figure carries a coverage state —
-  `complete`, `partial`, or `unavailable` — and a metric that was never recorded
-  reports as `null`, never `0`.
-- `src/transcriptRead.ts` — bounded, vendor-specific reader, isolated so
-  vendor-shaped parsing is testable and replaceable. Given a `transcriptPath` and
-  a time or session window, returns per-turn `{tokens: {input, output, cacheRead,
-  cacheWrite}, toolCalls: n}`. Reads numeric usage fields and tool-use record
-  *counts* only — never message content, never tool arguments or results.
-  Returns `undefined` for a vendor exposing neither, which is normal: cursor and
-  antigravity have no local usage store at all (`docs/analytics.md` §1.4).
+- `src/analytics.ts` — the reader. Journal-only sections, always available:
+  **phase count** and actions per phase; **time** as phase wall-clock, run total,
+  and per-agent `nudged` → `intent-seen` waits. Transcript-joined sections when
+  `sessionId` is present: **token count** and **tool count** per phase per agent,
+  per the join above. Every figure carries a coverage state; a metric never
+  recorded reports `null`, never `0`.
+- `src/transcriptRead.ts` — vendor locator and bounded parser. Takes a vendor,
+  `sessionId`, and a configured root (injected in tests); resolves the session
+  file under that root; reads at most the file's initial byte length; returns
+  `{values, coverage, reason}` — never a bare `undefined`.
 - `test/analytics.test.ts`, `test/transcriptRead.test.ts` — see Tests.
-- `test/support/fixtures/analytics-journal.jsonl` — issue-76-shaped fixture.
+- `test/support/fixtures/analytics-journal.jsonl` — issue-76-shaped journal
+  **including** `sessionId` and `actionId` on lifecycle rows.
 - `test/support/fixtures/transcript-claude.jsonl`,
-  `test/support/fixtures/transcript-codex.jsonl` — small fixture tails carrying
-  both usage records and tool-use records, in each vendor's shape.
-- `docs/analytics.md` — promote the existing **untracked** file to a tracked
-  measurement contract: the four metrics and their definitions, how to run
-  `coord analytics`, per-vendor coverage (claude and codex report tokens and
-  tools; cursor and antigravity report neither), the privacy boundary, and
-  explicit non-goals. The ad-hoc Python reconstruction scripts are replaced by
-  the CLI; the issue-76 measured tables stay as the baseline to beat, and the
-  §3 items Phase 1 skips are recorded as deferred rather than lost.
+  `test/support/fixtures/transcript-codex.jsonl` — sanitized tails in each
+  vendor's real shape, carrying usage records and tool records.
+
+## Metric definitions (frozen)
+
+These go verbatim into `docs/analytics.md`; the report must not deviate.
+
+- **Phase count** — named workflow gate intervals from `gate-advanced`, counting
+  revision rounds and retries as distinct intervals. Actions per phase are
+  reported separately, from `action-prepared`.
+- **Time** — the run window is `started.at` through the terminal `gate-advanced`
+  boundary; an in-progress run is labelled as such. Every interval is validated
+  monotonic: if end precedes start (clock adjustment, malformed timestamp) the
+  interval reports `invalid`, never a negative number.
+- **Token count** — components `input`, `output`, `cacheRead`, `cacheWrite`, plus
+  `reasoning` where the vendor reports it. Taken from **per-turn values only**:
+  claude's per-message `usage`, and codex's `last_token_usage` delta — **never**
+  codex's cumulative `total_token_usage`, which would multiply the total.
+  Records are de-duplicated by vendor record id.
+- **Tool count** — **invocation attempts only, never results.** Claude: content
+  blocks where `type === "tool_use"`, counted per block and not per assistant
+  message. Codex: tool-call events, excluding their result events. Reported
+  **per vendor**; never summed into a cross-roster total, because the vendors
+  count different things and the total would track roster mix rather than
+  efficiency.
+- **Coverage** — per agent, one of `complete`, `partial` (a growing or
+  final-truncated file), `unsupported` (a schema the parser does not know), or
+  `unavailable` (no store, or unreadable). Two of four agents have no local usage
+  store at all (`docs/analytics.md` §1.4). No cross-roster token or tool total is
+  printed unless coverage is `complete` for every active agent; otherwise the
+  report shows per-agent rows with their coverage.
 
 ## Tests
 
@@ -134,119 +160,145 @@ Phase 1 would destroy its own before-reading.
 
 - `test/analytics.test.ts` — **new.** Phase count and actions per phase match
   hand-counted fixture values; phase durations match hand-computed minutes with
-  the first phase measured from `started`; run total equals the sum of phases;
+  the first phase measured from `started`; run total equals the sum of phases; an
+  interval whose end precedes its start reports `invalid`, not a negative number;
   per-agent waits reproduce known count/median/max; token and tool counts bucket
-  to the correct phase and agent when a fixture transcript is joined; **a journal
-  with no identity fields still reports phase count and time, omitting the token
-  and tool sections rather than erroring**; a metric never recorded reports
-  `null` and coverage `unavailable`, never `0`; `--json` parses and carries the
-  same figures as the human summary.
+  to the correct phase and agent through the documented join; a transcript record
+  outside every action window is reported `unassigned`, not folded into a phase;
+  **a journal with no `sessionId` still reports phase count and time and omits
+  the token and tool sections rather than erroring**; a never-recorded metric
+  reports `null` with coverage `unavailable`, never `0`; no cross-roster total is
+  printed when any active agent's coverage is short of `complete`.
 - `test/transcriptRead.test.ts` — **new.** Claude and codex fixtures each yield
-  expected token deltas **and** tool-call counts; a transcript with usage but no
-  tool records reports tools as `0` while a vendor with no store at all reports
-  `undefined` — the two cases must not collapse; a truncated or malformed final
-  line returns `undefined` rather than throwing; **no message content, tool
-  argument, or tool result appears in the returned object**, asserted by shape so
-  a later field addition cannot leak text silently.
-- `test/agentEvent.test.ts` — `sessionId` and `transcriptPath` appear in
-  `agent-lifecycle` details when supplied, absent (not `null`) when not; **two
-  identical consecutive status-only ticks append one journal row, not two**; a
-  differing tick still appends; lifecycle state and the 45 s watchdog
-  (`AGENT_OBSERVABILITY_WATCHDOG_MS`) update on suppressed ticks too.
+  expected per-turn token deltas and tool-call counts; **codex's cumulative
+  `total_token_usage` is not summed** (a fixture with two turns proves the total
+  is the delta sum, not the cumulative sum); tool **results** are not counted as
+  calls; duplicate records de-duplicate by id; a vendor with usage but no tool
+  records reports tools `0` while a vendor with no store reports `unavailable` —
+  the two must not collapse; an unreadable file (`ENOENT`, `EACCES`) is caught
+  locally and returns `unavailable` rather than throwing, so running the report
+  on a machine that lacks the vendor store cannot crash the CLI; a growing or
+  final-truncated file returns `partial`, and an interior malformed record
+  returns `partial` or `unsupported` — never `complete`.
+- `test/agentEvent.test.ts` — `sessionId` appears in `agent-lifecycle` details
+  when the observation supplies it and is absent (not `null`) when it does not,
+  for both vendors; the existing top-level `actionId` is unaffected.
 - `test/cli.test.ts` — `coord analytics --issue <n>` exits 0 against a fixture
-  runtime root and prints all four metric sections; `--json` emits parseable JSON
-  on stdout and nothing else; the command appears in help; a missing journal
-  exits non-zero with a clear message.
+  runtime root and prints all four metric sections; both `--product` and
+  `--coord-root` resolution paths work; unknown flags are rejected; the command
+  appears in help; a missing journal exits non-zero with a clear message. Plus
+  the version literal at line 100.
+- `test/install.test.ts` — the installed-version assertion at line 163.
 
-**Acceptance for Phase 1:** `coord analytics --issue 76` run against the
-**existing** issue-76 runtime journal must reproduce the phase durations and
-per-agent latency tables already published by hand in `docs/analytics.md` §2.1
-and §2.3. If it cannot re-derive the baseline it replaces, it is not measuring
-the right thing and Phase 2 must not proceed on its numbers.
+### Acceptance, in three parts
+
+The peer reviews were right that one replay cannot validate everything, because
+the historical issue-76 journal has no `sessionId` in it.
+
+- **(a) Historical replay.** `coord analytics --issue 76` against the existing
+  issue-76 runtime journal reproduces the phase durations and per-agent latency
+  tables in `docs/analytics.md` §2.1 and §2.3. This validates phase count and
+  time against a hand-computed oracle the reader did not author.
+- **(b) Fixture pipeline.** The fixture journal — which *does* carry `sessionId`
+  and `actionId` — plus the two vendor transcript fixtures validates the token
+  and tool tables and the join.
+- **(c) One live run.** No Phase 2 token or tool claim may rest on Phase 1 until
+  one real post-ship run has produced a report with `complete` coverage for at
+  least claude and codex. Issue 76 cannot validate the new join, and a fixture
+  cannot prove the locator finds a real vendor file.
 
 ## Alternatives Rejected
 
-- **Journal a `token-usage` event at each `Stop`** (my own earlier drafts):
-  rejected in favour of Cursor's report-time join. Journaling usage duplicates
-  vendor data into the coordinator's write path and needs a
-  `journalEventSchema` enum change; joining at read time needs neither and works
-  on any journal carrying the identity fields.
+- **Journal `transcriptPath` from the hook payload** (my earlier drafts): codex
+  payloads carry no such field, so codex coverage would be fixture-only, and it
+  would have the coordinator open a payload-supplied path. Session-addressed
+  vendor locators fix both.
+- **Journal `turnId`** (Codex review, finding 3): its goal — binding a transcript
+  record to an exact action — is already met, because `agent-lifecycle` rows
+  carry top-level `actionId` (`src/agentEvent.ts:295`). The action turn window
+  gives the same binding with no new field.
+- **Debounce antigravity status ticks in Phase 1** (my earlier drafts; all three
+  reviews object): the noise is real — 95% of lifecycle events, 80% of journal
+  bytes — but it does **not** affect any of the four metrics, which come from
+  `gate-advanced`, `action-prepared` and `nudged`/`intent-seen`. It also adds
+  stateful behaviour to the lifecycle and watchdog path. Deferred to Phase 2, to
+  be justified by Phase 1's own numbers.
+- **`--json` in Phase 1** (Cursor review, finding 5): deferred. Phase 2 compares
+  a small number of runs and a human summary suffices; a report schema is
+  scope the issue did not ask for.
 - **Substitute action/bound-input bytes for tokens and tool calls** (Codex's
-  plan, which explicitly rejects vendor token and tool-call adapters): a
-  defensible engineering position — coverage really does differ by vendor — but
-  it does not satisfy this issue, which names token count and tool count as
-  Phase 1 deliverables. Bytes are a transport proxy; `docs/analytics.md`'s own
-  non-goals say action bytes are not tokens. Partial vendor coverage is better
-  reported honestly than replaced by a proxy.
-- **`durationMs` on `gate-advanced`, `verify-result`, `final-check`**
-  (Antigravity Phase 1, my earlier drafts): every one of these intervals is
-  derivable from timestamps already present; `docs/analytics.md` §3.3 says the
-  `gate-advanced` case is redundant outright. Coordinator verification is
-  already known to be ~1.05 s median and is not a Phase 2 target.
-- **`action-timing` delivery chain and `preparedAt`** (Antigravity Phase 1, my
-  earlier drafts): diagnostics for *why* an agent was slow. Time and phase count
-  are both measurable without them.
-- **Verify-failure classification, artifact byte counts, roster/flags in
-  `started`**: all useful, none needed for the four metrics, and all implementable
-  later as read-time analysis over journals already written — so deferring costs
-  a later commit and nothing else.
-- **Ship the `AGENTS.md` trim or `renderLog` removal in Phase 1**: both are
-  Phase 2 improvements. The trim is precisely a change Phase 1 should measure;
-  landing it inside Phase 1 would erase its own baseline.
-- **Ship turn-collapsing now** (Codex B/C, Antigravity Phase 2, Cursor Phase 2):
-  the substance of Phase 2 and the largest available saving. It follows Phase 1
-  by the issue's own ordering.
+  plan): a defensible position on vendor coverage, but the issue names token
+  count and tool count as Phase 1 deliverables, and bytes are a transport proxy.
+  Partial coverage reported honestly beats a proxy.
+- **`durationMs` on `gate-advanced` / `verify-result` / `final-check`,
+  `action-timing`, `preparedAt`, artifact byte counts, verify-failure
+  classification** (Antigravity's plan; my earlier drafts): every one of these
+  intervals is derivable from timestamps already journaled, and none is needed
+  for the four metrics.
+- **Content-handling and path-confinement hardening in Phase 1**: deferred at the
+  owner's direction. Largely moot now that the coordinator resolves transcripts
+  by session id under a configured root instead of opening a payload-supplied
+  path, and the reader extracts numeric fields and record counts by construction.
+  Recorded in `docs/analytics.md` as a Phase 2 item.
+- **Ship any Phase 2 improvement now** — `AGENTS.md` trim, `renderLog` removal,
+  clerical-step collapse, combined ballots, context capsules: all follow the
+  metrics by the issue's own ordering. The `AGENTS.md` trim in particular is a
+  change Phase 1 exists to measure; landing it inside Phase 1 would erase its own
+  baseline.
 
 ## Risks and Mitigations
 
-- **`src/transcriptRead.ts` reads a vendor's private store.** The sharpest risk
-  in Phase 1, admitted only because tokens and tool counts are unmeasurable
-  otherwise and the issue requires both. *Mitigation:* bounded reads; numeric
-  usage fields and tool-record **counts** only, never content, arguments, or
-  results, asserted by shape; parse failure yields `undefined`, not an error; all
-  vendor-shaped parsing confined to this one module so it can be replaced when a
-  vendor exposes a supported usage API.
-- **`transcriptPath` is a filesystem path into a vendor store, journaled into a
-  file the owner may share.** *Mitigation:* record the path only; never copy
-  transcript contents into the journal.
-- **Two of four agents can report neither tokens nor tool calls.** *Mitigation:*
-  coverage states on every figure, and `null` rather than `0` for
-  never-recorded metrics, so a run with two silent vendors cannot read as a run
-  that used no tokens. Directly asserted in `test/analytics.test.ts`. (This
-  discipline is taken from Codex's plan, which handles it best.)
-- **Debouncing status ticks hides a real state change.** *Mitigation:* suppress
-  only on byte-identical consecutive status-only observations — never for
-  `PreInvocation` / `PostInvocation` or any execution/health transition;
-  lifecycle state and the watchdog keep updating.
-- **Tool-call counting is not comparable across vendors**, since each defines a
-  "tool call" differently. *Mitigation:* report per-vendor, never as a single
-  cross-roster total; document each vendor's definition in `docs/analytics.md`.
-  Phase 2 compares a vendor against itself before and after.
+- **The vendor locator does not find a real transcript**, so the report is
+  fixture-correct and useless in production. This is the main risk of resolving
+  by session id. *Mitigation:* acceptance part (c) — one live run must produce
+  `complete` coverage for claude and codex before any Phase 2 token claim.
+- **Cumulative usage is summed as if it were per-turn**, inflating codex totals
+  by a large factor. *Mitigation:* the definition names `last_token_usage`
+  explicitly, and `test/transcriptRead.test.ts` proves a two-turn fixture totals
+  the deltas, not the cumulative values.
+- **A vendor store is missing or unreadable on the machine running the report.**
+  *Mitigation:* caught locally, returns `unavailable`; asserted so the CLI cannot
+  crash.
+- **Absent data reads as zero**, biasing a Phase 2 comparison favourably.
+  *Mitigation:* four coverage states, `null` never `0`, and no cross-roster total
+  unless coverage is complete. (Discipline taken from Codex's plan.)
+- **Tool counts are compared across vendors** and move with roster mix rather
+  than efficiency. *Mitigation:* per-vendor reporting only; the definition
+  forbids a cross-roster total; Phase 2 compares a vendor against itself.
+- **A session does non-issue work inside a gate window**, so records are
+  attributed to a phase they do not belong to. *Mitigation:* the join uses the
+  action turn window, not the whole gate; records outside every window report as
+  `unassigned` rather than being absorbed.
+- **Clock adjustment produces a negative interval.** *Mitigation:* monotonic
+  validation; report `invalid`.
 - **Fixture journals drift from real journal shape.** *Mitigation:* fixtures are
-  validated through `journalEventSchema` inside the test, and the issue-76 replay
-  in Tests is a second guard against fixture-only correctness.
-- **Phase 1 delivers no speed-up.** Correct and intended — the issue asks for
-  metrics first and improvements second.
+  validated through `journalEventSchema` in the test, and acceptance (a) runs
+  against a real historical journal.
+- **Phase 1 delivers no speed-up.** Correct and intended: the issue asks for
+  metrics first, improvements second.
 
 ## Conclusion
 
-Phase 1 is three source files plus a reader, and it touches neither the run loop,
-the action format, nor the journal schema.
+Phase 1 is two new source files, one added field in an existing journal
+projection, and a CLI registration.
 
-That follows from one fact the updated issue makes decisive: of its four named
-metrics, **two were never missing**. Phase count and time have been in every
-journal we have written, which is how `docs/analytics.md` published those tables
-by hand for issue-76. They needed a reader. The real gap is the transcript join —
-and closing it delivers token count and tool count together, because usage
-records and tool-use records live in the same transcript.
+That shape follows from three facts. Two of the four metrics — phase count and
+time — have been in every journal we have written, which is how
+`docs/analytics.md` published them by hand for issue-76; they need a reader, not
+a writer. The remaining gap is the transcript join, and both vendors already
+normalize the `sessionId` that keys it, so nothing new needs to be plumbed.
+And `agent-lifecycle` rows already carry `actionId`, so the join binds to an
+exact action without journaling a turn identity.
 
-So the honest shape of Phase 1 is: put `sessionId` and `transcriptPath` into the
-journal, stop the status-tick noise that corrupts the counts, and write
-`coord analytics`. Everything else the four plans propose measuring explains
-*why* a number moved; the issue asks only to measure the numbers, simply, without
-over-building — and the deferred items can be added later against journals
-already on disk.
+The three peer reviews converged on this plan and improved it in four concrete
+ways: resolve transcripts by session locator rather than a payload path (which
+also gives codex real rather than fixture-only coverage), state the join
+algorithm so two implementers cannot diverge, split acceptance because the
+historical journal cannot validate a join it predates, and drop the status-tick
+debounce that no metric depends on. Each of those made Phase 1 smaller.
 
-The acceptance test is deliberately unforgiving: `coord analytics --issue 76`
-must re-derive the hand-computed §2.1 and §2.3 tables from the journal we already
-have, before Phase 2 is allowed to rely on any number it prints.
+What remains non-negotiable is acceptance (a): the reader must re-derive the
+hand-computed §2.1 and §2.3 tables from the journal we already have. Two of the
+four metrics were always measurable; a reader that disagrees with the numbers
+already published is measuring something else, and every Phase 2 decision would
+inherit the error.
