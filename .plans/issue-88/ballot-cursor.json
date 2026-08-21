@@ -1,0 +1,54 @@
+{
+  "protocolVersion": 1,
+  "issue": 88,
+  "issueSessionId": "issue-88:26de98aae01426d582d17d15d1e33e1b6b3e3f90",
+  "agent": "cursor",
+  "inputSetHash": "8d1a15bde8dabb253adcfbf9838c960dc60a466951a7ee5879897a7eb88d4cb0",
+  "artifact": "plan-ballot",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "8b7fd403a4d4441d88c68d8e3820184707832f01",
+      "path": ".plans/issue-88/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "036cecb07f6e56ad74374a0007bd0bf610b0bb28",
+      "path": ".plans/issue-88/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "80c62df4da7871161c1ecfb77fb75354117c27e5",
+      "path": ".plans/issue-88/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "1327fe2423d9144ab6b3ca955fac4a6c0786d069",
+      "path": ".plans/issue-88/plan.md"
+    }
+  ],
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "54149ba37c35e2706cead24ac81abea040859763",
+      "path": ".plans/issue-88/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "5e47bca2557d9a48bf87e2680862e5f500806746",
+      "path": ".plans/issue-88/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "395d50b4036a72cd06a49064e01e7f1f7d7b2386",
+      "path": ".plans/issue-88/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "009e98252477875dc69ae693dfaefc31f958dd4b",
+      "path": ".plans/issue-88/review.md"
+    }
+  ],
+  "choice": "claude",
+  "rationale": "Claude alone specifies the pinErrors evidence-id subject map and a step-keyed language audit covering correction text; implement with a narrower forbidden-pattern oracle and the participation-ready token/path cutover."
+}
