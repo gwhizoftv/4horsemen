@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 92,
+  "issueSessionId": "issue-92:7fda95334541f40d6f5a7e96bffb4e07ed89e5ee",
+  "agent": "claude",
+  "inputSetHash": "5dd0888d80cb21aabbee62afc65cd3c367591957d09c0f71cc5a73ff6f018794",
+  "artifact": "consensus-ballot",
+  "round": 1,
+  "revisionCommitSha": "dfc587c570bb492add257ebbc8f1f78e432e1ad7",
+  "disposition": "approve",
+  "rationale": "Verified at the pin: pnpm check exits 0 (build, 402 fast tests, 2 e2e) with a clean worktree afterwards, the revision diff is confined to three approved paths, and the resolveChangeScope failure-path fix is backed by a regression test I confirmed records 3 attempts before the fix and 1 after; the remaining test:fast wrapper is documented in docs/repo-map.md and cannot be removed inside this file map, so it belongs to the owner's planned follow-up rather than a further round."
+}
