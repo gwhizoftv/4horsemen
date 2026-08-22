@@ -1,0 +1,32 @@
+{
+  "protocolVersion": 1,
+  "issue": 92,
+  "issueSessionId": "issue-92:7fda95334541f40d6f5a7e96bffb4e07ed89e5ee",
+  "agent": "claude",
+  "inputSetHash": "0b239c9a66fdf5638079b300e9cf04a149c8ce6b4a3a42f67180855b4ff9a56b",
+  "artifact": "comparison-ballot",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "4193d2fadf1d277e50cb773d07171011aa58eacc",
+      "path": ".signals/issue-92/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "60f729bc142831d7f5aa45057fa6a33a23d6b286",
+      "path": ".signals/issue-92/implementation-ready-cursor.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "b8a00f760497ed75d561ff5054db33a95adf08f8",
+      "path": ".signals/issue-92/implementation-ready-codex.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "be82d90cb07361d877e073c17f0506ef0963ed22",
+      "path": ".signals/issue-92/implementation-ready-claude.json"
+    }
+  ],
+  "choice": "claude",
+  "rationale": "Voting for my own pin on stated grounds: antigravity's fails pnpm check and throws on legal Git pathnames, codex's tree is byte-identical to cursor's so it is not an independent candidate, and between the two remaining pins claude's is the only one that renders advisory paths losslessly rather than dropping them with a count."
+}
