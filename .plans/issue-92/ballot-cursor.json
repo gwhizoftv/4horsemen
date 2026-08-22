@@ -1,0 +1,54 @@
+{
+  "protocolVersion": 1,
+  "issue": 92,
+  "issueSessionId": "issue-92:7fda95334541f40d6f5a7e96bffb4e07ed89e5ee",
+  "agent": "cursor",
+  "inputSetHash": "4abd52bbb56553db420ba90c810faa927d692dc6ace9e6313fe7391c4aa32126",
+  "artifact": "plan-ballot",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "dc6a7bdf3bc731b81382f0944b26cae400c8c21c",
+      "path": ".plans/issue-92/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "44a0512f2292d5dd16ff14b9eff2e4755b7d959b",
+      "path": ".plans/issue-92/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "3c9b810b4ab3f329cae009004609d76bbfecfc09",
+      "path": ".plans/issue-92/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "93dce7a2652e1e91488138aee97c6e0d52f932a7",
+      "path": ".plans/issue-92/plan.md"
+    }
+  ],
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "64d4509619e4748cf269871b4027653aaa877ff4",
+      "path": ".plans/issue-92/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "182b2ffb2f3d8ecc651fa5014c0ef4a0fb9f6692",
+      "path": ".plans/issue-92/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "1168fb56c902d97d57864beff1320b84473db324",
+      "path": ".plans/issue-92/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "13cde3e3ddc2b15a8537157b93a14b8c34e05a3f",
+      "path": ".plans/issue-92/review.md"
+    }
+  ],
+  "choice": "claude",
+  "rationale": "Claude best matches the owner-ranked R4/R5 rediscovery and Antigravity wait fixes via contextPaths, mirror changeScope, and --dangerously-skip-permissions beside accept-edits, provided review corrections add the 0.0.15 version-test updates and stronger R4 selected-plan scope."
+}
