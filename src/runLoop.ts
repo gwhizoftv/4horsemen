@@ -310,24 +310,28 @@ export const resolveChangeScope = async (
 ): Promise<ChangeScopeEntry[]> => {
   const pinned = inputs.filter((input) => PINNED_INPUT_KINDS.has(input.kind));
   if (pinned.length === 0) return [];
-  const byPin = new Map<string, string[]>();
+  // `null` records a pin whose diff could not be read. Caching the failure as
+  // well as the success is what makes "one diff per distinct pin" hold on the
+  // unreadable path too: without it, four inputs sharing one broken pin cost
+  // four failing git invocations per tick instead of one.
+  const byPin = new Map<string, readonly string[] | null>();
   const scope: ChangeScopeEntry[] = [];
   for (const input of pinned) {
-    let paths = byPin.get(input.commitSha);
-    if (paths === undefined) {
+    let cached = byPin.get(input.commitSha);
+    if (cached === undefined) {
       try {
-        paths = await mirror.changedPaths(start.baselineSha, input.commitSha);
+        cached = [...(await mirror.changedPaths(start.baselineSha, input.commitSha))].sort();
       } catch {
-        continue;
+        cached = null;
       }
-      byPin.set(input.commitSha, paths);
+      byPin.set(input.commitSha, cached);
     }
-    const sorted = [...paths].sort();
+    if (cached === null) continue;
     scope.push({
       agent: input.agent,
       commitSha: input.commitSha,
-      paths: sorted.slice(0, CHANGE_SCOPE_PATH_LIMIT),
-      truncated: sorted.length > CHANGE_SCOPE_PATH_LIMIT
+      paths: cached.slice(0, CHANGE_SCOPE_PATH_LIMIT),
+      truncated: cached.length > CHANGE_SCOPE_PATH_LIMIT
     });
   }
   return scope;

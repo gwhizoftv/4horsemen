@@ -1169,6 +1169,35 @@ describe("coordinator-resolved change scope", () => {
     expect(scope).toEqual([]);
   });
 
+  /**
+   * The memoisation guarantee has to hold on the failure path too. Caching only
+   * successes meant four agents bound to one unreadable pin produced four
+   * failing git invocations per tick — the exact per-agent repetition this
+   * feature exists to remove, surviving in the branch no test covered.
+   */
+  it("attempts an unreadable pin once per tick, not once per input", async () => {
+    const { paths } = fixture();
+    let attempts = 0;
+    const failing = {
+      changedPaths: async () => {
+        attempts += 1;
+        throw new Error("unknown revision");
+      }
+    };
+    const broken = "8".repeat(40);
+    const scope = await resolveChangeScope(
+      failing,
+      readStartState(paths),
+      pinnedInputs([
+        ["claude", broken],
+        ["codex", broken],
+        ["cursor", broken]
+      ])
+    );
+    expect(scope).toEqual([]);
+    expect(attempts).toBe(1);
+  });
+
   it("carries configured context paths from start state into every order", () => {
     const { paths } = fixture();
     const start = { ...readStartState(paths), contextPaths: ["docs/repo-map.md"] };
