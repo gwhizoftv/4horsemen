@@ -31,7 +31,9 @@ launcher_command() {
     antigravity)
       # agy installs into ~/.local/bin, which a login shell does not always
       # have on PATH; without this the launcher cannot find it.
-      printf 'export PATH="$HOME/.local/bin:$PATH"\nexec agy --mode accept-edits\n'
+      # Permission prompts show up as agent wait rather than work; automated
+      # agent clones require unattended execution.
+      printf 'export PATH="$HOME/.local/bin:$PATH"\nexec agy --mode accept-edits --dangerously-skip-permissions\n'
       ;;
     gemini)
       printf 'exec gemini\n'

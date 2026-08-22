@@ -28,7 +28,9 @@ const order = (root: string): InternalOrder => ({
   approvedPaths: [],
   activeRoster: ["codex", "claude"],
   eligibleChoices: [],
-  expectedSelectedAgents: []
+  expectedSelectedAgents: [],
+  contextPaths: [],
+  changeScope: []
 });
 
 describe("agent actions", () => {
@@ -43,10 +45,88 @@ describe("agent actions", () => {
     expect(raw).toContain("3".repeat(40));
     expect(raw).toContain("Before waiting for more input, re-read");
     expect(raw).toContain("If `actionId` in the front matter has changed");
+    expect(raw).not.toContain("## Repo context");
+    expect(raw).not.toContain("## Changed paths for the bound pins");
     expect(raw).not.toContain("nudge");
     expect(raw).not.toContain("stepId:");
     expect(raw).not.toContain("evidence:");
     expect(raw).not.toContain("gate-");
+  });
+
+  it("renders Repo context and Changed paths sections when populated", () => {
+    const ord = {
+      ...order("/external/coord"),
+      contextPaths: ["docs/repo-map.md", "docs/architecture.md"],
+      changeScope: [
+        {
+          agent: "claude",
+          commitSha: "3".repeat(40),
+          paths: ["src/foo.ts", "src/bar.ts"],
+          truncated: false
+        },
+        {
+          agent: "cursor",
+          commitSha: "4".repeat(40),
+          paths: ["src/big.ts"],
+          truncated: true
+        }
+      ]
+    };
+    const raw = renderAction(ord);
+    expect(raw).toContain("## Repo context\n\n- `docs/repo-map.md`\n- `docs/architecture.md`");
+    expect(raw).toContain("## Changed paths for the bound pins");
+    expect(raw).toContain(`### claude (\`${"3".repeat(40)}\`)\n- \`src/foo.ts\`\n- \`src/bar.ts\``);
+    expect(raw).toContain(`### cursor (\`${"4".repeat(40)}\`)\n- \`src/big.ts\`\n- ... (additional paths truncated)`);
+
+    const parsed = parseAction(raw);
+    expect(parsed.actionId).toBe("b2337d85-6617-4e9f-8ace-901453764aa4");
+    expect(parsed.agent).toBe("codex");
+    expect(parsed.body).toContain("## Repo context");
+    expect(parsed.body).toContain("## Changed paths for the bound pins");
+  });
+
+  it("throws when contextPaths or changeScope paths contain backticks or newlines", () => {
+    expect(() =>
+      renderAction({
+        ...order("/external/coord"),
+        contextPaths: ["docs/`bad.md"]
+      })
+    ).toThrow("must not contain backticks");
+
+    expect(() =>
+      renderAction({
+        ...order("/external/coord"),
+        contextPaths: ["docs/bad\n.md"]
+      })
+    ).toThrow("must fit on one line");
+
+    expect(() =>
+      renderAction({
+        ...order("/external/coord"),
+        changeScope: [
+          {
+            agent: "claude",
+            commitSha: "3".repeat(40),
+            paths: ["src/`bad.ts"],
+            truncated: false
+          }
+        ]
+      })
+    ).toThrow("must not contain backticks");
+
+    expect(() =>
+      renderAction({
+        ...order("/external/coord"),
+        changeScope: [
+          {
+            agent: "claude",
+            commitSha: "3".repeat(40),
+            paths: ["src/bad\n.ts"],
+            truncated: false
+          }
+        ]
+      })
+    ).toThrow("must fit on one line");
   });
 
   it("round trips an atomically written action", () => {

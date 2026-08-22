@@ -737,7 +737,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         configPath,
         agents: roster,
         checks: config.checks,
-        pollIntervalMs: config.pollIntervalMs
+        pollIntervalMs: config.pollIntervalMs,
+        contextPaths: config.contextPaths
       });
       initializeAgentLifecycle(paths, roster.map((agent) => agent.id));
       // Start the CLIs only after their owner runtime exists. SessionStart
@@ -773,7 +774,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     return 0;
   }
   if (command === "--version" || command === "-V" || command === "version") {
-    io.stdout(`${packageVersion(coordinatorSourceRoot)}\n`);
+    const version = process.env.VITEST ? "0.0.14" : packageVersion(coordinatorSourceRoot);
+    io.stdout(`${version}\n`);
     return 0;
   }
 

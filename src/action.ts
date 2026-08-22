@@ -19,6 +19,7 @@ export const createActionId = (): string => randomUUID();
 
 const validatePublicField = (name: string, value: string): void => {
   if (value.includes("\n") || value.includes("\r")) throw new Error(`${name} must fit on one line.`);
+  if (value.includes("`")) throw new Error(`${name} must not contain backticks.`);
 };
 
 export const renderAction = (order: InternalOrder): string => {
@@ -34,13 +35,40 @@ export const renderAction = (order: InternalOrder): string => {
           .map((input) => `- ${input.kind} from ${input.agent}: \`${input.commitSha}\` at \`${input.path}\``)
           .join("\n");
 
+  let repoContextText = "";
+  if (order.contextPaths && order.contextPaths.length > 0) {
+    for (const path of order.contextPaths) {
+      validatePublicField("contextPath", path);
+    }
+    const lines = order.contextPaths.map((path) => `- \`${path}\``).join("\n");
+    repoContextText = `\n\n## Repo context\n\n${lines}`;
+  }
+
+  let changeScopeText = "";
+  if (order.changeScope && order.changeScope.length > 0) {
+    const blocks: string[] = [];
+    for (const scope of order.changeScope) {
+      validatePublicField("commitSha", scope.commitSha);
+      const lines: string[] = [`### ${scope.agent} (\`${scope.commitSha}\`)`];
+      for (const path of scope.paths) {
+        validatePublicField("changedPath", path);
+        lines.push(`- \`${path}\``);
+      }
+      if (scope.truncated) {
+        lines.push("- ... (additional paths truncated)");
+      }
+      blocks.push(lines.join("\n"));
+    }
+    changeScopeText = `\n\n## Changed paths for the bound pins\n\n${blocks.join("\n\n")}`;
+  }
+
   return `---
 actionId: ${order.actionId}
 agent: ${order.agent}
 requiredPath: ${order.requiredPath}
 ---
 
-${order.task}
+${order.task}${repoContextText}
 
 Publish the required artifact at:
 
@@ -48,7 +76,7 @@ Publish the required artifact at:
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText}
+${inputText}${changeScopeText}
 
 Push the commit containing the artifact to \`${order.branch}\`. Then write that
 exact 40-character lowercase commit SHA as the sole contents of:

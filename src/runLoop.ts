@@ -36,6 +36,7 @@ import {
   coordMergesPullRequest,
   describeWorkflowStep,
   type BoundInput,
+  type ChangeScopeEntry,
   type EvidenceObservation,
   type InternalOrder,
   type MachineDecision,
@@ -299,7 +300,8 @@ export const buildOrder = (
   round: number | null,
   actionId = createActionId(),
   outstanding: readonly string[] = [],
-  approvedPathOverride?: readonly string[]
+  approvedPathOverride?: readonly string[],
+  changeScopeOverride?: readonly ChangeScopeEntry[]
 ): InternalOrder => {
   const definition = STEP_DEFINITIONS[stepId];
   const runtime = agentRuntimePaths(paths, agent);
@@ -367,7 +369,9 @@ export const buildOrder = (
     ...(selectedImplementationSubmission?.productPin === undefined
       ? {}
       : { expectedImplementationPin: selectedImplementationSubmission.productPin }),
-    ...(selectedImplementation === null ? {} : { expectedReviser: selectedImplementation })
+    ...(selectedImplementation === null ? {} : { expectedReviser: selectedImplementation }),
+    contextPaths: start.contextPaths ?? [],
+    changeScope: changeScopeOverride ?? []
   };
 };
 
@@ -469,6 +473,39 @@ export class CoordinatorRunLoop {
     this.log(from === undefined ? `Issue ${issue}: ${to}` : `Issue ${issue}: ${from} → ${to}`);
   }
 
+  private async resolveChangeScope(
+    start: StartState,
+    cursors: CursorsState,
+    stepId: WorkflowStepId,
+    round: number | null
+  ): Promise<ChangeScopeEntry[]> {
+    const inputs = deriveBoundInputs(start, cursors, stepId, round);
+    const pinInputs = inputs.filter((input) => input.kind === "implementation" || input.kind === "revision");
+    if (pinInputs.length === 0) return [];
+    const cache = new Map<string, string[]>();
+    const results: ChangeScopeEntry[] = [];
+    for (const input of pinInputs) {
+      let paths = cache.get(input.commitSha);
+      if (paths === undefined) {
+        try {
+          paths = await this.mirror.changedPaths(start.baselineSha, input.commitSha);
+        } catch {
+          paths = [];
+        }
+        cache.set(input.commitSha, paths);
+      }
+      const sorted = [...paths].sort();
+      const truncated = sorted.length > 200;
+      results.push({
+        agent: input.agent,
+        commitSha: input.commitSha,
+        paths: truncated ? sorted.slice(0, 200) : sorted,
+        truncated
+      });
+    }
+    return results;
+  }
+
   private async prepareAction(
     start: StartState,
     cursors: CursorsState,
@@ -479,8 +516,20 @@ export class CoordinatorRunLoop {
     const cursor = cursors.agents[agent];
     if (cursor === undefined) throw new Error(`Unknown agent ${agent}.`);
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
+    const changeScope = await this.resolveChangeScope(start, cursors, stepId, round);
     this.authority(cursors);
-    const order = buildOrder(this.paths, start, cursors, agent, stepId, round, this.actionId(), [], approvedPaths);
+    const order = buildOrder(
+      this.paths,
+      start,
+      cursors,
+      agent,
+      stepId,
+      round,
+      this.actionId(),
+      [],
+      approvedPaths,
+      changeScope
+    );
     const runtime = agentRuntimePaths(this.paths, agent);
     let next = this.mutate(cursors, (current) => {
       writeAction(this.paths.coordRoot, runtime.action, order);
@@ -557,8 +606,9 @@ export class CoordinatorRunLoop {
     if (!existsSync(runtime.action)) return cursors;
     const previous = readAction(runtime.action).body;
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
-    this.authority(cursors);
     const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+    const changeScope = await this.resolveChangeScope(start, cursors, cursor.stepId, round);
+    this.authority(cursors);
     const order = buildOrder(
       this.paths,
       start,
@@ -568,7 +618,8 @@ export class CoordinatorRunLoop {
       round,
       actionId,
       cursor.outstanding,
-      approvedPaths
+      approvedPaths,
+      changeScope
     );
     writeAction(this.paths.coordRoot, runtime.action, order);
     if (readAction(runtime.action).body !== previous) {
@@ -828,8 +879,20 @@ export class CoordinatorRunLoop {
     const stepId = cursor.stepId;
     const round = stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
+    const changeScope = await this.resolveChangeScope(start, cursors, stepId, round);
     this.authority(cursors);
-    const order = buildOrder(this.paths, start, cursors, agent, stepId, round, actionId, outstanding, approvedPaths);
+    const order = buildOrder(
+      this.paths,
+      start,
+      cursors,
+      agent,
+      stepId,
+      round,
+      actionId,
+      outstanding,
+      approvedPaths,
+      changeScope
+    );
     this.verbose(`reissued ${agent} action ${actionId}: ${outstanding.join("; ")}`);
     const next = this.mutate(cursors, (current) => {
       appendJournal(
@@ -1101,7 +1164,9 @@ export class CoordinatorRunLoop {
           }
         }
         if (harnessGone) {
+          const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
           const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
+          const changeScope = await this.resolveChangeScope(start, cursors, cursor.stepId, round);
           this.authority(cursors);
           const order = buildOrder(
             this.paths,
@@ -1109,10 +1174,11 @@ export class CoordinatorRunLoop {
             cursors,
             agent,
             cursor.stepId,
-            cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
+            round,
             cursor.actionId,
             cursor.outstanding,
-            approvedPaths
+            approvedPaths,
+            changeScope
           );
           const fetched = await this.mirror.fetchBranch(order.branch);
           this.authority(cursors);
@@ -1158,7 +1224,9 @@ export class CoordinatorRunLoop {
         );
         return replaceCursor(current, agent, { status: "verifying", submissionSha: completion.sha }, this.now());
       });
+      const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
       const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
+      const changeScope = await this.resolveChangeScope(start, cursors, cursor.stepId, round);
       this.authority(cursors);
       const order = buildOrder(
         this.paths,
@@ -1166,10 +1234,11 @@ export class CoordinatorRunLoop {
         cursors,
         agent,
         cursor.stepId,
-        cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
+        round,
         cursor.actionId,
         cursor.outstanding,
-        approvedPaths
+        approvedPaths,
+        changeScope
       );
       let observation = await evaluateEvidence(order, completion.sha, this.mirror as EvidenceMirror, () =>
         this.authority(cursors)

@@ -1072,4 +1072,88 @@ describe("effectful run loop", () => {
     expect(opens).toBe(0);
     expect(readCursorsState(paths).publication.status).toBe("not-required");
   });
+
+  it("populates contextPaths in buildOrder from start state", () => {
+    const { paths } = fixture();
+    const start = {
+      ...readStartState(paths),
+      contextPaths: ["docs/repo-map.md"]
+    };
+    const cursors = readCursorsState(paths);
+    const order = buildOrder(paths, start, cursors, "claude", "R2.plan", null);
+    expect(order.contextPaths).toEqual(["docs/repo-map.md"]);
+  });
+
+  it("resolves changeScope once per pin for compare actions and omits it for unpinned actions", async () => {
+    const { paths } = fixture();
+    const pinSha1 = "1".repeat(40);
+    const pinSha2 = "2".repeat(40);
+    const changedCalls: Array<[string, string]> = [];
+    const mirror = {
+      changedPaths: async (base: string, tip: string) => {
+        changedCalls.push([base, tip]);
+        if (tip === pinSha1) return ["src/foo.ts", "src/bar.ts"];
+        if (tip === pinSha2) return ["src/baz.ts"];
+        return [];
+      }
+    } as unknown as BareMirror;
+
+    const loop = new CoordinatorRunLoop(paths, { mirror });
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+
+    // Seed accepted implementations for R5.compare
+    const seededCursors = cursorsStateSchema.parse({
+      ...cursors,
+      issueCursor: { stepId: "R5.compare", gateId: "gate-5-comparison", round: null },
+      accepted: [
+        {
+          stepId: "R4.implement",
+          agent: "claude",
+          round: null,
+          submissionSha: "a".repeat(40),
+          productPin: pinSha1,
+          path: ".signals/issue-1/implementation-ready-claude.json",
+          acceptedAt: "2026-08-11T10:00:00Z"
+        },
+        {
+          stepId: "R4.implement",
+          agent: "codex",
+          round: null,
+          submissionSha: "b".repeat(40),
+          productPin: pinSha2,
+          path: ".signals/issue-1/implementation-ready-codex.json",
+          acceptedAt: "2026-08-11T10:00:00Z"
+        }
+      ]
+    });
+
+    const compareScope = await (loop as unknown as {
+      resolveChangeScope: (s: typeof start, c: typeof seededCursors, step: string, r: null) => Promise<unknown[]>;
+    }).resolveChangeScope(start, seededCursors, "R5.compare", null);
+
+    expect(compareScope).toEqual([
+      {
+        agent: "claude",
+        commitSha: pinSha1,
+        paths: ["src/bar.ts", "src/foo.ts"],
+        truncated: false
+      },
+      {
+        agent: "codex",
+        commitSha: pinSha2,
+        paths: ["src/baz.ts"],
+        truncated: false
+      }
+    ]);
+    expect(changedCalls.length).toBe(2);
+
+    // R2.plan is unpinned so changeScope is empty and changedPaths is not called
+    changedCalls.length = 0;
+    const planScope = await (loop as unknown as {
+      resolveChangeScope: (s: typeof start, c: typeof seededCursors, step: string, r: null) => Promise<unknown[]>;
+    }).resolveChangeScope(start, seededCursors, "R2.plan", null);
+    expect(planScope).toEqual([]);
+    expect(changedCalls.length).toBe(0);
+  });
 });

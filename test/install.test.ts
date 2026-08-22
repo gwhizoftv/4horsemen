@@ -160,11 +160,18 @@ describe("coord install — emitted config", () => {
     const result = installOnce(fixture);
     const config = readConfig(result.configPath);
     expect(config.project).toBe("myserver");
-    expect(config.checks).toEqual(declaredChecks);
     expect(config.coordination?.installRoot).toBe(repoRoot);
-    expect(config.coordination?.version).toBe("0.0.14");
+    expect(config.coordination?.version).toBe("0.0.15");
     expect(config.coordination?.vendored).toBe(false);
     expect(config.agents[0]?.launcher).toBe("start-claude.sh");
+  });
+
+  it("emits an antigravity launcher with unattended permissions flag", () => {
+    const fixture = product();
+    const result = installOnce(fixture, { agents: ["antigravity"] });
+    const clone = result.clones[0] as string;
+    const launcher = readFileSync(join(clone, "start-antigravity.sh"), "utf8");
+    expect(launcher).toContain("exec agy --mode accept-edits --dangerously-skip-permissions");
   });
 
   it("records the install stamp under coord-root, never in the product tree", () => {

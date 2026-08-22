@@ -224,6 +224,13 @@ export type BoundInput = {
   kind: string;
 };
 
+export type ChangeScopeEntry = {
+  agent: string;
+  commitSha: string;
+  paths: readonly string[];
+  truncated: boolean;
+};
+
 export type InternalOrder = {
   actionId: string;
   issue: number;
@@ -246,6 +253,8 @@ export type InternalOrder = {
   expectedImplementationAgent?: string;
   expectedImplementationPin?: string;
   expectedReviser?: string;
+  contextPaths?: readonly string[];
+  changeScope?: readonly ChangeScopeEntry[];
 };
 
 export type CheckResult = { name: string; argv: readonly string[]; exitCode: number };

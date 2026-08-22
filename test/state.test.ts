@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
   appendJournal,
+  coordinatorConfigSchema,
   cursorsStateSchema,
   dropAgent,
   initializeOperationalState,
@@ -15,6 +16,8 @@ import {
   setPaused,
   StateConflictError,
   startStateSchema,
+  type StartState,
+  workspaceDeclarationSchema,
   writeCursorsState
 } from "../src/state.js";
 
@@ -96,5 +99,43 @@ describe("operational state", () => {
     expect(staleWrite.applied).toBe(false);
     expect(staleWrite.state.paused).toBe(true);
     expect(new StateConflictError("conflict").name).toBe("StateConflictError");
+  });
+
+  it("validates contextPaths in coordinatorConfigSchema, workspaceDeclarationSchema, and startStateSchema", () => {
+    const validConfig = {
+      project: "myserver",
+      origin: "https://github.com/example/myserver.git",
+      agents: [{ id: "claude", root: "/clones/claude", launcher: "start-claude.sh", delivery: "nudge" }],
+      branch: "issue-{issue}/{agent}",
+      checks: [{ name: "check", argv: ["pnpm", "check"] }],
+      contextPaths: ["docs/repo-map.md", "docs/architecture.md"]
+    };
+    expect(coordinatorConfigSchema.safeParse(validConfig).success).toBe(true);
+
+    // Absolute path
+    expect(coordinatorConfigSchema.safeParse({ ...validConfig, contextPaths: ["/docs/repo-map.md"] }).success).toBe(
+      false
+    );
+    // Path with ..
+    expect(coordinatorConfigSchema.safeParse({ ...validConfig, contextPaths: ["docs/../secret.md"] }).success).toBe(
+      false
+    );
+    // Duplicate path
+    expect(
+      coordinatorConfigSchema.safeParse({ ...validConfig, contextPaths: ["docs/repo-map.md", "docs/repo-map.md"] })
+        .success
+    ).toBe(false);
+
+    // workspaceDeclarationSchema
+    expect(workspaceDeclarationSchema.safeParse({ contextPaths: ["docs/repo-map.md"] }).success).toBe(true);
+    expect(workspaceDeclarationSchema.safeParse({ contextPaths: ["/docs/repo-map.md"] }).success).toBe(false);
+    expect(workspaceDeclarationSchema.safeParse({ contextPaths: ["../secret.md"] }).success).toBe(false);
+
+    // startStateSchema with omitted contextPaths defaults to []
+    const { start } = initialize();
+    const withoutContextPaths: Partial<StartState> = { ...start };
+    delete withoutContextPaths.contextPaths;
+    const parsed = startStateSchema.parse(withoutContextPaths);
+    expect(parsed.contextPaths).toEqual([]);
   });
 });

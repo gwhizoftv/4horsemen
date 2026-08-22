@@ -41,7 +41,10 @@ resolvable; ambiguous duplicate state fails closed.
 
 `action.md` exposes only an opaque action UUID, the caller identity, required
 path, concrete task, exact bound input commits, and absolute completion path.
-Internal step/gate/evidence identifiers remain in `cursors.json`.
+When `contextPaths` is configured, it renders a `## Repo context` section
+listing advisory documentation files. For steps with implementation or revision
+pins, it renders `## Changed paths for the bound pins` to provide pre-computed
+diff scopes. Internal step/gate/evidence identifiers remain in `cursors.json`.
 
 ## Configuration
 
@@ -58,6 +61,10 @@ Start from `config.example.json`:
   `coord-merged` (coord merges), or legacy `owner-only` (same as open-unmerged)
 - `digestPaths`: optional additional config-relative, confined source
   templates; the list may be empty
+- `contextPaths`: optional list of confined repository-relative context documentation
+  files (such as `docs/repo-map.md`) rendered under `## Repo context` in `action.md`
+  to orient agents and reduce initial search tool calls. Advisory only; not included
+  in `automationDigest`
 - `checks[]`: explicit argv arrays executed in a clean worktree at the final
   pin; no shell is invoked
 - `pollIntervalMs`: bounded completion-file polling interval
