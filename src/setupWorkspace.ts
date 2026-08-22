@@ -288,6 +288,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     maxRevisionRounds: 3,
     prPolicy: declared.prPolicy ?? "coord-open-unmerged",
     digestPaths: declared.digestPaths ?? [],
+    contextPaths: declared.contextPaths ?? [],
     checks,
     pollIntervalMs: declared.pollIntervalMs ?? 1_000,
     ...(toolchain === undefined ? {} : { toolchain }),

@@ -224,6 +224,13 @@ export type BoundInput = {
   kind: string;
 };
 
+export type ChangeScopeEntry = {
+  agent: string;
+  commitSha: string;
+  paths: readonly string[];
+  truncated: boolean;
+};
+
 export type InternalOrder = {
   actionId: string;
   issue: number;
@@ -240,6 +247,10 @@ export type InternalOrder = {
   task: string;
   inputs: readonly BoundInput[];
   approvedPaths: readonly string[];
+  /** Advisory repo-context paths from start state; omitted/empty keeps actions byte-stable. */
+  contextPaths?: readonly string[];
+  /** Advisory changed-path lists for bound implementation/revision pins. */
+  changeScope?: readonly ChangeScopeEntry[];
   activeRoster: readonly string[];
   eligibleChoices: readonly string[];
   expectedSelectedAgents: readonly string[];

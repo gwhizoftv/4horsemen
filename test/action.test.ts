@@ -26,6 +26,8 @@ const order = (root: string): InternalOrder => ({
   task: "Review the bound plan.",
   inputs: [{ agent: "claude", commitSha: "3".repeat(40), path: ".plans/issue-1/plan.md", kind: "plan" }],
   approvedPaths: [],
+  contextPaths: [],
+  changeScope: [],
   activeRoster: ["codex", "claude"],
   eligibleChoices: [],
   expectedSelectedAgents: []
@@ -83,5 +85,43 @@ describe("agent actions", () => {
     expect(parseCompletion(`${sha}\n`)).toEqual({ status: "valid", sha });
     expect(parseCompletion(`commit ${sha}`)).toEqual({ status: "valid", sha });
     expect(parseCompletion(`commit ${sha}\n`)).toEqual({ status: "valid", sha });
+  });
+
+  it("emits repo-context and changed-path sections only when populated", () => {
+    const empty = renderAction(order("/external/coord"));
+    expect(empty).not.toContain("## Repo context");
+    expect(empty).not.toContain("## Changed paths for the bound pins");
+
+    const populated = renderAction({
+      ...order("/external/coord"),
+      contextPaths: ["docs/repo-map.md"],
+      changeScope: [
+        {
+          agent: "claude",
+          commitSha: "4".repeat(40),
+          paths: ["src/action.ts", "docs/a`b.md"],
+          truncated: true
+        }
+      ]
+    });
+    expect(populated).toContain("## Repo context");
+    expect(populated).toContain("`docs/repo-map.md`");
+    expect(populated).toContain("replace an initial find/grep sweep");
+    expect(populated).toContain("## Changed paths for the bound pins");
+    expect(populated).toContain("Informational only");
+    expect(populated).toContain("`src/action.ts`");
+    expect(populated).toContain("list truncated");
+    expect(populated).toContain("omitted: unsafe to render");
+    expect(populated).not.toContain("docs/a`b.md");
+    expect(parseAction(populated).requiredPath).toBe(".plans/issue-1/review.md");
+  });
+
+  it("rejects configured context paths that contain newlines", () => {
+    expect(() =>
+      renderAction({
+        ...order("/external/coord"),
+        contextPaths: ["docs/bad\npath.md"]
+      })
+    ).toThrow(/context path must fit on one line/);
   });
 });

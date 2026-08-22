@@ -14,7 +14,8 @@ import {
   deterministicWinner,
   githubRepositoryFromOrigin,
   NUDGE_RETRY_MS,
-  resolveApprovedPaths
+  resolveApprovedPaths,
+  resolveChangeScope
 } from "../src/runLoop.js";
 import {
   cursorsStateSchema,
@@ -186,6 +187,77 @@ describe("effectful run loop", () => {
     expect(approved).toEqual(["scripts/setup_claude.sh", "scripts/setup_codex.sh", "src/product.ts"]);
     const order = buildOrder(paths, readStartState(paths), cursors, "codex", "R4.implement", null, undefined, [], approved);
     expect(order.approvedPaths).toEqual(approved);
+  });
+
+  it("copies start contextPaths and resolves changeScope once per distinct pin", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify({ ...start, contextPaths: ["docs/repo-map.md"] }, null, 2)}\n`
+    );
+    const pin = "b".repeat(40);
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R5.compare", gateId: "gate-5-comparison", round: null },
+        accepted: [
+          {
+            stepId: "R4.implement",
+            agent: "claude",
+            round: null,
+            submissionSha: "c".repeat(40),
+            path: ".signals/issue-1/implementation-ready-claude.json",
+            productPin: pin,
+            acceptedAt: "2026-08-11T17:00:00.000Z"
+          },
+          {
+            stepId: "R4.implement",
+            agent: "codex",
+            round: null,
+            submissionSha: "d".repeat(40),
+            path: ".signals/issue-1/implementation-ready-codex.json",
+            productPin: pin,
+            acceptedAt: "2026-08-11T17:00:00.000Z"
+          }
+        ]
+      })
+    );
+    const cursors = readCursorsState(paths);
+    const refreshed = readStartState(paths);
+    const planOrder = buildOrder(paths, refreshed, cursors, "codex", "R2.plan", null);
+    expect(planOrder.contextPaths).toEqual(["docs/repo-map.md"]);
+    expect(planOrder.changeScope).toEqual([]);
+
+    let calls = 0;
+    const scope = await resolveChangeScope(
+      {
+        async changedPaths() {
+          calls += 1;
+          return ["src/a.ts", "src/b.ts"];
+        }
+      },
+      refreshed.baselineSha,
+      buildOrder(paths, refreshed, cursors, "codex", "R5.compare", null).inputs
+    );
+    expect(calls).toBe(1);
+    expect(scope).toEqual([
+      { agent: "claude", commitSha: pin, paths: ["src/a.ts", "src/b.ts"], truncated: false },
+      { agent: "codex", commitSha: pin, paths: ["src/a.ts", "src/b.ts"], truncated: false }
+    ]);
+    const compare = buildOrder(
+      paths,
+      refreshed,
+      cursors,
+      "codex",
+      "R5.compare",
+      null,
+      undefined,
+      [],
+      undefined,
+      scope
+    );
+    expect(compare.changeScope).toEqual(scope);
   });
 
   it("refreshes in-flight approved paths and reinjects only after positive idle evidence", async () => {

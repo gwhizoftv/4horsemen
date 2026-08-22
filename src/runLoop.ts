@@ -36,6 +36,7 @@ import {
   coordMergesPullRequest,
   describeWorkflowStep,
   type BoundInput,
+  type ChangeScopeEntry,
   type EvidenceObservation,
   type InternalOrder,
   type MachineDecision,
@@ -267,6 +268,44 @@ const approvedPathsForOrder = (cursors: CursorsState, stepId: WorkflowStepId): s
   ].sort();
 };
 
+const CHANGE_SCOPE_PATH_LIMIT = 200;
+
+const changeScopeInputKinds = new Set(["implementation", "revision", "prior-revision"]);
+
+export type ChangeScopeMirror = {
+  changedPaths(base: string, tip: string): Promise<string[]>;
+};
+
+/** Resolve bound-pin diffs once per distinct product pin for the current tick. */
+export const resolveChangeScope = async (
+  mirror: ChangeScopeMirror,
+  baselineSha: string,
+  inputs: readonly BoundInput[]
+): Promise<ChangeScopeEntry[]> => {
+  const cache = new Map<string, { paths: string[]; truncated: boolean }>();
+  const entries: ChangeScopeEntry[] = [];
+  for (const input of inputs) {
+    if (!changeScopeInputKinds.has(input.kind)) continue;
+    let cached = cache.get(input.commitSha);
+    if (cached === undefined) {
+      const changed = [...(await mirror.changedPaths(baselineSha, input.commitSha))].sort();
+      const truncated = changed.length > CHANGE_SCOPE_PATH_LIMIT;
+      cached = {
+        paths: truncated ? changed.slice(0, CHANGE_SCOPE_PATH_LIMIT) : changed,
+        truncated
+      };
+      cache.set(input.commitSha, cached);
+    }
+    entries.push({
+      agent: input.agent,
+      commitSha: input.commitSha,
+      paths: cached.paths,
+      truncated: cached.truncated
+    });
+  }
+  return entries;
+};
+
 /**
  * Re-extract the selected plan file map so extractor upgrades apply mid-issue
  * without wiping frozen plan-acceptance paths.
@@ -299,7 +338,8 @@ export const buildOrder = (
   round: number | null,
   actionId = createActionId(),
   outstanding: readonly string[] = [],
-  approvedPathOverride?: readonly string[]
+  approvedPathOverride?: readonly string[],
+  changeScopeOverride?: readonly ChangeScopeEntry[]
 ): InternalOrder => {
   const definition = STEP_DEFINITIONS[stepId];
   const runtime = agentRuntimePaths(paths, agent);
@@ -315,6 +355,8 @@ export const buildOrder = (
   );
   const approvedPaths =
     approvedPathOverride === undefined ? approvedPathsForOrder(cursors, stepId) : [...approvedPathOverride];
+  const contextPaths = start.contextPaths ?? [];
+  const changeScope = changeScopeOverride === undefined ? [] : [...changeScopeOverride];
   const eligibleChoices =
     stepId === "R3.plan-ballot"
       ? planChoices
@@ -360,6 +402,8 @@ export const buildOrder = (
     task: `${definition.task}${binding}${scaffold}${correction}`,
     inputs,
     approvedPaths,
+    contextPaths: [...contextPaths],
+    changeScope,
     activeRoster: [...cursors.activeRoster],
     eligibleChoices,
     expectedSelectedAgents,
@@ -480,7 +524,21 @@ export class CoordinatorRunLoop {
     if (cursor === undefined) throw new Error(`Unknown agent ${agent}.`);
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
     this.authority(cursors);
-    const order = buildOrder(this.paths, start, cursors, agent, stepId, round, this.actionId(), [], approvedPaths);
+    const draft = buildOrder(this.paths, start, cursors, agent, stepId, round, this.actionId(), [], approvedPaths);
+    const changeScope = await resolveChangeScope(this.mirror, start.baselineSha, draft.inputs);
+    this.authority(cursors);
+    const order = buildOrder(
+      this.paths,
+      start,
+      cursors,
+      agent,
+      stepId,
+      round,
+      draft.actionId,
+      [],
+      approvedPaths,
+      changeScope
+    );
     const runtime = agentRuntimePaths(this.paths, agent);
     let next = this.mutate(cursors, (current) => {
       writeAction(this.paths.coordRoot, runtime.action, order);
@@ -559,7 +617,7 @@ export class CoordinatorRunLoop {
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
     this.authority(cursors);
     const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
-    const order = buildOrder(
+    const draft = buildOrder(
       this.paths,
       start,
       cursors,
@@ -569,6 +627,20 @@ export class CoordinatorRunLoop {
       actionId,
       cursor.outstanding,
       approvedPaths
+    );
+    const changeScope = await resolveChangeScope(this.mirror, start.baselineSha, draft.inputs);
+    this.authority(cursors);
+    const order = buildOrder(
+      this.paths,
+      start,
+      cursors,
+      agent,
+      cursor.stepId,
+      round,
+      actionId,
+      cursor.outstanding,
+      approvedPaths,
+      changeScope
     );
     writeAction(this.paths.coordRoot, runtime.action, order);
     if (readAction(runtime.action).body !== previous) {
@@ -829,7 +901,21 @@ export class CoordinatorRunLoop {
     const round = stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
     this.authority(cursors);
-    const order = buildOrder(this.paths, start, cursors, agent, stepId, round, actionId, outstanding, approvedPaths);
+    const draft = buildOrder(this.paths, start, cursors, agent, stepId, round, actionId, outstanding, approvedPaths);
+    const changeScope = await resolveChangeScope(this.mirror, start.baselineSha, draft.inputs);
+    this.authority(cursors);
+    const order = buildOrder(
+      this.paths,
+      start,
+      cursors,
+      agent,
+      stepId,
+      round,
+      actionId,
+      outstanding,
+      approvedPaths,
+      changeScope
+    );
     this.verbose(`reissued ${agent} action ${actionId}: ${outstanding.join("; ")}`);
     const next = this.mutate(cursors, (current) => {
       appendJournal(

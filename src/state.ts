@@ -168,6 +168,14 @@ export const coordinatorConfigSchema = z
           .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "digest path must be confined")
       )
       .default([]),
+    contextPaths: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "context path must be confined")
+      )
+      .default([]),
     checks: z.array(checkCommandSchema).min(1),
     pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000),
     toolchain: z.string().min(1).optional(),
@@ -184,6 +192,9 @@ export const coordinatorConfigSchema = z
     }
     if (new Set(config.digestPaths).size !== config.digestPaths.length) {
       context.addIssue({ code: "custom", message: "digest paths must be unique", path: ["digestPaths"] });
+    }
+    if (new Set(config.contextPaths).size !== config.contextPaths.length) {
+      context.addIssue({ code: "custom", message: "context paths must be unique", path: ["contextPaths"] });
     }
   });
 
@@ -212,6 +223,14 @@ export const workspaceDeclarationSchema = z
           .string()
           .min(1)
           .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "digest path must be confined")
+      )
+      .optional(),
+    contextPaths: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "context path must be confined")
       )
       .optional(),
     pollIntervalMs: z.number().int().min(100).max(60_000).optional()
@@ -249,6 +268,14 @@ export const startStateSchema = z
     agents: z.array(agentConfigSchema).min(1),
     checks: z.array(checkCommandSchema).min(1),
     pollIntervalMs: z.number().int().min(100).max(60_000),
+    contextPaths: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "context path must be confined")
+      )
+      .default([]),
     createdAt: timestampSchema
   })
   .strict();
@@ -411,7 +438,11 @@ export type AcceptedSubmission = z.infer<typeof acceptedSubmissionSchema>;
 export type CursorsState = z.infer<typeof cursorsStateSchema>;
 export type JournalEvent = z.infer<typeof journalEventSchema>;
 
-export type StartStateInput = Omit<StartState, "formatVersion" | "createdAt"> & { createdAt?: string };
+/** Omit defaulted `contextPaths` so legacy typed initializers stay compatible. */
+export type StartStateInput = Omit<StartState, "formatVersion" | "createdAt" | "contextPaths"> & {
+  createdAt?: string;
+  contextPaths?: readonly string[];
+};
 
 const parseFile = <T>(path: string, schema: z.ZodType<T>): T => {
   let value: unknown;
@@ -501,7 +532,12 @@ export const initializeOperationalState = (
   if (existsSync(paths.start) || existsSync(paths.cursors) || existsSync(paths.journal)) {
     throw new Error(`Runtime state already exists for issue ${input.issue}. Use resume or abandon it explicitly.`);
   }
-  const start = startStateSchema.parse({ ...input, formatVersion: RUNTIME_FORMAT_VERSION, createdAt: input.createdAt ?? now });
+  const start = startStateSchema.parse({
+    ...input,
+    contextPaths: input.contextPaths === undefined ? [] : [...input.contextPaths],
+    formatVersion: RUNTIME_FORMAT_VERSION,
+    createdAt: input.createdAt ?? now
+  });
   const cursors = initialCursors(start, now);
   atomicWriteJson(paths.coordRoot, paths.start, start);
   atomicWriteJson(paths.coordRoot, paths.cursors, cursors);
