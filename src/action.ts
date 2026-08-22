@@ -3,7 +3,7 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, u
 import { dirname, relative } from "node:path";
 import { assertNoSymlink, containedPath } from "./paths.js";
 import { gitShaSchema, repositoryPathSchema } from "./protocol.js";
-import type { InternalOrder } from "./steps.js";
+import type { ChangeScopeEntry, InternalOrder } from "./steps.js";
 
 export type PublicAction = {
   actionId: string;
@@ -21,11 +21,80 @@ const validatePublicField = (name: string, value: string): void => {
   if (value.includes("\n") || value.includes("\r")) throw new Error(`${name} must fit on one line.`);
 };
 
+/** True when a path is safe to render inside a single Markdown code span. */
+export const isSafeActionPathDisplay = (value: string): boolean =>
+  value.length > 0 && !value.includes("\n") && !value.includes("\r") && !value.includes("`");
+
+const renderPathList = (paths: readonly string[]): { rendered: string[]; omitted: number } => {
+  const rendered: string[] = [];
+  let omitted = 0;
+  for (const path of paths) {
+    if (!isSafeActionPathDisplay(path)) {
+      omitted += 1;
+      continue;
+    }
+    rendered.push(`\`${path}\``);
+  }
+  return { rendered, omitted };
+};
+
+const renderRepoContextSection = (contextPaths: readonly string[]): string => {
+  if (contextPaths.length === 0) return "";
+  const { rendered, omitted } = renderPathList(contextPaths);
+  if (rendered.length === 0 && omitted === 0) return "";
+  const lines = [
+    "",
+    "## Repo context",
+    "",
+    "Read these repository-relative files first for orientation; they replace an initial find/grep sweep, not judgment or bound pins.",
+    ""
+  ];
+  for (const path of rendered) lines.push(`- ${path}`);
+  if (omitted > 0) {
+    lines.push(`- (${omitted} configured context path(s) omitted: unsafe to render in this action)`);
+  }
+  lines.push("");
+  return lines.join("\n");
+};
+
+const renderChangeScopeSection = (changeScope: readonly ChangeScopeEntry[]): string => {
+  if (changeScope.length === 0) return "";
+  const blocks: string[] = [
+    "",
+    "## Changed paths for the bound pins",
+    "",
+    "Informational only. `approvedPaths` remains the only authority for which paths an implementation may touch.",
+    ""
+  ];
+  for (const entry of changeScope) {
+    blocks.push(`- ${entry.agent} @ \`${entry.commitSha}\`:`);
+    const { rendered, omitted } = renderPathList(entry.paths);
+    if (rendered.length === 0) {
+      blocks.push("  - (no safely renderable paths)");
+    } else {
+      for (const path of rendered) blocks.push(`  - ${path}`);
+    }
+    if (entry.truncated) {
+      blocks.push("  - (list truncated; more paths changed than shown)");
+    }
+    if (omitted > 0) {
+      blocks.push(`  - (${omitted} path(s) omitted: unsafe to render in this action)`);
+    }
+  }
+  blocks.push("");
+  return blocks.join("\n");
+};
+
 export const renderAction = (order: InternalOrder): string => {
   if (!actionIdPattern.test(order.actionId)) throw new Error("actionId must be an opaque UUID.");
   if (!agentPattern.test(order.agent)) throw new Error(`Invalid action agent ${order.agent}.`);
   repositoryPathSchema.parse(order.requiredPath);
   validatePublicField("completePath", order.completePath);
+  for (const path of order.contextPaths ?? []) {
+    if (path.includes("\n") || path.includes("\r")) {
+      throw new Error("context path must fit on one line.");
+    }
+  }
 
   const inputText =
     order.inputs.length === 0
@@ -34,6 +103,9 @@ export const renderAction = (order: InternalOrder): string => {
           .map((input) => `- ${input.kind} from ${input.agent}: \`${input.commitSha}\` at \`${input.path}\``)
           .join("\n");
 
+  const contextSection = renderRepoContextSection(order.contextPaths ?? []);
+  const changeScopeSection = renderChangeScopeSection(order.changeScope ?? []);
+
   return `---
 actionId: ${order.actionId}
 agent: ${order.agent}
@@ -41,7 +113,7 @@ requiredPath: ${order.requiredPath}
 ---
 
 ${order.task}
-
+${contextSection}${changeScopeSection}
 Publish the required artifact at:
 
 \`${order.requiredPath}\`

@@ -58,6 +58,11 @@ Start from `config.example.json`:
   `coord-merged` (coord merges), or legacy `owner-only` (same as open-unmerged)
 - `digestPaths`: optional additional config-relative, confined source
   templates; the list may be empty
+- `contextPaths`: optional additional config-relative, confined documentation
+  paths named in every `action.md` under "## Repo context" when non-empty.
+  Advisory reading only — not digest material, not approved paths, and not a
+  substitute for bound pins. Omitted or empty leaves action bytes unchanged for
+  that section.
 - `checks[]`: explicit argv arrays executed in a clean worktree at the final
   pin; no shell is invoked
 - `pollIntervalMs`: bounded completion-file polling interval
@@ -67,8 +72,15 @@ worktree path. Expansion never creates shell text.
 
 Every new run always hashes the exact config bytes and a canonical snapshot of
 GitHub issue N from `config.origin`; optional `digestPaths` are added after
-those mandatory sources. Agent-authored plans are later protocol evidence, not
-owner-provided start input.
+those mandatory sources. `contextPaths` are deliberately excluded from the
+automation digest so owners can correct orientation docs mid-run without
+invalidating published artifacts. Agent-authored plans are later protocol
+evidence, not owner-provided start input.
+
+When an action binds implementation or revision pins, the coordinator may also
+render "## Changed paths for the bound pins" from mirror `changedPaths`
+(baseline → pin), truncated and informational only. `approvedPaths` remains the
+sole authority for which paths an implementation may touch.
 
 ## Owner-driven manual lifecycle
 

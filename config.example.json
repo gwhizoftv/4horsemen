@@ -47,6 +47,7 @@
   "maxRevisionRounds": 3,
   "prPolicy": "coord-open-unmerged",
   "digestPaths": [],
+  "contextPaths": ["docs/repo-map.md"],
   "pollIntervalMs": 1000,
   "checks": [
     { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },

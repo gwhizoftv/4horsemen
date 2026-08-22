@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
   appendJournal,
+  coordinatorConfigSchema,
   cursorsStateSchema,
   dropAgent,
   initializeOperationalState,
@@ -96,5 +97,59 @@ describe("operational state", () => {
     expect(staleWrite.applied).toBe(false);
     expect(staleWrite.state.paused).toBe(true);
     expect(new StateConflictError("conflict").name).toBe("StateConflictError");
+  });
+
+  it("accepts confined unique contextPaths and defaults them on legacy start state", () => {
+    const parsed = coordinatorConfigSchema.safeParse({
+      project: "demo",
+      origin: "https://example.com/demo.git",
+      agents: [{ id: "claude", root: "../demo-claude", launcher: "start-claude.sh", delivery: "both" }],
+      branch: "issue-{issue}/{agent}",
+      digestPaths: [],
+      contextPaths: ["docs/repo-map.md"],
+      checks: [{ name: "check", argv: ["true"] }]
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.contextPaths).toEqual(["docs/repo-map.md"]);
+
+    expect(
+      coordinatorConfigSchema.safeParse({
+        project: "demo",
+        origin: "https://example.com/demo.git",
+        agents: [{ id: "claude", root: "../demo-claude", launcher: "start-claude.sh", delivery: "both" }],
+        branch: "issue-{issue}/{agent}",
+        contextPaths: ["/abs/path.md"],
+        checks: [{ name: "check", argv: ["true"] }]
+      }).success
+    ).toBe(false);
+
+    expect(
+      coordinatorConfigSchema.safeParse({
+        project: "demo",
+        origin: "https://example.com/demo.git",
+        agents: [{ id: "claude", root: "../demo-claude", launcher: "start-claude.sh", delivery: "both" }],
+        branch: "issue-{issue}/{agent}",
+        contextPaths: ["docs/../secret.md"],
+        checks: [{ name: "check", argv: ["true"] }]
+      }).success
+    ).toBe(false);
+
+    expect(
+      coordinatorConfigSchema.safeParse({
+        project: "demo",
+        origin: "https://example.com/demo.git",
+        agents: [{ id: "claude", root: "../demo-claude", launcher: "start-claude.sh", delivery: "both" }],
+        branch: "issue-{issue}/{agent}",
+        contextPaths: ["docs/a.md", "docs/a.md"],
+        checks: [{ name: "check", argv: ["true"] }]
+      }).success
+    ).toBe(false);
+
+    const { start } = initialize();
+    const legacy = { ...start };
+    delete (legacy as { contextPaths?: unknown }).contextPaths;
+    const roundTrip = startStateSchema.safeParse(legacy);
+    expect(roundTrip.success).toBe(true);
+    if (roundTrip.success) expect(roundTrip.data.contextPaths).toEqual([]);
   });
 });
