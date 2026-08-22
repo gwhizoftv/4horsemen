@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 92,
+  "issueSessionId": "issue-92:7fda95334541f40d6f5a7e96bffb4e07ed89e5ee",
+  "agent": "antigravity",
+  "inputSetHash": "5dd0888d80cb21aabbee62afc65cd3c367591957d09c0f71cc5a73ff6f018794",
+  "artifact": "consensus-ballot",
+  "round": 1,
+  "revisionCommitSha": "dfc587c570bb492add257ebbc8f1f78e432e1ad7",
+  "disposition": "approve",
+  "rationale": "Claude's revision correctly memoizes failed changedPaths lookups and passes all checks cleanly."
+}
