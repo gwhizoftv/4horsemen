@@ -26,10 +26,10 @@ const commonArtifactFields = {
   agent: agentIdSchema
 } as const;
 
-export const joinArtifactSchema = z
+export const participationReadyArtifactSchema = z
   .object({
     ...commonArtifactFields,
-    artifact: z.literal("join"),
+    artifact: z.literal("participation-ready"),
     baselineSha: gitShaSchema,
     automationDigest: digestSchema
   })
@@ -140,7 +140,7 @@ export const finalizationArtifactSchema = z
   .strict();
 
 export const publishedArtifactSchema = z.discriminatedUnion("artifact", [
-  joinArtifactSchema,
+  participationReadyArtifactSchema,
   planBallotArtifactSchema,
   selectionArtifactSchema,
   implementationReadyArtifactSchema,
@@ -152,7 +152,7 @@ export const publishedArtifactSchema = z.discriminatedUnion("artifact", [
   finalizationArtifactSchema
 ]);
 
-export type JoinArtifact = z.infer<typeof joinArtifactSchema>;
+export type ParticipationReadyArtifact = z.infer<typeof participationReadyArtifactSchema>;
 export type PlanBallotArtifact = z.infer<typeof planBallotArtifactSchema>;
 export type SelectionArtifact = z.infer<typeof selectionArtifactSchema>;
 export type ImplementationReadyArtifact = z.infer<typeof implementationReadyArtifactSchema>;

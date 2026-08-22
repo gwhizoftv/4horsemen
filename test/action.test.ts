@@ -41,7 +41,9 @@ describe("agent actions", () => {
       requiredPath: ".plans/issue-1/review.md"
     });
     expect(raw).toContain("3".repeat(40));
-    expect(raw).toContain("If `actionId` in the front matter");
+    expect(raw).toContain("Before waiting for more input, re-read");
+    expect(raw).toContain("If `actionId` in the front matter has changed");
+    expect(raw).not.toContain("nudge");
     expect(raw).not.toContain("stepId:");
     expect(raw).not.toContain("evidence:");
     expect(raw).not.toContain("gate-");

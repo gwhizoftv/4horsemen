@@ -97,7 +97,7 @@ describe("CLI version", () => {
     for (const argv of [["--version"], ["-V"], ["version"]] as const) {
       const lines: string[] = [];
       expect(await runCli([...argv], { io: { stdout: (message) => lines.push(message) } })).toBe(0);
-      expect(lines.join("").trim()).toBe("0.0.13");
+      expect(lines.join("").trim()).toBe("0.0.14");
     }
   });
 });
@@ -329,7 +329,7 @@ describe("CLI", () => {
       })
     ).toBe(0);
     const action = output.join("");
-    expect(action).toContain("requiredPath: .signals/issue-1/joined-codex.json");
+    expect(action).toContain("requiredPath: .signals/issue-1/participation-ready-codex.json");
     expect(action).not.toContain("stepId:");
     expect(action).not.toContain("evidence:");
     expect(action).not.toContain("gate-");
@@ -708,7 +708,7 @@ describe("CLI", () => {
             submissionSha: "f".repeat(40),
             productPin: "e".repeat(40),
             reviser: "cursor",
-            path: ".signals/issue-1/reviser-authorized.json",
+            path: ".signals/issue-1/reviser-authorization.json",
             acceptedAt: now
           }
         ],

@@ -1,0 +1,333 @@
+import { readFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { renderAction } from "../src/action.js";
+import { computeInputSetHash, evaluateEvidence, type EvidenceMirror } from "../src/evidence.js";
+import { AGENT_FACING_BANNED_TERMS, agentFacingSubject, agentFacingSubjects, findAgentLanguageViolations } from "../src/agentLanguage.js";
+import { renderAgentsProtocolBlock } from "../src/agentsProtocol.js";
+import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import { buildOrder } from "../src/runLoop.js";
+import {
+  cursorsStateSchema,
+  initializeOperationalState,
+  readCursorsState,
+  readStartState,
+  writeCursorsState
+} from "../src/state.js";
+import { STEP_DEFINITIONS, type EvidenceId, type WorkflowStepId } from "../src/steps.js";
+import { renderNudgeText } from "../src/tmux.js";
+
+const repoRoot = new URL("..", import.meta.url).pathname;
+
+const roots: string[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+const fixture = () => {
+  const root = mkdtempSync(join(tmpdir(), "coord-language-"));
+  roots.push(root);
+  const paths = issueRuntimePaths(root, 1);
+  createIssueRuntime(paths, ["claude", "codex"]);
+  initializeOperationalState(paths, {
+    issue: 1,
+    issueSessionId: `issue-1:${"a".repeat(40)}`,
+    baselineSha: "a".repeat(40),
+    profile: "consensus",
+    originalRoster: ["claude", "codex"],
+    branchTemplate: "issue-{issue}/{agent}",
+    baseBranch: "main",
+    maxRevisionRounds: 3,
+    prPolicy: "owner-only",
+    automationDigest: "b".repeat(64),
+    automationDigestScheme: "sha256-length-prefixed-v1",
+    automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }],
+    trustedSourceCommit: "c".repeat(40),
+    origin: "/origin.git",
+    coordRoot: root,
+    configPath: join(root, "config.json"),
+    agents: [
+      { id: "claude", root: "/clones/claude", launcher: "start-claude.sh", delivery: "pull" },
+      { id: "codex", root: "/clones/codex", launcher: "start-codex.sh", delivery: "pull" }
+    ],
+    checks: [{ name: "check", argv: ["node", "-e", "process.exit(0)"] }],
+    pollIntervalMs: 100
+  });
+  return paths;
+};
+
+/** Accepted submissions for every step that later steps bind as inputs. */
+const seedAcceptedSubmissions = (paths: ReturnType<typeof fixture>) => {
+  const now = "2026-08-21T00:00:00.000Z";
+  const current = readCursorsState(paths);
+  const accepted = [
+    ...current.activeRoster.map((agent) => ({
+      stepId: "R2.plan" as const,
+      agent,
+      round: null,
+      submissionSha: "1".repeat(40),
+      path: `.plans/issue-1/plan.md`,
+      approvedPaths: ["src/steps.ts"],
+      acceptedAt: now
+    })),
+    ...current.activeRoster.map((agent) => ({
+      stepId: "R3.review" as const,
+      agent,
+      round: null,
+      submissionSha: "2".repeat(40),
+      path: `.plans/issue-1/review.md`,
+      acceptedAt: now
+    })),
+    ...current.activeRoster.map((agent) => ({
+      stepId: "R3.plan-ballot" as const,
+      agent,
+      round: null,
+      submissionSha: "3".repeat(40),
+      choice: "claude",
+      path: `.plans/issue-1/ballot-${agent}.json`,
+      acceptedAt: now
+    })),
+    ...current.activeRoster.map((agent) => ({
+      stepId: "R4.implement" as const,
+      agent,
+      round: null,
+      submissionSha: "4".repeat(40),
+      productPin: "5".repeat(40),
+      path: `.signals/issue-1/implementation-ready-${agent}.json`,
+      acceptedAt: now
+    })),
+    ...current.activeRoster.map((agent) => ({
+      stepId: "R5.compare-ballot" as const,
+      agent,
+      round: null,
+      submissionSha: "6".repeat(40),
+      choice: "codex",
+      path: `.code-reviews/issue-1/ballot-${agent}.json`,
+      acceptedAt: now
+    })),
+    {
+      stepId: "R6.revise" as const,
+      agent: "codex",
+      round: 1,
+      submissionSha: "7".repeat(40),
+      productPin: "8".repeat(40),
+      path: ".signals/issue-1/revision-ready-codex-round-1.json",
+      acceptedAt: now
+    },
+    ...current.activeRoster.map((agent) => ({
+      stepId: "R6.ballot" as const,
+      agent,
+      round: 1,
+      submissionSha: "9".repeat(40),
+      disposition: "approve" as const,
+      path: `.code-reviews/issue-1/consensus-ballot-${agent}-round-1.json`,
+      acceptedAt: now
+    }))
+  ];
+  writeCursorsState(
+    paths,
+    cursorsStateSchema.parse({
+      ...current,
+      reviser: "codex",
+      selection: {
+        planAgents: ["claude"],
+        implementationAgent: "codex",
+        implementationPin: "5".repeat(40),
+        reviser: "codex"
+      },
+      accepted,
+      updatedAt: now
+    })
+  );
+};
+
+const everyStep = Object.keys(STEP_DEFINITIONS) as WorkflowStepId[];
+const roundOf = (stepId: WorkflowStepId): number | null => (stepId.startsWith("R6.") ? 1 : null);
+
+const renderEveryStep = (paths: ReturnType<typeof fixture>, outstanding: readonly string[] = []): Map<WorkflowStepId, string> => {
+  const start = readStartState(paths);
+  const cursors = readCursorsState(paths);
+  const rendered = new Map<WorkflowStepId, string>();
+  for (const stepId of everyStep) {
+    const order = buildOrder(
+      paths,
+      start,
+      cursors,
+      "codex",
+      stepId,
+      roundOf(stepId),
+      "b2337d85-6617-4e9f-8ace-901453764aa4",
+      outstanding
+    );
+    rendered.set(stepId, renderAction(order));
+  }
+  return rendered;
+};
+
+describe("agent-facing language", () => {
+  it("keeps internal vocabulary out of every generated action type", () => {
+    const paths = fixture();
+    for (const [stepId, body] of renderEveryStep(paths)) {
+      expect(findAgentLanguageViolations(body), stepId).toEqual([]);
+    }
+  });
+
+  it("keeps internal vocabulary out of every generated action once inputs are bound", () => {
+    const paths = fixture();
+    seedAcceptedSubmissions(paths);
+    const rendered = renderEveryStep(paths);
+    // Prove the seeding actually produced bound citations, so this is not a
+    // second pass over the same empty-input bodies.
+    expect(rendered.get("R3.plan-ballot")).toContain('"artifact": "plan-ballot"');
+    expect(rendered.get("R3.plan-ballot")).toContain("1".repeat(40));
+    for (const [stepId, body] of rendered) {
+      expect(findAgentLanguageViolations(body), stepId).toEqual([]);
+    }
+  });
+
+  it("keeps internal vocabulary out of the correction block", () => {
+    const paths = fixture();
+    seedAcceptedSubmissions(paths);
+    const outstanding = agentFacingSubjects().map(
+      (subject) => `${subject} pins ${"e".repeat(40)}, which is not an ancestor of current origin tip.`
+    );
+    for (const [stepId, body] of renderEveryStep(paths, outstanding)) {
+      expect(body).toContain("Correct these outstanding items:");
+      expect(findAgentLanguageViolations(body), stepId).toEqual([]);
+    }
+  });
+
+  it("keeps internal vocabulary out of a correction block built from real evidence output", async () => {
+    const paths = fixture();
+    seedAcceptedSubmissions(paths);
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    const stepId: WorkflowStepId = "R4.implement";
+    const order = buildOrder(paths, start, cursors, "codex", stepId, null, "b2337d85-6617-4e9f-8ace-901453764aa4");
+    const blob = JSON.stringify({
+      protocolVersion: 1,
+      artifact: "implementation-ready",
+      issue: order.issue,
+      issueSessionId: order.issueSessionId,
+      agent: "codex",
+      inputSetHash: computeInputSetHash(order.inputs),
+      implementationCommitSha: "d".repeat(40),
+      approvedPaths: [...order.approvedPaths]
+    });
+    const mirror: EvidenceMirror = {
+      fetchBranch: async () => ({ ok: true, ref: "refs/remotes/origin/issue-1/codex", tip: "f".repeat(40) }),
+      isReachable: async () => true,
+      isAncestor: async () => true,
+      readBlob: async () => blob,
+      changedPaths: async () => ["src/steps.ts"],
+      // Echo whatever subject the evaluator supplies, exactly as pinValidation does.
+      validatePhasePin: async ({ subject }) => ({
+        ok: false,
+        reason: "history-rewrite",
+        details: `${subject} pins ${"d".repeat(40)}, which is not an ancestor of current origin tip.`
+      })
+    };
+    const observation = await evaluateEvidence(order, "e".repeat(40), mirror);
+
+    // The strings under test come from the evaluator, not from this test, so a
+    // regression in `pinErrors` reaches the rendered action instead of being
+    // masked by feeding the subject map back through the renderer.
+    expect(observation.status).toBe("rejected");
+    expect(observation.outstanding.length).toBeGreaterThan(0);
+    expect(findAgentLanguageViolations(observation.outstanding.join(" "))).toEqual([]);
+
+    const reissued = renderAction(
+      buildOrder(
+        paths,
+        start,
+        cursors,
+        "codex",
+        stepId,
+        null,
+        "b2337d85-6617-4e9f-8ace-901453764aa4",
+        observation.outstanding
+      )
+    );
+    expect(reissued).toContain("Correct these outstanding items:");
+    expect(findAgentLanguageViolations(reissued)).toEqual([]);
+  });
+
+  it("covers every workflow step and every evidence id", () => {
+    expect(everyStep).toHaveLength(13);
+    const subjects = new Set<string>();
+    for (const stepId of everyStep) {
+      const subject = agentFacingSubject(STEP_DEFINITIONS[stepId].evidenceId);
+      expect(subject, stepId).toBeTruthy();
+      subjects.add(subject);
+    }
+    expect(subjects.size).toBe(13);
+    for (const subject of agentFacingSubjects()) {
+      expect(findAgentLanguageViolations(subject), subject).toEqual([]);
+    }
+  });
+
+  it("keeps internal vocabulary out of the injected text", () => {
+    const path = "/runtime/issue-1/agents/codex/action.md";
+    const actionId = "b2337d85-6617-4e9f-8ace-901453764aa4";
+    const digest = "a".repeat(64);
+    for (const text of [
+      renderNudgeText(path),
+      renderNudgeText(path, actionId),
+      renderNudgeText(path, actionId, digest)
+    ]) {
+      expect(findAgentLanguageViolations(text), text).toEqual([]);
+    }
+  });
+
+  it("keeps internal vocabulary out of the installed agent guidance", () => {
+    expect(findAgentLanguageViolations(renderAgentsProtocolBlock(repoRoot))).toEqual([]);
+    expect(
+      findAgentLanguageViolations(readFileSync(join(repoRoot, "templates/product/AGENTS.md"), "utf8"))
+    ).toEqual([]);
+  });
+
+  it("reports the leaks issue 88 removed", () => {
+    expect(findAgentLanguageViolations("R1.join")).toContain("internal-step-id: R1.join");
+    expect(findAgentLanguageViolations("gate-1-join")).toContain("gate-id: gate-1");
+    expect(
+      findAgentLanguageViolations("execute the new action even if you were not nudged")
+    ).toContain("delivery-vocabulary: nudged");
+    expect(findAgentLanguageViolations("implementation-pinned artifact pins abc")).toContain(
+      "evidence-id: implementation-pinned"
+    );
+    expect(findAgentLanguageViolations("R7 finalization is deletion-only cleanup")).toContain(
+      "internal-round-label: R7"
+    );
+    expect(findAgentLanguageViolations("they gate pull-request creation")).toContain("gate-vocabulary: gate");
+    expect(findAgentLanguageViolations("the current phase")).toContain("phase-vocabulary: phase");
+    expect(findAgentLanguageViolations('"artifact": "join"')).toContain("participation-phase-name: join");
+    expect(AGENT_FACING_BANNED_TERMS.length).toBeGreaterThan(0);
+  });
+
+  it("does not flag the outcome-named paths the workflow still publishes", () => {
+    const evidenceIds = everyStep.map((stepId) => STEP_DEFINITIONS[stepId].evidenceId);
+    expect(evidenceIds).toContain<EvidenceId>("reviser-authorized");
+    // The evidence id `reviser-authorized` is banned, so the published path uses
+    // the artifact's own name instead. A suffix-shaped rule would reject both.
+    expect(STEP_DEFINITIONS["R5.reviser-auth"].requiredPath(1, "codex", null)).toBe(
+      ".signals/issue-1/reviser-authorization.json"
+    );
+    for (const path of [
+      ".signals/issue-1/participation-ready-codex.json",
+      ".signals/issue-1/implementation-ready-codex.json",
+      ".signals/issue-1/reviser-authorization.json",
+      ".signals/issue-1/revision-ready-codex-round-1.json",
+      ".signals/issue-1/finalization-ready-codex.json"
+    ]) {
+      expect(findAgentLanguageViolations(path), path).toEqual([]);
+    }
+  });
+
+  it("leaves internal identifiers untouched", () => {
+    expect(STEP_DEFINITIONS["R1.join"].id).toBe("R1.join");
+    expect(STEP_DEFINITIONS["R1.join"].gateId).toBe("gate-1-join");
+    expect(STEP_DEFINITIONS["R1.join"].evidenceId).toBe("join-published");
+  });
+});

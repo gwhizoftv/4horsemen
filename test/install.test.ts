@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { findAgentLanguageViolations } from "../src/agentLanguage.js";
 import { assertInstallDeletionAllowed, install, uninstall } from "../src/install.js";
 import { readConfig } from "../src/state.js";
 import { nestedConfigPath } from "../src/workspace.js";
@@ -123,6 +124,7 @@ describe("coord install — two-mode footprint", () => {
     expect(agentsMd).toContain("## Exact file list to be created");
     expect(agentsMd).toContain("action.md");
     expect(agentsMd).toContain("If `actionId` in the front matter has changed");
+    expect(findAgentLanguageViolations(agentsMd)).toEqual([]);
     expect(agentsMd).toContain("skip-worktree");
     expect(agentsMd).toContain("owner-driven manual mode");
     expect(agentsMd).toContain("<agent>/<name>");
@@ -160,7 +162,7 @@ describe("coord install — emitted config", () => {
     expect(config.project).toBe("myserver");
     expect(config.checks).toEqual(declaredChecks);
     expect(config.coordination?.installRoot).toBe(repoRoot);
-    expect(config.coordination?.version).toBe("0.0.13");
+    expect(config.coordination?.version).toBe("0.0.14");
     expect(config.coordination?.vendored).toBe(false);
     expect(config.agents[0]?.launcher).toBe("start-claude.sh");
   });

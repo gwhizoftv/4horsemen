@@ -61,7 +61,7 @@ describe("plan file-map path extraction", () => {
     expect(isFileMapPath("/abs/path.ts")).toBe(false);
     expect(isFileMapPath("packages/../secret.ts")).toBe(false);
     expect(isFileMapPath(".plans/issue-1/plan.md")).toBe(false);
-    expect(isFileMapPath(".signals/issue-1/joined-codex.json")).toBe(false);
+    expect(isFileMapPath(".signals/issue-1/participation-ready-codex.json")).toBe(false);
     expect(isFileMapPath(".code-reviews/issue-1/review.md")).toBe(false);
   });
 
@@ -239,15 +239,15 @@ Implement it.
     expect(result.outstanding.join(" ")).toContain("could not be fetched");
   });
 
-  it("checks join session, baseline, and digest fields", async () => {
+  it("checks participation-readiness session, baseline, and digest fields", async () => {
     const action = order({
       stepId: "R1.join",
       evidenceId: "join-published",
-      requiredPath: ".signals/issue-1/joined-codex.json"
+      requiredPath: ".signals/issue-1/participation-ready-codex.json"
     });
     const blob = JSON.stringify({
       protocolVersion: 1,
-      artifact: "join",
+      artifact: "participation-ready",
       issue: 1,
       issueSessionId: action.issueSessionId,
       agent: "codex",
@@ -256,7 +256,7 @@ Implement it.
     });
     expect(await evaluateEvidence(action, sha("c"), mirror(blob))).toMatchObject({
       status: "rejected",
-      outstanding: ["join baselineSha does not match the issue baseline"]
+      outstanding: ["participation-readiness baselineSha does not match the issue baseline"]
     });
   });
 
@@ -317,6 +317,63 @@ Implement it.
         })
       );
       expect(result).toMatchObject({ status: "satisfied", productPin: sha("d") });
+    }
+  );
+
+  it.each([
+    ["implementation-pinned" as EvidenceId, "R4.implement" as WorkflowStepId, "the implementation signal"],
+    ["revision-pinned" as EvidenceId, "R6.revise" as WorkflowStepId, "the revision signal"]
+  ])(
+    "names %s in outcome language, never by its evidence id, in pin-lineage rejections",
+    async (evidenceId, stepId, subject) => {
+      const inputs = [{ agent: "codex", commitSha: sha("2"), path: ".plans/issue-1/plan.md", kind: "selected-plan" }];
+      const action = order({
+        stepId,
+        evidenceId,
+        requiredPath: ".signals/issue-1/implementation-ready-codex.json",
+        inputs,
+        approvedPaths: ["src/product.ts"],
+        ...(stepId === "R6.revise" ? { round: 1 } : {})
+      });
+      const blob = JSON.stringify(
+        stepId === "R6.revise"
+          ? {
+              protocolVersion: 1,
+              artifact: "revision-ready",
+              issue: 1,
+              issueSessionId: action.issueSessionId,
+              agent: "codex",
+              inputSetHash: computeInputSetHash(inputs),
+              round: 1,
+              revisedBranchHead: sha("d"),
+              basedOn: [sha("2")]
+            }
+          : {
+              protocolVersion: 1,
+              artifact: "implementation-ready",
+              issue: 1,
+              issueSessionId: action.issueSessionId,
+              agent: "codex",
+              inputSetHash: computeInputSetHash(inputs),
+              implementationCommitSha: sha("d"),
+              approvedPaths: ["src/product.ts"]
+            }
+      );
+      // Echo the subject the evaluator supplies, exactly as pinValidation does.
+      const result = await evaluateEvidence(
+        action,
+        sha("e"),
+        mirror(blob, {
+          validatePhasePin: async ({ subject: supplied }) => ({
+            ok: false,
+            reason: "history-rewrite",
+            details: `${supplied} pins ${sha("d")}, which is not an ancestor of current origin tip.`
+          })
+        })
+      );
+      const outstanding = result.outstanding.join(" ");
+      expect(outstanding).toContain(subject);
+      expect(outstanding).not.toContain(evidenceId);
     }
   );
 
@@ -530,7 +587,7 @@ Implement it.
     const authOrder = order({
       stepId: "R5.reviser-auth",
       evidenceId: "reviser-authorized",
-      requiredPath: ".signals/issue-1/reviser-authorized.json",
+      requiredPath: ".signals/issue-1/reviser-authorization.json",
       inputs: [implementation, comparisonBallot],
       activeRoster: ["codex", "claude"],
       expectedImplementationAgent: "claude",
