@@ -5,7 +5,7 @@
   "agent": "claude",
   "inputSetHash": "ac2d7c4a02bf96596bacb1f95dfea4ddbcb56c848a84bfda239f6459ae955acb",
   "artifact": "implementation-ready",
-  "implementationCommitSha": "99fddc3f6eb1be0cc0a7d0ab87b72ee7b6cda861",
+  "implementationCommitSha": "be82d90cb07361d877e073c17f0506ef0963ed22",
   "approvedPaths": [
     "config.example.json",
     "config.product.example.json",
