@@ -114,6 +114,7 @@ describe("coord install — two-mode footprint", () => {
     const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
     expect(launcher).toContain("Owner-driven manual mode");
     expect(launcher).toContain("claude/<name>");
+    expect(launcher).toContain("exec claude --permission-mode auto");
     expect(git(clone, "config", "--local", "--get", "consensus.agentId")).toBe("claude");
     expect(git(clone, "config", "--local", "--get", "coord.installRoot")).toBe(repoRoot);
     expect(git(clone, "config", "--local", "--get", "coord.workspaceConfig")).toBe(result.configPath);
@@ -162,7 +163,7 @@ describe("coord install — emitted config", () => {
     expect(config.project).toBe("myserver");
     expect(config.checks).toEqual(declaredChecks);
     expect(config.coordination?.installRoot).toBe(repoRoot);
-    expect(config.coordination?.version).toBe("0.0.14");
+    expect(config.coordination?.version).toBe("0.0.15");
     expect(config.coordination?.vendored).toBe(false);
     expect(config.agents[0]?.launcher).toBe("start-claude.sh");
   });
@@ -499,5 +500,23 @@ describe("coord uninstall — scope", () => {
     const fixture = product();
     const installed = installOnce(fixture, { bootstrap: false });
     expectCoordinationDeletionRefused(fixture, installed);
+  });
+});
+
+describe("generated agent launchers", () => {
+  /**
+   * `--mode accept-edits` is an execution mode, not a permission grant, so on
+   * its own it left every out-of-whitelist tool call waiting on an owner
+   * prompt — time analytics attributes to agent wait rather than to work. Both
+   * flags are needed, and asserting the generated content is what stops the
+   * grant being dropped again by a later launcher edit.
+   */
+  it("launches Antigravity unattended without losing its execution mode", () => {
+    const fixture = product();
+    const result = installOnce(fixture, { agents: ["antigravity"] });
+    const clone = result.clones[0] as string;
+    const launcher = readFileSync(join(clone, "start-antigravity.sh"), "utf8");
+    expect(launcher).toContain("exec agy --mode accept-edits --dangerously-skip-permissions");
+    expect(launcher).toContain('export PATH="$HOME/.local/bin:$PATH"');
   });
 });

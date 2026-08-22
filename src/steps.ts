@@ -224,6 +224,20 @@ export type BoundInput = {
   kind: string;
 };
 
+/**
+ * Changed paths of one bound pin, resolved by the coordinator so that N agents
+ * comparing the same pins do not each re-derive the same diff. Advisory only:
+ * `approvedPaths` remains the sole authority over what an implementation may
+ * touch.
+ */
+export type ChangeScopeEntry = {
+  agent: string;
+  commitSha: string;
+  paths: readonly string[];
+  /** True when `paths` was capped and does not list the whole diff. */
+  truncated: boolean;
+};
+
 export type InternalOrder = {
   actionId: string;
   issue: number;
@@ -240,6 +254,13 @@ export type InternalOrder = {
   task: string;
   inputs: readonly BoundInput[];
   approvedPaths: readonly string[];
+  /**
+   * Advisory, and optional on purpose: an added hint must not become a required
+   * argument at every site that builds an order, and rendering must cope with
+   * its absence rather than making callers supply an empty list.
+   */
+  contextPaths?: readonly string[];
+  changeScope?: readonly ChangeScopeEntry[];
   activeRoster: readonly string[];
   eligibleChoices: readonly string[];
   expectedSelectedAgents: readonly string[];

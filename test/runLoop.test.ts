@@ -14,7 +14,9 @@ import {
   deterministicWinner,
   githubRepositoryFromOrigin,
   NUDGE_RETRY_MS,
-  resolveApprovedPaths
+  resolveApprovedPaths,
+  resolveChangeScope,
+  CHANGE_SCOPE_PATH_LIMIT
 } from "../src/runLoop.js";
 import {
   cursorsStateSchema,
@@ -1071,5 +1073,107 @@ describe("effectful run loop", () => {
     expect(pushes).toBe(0);
     expect(opens).toBe(0);
     expect(readCursorsState(paths).publication.status).toBe("not-required");
+  });
+});
+
+describe("coordinator-resolved change scope", () => {
+  const pinnedInputs = (pins: readonly [string, string][]) =>
+    pins.map(([agent, commitSha]) => ({
+      agent,
+      commitSha,
+      path: `.signals/issue-1/implementation-ready-${agent}.json`,
+      kind: "implementation"
+    }));
+
+  const countingMirror = (paths: readonly string[]) => {
+    const calls: string[] = [];
+    return {
+      calls,
+      changedPaths: async (base: string, tip: string) => {
+        calls.push(`${base}..${tip}`);
+        return [...paths];
+      }
+    };
+  };
+
+  it("resolves one entry per pinned input", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const mirror = countingMirror(["src/b.ts", "src/a.ts"]);
+    const scope = await resolveChangeScope(
+      mirror,
+      start,
+      pinnedInputs([
+        ["claude", "1".repeat(40)],
+        ["codex", "2".repeat(40)]
+      ])
+    );
+    expect(scope.map((entry) => entry.agent)).toEqual(["claude", "codex"]);
+    expect(scope[0]?.paths).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(scope[0]?.truncated).toBe(false);
+  });
+
+  /**
+   * The whole point of resolving centrally: four agents comparing the same pins
+   * must cost one diff per pin, not one per agent per pin.
+   */
+  it("reads each distinct pin once even when several inputs share it", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const mirror = countingMirror(["src/a.ts"]);
+    const shared = "3".repeat(40);
+    await resolveChangeScope(
+      mirror,
+      start,
+      pinnedInputs([
+        ["claude", shared],
+        ["codex", shared],
+        ["cursor", "4".repeat(40)]
+      ])
+    );
+    expect(mirror.calls).toEqual([`${start.baselineSha}..${shared}`, `${start.baselineSha}..${"4".repeat(40)}`]);
+  });
+
+  it("does no git work for a step with no pinned inputs", async () => {
+    const { paths } = fixture();
+    const mirror = countingMirror(["src/a.ts"]);
+    const scope = await resolveChangeScope(mirror, readStartState(paths), [
+      { agent: "claude", commitSha: "5".repeat(40), path: ".plans/issue-1/plan.md", kind: "plan" }
+    ]);
+    expect(scope).toEqual([]);
+    expect(mirror.calls).toEqual([]);
+  });
+
+  it("caps a large diff and marks it truncated", async () => {
+    const { paths } = fixture();
+    const many = Array.from({ length: CHANGE_SCOPE_PATH_LIMIT + 5 }, (_, index) =>
+      `src/f${String(index).padStart(4, "0")}.ts`
+    );
+    const scope = await resolveChangeScope(countingMirror(many), readStartState(paths), pinnedInputs([["claude", "6".repeat(40)]]));
+    expect(scope[0]?.paths).toHaveLength(CHANGE_SCOPE_PATH_LIMIT);
+    expect(scope[0]?.truncated).toBe(true);
+  });
+
+  /**
+   * Advisory scope must never be able to stall a step: an unreadable pin is
+   * omitted, and the action is still prepared.
+   */
+  it("omits a pin whose diff cannot be read rather than failing preparation", async () => {
+    const { paths } = fixture();
+    const failing = {
+      changedPaths: async () => {
+        throw new Error("unknown revision");
+      }
+    };
+    const scope = await resolveChangeScope(failing, readStartState(paths), pinnedInputs([["claude", "7".repeat(40)]]));
+    expect(scope).toEqual([]);
+  });
+
+  it("carries configured context paths from start state into every order", () => {
+    const { paths } = fixture();
+    const start = { ...readStartState(paths), contextPaths: ["docs/repo-map.md"] };
+    const order = buildOrder(paths, start, readCursorsState(paths), "claude", "R2.plan", null);
+    expect(order.contextPaths).toEqual(["docs/repo-map.md"]);
+    expect(order.changeScope).toEqual([]);
   });
 });
