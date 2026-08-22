@@ -5,7 +5,7 @@
   "agent": "cursor",
   "inputSetHash": "ac2d7c4a02bf96596bacb1f95dfea4ddbcb56c848a84bfda239f6459ae955acb",
   "artifact": "implementation-ready",
-  "implementationCommitSha": "b7448baa08acde563db55259c245c3c520690ca2",
+  "implementationCommitSha": "60f729bc142831d7f5aa45057fa6a33a23d6b286",
   "approvedPaths": [
     "config.example.json",
     "config.product.example.json",
