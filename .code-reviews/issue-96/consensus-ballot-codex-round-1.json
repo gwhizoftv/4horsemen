@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 96,
+  "issueSessionId": "issue-96:509748020eeec09acbbb5fb333efdf6db4b945de",
+  "agent": "codex",
+  "inputSetHash": "263b4c6c28c9eee63d0792a7fc43100a1d16839111688d517e783111de369e33",
+  "artifact": "consensus-ballot",
+  "round": 1,
+  "revisionCommitSha": "1613f8b60e8065cbb0fbefad337e7b889190ffa9",
+  "disposition": "approve",
+  "rationale": "The revision preserves the captured overlay when template rendering fails, verifies overlay consistency before launch, and adds exact-byte human-edit regression coverage without introducing a blocking defect."
+}
