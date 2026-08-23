@@ -85,12 +85,19 @@ export type PromptReadiness =
  * the match is anchored to a line that *starts* with the status word. A quoted
  * or bulleted line (`- \`Thinking…\``, `> Thinking...`, `* Thinking...`) is
  * prose and must not match, which is why the anchor admits only whitespace and
- * the spinner glyphs a TUI actually paints — never `-`, `*`, `>` or a backtick.
+ * the braille spinner frames a TUI actually paints — never `-`, `*`, `>`, a
+ * backtick, or a middle dot, each of which starts an ordinary markdown bullet.
+ *
+ * The suffix covers every live form the vendors render: an ellipsis, and the
+ * elapsed-timer variants `Thinking for 12s` and `Working (12s)`. Matching only
+ * the ellipsis would read a running timer line as an idle prompt and type into
+ * the turn — a false ready, which costs more than a false busy.
  */
-const SPINNER_PREFIX = String.raw`[\s\u2800-\u28ff\u00b7\u2022\u25cf\u25cb\u2219]*`;
+const SPINNER_PREFIX = String.raw`[\s\u2800-\u28ff]*`;
+const STATUS_SUFFIX = String.raw`(?:\.\.\.|\u2026|\s+for\s+\d|\s*\(\d)`;
 
 const inFlightStatusLine = (plain: string, words: string): boolean =>
-  new RegExp(String.raw`^${SPINNER_PREFIX}(?:${words})(?:\.\.\.|\u2026)`, "im").test(plain);
+  new RegExp(String.raw`^${SPINNER_PREFIX}(?:${words})${STATUS_SUFFIX}`, "im").test(plain);
 
 /** True when the sentinel is the last thing the pane rendered. */
 const sentinelAtTail = (plain: string): boolean => {

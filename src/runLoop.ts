@@ -651,6 +651,7 @@ export class CoordinatorRunLoop {
         next = this.mutate(next, (current) => {
           this.journalDeferral(
             start,
+            current,
             agent,
             order.actionId,
             actionDigest,
@@ -719,6 +720,7 @@ export class CoordinatorRunLoop {
    */
   private journalDeferral(
     start: StartState,
+    cursors: CursorsState,
     agent: string,
     actionId: string,
     actionDigest: string,
@@ -730,6 +732,10 @@ export class CoordinatorRunLoop {
     const entry = readAgentLifecycle(this.paths).agents[agent];
     const splitBrain =
       layer === "scrape" && entry?.execution === "idle" && entry.health !== "degraded";
+    // The workflow is blocked on this delivery only while the action is out and
+    // unanswered. A deferral for an agent that is verifying or waiting on a peer
+    // is background detail, so it belongs in the journal but not on stdout.
+    const gateWaiting = cursors.agents[agent]?.status === "ordered";
     appendJournal(
       this.paths,
       {
@@ -742,6 +748,7 @@ export class CoordinatorRunLoop {
           human,
           ...(detail === undefined ? {} : { detail }),
           ...(splitBrain ? { splitBrain: true } : {}),
+          gateWaiting,
           actionDigest,
           hooks: {
             execution: entry?.execution ?? "unknown",
@@ -760,8 +767,8 @@ export class CoordinatorRunLoop {
     const message = splitBrain
       ? `Issue ${start.issue}: ${agent} looks idle to its lifecycle hooks but its terminal is not ready to accept typing (${code}${detailText}); ${human}`
       : `Issue ${start.issue}: delivery to ${agent} deferred: ${code}${detailText}; ${human}`;
-    if (repeated) this.verbose(message);
-    else this.log(message);
+    if ((gateWaiting || splitBrain) && !repeated) this.log(message);
+    else this.verbose(message);
   }
 
   private async maybeLifecycleNudge(
@@ -857,6 +864,7 @@ export class CoordinatorRunLoop {
           ) {
             this.journalDeferral(
               start,
+              cursors,
               agent,
               actionId,
               actionDigest,
@@ -924,6 +932,7 @@ export class CoordinatorRunLoop {
       markActionInjectionDeferred(this.paths, agent, actionId, actionDigest, this.now());
       this.journalDeferral(
         start,
+        cursors,
         agent,
         actionId,
         actionDigest,

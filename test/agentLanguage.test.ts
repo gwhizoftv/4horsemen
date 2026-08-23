@@ -7,6 +7,7 @@ import { renderAction } from "../src/action.js";
 import { computeInputSetHash, evaluateEvidence, type EvidenceMirror } from "../src/evidence.js";
 import { AGENT_FACING_BANNED_TERMS, agentFacingSubject, agentFacingSubjects, findAgentLanguageViolations } from "../src/agentLanguage.js";
 import { renderAgentsProtocolBlock } from "../src/agentsProtocol.js";
+import { COORD_IDLE_SENTINEL } from "../src/tmux.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
 import {
@@ -286,6 +287,15 @@ describe("agent-facing language", () => {
     expect(
       findAgentLanguageViolations(readFileSync(join(repoRoot, "templates/product/AGENTS.md"), "utf8"))
     ).toEqual([]);
+  });
+
+  it("installs the exact idle line the terminal readiness check matches", () => {
+    // The sentinel is a contract between the protocol block an agent reads and
+    // the matcher in src/tmux.ts. A reword on either side must fail here rather
+    // than silently stop proving that a pane is idle.
+    const block = renderAgentsProtocolBlock(repoRoot);
+    expect(block).toContain(COORD_IDLE_SENTINEL);
+    expect(findAgentLanguageViolations(COORD_IDLE_SENTINEL)).toEqual([]);
   });
 
   it("reports the leaks issue 88 removed", () => {

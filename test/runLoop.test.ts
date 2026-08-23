@@ -460,7 +460,13 @@ describe("effectful run loop", () => {
     await loop.runTick();
     const first = readJournal(paths).filter((event) => event.type === "nudge-deferred" && event.agent === "codex");
     expect(first).toHaveLength(1);
-    expect(first[0]?.details).toMatchObject({ layer: "scrape", code: "foreground-mismatch", detail: "bash" });
+    expect(first[0]?.details).toMatchObject({
+      layer: "scrape",
+      code: "foreground-mismatch",
+      detail: "bash",
+      // The action is out and unanswered, so the workflow is blocked on it.
+      gateWaiting: true
+    });
     expect(first[0]?.details.human).toBe("the foreground process is not this agent's harness");
     const printedOnce = messages.filter((message) => message.includes("foreground-mismatch"));
     expect(printedOnce).toHaveLength(1);

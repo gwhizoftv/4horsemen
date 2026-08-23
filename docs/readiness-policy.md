@@ -92,8 +92,13 @@ both null) is `hooks-never-seen`, and only that case is told to restart the CLI
 ## Journalling
 
 Every refusal appends a `nudge-deferred` event carrying `layer`, `code`,
-`human`, the hook snapshot, and `splitBrain: true` when the scrape refused while
-hooks reported idle and healthy. Both sides of a disagreement live on one event.
-The line reaches normal stdout when the workflow is waiting on that agent or the
-layers disagree; an unchanged code repeating on later ticks stays verbose.
+`human`, `gateWaiting`, the hook snapshot, and `splitBrain: true` when the
+scrape refused while hooks reported idle and healthy. Both sides of a
+disagreement live on one event. `gateWaiting` is true while the action is out
+and unanswered, which is what makes a deferral operator-relevant rather than
+background detail; every delivery path in the run loop today defers only in that
+state, so the field currently reads true wherever it appears, and it is recorded
+so a consumer can tell the difference without re-deriving cursor state. The line
+reaches normal stdout when `gateWaiting` holds or the layers disagree; an
+unchanged code repeating on later ticks stays verbose.
 Clearing a degraded alert appends `agent-observability-recovered`.

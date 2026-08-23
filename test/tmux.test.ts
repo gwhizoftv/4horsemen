@@ -614,11 +614,22 @@ describe("tmux boundary", () => {
     expect(harnessPromptReady("> Thinking... appears while a turn runs\nAuto · 1%", "cursor")).toBe(true);
     expect(harnessPromptReady("* Working... is vendor chrome\nAuto · 1%", "cursor")).toBe(true);
     expect(harnessPromptReady("plans mention `Running...` a lot\nAuto · 1%", "cursor")).toBe(true);
+    // A middle dot starts an ordinary markdown bullet, not a spinner frame.
+    expect(harnessPromptReady("· Thinking… in a bulleted note\nAuto · 1%", "cursor")).toBe(true);
+    expect(harnessPromptReady("• Working... in a bulleted note\nAuto · 1%", "cursor")).toBe(true);
     // Real chrome still blocks, anchored or with the interrupt hint.
     expect(harnessPromptReady("Thinking…\nesc to cancel", "cursor")).toBe(false);
     expect(harnessPromptReady("Thinking...", "cursor")).toBe(false);
     expect(harnessPromptReady("⠋ Generating...", "cursor")).toBe(false);
     expect(harnessPromptReady("  Working... (12s)", "cursor")).toBe(false);
+    // Elapsed-timer forms are live chrome too: reading them as ready would type
+    // into a running turn, which costs more than deferring one tick.
+    expect(harnessPromptReady("Thinking for 12s", "cursor")).toBe(false);
+    expect(harnessPromptReady("⠹ Working for 3s · esc to interrupt", "cursor")).toBe(false);
+    expect(harnessPromptReady("Working (12s)", "cursor")).toBe(false);
+    expect(harnessPromptReady("Generating (3s)", "antigravity")).toBe(false);
+    // ...but a sentence that merely opens with the word is still prose.
+    expect(harnessPromptReady("Thinking about the timer forms for this issue\n> ", "cursor")).toBe(true);
   });
 
   it("names the predicate that refused a prompt", () => {
