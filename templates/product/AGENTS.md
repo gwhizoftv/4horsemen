@@ -9,7 +9,9 @@ git obligations. This file describes the rules that apply to **agent clones**
 ## Branch scheme
 
 - `{{BASE_BRANCH}}` — shared truth. Agents never commit or push to it.
-- `issue-<n>/<agent>` — an agent's working branch for issue n.
+- `issue-<n>/<agent>` — an agent's working branch for issue n. For automated
+  work coordination creates and checks this out before the agent CLI starts, so
+  the agent never creates it or switches to it.
 - `<agent>/<name>` — an agent-owned scratch branch for owner-driven manual work.
 - `issue-<n>/final` — the consensus branch, updated only by merging a reviewed
   pull request.

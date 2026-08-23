@@ -218,6 +218,24 @@ describe("coord doctor — broken clones and configs", () => {
     expect(result.findings[0]?.class).toBe("startCompatibility");
   });
 
+  // Branch preparation clears the bit to move HEAD and re-sets it afterwards. A
+  // clone found with it clear means that restore did not finish, and the only
+  // other symptom is a confusing "uncommitted changes" refusal on the next start.
+  it("reports an AGENTS.md that lost its skip-worktree bit", () => {
+    const { fixture, clone } = installed();
+    // This workspace installed without --write-product, so the overlay sits in
+    // an untracked AGENTS.md and the bit does not apply. Stage it to get the
+    // tracked shape a --write-product workspace has.
+    git(clone, "add", "-f", "--", "AGENTS.md");
+    git(clone, "update-index", "--skip-worktree", "--", "AGENTS.md");
+    expect(report(fixture).findings.map((item) => item.class)).not.toContain("agentsProtocol");
+
+    git(clone, "update-index", "--no-skip-worktree", "--", "AGENTS.md");
+    const findings = report(fixture).findings;
+    expect(findings.map((item) => item.code)).toContain(DOCTOR_CODES.agentsProtocol);
+    expect(findings.find((item) => item.class === "agentsProtocol")?.message).toContain("skip-worktree");
+  });
+
   it("reports a clone redirected at a different install root", () => {
     const { fixture, clone } = installed();
     git(clone, "config", "--local", "coord.installRoot", join(fixture.workspaceRoot, "another-checkout"));

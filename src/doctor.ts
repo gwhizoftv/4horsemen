@@ -8,6 +8,7 @@ import { productName } from "./setupWorkspace.js";
 import { readConfig, type CoordinatorConfig } from "./state.js";
 import { resolveWorkspaceLocation } from "./workspace.js";
 import { inspectAgentLifecycleHooks } from "./agentHookSync.js";
+import { cloneAgentsProtocolState } from "./agentsProtocol.js";
 
 /**
  * `coord doctor` — say exactly which part of an install is wrong.
@@ -30,7 +31,8 @@ export const DOCTOR_CODES = {
   installDrift: 17,
   verifyUndeclared: 18,
   cloneMissing: 19,
-  lifecycleHooks: 20
+  lifecycleHooks: 20,
+  agentsProtocol: 21
 } as const;
 
 export type DoctorClass = keyof typeof DOCTOR_CODES;
@@ -185,6 +187,21 @@ const checkClone = (input: {
   // copies, and a set key would give post-merge two candidate templates.
   const manifest = readHookManifest(clone);
   const vendored = manifest.kind === "ok" && manifest.manifest.mode === "vendor";
+  // Branch preparation clears skip-worktree to move HEAD and re-sets it after.
+  // A clone found with the bit clear means that restore did not finish, and the
+  // only symptom otherwise is a confusing "uncommitted changes" refusal on the
+  // next start, on a file the agent is forbidden to touch.
+  const protocolState = cloneAgentsProtocolState(clone);
+  if (protocolState.tracked && !protocolState.skipWorktree) {
+    findings.push(
+      finding(
+        "agentsProtocol",
+        clone,
+        "AGENTS.md is tracked but skip-worktree is not set, so the coordination overlay shows as an uncommitted change.",
+        "Re-run coord install, or start/resume the issue so branch preparation re-sets it."
+      )
+    );
+  }
   const requiredKeys = vendored ? [CLI_ENTRY_KEY, WORKSPACE_CONFIG_KEY] : [INSTALL_ROOT_KEY, CLI_ENTRY_KEY, WORKSPACE_CONFIG_KEY];
   for (const key of requiredKeys) {
     if (localConfigGet(clone, key) === null) {

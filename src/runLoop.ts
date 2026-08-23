@@ -32,6 +32,7 @@ import {
   type StartState
 } from "./state.js";
 import {
+  BRANCH_PREPARED_NOTE,
   STEP_DEFINITIONS,
   coordMergesPullRequest,
   describeWorkflowStep,
@@ -405,7 +406,7 @@ export const buildOrder = (
     issueSessionId: start.issueSessionId,
     baselineSha: start.baselineSha,
     automationDigest: start.automationDigest,
-    task: `${definition.task}${binding}${scaffold}${correction}`,
+    task: `${definition.task}${BRANCH_PREPARED_NOTE}${binding}${scaffold}${correction}`,
     inputs,
     approvedPaths,
     contextPaths: [...start.contextPaths],
@@ -455,12 +456,25 @@ export class CoordinatorRunLoop {
     const start = readStartState(this.paths);
     const authority = readCursorsState(this.paths);
     this.authority(authority);
+    // Resume used to swallow a config read failure to null, and null used to
+    // mean "skip the overlay restore entirely". The restore no longer depends on
+    // resolving a root — it falls back to the overlay already in the clone — so
+    // the remaining job here is to report the failure instead of hiding it.
+    //
+    // Deliberately not defaulting to this checkout the way `coord start` does:
+    // synthesising a root makes the restore render a protocol overlay into
+    // clones that were never installed against it, adding an untracked
+    // AGENTS.md that an agent's `git add -A` then sweeps into its commit.
     let installRoot: string | null = null;
     if (existsSync(start.configPath)) {
       try {
         installRoot = readConfig(start.configPath).coordination?.installRoot ?? null;
-      } catch {
-        installRoot = null;
+      } catch (error) {
+        this.log(
+          `could not read ${start.configPath} for the install root ` +
+            `(${error instanceof Error ? error.message : String(error)}); ` +
+            "restoring the AGENTS.md overlay from each clone's own copy"
+        );
       }
     }
     prepareAgentIssueBranches({
