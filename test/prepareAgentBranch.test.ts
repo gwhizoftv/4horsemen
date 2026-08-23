@@ -61,7 +61,9 @@ describe("prepareAgentIssueBranches", () => {
       installRoot: repoRoot
     });
 
-    expect(outcome).toEqual([{ agent: "claude", clone, branch: "issue-9/claude", action: "created" }]);
+    expect(outcome).toEqual([
+      { agent: "claude", clone, branch: "issue-9/claude", action: "created", protocol: "overlay" }
+    ]);
     expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
     expect(git(clone, "rev-parse", "HEAD")).toBe(baseline);
     expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toContain("coordination protocol");
@@ -100,9 +102,65 @@ describe("prepareAgentIssueBranches", () => {
     });
 
     expect(outcome[0]?.action).toBe("checked-out");
+    expect(outcome[0]?.protocol).toBe("overlay");
     expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
     expect(git(clone, "rev-parse", "HEAD")).toBe(kept);
     expect(existsSync(join(clone, "join.json"))).toBe(true);
+    expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toContain("coordination protocol");
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("re-sets skip-worktree even when no install root can be resolved", () => {
+    const { clone, baseline } = seedClone();
+
+    const outcome = prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main"
+    });
+
+    expect(outcome[0]?.protocol).toBe("bit-only");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("re-sets skip-worktree when checkout preparation fails", () => {
+    const { clone } = seedClone();
+
+    expect(() =>
+      prepareAgentIssueBranches({
+        agents: [{ id: "claude", root: clone }],
+        issue: 9,
+        branchTemplate: "issue-{issue}/{agent}",
+        baselineSha: "f".repeat(40),
+        baseBranch: "missing-base",
+        installRoot: repoRoot
+      })
+    ).toThrow(/Cannot resolve issue baseline/);
+    expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toContain("coordination protocol");
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("heals a clone whose only visible dirt is the managed protocol overlay", () => {
+    const { clone, baseline } = seedClone();
+    git(clone, "update-index", "--no-skip-worktree", "--", "AGENTS.md");
+    expect(git(clone, "status", "--porcelain")).toBe("M AGENTS.md");
+
+    const outcome = prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(outcome[0]?.action).toBe("created");
+    expect(outcome[0]?.protocol).toBe("overlay");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
+    expect(skipWorktree(clone)).toBe(true);
   });
 
   it("refuses a dirty clone", () => {

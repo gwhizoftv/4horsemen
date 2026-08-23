@@ -7,6 +7,13 @@ message is the task authority; work belongs on the agent's own
 branch, and agents must not fabricate `.plans/`, `.signals/`, `.code-reviews/`,
 `action.md`, or `complete`. Installed hook, verification, identity, no-main,
 and no-force rules remain active.
+
+For automated work, coordination checks out the prepared issue branch and
+restores the managed AGENTS.md state before the agent starts. Do not create the
+issue branch, switch branches, or clear `skip-worktree` to make checkout work.
+If the clone state looks wrong, report it instead of changing branches or index
+flags.
+
 The required response format for the current step also appears in that step's
 `action.md` and may change each time — match the headings or JSON scaffold
 listed there. The coordinator accepts only the published artifact. If this file

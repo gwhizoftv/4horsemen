@@ -32,6 +32,7 @@ import {
   type StartState
 } from "./state.js";
 import {
+  BRANCH_PREPARED_NOTE,
   STEP_DEFINITIONS,
   coordMergesPullRequest,
   describeWorkflowStep,
@@ -405,7 +406,7 @@ export const buildOrder = (
     issueSessionId: start.issueSessionId,
     baselineSha: start.baselineSha,
     automationDigest: start.automationDigest,
-    task: `${definition.task}${binding}${scaffold}${correction}`,
+    task: `${definition.task}${BRANCH_PREPARED_NOTE}${binding}${scaffold}${correction}`,
     inputs,
     approvedPaths,
     contextPaths: [...start.contextPaths],
@@ -459,8 +460,11 @@ export class CoordinatorRunLoop {
     if (existsSync(start.configPath)) {
       try {
         installRoot = readConfig(start.configPath).coordination?.installRoot ?? null;
-      } catch {
+      } catch (error) {
         installRoot = null;
+        this.log(
+          `Could not read coordination install root from ${start.configPath}: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
     }
     prepareAgentIssueBranches({

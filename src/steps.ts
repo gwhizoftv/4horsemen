@@ -7,6 +7,9 @@ export const DEFAULT_PR_POLICY: PrPolicy = "coord-open-unmerged";
 
 export const coordMergesPullRequest = (policy: PrPolicy): boolean => policy === "coord-merged";
 
+export const BRANCH_PREPARED_NOTE =
+  "\n\nCoordination already checked this clone out on the issue branch named below and restored the managed AGENTS.md state before the agent started. Do not create the issue branch, switch branches, or clear skip-worktree on AGENTS.md to make checkout work. If the clone state looks wrong, report it instead of changing branches or index flags.";
+
 export type EvidenceId =
   | "join-published"
   | "plan-published"
@@ -62,7 +65,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     evidenceId: "join-published",
     participants: "all",
     requiredPath: (issue, agent) => `.signals/issue-${issue}/participation-ready-${agent}.json`,
-    task: "Publish the participation-readiness artifact for this issue. Coordination already checked this clone out on your issue branch; do not clear skip-worktree on AGENTS.md or switch branches to make checkout work."
+    task: "Publish the participation-readiness artifact for this issue."
   },
   "R2.plan": {
     id: "R2.plan",

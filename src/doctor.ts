@@ -8,6 +8,7 @@ import { productName } from "./setupWorkspace.js";
 import { readConfig, type CoordinatorConfig } from "./state.js";
 import { resolveWorkspaceLocation } from "./workspace.js";
 import { inspectAgentLifecycleHooks } from "./agentHookSync.js";
+import { cloneAgentsProtocolState } from "./agentsProtocol.js";
 
 /**
  * `coord doctor` — say exactly which part of an install is wrong.
@@ -30,7 +31,8 @@ export const DOCTOR_CODES = {
   installDrift: 17,
   verifyUndeclared: 18,
   cloneMissing: 19,
-  lifecycleHooks: 20
+  lifecycleHooks: 20,
+  agentsProtocol: 21
 } as const;
 
 export type DoctorClass = keyof typeof DOCTOR_CODES;
@@ -179,6 +181,17 @@ const checkClone = (input: {
   if (localConfigGet(clone, "consensus.agentLabel") === null) {
     findings.push(
       finding("identity", clone, "consensus.agentLabel is unset, so the commit-message prefix is unresolved.", "Re-run coord install.")
+    );
+  }
+  const protocol = cloneAgentsProtocolState(clone);
+  if (protocol.tracked && !protocol.skipWorktree) {
+    findings.push(
+      finding(
+        "agentsProtocol",
+        clone,
+        "AGENTS.md is tracked but skip-worktree is not set, so the coordination overlay shows as an uncommitted change.",
+        "Re-run coord install, or start/resume the issue so branch preparation re-sets it."
+      )
     );
   }
   // A vendored clone deliberately has no install root: its hook bodies are

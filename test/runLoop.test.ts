@@ -30,6 +30,7 @@ import {
   writeCursorsState
 } from "../src/state.js";
 import { TmuxController } from "../src/tmux.js";
+import { BRANCH_PREPARED_NOTE } from "../src/steps.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -188,6 +189,7 @@ describe("effectful run loop", () => {
     expect(approved).toEqual(["scripts/setup_claude.sh", "scripts/setup_codex.sh", "src/product.ts"]);
     const order = buildOrder(paths, readStartState(paths), cursors, "codex", "R4.implement", null, undefined, [], approved);
     expect(order.approvedPaths).toEqual(approved);
+    expect(order.task).toContain(BRANCH_PREPARED_NOTE);
   });
 
   it("refreshes in-flight approved paths and reinjects only after positive idle evidence", async () => {
@@ -1204,5 +1206,6 @@ describe("coordinator-resolved change scope", () => {
     const order = buildOrder(paths, start, readCursorsState(paths), "claude", "R2.plan", null);
     expect(order.contextPaths).toEqual(["docs/repo-map.md"]);
     expect(order.changeScope).toEqual([]);
+    expect(order.task).toContain(BRANCH_PREPARED_NOTE);
   });
 });

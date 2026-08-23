@@ -118,6 +118,18 @@ describe("coord doctor", () => {
     expect(crossed?.message).toContain("'codex'");
   });
 
+  it("reports a tracked AGENTS.md whose skip-worktree bit is cleared", () => {
+    const { fixture, clone } = installed();
+    git(clone, "add", "-f", "AGENTS.md");
+
+    const broken = report(fixture).findings.find((item) => item.class === "agentsProtocol");
+    expect(broken?.subject).toBe(clone);
+    expect(broken?.message).toContain("skip-worktree is not set");
+
+    git(clone, "update-index", "--skip-worktree", "--", "AGENTS.md");
+    expect(report(fixture).findings.map((item) => item.class)).not.toContain("agentsProtocol");
+  });
+
   it("reports a stale vendor stamp", () => {
     // A genuine vendor install: the copies exist, so what makes them stale is
     // the recorded source commit, not their absence.
