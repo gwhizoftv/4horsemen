@@ -60,8 +60,8 @@ const readBasePackageVersion = (cwd: string, baseRef: string): string => {
 };
 
 /**
- * Pre-1.0 ship gate: on a non-base branch, package.json version must be strictly
- * greater than the version on `baseRef` (default `origin/main`).
+ * Pre-1.0 merge gate: before merging to main, package.json version must be
+ * strictly greater than the version on `baseRef` (default `origin/main`).
  */
 export const checkVersionBump = (
   cwd: string,
@@ -118,6 +118,6 @@ export const checkVersionBump = (
     ok,
     detail: ok
       ? `${headVersion} > ${baseVersion} (${baseRef})`
-      : `package.json version ${headVersion} must be strictly greater than ${baseRef} (${baseVersion}); bump 0.0.N on every ship`
+      : `package.json version ${headVersion} must be strictly greater than ${baseRef} (${baseVersion}); bump 0.0.N before merging to main`
   };
 };

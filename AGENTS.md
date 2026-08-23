@@ -123,6 +123,5 @@ In plans, name real commands; do not guess them from tracked hook files.
 
 In this repository, `verify.precommit` is `pnpm check:fast` (lint, typecheck,
 fast tests — no Vite build). Full `pnpm check` (build + check:fast + e2e) is
-what the coordinator `checks` gate. Run `pnpm check:fast` before commits. On
-non-`main` branches that suite also requires `package.json` version to be
-strictly greater than `origin/main` (pre-1.0 ship gate).
+what the coordinator `checks` gate. Run `pnpm check:fast` before commits. The
+pre-1.0 `0.0.N` advance is required on a PR into `main`, not by `check:fast`.

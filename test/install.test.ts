@@ -160,10 +160,12 @@ describe("coord install — emitted config", () => {
     const fixture = product();
     const result = installOnce(fixture);
     const config = readConfig(result.configPath);
+    const expectedVersion = (JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { version: string })
+      .version;
     expect(config.project).toBe("myserver");
     expect(config.checks).toEqual(declaredChecks);
     expect(config.coordination?.installRoot).toBe(repoRoot);
-    expect(config.coordination?.version).toBe("0.0.16");
+    expect(config.coordination?.version).toBe(expectedVersion);
     expect(config.coordination?.vendored).toBe(false);
     expect(config.agents[0]?.launcher).toBe("start-claude.sh");
   });
