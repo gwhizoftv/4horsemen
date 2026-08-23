@@ -41,6 +41,10 @@ const writeManifest = (root: string, version: string): void => {
  * A throwaway repository whose `main` carries `baseVersion` and whose worktree
  * manifest carries `headVersion`. The gate reads head from the file and base
  * through `git show`, so the head version needs no commit of its own.
+ *
+ * Each case asserts `headVersion` and `baseVersion` alongside the verdict: a
+ * regression that resolves `baseRef` to some other parseable ref would keep the
+ * verdict correct for these inputs while comparing against the wrong manifest.
  */
 const fixture = (baseVersion: string, headVersion: string): string => {
   const root = mkdtempSync(join(tmpdir(), "coord-versionbump-"));
@@ -64,6 +68,8 @@ describe("version bump gate decision", () => {
     const result = checkVersionBump(root, { baseRef: "main", headRef: "issue-95/fixture" });
     expect(result.enforce).toBe(true);
     expect(result.ok).toBe(false);
+    expect(result.headVersion).toBe("0.0.1");
+    expect(result.baseVersion).toBe("0.0.1");
   });
 
   it("accepts a branch whose version is strictly greater than the base", () => {
@@ -71,6 +77,8 @@ describe("version bump gate decision", () => {
     const result = checkVersionBump(root, { baseRef: "main", headRef: "issue-95/fixture" });
     expect(result.enforce).toBe(true);
     expect(result.ok).toBe(true);
+    expect(result.headVersion).toBe("0.0.2");
+    expect(result.baseVersion).toBe("0.0.1");
   });
 
   it("exempts the base branch itself so main never requires an advance", () => {
@@ -78,6 +86,8 @@ describe("version bump gate decision", () => {
     const result = checkVersionBump(root, { baseRef: "main", headRef: "main" });
     expect(result.enforce).toBe(false);
     expect(result.ok).toBe(true);
+    expect(result.headVersion).toBe("0.0.1");
+    expect(result.baseVersion).toBe("0.0.1");
   });
 
   it("rejects a head version that is not a dotted triple", () => {
@@ -85,5 +95,7 @@ describe("version bump gate decision", () => {
     const result = checkVersionBump(root, { baseRef: "main", headRef: "issue-95/fixture" });
     expect(result.enforce).toBe(true);
     expect(result.ok).toBe(false);
+    expect(result.headVersion).toBe("0.0.2-beta");
+    expect(result.baseVersion).toBe("0.0.1");
   });
 });
