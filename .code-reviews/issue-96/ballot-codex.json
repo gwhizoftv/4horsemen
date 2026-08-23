@@ -1,0 +1,27 @@
+{
+  "protocolVersion": 1,
+  "issue": 96,
+  "issueSessionId": "issue-96:509748020eeec09acbbb5fb333efdf6db4b945de",
+  "agent": "codex",
+  "inputSetHash": "3b7b748b0f0ceae7efce29d8ede90c47fa9f25f7cd0260ff44471567152aa5f4",
+  "artifact": "comparison-ballot",
+  "implementations": [
+    {
+      "agent": "codex",
+      "commitSha": "4869a4b7c4a4f639c1e2915e5600198a749e438c",
+      "path": ".signals/issue-96/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "6121c0c17f4ebc60efc424f23f3526491079ca1c",
+      "path": ".signals/issue-96/implementation-ready-cursor.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "e61aad3d4af48938c05092532a25c9d453c54786",
+      "path": ".signals/issue-96/implementation-ready-claude.json"
+    }
+  ],
+  "choice": "codex",
+  "rationale": "Codex uses exact byte equality for protocol-only recovery, asserts both the branch and advertised overlay postconditions, and avoids Cursor's trailing-whitespace data-loss risk."
+}
