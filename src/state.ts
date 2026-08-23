@@ -401,6 +401,8 @@ export const journalEventSchema = z
       "agent-lifecycle",
       "agent-usage",
       "agent-observability-degraded",
+      "agent-observability-recovered",
+      "nudge-deferred",
       "intent-seen",
       "verify-result",
       "gate-advanced",

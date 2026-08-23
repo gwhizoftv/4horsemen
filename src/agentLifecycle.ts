@@ -317,17 +317,25 @@ export const markActionWorkflowComplete = (
   agent: string,
   actionId: string,
   now = new Date().toISOString()
-): AgentLifecycleState =>
-  mutateAgentLifecycle(paths, (state) => {
-    const current = state.agents[agent];
-    if (current?.action?.actionId !== actionId) return state;
+): { state: AgentLifecycleState; clearedDegraded: boolean } => {
+  let clearedDegraded = false;
+  const state = mutateAgentLifecycle(paths, (current) => {
+    const entry = current.agents[agent];
+    if (entry?.action?.actionId !== actionId) return current;
+    if (entry.health === "degraded") clearedDegraded = true;
     return replaceEntry(
-      state,
+      current,
       agent,
-      { ...current, action: { ...current.action, workflowCompleteAt: now } },
+      {
+        ...entry,
+        health: entry.health === "degraded" ? "healthy" : entry.health,
+        action: { ...entry.action, workflowCompleteAt: now }
+      },
       now
     );
   });
+  return { state, clearedDegraded };
+};
 
 const positiveIdle = (entry: AgentLifecycleEntry, nextExecution: AgentLifecycleEntry["execution"]): number =>
   (nextExecution === "idle" || nextExecution === "failed") &&
@@ -505,7 +513,20 @@ export const observeAgentLifecycle = (
   now = new Date().toISOString()
 ): AgentLifecycleState => observeAgentLifecycleWithResult(paths, agent, observation, now).state;
 
-export type NudgeDecision = { kind: "send"; reason: "eligible-idle" } | { kind: "wait"; reason: string };
+export type WaitCode =
+  | "unmatched-action"
+  | "workflow-complete"
+  | "pending-input"
+  | "background-active"
+  | "queued"
+  | "working"
+  | "unknown"
+  | "failed-execution"
+  | "idle-transition-already-used";
+
+export type NudgeDecision =
+  | { kind: "send"; reason: "eligible-idle"; code: "eligible-idle" }
+  | { kind: "wait"; reason: string; code: WaitCode };
 
 export const decideLifecycleNudge = (
   entry: AgentLifecycleEntry,
@@ -514,39 +535,56 @@ export const decideLifecycleNudge = (
 ): NudgeDecision => {
   const action = entry.action;
   if (action === null || action.actionId !== actionId || action.actionDigest !== actionDigest) {
-    return { kind: "wait", reason: "unmatched-action" };
+    return { kind: "wait", reason: "unmatched-action", code: "unmatched-action" };
   }
-  if (action.workflowCompleteAt !== null) return { kind: "wait", reason: "workflow-complete" };
+  if (action.workflowCompleteAt !== null) {
+    return { kind: "wait", reason: "workflow-complete", code: "workflow-complete" };
+  }
   if (entry.pendingInputCount !== null && entry.pendingInputCount > 0) {
-    return { kind: "wait", reason: "pending-input" };
+    return { kind: "wait", reason: "pending-input", code: "pending-input" };
   }
-  if (entry.backgroundActive === true) return { kind: "wait", reason: "background-active" };
+  if (entry.backgroundActive === true) {
+    return { kind: "wait", reason: "background-active", code: "background-active" };
+  }
   if (entry.execution !== "idle" && entry.execution !== "failed") {
-    return { kind: "wait", reason: entry.execution };
+    const code: WaitCode =
+      entry.execution === "queued"
+        ? "queued"
+        : entry.execution === "working"
+          ? "working"
+          : entry.execution === "unknown"
+            ? "unknown"
+            : "failed-execution";
+    return { kind: "wait", reason: entry.execution, code };
   }
   if (action.lastNudgedIdleEpoch === entry.idleEpoch) {
-    return { kind: "wait", reason: "idle-transition-already-used" };
+    return { kind: "wait", reason: "idle-transition-already-used", code: "idle-transition-already-used" };
   }
-  return { kind: "send", reason: "eligible-idle" };
+  return { kind: "send", reason: "eligible-idle", code: "eligible-idle" };
 };
+
+export type DegradedCause = "hooks-never-seen" | "correlation-lagged";
 
 export const markObservabilityDegraded = (
   paths: IssueRuntimePaths,
   agent: string,
   now = new Date().toISOString(),
   watchdogMs = AGENT_OBSERVABILITY_WATCHDOG_MS
-): { changed: boolean; state: AgentLifecycleState } => {
+): { changed: boolean; state: AgentLifecycleState; cause: DegradedCause | null } => {
   let changed = false;
+  let cause: DegradedCause | null = null;
   const state = mutateAgentLifecycle(paths, (current) => {
     const entry = current.agents[agent];
     const action = entry?.action;
     if (entry === undefined || action === null || entry.health === "degraded") return current;
+    if (action.workflowCompleteAt !== null) return current;
     const expectedAfter = action.injectedAt ?? action.orderedAt;
     if (entry.lastEventAt !== null && Date.parse(entry.lastEventAt) >= Date.parse(expectedAfter)) return current;
     const elapsed = Date.parse(now) - Date.parse(expectedAfter);
     if (!Number.isFinite(elapsed) || elapsed < watchdogMs) return current;
     changed = true;
+    cause = entry.lastEvent === null && entry.sessionId === null ? "hooks-never-seen" : "correlation-lagged";
     return replaceEntry(current, agent, { ...entry, health: "degraded" }, now);
   });
-  return { changed, state };
+  return { changed, state, cause: changed ? cause : null };
 };

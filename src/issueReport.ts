@@ -1,4 +1,4 @@
-import type { CursorsState, StartState } from "./state.js";
+import type { CursorsState, JournalEvent, StartState } from "./state.js";
 import type { AgentLifecycleState } from "./agentLifecycle.js";
 import { coordMergesPullRequest } from "./steps.js";
 
@@ -12,7 +12,8 @@ const finalization = (cursors: CursorsState) =>
 export const renderIssueReport = (
   start: StartState,
   cursors: CursorsState,
-  lifecycle?: AgentLifecycleState
+  lifecycle?: AgentLifecycleState,
+  journal?: readonly JournalEvent[]
 ): string => {
   const r7 = finalization(cursors);
   const pin = cursors.publication.finalSha ?? r7?.productPin ?? null;
@@ -57,13 +58,24 @@ export const renderIssueReport = (
     lines.push(`Error: ${cursors.publication.error}`);
   }
   if (lifecycle !== undefined) {
+    const degradedCauses = new Map<string, string>();
+    if (journal !== undefined) {
+      for (const event of journal) {
+        if (event.type === "agent-observability-degraded" && event.agent !== undefined) {
+          const cause = event.details.cause;
+          if (typeof cause === "string") degradedCauses.set(event.agent, cause);
+        }
+      }
+    }
     for (const agent of start.agents) {
       const entry = lifecycle.agents[agent.id];
       if (entry === undefined) continue;
       const queue = entry.pendingInputCount === null ? "" : `, pending=${entry.pendingInputCount}`;
       const background = entry.backgroundActive === true ? ", background-active" : "";
+      const alert =
+        entry.health === "degraded" && degradedCauses.has(agent.id) ? `, alert=${degradedCauses.get(agent.id)}` : "";
       lines.push(
-        `Agent ${agent.id}: ${entry.action?.delivery ?? "none"} / ${entry.execution} / ${entry.health}${queue}${background}`
+        `Agent ${agent.id}: ${entry.action?.delivery ?? "none"} / ${entry.execution} / ${entry.health}${queue}${background}${alert}`
       );
     }
   }

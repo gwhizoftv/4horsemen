@@ -516,6 +516,59 @@ describe("effectful run loop", () => {
     expect(nudged[1]?.details).toMatchObject({ idle: true, actionDigest: action!.actionDigest });
   });
 
+  it("classifies observability degrade as correlation-lagged when hooks were seen before the send", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
+    let literalNudges = 0;
+    let paneText = "";
+    const messages: string[] = [];
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: paneText, stderr: "" };
+      if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, {
+      tmux,
+      now: () => new Date(nowMs).toISOString(),
+      nudgeRetryMs: NUDGE_RETRY_MS,
+      log: (message) => messages.push(message)
+    });
+    observeAgentLifecycle(
+      paths,
+      "codex",
+      { kind: "session-start", eventName: "SessionStart", sessionId: "session-1" },
+      new Date(nowMs - 60_000).toISOString()
+    );
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+    const actionId = readCursorsState(paths).agents.codex?.actionId as string;
+    paneText = actionId;
+    nowMs += NUDGE_RETRY_MS;
+    await loop.runTick();
+    expect(readAgentLifecycle(paths).agents.codex?.health).toBe("degraded");
+    expect(messages.join("\n")).toContain("duplicate send suppressed");
+    expect(messages.join("\n")).not.toContain("Restart codex's CLI");
+    const degradeEvent = readJournal(paths).find(
+      (event) => event.type === "agent-observability-degraded" && event.agent === "codex"
+    );
+    expect(degradeEvent?.details.cause).toBe("correlation-lagged");
+  });
+
   it("retries an action that a busy pane never injected", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);
