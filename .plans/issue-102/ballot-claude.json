@@ -1,0 +1,54 @@
+{
+  "protocolVersion": 1,
+  "issue": 102,
+  "issueSessionId": "issue-102:eb3ed3b90f2ea26f1284de408321e3a785138d07",
+  "agent": "claude",
+  "inputSetHash": "300f8a65857e5edd24b30fe0c26dd08ded1e34ef9f69eb8b827365b3679d5346",
+  "artifact": "plan-ballot",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "ba6c7daa132cb6937aa1eca0032310e005611c9f",
+      "path": ".plans/issue-102/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "fe93f93e173bf52e0b5e5851994d3b2cb553150a",
+      "path": ".plans/issue-102/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "4029b017e2a8c5f17c1d588a8267b8cd1e72e8a4",
+      "path": ".plans/issue-102/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "f1a824657dd73f3b07c25bb367bdfbc735f28f1c",
+      "path": ".plans/issue-102/plan.md"
+    }
+  ],
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "d84c45637206d3b09d31a567656730a5692ad59f",
+      "path": ".plans/issue-102/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "0db9efb43854e5723edcb4821b8a3e02da7856f7",
+      "path": ".plans/issue-102/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "e4520da640743cdf2b94ec099eebbffad34c1870",
+      "path": ".plans/issue-102/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "c149e0e712b7647e8e0bf2dc47144483b2389489",
+      "path": ".plans/issue-102/review.md"
+    }
+  ],
+  "choice": "cursor",
+  "rationale": "Cursor's plan is the only bound plan that no reviewer found to weaken delivery safety or to edit a file the clone protocol forbids, and its remaining defects — the ellipsis-only Cursor matcher, the missing hooks-never-seen versus correlation-lagged split, and the deferred agent waiting line — are each correctable inside the implementation step, whereas my own plan's sentinel check is ordered ahead of the account-verify blocker and its file map lists the tracked AGENTS.md, both flagged independently by codex."
+}
