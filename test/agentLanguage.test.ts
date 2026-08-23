@@ -17,7 +17,7 @@ import {
   writeCursorsState
 } from "../src/state.js";
 import { STEP_DEFINITIONS, type EvidenceId, type WorkflowStepId } from "../src/steps.js";
-import { renderNudgeText } from "../src/tmux.js";
+import { COORD_IDLE_SENTINEL, renderNudgeText } from "../src/tmux.js";
 
 const repoRoot = new URL("..", import.meta.url).pathname;
 
@@ -282,7 +282,9 @@ describe("agent-facing language", () => {
   });
 
   it("keeps internal vocabulary out of the installed agent guidance", () => {
-    expect(findAgentLanguageViolations(renderAgentsProtocolBlock(repoRoot))).toEqual([]);
+    const protocol = renderAgentsProtocolBlock(repoRoot);
+    expect(protocol).toContain(COORD_IDLE_SENTINEL);
+    expect(findAgentLanguageViolations(protocol)).toEqual([]);
     expect(
       findAgentLanguageViolations(readFileSync(join(repoRoot, "templates/product/AGENTS.md"), "utf8"))
     ).toEqual([]);

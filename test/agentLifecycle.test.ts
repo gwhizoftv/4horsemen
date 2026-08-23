@@ -8,6 +8,7 @@ import {
   initialAgentLifecycle,
   initializeAgentLifecycle,
   markActionInjected,
+  markActionWorkflowComplete,
   markObservabilityDegraded,
   observeAgentLifecycleWithResult,
   orderAgentAction,
@@ -87,7 +88,11 @@ describe("agent lifecycle policy", () => {
         workflowCompleteAt: null
       }
     };
-    expect(decideLifecycleNudge(withAction, actionId, digest)).toEqual({ kind: "wait", reason: "pending-input" });
+    expect(decideLifecycleNudge(withAction, actionId, digest)).toEqual({
+      kind: "wait",
+      reason: "pending-input",
+      code: "pending-input"
+    });
     const failedPriorTurn = applyLifecycleObservation(withAction, {
       kind: "failed",
       eventName: "StopFailure",
@@ -181,7 +186,8 @@ describe("agent lifecycle policy", () => {
     const used = { ...idle, action: { ...idle.action!, lastNudgedIdleEpoch: idle.idleEpoch } };
     expect(decideLifecycleNudge(used, actionId, digest)).toEqual({
       kind: "wait",
-      reason: "idle-transition-already-used"
+      reason: "idle-transition-already-used",
+      code: "idle-transition-already-used"
     });
     const duplicateStop = applyLifecycleObservation(idle, {
       kind: "stopped",
@@ -253,9 +259,49 @@ describe("agent lifecycle policy", () => {
     markActionInjected(paths, "codex", actionId, digest, now);
     const degraded = markObservabilityDegraded(paths, "codex", later, 45_000);
     expect(degraded.changed).toBe(true);
+    expect(degraded.cause).toBe("hooks-never-seen");
     const persisted = readAgentLifecycle(paths).agents.codex!;
-    expect(persisted).toMatchObject({ health: "degraded", action: { delivery: "injected" } });
-    expect(decideLifecycleNudge(persisted, actionId, digest)).toEqual({ kind: "wait", reason: "unknown" });
+    expect(persisted).toMatchObject({
+      health: "degraded",
+      degradedCause: "hooks-never-seen",
+      action: { delivery: "injected" }
+    });
+    expect(decideLifecycleNudge(persisted, actionId, digest)).toEqual({
+      kind: "wait",
+      reason: "unknown",
+      code: "unknown"
+    });
+  });
+
+  it("classifies correlation lag and clears it when workflow evidence completes the action", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
+    roots.push(root);
+    const paths = issueRuntimePaths(root, 1);
+    createIssueRuntime(paths, ["codex"]);
+    initializeAgentLifecycle(paths, ["codex"], now);
+    observeAgentLifecycleWithResult(
+      paths,
+      "codex",
+      { kind: "session-start", eventName: "SessionStart", sessionId: "session-1" },
+      now
+    );
+    const injectedAt = "2026-08-18T00:00:01.000Z";
+    orderAgentAction(paths, "codex", actionId, digest, injectedAt);
+    markActionInjected(paths, "codex", actionId, digest, injectedAt);
+    const degraded = markObservabilityDegraded(paths, "codex", "2026-08-18T00:00:46.000Z", 45_000);
+    expect(degraded).toMatchObject({ changed: true, cause: "correlation-lagged" });
+
+    const completed = markActionWorkflowComplete(
+      paths,
+      "codex",
+      actionId,
+      "2026-08-18T00:00:47.000Z"
+    );
+    expect(completed.clearedDegraded).toBe(true);
+    expect(completed.state.agents.codex).toMatchObject({ health: "healthy", degradedCause: null });
+    expect(
+      markObservabilityDegraded(paths, "codex", "2026-08-18T00:10:00.000Z", 45_000)
+    ).toMatchObject({ changed: false, cause: null });
   });
 
   it("does not rewrite lifecycle state for duplicate status-line renders", () => {

@@ -62,8 +62,9 @@ export const renderIssueReport = (
       if (entry === undefined) continue;
       const queue = entry.pendingInputCount === null ? "" : `, pending=${entry.pendingInputCount}`;
       const background = entry.backgroundActive === true ? ", background-active" : "";
+      const alert = entry.health === "degraded" && entry.degradedCause !== null ? `, alert=${entry.degradedCause}` : "";
       lines.push(
-        `Agent ${agent.id}: ${entry.action?.delivery ?? "none"} / ${entry.execution} / ${entry.health}${queue}${background}`
+        `Agent ${agent.id}: ${entry.action?.delivery ?? "none"} / ${entry.execution} / ${entry.health}${queue}${background}${alert}`
       );
     }
   }

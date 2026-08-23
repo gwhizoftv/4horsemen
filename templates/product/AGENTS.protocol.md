@@ -26,6 +26,14 @@ do not change index flags.
 After you write `complete`, do not stop. Before waiting for more input, re-read
 your `action.md`. If `actionId` in the front matter has changed, execute the new
 instructions immediately; do not wait for another coordinator message.
+If it has not changed, make the final line of your reply exactly:
+
+```text
+COORD-IDLE: waiting for the next coordinator action file
+```
+
+Print nothing after that line. This is an additive terminal-readiness hint; the
+coordinator still validates `complete`, the action UUID, and live pane safety.
 
 A **plan** (`.plans/issue-<n>/plan.md`) must include every heading below,
 each with a non-empty body:

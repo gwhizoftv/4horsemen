@@ -516,6 +516,96 @@ describe("effectful run loop", () => {
     expect(nudged[1]?.details).toMatchObject({ idle: true, actionDigest: action!.actionDigest });
   });
 
+  it("classifies watchdog correlation lag without prescribing a restart", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    let nowMs = Date.parse("2026-08-18T00:00:01.000Z");
+    observeAgentLifecycle(
+      paths,
+      "codex",
+      { kind: "session-start", eventName: "SessionStart", sessionId: "session-1" },
+      "2026-08-18T00:00:00.000Z"
+    );
+    const messages: string[] = [];
+    const tmux = new TmuxController(async (args) =>
+      args[0] === "display-message"
+        ? { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" }
+        : { exitCode: 0, stdout: "", stderr: "" }
+    );
+    const loop = new CoordinatorRunLoop(paths, {
+      tmux,
+      now: () => new Date(nowMs).toISOString(),
+      log: (message) => messages.push(message)
+    });
+    await loop.runTick();
+    nowMs += NUDGE_RETRY_MS;
+    await loop.runTick();
+
+    expect(messages.join("\n")).toContain("no lifecycle signal correlated");
+    expect(messages.join("\n")).not.toContain("Restart codex's CLI");
+    expect(
+      readJournal(paths).find((event) => event.type === "agent-observability-degraded" && event.agent === "codex")
+    ).toMatchObject({ details: { cause: "correlation-lagged", watchdogMs: NUDGE_RETRY_MS } });
+  });
+
+  it("journals scrape and healthy idle-hook disagreement in one deferral", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    observeAgentLifecycle(paths, "codex", {
+      kind: "status",
+      eventName: "status-line",
+      sessionId: "session-1",
+      execution: "idle",
+      pendingInputCount: 0,
+      backgroundActive: false
+    });
+    const messages: string[] = [];
+    const tmux = new TmuxController(async (args) =>
+      args[0] === "display-message"
+        ? { exitCode: 0, stdout: "0\tcodex\t1\n", stderr: "" }
+        : { exitCode: 0, stdout: "", stderr: "" }
+    );
+    await new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) }).runTick();
+
+    expect(
+      readJournal(paths).find((event) => event.type === "nudge-deferred" && event.agent === "codex")
+    ).toMatchObject({
+      details: {
+        layer: "scrape",
+        code: "owner-typing",
+        splitBrain: true,
+        hooks: { execution: "idle", health: "healthy" }
+      }
+    });
+    expect(messages.join("\n")).toContain("owner-typing");
+  });
+
   it("retries an action that a busy pane never injected", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);
@@ -545,6 +635,9 @@ describe("effectful run loop", () => {
     await loop.runTick();
     expect(literalNudges).toBe(0);
     expect(readAgentLifecycle(paths).agents.codex?.action?.delivery).toBe("ordered");
+    expect(readJournal(paths).find((event) => event.type === "nudge-deferred" && event.agent === "codex")).toMatchObject({
+      details: { layer: "scrape", code: "owner-typing", stage: "initial", gateWaiting: true }
+    });
 
     busy = false;
     await loop.runTick();

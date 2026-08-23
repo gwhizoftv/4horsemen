@@ -7,6 +7,8 @@ import { acquireExclusiveLock, atomicWriteJson, readStartState } from "./state.j
 /** Independent from the workflow runtime format: hook traffic is not workflow authority. */
 export const AGENT_LIFECYCLE_FORMAT_VERSION = 1;
 export const AGENT_OBSERVABILITY_WATCHDOG_MS = 45_000;
+export const observabilityDegradedCauseSchema = z.enum(["hooks-never-seen", "correlation-lagged"]);
+export type ObservabilityDegradedCause = z.infer<typeof observabilityDegradedCauseSchema>;
 
 const timestampSchema = z.string().datetime({ offset: true });
 
@@ -37,6 +39,7 @@ export const agentLifecycleEntrySchema = z
     backgroundActive: z.boolean().nullable(),
     idleEpoch: z.number().int().nonnegative(),
     health: z.enum(["unknown", "healthy", "degraded"]),
+    degradedCause: observabilityDegradedCauseSchema.nullable().default(null),
     lastEvent: z.string().min(1).nullable(),
     lastEventAt: timestampSchema.nullable(),
     updatedAt: timestampSchema
@@ -81,6 +84,7 @@ const emptyEntry = (now: string): AgentLifecycleEntry => ({
   backgroundActive: null,
   idleEpoch: 0,
   health: "unknown",
+  degradedCause: null,
   lastEvent: null,
   lastEventAt: null,
   updatedAt: now
@@ -229,6 +233,7 @@ export const markActionInjected = (
       {
         ...current,
         health: acceptedDuringAttempt ? "healthy" : "unknown",
+        degradedCause: null,
         action: {
           ...action,
           delivery: acceptedDuringAttempt ? "accepted" : "injected",
@@ -317,17 +322,26 @@ export const markActionWorkflowComplete = (
   agent: string,
   actionId: string,
   now = new Date().toISOString()
-): AgentLifecycleState =>
-  mutateAgentLifecycle(paths, (state) => {
+): { state: AgentLifecycleState; clearedDegraded: boolean } => {
+  let clearedDegraded = false;
+  const state = mutateAgentLifecycle(paths, (state) => {
     const current = state.agents[agent];
     if (current?.action?.actionId !== actionId) return state;
+    clearedDegraded = current.health === "degraded";
     return replaceEntry(
       state,
       agent,
-      { ...current, action: { ...current.action, workflowCompleteAt: now } },
+      {
+        ...current,
+        health: clearedDegraded ? "healthy" : current.health,
+        degradedCause: null,
+        action: { ...current.action, workflowCompleteAt: now }
+      },
       now
     );
   });
+  return { state, clearedDegraded };
+};
 
 const positiveIdle = (entry: AgentLifecycleEntry, nextExecution: AgentLifecycleEntry["execution"]): number =>
   (nextExecution === "idle" || nextExecution === "failed") &&
@@ -462,6 +476,7 @@ export const applyLifecycleObservation = (
     backgroundActive,
     idleEpoch,
     health: "healthy",
+    degradedCause: null,
     lastEvent: observation.eventName,
     lastEventAt: now,
     updatedAt: now
@@ -505,7 +520,18 @@ export const observeAgentLifecycle = (
   now = new Date().toISOString()
 ): AgentLifecycleState => observeAgentLifecycleWithResult(paths, agent, observation, now).state;
 
-export type NudgeDecision = { kind: "send"; reason: "eligible-idle" } | { kind: "wait"; reason: string };
+export type NudgeWaitCode =
+  | "unmatched-action"
+  | "workflow-complete"
+  | "pending-input"
+  | "background-active"
+  | "unknown"
+  | "queued"
+  | "working"
+  | "idle-transition-already-used";
+export type NudgeDecision =
+  | { kind: "send"; reason: "eligible-idle"; code: "eligible-idle" }
+  | { kind: "wait"; reason: NudgeWaitCode; code: NudgeWaitCode };
 
 export const decideLifecycleNudge = (
   entry: AgentLifecycleEntry,
@@ -514,20 +540,28 @@ export const decideLifecycleNudge = (
 ): NudgeDecision => {
   const action = entry.action;
   if (action === null || action.actionId !== actionId || action.actionDigest !== actionDigest) {
-    return { kind: "wait", reason: "unmatched-action" };
+    return { kind: "wait", reason: "unmatched-action", code: "unmatched-action" };
   }
-  if (action.workflowCompleteAt !== null) return { kind: "wait", reason: "workflow-complete" };
+  if (action.workflowCompleteAt !== null) {
+    return { kind: "wait", reason: "workflow-complete", code: "workflow-complete" };
+  }
   if (entry.pendingInputCount !== null && entry.pendingInputCount > 0) {
-    return { kind: "wait", reason: "pending-input" };
+    return { kind: "wait", reason: "pending-input", code: "pending-input" };
   }
-  if (entry.backgroundActive === true) return { kind: "wait", reason: "background-active" };
+  if (entry.backgroundActive === true) {
+    return { kind: "wait", reason: "background-active", code: "background-active" };
+  }
   if (entry.execution !== "idle" && entry.execution !== "failed") {
-    return { kind: "wait", reason: entry.execution };
+    return { kind: "wait", reason: entry.execution, code: entry.execution };
   }
   if (action.lastNudgedIdleEpoch === entry.idleEpoch) {
-    return { kind: "wait", reason: "idle-transition-already-used" };
+    return {
+      kind: "wait",
+      reason: "idle-transition-already-used",
+      code: "idle-transition-already-used"
+    };
   }
-  return { kind: "send", reason: "eligible-idle" };
+  return { kind: "send", reason: "eligible-idle", code: "eligible-idle" };
 };
 
 export const markObservabilityDegraded = (
@@ -535,18 +569,27 @@ export const markObservabilityDegraded = (
   agent: string,
   now = new Date().toISOString(),
   watchdogMs = AGENT_OBSERVABILITY_WATCHDOG_MS
-): { changed: boolean; state: AgentLifecycleState } => {
+): { changed: boolean; state: AgentLifecycleState; cause: ObservabilityDegradedCause | null } => {
   let changed = false;
+  let cause: ObservabilityDegradedCause | null = null;
   const state = mutateAgentLifecycle(paths, (current) => {
     const entry = current.agents[agent];
     const action = entry?.action;
-    if (entry === undefined || action === null || entry.health === "degraded") return current;
+    if (
+      entry === undefined ||
+      action === null ||
+      action.workflowCompleteAt !== null ||
+      entry.health === "degraded"
+    ) {
+      return current;
+    }
     const expectedAfter = action.injectedAt ?? action.orderedAt;
     if (entry.lastEventAt !== null && Date.parse(entry.lastEventAt) >= Date.parse(expectedAfter)) return current;
     const elapsed = Date.parse(now) - Date.parse(expectedAfter);
     if (!Number.isFinite(elapsed) || elapsed < watchdogMs) return current;
     changed = true;
-    return replaceEntry(current, agent, { ...entry, health: "degraded" }, now);
+    cause = entry.lastEvent === null && entry.sessionId === null ? "hooks-never-seen" : "correlation-lagged";
+    return replaceEntry(current, agent, { ...entry, health: "degraded", degradedCause: cause }, now);
   });
-  return { changed, state };
+  return { changed, state, cause };
 };
