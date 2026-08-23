@@ -1,7 +1,9 @@
 # Plan review — issue 102
 
 Reviewed at the bound commits: antigravity `ba6c7daa132cb6937aa1eca0032310e005611c9f`,
-cursor `fe93f93e173bf52e0b5e5851994d3b2cb553150a`, codex `f1a824657dd73f3b07c25bb367bdfbc735f28f1c`.
+cursor `fe93f93e173bf52e0b5e5851994d3b2cb553150a`, claude `4029b017e2a8c5f17c1d588a8267b8cd1e72e8a4`,
+codex `f1a824657dd73f3b07c25bb367bdfbc735f28f1c`. F11-F13 apply the same standard to the claude plan at
+`4029b017e2a8c5f17c1d588a8267b8cd1e72e8a4`; they are stated as defects, not as a defence of it.
 
 ## Findings
 
@@ -236,22 +238,104 @@ signal together.
 deferral clears (successful send, new action, changed reason) or carry `firstSeenAt`, `lastSeenAt`, and
 an occurrence count on the persisted deferral so a later event can close the interval.
 
+### F11 — claude: the sentinel shortcut bypasses the account-verify check, and keys are typed into an overlay that discards them
+
+**Claim.** The claude plan (`4029b017e2a8c5f17c1d588a8267b8cd1e72e8a4`) states that
+`harnessPromptReadiness` "returns `{ ready: true, reason: \"idle-sentinel\" }` when the sentinel is the
+last non-empty line, before any per-agent branch other than the trust dialog", and separately defines
+`idleSentinelAfterAction(paneText, actionId, sentinel)` "used by the broadened recovery below".
+
+**Rule that must hold.** A positive readiness signal may add a reason to send; it may never remove a
+blocker. The antigravity account-verify check (`src/tmux.ts:77-78`) exists because that overlay renders
+a `>` prompt and Accept-edits chrome while silently discarding every key — it is a hard blocker,
+independent of any evidence about the previous turn.
+
+**Concrete failure.** An antigravity agent finishes an action, prints the sentinel, and the account
+overlay appears while the pane is otherwise unchanged, so the sentinel is still the last non-empty line.
+Ordering the sentinel branch ahead of the per-agent cases makes `harnessPromptReadiness` return ready;
+`nudge` types prelude, text, `Escape` and `Enter` into the overlay, which drops them; `nudge` returns
+`sent`; `markActionInjected` sets `delivery: "injected"` and burns `lastNudgedIdleEpoch`
+(`src/agentLifecycle.ts:240`). The action was never delivered and the lifecycle now believes it was —
+the same lost-delivery stall as B5, created by the mechanism meant to fix it. The staleness guard the
+plan does define is wired only into the recovery path, not into this one.
+
+**Smallest correction.** Evaluate the sentinel after every blocking check, never before, and give
+`harnessPromptReadiness` the current actionId so the one staleness rule applies on both paths.
+
+### F12 — claude: composing reason codes as template strings defeats the machine-readable requirement
+
+**Claim.** "The inner `send` closure keeps returning the gate result and its reason is surfaced as
+`reason: \"gate-<GateReason>-mid-send\"` so a pane that goes busy between keystrokes is distinguishable
+from one that was busy up front."
+
+**Rule that must hold.** The issue's first acceptance criterion is a *machine-readable reason code*. A
+code is machine-readable when it is a closed union a consumer can exhaustively match; the same plan
+defines `GateReason`, `PromptBlockedReason`, and `WaitCode` as exactly that, then breaks its own model
+here by minting a second spelling of every gate code at runtime.
+
+**Concrete failure.** One predicate now has two codes: an operator or a later analytics query filtering
+`code === "foreground-mismatch"` silently misses every mid-send occurrence, which is the *more*
+interesting case because it means the pane changed state during a paste. TypeScript cannot help — the
+composed string is `string`, so no exhaustiveness check fires and no test that asserts on the union
+catches the gap. The journal ends up with `foreground-mismatch` and `gate-foreground-mismatch-mid-send`
+as unrelated values for one condition.
+
+**Smallest correction.** Keep the code in the closed union and put the stage in its own field:
+`{ code: "foreground-mismatch", stage: "mid-send" }`.
+
+### F13 — claude: the `issueReport` entry names the wrong call sites and offers two designs instead of one
+
+**Claim.** "Agent lines (`src/issueReport.ts:58`–`67`) append `, alert=<cause>` … implemented without a
+schema change by reading the newest `agent-observability-degraded` journal event for that agent in
+`renderIssueReport`'s existing caller. If that plumbing proves to need a new parameter, the parameter is
+added as an optional third argument and the two existing call sites (`src/runLoop.ts:1315`,
+`src/runLoop.ts:1323`) pass it."
+
+**Rule that must hold.** An exact file list is executable as written: it names one design and every call
+site that design touches. This step's own protocol says the coordinator accepts the published artifact,
+and the implementation step binds to it — a fork in the plan becomes a fork in the implementation.
+
+**Concrete failure.** There are three callers of `renderIssueReport`, not two, and the plan names the
+wrong ones. `src/cli.ts:1091` is the only caller that passes a lifecycle state at all; the two runLoop
+callers (`src/runLoop.ts:1315`, `src/runLoop.ts:1323`) pass `(start, cursors)` with no lifecycle, so the
+agent lines the plan proposes to extend never render there. An implementer following the entry threads
+the new value through the two sites where it has no effect and leaves `coord status` — the one surface
+an operator actually reads — unchanged, and the plan's stated fallback is wrong on its own terms:
+`lifecycle` already occupies the third parameter (`src/issueReport.ts:12-16`), so the addition is a
+fourth.
+
+**Smallest correction.** Pick one design — pass the cause on the lifecycle entry that
+`renderIssueReport` already receives — and name `src/cli.ts:1091` as the call site that must pass it.
+
 ## Conclusion
 
-All three peer plans agree on the core shape — reason codes instead of a bare `busy`, a dedicated
+All four bound plans agree on the core shape — reason codes instead of a bare `busy`, a dedicated
 deferral event, and keeping the scrape as the typing gate — and that shape is right.
 
 The blocking defects are F1 (antigravity ships without touching the degraded remedy at
 `src/runLoop.ts:699` or the sticky alert, so two acceptance criteria are unmet and the reported harm
 recurs), F2 (antigravity's idle-epoch relaxation can deliver one action twice with no absence proof),
-and F9 (codex's fresh-`Stop` override can type into a turn the coordinator did not start, converting a
-stall into a corrupted turn). None of the three should be implemented as written.
+F9 (codex's fresh-`Stop` override can type into a turn the coordinator did not start, converting a
+stall into a corrupted turn), and F11 (the claude plan orders its sentinel check ahead of the
+account-verify blocker, so keys are typed into an overlay that discards them while delivery is recorded
+as sent). None of those four sections should be implemented as written.
 
 F6 and F8 are correctness defects in an otherwise sound cursor plan: the ellipsis rule does not
 actually separate chrome from the prose this workflow generates, and removing the only negative signal
 for a vendor whose readiness check has no positive branch leaves that vendor with no readiness check at
-all. F3, F4, F5, F7, and F10 are narrower and each has a one-line correction.
+all. F3, F4, F5, F7, F10, F12, and F13 are narrower and each has a one-line correction.
+
+Two failures recur across plans and are worth stating once. First, the Cursor chrome fix: the claude
+plan's line anchor is defeated by the same markdown quoting that defeats cursor's ellipsis rule
+(`` - `Thinking…` `` satisfies a leading `\W{0,3}`), so neither plan's proposed matcher survives the
+artifacts this workflow itself produces — the discriminator has to exclude a quoted or bulleted line,
+and the negative test has to use one. Second, the exact file list: antigravity names a version bump that
+does not exist in the named file (F4) and the claude plan names two call sites of `renderIssueReport`
+when there are three, missing the only one that would show the change (F13). Both are the same rule —
+the list has to be executable as written.
 
 The strongest plan to build on is cursor's — it is the only one that states the precedence policy
 explicitly and scopes itself to the acceptance list — with F6 and F8 corrected and F7's re-degrade guard
-added, plus codex's de-duplicated deferral record (F10 corrected) for the journalling half.
+added, plus codex's de-duplicated deferral record (F10 corrected) for the journalling half. The claude
+plan's contribution worth carrying over is its closed reason-code unions and its insistence that every
+recovery branch keep the `actionAbsentAtReadyPrompt` proof, both corrected per F11 and F12.
