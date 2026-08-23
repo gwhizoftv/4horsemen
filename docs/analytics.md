@@ -81,7 +81,7 @@ cost comes from vendor-private stores:
 | --- | --- | --- |
 | claude | `~/.claude/projects/<slug>/<sessionId>.jsonl` | **Yes** — per assistant message: `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, plus `timestamp` |
 | codex | `~/.codex/sessions/YYYY/MM/DD/*.jsonl` | **Yes** — `event_msg` / `token_count` with `total_token_usage` and `last_token_usage` (cumulative + delta), `cached_input_tokens`, `reasoning_output_tokens`, `model_context_window` |
-| cursor | `~/.cursor/chats/<hash>/<id>/store.db` (SQLite `blobs`) | **No** — scanned every blob for `usage` / `inputTokens` / `cacheRead` / `totalTokens`: zero matches |
+| cursor | journaled `agent-usage` from managed `.cursor/hooks.json` (`postToolUse`, `afterAgentResponse`, optional token fields on `stop`) | **Yes when hooks fire** — `conversation_id` / `generation_id` correlate to lifecycle turns; no `store.db` scrape |
 | antigravity | — | **No local store found** |
 
 So token analytics is currently possible for two of four agents, by reading

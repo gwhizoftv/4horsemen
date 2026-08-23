@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { extractPromptActionIdentity, handleAgentEvent, normalizeAgentEvent } from "../src/agentEvent.js";
+import { extractPromptActionIdentity, handleAgentEvent, normalizeAgentEvent, normalizeCursorUsageEvent } from "../src/agentEvent.js";
 import {
   initializeAgentLifecycle,
   markActionInjected,
@@ -21,7 +21,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-const runtimeFixture = (agent: "codex" | "claude" | "antigravity") => {
+const runtimeFixture = (agent: "codex" | "claude" | "cursor" | "antigravity") => {
   const root = mkdtempSync(join(tmpdir(), "coord-agent-event-"));
   roots.push(root);
   const clone = join(root, "clone");
@@ -140,6 +140,31 @@ describe("vendor lifecycle event normalization", () => {
         status: "error"
       })
     ).toMatchObject({ kind: "failed" });
+  });
+
+  it("normalizes Cursor analytics hooks for tools and token usage", () => {
+    expect(
+      normalizeCursorUsageEvent("cursor", {
+        hook_event_name: "postToolUse",
+        conversation_id: "conversation-1",
+        generation_id: "generation-1",
+        tool_name: "Read"
+      })
+    ).toMatchObject({ kind: "tool-used", sessionId: "conversation-1", turnId: "generation-1", toolCalls: 1 });
+    expect(
+      normalizeCursorUsageEvent("cursor", {
+        hook_event_name: "afterAgentResponse",
+        conversation_id: "conversation-1",
+        generation_id: "generation-1",
+        input_tokens: 12,
+        output_tokens: 4,
+        cache_read_tokens: 1,
+        cache_write_tokens: 0
+      })
+    ).toMatchObject({
+      kind: "turn-usage",
+      tokens: { input: 12, output: 4, cacheRead: 1, cacheWrite: 0, reasoning: null }
+    });
   });
 
   it("uses Antigravity queue, task, agent-state, and fullyIdle signals", () => {
@@ -294,5 +319,27 @@ describe("vendor lifecycle event normalization", () => {
       sessionId: "agy-1",
       pendingInputCount: 2
     });
+  });
+
+  it("journals Cursor tool and token usage without mutating lifecycle on analytics-only hooks", () => {
+    const { clone, paths } = runtimeFixture("cursor");
+    const result = handleAgentEvent({
+      vendor: "cursor",
+      clone,
+      environmentIssue: "86",
+      explicitEvent: "postToolUse",
+      raw: {
+        conversation_id: "conversation-1",
+        generation_id: "generation-1",
+        tool_name: "Read"
+      }
+    });
+    expect(result.observed).toBe(true);
+    expect(readJournal(paths).at(-1)).toMatchObject({
+      type: "agent-usage",
+      agent: "cursor",
+      details: { kind: "tool-used", sessionId: "conversation-1", turnId: "generation-1" }
+    });
+    expect(readAgentLifecycle(paths).agents.cursor?.execution).toBe("unknown");
   });
 });

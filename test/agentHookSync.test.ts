@@ -55,6 +55,25 @@ describe("agent lifecycle hook synchronization", () => {
     });
   }
 
+  it("installs all managed Cursor lifecycle and analytics hooks", () => {
+    const { clone, cliEntry } = fixture();
+    const effects = effectOptions(() => undefined, false);
+    syncAgentLifecycleHooks({ clone, agent: "cursor", cliEntry, options: effects });
+    const document = json(agentLifecycleHookPath(clone, "cursor")!);
+    const hooks = document.hooks as Record<string, unknown[]>;
+    expect(Object.keys(hooks).sort()).toEqual(
+      [
+        "afterAgentResponse",
+        "beforeSubmitPrompt",
+        "postToolUse",
+        "postToolUseFailure",
+        "sessionEnd",
+        "sessionStart",
+        "stop"
+      ].sort()
+    );
+  });
+
   it("reports dry-run work without creating vendor files", () => {
     const { clone, cliEntry } = fixture();
     const effects = effectOptions(() => undefined, true);
