@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   checkVersionBump,
   isStrictlyGreater,
@@ -21,11 +25,65 @@ describe("version bump compare", () => {
   });
 });
 
-describe("version bump ship gate", () => {
-  it("requires package.json to advance past origin/main on non-main branches", () => {
-    const result = checkVersionBump(process.cwd(), {
-      baseRef: process.env.COORD_VERSION_BASE_REF ?? "origin/main"
-    });
-    expect(result.ok, result.detail).toBe(true);
+const repos: string[] = [];
+afterEach(() => {
+  for (const repo of repos.splice(0)) rmSync(repo, { recursive: true, force: true });
+});
+
+const writeManifest = (root: string, version: string): void => {
+  writeFileSync(
+    join(root, "package.json"),
+    `${JSON.stringify({ name: "version-bump-fixture", version }, null, 2)}\n`
+  );
+};
+
+/**
+ * A throwaway repository whose `main` carries `baseVersion` and whose worktree
+ * manifest carries `headVersion`. The gate reads head from the file and base
+ * through `git show`, so the head version needs no commit of its own.
+ */
+const fixture = (baseVersion: string, headVersion: string): string => {
+  const root = mkdtempSync(join(tmpdir(), "coord-versionbump-"));
+  repos.push(root);
+  const git = (...args: string[]): void => {
+    execFileSync("git", args, { cwd: root, stdio: "pipe" });
+  };
+  git("init", "-q", "-b", "main", ".");
+  git("config", "user.email", "fixture@example.com");
+  git("config", "user.name", "fixture");
+  writeManifest(root, baseVersion);
+  git("add", "package.json");
+  git("commit", "-qm", "base");
+  if (headVersion !== baseVersion) writeManifest(root, headVersion);
+  return root;
+};
+
+describe("version bump gate decision", () => {
+  it("rejects a branch whose version has not advanced past the base", () => {
+    const root = fixture("0.0.1", "0.0.1");
+    const result = checkVersionBump(root, { baseRef: "main", headRef: "issue-95/fixture" });
+    expect(result.enforce).toBe(true);
+    expect(result.ok).toBe(false);
+  });
+
+  it("accepts a branch whose version is strictly greater than the base", () => {
+    const root = fixture("0.0.1", "0.0.2");
+    const result = checkVersionBump(root, { baseRef: "main", headRef: "issue-95/fixture" });
+    expect(result.enforce).toBe(true);
+    expect(result.ok).toBe(true);
+  });
+
+  it("exempts the base branch itself so main never requires an advance", () => {
+    const root = fixture("0.0.1", "0.0.1");
+    const result = checkVersionBump(root, { baseRef: "main", headRef: "main" });
+    expect(result.enforce).toBe(false);
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects a head version that is not a dotted triple", () => {
+    const root = fixture("0.0.1", "0.0.2-beta");
+    const result = checkVersionBump(root, { baseRef: "main", headRef: "issue-95/fixture" });
+    expect(result.enforce).toBe(true);
+    expect(result.ok).toBe(false);
   });
 });

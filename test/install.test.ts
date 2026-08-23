@@ -163,7 +163,10 @@ describe("coord install — emitted config", () => {
     expect(config.project).toBe("myserver");
     expect(config.checks).toEqual(declaredChecks);
     expect(config.coordination?.installRoot).toBe(repoRoot);
-    expect(config.coordination?.version).toBe("0.0.16");
+    // Independent of `packageVersion`, which is what wrote this field.
+    const expected = (JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { version: string })
+      .version;
+    expect(config.coordination?.version).toBe(expected);
     expect(config.coordination?.vendored).toBe(false);
     expect(config.agents[0]?.launcher).toBe("start-claude.sh");
   });
