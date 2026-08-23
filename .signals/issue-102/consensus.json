@@ -1,0 +1,32 @@
+{
+  "protocolVersion": 1,
+  "issue": 102,
+  "issueSessionId": "issue-102:eb3ed3b90f2ea26f1284de408321e3a785138d07",
+  "agent": "claude",
+  "inputSetHash": "c7e30064e80bd38b682db7b3693cb46e8c688241dea98225d5a3d935c7a3eacf",
+  "artifact": "consensus-declaration",
+  "round": 1,
+  "consensusCommitSha": "48d0f00ab5a90b29f0b035e629247209718c5e58",
+  "ballots": [
+    {
+      "agent": "claude",
+      "commitSha": "f6c4aadf6a86b29ea90832bb8fc4e3ed9b57c27c",
+      "path": ".code-reviews/issue-102/consensus-ballot-claude-round-1.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "44b161ee58a349d2eb0a0ff5ec00e55f6313305f",
+      "path": ".code-reviews/issue-102/consensus-ballot-codex-round-1.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "f953057067810f779ad7af759dc052fc03d694b6",
+      "path": ".code-reviews/issue-102/consensus-ballot-cursor-round-1.json"
+    },
+    {
+      "agent": "antigravity",
+      "commitSha": "b1d398e7358808fe80aef88f1d63d964d55d5607",
+      "path": ".code-reviews/issue-102/consensus-ballot-antigravity-round-1.json"
+    }
+  ]
+}
