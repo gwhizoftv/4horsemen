@@ -18,6 +18,7 @@ import {
   resolveChangeScope,
   CHANGE_SCOPE_PATH_LIMIT
 } from "../src/runLoop.js";
+import { BRANCH_PREPARED_NOTE } from "../src/steps.js";
 import {
   cursorsStateSchema,
   dropAgent,
@@ -1204,5 +1205,13 @@ describe("coordinator-resolved change scope", () => {
     const order = buildOrder(paths, start, readCursorsState(paths), "claude", "R2.plan", null);
     expect(order.contextPaths).toEqual(["docs/repo-map.md"]);
     expect(order.changeScope).toEqual([]);
+    expect(order.task).toContain(BRANCH_PREPARED_NOTE);
+  });
+
+  it("carries the branch-prepared note into implement actions", () => {
+    const { paths } = fixture();
+    const cursors = readCursorsState(paths);
+    const order = buildOrder(paths, readStartState(paths), cursors, "codex", "R4.implement", null);
+    expect(order.task).toContain(BRANCH_PREPARED_NOTE);
   });
 });

@@ -45,9 +45,20 @@ export const liftCloneAgentsProtocol = (clone: string, options: Effects): void =
   git(clone, "checkout", "HEAD", "--", "AGENTS.md");
 };
 
-const skipWorktreeAgentsMd = (clone: string): void => {
+export const ensureAgentsMdSkipWorktree = (clone: string): void => {
   if (!agentsMdTracked(clone)) return;
   gitOrThrow(clone, "update-index", "--skip-worktree", "--", "AGENTS.md");
+};
+
+export const cloneAgentsProtocolState = (
+  clone: string
+): { tracked: boolean; overlayPresent: boolean; skipWorktree: boolean } => {
+  const tracked = agentsMdTracked(clone);
+  const path = join(clone, "AGENTS.md");
+  const overlayPresent =
+    existsSync(path) && readFileSync(path, "utf8").includes(AGENTS_PROTOCOL_MARKERS.begin);
+  const skipWorktree = tracked && git(clone, "ls-files", "-v", "--", "AGENTS.md").stdout.startsWith("S");
+  return { tracked, overlayPresent, skipWorktree };
 };
 
 /**
@@ -65,13 +76,13 @@ export const writeCloneAgentsProtocol = (input: {
   const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
   const outcome = writeProtocolFile(path, existing, input.installRoot, input.options.dryRun);
   if (!outcome.changed) {
-    if (!input.options.dryRun) skipWorktreeAgentsMd(input.clone);
+    if (!input.options.dryRun) ensureAgentsMdSkipWorktree(input.clone);
     input.options.log(`AGENTS.md protocol already current in ${input.clone}\n`);
     return;
   }
   input.options.changes.push(`write AGENTS.md protocol in ${input.clone}`);
   input.options.log(`${input.options.dryRun ? "would write" : "wrote"} AGENTS.md protocol in ${input.clone}\n`);
-  if (!input.options.dryRun) skipWorktreeAgentsMd(input.clone);
+  if (!input.options.dryRun) ensureAgentsMdSkipWorktree(input.clone);
 };
 
 export const writeProductAgentsProtocol = (input: {

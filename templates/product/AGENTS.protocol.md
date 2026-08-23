@@ -17,6 +17,13 @@ replace the file to “fix” git status. Coordination sets that bit so the
 clone-local protocol section stays hidden. If `AGENTS.md` looks wrong, escalate;
 do not change index flags.
 
+## Automated branch preparation
+
+When the coordinator publishes an automated `action.md`, coordination has already
+checked this clone out on `issue-<n>/<agent>` and restored the `skip-worktree`
+bit on `AGENTS.md`. Do not create that branch, switch to it, or clear the bit to
+make checkout work. If the clone looks wrong, escalate.
+
 After you write `complete`, do not stop. Before waiting for more input, re-read
 your `action.md`. If `actionId` in the front matter has changed, execute the new
 instructions immediately; do not wait for another coordinator message.

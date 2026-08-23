@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, rmSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { clearCompletion, createActionId, readAction, readCompletion, writeAction } from "./action.js";
 import {
   AGENT_OBSERVABILITY_WATCHDOG_MS,
@@ -32,6 +34,7 @@ import {
   type StartState
 } from "./state.js";
 import {
+  BRANCH_PREPARED_NOTE,
   STEP_DEFINITIONS,
   coordMergesPullRequest,
   describeWorkflowStep,
@@ -405,7 +408,7 @@ export const buildOrder = (
     issueSessionId: start.issueSessionId,
     baselineSha: start.baselineSha,
     automationDigest: start.automationDigest,
-    task: `${definition.task}${binding}${scaffold}${correction}`,
+    task: `${definition.task}${BRANCH_PREPARED_NOTE}${binding}${scaffold}${correction}`,
     inputs,
     approvedPaths,
     contextPaths: [...start.contextPaths],
@@ -456,10 +459,14 @@ export class CoordinatorRunLoop {
     const authority = readCursorsState(this.paths);
     this.authority(authority);
     let installRoot: string | null = null;
+    const defaultInstallRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
     if (existsSync(start.configPath)) {
       try {
         installRoot = readConfig(start.configPath).coordination?.installRoot ?? null;
-      } catch {
+      } catch (error) {
+        this.log(
+          `Could not read workspace config for branch preparation: ${error instanceof Error ? error.message : String(error)}`
+        );
         installRoot = null;
       }
     }
@@ -469,7 +476,7 @@ export class CoordinatorRunLoop {
       branchTemplate: start.branchTemplate,
       baselineSha: start.baselineSha,
       baseBranch: start.baseBranch,
-      installRoot,
+      installRoot: installRoot ?? defaultInstallRoot,
       log: (message) => this.log(message.trimEnd())
     });
     this.authority(authority);

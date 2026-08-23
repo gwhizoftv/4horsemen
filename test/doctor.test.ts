@@ -2,6 +2,7 @@ import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DOCTOR_CODES, doctor, renderDoctorReport } from "../src/doctor.js";
+import { writeCloneAgentsProtocol, liftCloneAgentsProtocol } from "../src/agentsProtocol.js";
 import { install } from "../src/install.js";
 import {
   declaredChecks,
@@ -239,5 +240,40 @@ describe("coord doctor — broken clones and configs", () => {
     manifest.files["../../../victim"] = "a".repeat(64);
     writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
     expect(report(fixture).findings.map((item) => item.code)).toContain(DOCTOR_CODES.hooks);
+  });
+
+  it("reports tracked AGENTS.md without skip-worktree", () => {
+    ensureBuilt();
+    const fixture = makeProduct("go");
+    fixtures.push(fixture);
+    git(fixture.productRoot, "remote", "set-url", "origin", "https://github.com/example/myserver.git");
+    writeFileSync(join(fixture.productRoot, "AGENTS.md"), "# Product agents\n");
+    git(fixture.productRoot, "add", "AGENTS.md");
+    git(fixture.productRoot, "commit", "-qm", "track AGENTS.md");
+    const result = install({
+      installRoot: repoRoot,
+      productRoot: fixture.productRoot,
+      coordRoot: fixture.coordRoot,
+      agents: ["claude"],
+      profile: "solo",
+      declarePath: writeDeclaration(fixture.workspaceRoot, { checks: declaredChecks, verify: passingVerify }),
+      writeProduct: false,
+      vendor: false,
+      bootstrap: false,
+      dryRun: false,
+      log: silence().log
+    });
+    const clone = result.clones[0] as string;
+    liftCloneAgentsProtocol(clone, { dryRun: false, log: () => undefined, changes: [] });
+    const findings = report(fixture).findings.filter((item) => item.class === "agentsProtocol");
+    expect(findings.map((item) => item.code)).toContain(DOCTOR_CODES.agentsProtocol);
+    expect(findings[0]?.subject).toBe(clone);
+
+    writeCloneAgentsProtocol({
+      clone,
+      installRoot: repoRoot,
+      options: { dryRun: false, log: () => undefined, changes: [] }
+    });
+    expect(report(fixture).findings.map((item) => item.class)).not.toContain("agentsProtocol");
   });
 });

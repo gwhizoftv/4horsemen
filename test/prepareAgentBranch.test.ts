@@ -2,8 +2,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { liftCloneAgentsProtocol, writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
+import {
+  liftCloneAgentsProtocol,
+  renderAgentsProtocolBlock,
+  writeCloneAgentsProtocol
+} from "../src/agentsProtocol.js";
+import { localConfigUnset } from "../src/gitExec.js";
 import { prepareAgentIssueBranches } from "../src/prepareAgentBranch.js";
+import { AGENTS_PROTOCOL_MARKERS, applyDelimitedBlock } from "../src/productIgnore.js";
 import { git, repoRoot, tryGit } from "./support/workspaceFixture.js";
 
 const roots: string[] = [];
@@ -61,7 +67,9 @@ describe("prepareAgentIssueBranches", () => {
       installRoot: repoRoot
     });
 
-    expect(outcome).toEqual([{ agent: "claude", clone, branch: "issue-9/claude", action: "created" }]);
+    expect(outcome).toEqual([
+      { agent: "claude", clone, branch: "issue-9/claude", action: "created", protocol: "overlay" }
+    ]);
     expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
     expect(git(clone, "rev-parse", "HEAD")).toBe(baseline);
     expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toContain("coordination protocol");
@@ -120,5 +128,84 @@ describe("prepareAgentIssueBranches", () => {
     ).toThrow(/uncommitted changes/);
     expect(existsSync(join(clone, "dirty.txt"))).toBe(true);
     expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+  });
+
+  it("re-sets skip-worktree even when no install root can be resolved", () => {
+    const { clone, baseline } = seedClone();
+    localConfigUnset(clone, "coord.installRoot");
+
+    const outcome = prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main"
+    });
+
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
+    expect(skipWorktree(clone)).toBe(true);
+    expect(outcome[0]?.protocol).toBe("bit-only");
+  });
+
+  it("re-sets skip-worktree when the checkout fails", () => {
+    const { clone } = seedClone();
+    liftCloneAgentsProtocol(clone, { dryRun: false, log: () => undefined, changes: [] });
+
+    expect(() =>
+      prepareAgentIssueBranches({
+        agents: [{ id: "claude", root: clone }],
+        issue: 9,
+        branchTemplate: "issue-{issue}/{agent}",
+        baselineSha: "0".repeat(40),
+        baseBranch: "missing-base-branch",
+        installRoot: repoRoot
+      })
+    ).toThrow(/Cannot resolve issue baseline/);
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("heals a clone whose only dirt is the lifted overlay", () => {
+    const { clone, baseline } = seedClone();
+    git(clone, "update-index", "--no-skip-worktree", "--", "AGENTS.md");
+
+    const outcome = prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(outcome[0]?.action).toBe("created");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("still refuses a dirty clone when AGENTS.md dirt accompanies another dirty path", () => {
+    const { clone, baseline } = seedClone();
+    liftCloneAgentsProtocol(clone, { dryRun: false, log: () => undefined, changes: [] });
+    const headContent = readFileSync(join(clone, "AGENTS.md"), "utf8");
+    writeFileSync(
+      join(clone, "AGENTS.md"),
+      applyDelimitedBlock(
+        headContent,
+        renderAgentsProtocolBlock(repoRoot),
+        "AGENTS.md",
+        AGENTS_PROTOCOL_MARKERS
+      ).content
+    );
+    writeFileSync(join(clone, "dirty.txt"), "nope\n");
+
+    expect(() =>
+      prepareAgentIssueBranches({
+        agents: [{ id: "claude", root: clone }],
+        issue: 9,
+        branchTemplate: "issue-{issue}/{agent}",
+        baselineSha: baseline,
+        baseBranch: "main",
+        installRoot: repoRoot
+      })
+    ).toThrow(/uncommitted changes/);
   });
 });

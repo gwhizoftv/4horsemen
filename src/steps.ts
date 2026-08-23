@@ -55,6 +55,11 @@ export type StepDefinition = {
   task: string;
 };
 
+export const BRANCH_PREPARED_NOTE =
+  "\n\nCoordination has already checked this clone out on the issue branch named later in this action. " +
+  "Do not create that branch, switch to it, or clear `skip-worktree` on `AGENTS.md` to make checkout work. " +
+  "If the clone looks wrong, escalate.";
+
 export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> = {
   "R1.join": {
     id: "R1.join",
@@ -62,7 +67,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     evidenceId: "join-published",
     participants: "all",
     requiredPath: (issue, agent) => `.signals/issue-${issue}/participation-ready-${agent}.json`,
-    task: "Publish the participation-readiness artifact for this issue. Coordination already checked this clone out on your issue branch; do not clear skip-worktree on AGENTS.md or switch branches to make checkout work."
+    task: "Publish the participation-readiness artifact for this issue."
   },
   "R2.plan": {
     id: "R2.plan",
