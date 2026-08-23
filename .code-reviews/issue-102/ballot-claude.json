@@ -1,0 +1,32 @@
+{
+  "protocolVersion": 1,
+  "issue": 102,
+  "issueSessionId": "issue-102:eb3ed3b90f2ea26f1284de408321e3a785138d07",
+  "agent": "claude",
+  "inputSetHash": "acc24acad01ec7c92ec2eb7c19d7bc62706f04f5e10e320994c6ae72e99f0263",
+  "artifact": "comparison-ballot",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "62ed5b44096ddd622e9b8c1263faa6c21f429e5b",
+      "path": ".signals/issue-102/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "176321636ce7660142c5a77f8be75701911c817a",
+      "path": ".signals/issue-102/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "ecc899ee10d92e7324106e056fd1f5ed34373013",
+      "path": ".signals/issue-102/implementation-ready-cursor.json"
+    },
+    {
+      "agent": "antigravity",
+      "commitSha": "24106c134ae82a23917900374f300693c677774c",
+      "path": ".signals/issue-102/implementation-ready-antigravity.json"
+    }
+  ],
+  "choice": "claude",
+  "rationale": "Only claude and codex order the idle sentinel after every vendor blocker and anchor the in-flight chrome match strictly enough that the markdown this workflow itself produces does not read as busy, and between those two the deciding difference runs in the safer direction: claude threads the action id into readiness so a stale sentinel can never authorize a send, whereas codex leaves that correlation as dead code and lets a sentinel short-circuit the Claude prompt check, which is a false ready rather than a false busy; codex's braille-only spinner class is the stricter of the two and should be adopted at src/tmux.ts:90 in the revision."
+}
