@@ -399,6 +399,7 @@ export const journalEventSchema = z
       "action-prepared",
       "nudged",
       "agent-lifecycle",
+      "agent-usage",
       "agent-observability-degraded",
       "intent-seen",
       "verify-result",

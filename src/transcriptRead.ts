@@ -10,6 +10,7 @@ import {
 import { basename, join, resolve } from "node:path";
 
 export type TranscriptVendor = "claude" | "codex";
+export type UsageVendor = TranscriptVendor | "cursor";
 export type AnalyticsCoverage = "complete" | "partial" | "unsupported" | "unavailable";
 
 export type TokenUsage = {
@@ -39,7 +40,7 @@ export type UnattributedTranscriptUsage = {
 };
 
 export type TranscriptReadResult = {
-  vendor: TranscriptVendor;
+  vendor: UsageVendor;
   sessionId: string;
   path: string | null;
   coverage: AnalyticsCoverage;
