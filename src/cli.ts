@@ -216,7 +216,7 @@ From an agent clone, \`coord next --issue N\` resolves the runtime via
 coord.workspaceConfig and the caller via consensus.agentId (or --agent / COORD_AGENT).
 Use \`-v\` / \`--verbose\` on \`coord N\`, start, or run for tick-level nudge logs.
 Phase changes (R1.join → R2.plan, …) always print.
-\`coord --version\` prints the package version (pre-1.0: \`0.0.N\`, bump on every ship).
+\`coord --version\` prints the package version (pre-1.0: \`0.0.N\`, bump before merging to main).
 \`coord status\` prints the chosen agent, final pin, published branch, and PR URL.
 
 On macOS, starting or resuming an issue opens one Terminal.app window per agent

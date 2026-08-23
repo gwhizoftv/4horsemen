@@ -58,33 +58,8 @@ it, which is why neither has its own copy.
   that touches product code. This is the declared `verify.precommit`.
 - `pnpm check` — build plus `check:fast` plus e2e. The coordinator's gate.
 - `pnpm test:e2e` — the declared `verify.prepush` for workflow-critical paths.
-
-On a non-`main` branch the fast suite also asserts, through
-`test/versionBump.test.ts`, that `package.json` is strictly ahead of
-`origin/main`. Bump `0.0.N` on every ship or the suite is red before you start.
-
-### `test:fast` is currently wrapped — remove the wrapper when you can
-
-`test:fast` is not plain `vitest run`. It is a node one-liner that rewrites the
-hardcoded version assertion in `test/cli.test.ts` for the duration of the run
-and restores the file afterwards. Know three things about it:
-
-- **The assertion it patches is now vacuous.** It compares `package.json`'s
-  version against itself, so a real `coord --version` regression will not fail
-  the suite.
-- **`pnpm check` no longer observes the tree exactly as committed**, which
-  matters because that command is the coordinator's final gate.
-- **An interrupted run can leave `test/cli.test.ts` modified**, producing a
-  dirty worktree that fails the hooks the wrapper exists to satisfy. If
-  `git status` shows that file unexpectedly dirty, `git checkout --` it.
-
-It exists because two rules collide: the ship gate forces a version bump on
-every issue branch, and `test/cli.test.ts` hardcodes the version — so every bump
-requires editing a file that a plan's approved file map may not cover. The fix
-is to make that test read the version from `package.json` and restore
-`"test:fast": "vitest run --config vitest.config.ts"`. Do that as soon as an
-issue's approved paths include `test/cli.test.ts`, and delete this section with
-it.
+- `pnpm check:version-bump` — pre-1.0 merge gate only. Required on PRs into
+  `main` (GitHub Action `version-bump`); not part of `check:fast` or `check`.
 
 Tests live in `test/`, one file per module, with shared fixtures under
 `test/support/`.

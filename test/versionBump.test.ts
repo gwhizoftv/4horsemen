@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   checkVersionBump,
   isStrictlyGreater,
@@ -21,11 +25,63 @@ describe("version bump compare", () => {
   });
 });
 
-describe("version bump ship gate", () => {
-  it("requires package.json to advance past origin/main on non-main branches", () => {
-    const result = checkVersionBump(process.cwd(), {
-      baseRef: process.env.COORD_VERSION_BASE_REF ?? "origin/main"
-    });
-    expect(result.ok, result.detail).toBe(true);
+describe("version bump gate decision", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  const gitEnv = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "Fixture",
+    GIT_AUTHOR_EMAIL: "fixture@example.com",
+    GIT_COMMITTER_NAME: "Fixture",
+    GIT_COMMITTER_EMAIL: "fixture@example.com"
+  };
+
+  const git = (cwd: string, ...args: string[]): void => {
+    execFileSync("git", args, { cwd, env: gitEnv, stdio: "ignore" });
+  };
+
+  const writeVersion = (cwd: string, version: string): void => {
+    writeFileSync(join(cwd, "package.json"), `${JSON.stringify({ name: "fixture", version }, null, 2)}\n`);
+  };
+
+  /** Temp repo: main @ 0.0.1, then branch issue-fixture (working tree starts at 0.0.1). */
+  const fixtureRepo = (): string => {
+    const cwd = mkdtempSync(join(tmpdir(), "coord-version-bump-"));
+    roots.push(cwd);
+    git(cwd, "init", "-q", "-b", "main");
+    writeVersion(cwd, "0.0.1");
+    git(cwd, "add", "package.json");
+    git(cwd, "commit", "-qm", "base");
+    git(cwd, "checkout", "-qb", "issue-fixture");
+    return cwd;
+  };
+
+  it("rejects a non-advancing branch version", () => {
+    const cwd = fixtureRepo();
+    const result = checkVersionBump(cwd, { baseRef: "main", headRef: "issue-fixture" });
+    expect(result.enforce).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.headVersion).toBe("0.0.1");
+    expect(result.baseVersion).toBe("0.0.1");
+  });
+
+  it("accepts a strictly greater branch version", () => {
+    const cwd = fixtureRepo();
+    writeVersion(cwd, "0.0.2");
+    const result = checkVersionBump(cwd, { baseRef: "main", headRef: "issue-fixture" });
+    expect(result.enforce).toBe(true);
+    expect(result.ok).toBe(true);
+    expect(result.headVersion).toBe("0.0.2");
+    expect(result.baseVersion).toBe("0.0.1");
+  });
+
+  it("does not enforce on the base branch", () => {
+    const cwd = fixtureRepo();
+    const result = checkVersionBump(cwd, { baseRef: "main", headRef: "main" });
+    expect(result.enforce).toBe(false);
+    expect(result.ok).toBe(true);
   });
 });
