@@ -24,6 +24,8 @@ export type PrepareAgentIssueBranchResult = {
   branch: string;
   action: "created" | "checked-out" | "already-on-branch" | "skipped-missing";
   protocol: ProtocolRestoreOutcome | "skipped";
+  /** An overlay was in the clone before preparation touched it. */
+  hadOverlay: boolean;
 };
 
 export const issueBranchFor = (template: string, issue: number, agent: string): string =>
@@ -64,12 +66,23 @@ const restoreProtocol = (
 ): ProtocolRestoreOutcome => {
   const root = installRoot ?? localConfigGet(clone, INSTALL_ROOT_KEY);
   if (root !== null && existsSync(root)) {
-    writeCloneAgentsProtocol({
-      clone,
-      installRoot: root,
-      options: { dryRun: false, log, changes: [] }
-    });
-    return "overlay";
+    try {
+      writeCloneAgentsProtocol({
+        clone,
+        installRoot: root,
+        options: { dryRun: false, log, changes: [] }
+      });
+      return "overlay";
+    } catch (error) {
+      // An install root that resolves but whose template tree has been moved or
+      // pruned must not take the restore down with it. This runs in a `finally`,
+      // so throwing here would both replace the original failure and leave the
+      // bit clear -- the exact state the restore exists to prevent.
+      log(
+        `could not render the AGENTS.md protocol from ${root} ` +
+          `(${error instanceof Error ? error.message : String(error)})\n`
+      );
+    }
   }
   if (captured !== null) {
     restoreCapturedAgentsProtocol(clone, captured);
@@ -108,20 +121,32 @@ const blockingDirtyPaths = (clone: string): readonly string[] => {
  * so throwing here is what keeps "checked out and the bit re-set before the
  * agent is started" true rather than merely intended.
  */
+const readinessProblems = (result: PrepareAgentIssueBranchResult): readonly string[] => {
+  const head = git(result.clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+  const state = cloneAgentsProtocolState(result.clone);
+  const problems: string[] = [];
+  if (head !== result.branch) problems.push(`HEAD is ${head || "detached"}, not ${result.branch}`);
+  if (state.tracked && !state.skipWorktree) problems.push("AGENTS.md is tracked but skip-worktree is not set");
+  // The bit only hides the overlay; it is not a substitute for it. An overlay
+  // that was in the clone before preparation must still be there afterwards,
+  // and a restore that claims to have written one must have written it.
+  if (result.hadOverlay && result.protocol !== "overlay") {
+    problems.push("the AGENTS.md protocol was present before preparation and was not restored");
+  }
+  if (result.protocol === "overlay" && !state.overlayPresent) {
+    problems.push("the AGENTS.md protocol was reported restored but is missing");
+  }
+  return problems;
+};
+
 const assertClonesReady = (results: readonly PrepareAgentIssueBranchResult[]): void => {
   for (const result of results) {
     if (result.action === "skipped-missing") continue;
-    const head = git(result.clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
-    const state = cloneAgentsProtocolState(result.clone);
-    const reason =
-      head !== result.branch
-        ? `HEAD is ${head}, not ${result.branch}`
-        : state.tracked && !state.skipWorktree
-          ? "AGENTS.md is tracked but skip-worktree is not set"
-          : null;
-    if (reason !== null) {
+    const problems = readinessProblems(result);
+    if (problems.length > 0) {
       throw new Error(
-        `Agent clone ${result.clone} is not ready for ${result.branch}: ${reason}. Agents were not started.`
+        `Agent clone ${result.clone} is not ready for ${result.branch}: ${problems.join("; ")}. ` +
+          "Agents were not started."
       );
     }
   }
@@ -166,7 +191,14 @@ export const prepareAgentIssueBranches = (input: {
     const branch = issueBranchFor(input.branchTemplate, input.issue, agent.id);
     if (!existsSync(agent.root) || !isGitWorktree(agent.root)) {
       log(`skip missing clone for ${agent.id}: ${agent.root}\n`);
-      results.push({ agent: agent.id, clone: agent.root, branch, action: "skipped-missing", protocol: "skipped" });
+      results.push({
+        agent: agent.id,
+        clone: agent.root,
+        branch,
+        action: "skipped-missing",
+        protocol: "skipped",
+        hadOverlay: false
+      });
       continue;
     }
 
@@ -175,7 +207,14 @@ export const prepareAgentIssueBranches = (input: {
     if (onBranch === branch) {
       const protocol = restoreProtocol(agent.root, installRoot, captured, log);
       log(`${agent.id} already on ${branch}\n`);
-      results.push({ agent: agent.id, clone: agent.root, branch, action: "already-on-branch", protocol });
+      results.push({
+        agent: agent.id,
+        clone: agent.root,
+        branch,
+        action: "already-on-branch",
+        protocol,
+        hadOverlay: captured !== null
+      });
       continue;
     }
 
@@ -198,7 +237,7 @@ export const prepareAgentIssueBranches = (input: {
       // what the dirty check above used to refuse forever.
       protocol = restoreProtocol(agent.root, installRoot, captured, log);
     }
-    results.push({ agent: agent.id, clone: agent.root, branch, action, protocol });
+    results.push({ agent: agent.id, clone: agent.root, branch, action, protocol, hadOverlay: captured !== null });
   }
 
   assertClonesReady(results);
