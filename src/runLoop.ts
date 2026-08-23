@@ -36,6 +36,7 @@ import {
   coordMergesPullRequest,
   describeWorkflowStep,
   type BoundInput,
+  type ChangeScopeEntry,
   type EvidenceObservation,
   type InternalOrder,
   type MachineDecision,
@@ -290,6 +291,52 @@ export const resolveApprovedPaths = async (
   return paths.size > 0 ? [...paths].sort() : frozen;
 };
 
+/** Kinds whose bound `commitSha` is a product pin with a diff worth resolving. */
+const PINNED_INPUT_KINDS = new Set(["implementation", "revision", "prior-revision"]);
+
+/** Cap on rendered paths per pin; a large diff must not unbound the action. */
+export const CHANGE_SCOPE_PATH_LIMIT = 200;
+
+/**
+ * Resolve the changed paths of each pinned bound input once, memoised per pin,
+ * so four agents comparing the same four pins cost four diffs rather than
+ * sixteen. A pin whose diff cannot be read is omitted rather than fatal: the
+ * scope is advisory and must never block action preparation.
+ */
+export const resolveChangeScope = async (
+  mirror: Pick<EvidenceMirror, "changedPaths">,
+  start: StartState,
+  inputs: readonly BoundInput[]
+): Promise<ChangeScopeEntry[]> => {
+  const pinned = inputs.filter((input) => PINNED_INPUT_KINDS.has(input.kind));
+  if (pinned.length === 0) return [];
+  // `null` records a pin whose diff could not be read. Caching the failure as
+  // well as the success is what makes "one diff per distinct pin" hold on the
+  // unreadable path too: without it, four inputs sharing one broken pin cost
+  // four failing git invocations per tick instead of one.
+  const byPin = new Map<string, readonly string[] | null>();
+  const scope: ChangeScopeEntry[] = [];
+  for (const input of pinned) {
+    let cached = byPin.get(input.commitSha);
+    if (cached === undefined) {
+      try {
+        cached = [...(await mirror.changedPaths(start.baselineSha, input.commitSha))].sort();
+      } catch {
+        cached = null;
+      }
+      byPin.set(input.commitSha, cached);
+    }
+    if (cached === null) continue;
+    scope.push({
+      agent: input.agent,
+      commitSha: input.commitSha,
+      paths: cached.slice(0, CHANGE_SCOPE_PATH_LIMIT),
+      truncated: cached.length > CHANGE_SCOPE_PATH_LIMIT
+    });
+  }
+  return scope;
+};
+
 export const buildOrder = (
   paths: IssueRuntimePaths,
   start: StartState,
@@ -299,7 +346,8 @@ export const buildOrder = (
   round: number | null,
   actionId = createActionId(),
   outstanding: readonly string[] = [],
-  approvedPathOverride?: readonly string[]
+  approvedPathOverride?: readonly string[],
+  changeScope: readonly ChangeScopeEntry[] = []
 ): InternalOrder => {
   const definition = STEP_DEFINITIONS[stepId];
   const runtime = agentRuntimePaths(paths, agent);
@@ -360,6 +408,8 @@ export const buildOrder = (
     task: `${definition.task}${binding}${scaffold}${correction}`,
     inputs,
     approvedPaths,
+    contextPaths: [...start.contextPaths],
+    changeScope,
     activeRoster: [...cursors.activeRoster],
     eligibleChoices,
     expectedSelectedAgents,
@@ -479,8 +529,20 @@ export class CoordinatorRunLoop {
     const cursor = cursors.agents[agent];
     if (cursor === undefined) throw new Error(`Unknown agent ${agent}.`);
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
+    const changeScope = await resolveChangeScope(this.mirror, start, deriveBoundInputs(start, cursors, stepId, round));
     this.authority(cursors);
-    const order = buildOrder(this.paths, start, cursors, agent, stepId, round, this.actionId(), [], approvedPaths);
+    const order = buildOrder(
+      this.paths,
+      start,
+      cursors,
+      agent,
+      stepId,
+      round,
+      this.actionId(),
+      [],
+      approvedPaths,
+      changeScope
+    );
     const runtime = agentRuntimePaths(this.paths, agent);
     let next = this.mutate(cursors, (current) => {
       writeAction(this.paths.coordRoot, runtime.action, order);
@@ -559,6 +621,11 @@ export class CoordinatorRunLoop {
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
     this.authority(cursors);
     const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+    const changeScope = await resolveChangeScope(
+      this.mirror,
+      start,
+      deriveBoundInputs(start, cursors, cursor.stepId, round)
+    );
     const order = buildOrder(
       this.paths,
       start,
@@ -568,7 +635,8 @@ export class CoordinatorRunLoop {
       round,
       actionId,
       cursor.outstanding,
-      approvedPaths
+      approvedPaths,
+      changeScope
     );
     writeAction(this.paths.coordRoot, runtime.action, order);
     if (readAction(runtime.action).body !== previous) {
@@ -828,8 +896,20 @@ export class CoordinatorRunLoop {
     const stepId = cursor.stepId;
     const round = stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
+    const changeScope = await resolveChangeScope(this.mirror, start, deriveBoundInputs(start, cursors, stepId, round));
     this.authority(cursors);
-    const order = buildOrder(this.paths, start, cursors, agent, stepId, round, actionId, outstanding, approvedPaths);
+    const order = buildOrder(
+      this.paths,
+      start,
+      cursors,
+      agent,
+      stepId,
+      round,
+      actionId,
+      outstanding,
+      approvedPaths,
+      changeScope
+    );
     this.verbose(`reissued ${agent} action ${actionId}: ${outstanding.join("; ")}`);
     const next = this.mutate(cursors, (current) => {
       appendJournal(

@@ -12,6 +12,7 @@
   "maxRevisionRounds": 3,
   "prPolicy": "coord-open-unmerged",
   "digestPaths": [],
+  "contextPaths": [],
   "pollIntervalMs": 1000,
 
   "verify": {

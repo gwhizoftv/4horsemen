@@ -58,12 +58,40 @@ Start from `config.example.json`:
   `coord-merged` (coord merges), or legacy `owner-only` (same as open-unmerged)
 - `digestPaths`: optional additional config-relative, confined source
   templates; the list may be empty
+- `contextPaths`: optional confined product-relative files an agent should read
+  first to orient — a repo map, an architecture note. Coordination names them
+  in a `## Repo context` section of every `action.md`; it never inlines their
+  contents, because the measured cost is what enters an agent's context, and
+  naming a short list is what replaces a repository-wide search rather than
+  adding to it. They are advisory documentation and are deliberately **not**
+  digest material: an owner must be able to correct a stale context note
+  mid-run without invalidating every published artifact.
 - `checks[]`: explicit argv arrays executed in a clean worktree at the final
   pin; no shell is invoked
 - `pollIntervalMs`: bounded completion-file polling interval
 
 Any `{worktree}` token in one check argument is replaced with the verification
 worktree path. Expansion never creates shell text.
+
+## Advisory sections in `action.md`
+
+Two body sections are rendered only when they have content, so a step with
+neither is byte-identical to what it produced before they existed.
+
+- `## Repo context` lists the configured `contextPaths`.
+- `## Changed paths for the bound pins` lists, for each bound input that pins a
+  product commit, the paths that commit changed against the issue baseline.
+  Coordination resolves each pin once per tick, so N agents comparing the same
+  pins cost N diffs rather than N×N. The list is capped per pin and marked when
+  truncated.
+
+Both are informational. `approvedPaths` remains the only authority over what an
+implementation may change, and neither section is read back by any verifier.
+
+Paths in both sections are JSON-encoded strings, one per line. Git permits
+backticks and newlines in pathnames, and an advisory hint must never be able to
+abort action preparation or forge a heading — so the encoding is total over
+valid pathnames rather than rejecting the awkward ones.
 
 Every new run always hashes the exact config bytes and a canonical snapshot of
 GitHub issue N from `config.origin`; optional `digestPaths` are added after

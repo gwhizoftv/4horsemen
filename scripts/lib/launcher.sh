@@ -31,7 +31,14 @@ launcher_command() {
     antigravity)
       # agy installs into ~/.local/bin, which a login shell does not always
       # have on PATH; without this the launcher cannot find it.
-      printf 'export PATH="$HOME/.local/bin:$PATH"\nexec agy --mode accept-edits\n'
+      #
+      # --mode accept-edits sets the execution mode; it does not grant tool
+      # permissions, so every out-of-whitelist call became an owner prompt and
+      # showed up in analytics as agent wait rather than work (median ~7 min,
+      # max ~2.3 h on a product run). --dangerously-skip-permissions is a
+      # separate flag, so keep the mode and add the grant. Codex already
+      # launches unattended for the same reason.
+      printf 'export PATH="$HOME/.local/bin:$PATH"\nexec agy --mode accept-edits --dangerously-skip-permissions\n'
       ;;
     gemini)
       printf 'exec gemini\n'
