@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 96,
+  "issueSessionId": "issue-96:509748020eeec09acbbb5fb333efdf6db4b945de",
+  "agent": "claude",
+  "inputSetHash": "263b4c6c28c9eee63d0792a7fc43100a1d16839111688d517e783111de369e33",
+  "artifact": "consensus-ballot",
+  "round": 1,
+  "revisionCommitSha": "1613f8b60e8065cbb0fbefad337e7b889190ffa9",
+  "disposition": "approve",
+  "rationale": "Reviewing my own revision: 1613f8b60e8065cbb0fbefad337e7b889190ffa9 closes the one substantive comparison finding against e61aad3d — cloneAgentsProtocolState reported overlayPresent and the readiness assertion never consumed it, so the assertion now also requires that an overlay present before preparation survives it (via the new hadOverlay field) and that a restore reporting \"overlay\" actually wrote one, deliberately not gating solely on protocol === \"overlay\" the way codex does, since that guard is what lets codex's own bit-only path past the same check; writing it also exposed a hole of mine that nobody had flagged, where a resolvable install root with a pruned template tree made writeCloneAgentsProtocol throw ENOENT from inside the finally, replacing the in-flight error and leaving the bit clear, now caught and fallen through to the captured overlay and pinned by a test that fails on the prior pin with 'ENOENT: … /templates/product/AGENTS.protocol.md'; pnpm check is green on this exact product code (418 fast tests, both end-to-end canaries, 11 branch-preparation cases) and every product path in the pin is inside the approved map with test/install.test.ts still untouched. One non-blocking defect I will not spend a round on: the doc comment describing the throwing assertClonesReady now sits above the non-throwing readinessProblems at src/prepareAgentBranch.ts:117-123 and should move down one function. Scope note, unchanged and not a defect in this pin: the four scripts/setup_*.sh generators are outside the approved map, so the session-start checklist that tells agents to check out the shared branch before deciding whether the session is automated still needs a follow-up issue."
+}
