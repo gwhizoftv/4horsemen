@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 95,
+  "issueSessionId": "issue-95:4d65f30bd3c33edf83fc678b69f4cf3fa678f3a9",
+  "agent": "cursor",
+  "inputSetHash": "e17a4c1c48a4aeb58737915f66bd41d13ee41021e00082304f16890bca294ea2",
+  "artifact": "consensus-ballot",
+  "round": 1,
+  "revisionCommitSha": "329fad4467a79efb088492c69f181af8fff2407f",
+  "disposition": "approve",
+  "rationale": "Revision 329fad44 keeps the selected Claude PR-only ship-gate spine at 0.0.18 with plain test:fast and hermetic equal/greater/base/malformed coverage, and only tightens the fixture by pinning headVersion/baseVersion."
+}
