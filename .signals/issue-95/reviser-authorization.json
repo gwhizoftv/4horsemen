@@ -1,0 +1,10 @@
+{
+  "protocolVersion": 1,
+  "issue": 95,
+  "issueSessionId": "issue-95:4d65f30bd3c33edf83fc678b69f4cf3fa678f3a9",
+  "agent": "claude",
+  "inputSetHash": "d51552e82fc03cb92e0a5b28c56912a9ac4d9cb90f76e8eb623e96b16f8cbe00",
+  "artifact": "reviser-authorization",
+  "reviser": "claude",
+  "implementationCommitSha": "b331e9a0cb4cf9acdc455eb272371278ddbc0414"
+}
