@@ -10,7 +10,8 @@ import {
   markActionWorkflowComplete,
   markInjectedActionAbsent,
   markObservabilityDegraded,
-  orderAgentAction
+  orderAgentAction,
+  readAgentLifecycle
 } from "./agentLifecycle.js";
 import { evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
@@ -422,6 +423,35 @@ export const buildOrder = (
   };
 };
 
+/**
+ * The operator-facing sentence for each refusal code. Every code in
+ * `GateReason`, `PromptBlockedReason`, and `NudgeWaitCode` has an entry, so a
+ * journal line always says what was actually observed.
+ */
+const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
+  "pane-dead": "the terminal pane for this agent is gone",
+  "owner-typing": "the pane is in copy mode or the owner is typing in it",
+  "input-off": "the pane has input disabled",
+  "foreground-mismatch": "the foreground process is not this agent's harness",
+  "trust-dialog": "the harness is waiting on its trust-this-folder prompt",
+  "claude-no-prompt": "no idle prompt is visible in the pane",
+  "cursor-turn-chrome": "the pane shows in-flight turn chrome",
+  "antigravity-turn-chrome": "the pane shows in-flight turn chrome",
+  "antigravity-verify-overlay": "the account-verify overlay is up and discards keystrokes",
+  "antigravity-no-prompt": "no idle prompt is visible in the pane",
+  "unmatched-action": "the recorded lifecycle action does not match the current one",
+  "workflow-complete": "this agent already published its work for this action",
+  "pending-input": "the agent has queued input of its own",
+  "background-active": "the agent has background work running",
+  unknown: "no lifecycle signal has been correlated yet",
+  queued: "the agent has accepted work that has not started",
+  working: "the agent is mid-turn",
+  "idle-transition-already-used": "this action was already delivered on the current idle transition"
+};
+
+const deferralRationale = (code: string): string =>
+  DEFERRAL_RATIONALE[code] ?? "the terminal or lifecycle layer refused delivery";
+
 export class CoordinatorRunLoop {
   private readonly mirror: BareMirror;
   private readonly tmux: TmuxController | null;
@@ -436,6 +466,8 @@ export class CoordinatorRunLoop {
   private readonly observabilityWatchdogMs: number;
   /** Last RN/round announced on `log`, so resume and first prepare do not repeat. */
   private loggedPhaseKey: string | null = null;
+  /** Last deferral code printed per `<agent>:<actionId>`, so an unchanged reason stays quiet. */
+  private readonly loggedDeferral = new Map<string, string>();
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
@@ -594,25 +626,41 @@ export class CoordinatorRunLoop {
         actionDigest
       );
       this.authority(next);
-      if (result === "sent") {
+      if (result.status === "sent") {
         markActionInjected(this.paths, agent, order.actionId, actionDigest, injectionStartedAt);
         this.verbose(`nudged ${agent} (${stepId}) → ${runtime.action}`);
+        this.loggedDeferral.delete(`${agent}\u0000${order.actionId}`);
         next = this.mutate(next, (current) => {
           appendJournal(
             this.paths,
-            { type: "nudged", agent, actionId: order.actionId, details: { actionDigest } },
+            {
+              type: "nudged",
+              agent,
+              actionId: order.actionId,
+              details: { actionDigest, readiness: result.detail ?? "vendor-prompt" }
+            },
             this.now()
           );
           return current;
         });
-      } else if (result === "gone") {
-        this.verbose(`nudge skipped for ${agent}: harness gone`);
+      } else if (result.status === "gone") {
+        this.verbose(`nudge skipped for ${agent}: harness gone (${result.reason})`);
         next = this.mutate(next, (current) => replaceCursor(current, agent, { status: "harness-gone" }, this.now()));
-      } else {
-        if (result === "busy") {
-          markActionInjectionDeferred(this.paths, agent, order.actionId, actionDigest, this.now());
-        }
-        this.verbose(`nudge deferred for ${agent}: ${result}`);
+      } else if (result.status === "busy") {
+        markActionInjectionDeferred(this.paths, agent, order.actionId, actionDigest, this.now());
+        next = this.mutate(next, (current) => {
+          this.journalDeferral(
+            start,
+            agent,
+            order.actionId,
+            actionDigest,
+            "scrape",
+            result.reason,
+            deferralRationale(result.reason),
+            result.detail
+          );
+          return current;
+        });
       }
     } else {
       this.verbose(`ordered ${agent} (${stepId}) → ${runtime.action}`);
@@ -659,6 +707,63 @@ export class CoordinatorRunLoop {
     return cursors;
   }
 
+  /**
+   * Record one delivery refusal with a machine-readable code.
+   *
+   * Both sides of the disagreement go on a single event: when the pane scrape
+   * refuses while hooks say the agent is idle and healthy, `splitBrain` marks
+   * it so status and debug do not have to be reconciled across two axes. The
+   * line reaches normal stdout when the workflow is actually waiting on this
+   * agent or when the two layers disagree; a repeat of an unchanged code stays
+   * verbose so a long stall does not flood the operator.
+   */
+  private journalDeferral(
+    start: StartState,
+    agent: string,
+    actionId: string,
+    actionDigest: string,
+    layer: "scrape" | "lifecycle",
+    code: string,
+    human: string,
+    detail?: string
+  ): void {
+    const entry = readAgentLifecycle(this.paths).agents[agent];
+    const splitBrain =
+      layer === "scrape" && entry?.execution === "idle" && entry.health !== "degraded";
+    appendJournal(
+      this.paths,
+      {
+        type: "nudge-deferred",
+        agent,
+        actionId,
+        details: {
+          layer,
+          code,
+          human,
+          ...(detail === undefined ? {} : { detail }),
+          ...(splitBrain ? { splitBrain: true } : {}),
+          actionDigest,
+          hooks: {
+            execution: entry?.execution ?? "unknown",
+            health: entry?.health ?? "unknown",
+            pendingInputCount: entry?.pendingInputCount ?? null,
+            backgroundActive: entry?.backgroundActive ?? null
+          }
+        }
+      },
+      this.now()
+    );
+    const key = `${agent}\u0000${actionId}`;
+    const repeated = this.loggedDeferral.get(key) === code;
+    this.loggedDeferral.set(key, code);
+    const detailText = detail === undefined ? "" : ` (${detail})`;
+    const message = splitBrain
+      ? `Issue ${start.issue}: ${agent} looks idle to its lifecycle hooks but its terminal is not ready to accept typing (${code}${detailText}); ${human}`
+      : `Issue ${start.issue}: delivery to ${agent} deferred: ${code}${detailText}; ${human}`;
+    if (repeated) this.verbose(message);
+    else this.log(message);
+  }
+
   private async maybeLifecycleNudge(
     start: StartState,
     cursors: CursorsState,
@@ -692,13 +797,21 @@ export class CoordinatorRunLoop {
             type: "agent-observability-degraded",
             agent,
             actionId,
-            details: { actionDigest, watchdogMs: this.observabilityWatchdogMs }
+            details: { actionDigest, watchdogMs: this.observabilityWatchdogMs, cause: degraded.cause }
           },
           this.now()
         );
+        // The watchdog proves correlation lag, not a dead hook bridge. Only an
+        // agent that never announced a session gets the restart remedy; telling
+        // an operator to restart a healthy CLI kills the turn that was about to
+        // write `complete`.
         this.log(
-          `Issue ${start.issue}: lifecycle observability degraded for ${agent}; duplicate nudge suppressed. ` +
-            `Restart ${agent}'s CLI so it loads coordinator lifecycle hooks.`
+          degraded.cause === "hooks-never-seen"
+            ? `Issue ${start.issue}: no lifecycle signal has ever arrived from ${agent}; duplicate send suppressed. ` +
+                `Restart ${agent}'s CLI so it loads coordinator lifecycle hooks.`
+            : `Issue ${start.issue}: no lifecycle signal correlated with the last delivery to ${agent} within ` +
+                `${this.observabilityWatchdogMs}ms; duplicate send suppressed. The agent may still be finishing its ` +
+                `previous turn — no action needed unless it stays quiet.`
         );
       }
       const entry = degraded.state.agents[agent];
@@ -718,6 +831,14 @@ export class CoordinatorRunLoop {
             entry.lastEventAt !== null &&
             Date.parse(entry.lastEventAt) >= Date.parse(injected.injectedAt);
           const tmux = this.tmux;
+          // A send that was never accepted and whose watchdog has elapsed can be
+          // retried, but only on the positive scrape proof below. Elapsed time
+          // and a missing `complete` never authorize a retry on their own.
+          const watchdogElapsed =
+            injected !== null &&
+            injected !== undefined &&
+            injected.injectedAt !== null &&
+            Date.parse(this.now()) - Date.parse(injected.injectedAt) >= this.observabilityWatchdogMs;
           const canProveLostInjection =
             tmux !== null &&
             injected?.delivery === "injected" &&
@@ -725,13 +846,24 @@ export class CoordinatorRunLoop {
             (entry.pendingInputCount ?? 0) === 0 &&
             entry.backgroundActive !== true &&
             ((entry.execution === "queued" && observedAfterInjection) ||
-              (entry.execution === "unknown" && entry.health === "degraded"));
+              (entry.execution === "unknown" && entry.health === "degraded") ||
+              (entry.execution === "idle" &&
+                decision.code === "idle-transition-already-used" &&
+                watchdogElapsed));
           if (
             !canProveLostInjection ||
             tmux === null ||
             !(await tmux.actionAbsentAtReadyPrompt(start.issue, config, actionId, () => this.authority(cursors)))
           ) {
-            this.verbose(`nudge deferred for ${agent}: ${decision.reason}`);
+            this.journalDeferral(
+              start,
+              agent,
+              actionId,
+              actionDigest,
+              "lifecycle",
+              decision.code,
+              deferralRationale(decision.code)
+            );
             return cursors;
           }
           this.authority(cursors);
@@ -762,9 +894,10 @@ export class CoordinatorRunLoop {
       actionDigest
     );
     this.authority(cursors);
-    if (result === "sent") {
+    if (result.status === "sent") {
       markActionInjected(this.paths, agent, actionId, actionDigest, injectionStartedAt);
       this.verbose(`nudged ${agent} (${reason}) → ${runtime.action}`);
+      this.loggedDeferral.delete(`${agent}\u0000${actionId}`);
       return this.mutate(cursors, (current) => {
         appendJournal(
           this.paths,
@@ -772,21 +905,34 @@ export class CoordinatorRunLoop {
             type: "nudged",
             agent,
             actionId,
-            details: { actionDigest, ...(reason === "idle" ? { idle: true } : { reissue: true }) }
+            details: {
+              actionDigest,
+              readiness: result.detail ?? "vendor-prompt",
+              ...(reason === "idle" ? { idle: true } : { reissue: true })
+            }
           },
           this.now()
         );
         return current;
       });
     }
-    if (result === "gone") {
-      this.verbose(`nudge ${reason} skipped for ${agent}: harness gone`);
+    if (result.status === "gone") {
+      this.verbose(`nudge ${reason} skipped for ${agent}: harness gone (${result.reason})`);
       return this.mutate(cursors, (current) => replaceCursor(current, agent, { status: "harness-gone" }, this.now()));
     }
-    if (result === "busy") {
+    if (result.status === "busy") {
       markActionInjectionDeferred(this.paths, agent, actionId, actionDigest, this.now());
+      this.journalDeferral(
+        start,
+        agent,
+        actionId,
+        actionDigest,
+        "scrape",
+        result.reason,
+        deferralRationale(result.reason),
+        result.detail
+      );
     }
-    this.verbose(`nudge ${reason} deferred for ${agent}: ${result}`);
     return cursors;
   }
 
@@ -893,7 +1039,24 @@ export class CoordinatorRunLoop {
         updatedAt: this.now()
       });
     });
-    markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
+    const completion = markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
+    if (completion.clearedDegraded) {
+      // The agent published and pushed, so the earlier watchdog warning is
+      // disproven. Retract it explicitly rather than leaving it standing.
+      appendJournal(
+        this.paths,
+        {
+          type: "agent-observability-recovered",
+          agent: decision.agent,
+          actionId: cursor.actionId,
+          details: { reason: "workflow-complete-after-degraded" }
+        },
+        this.now()
+      );
+      this.log(
+        `Issue ${start.issue}: ${decision.agent} completed its work; the earlier lifecycle warning is cleared.`
+      );
+    }
     return next;
   }
 

@@ -56,34 +56,118 @@ export const harnessLooksReady = (foreground: string, expected?: string): boolea
 };
 
 /**
- * True when the TUI has an idle prompt that can accept typed input.
- * Process-name readiness alone is not enough: Antigravity/`agy` can be foreground
- * during splash while keys are discarded; Claude may still be on the trust dialog.
+ * The exact line an agent prints once it has written `complete` and found no
+ * replacement action. It is *additive* positive evidence: it can confirm an
+ * otherwise-ready pane, and it can never clear a blocker (see
+ * `harnessPromptReadiness`). Agents are told to print it by the protocol block
+ * in `templates/product/AGENTS.protocol.md`.
  */
-export const harnessPromptReady = (paneText: string, agentId: string): boolean => {
+export const COORD_IDLE_SENTINEL = "COORD-IDLE: waiting for the next coordinator action file";
+
+/** Why a pane refused a paste. A closed union so journal consumers can match it. */
+export type PromptBlockedReason =
+  | "trust-dialog"
+  | "claude-no-prompt"
+  | "cursor-turn-chrome"
+  | "antigravity-turn-chrome"
+  | "antigravity-verify-overlay"
+  | "antigravity-no-prompt";
+
+export type PromptReadiness =
+  | { ready: true; reason: "vendor-prompt" | "idle-sentinel" }
+  | { ready: false; reason: PromptBlockedReason };
+
+/**
+ * In-flight status chrome, as opposed to prose that merely contains the word.
+ *
+ * Requiring only an ellipsis is not enough: agents on this workflow routinely
+ * render `Thinking…` and `Working...` inside their own plans and reviews, so
+ * the match is anchored to a line that *starts* with the status word. A quoted
+ * or bulleted line (`- \`Thinking…\``, `> Thinking...`, `* Thinking...`) is
+ * prose and must not match, which is why the anchor admits only whitespace and
+ * the spinner glyphs a TUI actually paints — never `-`, `*`, `>` or a backtick.
+ */
+const SPINNER_PREFIX = String.raw`[\s\u2800-\u28ff\u00b7\u2022\u25cf\u25cb\u2219]*`;
+
+const inFlightStatusLine = (plain: string, words: string): boolean =>
+  new RegExp(String.raw`^${SPINNER_PREFIX}(?:${words})(?:\.\.\.|\u2026)`, "im").test(plain);
+
+/** True when the sentinel is the last thing the pane rendered. */
+const sentinelAtTail = (plain: string): boolean => {
+  const lines = plain.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  return lines[lines.length - 1] === COORD_IDLE_SENTINEL;
+};
+
+/**
+ * True when the sentinel appears *after* the last mention of `actionId`.
+ *
+ * The capture buffer keeps 40 lines, so the sentinel an agent printed for the
+ * previous action can still be on screen while it works on the current one.
+ * Only a sentinel newer than the current action proves present-tense idleness.
+ */
+export const idleSentinelAfterAction = (paneText: string, actionId: string): boolean => {
   const plain = stripAnsi(paneText);
-  if (/trust this folder/i.test(plain)) return false;
+  const sentinel = plain.lastIndexOf(COORD_IDLE_SENTINEL);
+  if (sentinel < 0) return false;
+  return sentinel > plain.lastIndexOf(actionId);
+};
+
+/**
+ * Whether the TUI has an idle prompt that can accept typed input, and why not.
+ *
+ * Process-name readiness alone is not enough: Antigravity/`agy` can be
+ * foreground during splash while keys are discarded; Claude may still be on the
+ * trust dialog. Every blocking check runs *before* the sentinel is consulted —
+ * a positive hint may add a reason to send, never remove one, or a stale
+ * sentinel would let the coordinator type into an account-verify overlay that
+ * silently drops the keystrokes.
+ */
+export const harnessPromptReadiness = (
+  paneText: string,
+  agentId: string,
+  actionId?: string
+): PromptReadiness => {
+  const plain = stripAnsi(paneText);
+  // A sentinel older than the current action is stale scrollback, not evidence.
+  const sentinel =
+    sentinelAtTail(plain) && (actionId === undefined || idleSentinelAfterAction(plain, actionId));
+  const ready = (): PromptReadiness => ({ ready: true, reason: sentinel ? "idle-sentinel" : "vendor-prompt" });
+  if (/trust this folder/i.test(plain)) return { ready: false, reason: "trust-dialog" };
   switch (agentId) {
     case "claude":
-      return /❯|auto mode|-- INSERT --|-- NORMAL --|-- VISUAL/i.test(plain);
+      if (/❯|auto mode|-- INSERT --|-- NORMAL --|-- VISUAL/i.test(plain)) return ready();
+      return sentinel ? { ready: true, reason: "idle-sentinel" } : { ready: false, reason: "claude-no-prompt" };
     case "cursor":
       // Composer placeholder copy changes; do not match it. Block only on
       // in-flight turn chrome. Process readiness is `harnessLooksReady`.
-      if (/esc to cancel|Generating|Running\.\.\.|Working\.\.\.|Thinking/i.test(plain)) return false;
-      return true;
+      if (/esc to cancel/i.test(plain) || inFlightStatusLine(plain, "Generating|Running|Working|Thinking")) {
+        return { ready: false, reason: "cursor-turn-chrome" };
+      }
+      return ready();
     case "antigravity":
       // Escape cancels an in-flight turn; do not nudge while working.
-      if (/esc to cancel|Generating\.\.\.|Running\.\.\.|Working\.\.\./i.test(plain)) return false;
+      if (/esc to cancel/i.test(plain) || inFlightStatusLine(plain, "Generating|Running|Working")) {
+        return { ready: false, reason: "antigravity-turn-chrome" };
+      }
       // Account-verify overlay still shows `>` / Accept-edits; keys are discarded.
-      if (/Verifying your account|account eligibility|Please try again shortly/i.test(plain)) return false;
-      return (/>|shortcuts|Accept-edits/i.test(plain) && /Antigravity|Gemini|accept-edits/i.test(plain));
+      if (/Verifying your account|account eligibility|Please try again shortly/i.test(plain)) {
+        return { ready: false, reason: "antigravity-verify-overlay" };
+      }
+      if (/>|shortcuts|Accept-edits/i.test(plain) && /Antigravity|Gemini|accept-edits/i.test(plain)) return ready();
+      return sentinel
+        ? { ready: true, reason: "idle-sentinel" }
+        : { ready: false, reason: "antigravity-no-prompt" };
     case "codex":
       // Codex accepts keys once the process is up; avoid blocking on transient UI.
-      return true;
+      return ready();
     default:
-      return true;
+      return ready();
   }
 };
+
+/** True when the TUI has an idle prompt that can accept typed input. */
+export const harnessPromptReady = (paneText: string, agentId: string, actionId?: string): boolean =>
+  harnessPromptReadiness(paneText, agentId, actionId).ready;
 
 /**
  * Vim-mode TUIs swallow the first nudge character in NORMAL. Enter insert with
@@ -193,6 +277,29 @@ export const renderNudgeText = (actionPath: string, actionId?: string, actionDig
     : actionDigest === undefined
       ? `Read and execute coordinator action ${actionId} at ${actionPath}`
       : `Read and execute coordinator action ${actionId} digest ${actionDigest} at ${actionPath}`;
+
+/** Why the pane gate refused. A closed union, like `PromptBlockedReason`. */
+export type GateReason = "ok" | "pane-dead" | "owner-typing" | "input-off" | "foreground-mismatch";
+
+export type GateOutcome = {
+  status: "ok" | "busy" | "gone";
+  reason: GateReason;
+  detail?: string;
+};
+
+/**
+ * The result of one delivery attempt.
+ *
+ * `reason` stays a closed union value; where in the attempt it was refused
+ * lives in `stage` rather than being composed into the reason string, so a
+ * consumer matching `reason === "foreground-mismatch"` sees every occurrence.
+ */
+export type NudgeOutcome = {
+  status: "sent" | "disabled" | "busy" | "gone";
+  reason: GateReason | PromptBlockedReason | "delivery-disabled" | "sent";
+  stage: "config" | "gate" | "prompt" | "antigravity-recapture" | "mid-send" | "complete";
+  detail?: string;
+};
 
 /** Resolve macOS Terminal.app profile name for an owner attach window. */
 export const resolveTerminalProfile = (agent: AgentConfig): string =>
@@ -703,13 +810,16 @@ export class TmuxController {
     target: string,
     agent: AgentConfig,
     assertAuthority: () => void
-  ): Promise<"ok" | "busy" | "gone"> {
+  ): Promise<GateOutcome> {
     const pane = await this.inspectPane(target);
     assertAuthority();
-    if (!pane.alive) return "gone";
-    if (pane.ownerTyping || pane.inputOff) return "busy";
-    if (!harnessLooksReady(pane.foreground, agent.harnessProcess)) return "busy";
-    return "ok";
+    if (!pane.alive) return { status: "gone", reason: "pane-dead" };
+    if (pane.ownerTyping) return { status: "busy", reason: "owner-typing" };
+    if (pane.inputOff) return { status: "busy", reason: "input-off" };
+    if (!harnessLooksReady(pane.foreground, agent.harnessProcess)) {
+      return { status: "busy", reason: "foreground-mismatch", detail: pane.foreground };
+    }
+    return { status: "ok", reason: "ok" };
   }
 
   async capturePane(target: string): Promise<string> {
@@ -727,11 +837,13 @@ export class TmuxController {
   ): Promise<boolean> {
     const target = this.target(issue, agent.id);
     const gate = await this.injectionGate(target, agent, assertAuthority);
-    if (gate !== "ok") return false;
+    if (gate.status !== "ok") return false;
     const captured = await this.runner(["capture-pane", "-ep", "-t", target, "-S", "-40"]);
     assertAuthority();
     if (captured.exitCode !== 0) return false;
-    return harnessPromptReady(captured.stdout, agent.id) && !captured.stdout.includes(actionId);
+    // The UUID check stays on the full 40-line capture: a ready prompt is not
+    // proof on its own, only a ready prompt that never showed this action.
+    return harnessPromptReady(captured.stdout, agent.id, actionId) && !captured.stdout.includes(actionId);
   }
 
   async nudge(
@@ -741,39 +853,47 @@ export class TmuxController {
     assertAuthority: () => void = () => undefined,
     actionId?: string,
     actionDigest?: string
-  ): Promise<"sent" | "disabled" | "busy" | "gone"> {
-    if (agent.delivery !== "nudge" && agent.delivery !== "both") return "disabled";
+  ): Promise<NudgeOutcome> {
+    if (agent.delivery !== "nudge" && agent.delivery !== "both") {
+      return { status: "disabled", reason: "delivery-disabled", stage: "config" };
+    }
     const target = this.target(issue, agent.id);
     const initial = await this.injectionGate(target, agent, assertAuthority);
-    if (initial !== "ok") return initial;
+    if (initial.status !== "ok") {
+      return { status: initial.status, reason: initial.reason, stage: "gate", ...(initial.detail === undefined ? {} : { detail: initial.detail }) };
+    }
     let paneText = await this.capturePane(target);
     assertAuthority();
-    if (!harnessPromptReady(paneText, agent.id)) return "busy";
+    const readiness = harnessPromptReadiness(paneText, agent.id, actionId);
+    if (!readiness.ready) return { status: "busy", reason: readiness.reason, stage: "prompt" };
     if (agent.id === "antigravity") {
       await this.sleep(NUDGE_BEFORE_ANTIGRAVITY_MS);
       assertAuthority();
       paneText = await this.capturePane(target);
       assertAuthority();
-      if (!harnessPromptReady(paneText, agent.id)) return "busy";
+      const recaptured = harnessPromptReadiness(paneText, agent.id, actionId);
+      if (!recaptured.ready) return { status: "busy", reason: recaptured.reason, stage: "antigravity-recapture" };
     }
     const text = renderNudgeText(actionPath, actionId, actionDigest);
     // Some harnesses (notably agy) ignore tmux paste-buffer; literal send-keys
     // reaches the input widget. Prelude/submit keys come from agent config.
     const { prelude: preludeKeys, submit: submitKeys } = resolveNudgeKeys(agent, paneText);
-    const send = async (args: readonly string[], fail: string): Promise<"sent" | "busy" | "gone"> => {
+    const send = async (args: readonly string[], fail: string): Promise<NudgeOutcome> => {
       const gate = await this.injectionGate(target, agent, assertAuthority);
-      if (gate !== "ok") return gate;
+      if (gate.status !== "ok") {
+        return { status: gate.status, reason: gate.reason, stage: "mid-send", ...(gate.detail === undefined ? {} : { detail: gate.detail }) };
+      }
       const result = await this.runner(["send-keys", ...args]);
       assertAuthority();
       if (result.exitCode !== 0) throw new Error(`${fail}${result.stderr}`);
-      return "sent";
+      return { status: "sent", reason: "sent", stage: "complete" };
     };
     for (const key of preludeKeys) {
       const prelude = await send(["-t", target, key], "tmux send-keys prelude failed: ");
-      if (prelude !== "sent") return prelude;
+      if (prelude.status !== "sent") return prelude;
     }
     const typed = await send(["-l", "-t", target, text], "tmux send-keys text failed: ");
-    if (typed !== "sent") return typed;
+    if (typed.status !== "sent") return typed;
     // Autocomplete/multiline handlers need a beat before Escape; then gap before Enter.
     await this.sleep(NUDGE_AFTER_TEXT_MS);
     assertAuthority();
@@ -783,8 +903,8 @@ export class TmuxController {
         assertAuthority();
       }
       const submit = await send(["-t", target, key], "tmux send-keys submit failed: ");
-      if (submit !== "sent") return submit;
+      if (submit.status !== "sent") return submit;
     }
-    return "sent";
+    return { status: "sent", reason: "sent", stage: "complete", ...(readiness.reason === "idle-sentinel" ? { detail: "idle-sentinel" } : {}) };
   }
 }
