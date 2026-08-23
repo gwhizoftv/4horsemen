@@ -1,0 +1,27 @@
+{
+  "protocolVersion": 1,
+  "issue": 95,
+  "issueSessionId": "issue-95:4d65f30bd3c33edf83fc678b69f4cf3fa678f3a9",
+  "agent": "codex",
+  "inputSetHash": "0366bc952130b505db017e871dd62f323a493a34abff72ae6dd1d240768c02e8",
+  "artifact": "comparison-ballot",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "b331e9a0cb4cf9acdc455eb272371278ddbc0414",
+      "path": ".signals/issue-95/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "5f3c7a8b9c18d2f6abf6cc2cb3542609d42d4f17",
+      "path": ".signals/issue-95/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "1addcc238016dd198255fef585e0dbdbf3856ef0",
+      "path": ".signals/issue-95/implementation-ready-cursor.json"
+    }
+  ],
+  "choice": "claude",
+  "rationale": "Claude is preferred because it matches the correct PR-only behavior while providing the most complete hermetic gate coverage, including malformed versions, and the clearest merge-time guidance."
+}
