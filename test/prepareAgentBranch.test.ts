@@ -61,7 +61,9 @@ describe("prepareAgentIssueBranches", () => {
       installRoot: repoRoot
     });
 
-    expect(outcome).toEqual([{ agent: "claude", clone, branch: "issue-9/claude", action: "created" }]);
+    expect(outcome).toEqual([
+      { agent: "claude", clone, branch: "issue-9/claude", action: "created", protocol: "overlay" }
+    ]);
     expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
     expect(git(clone, "rev-parse", "HEAD")).toBe(baseline);
     expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toContain("coordination protocol");
@@ -103,6 +105,103 @@ describe("prepareAgentIssueBranches", () => {
     expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
     expect(git(clone, "rev-parse", "HEAD")).toBe(kept);
     expect(existsSync(join(clone, "join.json"))).toBe(true);
+  });
+
+  // A vendored clone records no `coord.installRoot` by design, so the template
+  // the overlay came from cannot be located during preparation. The lift still
+  // happens, and the bit still has to come back.
+  it("restores the overlay and the bit when no install root can be resolved", () => {
+    const { clone, baseline } = seedClone();
+    expect(tryGit(clone, "config", "--local", "--get", "coord.installRoot").exitCode).not.toBe(0);
+
+    const outcome = prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main"
+    });
+
+    expect(outcome[0]?.action).toBe("created");
+    expect(outcome[0]?.protocol).toBe("overlay");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
+    expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toContain("coordination protocol");
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("re-asserts the bit with no install root and no overlay to restore", () => {
+    const { clone, baseline } = seedClone();
+    liftCloneAgentsProtocol(clone, { dryRun: false, log: () => undefined, changes: [] });
+    expect(skipWorktree(clone)).toBe(false);
+
+    const outcome = prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main"
+    });
+
+    expect(outcome[0]?.protocol).toBe("bit-only");
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("re-sets the bit when the checkout fails", () => {
+    const { clone } = seedClone();
+    expect(() =>
+      prepareAgentIssueBranches({
+        agents: [{ id: "claude", root: clone }],
+        issue: 9,
+        branchTemplate: "issue-{issue}/{agent}",
+        baselineSha: "f".repeat(40),
+        baseBranch: "no-such-base",
+        installRoot: repoRoot
+      })
+    ).toThrow(/Cannot resolve issue baseline/);
+    // The lift ran before the failure; leaving the bit clear is what used to
+    // make the next run refuse forever.
+    expect(skipWorktree(clone)).toBe(true);
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+  });
+
+  it("heals a clone whose only dirt is an overlay left without the bit", () => {
+    const { clone, baseline } = seedClone();
+    const withOverlay = readFileSync(join(clone, "AGENTS.md"), "utf8");
+    liftCloneAgentsProtocol(clone, { dryRun: false, log: () => undefined, changes: [] });
+    writeFileSync(join(clone, "AGENTS.md"), withOverlay);
+    expect(git(clone, "status", "--porcelain")).toContain("AGENTS.md");
+
+    const outcome = prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(outcome[0]?.action).toBe("created");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("still refuses when real work sits beside the lifted overlay", () => {
+    const { clone, baseline } = seedClone();
+    const withOverlay = readFileSync(join(clone, "AGENTS.md"), "utf8");
+    liftCloneAgentsProtocol(clone, { dryRun: false, log: () => undefined, changes: [] });
+    writeFileSync(join(clone, "AGENTS.md"), withOverlay);
+    writeFileSync(join(clone, "dirty.txt"), "nope\n");
+
+    expect(() =>
+      prepareAgentIssueBranches({
+        agents: [{ id: "claude", root: clone }],
+        issue: 9,
+        branchTemplate: "issue-{issue}/{agent}",
+        baselineSha: baseline,
+        baseBranch: "main",
+        installRoot: repoRoot
+      })
+    ).toThrow(/uncommitted changes/);
   });
 
   it("refuses a dirty clone", () => {

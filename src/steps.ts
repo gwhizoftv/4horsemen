@@ -46,6 +46,21 @@ export type GateId =
   | "gate-6-consensus"
   | "gate-7-finalized";
 
+/**
+ * Appended to every action, not only the first one.
+ *
+ * Coordination checks the clone out and re-sets the skip-worktree bit before
+ * any agent starts, but an agent that compacts, restarts, or reads only the
+ * action in front of it has no memory of that. It used to be told once, on the
+ * first action of the run, which is exactly the wrong place for a fact it needs
+ * on every step.
+ */
+export const BRANCH_PREPARED_NOTE =
+  "\n\nCoordination has already checked this clone out on the branch named below " +
+  "and re-set the skip-worktree bit on AGENTS.md. Do not create that branch, " +
+  "switch to it, or clear skip-worktree to make a checkout work. If the clone " +
+  "looks wrong, report that instead of repairing it by hand.";
+
 export type StepDefinition = {
   id: WorkflowStepId;
   gateId: GateId;
@@ -62,7 +77,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     evidenceId: "join-published",
     participants: "all",
     requiredPath: (issue, agent) => `.signals/issue-${issue}/participation-ready-${agent}.json`,
-    task: "Publish the participation-readiness artifact for this issue. Coordination already checked this clone out on your issue branch; do not clear skip-worktree on AGENTS.md or switch branches to make checkout work."
+    task: "Publish the participation-readiness artifact for this issue."
   },
   "R2.plan": {
     id: "R2.plan",

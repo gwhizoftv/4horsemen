@@ -12,6 +12,12 @@ The required response format for the current step also appears in that step's
 listed there. The coordinator accepts only the published artifact. If this file
 and `action.md` disagree on format, `action.md` wins.
 
+Coordination checks this clone out on `issue-<n>/<agent>` and re-sets the
+`skip-worktree` bit on `AGENTS.md` before your CLI starts. The branch already
+exists and is already current: do not create it, do not switch to it, and do not
+check out or pull the shared branch first. Every automated action names the
+branch to push to, and that is the branch you are already on.
+
 Do not clear `skip-worktree` on `AGENTS.md`, strip this protocol block, or
 replace the file to “fix” git status. Coordination sets that bit so the
 clone-local protocol section stays hidden. If `AGENTS.md` looks wrong, escalate;

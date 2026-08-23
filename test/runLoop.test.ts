@@ -1198,6 +1198,22 @@ describe("coordinator-resolved change scope", () => {
     expect(attempts).toBe(1);
   });
 
+  // The branch is prepared before any agent starts, but an agent that compacts
+  // or restarts only has the action in front of it. It used to be told once, on
+  // the first action of the run.
+  it("tells every action that the branch is already checked out", () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    for (const stepId of ["R1.join", "R2.plan", "R4.implement", "R7.finalize"] as const) {
+      const order = buildOrder(paths, start, cursors, "claude", stepId, null);
+      expect(order.task, stepId).toContain("already checked this clone out");
+      expect(order.task, stepId).toContain("Do not create that branch");
+      // Said once, not twice, on the step that used to carry it inline.
+      expect(order.task.split("already checked this clone out").length - 1, stepId).toBe(1);
+    }
+  });
+
   it("carries configured context paths from start state into every order", () => {
     const { paths } = fixture();
     const start = { ...readStartState(paths), contextPaths: ["docs/repo-map.md"] };
