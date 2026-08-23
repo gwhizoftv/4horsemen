@@ -27,6 +27,18 @@ After you write `complete`, do not stop. Before waiting for more input, re-read
 your `action.md`. If `actionId` in the front matter has changed, execute the new
 instructions immediately; do not wait for another coordinator message.
 
+If that re-read shows the same `actionId` — there is no new work yet — end your
+reply with this exact line, on its own, with nothing after it:
+
+```
+COORD-IDLE: waiting for the next coordinator action file
+```
+
+Coordination reads your terminal to decide whether it is safe to type into it.
+That line is how it can tell an idle window from one that is still rendering.
+Print it only when you are genuinely finished and waiting; never print it while
+work is still in progress.
+
 A **plan** (`.plans/issue-<n>/plan.md`) must include every heading below,
 each with a non-empty body:
 

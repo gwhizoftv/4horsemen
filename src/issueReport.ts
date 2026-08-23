@@ -62,8 +62,11 @@ export const renderIssueReport = (
       if (entry === undefined) continue;
       const queue = entry.pendingInputCount === null ? "" : `, pending=${entry.pendingInputCount}`;
       const background = entry.backgroundActive === true ? ", background-active" : "";
+      // Naming the cause is the difference between "restart this CLI" and
+      // "this agent is still finishing its previous turn".
+      const alert = entry.degradedCause === null ? "" : `, alert=${entry.degradedCause}`;
       lines.push(
-        `Agent ${agent.id}: ${entry.action?.delivery ?? "none"} / ${entry.execution} / ${entry.health}${queue}${background}`
+        `Agent ${agent.id}: ${entry.action?.delivery ?? "none"} / ${entry.execution} / ${entry.health}${queue}${background}${alert}`
       );
     }
   }
