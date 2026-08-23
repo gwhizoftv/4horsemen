@@ -286,6 +286,9 @@ describe("agent-facing language", () => {
     expect(
       findAgentLanguageViolations(readFileSync(join(repoRoot, "templates/product/AGENTS.md"), "utf8"))
     ).toEqual([]);
+    expect(
+      findAgentLanguageViolations("COORD-IDLE: waiting for the next coordinator action file")
+    ).toEqual([]);
   });
 
   it("reports the leaks issue 88 removed", () => {

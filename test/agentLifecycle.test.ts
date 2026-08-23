@@ -8,6 +8,7 @@ import {
   initialAgentLifecycle,
   initializeAgentLifecycle,
   markActionInjected,
+  markActionWorkflowComplete,
   markObservabilityDegraded,
   observeAgentLifecycleWithResult,
   orderAgentAction,
@@ -87,7 +88,11 @@ describe("agent lifecycle policy", () => {
         workflowCompleteAt: null
       }
     };
-    expect(decideLifecycleNudge(withAction, actionId, digest)).toEqual({ kind: "wait", reason: "pending-input" });
+    expect(decideLifecycleNudge(withAction, actionId, digest)).toEqual({
+      kind: "wait",
+      reason: "pending-input",
+      code: "pending-input"
+    });
     const failedPriorTurn = applyLifecycleObservation(withAction, {
       kind: "failed",
       eventName: "StopFailure",
@@ -181,7 +186,8 @@ describe("agent lifecycle policy", () => {
     const used = { ...idle, action: { ...idle.action!, lastNudgedIdleEpoch: idle.idleEpoch } };
     expect(decideLifecycleNudge(used, actionId, digest)).toEqual({
       kind: "wait",
-      reason: "idle-transition-already-used"
+      reason: "idle-transition-already-used",
+      code: "idle-transition-already-used"
     });
     const duplicateStop = applyLifecycleObservation(idle, {
       kind: "stopped",
@@ -253,9 +259,54 @@ describe("agent lifecycle policy", () => {
     markActionInjected(paths, "codex", actionId, digest, now);
     const degraded = markObservabilityDegraded(paths, "codex", later, 45_000);
     expect(degraded.changed).toBe(true);
+    expect(degraded.cause).toBe("hooks-never-seen");
     const persisted = readAgentLifecycle(paths).agents.codex!;
     expect(persisted).toMatchObject({ health: "degraded", action: { delivery: "injected" } });
-    expect(decideLifecycleNudge(persisted, actionId, digest)).toEqual({ kind: "wait", reason: "unknown" });
+    expect(decideLifecycleNudge(persisted, actionId, digest)).toEqual({
+      kind: "wait",
+      reason: "unknown",
+      code: "unknown"
+    });
+  });
+
+  it("distinguishes correlation-lagged from hooks-never-seen degrade causes", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
+    roots.push(root);
+    const paths = issueRuntimePaths(root, 1);
+    createIssueRuntime(paths, ["cursor"]);
+    initializeAgentLifecycle(paths, ["cursor"], now);
+    const earlier = "2026-08-17T23:59:00.000Z";
+    observeAgentLifecycleWithResult(
+      paths,
+      "cursor",
+      { kind: "session-start", eventName: "SessionStart", sessionId: "cursor-1" },
+      earlier
+    );
+    orderAgentAction(paths, "cursor", actionId, digest, now);
+    markActionInjected(paths, "cursor", actionId, digest, now);
+    const degraded = markObservabilityDegraded(paths, "cursor", later, 45_000);
+    expect(degraded.changed).toBe(true);
+    expect(degraded.cause).toBe("correlation-lagged");
+  });
+
+  it("does not degrade completed actions and clears degraded health on workflow completion", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
+    roots.push(root);
+    const paths = issueRuntimePaths(root, 1);
+    createIssueRuntime(paths, ["claude"]);
+    initializeAgentLifecycle(paths, ["claude"], now);
+    orderAgentAction(paths, "claude", actionId, digest, now);
+    markActionInjected(paths, "claude", actionId, digest, now);
+    markObservabilityDegraded(paths, "claude", later, 45_000);
+
+    const completed = markActionWorkflowComplete(paths, "claude", actionId, later);
+    expect(completed.clearedDegraded).toBe(true);
+    expect(completed.state.agents.claude?.health).toBe("healthy");
+    expect(completed.state.agents.claude?.action?.workflowCompleteAt).toBe(later);
+
+    const nextDegraded = markObservabilityDegraded(paths, "claude", "2026-08-18T00:02:00.000Z", 45_000);
+    expect(nextDegraded.changed).toBe(false);
+    expect(nextDegraded.cause).toBeNull();
   });
 
   it("does not rewrite lifecycle state for duplicate status-line renders", () => {

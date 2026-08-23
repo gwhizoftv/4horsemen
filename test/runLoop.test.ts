@@ -36,7 +36,12 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-const fixture = (options: { prPolicy?: "owner-only" | "coord-open-unmerged" | "coord-merged"; origin?: string } = {}) => {
+const fixture = (options: {
+  prPolicy?: "owner-only" | "coord-open-unmerged" | "coord-merged";
+  origin?: string;
+  delivery?: "pull" | "nudge" | "both";
+} = {}) => {
+  const delivery = options.delivery ?? "pull";
   const root = mkdtempSync(join(tmpdir(), "coord-loop-"));
   roots.push(root);
   const paths = issueRuntimePaths(root, 1);
@@ -59,8 +64,8 @@ const fixture = (options: { prPolicy?: "owner-only" | "coord-open-unmerged" | "c
     coordRoot: root,
     configPath: join(root, "config.json"),
     agents: [
-      { id: "claude", root: "/clones/claude", launcher: "start-claude.sh", delivery: "pull" },
-      { id: "codex", root: "/clones/codex", launcher: "start-codex.sh", delivery: "pull" }
+      { id: "claude", root: "/clones/claude", launcher: "start-claude.sh", delivery },
+      { id: "codex", root: "/clones/codex", launcher: "start-codex.sh", delivery }
     ],
     checks: [{ name: "check", argv: ["node", "-e", "process.exit(0)"] }],
     pollIntervalMs: 100
@@ -1220,5 +1225,131 @@ describe("coordinator-resolved change scope", () => {
     const order = buildOrder(paths, start, readCursorsState(paths), "claude", "R2.plan", null);
     expect(order.contextPaths).toEqual(["docs/repo-map.md"]);
     expect(order.changeScope).toEqual([]);
+  });
+
+  it("records nudge-deferred and logs once for gate-waiting or split-brain deferrals", async () => {
+    const { paths } = fixture({ delivery: "both" });
+    const logs: string[] = [];
+    const tmux = new TmuxController(
+      async (args) => {
+        if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tclaude\t0\t0\n", stderr: "" };
+        if (args[0] === "capture-pane") return { exitCode: 0, stdout: "Do you trust this folder?\n❯ 1. Yes\n", stderr: "" };
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      null,
+      null,
+      null,
+      async () => undefined
+    );
+    const loop = new CoordinatorRunLoop(paths, { tmux, log: (msg) => logs.push(msg) });
+    await loop.runTick();
+    expect(readJournal(paths).some((e) => e.type === "nudge-deferred" && e.agent === "claude")).toBe(true);
+    const firstLogCount = logs.length;
+    expect(logs.some((msg) => msg.includes("delivery deferred for claude (scrape: trust-dialog)"))).toBe(true);
+
+    // Second tick with same deferral code does not repeat log
+    await loop.runTick();
+    expect(logs.length).toBe(firstLogCount);
+  });
+
+  it("distinguishes correlation-lagged and hooks-never-seen watchdog log messages", async () => {
+    const { paths } = fixture({ delivery: "both" });
+    const logs: string[] = [];
+    let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
+    const tmux = new TmuxController(
+      async (args) => {
+        if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tclaude\t0\t0\n", stderr: "" };
+        if (args[0] === "capture-pane") return { exitCode: 0, stdout: "❯\nauto mode\n", stderr: "" };
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      null,
+      null,
+      null,
+      async () => undefined
+    );
+    const loop = new CoordinatorRunLoop(paths, {
+      tmux,
+      log: (msg) => logs.push(msg),
+      now: () => new Date(nowMs).toISOString()
+    });
+
+    // Claude never sends hook events -> hooks-never-seen
+    await loop.runTick();
+    nowMs += NUDGE_RETRY_MS;
+    await loop.runTick();
+    expect(logs.some((msg) => msg.includes("Restart claude's CLI"))).toBe(true);
+    const degradedEvent = readJournal(paths).find(
+      (e) => e.type === "agent-observability-degraded" && e.agent === "claude"
+    );
+    expect(degradedEvent?.details).toMatchObject({ cause: "hooks-never-seen" });
+  });
+
+  it("recovers degraded agent observability on submission accept and journals event", async () => {
+    const { paths } = fixture({ delivery: "both" });
+    const logs: string[] = [];
+    let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
+    const tip = "d".repeat(40);
+    const mirror = new BareMirror(paths.mirror, "/origin.git", async (args) => {
+      const command = args[2];
+      if (command === "fetch") return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+      if (command === "rev-parse") return { exitCode: 0, stdout: Buffer.from(`${tip}\n`), stderr: "" };
+      if (command === "merge-base") return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+      if (command === "show") {
+        return {
+          exitCode: 0,
+          stdout: Buffer.from(
+            JSON.stringify({
+              protocolVersion: 1,
+              artifact: "participation-ready",
+              issue: 1,
+              issueSessionId: `issue-1:${"a".repeat(40)}`,
+              agent: "claude",
+              baselineSha: "a".repeat(40),
+              automationDigest: "b".repeat(64)
+            })
+          ),
+          stderr: ""
+        };
+      }
+      return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+    });
+    const tmux = new TmuxController(
+      async (args) => {
+        if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tclaude\t0\t0\n", stderr: "" };
+        if (args[0] === "capture-pane") {
+          const actionId = readCursorsState(paths).agents.claude?.actionId ?? "";
+          return { exitCode: 0, stdout: `❯\nauto mode\nRead and execute coordinator action ${actionId}\n`, stderr: "" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      null,
+      null,
+      null,
+      async () => undefined
+    );
+    const loop = new CoordinatorRunLoop(paths, {
+      tmux,
+      mirror,
+      log: (msg) => logs.push(msg),
+      now: () => new Date(nowMs).toISOString()
+    });
+
+    await loop.runTick();
+    nowMs += NUDGE_RETRY_MS;
+    await loop.runTick();
+    expect(readAgentLifecycle(paths).agents.claude?.health).toBe("degraded");
+
+    // Agent writes completion
+    const runtime = agentRuntimePaths(paths, "claude");
+    writeFileSync(runtime.complete, `${tip}\n`);
+    await loop.runTick();
+
+    expect(readAgentLifecycle(paths).agents.claude?.health).toBe("healthy");
+    expect(
+      readJournal(paths).some(
+        (e) => e.type === "agent-observability-recovered" && e.agent === "claude"
+      )
+    ).toBe(true);
+    expect(logs.some((msg) => msg.includes("earlier lifecycle warning is cleared"))).toBe(true);
   });
 });

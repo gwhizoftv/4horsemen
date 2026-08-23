@@ -3,8 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  COORD_IDLE_SENTINEL,
   harnessLooksReady,
+  harnessPromptReadiness,
   harnessPromptReady,
+  idleSentinelAfterAction,
   nudgePreludeKeys,
   ownerTerminalCloseAppleScript,
   ownerTerminalOpenAppleScript,
@@ -95,7 +98,7 @@ describe("tmux boundary", () => {
         "11111111-1111-4111-8111-111111111111",
         "a".repeat(64)
       )
-    ).toBe("sent");
+    ).toMatchObject({ status: "sent" });
     expect(calls.map((call) => call.args[0])).toEqual([
       "display-message",
       "capture-pane",
@@ -134,7 +137,7 @@ describe("tmux boundary", () => {
         { id: "cursor", root, launcher: "start-cursor.sh", delivery: "both", harnessProcess: "agent" },
         "/runtime/action.md"
       )
-    ).toBe("sent");
+    ).toMatchObject({ status: "sent" });
     const sent = calls.filter((call) => call.args[0] === "send-keys");
     expect(sent.map((call) => call.args.slice(-1)[0])).toEqual([
       "Read and execute your current coordinator action at /runtime/action.md",
@@ -214,7 +217,7 @@ describe("tmux boundary", () => {
         },
         "/runtime/action.md"
       )
-    ).toBe("sent");
+    ).toMatchObject({ status: "sent" });
     expect(calls.map((call) => call.args[0])).toEqual([
       "display-message",
       "capture-pane",
@@ -585,9 +588,10 @@ describe("tmux boundary", () => {
       called = true;
       return ok();
     });
-    expect(await controller.nudge(1, { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "pull" }, "/a")).toBe(
-      "disabled"
-    );
+    expect(await controller.nudge(1, { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "pull" }, "/a")).toEqual({
+      status: "disabled",
+      reason: "delivery-disabled"
+    });
     expect(called).toBe(false);
   });
 
@@ -658,6 +662,80 @@ describe("tmux boundary", () => {
     ).toEqual({ prelude: [], submit: ["Enter"] });
   });
 
+  it("does not trigger Cursor in-flight turn chrome on plan prose containing thinking or stats", () => {
+    expect(harnessPromptReady("Thinking about the alternatives...\nAuto · 1%\nRun Everything", "cursor")).toBe(true);
+    expect(harnessPromptReadiness("status/thinking/stats\nAuto · 1%\nRun Everything", "cursor")).toEqual({
+      ready: true,
+      reason: "ready"
+    });
+    expect(harnessPromptReadiness("Thinking…\nAuto · 1%\nRun Everything", "cursor")).toEqual({
+      ready: false,
+      reason: "cursor-turn-chrome"
+    });
+    expect(harnessPromptReadiness("Thinking...\nAuto · 1%\nRun Everything", "cursor")).toEqual({
+      ready: false,
+      reason: "cursor-turn-chrome"
+    });
+    expect(harnessPromptReadiness("Working... (12s)\nAuto · 1%\nRun Everything", "cursor")).toEqual({
+      ready: false,
+      reason: "cursor-turn-chrome"
+    });
+  });
+
+  it("returns machine-readable prompt readiness reasons", () => {
+    expect(harnessPromptReadiness("Do you trust this folder?\n❯ 1. Yes", "claude")).toEqual({
+      ready: false,
+      reason: "trust-dialog"
+    });
+    expect(harnessPromptReadiness("❯\nauto mode", "claude")).toEqual({
+      ready: true,
+      reason: "ready"
+    });
+    expect(harnessPromptReadiness("bash-5.2$", "claude")).toEqual({
+      ready: false,
+      reason: "claude-no-prompt"
+    });
+    expect(
+      harnessPromptReadiness(
+        "⚠ Verifying your account...\nWe're finishing verifying your account eligibility.\nPlease try again shortly.\n> ",
+        "antigravity"
+      )
+    ).toEqual({
+      ready: false,
+      reason: "antigravity-verify-overlay"
+    });
+  });
+
+  it("recognizes idle sentinel and correlates order after action", () => {
+    expect(
+      harnessPromptReadiness(
+        `Some earlier text\n${COORD_IDLE_SENTINEL}`,
+        "cursor"
+      )
+    ).toEqual({
+      ready: true,
+      reason: "idle-sentinel"
+    });
+
+    const actionId = "11111111-1111-4111-8111-111111111111";
+    const bufferAfter = `action ${actionId}\noutput\n${COORD_IDLE_SENTINEL}`;
+    expect(idleSentinelAfterAction(bufferAfter, actionId)).toBe(true);
+
+    const bufferBefore = `${COORD_IDLE_SENTINEL}\naction ${actionId}\nworking...`;
+    expect(idleSentinelAfterAction(bufferBefore, actionId)).toBe(false);
+  });
+
+  it("returns gate reason codes on mismatch or dead pane", async () => {
+    const mismatch = new TmuxController(async () => ok("0\tbash\t0\t0\n"), null, null, null, noopSleep);
+    expect(
+      await mismatch.nudge(
+        1,
+        { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both", harnessProcess: "codex" },
+        "/a"
+      )
+    ).toEqual({ status: "busy", reason: "foreground-mismatch", detail: "bash" });
+  });
+
   it("submits Antigravity nudges with Enter only", async () => {
     const calls: Array<{ args: readonly string[] }> = [];
     const slept: number[] = [];
@@ -683,7 +761,7 @@ describe("tmux boundary", () => {
         },
         "/runtime/action.md"
       )
-    ).toBe("sent");
+    ).toMatchObject({ status: "sent" });
     expect(slept[0]).toBe(NUDGE_BEFORE_ANTIGRAVITY_MS);
     expect(calls.map((call) => call.args[0])).toEqual([
       "display-message",
@@ -729,7 +807,7 @@ describe("tmux boundary", () => {
         { id: "antigravity", root: "/clone", launcher: "start-antigravity.sh", delivery: "both", harnessProcess: "agy" },
         "/runtime/action.md"
       )
-    ).toBe("busy");
+    ).toMatchObject({ status: "busy", reason: "antigravity-recapture-busy" });
     expect(slept).toEqual([NUDGE_BEFORE_ANTIGRAVITY_MS]);
     expect(calls.map((call) => call.args[0])).toEqual(["display-message", "capture-pane", "capture-pane"]);
   });
@@ -749,7 +827,7 @@ describe("tmux boundary", () => {
         { id: "antigravity", root: "/clone", launcher: "start-antigravity.sh", delivery: "both", harnessProcess: "agy" },
         "/runtime/action.md"
       )
-    ).toBe("busy");
+    ).toMatchObject({ status: "busy", reason: "antigravity-no-prompt" });
     expect(calls.map((call) => call.args[0])).toEqual(["display-message", "capture-pane"]);
   });
 
@@ -772,7 +850,7 @@ describe("tmux boundary", () => {
         { id: "antigravity", root: "/clone", launcher: "start-antigravity.sh", delivery: "both", harnessProcess: "agy" },
         "/runtime/action.md"
       )
-    ).toBe("busy");
+    ).toMatchObject({ status: "busy", reason: "antigravity-verify-overlay" });
     expect(calls.map((call) => call.args[0])).toEqual(["display-message", "capture-pane"]);
   });
 
@@ -795,7 +873,7 @@ describe("tmux boundary", () => {
         { id: "antigravity", root: "/clone", launcher: "start-antigravity.sh", delivery: "both", harnessProcess: "agy" },
         "/runtime/action.md"
       )
-    ).toBe("busy");
+    ).toMatchObject({ status: "busy", reason: "antigravity-turn-chrome" });
     expect(calls.map((call) => call.args[0])).toEqual(["display-message", "capture-pane"]);
   });
 
@@ -808,7 +886,7 @@ describe("tmux boundary", () => {
         { id: "cursor", root: "/clone", launcher: "start-cursor.sh", delivery: "both", harnessProcess: "agent" },
         "/runtime/action.md"
       )
-    ).toBe("sent");
+    ).toMatchObject({ status: "sent" });
   });
 
   it("does not insert while the owner is in pane mode or the harness is gone", async () => {
@@ -819,11 +897,11 @@ describe("tmux boundary", () => {
         { id: "claude", root: "/clone", launcher: "start-claude.sh", delivery: "nudge", harnessProcess: "claude" },
         "/a"
       )
-    ).toBe("busy");
+    ).toMatchObject({ status: "busy", reason: "owner-typing" });
     const gone = new TmuxController(async () => ({ exitCode: 1, stdout: "", stderr: "missing" }), null, null, null, noopSleep);
     expect(
       await gone.nudge(1, { id: "claude", root: "/clone", launcher: "start-claude.sh", delivery: "nudge" }, "/a")
-    ).toBe("gone");
+    ).toMatchObject({ status: "gone", reason: "pane-dead" });
   });
 
   it("does not inject when pane_input_off is set", async () => {
@@ -839,7 +917,7 @@ describe("tmux boundary", () => {
         { id: "cursor", root: "/clone", launcher: "start-cursor.sh", delivery: "both", harnessProcess: "agent" },
         "/a"
       )
-    ).toBe("busy");
+    ).toMatchObject({ status: "busy", reason: "input-off" });
     expect(calls.some((call) => call.args[0] === "send-keys")).toBe(false);
   });
 
@@ -870,7 +948,7 @@ describe("tmux boundary", () => {
         { id: "cursor", root: "/clone", launcher: "start-cursor.sh", delivery: "both", harnessProcess: "agent" },
         "/runtime/action.md"
       )
-    ).toBe("busy");
+    ).toMatchObject({ status: "busy", reason: "gate-owner-typing-mid-send" });
     const sent = calls.filter((call) => call.args[0] === "send-keys");
     expect(sent).toHaveLength(1);
     expect(sent[0]?.args[1]).toBe("-l");

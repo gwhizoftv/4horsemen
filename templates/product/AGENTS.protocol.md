@@ -25,7 +25,10 @@ do not change index flags.
 
 After you write `complete`, do not stop. Before waiting for more input, re-read
 your `action.md`. If `actionId` in the front matter has changed, execute the new
-instructions immediately; do not wait for another coordinator message.
+instructions immediately; do not wait for another coordinator message. If
+`actionId` is unchanged, print the exact line
+`COORD-IDLE: waiting for the next coordinator action file` as the final line
+of the reply, and print nothing after it.
 
 A **plan** (`.plans/issue-<n>/plan.md`) must include every heading below,
 each with a non-empty body:

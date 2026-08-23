@@ -25,7 +25,7 @@ Nothing in this repository writes issue state into the working tree.
 | State machine and run loop | `src/machine.ts`, `src/steps.ts`, `src/state.ts`, `src/runLoop.ts` | Step definitions, gate transitions, persisted start/cursor/journal state, the tick |
 | Action rendering | `src/action.ts`, `src/orderScaffold.ts` | `action.md` front matter and body, per-step JSON and heading scaffolds |
 | Workspace and install | `src/setupWorkspace.ts`, `src/install.ts`, `src/hookSync.ts`, `src/agentHookSync.ts`, `src/agentsProtocol.ts`, `src/productIgnore.ts` | Config generation, clone setup, git hooks, vendor lifecycle hooks, the AGENTS.md overlay |
-| Harness surface | `src/tmux.ts`, `src/agentEvent.ts`, `src/agentLifecycle.ts` | Launching and nudging agent CLIs, readiness detection, lifecycle events |
+| Harness surface | `src/tmux.ts`, `src/agentEvent.ts`, `src/agentLifecycle.ts`, `docs/readiness-policy.md` | Launching and nudging agent CLIs, readiness detection, lifecycle events |
 | Git access | `src/mirror.ts`, `src/gitExec.ts`, `src/prepareAgentBranch.ts` | The bare mirror, blob and diff reads, issue-branch preparation |
 | Analytics | `src/analytics.ts`, `src/transcriptRead.ts` | Phase timing, agent wait, token and tool attribution with honest coverage |
 | Entry points | `src/cli.ts`, `src/main.ts` | Command parsing, `start` / `next` / `resume` / `analytics` / `install` |
@@ -98,6 +98,6 @@ Tests live in `test/`, one file per module, with shared fixtures under
 | Step sequence, participants, or gates | `src/steps.ts`, then `src/machine.ts` |
 | What the coordinator resolves and hands to agents | `src/runLoop.ts` |
 | Persisted state or config shape | `src/state.ts` |
-| Agent launch, nudging, or readiness | `scripts/lib/launcher.sh`, `src/tmux.ts` |
+| Agent launch, nudging, or readiness | `scripts/lib/launcher.sh`, `src/tmux.ts`, `docs/readiness-policy.md` |
 | Clone setup, hooks, ignore files | `src/setupWorkspace.ts`, `src/install.ts` |
 | Reporting on a finished run | `src/analytics.ts` |
