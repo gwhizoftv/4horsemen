@@ -1,0 +1,44 @@
+{
+  "protocolVersion": 1,
+  "issue": 96,
+  "issueSessionId": "issue-96:509748020eeec09acbbb5fb333efdf6db4b945de",
+  "agent": "cursor",
+  "inputSetHash": "83e24feb468f7e87aab2e93daf1a7a804e3f96a16c635e692c1b4a08001cb2ef",
+  "artifact": "plan-ballot",
+  "plans": [
+    {
+      "agent": "cursor",
+      "commitSha": "c322ff755f9ad9ba2587db71e02917807a9e9266",
+      "path": ".plans/issue-96/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "8987f621e47515b123deea4be471487bf05a724d",
+      "path": ".plans/issue-96/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "3b9a0c2df8c47e2ae5f0a7230e38423aea58b37a",
+      "path": ".plans/issue-96/plan.md"
+    }
+  ],
+  "reviews": [
+    {
+      "agent": "cursor",
+      "commitSha": "11f6ad8b88a3ededc47581601ae8cb3103a85b2a",
+      "path": ".plans/issue-96/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "abfe90ed4509ef514bd0c5874ccd14ea23d522af",
+      "path": ".plans/issue-96/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "7f3ee2dd1dc63b97dd3e3b9bb851e273bedc67b4",
+      "path": ".plans/issue-96/review.md"
+    }
+  ],
+  "choice": "claude",
+  "rationale": "Claude's plan fixes the silent restoreProtocol skip and launch post-conditions that must hold before instruction-only plans can satisfy issue #96."
+}
