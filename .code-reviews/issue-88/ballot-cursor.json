@@ -1,32 +1,27 @@
 {
   "protocolVersion": 1,
   "issue": 88,
-  "issueSessionId": "issue-88:26de98aae01426d582d17d15d1e33e1b6b3e3f90",
+  "issueSessionId": "issue-88:76cfd1550c3e74c0b6281cd83be04da9049f5814",
   "agent": "cursor",
-  "inputSetHash": "2456fb7c248885e36bd92dec0b974c3e9cc737f8a3892075438022176142dee1",
+  "inputSetHash": "70123a9f0f176c43df293b247d0123851e8c9d73011764028aab9f0f0f99a5ce",
   "artifact": "comparison-ballot",
   "implementations": [
     {
       "agent": "cursor",
-      "commitSha": "2eb72a07ab9b02a575ab7483d21ca2fbb8dfa231",
+      "commitSha": "14496c05001a9e72f0a72301c5f12d0ebd597f75",
       "path": ".signals/issue-88/implementation-ready-cursor.json"
     },
     {
-      "agent": "antigravity",
-      "commitSha": "4eadf9f357d593e3c6abf88ca4008ff61d74d525",
-      "path": ".signals/issue-88/implementation-ready-antigravity.json"
+      "agent": "codex",
+      "commitSha": "b45393f18c9b0fe0ec0bf35e9bb7e41e5b19cb11",
+      "path": ".signals/issue-88/implementation-ready-codex.json"
     },
     {
       "agent": "claude",
-      "commitSha": "3662cc094cd9f12ec0a82f56e8d6a9e4da652536",
+      "commitSha": "c90717513ce4935b78c37feba7e18cda55028613",
       "path": ".signals/issue-88/implementation-ready-claude.json"
-    },
-    {
-      "agent": "codex",
-      "commitSha": "9b2c05b6dc4e8d6780492972e5b572fc4d299f82",
-      "path": ".signals/issue-88/implementation-ready-codex.json"
     }
   ],
-  "choice": "claude",
-  "rationale": "Claude clears gate jargon, renames the reviser-auth path, and uses an exact EvidenceId alternation so the language oracle bans internals without leaving reviser-authorized in requiredPath."
+  "choice": "cursor",
+  "rationale": "Cursor alone fixes tracked AGENTS.md including the checks sentence, keeps strict round/phase/gate oracle guards, and audits index-staged prose plus hook stderr while codex leaves AGENTS.md leaking and claude weakens those regression bans."
 }
