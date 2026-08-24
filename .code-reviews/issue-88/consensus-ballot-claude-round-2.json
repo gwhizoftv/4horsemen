@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 88,
+  "issueSessionId": "issue-88:76cfd1550c3e74c0b6281cd83be04da9049f5814",
+  "agent": "claude",
+  "inputSetHash": "f088d3f18e170e5b42dd6b55c7bebf86bf2a7139a7e33ba34571c5f4435edc20",
+  "artifact": "consensus-ballot",
+  "round": 2,
+  "revisionCommitSha": "d0e923e92a04423fd6432a092bff8bf9a8a6d28a",
+  "disposition": "approve",
+  "rationale": "Both round-1 items are closed and verified at this pin rather than taken on the diff: dropping the *.sh filter means the hook walk now covers all eight files, and injecting echo \"the current step is gated by R6\" into each of the five previously-skipped bodies (pre-commit, pre-push, post-merge, post-commit, commit-msg) now fails the suite in every case where it passed before; the AGENTS.md fixture reads git show HEAD:AGENTS.md through removeManagedBlock, which I confirmed is immune to index state by staging a jargon-bearing blob and seeing no spurious failure, and asserting over the committed bytes is a better choice than my suggested worktree read because skip-worktree can leave the worktree stale relative to what ships; with the suite green at 439/439, every agent-facing surface scanning clean and the internal ids still present in steps.ts, analytics.ts and cli.ts, both acceptance criteria hold, and the only thing I would still flag — the stale .signals/issue-88/joined-cursor.json carrying the previous session's issueSessionId — is a current-issue coordination path that finalization deletes wholesale and is not worth a third round."
+}
