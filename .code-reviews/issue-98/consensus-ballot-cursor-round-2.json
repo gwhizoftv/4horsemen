@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 98,
+  "issueSessionId": "issue-98:3fed3f76b6030fffefc699d0530115fddeb847da",
+  "agent": "cursor",
+  "inputSetHash": "8a4bc1710c0b89b933b7a4364a5ca38797f2939d78d9ed6859e4e3fc3bed5c03",
+  "artifact": "consensus-ballot",
+  "round": 2,
+  "revisionCommitSha": "c432808979675511903058e6df07bb5044a51c6e",
+  "disposition": "approve",
+  "rationale": "Revision c432808 withdraws the script-managed peer clones from Antigravity trustedWorkspaces on upgrade while preserving owner entries, closing the remaining round-1 revise finding with a regression test."
+}
