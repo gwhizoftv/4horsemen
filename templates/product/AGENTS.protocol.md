@@ -7,7 +7,7 @@ message is the task authority; work belongs on the agent's own
 branch, and agents must not fabricate `.plans/`, `.signals/`, `.code-reviews/`,
 `action.md`, or `complete`. Installed hook, verification, identity, no-main,
 and no-force rules remain active.
-The required response format for the current step also appears in that step's
+The required response format for the current action also appears in that action's
 `action.md` and may change each time — match the headings or JSON scaffold
 listed there. The coordinator accepts only the published artifact. If this file
 and `action.md` disagree on format, `action.md` wins.

@@ -29,7 +29,7 @@ no-force, and skip-worktree rules apply in both modes.
 
 This file is the automated-action protocol. Follow it when the coordinator has
 published an `action.md` and you are writing coordinator artifacts.
-The required response format for the current step also appears in that step's
+The required response format for the current action also appears in that action's
 `action.md` and may change each time — match the headings or JSON scaffold
 listed there. The coordinator accepts only the published artifact. If this file
 and `action.md` disagree on format, `action.md` wins.
@@ -39,11 +39,9 @@ replace the file to “fix” git status. Coordination sets that bit so the
 clone-local protocol section stays hidden. If `AGENTS.md` looks wrong, escalate;
 do not change index flags.
 
-After you write `complete` for an automated action, do not stop. Re-read your
-coordinator `action.md`.
-If `actionId` in the front matter has changed, execute that new action even
-without a typed nudge. Delivery still comes from the coordinator; this watch
-is how you recover when a nudge did not land.
+After you write `complete` for an automated action, do not stop. Before waiting for more input, re-read
+your `action.md`. If `actionId` in the front matter has changed, execute the new
+instructions immediately; do not wait for another coordinator message.
 
 A **plan** (`.plans/issue-<n>/plan.md`) must include every heading below,
 each with a non-empty body:
@@ -123,7 +121,7 @@ In plans, name real commands; do not guess them from tracked hook files.
 
 In this repository, `verify.precommit` is `pnpm check:fast` (lint, typecheck,
 fast tests — no Vite build). Full `pnpm check` (build + check:fast + e2e) is
-what the coordinator `checks` gate. Run `pnpm check:fast` before commits.
+what the coordinator runs on an approved commit. Run `pnpm check:fast` before commits.
 Neither suite requires `package.json` to be ahead of `origin/main`: the pre-1.0
 `0.0.N` advance is checked only on the PR into `main`, so do not plan a version
 bump for ordinary commits on an issue branch.

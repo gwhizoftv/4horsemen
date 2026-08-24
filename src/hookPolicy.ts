@@ -34,7 +34,7 @@ export const resolveWorkspaceConfig = (clone: string): ResolvedWorkspace => {
   if (configPath === null) {
     throw new HookPolicyError(
       `This clone has no local ${WORKSPACE_CONFIG_KEY}, so the project's declared verification cannot be located.\n` +
-        "  Coordination hooks are present here, so this is an agent clone and must not commit ungated.\n" +
+        "  Coordination hooks are present here, so this is an agent clone and must not commit without running the project's declared checks.\n" +
         "  Fix: coord install --product <product> --coord-root <runtime> --agents <agents>"
     );
   }
@@ -64,7 +64,7 @@ export const verifyCommands = (config: CoordinatorConfig, phase: VerifyPhase): r
       "The workspace config declares no `verify`, so this clone cannot know how to check the project.\n" +
         "  Declare argument vectors, for example:\n" +
         '    "verify": { "precommit": [{ "name": "test", "argv": ["go", "test", "./..."] }], "prepush": [] }\n' +
-        '  To opt out deliberately, declare both phases empty: "verify": { "precommit": [], "prepush": [] }'
+        '  To opt out deliberately, declare both lists empty: "verify": { "precommit": [], "prepush": [] }'
     );
   }
   return config.verify[phase];

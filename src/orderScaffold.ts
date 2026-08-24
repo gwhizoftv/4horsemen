@@ -135,7 +135,7 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
     case "R2.plan":
       return (
         "\n\nRequired markdown headings for this action (also in AGENTS.md; the list here is authoritative " +
-        "for this step and may change). Each heading needs a non-empty body " +
+        "for this action and may change). Each heading needs a non-empty body " +
         "(accepted aliases in parentheses):\n\n" +
         "## Exact File List to be changed or deleted\n" +
         "(or Exact File Map / File Map / File Creation Order / Proposed Architecture)\n\n" +
@@ -152,7 +152,7 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
     case "R3.review":
       return (
         "\n\nRequired markdown headings for this action (also in AGENTS.md; the list here is authoritative " +
-        "for this step and may change). Each heading needs a non-empty body:\n\n" +
+        "for this action and may change). Each heading needs a non-empty body:\n\n" +
         "## Findings\n" +
         "(or Review Findings)\n\n" +
         "## Conclusion\n" +
@@ -164,7 +164,7 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
     case "R5.compare":
       return (
         "\n\nRequired markdown headings for this action (also in AGENTS.md; the list here is authoritative " +
-        "for this step and may change). Use a heading line that is exactly the section name " +
+        "for this action and may change). Use a heading line that is exactly the section name " +
         "(no em dash or subtitle on the same line). Each heading needs a non-empty body:\n\n" +
         "## Comparison\n" +
         "(or Findings)\n\n" +
