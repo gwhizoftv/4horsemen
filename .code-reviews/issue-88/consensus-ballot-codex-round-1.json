@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 88,
+  "issueSessionId": "issue-88:76cfd1550c3e74c0b6281cd83be04da9049f5814",
+  "agent": "codex",
+  "inputSetHash": "b3ba9b895ca4064dac7e15e46b9c1edde11f8694a35d875f002b2c51d7620f50",
+  "artifact": "consensus-ballot",
+  "round": 1,
+  "revisionCommitSha": "14496c05001a9e72f0a72301c5f12d0ebd597f75",
+  "disposition": "approve",
+  "rationale": "The revision cleans the current root, action, template, and hook surfaces with its focused suite passing, while the remaining test-hardening opportunities do not expose jargon in the shipped prose."
+}
