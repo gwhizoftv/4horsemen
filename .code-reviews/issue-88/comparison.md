@@ -2,109 +2,154 @@
 
 Bound implementation pins:
 
-- cursor `2eb72a07ab9b02a575ab7483d21ca2fbb8dfa231`
-- antigravity `4eadf9f357d593e3c6abf88ca4008ff61d74d525`
-- claude `3662cc094cd9f12ec0a82f56e8d6a9e4da652536`
-- codex `9b2c05b6dc4e8d6780492972e5b572fc4d299f82`
+- cursor `14496c05001a9e72f0a72301c5f12d0ebd597f75`
+- codex `b45393f18c9b0fe0ec0bf35e9bb7e41e5b19cb11`
+- claude `c90717513ce4935b78c37feba7e18cda55028613`
 
-All four ship the shared cutover: `artifact: "participation-ready"`,
-`.signals/issue-<n>/participation-ready-<agent>.json`, outcome-oriented join
-task/footer prose, `agentFacingSubject` for pin-validation subjects, version
-`0.0.14`, and a step-keyed language audit. They diverge on whether agent-visible
-paths and templates still encode evidence/gate jargon, and on how strictly the
-oracle bans those forms.
+All three pins reword hook stderr (`ungated` → declared-checks,
+`phases empty` → `lists empty`), remove workflow-sequence framing from
+`src/action.ts`, `src/orderScaffold.ts`, and the product AGENTS templates,
+add `shellEmittedText` plus hook-diagnostic coverage, and extend
+`test/agentLanguage.test.ts` with populated `contextPaths` / `changeScope`
+fixtures. They diverge on whether tracked root `AGENTS.md` is cleaned, how
+strict the language oracle stays, and whether prose-file / skip-worktree
+audit mechanics are durable.
 
 ## Comparison
 
-### Antigravity leaves “gate” in the installed product template
+### Codex — tracked `AGENTS.md` delivery and sequencing leaks are untouched
 
-**File:** `templates/product/AGENTS.md:34` on
-`4eadf9f357d593e3c6abf88ca4008ff61d74d525`
+**File:** `AGENTS.md:32`, `AGENTS.md:45-46`, `AGENTS.md:126` on
+`b45393f18c9b0fe0ec0bf35e9bb7e41e5b19cb11`
 
-**Rule:** Agent-facing installed guidance must not use coordinator gate
-vocabulary; a language oracle that bans `\bgates?\b` must either rewrite every
-matching template line or the acceptance criterion fails.
+**Rule:** Root `AGENTS.md` is agent-facing prose in this driver clone; issue
+88 requires removing coordinator delivery jargon (`nudge`) and not teaching
+agents coordinator position vocabulary.
 
-**Failure:** The template still says checks “gate pull-request creation” while
-`src/agentLanguage.ts:12` bans `gate-vocabulary`. The agentLanguage suite on
-this pin scans the protocol overlay but not `templates/product/AGENTS.md`, so
-`pnpm check:fast` can pass while every `--write-product` / clone overlay that
-includes the product template still teaches agents the banned word.
+**Failure if followed:** Agents loading the tracked protocol still read “the
+current step”, “typed nudge”, and “what the coordinator `checks` gate”.
+`test/agentLanguage.test.ts` on this pin scans rendered actions, templates,
+and hook emissions only — not `AGENTS.md` — so `pnpm check:fast` stays green
+while the highest-traffic instruction file still violates acceptance.
 
-**Test:** `expect(findAgentLanguageViolations(readFileSync("templates/product/AGENTS.md","utf8"))).toEqual([])`
-fails until the sentence is rewritten to “must pass before pull-request
-creation” (as on the cursor/claude/codex pins).
+**Test:** `expect(findAgentLanguageViolations(execSync("git show :AGENTS.md",{encoding:"utf8"}))).toEqual([])`
+fails on this pin until the recovery paragraph, sequencing line, and checks
+sentence are rewritten (as on the cursor/claude pins).
 
-### Antigravity weakens the evidence-id ban to keep `reviser-authorized.json`
+### Codex — operator-doc edit is the only unique product path change
 
-**File:** `src/agentLanguage.ts:16` and `src/steps.ts:128` on
-`4eadf9f357d593e3c6abf88ca4008ff61d74d525`
+**File:** `docs/coord-driver.md:286-303` on
+`b45393f18c9b0fe0ec0bf35e9bb7e41e5b19cb11`
 
-**Rule:** Agent-visible required paths and copied tokens must not expose
-internal evidence ids; if the oracle claims to ban evidence ids, it must catch
-`reviser-authorized` or the path must be renamed to outcome language.
+**Rule:** Issue 88 scopes agent-facing surfaces; operator documentation is
+deliberately out of scope for sanitization.
 
-**Failure:** The evidence-id regex omits the `authorized` suffix, so
-`.signals/issue-<n>/reviser-authorized.json` remains in `requiredPath` and is
-printed into every reviser-auth `action.md` without tripping the checker.
-Agents still see the internal evidence id as a filename.
+**Failure if followed:** The implementation spends diff budget documenting
+hook-emission coverage in operator docs while leaving the live agent leak in
+tracked `AGENTS.md` unfixed. The doc change does not close any agent-visible
+gap the suite would otherwise miss.
 
-**Test:** Render `R5.reviser-auth` via `buildOrder`/`renderAction` and assert
-`findAgentLanguageViolations` is empty only after the path no longer contains
-`reviser-authorized` (or the oracle matches that exact id).
+**Correction:** Drop the operator-doc delta or land it separately; spend the
+change set on root `AGENTS.md` and a prose-file audit case.
 
-### Codex keeps the evidence-id filename and special-cases only “artifact” prose
+### Claude — `AGENTS.md` recovery is fixed but the “checks gate” sentence remains
 
-**File:** `src/steps.ts:128` and `src/agentLanguage.ts:21-25` on
-`9b2c05b6dc4e8d6780492972e5b572fc4d299f82`
+**File:** `AGENTS.md:125` on `c90717513ce4935b78c37feba7e18cda55028613`
 
-**Rule:** Same as above: the publication path is agent-facing. Exempting
-`reviser-authorized` except when followed by the word `artifact` does not stop
-the path from appearing in front matter / publication instructions.
+**Rule:** Agent-facing prose must not teach coordinator gate vocabulary when
+the issue’s goal is to keep internals out of rote instructions.
 
-**Failure:** `requiredPath` remains `.signals/issue-<n>/reviser-authorized.json`.
-Generated actions still instruct agents to write a file whose name is the
-internal evidence id, which is the leak class issue 88 called out for join and
-which the selected plan extended to correction/path surfaces.
+**Failure if followed:** Recovery no longer says “nudge”, but the checks
+section still reads “what the coordinator `checks` gate.” The narrowed oracle
+on this pin deliberately dropped bare `\bgates?\b`, so tests stay green while
+agents still read gate framing in the file they load every session.
 
-**Fix sketch:** Rename to an outcome path such as
-`reviser-authorization.json` or `revision-authorization.json` (claude/cursor)
-and ban the bare evidence id, not only the `… artifact` phrase.
+**Test:** After restoring a bare gate-vocabulary guard (or rewriting the
+sentence to “runs on an approved commit”), the prose scan must fail until
+line 125 is fixed.
 
-### Claude’s evidence-id oracle is exact; cursor/claude rename the path
+### Claude — narrowed oracle drops round/phase/gate regression guards
 
-**Pins:** claude `3662cc094cd9f12ec0a82f56e8d6a9e4da652536`
-(`src/agentLanguage.ts:56`, `src/steps.ts:128` → `reviser-authorization.json`);
-cursor `2eb72a07ab9b02a575ab7483d21ca2fbb8dfa231`
-(`src/steps.ts:128` → `revision-authorization.json`).
+**File:** `src/agentLanguage.ts:58-69` on
+`c90717513ce4935b78c37feba7e18cda55028613`
 
-**Rule:** Prefer an exhaustive evidence-id alternation (or a renamed path) so
-outcome artifact names like `implementation-ready` are not collateral damage
-and required paths stay jargon-free.
+**Rule:** The ballot-selected implementation should keep strict language bans
+that catch historical leaks (`R7`, “the current phase”, bare “gate”) while
+only removing shapes fixed by explicit string rewrites.
 
-**Observation:** Claude matches the selected plan’s intent most cleanly: exact
-`EvidenceId` alternation plus a renamed path and a template that already says
-checks “must pass before a pull request is created.” Cursor reaches the same
-acceptance bar by renaming the path and fixing the gate sentence, with a
-suffix-shaped evidence-id regex that forced the rename. Both are preferable to
-antigravity/codex on this axis.
+**Failure if followed:** Bare `\bR[1-7]\b`, `\bphases?\b`, and `\bgates?\b`
+are gone. New agent-visible copy containing “R7 finalization”, “the current
+phase”, or “they gate pull-request creation” would not fail
+`test/agentLanguage.test.ts`, reopening the regression class the baseline
+checker already flagged.
 
-### Shared strengths (all four pins)
+**Test:** The cursor pin’s `"reports the leaks issue 88 removed"` cases for
+`internal-round-label`, `phase-vocabulary`, and `gate-vocabulary` fail when
+run against claude’s `AGENT_FACING_BANNED_TERMS` list.
 
-Each pin updates `src/protocol.ts` / `src/orderScaffold.ts` /
-`src/steps.ts` join surfaces to `participation-ready`, rewrites the action
-re-read footer without “nudge,” wires
-`subject: agentFacingSubject(order.evidenceId)` in `src/evidence.ts`, bumps
-`package.json` to `0.0.14`, and adds a `STEP_DEFINITIONS`-keyed language test.
-Internal ids `R1.join`, `gate-1-join`, and `join-published` remain for
-coordinator/analytics use.
+### Claude — prose audit reads the working tree, not the committed blob
+
+**File:** `test/agentLanguage.test.ts:381-387` on
+`c90717513ce4935b78c37feba7e18cda55028613`
+
+**Rule:** Tracked `AGENTS.md` in agent clones carries a skip-worktree bit and
+an installed overlay; the audit must judge the committed source of truth.
+
+**Failure if followed:** `removeManagedBlock` over the working-tree file can
+pass or fail based on install age and overlay content rather than the blob
+staged through index plumbing. A green test does not prove the committed
+`AGENTS.md` fix shipped.
+
+**Correction:** Assert against `git show :AGENTS.md` (cursor pin) or document
+and verify the `--cacheinfo` staging sequence after every AGENTS edit.
+
+### Cursor — strict oracle retained alongside full prose and hook coverage
+
+**Pin:** `14496c05001a9e72f0a72301c5f12d0ebd597f75`
+(`src/agentLanguage.ts:49-65`, `test/agentLanguage.test.ts`)
+
+**Rule:** Close the full residual leak inventory without weakening regression
+guards agreed in the ballot rationale.
+
+**Observation:** This pin keeps `\bR[1-7]\b`, `\bphases?\b`, widened
+gate-vocabulary (`(?:un)?gat(?:e|es|ed|ing)`), evidence-id alternation, and
+sequence-phrase rules while rewriting every string those rules still flag in
+tracked `AGENTS.md` (including “checks gate” → “runs on an approved commit”).
+It exports `AGENT_FACING_PROSE_FILES`, scans hook operands, exercises live
+`HookPolicyError` paths, renders non-empty advisory sections, and reads
+`:AGENTS.md` from the index so skip-worktree staging is testable.
+
+### Cursor — out-of-scope branch artifact required a follow-up revert
+
+**File:** `test/integration.test.ts` (reverted in `14496c05001a9e72f0a72301c5f12d0ebd597f75` relative to earlier cursor history)
+
+**Rule:** Implementation pins may change only approved paths from the
+selected plan.
+
+**Failure if followed:** An earlier ancestor on the cursor branch had added a
+language assertion to `test/integration.test.ts`; the corrected pin reverts
+that file to baseline so the approved map holds. Selection should treat
+`14496c0` as the authoritative product tip, not earlier cursor commits.
+
+### Shared strengths (all three pins)
+
+Each pin rewords the three hook stderr surfaces (`src/hookPolicy.ts`,
+`githooks/lib/identity.sh`, `templates/hooks/shim.sh`), removes “for this
+step” / “current step” / “final cleanup step” from scaffolds and product
+templates, and extends `test/agentLanguage.test.ts` so populated
+`contextPaths` / `changeScope` sections render before the clean check.
+Internal ids (`R1.join`, `gate-1-join`, `join-published`) remain in
+coordinator code.
 
 ## Verdict
 
-Prefer **claude** `3662cc094cd9f12ec0a82f56e8d6a9e4da652536` or **cursor**
-`2eb72a07ab9b02a575ab7483d21ca2fbb8dfa231`: both remove gate jargon from the
-product template and stop shipping `reviser-authorized` as a required path.
-**codex** `9b2c05b6dc4e8d6780492972e5b572fc4d299f82` is close but leaves that
-path. **antigravity** `4eadf9f357d593e3c6abf88ca4008ff61d74d525` still leaks
-“gate” in `AGENTS.md` and deliberately narrows the evidence-id ban around the
-old filename.
+**cursor** `14496c05001a9e72f0a72301c5f12d0ebd597f75` is the most complete
+against issue 88: it fixes tracked `AGENTS.md` (including the checks
+sentence), keeps the strict oracle guards, exports a prose-file list, and
+audits hook emissions plus index-staged `AGENTS.md`. **claude**
+`c90717513ce4935b78c37feba7e18cda55028613` is close on templates, hooks, and
+recovery wording but leaves “checks gate” in `AGENTS.md` and weakens
+round/phase/gate regression bans. **codex**
+`b45393f18c9b0fe0ec0bf35e9bb7e41e5b19cb11` fixes the same rendered/hook
+surfaces but never edits tracked `AGENTS.md`, leaving the largest remaining
+leak class in place.
