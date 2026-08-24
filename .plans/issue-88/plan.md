@@ -1,110 +1,84 @@
-# Issue 88 plan: keep coordinator internals out of agent prompts
+# Issue 88 plan: finish agent-facing language cleanup
 
 ## Scope
 
-Issue 88 removes internal coordinator vocabulary from every agent-visible
-surface while leaving workflow IDs, journal events, operator logs, and analytics
-unchanged. Agents must see only the current outcome, required artifact, exact
-inputs, publication path, and completion signal—not phase IDs, gates, or
-delivery mechanics.
+Issue 88 keeps coordinator internals out of anything an agent must read to do
+rote publication work, so the agent role stays outcome-only: required artifact,
+exact inputs, path, and completion signal. Internal workflow IDs, journals,
+analytics, CLI verbose logs, and owner docs stay unchanged.
 
-### Agent-facing surfaces (in scope)
+### Already on baseline `76cfd155` (do not redo)
 
-1. Generated `action.md` bodies from `renderAction` plus `STEP_DEFINITIONS.task`,
-   artifact scaffolds, and correction `outstanding` lines.
-2. Injected delivery text from `renderNudgeText` (keep outcome wording; do not
-   mention delivery/retry mechanics).
-3. Installed protocol prose in `templates/product/AGENTS.protocol.md` (clone
-   overlay via `writeCloneAgentsProtocol`).
-4. Opt-in product `templates/product/AGENTS.md` when it names internal phases
-   (today: `R7 finalization`).
-5. Agent-copied JSON schema tokens and required paths that encode the join phase
-   name (`artifact: "join"`, `.signals/issue-<n>/joined-<agent>.json`).
+The prior coordinated implementation already shipped:
 
-### Operator / internal surfaces (out of scope; must remain)
+- `artifact: "participation-ready"` and
+  `.signals/issue-<n>/participation-ready-<agent>.json`
+- Outcome task/footer prose in `src/steps.ts` / `src/action.ts`
+- `agentFacingSubject` for pin-validation subjects in `src/evidence.ts`
+- Product templates `templates/product/AGENTS.protocol.md` and
+  `templates/product/AGENTS.md` without delivery/phase jargon
+- `src/agentLanguage.ts` plus `test/agentLanguage.test.ts` covering every
+  `STEP_DEFINITIONS` render, correction blocks, and injected text
+- Internal ids `R1.join`, `gate-1-join`, `join-published` preserved
 
-- `WorkflowStepId` / `GateId` / `EvidenceId` values such as `R1.join`,
-  `gate-1-join`, `join-published`.
-- Journal types (`nudged`), lifecycle delivery enums, tmux/config field names,
-  CLI verbose logs, analytics reports, and owner docs (`docs/`, `README.md`).
+### Remaining gaps this plan closes
 
-### Binding rename for the participation artifact
+1. **Tracked `AGENTS.md` still teaches delivery jargon.** The recovery paragraph
+   still says “typed nudge” / “when a nudge did not land.” Agents in this driver
+   clone read that file; acceptance fails while it remains.
+2. **Language audit does not scan root `AGENTS.md`.**
+   `test/agentLanguage.test.ts` checks rendered actions, nudge text, and product
+   templates only, so the leak above stays green under `pnpm check:fast`.
+3. **Forbidden-pattern oracle is broader than the issue.** Bare
+   `\bphases?\b`, `\bgates?\b`, `\bR[1-7]\b`, and `\bjoin(ed|ing)?\b` ban ordinary
+   English the issue explicitly allows. That over-ban also flags the legitimate
+   sentence “what the coordinator `checks` gate” in `AGENTS.md`. Narrow the
+   oracle to phase/gate/delivery *shapes* and join-phase token/path forms.
 
-Rename only the agent-authored join evidence token and path to outcome language.
-Keep internal step/evidence IDs:
+Authoritative recovery wording for `AGENTS.md` (match
+`templates/product/AGENTS.protocol.md`):
 
-| Surface | Current | New |
-| --- | --- | --- |
-| JSON `artifact` literal | `"join"` | `"participation-ready"` |
-| Required path | `.signals/issue-<n>/joined-<agent>.json` | `.signals/issue-<n>/participation-ready-<agent>.json` |
-| Task prose | “Publish the join artifact …” | “Publish the participation-readiness artifact …” |
-| Correction strings | `invalid join artifact…`, `join baselineSha…` | matching participation-ready wording |
+> After you write `complete`, do not stop. Before waiting for more input, re-read
+> your `action.md`. If `actionId` in the front matter has changed, execute the new
+> instructions immediately; do not wait for another coordinator message.
 
-No `protocolVersion` bump: issue coordination artifacts are ephemeral and deleted
-at finalization; in-flight issues are not required to accept both literals.
+(`src/action.ts` already uses the same re-read rule with action-file wording; do
+not change it unless it drifts.)
 
-### Forbidden agent-facing patterns (test oracle)
+### Out of scope
 
-Generated action bodies, scaffolds, protocol template text, and product AGENTS
-template text must not match:
-
-- internal phase IDs: `\bR[1-7]\.[a-z0-9-]+\b`
-- gate IDs: `\bgate-[0-9]+-[a-z0-9-]+\b`
-- delivery jargon: `\bnudge(?:d|s)?\b` (case-insensitive)
-- phase-named join wording: `\bjoin artifact\b`, `"artifact": "join"`, path
-  segment `joined-`
-
-Ordinary task words such as “plan,” “review,” and “implement” remain allowed.
-
-### Footer replacement (authoritative)
-
-Replace the `action.md` / protocol re-read footer with:
-
-> Before waiting for more input, re-read this file. If `actionId` has changed,
-> execute the new instructions immediately; do not wait for another coordinator
-> message.
+- Renaming internal step/gate/evidence ids or journal `nudged` events
+- Rewriting operator docs (`docs/`, README) or config field names such as
+  `nudgePrelude`
+- Deriving clerical workflow steps in the coordinator (separate efficiency work)
+- Bumping `package.json` on ordinary issue-branch commits (`pnpm check:version-bump`
+  / PR workflow only, per issue 95)
 
 ## Exact File List to be changed or deleted
 
 ### Changed
 
-- `package.json` — bump `0.0.13` → `0.0.14` for the non-main ship gate.
-- `config.product.example.json` — bump installed `coordination.version` to
-  `0.0.14`.
-- `src/steps.ts` — rewrite `R1.join` task to participation-readiness language;
-  change `requiredPath` to
-  `.signals/issue-${issue}/participation-ready-${agent}.json`. Audit other
-  `STEP_DEFINITIONS.task` strings and keep only outcome wording (no phase/gate/
-  nudge terms).
-- `src/action.ts` — replace the re-read footer with the authoritative text above;
-  keep restricted front matter (`actionId`, `agent`, `requiredPath` only).
-- `src/orderScaffold.ts` — emit `"artifact": "participation-ready"` for
-  `R1.join`; keep other scaffolds unchanged unless a forbidden pattern appears.
-- `src/protocol.ts` — change `joinArtifactSchema` literal from `"join"` to
-  `"participation-ready"`; keep the TypeScript type name if useful internally.
-- `src/evidence.ts` — validate the new literal/path; rewrite agent-visible
-  outstanding strings that say “join artifact” / “join baselineSha” /
-  “join automationDigest” into participation-ready wording. Leave
-  `evidenceId === "join-published"` as the internal discriminator.
-- `templates/product/AGENTS.protocol.md` — replace the nudge/delivery recovery
-  paragraph with the same outcome-oriented re-read instructions (no “nudge”).
-- `templates/product/AGENTS.md` — replace “R7 finalization” with outcome wording
-  such as “Finalization deletes only those current-issue coordination paths.”
-- `test/action.test.ts` — expect the new footer; keep asserting front matter
-  never includes `stepId` / evidence / gate fields; add coverage that the
-  rendered body has no forbidden patterns.
-- `test/orderScaffold.test.ts` — expect `participation-ready` scaffold and path
-  token absence of `"join"`.
-- `test/protocol.test.ts` — accept only `"participation-ready"` for that
-  artifact family.
-- `test/evidence.test.ts` — update join fixtures/paths/messages to the new
-  token and path.
-- `test/runLoop.test.ts` — update required path, scaffold, and any body
-  assertions for the renamed participation artifact.
-- `test/cli.test.ts` — update path assertions for the participation-ready file.
-- `test/integration.test.ts` — publish `participation-ready` evidence instead
-  of `join`.
-- `test/install.test.ts` — expect installed version `0.0.14`.
+- `AGENTS.md` — replace the post-`complete` recovery paragraph so it uses the
+  authoritative re-read wording above with no “nudge” / delivery mechanics.
+  Keep the surrounding skip-worktree and heading rules. Leave the
+  “`checks` gate” sentence as ordinary English once the oracle is narrowed; do
+  not invent a paraphrase unless a remaining shape-ban still matches it.
+- `src/agentLanguage.ts` — replace the over-broad `AGENT_FACING_BANNED_TERMS`
+  list with issue-shaped patterns only:
+  - keep dotted step ids: `\bR[1-7]\.[a-z][a-z-]*\b`
+  - keep gate ids as used today: `\bgate-[1-7]\b` (matches real `GateId`
+    prefixes such as `gate-1-join`); do not ban the bare word “gate”
+  - keep delivery stems: `\bnudg[a-z]*\b`
+  - keep exact `EvidenceId` alternation and `\b(?:stepId|gateId|evidenceId)\b`
+  - replace bare join ban with phase-shaped forms only:
+    `\bjoin artifact\b`, `"artifact"\s*:\s*"join"`, and path segment `joined-`
+  - drop bare `\bphases?\b`, `\bgates?\b`, and `\bR[1-7]\b` round-label bans
+- `test/agentLanguage.test.ts` — assert
+  `findAgentLanguageViolations(readFileSync("AGENTS.md","utf8"))` is empty;
+  update the “reports the leaks” cases to the narrowed shapes; add positive
+  controls that ordinary “phase” / “gate” / bare “R6” / non-phase “join” prose
+  is allowed while `R1.join`, `gate-1-join`, `nudge`, `join artifact`, and
+  `"artifact": "join"` still fail.
 
 ### Deleted
 
@@ -112,118 +86,77 @@ Replace the `action.md` / protocol re-read footer with:
 
 ## Exact file list to be created
 
-- `test/agentFacingLanguage.test.ts` — mechanical audit: for every
-  `WorkflowStepId` in `STEP_DEFINITIONS`, build a representative `InternalOrder`
-  (via `buildOrder` or direct render of `task` + `renderArtifactScaffold` +
-  `renderAction`), plus read protocol/product AGENTS templates, and assert none
-  of the forbidden patterns appear. Also assert the new footer text is present
-  in `renderAction` output and in `AGENTS.protocol.md`. Assert
-  `renderNudgeText` still contains only action id/digest/path instructions and
-  no delivery jargon.
-
-## Implementation Details
-
-1. Treat “agent-facing” as anything an agent is instructed to read or copy:
-   `action.md`, injected prompt text, AGENTS protocol/product templates, JSON
-   scaffolds, required paths, and correction outstanding lines. Code comments,
-   operator docs, journals, and internal IDs are not rewritten for this issue.
-2. Rename only the join evidence token/path. Do not rename
-   `implementation-ready`, ballots, or other outcome-named artifacts; they
-   already describe work products rather than phase IDs.
-3. Keep `EvidenceId` `join-published` and step id `R1.join` so machine, journal,
-   analytics, and gate advancement stay stable.
-4. Apply the footer replacement in both `src/action.ts` and
-   `templates/product/AGENTS.protocol.md` so clone overlays and live actions
-   agree.
-5. When updating outstanding strings in `evidence.ts`, keep them actionable and
-   specific; only remove phase/delivery jargon.
-6. Do not change `renderNudgeText` wording unless a forbidden pattern is found;
-   today’s text already names the action file, id, and digest without saying
-   “nudge.”
-7. Do not edit product `githooks/` to satisfy checks. Do not clear skip-worktree
-   on clone `AGENTS.md` as part of this work; install overlay updates happen on
-   the next coordinator install/sync.
-8. Update `.plans/issue-1/workflow-algorithm.md` only if a reviewer requires
-   design-doc path alignment; it is not agent-facing and is otherwise out of
-   scope.
-9. Bump package and example product config versions together so
-   `pnpm check:fast`’s non-main version gate passes.
+- None.
 
 ## Tests
 
-Run focused tests while implementing:
+While implementing:
 
 ```bash
-pnpm vitest run --config vitest.config.ts test/agentFacingLanguage.test.ts test/action.test.ts test/orderScaffold.test.ts test/protocol.test.ts test/evidence.test.ts test/runLoop.test.ts test/cli.test.ts test/integration.test.ts test/install.test.ts
+pnpm exec vitest run --config vitest.config.ts test/agentLanguage.test.ts
 ```
 
-Run the repository pre-commit suite before committing:
+Before commit:
 
 ```bash
 pnpm check:fast
 ```
 
-Run full coordinator acceptance before publication/final acceptance:
+Before final acceptance / PR:
 
 ```bash
 pnpm check
 ```
 
+Before merging to `main`, bump `package.json` so `pnpm check:version-bump`
+passes (PR workflow only; not required on intermediate commits).
+
 Tests must prove:
 
-- Every workflow step’s rendered `action.md` lacks phase IDs, gate IDs, and
-  nudge/join-phase jargon.
-- `AGENTS.protocol.md` and product `AGENTS.md` lack those patterns.
-- Join evidence uses `artifact: "participation-ready"` and the new path; old
-  `"join"` / `joined-*.json` are rejected.
-- Internal step advancement, evidence id `join-published`, journal `nudged`
-  events, and operator phase logging still function in existing run-loop /
-  integration coverage.
-- Version assertions expect `0.0.14`.
+- Root `AGENTS.md` has no delivery/phase/gate-id/join-phase jargon under the
+  narrowed oracle.
+- Every `STEP_DEFINITIONS` rendered `action.md`, correction outstanding block,
+  injected `renderNudgeText`, and product AGENTS templates remain clean.
+- Narrowed oracle still catches the historical leaks (`R1.join`, `gate-1-join`,
+  “nudged”, `"artifact": "join"`, evidence ids) and no longer fails ordinary
+  “phase”/“gate”/bare round words.
+- Internal step/gate/evidence identifiers in `STEP_DEFINITIONS` are unchanged.
 
 ## Alternatives Rejected
 
-- **Rename internal step/gate IDs (`R1.join`, `gate-1-join`).** Rejected: the
-  issue requires those IDs to remain for coordinator state, journals, and
-  analytics; only agent-facing prose/tokens change.
-- **Keep `artifact: "join"` and only rewrite English task text.** Rejected: the
-  issue explicitly calls out agent-visible schema tokens and paths that encode
-  phase jargon; agents copy those tokens verbatim.
-- **Bump `protocolVersion` and dual-accept old/new join literals.** Rejected:
-  unnecessary complexity for ephemeral issue artifacts deleted at finalization.
-- **Rewrite operator docs and analytics to avoid “nudge”/phase names.**
-  Rejected: acceptance criteria keep those terms for coordinator/owner surfaces.
-- **Hide required paths behind opaque aliases.** Rejected: agents still need an
-  exact publication path; renaming to outcome language is enough.
-- **Rely on manual review instead of a mechanical language test.** Rejected:
-  acceptance requires tests that inspect every generated action type.
+- **Re-implement the full participation-ready cutover.** Rejected: baseline
+  already contains it; redoing it risks churn without closing the open gap.
+- **Leave `AGENTS.md` alone and rely on the product protocol overlay.**
+  Rejected: this driver clone’s tracked `AGENTS.md` is agent-facing and still
+  names nudges; overlays do not erase that prose.
+- **Keep the broad bare-word bans and rewrite “checks gate”.** Rejected: the
+  issue allows ordinary task English; the prior plan ballot preferred a
+  shape-scoped oracle. Broad bans fight the “simplify rote work” goal.
+- **Ban every occurrence of “join”.** Rejected: only phase-named join forms are
+  in scope.
+- **Bump package version on every commit.** Rejected: issue 95 moved that gate
+  to PR/merge only.
 
 ## Risks and Mitigations
 
-- **Risk: in-flight issues still write `joined-*.json` / `"join"`.** Mitigation:
-  ephemeral issue sessions; document that issue 88 ships as a clean cutover.
-  Validation fails closed with clear outstanding text.
-- **Risk: over-broad forbidden regex blocks legitimate words.** Mitigation: match
-  phase IDs, gate IDs, nudge stems, and join-phase tokens/paths—not the ordinary
-  verbs plan/review/implement.
-- **Risk: correction outstanding strings still leak jargon.** Mitigation: include
-  evidence rejection messages in the agent-facing audit and rewrite join-family
-  strings with the rename.
-- **Risk: clone AGENTS overlays stay stale until reinstall.** Mitigation: change
-  the template source of truth; coordinator install/sync refreshes overlays.
-  Live `action.md` footer fixes apply immediately on new actions.
-- **Risk: accidental behavior change in verification or machine transitions.**
-  Mitigation: keep internal evidence/step IDs; extend existing evidence and
-  integration tests rather than rewriting the state machine.
-- **Risk: version bump forgotten.** Mitigation: update `package.json`,
-  `config.product.example.json`, and install test together; `check:fast`
-  enforces the ship gate.
+- **Risk: narrowing the oracle misses a real leak.** Mitigation: keep exact
+  evidence-id alternation, dotted step ids, gate ids, nudge stems, and
+  join-phase token/path forms; add explicit regression cases for each.
+- **Risk: root `AGENTS.md` drifts from `templates/product/AGENTS.protocol.md`
+  again.** Mitigation: shared recovery wording; audit both files in
+  `test/agentLanguage.test.ts`.
+- **Risk: skip-worktree clone overlays hide the tracked fix until reinstall.**
+  Mitigation: change the tracked source of truth; next prepare/install refresh
+  re-applies the protocol block from the clean template. Live `action.md`
+  footers are already clean.
+- **Risk: over-editing `AGENTS.md` and stripping required plan/review heading
+  docs.** Mitigation: only replace the recovery paragraph and leave heading
+  contracts intact.
 
 ## Conclusion
 
-Sanitize every agent-visible instruction and copied token so agents never see
-coordinator phase/delivery vocabulary, while preserving internal workflow IDs
-and operator observability. The concrete cutover is outcome-oriented task/footer
-prose plus renaming the join evidence literal and path to
-`participation-ready`, locked in by a mechanical language audit over all
-generated action types.
+Finish issue 88 as a small delta on the already-merged cutover: remove the
+remaining nudge (and only-by-overbroad-ban) leaks from tracked `AGENTS.md`,
+narrow the language oracle to the shapes the issue actually forbids, and extend
+the mechanical audit so root agent guidance cannot regress while internal
+coordinator vocabulary stays available to analytics and operators.
