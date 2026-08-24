@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -551,6 +552,77 @@ describe("completion mailbox wiring", () => {
     expect(launcher).not.toContain("danger-full-access");
     expect(launcher).toContain("--sandbox workspace-write");
     expect(launcher).toContain("--ask-for-approval never");
+  });
+
+  /**
+   * Executes the real generated launchers against stub harnesses and asserts the
+   * exact argv. Asserting the rendered text alone cannot see an expansion that
+   * aborts, a flag that lands in the wrong order, or a path with a space that
+   * splits into two arguments — all of which reach the vendor, not the file.
+   */
+  it("passes each harness exactly its own current drop, and nothing in manual mode", () => {
+    const fixture = product("plain");
+    // A space in the path: the grant has to survive as one argument.
+    const completesRoot = join(fixture.workspaceRoot, "completion mailbox");
+    const agents = ["claude", "codex", "cursor", "antigravity"] as const;
+    // The Antigravity launcher prepends $HOME/.local/bin, so HOME must point at
+    // the fixture or the machine's real agy would shadow the stub.
+    const home = join(fixture.workspaceRoot, "home");
+    const result = installOnce(fixture, { agents, completesRoot, home });
+    const bin = join(fixture.workspaceRoot, "stub-bin");
+    mkdirSync(bin);
+    for (const command of ["claude", "codex", "agent", "agy"]) {
+      writeFileSync(join(bin, command), '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$CAPTURE"\n', { mode: 0o755 });
+    }
+
+    const expected = {
+      claude: ["--permission-mode", "auto"],
+      codex: ["--ask-for-approval", "never", "--sandbox", "workspace-write"],
+      cursor: ["--sandbox", "enabled"],
+      antigravity: ["--mode", "accept-edits", "--dangerously-skip-permissions"]
+    } as const;
+
+    for (const [index, agent] of agents.entries()) {
+      const clone = result.clones[index] as string;
+      const drop = join(completesRoot, "issue-17", agent);
+      mkdirSync(drop, { recursive: true });
+      const capture = join(fixture.workspaceRoot, `${agent}.args`);
+      // /bin/bash, not `bash`: macOS ships 3.2, where expanding an empty array
+      // as "${a[@]}" under `set -u` aborts. A test that resolves a newer bash
+      // from PATH cannot see that, and the launcher runs under whatever the
+      // machine has.
+      execFileSync("/bin/bash", [join(clone, `start-${agent}.sh`)], {
+        cwd: clone,
+        env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_ISSUE: "17", CAPTURE: capture },
+        stdio: "ignore"
+      });
+      const argv = readFileSync(capture, "utf8").trimEnd().split("\n");
+      expect(argv).toEqual([...expected[agent], "--add-dir", drop]);
+      // Never the runtime, never the whole mailbox, never a peer's drop.
+      expect(argv).not.toContain(fixture.coordRoot);
+      expect(argv).not.toContain(completesRoot);
+      expect(argv).not.toContain(join(completesRoot, "issue-17", agents[(index + 1) % agents.length]));
+    }
+
+    // Manual mode: no issue, so no grant — and the harness must still start.
+    const claudeClone = result.clones[0] as string;
+    const manual = join(fixture.workspaceRoot, "claude-manual.args");
+    execFileSync("/bin/bash", [join(claudeClone, "start-claude.sh")], {
+      cwd: claudeClone,
+      env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_ISSUE: "", CAPTURE: manual },
+      stdio: "ignore"
+    });
+    expect(readFileSync(manual, "utf8").trimEnd().split("\n")).toEqual(["--permission-mode", "auto"]);
+  });
+
+  it("refuses a second workspace that would share one mailbox", () => {
+    const first = product();
+    const second = product();
+    const shared = join(first.workspaceRoot, "shared-mailbox");
+    installOnce(first, { completesRoot: shared });
+    // Same receipts directory for a different workspace: issue-42/claude/complete
+    // would be one file for two products, and the last writer would win.
+    expect(() => installOnce(second, { completesRoot: shared })).toThrow(/already holds receipts for/);
   });
 
   it("uninstall clears the mailbox key so a stale grant cannot survive", () => {

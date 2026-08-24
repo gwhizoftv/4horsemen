@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
@@ -117,26 +117,83 @@ export const resolveSafeCoordRoot = (options: SafeCoordRootOptions): string => {
  * Sibling `completes/`, then one segment identifying the workspace whose
  * receipts live under it.
  *
- * Both parts are load-bearing. The mailbox is a *sibling* of the coord root so
- * granting it never grants coordinator state — that is the whole point of the
- * third tree. The trailing segment exists because one outer root can hold
- * several workspaces (nested installs put each product at
- * `<outer>/workspaces/<project>`): without it two products would share
- * `completes/issue-42/claude/complete`, and the coordinator would read a peer
- * product's intent as its own.
+ * The mailbox is a *sibling* of the coord root so granting it never grants
+ * coordinator state — that is the whole point of the third tree. Under that
+ * sibling comes one segment naming the runtime, and the project too when the
+ * workspace is nested.
  *
- * The identity is always the coord root's own directory name, plus the project
- * for a nested workspace. Both segments are needed: the project alone is not
- * unique (two outer roots under one parent can each hold a `beta`), and the
- * runtime name alone is not unique across the products nested inside it. The
- * result mirrors how the runtime itself nests — `<outer>/workspaces/<project>`
- * sits inside `<outer>` — so the same rule that keeps one workspace's teardown
- * off another's runtime keeps it off another's mailbox.
+ * The naming segment was tried both ways. A bare `completes/` matches the
+ * topology sketched on the issue, but `dirname(coordRoot)` is shared by every
+ * runtime under one parent, so two workspaces resolve
+ * `issue-42/claude/complete` to one file: last writer wins, and each
+ * coordinator reads the other product's SHA as its own agent's intent. That is
+ * not a corner case here — the repository's own fixtures mkdtemp every coord
+ * root into one parent, and dropping the segment makes suites that never touch
+ * this feature fail. `assertMailboxClaim` still guards the case a path cannot
+ * separate: an explicitly configured root that another live workspace owns.
  */
 export const defaultCompletesRoot = (coordRoot: string, workspaceName?: string): string => {
   const root = resolve(coordRoot);
   const identity = workspaceName === undefined ? [basename(root)] : [basename(root), workspaceName];
   return resolve(dirname(root), "completes", ...identity);
+};
+
+/** Marker naming the workspace whose receipts a mailbox root holds. */
+export const mailboxClaimPath = (completesRoot: string): string =>
+  containedPath(completesRoot, ".coord-workspace.json");
+
+export type MailboxClaim = { configPath: string };
+
+const readMailboxClaim = (path: string): MailboxClaim | null => {
+  if (!existsSync(path)) return null;
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (typeof value === "object" && value !== null && typeof (value as MailboxClaim).configPath === "string") {
+      return { configPath: (value as MailboxClaim).configPath };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+};
+
+/**
+ * Refuse a mailbox root another workspace already owns, and claim it otherwise.
+ *
+ * Two flat runtimes under one parent derive the same root. Without this they
+ * both publish `issue-42/claude/complete` to one file: whichever agent writes
+ * last wins, and each coordinator reads the other product's SHA as its own
+ * agent's intent — a wrong commit on an unexpected branch, with nothing in the
+ * error naming the cause. Failing at install, where the operator can still pass
+ * `--completes-root`, is the only point where that is cheap.
+ *
+ * The marker sits at the mailbox root. Agents are granted `issue-<n>/<agent>`
+ * only, so it is outside every grant this design hands out.
+ */
+export const assertMailboxClaim = (input: {
+  completesRoot: string;
+  configPath: string;
+  write: boolean;
+}): void => {
+  const claimPath = mailboxClaimPath(input.completesRoot);
+  const existing = readMailboxClaim(claimPath);
+  const owner = resolve(input.configPath);
+  // A claim whose workspace config no longer exists is stale — that workspace
+  // was uninstalled or deleted — so the mailbox is free. Only a claim held by a
+  // workspace that still exists can conflict, which is the case where two live
+  // products would actually write one receipt file.
+  const heldByLiveWorkspace = existing !== null && existsSync(existing.configPath);
+  if (heldByLiveWorkspace && resolve((existing as MailboxClaim).configPath) !== owner) {
+    throw new PathSafetyError(
+      `Completion mailbox ${resolve(input.completesRoot)} already holds receipts for ${(existing as MailboxClaim).configPath}. ` +
+        "Two workspaces sharing one mailbox would overwrite each other's completion SHAs. " +
+        "Re-run with --completes-root <path> to give this workspace its own."
+    );
+  }
+  if (!input.write) return;
+  if (existing !== null && resolve(existing.configPath) === owner) return;
+  assertNoSymlink(input.completesRoot, claimPath);
+  writeFileSync(claimPath, `${JSON.stringify({ configPath: owner }, null, 2)}\n`, { mode: 0o600 });
 };
 
 export type SafeCompletesRootOptions = {

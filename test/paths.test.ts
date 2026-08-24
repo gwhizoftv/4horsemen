@@ -1,12 +1,14 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   agentRuntimePaths,
+  assertMailboxClaim,
   createIssueRuntime,
   defaultCompletesRoot,
   issueRuntimePaths,
+  mailboxClaimPath,
   PathSafetyError,
   removeIssueMailbox,
   resolveSafeCompletesRoot
@@ -56,17 +58,64 @@ describe("completion mailbox paths", () => {
     expect(first).not.toBe(second);
   });
 
-  it("derives a sibling named for the workspace, never a bare shared completes/", () => {
+  it("names the runtime under the sibling completes/, so two workspaces cannot share receipts", () => {
     const { root, coordRoot } = workspace();
     expect(defaultCompletesRoot(coordRoot)).toBe(join(root, "completes", "coord-runtime"));
     expect(defaultCompletesRoot(coordRoot, "beta")).toBe(join(root, "completes", "coord-runtime", "beta"));
-    // Two products under one outer root must not share the tree: without the
-    // project segment both would resolve issue-42/claude/complete to one file.
+    // Two products under one outer root, and two outer roots under one parent,
+    // must each resolve issue-42/claude/complete to their own file.
     expect(defaultCompletesRoot(coordRoot, "alpha")).not.toBe(defaultCompletesRoot(coordRoot, "beta"));
-    // And the project alone is not enough: two outer roots beside each other can
-    // each hold a product called `beta`.
     const other = workspace();
     expect(defaultCompletesRoot(other.coordRoot, "beta")).not.toBe(defaultCompletesRoot(coordRoot, "beta"));
+  });
+
+  it("refuses a mailbox another live workspace claimed, and is idempotent for its owner", () => {
+    const { root } = workspace();
+    const mailbox = join(root, "completes");
+    mkdirSync(mailbox, { recursive: true });
+    const configFor = (name: string): string => {
+      const path = join(root, name, "config.json");
+      mkdirSync(join(root, name), { recursive: true });
+      writeFileSync(path, "{}\n");
+      return path;
+    };
+    const a = configFor("a");
+    const b = configFor("b");
+
+    assertMailboxClaim({ completesRoot: mailbox, configPath: a, write: true });
+    // Re-running install for the same workspace must not trip its own claim.
+    assertMailboxClaim({ completesRoot: mailbox, configPath: a, write: true });
+    // Two flat runtimes under one parent derive this same path. Sharing it would
+    // give both products one issue-42/claude/complete, last writer winning.
+    expect(() => assertMailboxClaim({ completesRoot: mailbox, configPath: b, write: true })).toThrow(
+      /already holds receipts for/
+    );
+    expect(existsSync(mailboxClaimPath(mailbox))).toBe(true);
+  });
+
+  it("reclaims a mailbox whose owning workspace no longer exists", () => {
+    const { root } = workspace();
+    const mailbox = join(root, "completes");
+    mkdirSync(mailbox, { recursive: true });
+    const gone = join(root, "uninstalled", "config.json");
+    assertMailboxClaim({ completesRoot: mailbox, configPath: gone, write: true });
+
+    // The claim names a config that was never created — the same state an
+    // uninstalled workspace leaves. Refusing here would make the mailbox
+    // permanently unusable with no command to release it.
+    const live = join(root, "new", "config.json");
+    mkdirSync(join(root, "new"), { recursive: true });
+    writeFileSync(live, "{}\n");
+    assertMailboxClaim({ completesRoot: mailbox, configPath: live, write: true });
+    expect(JSON.parse(readFileSync(mailboxClaimPath(mailbox), "utf8")).configPath).toBe(live);
+  });
+
+  it("does not write a claim on a dry run", () => {
+    const { root } = workspace();
+    const mailbox = join(root, "completes");
+    mkdirSync(mailbox, { recursive: true });
+    assertMailboxClaim({ completesRoot: mailbox, configPath: join(root, "a", "config.json"), write: false });
+    expect(existsSync(mailboxClaimPath(mailbox))).toBe(false);
   });
 
   it("refuses a mailbox inside the coordinator runtime", () => {

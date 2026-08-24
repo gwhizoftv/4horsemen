@@ -54,8 +54,9 @@ two workspaces would resolve `issue-42/claude/complete` to the same file. The
 coord root's own directory name is always present; a nested workspace adds its
 project, because the project alone is not unique across outer roots.
 
-`completesRoot` defaults to that derived path and may be set explicitly in the
-workspace config; the resolved absolute value is frozen into `start.json` at
+`completesRoot` defaults to that derived path, may be set with
+`--completes-root` on `coord install` / `coord onboard`, and is claimed at the
+mailbox root so a second workspace cannot silently share it; the resolved absolute value is frozen into `start.json` at
 `coord start`, and every later command for that issue reads it from there rather
 than from a config that a reinstall may have moved.
 

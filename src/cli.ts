@@ -200,12 +200,12 @@ const help = `coord — owner-side workflow driver
 
 Usage:
   coord --version | -V | version
-  coord onboard <product> [--coord-root <path>] [--agents <a,b,c>] [--profile <p>]
+  coord onboard <product> [--coord-root <path>] [--completes-root <path>] [--agents <a,b,c>] [--profile <p>]
   coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord manual [--product <path> | --config <path> --coord-root <path>]
   coord install --product <path> --coord-root <external-path> --agents <a,b,c> [--profile <p>]
-                [--clone-root <dir>] [--declare <file>] [--write-product] [--vendor]
-                [--bootstrap-coordination] [--dry-run]
+                [--completes-root <path>] [--clone-root <dir>] [--declare <file>]
+                [--write-product] [--vendor] [--bootstrap-coordination] [--dry-run]
   coord uninstall --coord-root <path> --product <path> [--delete-clones] [--force]
                   [--wipe-runtime] [--delete-coordination] [--dry-run]
   coord doctor --coord-root <path> --product <path>
@@ -855,7 +855,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "onboard") {
-      allowedFlags(parsed, ["coord-root", "clone-root", "agents", "profile"]);
+      allowedFlags(parsed, ["coord-root", "completes-root", "clone-root", "agents", "profile"]);
       if (parsed.positionals.length !== 1) throw new Error("onboard requires exactly one product path.");
       const agents = (parsed.flags.get("agents") ?? "claude,codex,cursor,antigravity")
         .split(",")
@@ -870,6 +870,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         agents,
         profile,
         ...(parsed.flags.has("coord-root") ? { coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")) } : {}),
+        ...(parsed.flags.has("completes-root")
+          ? { completesRoot: resolve(io.cwd, requireFlag(parsed, "completes-root")) }
+          : {}),
         ...(parsed.flags.has("clone-root") ? { cloneRoot: resolve(io.cwd, requireFlag(parsed, "clone-root")) } : {}),
         ...(dependencies.home === undefined ? {} : { home: dependencies.home }),
         log: io.stdout
@@ -882,6 +885,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       allowedFlags(parsed, [
         "product",
         "coord-root",
+        "completes-root",
         "agents",
         "profile",
         "clone-root",
@@ -906,6 +910,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
         agents,
         profile,
+        ...(parsed.flags.has("completes-root")
+          ? { completesRoot: resolve(io.cwd, requireFlag(parsed, "completes-root")) }
+          : {}),
         ...(parsed.flags.has("clone-root") ? { cloneRoot: resolve(io.cwd, requireFlag(parsed, "clone-root")) } : {}),
         ...(parsed.flags.has("declare") ? { declarePath: resolve(io.cwd, requireFlag(parsed, "declare")) } : {}),
         ...(parsed.flags.has("origin") ? { origin: requireFlag(parsed, "origin") } : {}),

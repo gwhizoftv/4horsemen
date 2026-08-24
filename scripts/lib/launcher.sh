@@ -48,6 +48,15 @@ launcher_command() {
       # max ~2.3 h on a product run). --dangerously-skip-permissions is a
       # separate flag, so keep the mode and add the grant. Codex already
       # launches unattended for the same reason.
+      #
+      # Deliberately NOT given `agy --sandbox`, which its own --help describes as
+      # "Run in a sandbox with terminal restrictions enabled". This agent has to
+      # run `git push` and the project's declared checks from its terminal; a
+      # restriction there would stop it publishing the very commit whose SHA it
+      # must then write, which is worse than the write refusal being fixed. It
+      # also contradicts --dangerously-skip-permissions on the same line. The
+      # add-dir below is therefore advisory for this vendor until the sandbox
+      # can be verified against a real agy run that pushes.
       printf 'export PATH="$HOME/.local/bin:$PATH"\nexec agy --mode accept-edits --dangerously-skip-permissions ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     gemini)
@@ -56,7 +65,11 @@ launcher_command() {
       printf 'exec gemini\n'
       ;;
     cursor)
-      printf 'exec agent ${coord_grant[@]+"${coord_grant[@]}"}\n'
+      # --add-dir only means something if the harness is sandboxed: an
+      # unsandboxed agent can already write anywhere, so the narrow grant would
+      # be decoration. `agent --sandbox` documents the exact choices
+      # enabled|disabled, so state it rather than relying on the vendor default.
+      printf 'if (( ${#coord_grant[@]} > 0 )); then\n  exec agent --sandbox enabled "${coord_grant[@]}"\nelse\n  exec agent\nfi\n'
       ;;
     *)
       return 1

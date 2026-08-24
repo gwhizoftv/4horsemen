@@ -20,6 +20,7 @@ import {
   type HookMode
 } from "./hookSync.js";
 import {
+  assertMailboxClaim,
   defaultCompletesRoot,
   isPathInside,
   resolveSafeCompletesRoot,
@@ -275,16 +276,22 @@ export const install = (options: InstallOptions): InstallResult => {
   // rather than be discovered when the first agent cannot publish its SHA.
   const completesRoot = resolveSafeCompletesRoot({
     // Sibling of the *outer* root either way, so the mailbox never lands inside
-    // the runtime tree; the trailing segment is the project for a nested
-    // workspace and the runtime directory's own name for a flat one. Deriving
-    // from the workspace root instead put a nested product's mailbox under
-    // `<outer>/workspaces/`, i.e. inside the coordinator runtime.
+    // the runtime tree. Flat gets the bare sibling (the documented topology);
+    // nested adds its project, because several products share one outer root.
     completesRoot:
       options.completesRoot ??
       defaultCompletesRoot(coordRoot, workspace.layout === "nested" ? project : undefined),
     coordRoot,
     agentRoots: options.agents.map((agent) => agentCloneDirectory(cloneRoot, project, agent)),
     create: !options.dryRun
+  });
+  // Two flat runtimes under one parent derive the same mailbox; nothing in the
+  // path distinguishes them. Refuse here, where --completes-root is still an
+  // option, rather than letting both products write one receipt file.
+  assertMailboxClaim({
+    completesRoot,
+    configPath: workspace.configPath,
+    write: !options.dryRun
   });
 
   const origin = options.origin ?? localConfigGet(productRoot, "remote.origin.url");
@@ -754,6 +761,8 @@ export type OnboardOptions = {
   installRoot: string;
   productRoot: string;
   coordRoot?: string;
+  /** Owner override for the completion mailbox root; see InstallOptions. */
+  completesRoot?: string;
   cloneRoot?: string;
   agents?: readonly string[];
   profile?: string;
@@ -771,6 +780,7 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     installRoot: options.installRoot,
     productRoot,
     coordRoot,
+    ...(options.completesRoot === undefined ? {} : { completesRoot: resolve(options.completesRoot) }),
     cloneRoot: resolve(options.cloneRoot ?? parent),
     agents: options.agents ?? ["claude", "codex", "cursor", "antigravity"],
     profile: options.profile ?? "consensus",

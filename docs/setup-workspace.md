@@ -204,10 +204,18 @@ granted `cursors.json`, the journal, or another agent's `action.md`:
 for a flat install, with the project appended for a nested one, and is created by
 `coord install`. Those segments are what keep two products sharing an outer root
 — or two outer roots sharing a parent — from resolving the same
-`issue-42/claude/complete`. Set `completesRoot` explicitly in the workspace
-config when neither derived location suits the layout — the value must be
-absolute, outside the coord root, and outside every agent clone, or install
-refuses it.
+`issue-42/claude/complete`. Pass `--completes-root <path>` to `coord install` or `coord onboard` when
+neither derived location suits the layout; the resolved absolute value is
+written to the workspace config. It must be outside the coord root and outside
+every agent clone, or install refuses it.
+
+Install also records a claim file at the mailbox root naming the workspace whose
+receipts live there. A second workspace pointed at the same root is refused with
+the path of the workspace that already owns it, because sharing one mailbox
+means sharing `issue-<n>/<agent>/complete` — the last agent to write wins and
+each coordinator reads the other product's SHA as its own agent's intent. A
+claim whose workspace config no longer exists is stale and is taken over
+silently, so uninstalling a product releases its mailbox.
 
 Install records the resolved root in each clone as `coord.completesRoot`. The
 generated `start-<agent>.sh` combines it with `COORD_ISSUE` at launch and passes
