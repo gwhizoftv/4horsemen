@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 
 export type CommandResult = { exitCode: number; stdout: string; stderr: string };
@@ -15,12 +16,62 @@ const issueResponseSchema = z
   })
   .strict();
 
+const issueSnapshotSchema = z
+  .object({
+    repository: z.string().min(1),
+    number: z.number().int().positive(),
+    title: z.string(),
+    body: z.string(),
+    url: z.string().url()
+  })
+  .strict();
+
 export type GitHubIssueSnapshot = {
   repository: string;
   number: number;
   title: string;
   body: string;
   url: string;
+};
+
+/** Load the start-time `github-issue.json` snapshot written under the issue runtime. */
+export const readGitHubIssueSnapshot = (path: string): GitHubIssueSnapshot => {
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  } catch (error) {
+    throw new Error(
+      `Cannot read GitHub issue snapshot ${path}: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const parsed = issueSnapshotSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`GitHub issue snapshot ${path} is invalid.`);
+  }
+  return parsed.data;
+};
+
+/**
+ * Title and body for the coordinator-opened finalization PR.
+ * `Closes #N` must appear in the body so GitHub auto-closes the issue on merge.
+ */
+export const formatFinalizationPullRequest = (input: {
+  issue: number;
+  title: string;
+  finalSha: string;
+  draft: boolean;
+}): { title: string; body: string } => {
+  const issueTitle = input.title.trim() === "" ? "coordinated implementation" : input.title.trim();
+  return {
+    title: `Issue ${input.issue}: ${issueTitle}`,
+    body: [
+      `Closes #${input.issue}`,
+      "",
+      input.draft
+        ? `Draft PR for issue ${input.issue}. Owner merges. Final pin: ${input.finalSha}.`
+        : `PR for issue ${input.issue}. Coordinator merges. Final pin: ${input.finalSha}.`
+    ].join("\n")
+  };
 };
 
 export const githubRepositoryFromOrigin = (origin: string): string | null => {
