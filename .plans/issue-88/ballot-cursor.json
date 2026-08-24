@@ -3,42 +3,42 @@
   "issue": 88,
   "issueSessionId": "issue-88:76cfd1550c3e74c0b6281cd83be04da9049f5814",
   "agent": "cursor",
-  "inputSetHash": "77f56d2162a795cacefb1228f2c93dec8c1052d629dad33798d4e67db3b78df1",
+  "inputSetHash": "3895ab8810e6d552c9f1bfac11199ddfc4fe25bf51f95a9b1f92c3346d7571af",
   "artifact": "plan-ballot",
   "plans": [
     {
       "agent": "claude",
-      "commitSha": "8b1d1d060e79bfb24df7c4a92a6ef0cf03eb5d93",
-      "path": ".plans/issue-88/plan.md"
-    },
-    {
-      "agent": "cursor",
-      "commitSha": "35b6b5b578959d4f194c92f38832852294c16c1b",
+      "commitSha": "ff3ec41c02507e28ad3087ba2ac53c5646b87701",
       "path": ".plans/issue-88/plan.md"
     },
     {
       "agent": "codex",
-      "commitSha": "1ead79c63e020394124deac2cc6bf7ba072835cc",
+      "commitSha": "0027cb4c64efcf06da255aaea482bdf5baf939fe",
+      "path": ".plans/issue-88/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "a58b4d38e13a1a66f81a240c11deb382ee6ca278",
       "path": ".plans/issue-88/plan.md"
     }
   ],
   "reviews": [
     {
       "agent": "cursor",
-      "commitSha": "08deba37c27b83d46f2be912ea806cb4221e21d8",
+      "commitSha": "1cd2878c37b41940db19d83016a1132f19a213d3",
       "path": ".plans/issue-88/review.md"
     },
     {
       "agent": "codex",
-      "commitSha": "81148fcdd7bb16c91f7b9a0471a669237ff2c114",
+      "commitSha": "1b3950353a628543c25bd7064e07a7ae8359d0ce",
       "path": ".plans/issue-88/review.md"
     },
     {
       "agent": "claude",
-      "commitSha": "42506a285d0e420eba6623e19a2791db17e7adc5",
+      "commitSha": "4d85efd6628c3b1e9f4c420380000d82e2ecc9d6",
       "path": ".plans/issue-88/review.md"
     }
   ],
-  "choice": "claude",
-  "rationale": "Claude alone closes the hook-emitted phases/ungated leaks and unscanned action-section gap; implement with Codex’s step-sequence cleanup and an AGENTS.md recovery rewrite, without Cursor’s oracle narrowing or Claude’s stale non-main version bump."
+  "choice": "cursor",
+  "rationale": "Cursor is the only bound plan whose file map closes the full residual leak set; implement with Claude's `--cacheinfo` AGENTS.md staging, overlay stripping, and `AGENT_FACING_PROSE_FILES` enumeration while keeping the strict oracle bans neither plan should drop."
 }
