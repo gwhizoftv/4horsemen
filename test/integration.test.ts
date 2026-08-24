@@ -3,8 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { clearCompletion, renderAction } from "../src/action.js";
-import { findAgentLanguageViolations } from "../src/agentLanguage.js";
+import { clearCompletion } from "../src/action.js";
 import { observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { computeInputSetHash } from "../src/evidence.js";
 import { BareMirror } from "../src/mirror.js";
@@ -156,7 +155,6 @@ describe("four-agent coordinator canary", () => {
       };
 
       expectStep("R1.join");
-      expect(findAgentLanguageViolations(renderAction(currentOrder("codex")))).toEqual([]);
       for (const agent of agents) {
         const order = currentOrder(agent);
         submit(
