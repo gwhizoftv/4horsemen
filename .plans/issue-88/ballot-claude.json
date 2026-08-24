@@ -1,0 +1,44 @@
+{
+  "protocolVersion": 1,
+  "issue": 88,
+  "issueSessionId": "issue-88:76cfd1550c3e74c0b6281cd83be04da9049f5814",
+  "agent": "claude",
+  "inputSetHash": "3895ab8810e6d552c9f1bfac11199ddfc4fe25bf51f95a9b1f92c3346d7571af",
+  "artifact": "plan-ballot",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "ff3ec41c02507e28ad3087ba2ac53c5646b87701",
+      "path": ".plans/issue-88/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "0027cb4c64efcf06da255aaea482bdf5baf939fe",
+      "path": ".plans/issue-88/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "a58b4d38e13a1a66f81a240c11deb382ee6ca278",
+      "path": ".plans/issue-88/plan.md"
+    }
+  ],
+  "reviews": [
+    {
+      "agent": "cursor",
+      "commitSha": "1cd2878c37b41940db19d83016a1132f19a213d3",
+      "path": ".plans/issue-88/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "1b3950353a628543c25bd7064e07a7ae8359d0ce",
+      "path": ".plans/issue-88/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "4d85efd6628c3b1e9f4c420380000d82e2ecc9d6",
+      "path": ".plans/issue-88/review.md"
+    }
+  ],
+  "choice": "claude",
+  "rationale": "Codex plans a zero-diff pin whose own approved-path map excludes the two files that still leak, and Cursor's wider coverage rests on narrowing the banned-term list (re-legalising the R7 and gate strings round one removed) plus edits to the protected githooks tree to satisfy its new checker, whereas the confirmed defects in this plan — the untracked CLAUDE.md fixture that both peer reviews caught, the missed 'ungated' string, and the uncovered sequence framing — are additive one-line corrections that leave the strict oracle and the verified AGENTS.md staging procedure intact."
+}
