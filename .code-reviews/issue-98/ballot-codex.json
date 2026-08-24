@@ -1,0 +1,27 @@
+{
+  "protocolVersion": 1,
+  "issue": 98,
+  "issueSessionId": "issue-98:3fed3f76b6030fffefc699d0530115fddeb847da",
+  "agent": "codex",
+  "inputSetHash": "7b56c127c5ac48acc51c012b4cee4385bcf0326cf49c4ea2c010433c377125b0",
+  "artifact": "comparison-ballot",
+  "implementations": [
+    {
+      "agent": "cursor",
+      "commitSha": "6b2ede95cd915d1e3f7a4a4ca0b8d078df234c5c",
+      "path": ".signals/issue-98/implementation-ready-cursor.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "9794eafd52a3e5a9f768c4bfe7aed0d46d1e84fc",
+      "path": ".signals/issue-98/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "5055366c3484916b92b4a688d6707bc282c56c96",
+      "path": ".signals/issue-98/implementation-ready-codex.json"
+    }
+  ],
+  "choice": "cursor",
+  "rationale": "Cursor is selected for its minimal issue-first sibling-mailbox change set, with exact launcher grants and configured-root cleanup to be completed during revision."
+}
