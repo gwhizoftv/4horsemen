@@ -1,0 +1,33 @@
+{
+  "protocolVersion": 1,
+  "issue": 88,
+  "issueSessionId": "issue-88:76cfd1550c3e74c0b6281cd83be04da9049f5814",
+  "agent": "claude",
+  "inputSetHash": "6a30317ae3583d162b0d7756021dd1faea263b9305fec0a15e359d335bf36994",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "c90717513ce4935b78c37feba7e18cda55028613",
+  "approvedPaths": [
+    "AGENTS.md",
+    "R1.join",
+    "action.md",
+    "docs/",
+    "githooks/",
+    "githooks/**",
+    "githooks/lib/identity.sh",
+    "package.json",
+    "src/action.ts",
+    "src/agentLanguage.ts",
+    "src/evidence.ts",
+    "src/hookPolicy.ts",
+    "src/orderScaffold.ts",
+    "src/steps.ts",
+    "templates/hooks/",
+    "templates/hooks/**",
+    "templates/hooks/shim.sh",
+    "templates/product/AGENTS.md",
+    "templates/product/AGENTS.protocol.md",
+    "test/agentLanguage.test.ts",
+    "test/install.test.ts",
+    "test/orderScaffold.test.ts"
+  ]
+}
