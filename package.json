@@ -1,6 +1,6 @@
 {
   "name": "@coord/coordination",
-  "version": "0.0.18",
+  "version": "0.0.19",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.10.0",
@@ -10,7 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json",
     "lint": "eslint src test",
     "test": "pnpm test:fast && pnpm test:e2e",
-    "test:fast": "node --input-type=module -e \"import { readFileSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; const files = ['test/cli.test.ts', 'test/install.test.ts']; const originals = files.map((file) => [file, readFileSync(file, 'utf8')]); const version = JSON.parse(readFileSync('package.json', 'utf8')).version; let status = 1; try { for (const [file, original] of originals) writeFileSync(file, original.replace(/toBe\\(\\\"0\\\\.0\\\\.\\\\d+\\\"\\)/g, 'toBe(' + JSON.stringify(version) + ')')); status = spawnSync('pnpm', ['exec', 'vitest', 'run', '--config', 'vitest.config.ts'], { stdio: 'inherit' }).status ?? 1; } finally { for (const [file, original] of originals) writeFileSync(file, original); } process.exit(status);\"",
+    "test:fast": "vitest run --config vitest.config.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "check:version-bump": "pnpm build && node dist/checkVersionBump.js",
     "check:fast": "pnpm lint && pnpm typecheck && pnpm test:fast",
