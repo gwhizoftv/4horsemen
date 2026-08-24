@@ -2,10 +2,63 @@
 
 Bound plans reviewed:
 
-- Claude `0a7d41e2ee6135ebc5e1c4777be0226e1cb38c04`
-- Codex `a651dc57a1d1cddbf647decc0f7daf9fa2bfe8bd`
+- Cursor `bcf63b62794fb8245d8eabb16d35d38f88ee51e3` at `.plans/issue-109/plan.md`
+- Claude `0a7d41e2ee6135ebc5e1c4777be0226e1cb38c04` at `.plans/issue-109/plan.md`
+- Codex `a651dc57a1d1cddbf647decc0f7daf9fa2bfe8bd` at `.plans/issue-109/plan.md`
 
 ## Findings
+
+### Cursor — `src/cli.ts` drop handling still recomputes selection summaries
+
+**Plan claim:** `src/cli.ts` — “Update `rederiveAfterDrop` to recompute/invalidate
+derived plan and implementation selections from remaining accepted evidence.”
+
+**Rule:** Coordinator derivation must be idempotent, journaled exactly once per
+durable decision identity, and applied under the run-loop state lock — not from
+a parallel CLI path during owner drop handling.
+
+**Failure:** The current `rederiveAfterDrop` already recomputes winners with
+`deterministicWinner` and writes `cursors.selection` directly. Following this
+plan without narrowing the CLI role repeats that pattern against `derived`,
+creating the same dual-path race and duplicate-journal risk as Codex’s plan.
+
+**Smallest correction:** Invalidate affected `derived` slots in `dropAgent`; have
+the CLI filter accepted rows and clear owner questions only; leave
+re-derivation and journaling to the next coordinator tick.
+
+### Cursor — changed-file list omits required test and fixture updates
+
+**Plan claim:** The Tests section names eleven files; it does not list
+`test/action.test.ts`, `test/cursorHookUsage.test.ts`, or
+`test/support/fixtures/analytics-journal.jsonl`.
+
+**Rule:** After `RUNTIME_FORMAT_VERSION` 2 → 3 and removal of `expected*` order
+fields, every fixture that seeds format 2 journals or obsolete order shapes must
+be updated or `pnpm check:fast` fails.
+
+**Failure:** `test/action.test.ts` fixtures still carry `expectedSelectedAgents`;
+`test/cursorHookUsage.test.ts` seeds `formatVersion: 2` journal events; and
+`analytics-journal.jsonl` is entirely format 2. An implementer following Cursor’s
+file list alone will ship a broken test suite.
+
+**Smallest correction:** Add all three paths to the changed-file list (Codex
+includes them explicitly).
+
+### Cursor — `cursors.selection` retirement is underspecified
+
+**Plan claim:** `src/state.ts` — “Replace or retire `cursors.selection` so
+downstream routing cannot drift from derived evidence.”
+
+**Rule:** Issue 109 forbids parallel summary fields that can drift from cited
+evidence; canonical routing must read only `cursors.derived`.
+
+**Failure:** “Replace or retire” leaves room to keep a mirrored `selection`
+object updated alongside `derived`. Any missed write path restores the exact
+drift the issue removes, and drop/rebind logic would have to maintain two
+authorities.
+
+**Smallest correction:** Delete top-level `reviser`, `selection`, and obsolete
+`acceptedSubmission` result fields outright, as Claude and Codex specify.
 
 ### Codex — `src/cli.ts` drop handling recomputes and journals derived decisions
 
@@ -136,17 +189,21 @@ requires.
 
 ## Conclusion
 
-Both peer plans align with issue 109’s core goal — delete the three deterministic
-agent phases, persist canonical `derived` state, journal `decision-derived`, and
-fail closed on runtime format 2. Claude’s plan is stronger on module boundaries,
-lock-safe `derive-decision` semantics, `assertRuntimeFormat`, and exhaustive
-test numbering; Codex’s plan is stronger on decision-hash specification, protocol
-negatives, and fixture coverage breadth.
+All three bound plans (`bcf63b62794fb8245d8eabb16d35d38f88ee51e3`,
+`0a7d41e2ee6135ebc5e1c4777be0226e1cb38c04`, `a651dc57a1d1cddbf647decc0f7daf9fa2bfe8bd`)
+align on the core goal — delete the three deterministic agent phases, persist
+canonical `derived` state, journal `decision-derived`, and fail closed on runtime
+format 2. Claude’s plan is strongest on module boundaries, lock-safe
+`derive-decision` semantics, `assertRuntimeFormat`, and numbered test cases;
+Codex’s is strongest on decision-hash specification, protocol negatives, and
+fixture breadth; Cursor’s matches the issue scope but shares Codex’s CLI
+re-derivation ambiguity and omits several files both peers name.
 
-Neither plan is safe to implement verbatim without corrections: Codex must not
-derive or journal from the CLI drop path, must document coord-driver, and should
-adopt a pure derivation module; Claude must break the derive/runLoop import
-cycle, use a decision-specific hash, extend fixture updates, and add protocol
-negative tests. An implementation plan that merges Claude’s structure with
-Codex’s hash/fixture/protocol detail — and a single coordinator-side derivation
-path — will satisfy the issue acceptance criteria.
+No bound plan is safe to implement verbatim without corrections: Cursor and Codex
+must not derive or journal from the CLI drop path; Cursor must delete (not
+“retire”) parallel selection summaries and extend its test/fixture file list;
+Codex must document coord-driver and adopt a pure derivation module; Claude must
+break the derive/runLoop import cycle, use a decision-specific hash, extend
+fixture updates, and add protocol negative tests. A merged implementation plan
+with Claude’s structure, Codex’s hash/fixture/protocol detail, and a single
+coordinator-side derivation path will satisfy the issue acceptance criteria.
