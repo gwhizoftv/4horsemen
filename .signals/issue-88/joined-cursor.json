@@ -1,9 +1,0 @@
-{
-  "protocolVersion": 1,
-  "issue": 88,
-  "issueSessionId": "issue-88:26de98aae01426d582d17d15d1e33e1b6b3e3f90",
-  "agent": "cursor",
-  "artifact": "join",
-  "baselineSha": "26de98aae01426d582d17d15d1e33e1b6b3e3f90",
-  "automationDigest": "f6770a71b6fc999e087b2e44b6db8a2a3a9f04c309372e6782793363eabf81b3"
-}
