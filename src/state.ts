@@ -182,6 +182,11 @@ export const coordinatorConfigSchema = z
     verify: verifyConfigSchema.optional(),
     workflowCriticalPrefixes: z.array(pathTokenSchema).default([]),
     workflowCriticalFiles: z.array(pathTokenSchema).default([]),
+    /**
+     * Absolute mailbox for agent completion SHAs. Absent means derive the
+     * sibling of coord-root (`dirname(coordRoot)/completes`).
+     */
+    completesRoot: z.string().min(1).optional(),
     coordination: installStampSchema.optional()
   })
   .strict()
@@ -233,7 +238,8 @@ export const workspaceDeclarationSchema = z
           .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "context path must be confined")
       )
       .optional(),
-    pollIntervalMs: z.number().int().min(100).max(60_000).optional()
+    pollIntervalMs: z.number().int().min(100).max(60_000).optional(),
+    completesRoot: z.string().min(1).optional()
   })
   .strict();
 
@@ -274,6 +280,11 @@ export const startStateSchema = z
      * strict schema; see `StartStateInput` for the construction boundary.
      */
     contextPaths: z.array(z.string().min(1)).default([]),
+    /**
+     * Absolute completion mailbox used for this issue. Defaulted so a start.json
+     * written before this field still parses; new sessions always persist it.
+     */
+    completesRoot: z.string().min(1).optional(),
     createdAt: timestampSchema
   })
   .strict();
@@ -445,9 +456,10 @@ export type JournalEvent = z.infer<typeof journalEventSchema>;
  * re-adding it as optional keeps every existing typed initializer compiling —
  * a defaulted field must not become a required constructor argument.
  */
-export type StartStateInput = Omit<StartState, "formatVersion" | "createdAt" | "contextPaths"> & {
+export type StartStateInput = Omit<StartState, "formatVersion" | "createdAt" | "contextPaths" | "completesRoot"> & {
   createdAt?: string;
   contextPaths?: readonly string[];
+  completesRoot?: string;
 };
 
 const parseFile = <T>(path: string, schema: z.ZodType<T>): T => {
@@ -538,7 +550,12 @@ export const initializeOperationalState = (
   if (existsSync(paths.start) || existsSync(paths.cursors) || existsSync(paths.journal)) {
     throw new Error(`Runtime state already exists for issue ${input.issue}. Use resume or abandon it explicitly.`);
   }
-  const start = startStateSchema.parse({ ...input, formatVersion: RUNTIME_FORMAT_VERSION, createdAt: input.createdAt ?? now });
+  const start = startStateSchema.parse({
+    ...input,
+    formatVersion: RUNTIME_FORMAT_VERSION,
+    createdAt: input.createdAt ?? now,
+    completesRoot: input.completesRoot ?? paths.completesRoot
+  });
   const cursors = initialCursors(start, now);
   atomicWriteJson(paths.coordRoot, paths.start, start);
   atomicWriteJson(paths.coordRoot, paths.cursors, cursors);

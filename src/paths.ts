@@ -120,19 +120,62 @@ export type IssueRuntimePaths = {
   journal: string;
   issueSnapshot: string;
   agents: string;
+  issue: number;
+  /** Sibling mailbox root; completion SHAs live here, not beside action.md. */
+  completesRoot: string;
 };
+
+/** Default mailbox: sibling of coord-root named `completes`. */
+export const defaultCompletesRoot = (coordRoot: string): string => resolve(dirname(resolve(coordRoot)), "completes");
+
+export type SafeCompletesRootOptions = {
+  coordRoot: string;
+  completesRoot?: string;
+  agentRoots?: readonly string[];
+  create?: boolean;
+};
+
+/** Resolve the agent completion mailbox; it must not overlap coord-root or clones. */
+export const resolveSafeCompletesRoot = (options: SafeCompletesRootOptions): string => {
+  const coordReal = nearestExistingRealPath(options.coordRoot);
+  const requested = resolve(options.completesRoot ?? defaultCompletesRoot(options.coordRoot));
+  assertNoSymlink(requested, requested);
+  const completesReal = nearestExistingRealPath(requested);
+  if (isPathInside(coordReal, completesReal) || isPathInside(completesReal, coordReal)) {
+    throw new PathSafetyError(
+      `Completes root ${completesReal} overlaps coordinator root ${coordReal}. Choose a sibling mailbox.`
+    );
+  }
+  for (const agentRoot of options.agentRoots ?? []) {
+    const agentReal = nearestExistingRealPath(agentRoot);
+    if (isPathInside(agentReal, completesReal) || isPathInside(completesReal, agentReal)) {
+      throw new PathSafetyError(
+        `Completes root ${completesReal} overlaps configured agent clone ${agentReal}.`
+      );
+    }
+  }
+  if (options.create === true) {
+    mkdirSync(requested, { recursive: true, mode: 0o700 });
+    assertNoSymlink(requested, requested);
+  }
+  return requested;
+};
+
+export const issueCompletesDir = (paths: IssueRuntimePaths): string =>
+  containedPath(paths.completesRoot, `issue-${paths.issue}`);
 
 /** Short stable fingerprint of a workspace root for Terminal title grouping. */
 export const workspaceTerminalGroup = (coordRoot: string): string =>
   createHash("sha256").update(resolve(coordRoot)).digest("hex").slice(0, 10);
 
-export const issueRuntimePaths = (coordRoot: string, issue: number): IssueRuntimePaths => {
+export const issueRuntimePaths = (coordRoot: string, issue: number, completesRoot?: string): IssueRuntimePaths => {
   if (!Number.isInteger(issue) || issue < 1) {
     throw new PathSafetyError("Issue must be a positive integer.");
   }
   const root = resolve(coordRoot);
   const issueRoot = containedPath(root, `issue-${issue}`);
   const terminalGroup = workspaceTerminalGroup(root);
+  const mailbox = resolve(completesRoot ?? defaultCompletesRoot(root));
   return {
     coordRoot: root,
     // Nested workspaces also namespace tmux sessions; flat keeps legacy coord-N.
@@ -145,7 +188,9 @@ export const issueRuntimePaths = (coordRoot: string, issue: number): IssueRuntim
     agentLifecycle: containedPath(issueRoot, "agent-lifecycle.json"),
     journal: containedPath(issueRoot, "journal.jsonl"),
     issueSnapshot: containedPath(issueRoot, "github-issue.json"),
-    agents: containedPath(issueRoot, "agents")
+    agents: containedPath(issueRoot, "agents"),
+    issue,
+    completesRoot: mailbox
   };
 };
 
@@ -163,10 +208,11 @@ export const agentRuntimePaths = (paths: IssueRuntimePaths, agent: string): Agen
     throw new PathSafetyError(`Invalid agent id: ${agent}`);
   }
   const root = containedPath(paths.agents, agent);
+  const completeDir = containedPath(issueCompletesDir(paths), agent);
   return {
     root,
     action: containedPath(root, "action.md"),
-    complete: containedPath(root, "complete"),
+    complete: containedPath(completeDir, "complete"),
     renderLog: containedPath(root, "render.log")
   };
 };
@@ -178,10 +224,20 @@ export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly st
   assertNoSymlink(paths.coordRoot, paths.agents);
   mkdirSync(paths.agents, { recursive: true, mode: 0o700 });
   assertNoSymlink(paths.coordRoot, paths.agents);
+  mkdirSync(paths.completesRoot, { recursive: true, mode: 0o700 });
+  assertNoSymlink(paths.completesRoot, paths.completesRoot);
+  const mailboxIssue = issueCompletesDir(paths);
+  assertNoSymlink(paths.completesRoot, mailboxIssue);
+  mkdirSync(mailboxIssue, { recursive: true, mode: 0o700 });
+  assertNoSymlink(paths.completesRoot, mailboxIssue);
   for (const agent of agents) {
     const runtime = agentRuntimePaths(paths, agent);
     assertNoSymlink(paths.coordRoot, runtime.root);
     mkdirSync(runtime.root, { recursive: true, mode: 0o700 });
     assertNoSymlink(paths.coordRoot, runtime.root);
+    const completeDir = dirname(runtime.complete);
+    assertNoSymlink(paths.completesRoot, completeDir);
+    mkdirSync(completeDir, { recursive: true, mode: 0o700 });
+    assertNoSymlink(paths.completesRoot, completeDir);
   }
 };

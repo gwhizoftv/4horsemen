@@ -19,7 +19,9 @@ import {
   assertNoSymlink,
   containedPath,
   createIssueRuntime,
+  issueCompletesDir,
   issueRuntimePaths,
+  resolveSafeCompletesRoot,
   resolveSafeCoordRoot,
   type IssueRuntimePaths
 } from "./paths.js";
@@ -681,7 +683,13 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       agentRoots: agents.map((agent) => agent.root),
       create: false
     });
-    const paths = issueRuntimePaths(coordRoot, issue);
+    const completesRoot = resolveSafeCompletesRoot({
+      coordRoot,
+      completesRoot: config.completesRoot,
+      agentRoots: agents.map((agent) => agent.root),
+      create: true
+    });
+    const paths = issueRuntimePaths(coordRoot, issue, completesRoot);
     if (existsSync(paths.issueRoot)) {
       throw new Error(`Runtime state already exists for issue ${issue}. Use coord ${issue} to resume or abandon it explicitly.`);
     }
@@ -738,7 +746,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         agents: roster,
         checks: config.checks,
         pollIntervalMs: config.pollIntervalMs,
-        contextPaths: config.contextPaths
+        contextPaths: config.contextPaths,
+        completesRoot
       });
       initializeAgentLifecycle(paths, roster.map((agent) => agent.id));
       // Start the CLIs only after their owner runtime exists. SessionStart
@@ -746,6 +755,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       effects = await startEffects({ paths, issue, origin: config.origin, agents: roster, log: io.stdout });
     } catch (error) {
       rmSync(paths.issueRoot, { recursive: true, force: true });
+      const completesIssue = issueCompletesDir(paths);
+      if (existsSync(completesIssue)) rmSync(completesIssue, { recursive: true, force: true });
       if (effects !== null) {
         try {
           await effects.cleanup();

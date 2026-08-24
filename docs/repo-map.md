@@ -36,8 +36,9 @@ it, which is why neither has its own copy.
 
 ## Invariants worth knowing before you plan
 
-- **Runtime state is outside the clone.** `action.md` and `complete` live under
-  the coord root, never in the working tree.
+- **Runtime state is outside the clone.** `action.md` lives under the coord
+  root; `complete` (agent completion SHAs) lives under the sibling `completes/`
+  mailbox. Neither is in the working tree.
 - **`AGENTS.md` is skip-worktree in every agent clone.** It carries a managed
   protocol overlay. Editing it from a clone stages nothing, and clearing the bit
   is forbidden. See `src/agentsProtocol.ts`.

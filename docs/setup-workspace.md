@@ -19,6 +19,11 @@ unchanged: `git status` in the product master is empty afterwards. Everything
 coordination adds lives in each agent clone's untracked per-clone state
 (`.git/hooks/`, `.git/info/exclude`, local git config) or under `--coord-root`.
 
+Agent completion SHAs live in a sibling `completes/` mailbox (default:
+`dirname(coordRoot)/completes`), not under `coord-root`. Each agent's harness is
+granted only its own drop prefix (`completes/issue-N/<agent>`). Override with
+`completesRoot` in the workspace config for nested or non-sibling layouts.
+
 If the product already has its own hooks for its own humans, coordination leaves
 them alone. "No hooks for humans" means none *from coordination*.
 

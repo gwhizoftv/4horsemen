@@ -28,8 +28,9 @@ within derived runtime paths are rejected.
     journal.jsonl    append-only owner/effect audit
     agents/<agent>/
       action.md      restricted public order
-      complete       exact pushed SHA supplied by the agent
       render.log     optional human log
+  ../completes/issue-<n>/<agent>/
+    complete         exact pushed SHA supplied by the agent (sibling mailbox)
 ```
 
 For a fresh single-product onboard, `<workspace-root>` is the outer coord root

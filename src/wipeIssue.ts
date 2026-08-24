@@ -5,7 +5,7 @@ import { liftCloneAgentsProtocol } from "./agentsProtocol.js";
 import { detachIssue } from "./detachIssue.js";
 import { git, gitOrThrow, hasUncommittedChanges } from "./gitExec.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
-import { issueRuntimePaths } from "./paths.js";
+import { issueRuntimePaths, issueCompletesDir } from "./paths.js";
 import { cloneIsDirty } from "./setupWorkspace.js";
 import type { CoordinatorConfig } from "./state.js";
 import type { OwnerTerminalCloser } from "./tmux.js";
@@ -371,6 +371,11 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
       log(`${dryRun ? "would wipe" : "wiping"} runtime ${paths.issueRoot}\n`);
       if (!dryRun) rmSync(paths.issueRoot, { recursive: true, force: true });
       result.wipedRuntime = paths.issueRoot;
+    }
+    const completesIssueDir = issueCompletesDir(paths);
+    if (existsSync(completesIssueDir)) {
+      log(`${dryRun ? "would wipe" : "wiping"} completes ${completesIssueDir}\n`);
+      if (!dryRun) rmSync(completesIssueDir, { recursive: true, force: true });
     }
   } finally {
     // Always tear down UI once wipe has begun (after dirty check), even if clone

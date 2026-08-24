@@ -248,6 +248,7 @@ export type WorkspaceConfigInput = {
   workspaceDir: string;
   declared: WorkspaceDeclaration | null;
   proposal: ProjectPolicyProposal;
+  completesRoot: string;
 };
 
 /**
@@ -295,6 +296,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     ...(verify === undefined ? {} : { verify }),
     workflowCriticalPrefixes: declared.workflowCriticalPrefixes ?? input.proposal.workflowCriticalPrefixes,
     workflowCriticalFiles: declared.workflowCriticalFiles ?? input.proposal.workflowCriticalFiles,
+    completesRoot: input.completesRoot,
     coordination: stamp
   });
 };
@@ -444,6 +446,7 @@ export const writeAgentLauncher = (input: {
   label: string;
   baseBranch: string;
   options: EffectOptions;
+  completesDir?: string;
 }): void => {
   const library = join(input.installRoot, "scripts", "lib", "launcher.sh");
   if (!existsSync(library)) {
@@ -457,9 +460,20 @@ export const writeAgentLauncher = (input: {
   // exclude does not match, which then made the clone dirty.
   const stagingDir = mkdtempSync(join(tmpdir(), "coord-launcher-"));
   const staging = join(stagingDir, `start-${input.agent}.sh`);
+  const completesDir = input.completesDir ?? "";
   const render = spawnSync(
     "bash",
-    ["-c", '. "$1"; write_launcher "$2" "$3" "$4" "$5"', "_", library, staging, input.agent, input.label, input.baseBranch],
+    [
+      "-c",
+      '. "$1"; write_launcher "$2" "$3" "$4" "$5" "$6"',
+      "_",
+      library,
+      staging,
+      input.agent,
+      input.label,
+      input.baseBranch,
+      completesDir
+    ],
     { encoding: "utf8" }
   );
   if ((render.status ?? 1) !== 0) {

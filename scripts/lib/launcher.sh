@@ -14,18 +14,40 @@
 # A second copy of this template drifted from the first within a day of being
 # written. Keep both callers on these functions.
 
-# launcher_command <agent>
+# launcher_command <agent> [completes-dir]
 #
 # Emits the shell lines that launch one agent. This is the only place a vendor's
 # flags are recorded; setup scripts and the post-merge hook both read them here.
+# The optional second argument is the absolute agent mailbox root (completesRoot/<agent>);
+# when set and COORD_ISSUE is available at launch, the exact current drop directory
+# is derived and granted to the vendor CLI. When absent, behavior is unchanged.
 launcher_command() {
-  case "$1" in
+  local agent="$1"
+  local completes_dir="${2:-}"
+  # If a completes dir is available, derive the per-issue drop at launch:
+  local grant_block=""
+  if [[ -n "$completes_dir" ]]; then
+    grant_block="
+# Derive the current issue's completion drop directory at launch time.
+if [[ -n \"\${COORD_ISSUE:-}\" ]]; then
+  COORD_COMPLETES_DROP=\"${completes_dir}/issue-\${COORD_ISSUE}\"
+fi
+"
+  fi
+  case "$agent" in
     claude)
-      printf 'exec claude --permission-mode auto\n'
+      if [[ -n "$completes_dir" ]]; then
+        printf '%s' "$grant_block"
+        printf 'if [[ -n "${COORD_COMPLETES_DROP:-}" ]]; then\n  exec claude --permission-mode auto --add-dir "$COORD_COMPLETES_DROP"\nelse\n  exec claude --permission-mode auto\nfi\n'
+      else
+        printf 'exec claude --permission-mode auto\n'
+      fi
       ;;
     codex)
-      # complete lives under coord-runtime (outside the clone). workspace-write
-      # still prompts for that path; agent clones need unattended out-of-tree writes.
+      # Codex completion SHAs now live under the completes mailbox.
+      # danger-full-access remains because workspace-write does not support
+      # additional writable roots in current CLI; remove when codex gains that flag.
+      printf '%s' "$grant_block"
       printf 'exec codex --ask-for-approval never --sandbox danger-full-access\n'
       ;;
     antigravity)
@@ -38,12 +60,14 @@ launcher_command() {
       # max ~2.3 h on a product run). --dangerously-skip-permissions is a
       # separate flag, so keep the mode and add the grant. Codex already
       # launches unattended for the same reason.
+      printf '%s' "$grant_block"
       printf 'export PATH="$HOME/.local/bin:$PATH"\nexec agy --mode accept-edits --dangerously-skip-permissions\n'
       ;;
     gemini)
       printf 'exec gemini\n'
       ;;
     cursor)
+      printf '%s' "$grant_block"
       printf 'exec agent\n'
       ;;
     *)
@@ -52,14 +76,14 @@ launcher_command() {
   esac
 }
 
-# write_launcher <path> <agent> <label> <shared-branch>
+# write_launcher <path> <agent> <label> <shared-branch> [completes-dir]
 #
 # Writes an executable launcher, or returns 1 for an agent with no known launch
 # command rather than emitting a truncated script.
 write_launcher() {
-  local path="$1" agent="$2" label="$3" shared="$4" command
+  local path="$1" agent="$2" label="$3" shared="$4" completes_dir="${5:-}" command
 
-  command="$(launcher_command "$agent")" || return 1
+  command="$(launcher_command "$agent" "$completes_dir")" || return 1
 
   # cd by script location, not by a baked-in absolute path: a clone that moves
   # keeps working, and the file stays free of machine-specific state.

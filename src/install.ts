@@ -19,7 +19,7 @@ import {
   writeCloneHooks,
   type HookMode
 } from "./hookSync.js";
-import { isPathInside, resolveSafeCoordRoot, workspaceTerminalGroup } from "./paths.js";
+import { isPathInside, resolveSafeCompletesRoot, resolveSafeCoordRoot, workspaceTerminalGroup } from "./paths.js";
 import { clearManagedIgnoreFile, DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile } from "./productIgnore.js";
 import {
   agentCloneDirectory,
@@ -258,6 +258,12 @@ export const install = (options: InstallOptions): InstallResult => {
     agentRoots: options.agents.map((agent) => agentCloneDirectory(cloneRoot, project, agent)),
     create: !options.dryRun
   });
+  const agentRoots = options.agents.map((agent) => agentCloneDirectory(cloneRoot, project, agent));
+  const completesRoot = resolveSafeCompletesRoot({
+    coordRoot,
+    agentRoots,
+    create: !options.dryRun
+  });
   const workspace = selectWorkspaceLocation(coordRoot, project);
 
   const origin = options.origin ?? localConfigGet(productRoot, "remote.origin.url");
@@ -326,7 +332,8 @@ export const install = (options: InstallOptions): InstallResult => {
       cloneRoot,
       workspaceDir: workspace.workspaceRoot,
       declared,
-      proposal
+      proposal,
+      completesRoot
     },
     // A re-install must not look like a change just because time passed — but
     // only the timestamp may be carried over. Comparing three fields let a run
