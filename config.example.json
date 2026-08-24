@@ -43,6 +43,7 @@
   ],
   "branch": "issue-{issue}/{agent}",
   "baseBranch": "main",
+  "completesRoot": "/absolute/path/to/completes/coord-runtime",
   "profile": "consensus",
   "maxRevisionRounds": 3,
   "prPolicy": "coord-open-unmerged",

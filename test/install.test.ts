@@ -1,5 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { findAgentLanguageViolations } from "../src/agentLanguage.js";
 import { assertInstallDeletionAllowed, install, uninstall } from "../src/install.js";
@@ -503,6 +504,187 @@ describe("coord uninstall — scope", () => {
     const fixture = product();
     const installed = installOnce(fixture, { bootstrap: false });
     expectCoordinationDeletionRefused(fixture, installed);
+  });
+});
+
+describe("completion mailbox wiring", () => {
+  /**
+   * The grant is resolved by the generated launcher at exec time, not baked in
+   * at install: `githooks/post-merge` regenerates that file with no issue
+   * number in hand, so a baked-in path would disagree with whichever writer ran
+   * last. The clone key is how both writers reach the same mailbox.
+   */
+  it("records the mailbox root in the clone and grants only the current drop", () => {
+    const fixture = product();
+    const result = installOnce(fixture, { agents: ["claude", "codex"] });
+    const config = JSON.parse(readFileSync(result.configPath, "utf8")) as {
+      completesRoot?: string;
+      coordination?: { completesRoot?: string };
+    };
+    const mailbox = config.completesRoot as string;
+
+    expect(mailbox).toBeDefined();
+    expect(isAbsolute(mailbox)).toBe(true);
+    // A sibling, not a child: granting a path inside the coord root would grant
+    // cursors.json and every peer's action.md along with it.
+    expect(mailbox.startsWith(`${resolve(fixture.coordRoot)}/`)).toBe(false);
+    expect(existsSync(mailbox)).toBe(true);
+    expect(config.coordination?.completesRoot).toBe(mailbox);
+
+    for (const clone of result.clones) {
+      expect(git(clone, "config", "--local", "--get", "coord.completesRoot")).toBe(mailbox);
+    }
+
+    const launcher = readFileSync(join(result.clones[0] as string, "start-claude.sh"), "utf8");
+    expect(launcher).toContain("--add-dir");
+    expect(launcher).toContain('coord_drop="$coord_completes_root/issue-$COORD_ISSUE/claude"');
+    // Never the whole mailbox (peers' receipts) and never the runtime.
+    expect(launcher).not.toContain(`--add-dir "${mailbox}"`);
+    expect(launcher).not.toContain(resolve(fixture.coordRoot));
+  });
+
+  it("stops launching Codex with blanket filesystem access", () => {
+    const fixture = product();
+    const result = installOnce(fixture, { agents: ["codex"] });
+    const launcher = readFileSync(join(result.clones[0] as string, "start-codex.sh"), "utf8");
+    // danger-full-access existed only because `complete` sat under the coord
+    // root; the mailbox grant replaces the reason for it.
+    expect(launcher).not.toContain("danger-full-access");
+    expect(launcher).toContain("--sandbox workspace-write");
+    expect(launcher).toContain("--ask-for-approval never");
+  });
+
+  /**
+   * Executes the real generated launchers against stub harnesses and asserts the
+   * exact argv. Asserting the rendered text alone cannot see an expansion that
+   * aborts, a flag that lands in the wrong order, or a path with a space that
+   * splits into two arguments — all of which reach the vendor, not the file.
+   */
+  it("passes each harness exactly its own current drop, and nothing in manual mode", () => {
+    const fixture = product("plain");
+    // A space in the path: the grant has to survive as one argument.
+    const completesRoot = join(fixture.workspaceRoot, "completion mailbox");
+    const agents = ["claude", "codex", "cursor", "antigravity"] as const;
+    // The Antigravity launcher prepends $HOME/.local/bin, so HOME must point at
+    // the fixture or the machine's real agy would shadow the stub.
+    const home = join(fixture.workspaceRoot, "home");
+    const result = installOnce(fixture, { agents, completesRoot, home });
+    const bin = join(fixture.workspaceRoot, "stub-bin");
+    mkdirSync(bin);
+    for (const command of ["claude", "codex", "agent", "agy"]) {
+      writeFileSync(join(bin, command), '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$CAPTURE"\n', { mode: 0o755 });
+    }
+
+    const expected = {
+      claude: ["--permission-mode", "auto"],
+      codex: ["--ask-for-approval", "never", "--sandbox", "workspace-write"],
+      cursor: ["--sandbox", "enabled"],
+      antigravity: ["--mode", "accept-edits", "--dangerously-skip-permissions"]
+    } as const;
+
+    for (const [index, agent] of agents.entries()) {
+      const clone = result.clones[index] as string;
+      const drop = join(completesRoot, "issue-17", agent);
+      mkdirSync(drop, { recursive: true });
+      const capture = join(fixture.workspaceRoot, `${agent}.args`);
+      // /bin/bash, not `bash`: macOS ships 3.2, where expanding an empty array
+      // as "${a[@]}" under `set -u` aborts. A test that resolves a newer bash
+      // from PATH cannot see that, and the launcher runs under whatever the
+      // machine has.
+      execFileSync("/bin/bash", [join(clone, `start-${agent}.sh`)], {
+        cwd: clone,
+        env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_ISSUE: "17", CAPTURE: capture },
+        stdio: "ignore"
+      });
+      const argv = readFileSync(capture, "utf8").trimEnd().split("\n");
+      expect(argv).toEqual([...expected[agent], "--add-dir", drop]);
+      // Never the runtime, never the whole mailbox, never a peer's drop.
+      expect(argv).not.toContain(fixture.coordRoot);
+      expect(argv).not.toContain(completesRoot);
+      expect(argv).not.toContain(join(completesRoot, "issue-17", agents[(index + 1) % agents.length]));
+    }
+
+    // Manual mode: no issue, so no grant — and the harness must still start.
+    const claudeClone = result.clones[0] as string;
+    const manual = join(fixture.workspaceRoot, "claude-manual.args");
+    execFileSync("/bin/bash", [join(claudeClone, "start-claude.sh")], {
+      cwd: claudeClone,
+      env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_ISSUE: "", CAPTURE: manual },
+      stdio: "ignore"
+    });
+    expect(readFileSync(manual, "utf8").trimEnd().split("\n")).toEqual(["--permission-mode", "auto"]);
+  });
+
+  /**
+   * `scripts/setup_antigravity.sh` writes a user-global settings file that no
+   * `coord` command reads back, so an upgrade repairs it or nothing does. Runs
+   * the script's own embedded node program against a settings.json from before
+   * the mailbox existed.
+   */
+  it("withdraws the peer-clone trust and non-workspace access an older Antigravity install kept", () => {
+    const fixture = product();
+    const script = readFileSync(join(repoRoot, "scripts", "setup_antigravity.sh"), "utf8");
+    const program = /^node - "\$SETTINGS_FILE" "\$CLONE_DIR" <<'EOF'\n([\s\S]*?)\nEOF$/m.exec(script)?.[1];
+    expect(program).toBeDefined();
+    // .cjs: the embedded program uses require(), and this package is type: module.
+    const programPath = join(fixture.workspaceRoot, "antigravity-settings.cjs");
+    writeFileSync(programPath, program as string);
+
+    const clone = join(fixture.workspaceRoot, "myapp-antigravity");
+    const settingsPath = join(fixture.workspaceRoot, "settings.json");
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        // What an install from before this issue left behind.
+        allowNonWorkspaceAccess: true,
+        permissions: { allow: ["command(ls)"] },
+        trustedWorkspaces: [
+          join(fixture.workspaceRoot, "myapp-claude"),
+          join(fixture.workspaceRoot, "myapp-codex"),
+          clone,
+          join(fixture.workspaceRoot, "owner-notes")
+        ]
+      })
+    );
+
+    execFileSync("node", [programPath, settingsPath, clone], { stdio: "ignore" });
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      allowNonWorkspaceAccess: boolean;
+      permissions: { allow: string[] };
+      trustedWorkspaces: string[];
+    };
+
+    // A user-global grant of non-workspace access hands back the coordinator
+    // runtime the mailbox exists to keep out; a launcher flag cannot narrow it.
+    expect(settings.allowNonWorkspaceAccess).toBe(false);
+    // Peer clones this script itself added are withdrawn: Antigravity must not
+    // hold write trust on another agent's working tree.
+    expect(settings.trustedWorkspaces).not.toContain(join(fixture.workspaceRoot, "myapp-claude"));
+    expect(settings.trustedWorkspaces).not.toContain(join(fixture.workspaceRoot, "myapp-codex"));
+    // Its own clone stays, and owner-authored entries are not this script's to
+    // delete.
+    expect(settings.trustedWorkspaces).toContain(clone);
+    expect(settings.trustedWorkspaces).toContain(join(fixture.workspaceRoot, "owner-notes"));
+    expect(settings.permissions.allow).toContain("command(ls)");
+  });
+
+  it("refuses a second workspace that would share one mailbox", () => {
+    const first = product();
+    const second = product();
+    const shared = join(first.workspaceRoot, "shared-mailbox");
+    installOnce(first, { completesRoot: shared });
+    // Same receipts directory for a different workspace: issue-42/claude/complete
+    // would be one file for two products, and the last writer would win.
+    expect(() => installOnce(second, { completesRoot: shared })).toThrow(/already holds receipts for/);
+  });
+
+  it("uninstall clears the mailbox key so a stale grant cannot survive", () => {
+    const fixture = product();
+    const installed = installOnce(fixture, { agents: ["claude"] });
+    uninstallOnce(fixture);
+    expect(tryGit(installed.clones[0] as string, "config", "--local", "--get", "coord.completesRoot").exitCode).not.toBe(
+      0
+    );
   });
 });
 

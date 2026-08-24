@@ -19,7 +19,10 @@ import {
   assertNoSymlink,
   containedPath,
   createIssueRuntime,
+  defaultCompletesRoot,
   issueRuntimePaths,
+  removeIssueMailbox,
+  resolveSafeCompletesRoot,
   resolveSafeCoordRoot,
   type IssueRuntimePaths
 } from "./paths.js";
@@ -164,11 +167,27 @@ const parseIssue = (value: string): number => {
   return issue;
 };
 
+/**
+ * Re-derive the paths using the mailbox root frozen in `start.json`.
+ *
+ * The configured root is only the default for a *new* issue. Once an issue is
+ * running, its receipts must keep resolving to the tree the agents were granted
+ * at launch: `coord install` may rewrite config mid-issue, and re-reading the
+ * mailbox from config would leave the coordinator polling a directory no
+ * harness can write.
+ */
+const withStoredMailbox = (paths: IssueRuntimePaths): IssueRuntimePaths => {
+  if (!existsSync(paths.start)) return paths;
+  const start = readStartState(paths);
+  if (start.completesRoot === undefined || resolve(start.completesRoot) === paths.completesRoot) return paths;
+  return issueRuntimePaths(paths.coordRoot, paths.issue, start.completesRoot);
+};
+
 const context = (parsed: ParsedArgs, io: CliIo): IssueRuntimePaths => {
   const coordRoot = requireFlag(parsed, "coord-root");
   const issueValue = parsed.flags.get("issue") ?? io.env.COORD_ISSUE;
   if (issueValue === undefined) throw new Error("--issue or COORD_ISSUE is required.");
-  return issueRuntimePaths(resolve(io.cwd, coordRoot), parseIssue(issueValue));
+  return withStoredMailbox(issueRuntimePaths(resolve(io.cwd, coordRoot), parseIssue(issueValue)));
 };
 
 const allowedFlags = (parsed: ParsedArgs, allowed: readonly string[]): void => {
@@ -181,12 +200,12 @@ const help = `coord — owner-side workflow driver
 
 Usage:
   coord --version | -V | version
-  coord onboard <product> [--coord-root <path>] [--agents <a,b,c>] [--profile <p>]
+  coord onboard <product> [--coord-root <path>] [--completes-root <path>] [--agents <a,b,c>] [--profile <p>]
   coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord manual [--product <path> | --config <path> --coord-root <path>]
   coord install --product <path> --coord-root <external-path> --agents <a,b,c> [--profile <p>]
-                [--clone-root <dir>] [--declare <file>] [--write-product] [--vendor]
-                [--bootstrap-coordination] [--dry-run]
+                [--completes-root <path>] [--clone-root <dir>] [--declare <file>]
+                [--write-product] [--vendor] [--bootstrap-coordination] [--dry-run]
   coord uninstall --coord-root <path> --product <path> [--delete-clones] [--force]
                   [--wipe-runtime] [--delete-coordination] [--dry-run]
   coord doctor --coord-root <path> --product <path>
@@ -454,8 +473,8 @@ const existingIssueRuntime = (resolution: StartResolution, issue: number): Issue
         "remove or archive the stale copy before continuing."
     );
   }
-  if (currentMatches) return current;
-  if (legacyMatches) return legacy;
+  if (currentMatches) return withStoredMailbox(current);
+  if (legacyMatches) return legacy === null ? null : withStoredMailbox(legacy);
   if (existsSync(current.start)) {
     throw new Error(`Issue ${issue} runtime at ${current.issueRoot} belongs to a different workspace.`);
   }
@@ -681,9 +700,23 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       agentRoots: agents.map((agent) => agent.root),
       create: false
     });
-    const paths = issueRuntimePaths(coordRoot, issue);
+    // Resolved once here and then frozen into start.json: every later command
+    // for this issue reads it from there, not from a config that may move.
+    const completesRoot = resolveSafeCompletesRoot({
+      completesRoot: config.completesRoot ?? defaultCompletesRoot(coordRoot),
+      coordRoot,
+      agentRoots: agents.map((agent) => agent.root),
+      create: true
+    });
+    const paths = issueRuntimePaths(coordRoot, issue, completesRoot);
     if (existsSync(paths.issueRoot)) {
       throw new Error(`Runtime state already exists for issue ${issue}. Use coord ${issue} to resume or abandon it explicitly.`);
+    }
+    if (existsSync(paths.completesIssueRoot)) {
+      throw new Error(
+        `A completion mailbox already exists for issue ${issue} at ${paths.completesIssueRoot}. ` +
+          "Wipe it with coord wipe-issue before starting; a stale receipt there would be read as completion intent."
+      );
     }
 
     const snapshot = await fetchGitHubIssue({ origin: config.origin, issue, cwd: io.cwd, runner });
@@ -746,6 +779,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       effects = await startEffects({ paths, issue, origin: config.origin, agents: roster, log: io.stdout });
     } catch (error) {
       rmSync(paths.issueRoot, { recursive: true, force: true });
+      // The mailbox is a separate tree, so the rollback has to name it too.
+      // startIssue refuses to run when either tree already exists, so an orphan
+      // drop directory from a failed start would block the retry it invites.
+      removeIssueMailbox(paths);
       if (effects !== null) {
         try {
           await effects.cleanup();
@@ -818,7 +855,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "onboard") {
-      allowedFlags(parsed, ["coord-root", "clone-root", "agents", "profile"]);
+      allowedFlags(parsed, ["coord-root", "completes-root", "clone-root", "agents", "profile"]);
       if (parsed.positionals.length !== 1) throw new Error("onboard requires exactly one product path.");
       const agents = (parsed.flags.get("agents") ?? "claude,codex,cursor,antigravity")
         .split(",")
@@ -833,6 +870,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         agents,
         profile,
         ...(parsed.flags.has("coord-root") ? { coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")) } : {}),
+        ...(parsed.flags.has("completes-root")
+          ? { completesRoot: resolve(io.cwd, requireFlag(parsed, "completes-root")) }
+          : {}),
         ...(parsed.flags.has("clone-root") ? { cloneRoot: resolve(io.cwd, requireFlag(parsed, "clone-root")) } : {}),
         ...(dependencies.home === undefined ? {} : { home: dependencies.home }),
         log: io.stdout
@@ -845,6 +885,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       allowedFlags(parsed, [
         "product",
         "coord-root",
+        "completes-root",
         "agents",
         "profile",
         "clone-root",
@@ -869,6 +910,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
         agents,
         profile,
+        ...(parsed.flags.has("completes-root")
+          ? { completesRoot: resolve(io.cwd, requireFlag(parsed, "completes-root")) }
+          : {}),
         ...(parsed.flags.has("clone-root") ? { cloneRoot: resolve(io.cwd, requireFlag(parsed, "clone-root")) } : {}),
         ...(parsed.flags.has("declare") ? { declarePath: resolve(io.cwd, requireFlag(parsed, "declare")) } : {}),
         ...(parsed.flags.has("origin") ? { origin: requireFlag(parsed, "origin") } : {}),
@@ -1056,6 +1100,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         config: resolution.config,
         configPath: resolution.configPath,
         coordRoot: resolution.runtimeRoot,
+        completesRoot: withStoredMailbox(issueRuntimePaths(resolution.runtimeRoot, issue, resolution.config.completesRoot))
+          .completesRoot,
         force: flagIsSet(parsed, "force"),
         dryRun: flagIsSet(parsed, "dry-run"),
         log: io.stdout

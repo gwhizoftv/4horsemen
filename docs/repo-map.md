@@ -36,8 +36,12 @@ it, which is why neither has its own copy.
 
 ## Invariants worth knowing before you plan
 
-- **Runtime state is outside the clone.** `action.md` and `complete` live under
-  the coord root, never in the working tree.
+- **Runtime state is outside the clone.** `action.md` lives under the coord
+  root, never in the working tree. `complete` is not there either: the
+  completion receipt is the one file an agent writes, so it lives in a mailbox
+  beside the coord root — `completes/<workspace>/issue-<n>/<agent>/complete` —
+  not in the clone, and not next to `cursors.json`. `src/paths.ts` owns that
+  boundary; `scripts/lib/launcher.sh` owns the per-issue harness grant.
 - **`AGENTS.md` is skip-worktree in every agent clone.** It carries a managed
   protocol overlay. Editing it from a clone stages nothing, and clearing the bit
   is forbidden. See `src/agentsProtocol.ts`.

@@ -17,7 +17,7 @@ const order = (root: string): InternalOrder => ({
   stepId: "R3.review",
   evidenceId: "review-published",
   requiredPath: ".plans/issue-1/review.md",
-  completePath: join(root, "agents/codex/complete"),
+  completePath: join(root, "completes", "issue-1", "codex", "complete"),
   branch: "issue-1/codex",
   round: null,
   issueSessionId: `issue-1:${"1".repeat(40)}`,
@@ -56,7 +56,25 @@ describe("agent actions", () => {
     const path = join(root, "agents/codex/action.md");
     writeAction(root, path, order(root));
     expect(readAction(path).agent).toBe("codex");
-    expect(readFileSync(path, "utf8")).toContain(join(root, "agents/codex/complete"));
+    expect(readFileSync(path, "utf8")).toContain(join(root, "completes", "issue-1", "codex", "complete"));
+  });
+
+  it("names the mailbox receipt in the body and keeps front matter to three fields", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-action-"));
+    roots.push(root);
+    const raw = renderAction(order(root));
+    const [, frontMatter = "", body = ""] = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(raw) ?? [];
+
+    // The absolute receipt path is what an agent acts on, so it belongs in the
+    // body the agent reads. Front matter stays the restricted three fields: a
+    // completePath key there would become a parsed field agents could rely on.
+    expect(body).toContain(join(root, "completes", "issue-1", "codex", "complete"));
+    expect(frontMatter).not.toContain("complete");
+    expect(frontMatter.split("\n").map((line) => line.split(":")[0])).toEqual([
+      "actionId",
+      "agent",
+      "requiredPath"
+    ]);
   });
 
   it.each([

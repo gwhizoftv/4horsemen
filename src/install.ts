@@ -19,7 +19,14 @@ import {
   writeCloneHooks,
   type HookMode
 } from "./hookSync.js";
-import { isPathInside, resolveSafeCoordRoot, workspaceTerminalGroup } from "./paths.js";
+import {
+  assertMailboxClaim,
+  defaultCompletesRoot,
+  isPathInside,
+  resolveSafeCompletesRoot,
+  resolveSafeCoordRoot,
+  workspaceTerminalGroup
+} from "./paths.js";
 import { clearManagedIgnoreFile, DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile } from "./productIgnore.js";
 import {
   agentCloneDirectory,
@@ -93,6 +100,12 @@ export type InstallOptions = {
   dryRun: boolean;
   log: Logger;
   now?: string;
+  /**
+   * Owner override for the completion mailbox root. Defaults to the sibling of
+   * the coord root; a nested or shared runtime that does not share that parent
+   * has to state one, or two products would drop receipts in the same tree.
+   */
+  completesRoot?: string;
   /** Test/embedding override for the one Antigravity user-global setting. */
   home?: string | null;
 };
@@ -259,6 +272,27 @@ export const install = (options: InstallOptions): InstallResult => {
     create: !options.dryRun
   });
   const workspace = selectWorkspaceLocation(coordRoot, project);
+  // Resolved before any clone is wired: an unsafe mailbox must fail the install
+  // rather than be discovered when the first agent cannot publish its SHA.
+  const completesRoot = resolveSafeCompletesRoot({
+    // Sibling of the *outer* root either way, so the mailbox never lands inside
+    // the runtime tree. Flat gets the bare sibling (the documented topology);
+    // nested adds its project, because several products share one outer root.
+    completesRoot:
+      options.completesRoot ??
+      defaultCompletesRoot(coordRoot, workspace.layout === "nested" ? project : undefined),
+    coordRoot,
+    agentRoots: options.agents.map((agent) => agentCloneDirectory(cloneRoot, project, agent)),
+    create: !options.dryRun
+  });
+  // Two flat runtimes under one parent derive the same mailbox; nothing in the
+  // path distinguishes them. Refuse here, where --completes-root is still an
+  // option, rather than letting both products write one receipt file.
+  assertMailboxClaim({
+    completesRoot,
+    configPath: workspace.configPath,
+    write: !options.dryRun
+  });
 
   const origin = options.origin ?? localConfigGet(productRoot, "remote.origin.url");
   if (origin === null || origin === "") {
@@ -310,7 +344,8 @@ export const install = (options: InstallOptions): InstallResult => {
     // bootstrap created this checkout and may authorize later deletion.
     ownsInstallRoot: bootstrapOwned,
     wroteProductIgnore: options.writeProduct,
-    wroteAgentsMd: options.writeProduct && !existsSync(agentsMdPath)
+    wroteAgentsMd: options.writeProduct && !existsSync(agentsMdPath),
+    completesRoot
   };
   // Only used to carry a timestamp forward. A config that no longer parses —
   // typically one written before a schema change — must not stop the installer
@@ -326,7 +361,8 @@ export const install = (options: InstallOptions): InstallResult => {
       cloneRoot,
       workspaceDir: workspace.workspaceRoot,
       declared,
-      proposal
+      proposal,
+      completesRoot
     },
     // A re-install must not look like a change just because time passed — but
     // only the timestamp may be carried over. Comparing three fields let a run
@@ -371,7 +407,8 @@ export const install = (options: InstallOptions): InstallResult => {
         remoteName: "origin",
         installRoot: options.vendor ? null : installRoot,
         cliEntry,
-        workspaceConfig: configPath
+        workspaceConfig: configPath,
+        completesRoot
       },
       effects
     );
@@ -686,9 +723,14 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
     // root, wipe the whole coord-runtime folder (what operators expect). Shared
     // roots still only drop this product's scoped targets so siblings survive.
     const others = otherWorkspaceConfigs(coordRoot, configPath);
+    // The mailbox is a separate tree, so it needs its own target. A receipt left
+    // behind after a wipe is read as completion intent by whatever reuses that
+    // issue number next. Only wipe it when this product is the last claim on the
+    // runtime: a shared root means a sibling workspace still owns its receipts.
+    const mailbox = config.completesRoot ?? stamp?.completesRoot ?? defaultCompletesRoot(coordRoot);
     const targets =
       others.length === 0
-        ? [coordRoot]
+        ? [coordRoot, mailbox]
         : workspace.layout === "flat"
           ? flatRuntimeTargets(coordRoot)
           : [workspaceDir];
@@ -719,6 +761,8 @@ export type OnboardOptions = {
   installRoot: string;
   productRoot: string;
   coordRoot?: string;
+  /** Owner override for the completion mailbox root; see InstallOptions. */
+  completesRoot?: string;
   cloneRoot?: string;
   agents?: readonly string[];
   profile?: string;
@@ -736,6 +780,7 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     installRoot: options.installRoot,
     productRoot,
     coordRoot,
+    ...(options.completesRoot === undefined ? {} : { completesRoot: resolve(options.completesRoot) }),
     cloneRoot: resolve(options.cloneRoot ?? parent),
     agents: options.agents ?? ["claude", "codex", "cursor", "antigravity"],
     profile: options.profile ?? "consensus",

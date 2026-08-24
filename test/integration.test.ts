@@ -146,7 +146,11 @@ describe("four-agent coordinator canary", () => {
       const submit = (agent: string, content: string): string => {
         const order = currentOrder(agent);
         const submission = commitAndPush(agent, order.requiredPath, content, `${order.stepId} ${agent}`);
-        writeFileSync(agentRuntimePaths(paths, agent).complete, `${submission}\n`);
+        const receipt = agentRuntimePaths(paths, agent).complete;
+        // End to end, through the mailbox: every agent publishes its SHA to its
+        // own drop and the workflow still advances on it.
+        expect(receipt).toBe(join(paths.completesRoot, "issue-1", agent, "complete"));
+        writeFileSync(receipt, `${submission}\n`);
         return submission;
       };
 
@@ -407,9 +411,11 @@ Implement the selected product files.
 
 describe("lifecycle nudge canary", () => {
   it("does not pile a second prompt after 45 seconds and permits one after the matching turn stops", async () => {
-    const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-e2e-"));
-    roots.push(root);
-    const paths = issueRuntimePaths(root, 1);
+    const workspace = mkdtempSync(join(tmpdir(), "coord-lifecycle-e2e-"));
+    roots.push(workspace);
+    const root = join(workspace, "coord-runtime");
+    mkdirSync(root, { recursive: true });
+    const paths = issueRuntimePaths(root, 1, join(workspace, "completes"));
     createIssueRuntime(paths, ["codex"]);
     initializeOperationalState(paths, {
       issue: 1,

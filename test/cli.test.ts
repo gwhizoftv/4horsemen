@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeAction } from "../src/action.js";
 import { automationDigestMaterial, runCli, type CliRunLoop } from "../src/cli.js";
@@ -899,6 +899,16 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     expect(messages.join("")).not.toContain("Invalid");
     expect(messages.join("")).not.toContain("Unknown option");
     expect(existsSync(issueRuntimePaths(runtime, 1).issueSnapshot)).toBe(true);
+
+    // The mailbox is frozen into start.json rather than re-read from config on
+    // every command: a reinstall that moved it would otherwise leave the
+    // coordinator polling a tree no running harness holds a grant to.
+    const started1 = readStartState(issueRuntimePaths(runtime, 1));
+    const configured = readConfig(configPath).completesRoot as string;
+    expect(started1.completesRoot).toBe(configured);
+    const paths = issueRuntimePaths(runtime, 1, started1.completesRoot);
+    expect(existsSync(agentRuntimePaths(paths, "claude").completeDir)).toBe(true);
+    expect(agentRuntimePaths(paths, "claude").complete.startsWith(`${resolve(runtime)}/`)).toBe(false);
   });
 
   it("resolves analytics through an onboarded product", async () => {

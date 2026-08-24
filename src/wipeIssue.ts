@@ -5,7 +5,7 @@ import { liftCloneAgentsProtocol } from "./agentsProtocol.js";
 import { detachIssue } from "./detachIssue.js";
 import { git, gitOrThrow, hasUncommittedChanges } from "./gitExec.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
-import { issueRuntimePaths } from "./paths.js";
+import { issueRuntimePaths, removeIssueMailbox } from "./paths.js";
 import { cloneIsDirty } from "./setupWorkspace.js";
 import type { CoordinatorConfig } from "./state.js";
 import type { OwnerTerminalCloser } from "./tmux.js";
@@ -17,6 +17,8 @@ export type WipeIssueOptions = {
   config: CoordinatorConfig;
   configPath: string;
   coordRoot: string;
+  /** Mailbox root for this workspace; defaults to the sibling of coordRoot. */
+  completesRoot?: string;
   force?: boolean;
   dryRun?: boolean;
   log?: WipeIssueLogger;
@@ -30,6 +32,8 @@ export type WipeIssueResult = {
   missingRemoteBranches: string[];
   keptProductBranches: string[];
   wipedRuntime: string | null;
+  /** This issue's mailbox subtree, when one was removed. */
+  wipedCompletes: string | null;
   killedSessions: string[];
   closedTerminalTitles: string[];
 };
@@ -195,6 +199,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     missingRemoteBranches: [],
     keptProductBranches: [],
     wipedRuntime: null,
+    wipedCompletes: null,
     killedSessions: [],
     closedTerminalTitles: []
   };
@@ -213,7 +218,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     );
   }
 
-  const paths = issueRuntimePaths(options.coordRoot, options.issue);
+  const paths = issueRuntimePaths(options.coordRoot, options.issue, options.completesRoot);
   const productRoot = options.config.coordination?.productRoot;
   const { byBranch: rosterByBranch, finals: finalBranches } = rosterBranchMap(
     options.config.branch,
@@ -367,6 +372,14 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
       keepRemoteBranches
     });
 
+    // The two trees are wiped independently: either can exist without the other
+    // (a failed start creates the mailbox first), and a receipt that survives a
+    // wipe is read as completion intent by a rerun of the same issue number.
+    if (existsSync(paths.completesIssueRoot)) {
+      log(`${dryRun ? "would wipe" : "wiping"} completion mailbox ${paths.completesIssueRoot}\n`);
+      if (!dryRun) removeIssueMailbox(paths);
+      result.wipedCompletes = paths.completesIssueRoot;
+    }
     if (existsSync(paths.issueRoot)) {
       log(`${dryRun ? "would wipe" : "wiping"} runtime ${paths.issueRoot}\n`);
       if (!dryRun) rmSync(paths.issueRoot, { recursive: true, force: true });
