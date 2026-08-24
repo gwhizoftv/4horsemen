@@ -615,6 +615,59 @@ describe("completion mailbox wiring", () => {
     expect(readFileSync(manual, "utf8").trimEnd().split("\n")).toEqual(["--permission-mode", "auto"]);
   });
 
+  /**
+   * `scripts/setup_antigravity.sh` writes a user-global settings file that no
+   * `coord` command reads back, so an upgrade repairs it or nothing does. Runs
+   * the script's own embedded node program against a settings.json from before
+   * the mailbox existed.
+   */
+  it("withdraws the peer-clone trust and non-workspace access an older Antigravity install kept", () => {
+    const fixture = product();
+    const script = readFileSync(join(repoRoot, "scripts", "setup_antigravity.sh"), "utf8");
+    const program = /^node - "\$SETTINGS_FILE" "\$CLONE_DIR" <<'EOF'\n([\s\S]*?)\nEOF$/m.exec(script)?.[1];
+    expect(program).toBeDefined();
+    // .cjs: the embedded program uses require(), and this package is type: module.
+    const programPath = join(fixture.workspaceRoot, "antigravity-settings.cjs");
+    writeFileSync(programPath, program as string);
+
+    const clone = join(fixture.workspaceRoot, "myapp-antigravity");
+    const settingsPath = join(fixture.workspaceRoot, "settings.json");
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        // What an install from before this issue left behind.
+        allowNonWorkspaceAccess: true,
+        permissions: { allow: ["command(ls)"] },
+        trustedWorkspaces: [
+          join(fixture.workspaceRoot, "myapp-claude"),
+          join(fixture.workspaceRoot, "myapp-codex"),
+          clone,
+          join(fixture.workspaceRoot, "owner-notes")
+        ]
+      })
+    );
+
+    execFileSync("node", [programPath, settingsPath, clone], { stdio: "ignore" });
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      allowNonWorkspaceAccess: boolean;
+      permissions: { allow: string[] };
+      trustedWorkspaces: string[];
+    };
+
+    // A user-global grant of non-workspace access hands back the coordinator
+    // runtime the mailbox exists to keep out; a launcher flag cannot narrow it.
+    expect(settings.allowNonWorkspaceAccess).toBe(false);
+    // Peer clones this script itself added are withdrawn: Antigravity must not
+    // hold write trust on another agent's working tree.
+    expect(settings.trustedWorkspaces).not.toContain(join(fixture.workspaceRoot, "myapp-claude"));
+    expect(settings.trustedWorkspaces).not.toContain(join(fixture.workspaceRoot, "myapp-codex"));
+    // Its own clone stays, and owner-authored entries are not this script's to
+    // delete.
+    expect(settings.trustedWorkspaces).toContain(clone);
+    expect(settings.trustedWorkspaces).toContain(join(fixture.workspaceRoot, "owner-notes"));
+    expect(settings.permissions.allow).toContain("command(ls)");
+  });
+
   it("refuses a second workspace that would share one mailbox", () => {
     const first = product();
     const second = product();

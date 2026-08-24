@@ -96,6 +96,17 @@ const [,, settingsPath, cloneDir] = process.argv;
 // granted per issue by the launcher (--add-dir), not by blanket trust here.
 const agentClones = [cloneDir];
 
+// Paths an earlier version of THIS script derived and trusted: the sibling
+// clones of the other agents it knew about. They are this script's own output,
+// not owner-authored entries, which is what makes removing them safe — and
+// removing them is the only way an upgraded install stops trusting a peer's
+// working tree. Anything else in trustedWorkspaces is left alone.
+const parentDir = path.dirname(cloneDir);
+const projectName = path.basename(cloneDir).replace(/-antigravity$/, '');
+const managedPeerClones = ['claude', 'codex']
+  .map(agent => path.join(parentDir, `${projectName}-${agent}`))
+  .filter(clone => clone !== cloneDir);
+
 let settings = {
   // The completion receipt is the only file this agent writes outside its
   // clone, and the launcher grants exactly that directory. Blanket
@@ -176,12 +187,16 @@ for (const clone of agentClones) {
   }
 }
 
-// Repair an install that predates the mailbox: a settings.json carried forward
-// from before still says true, and a launcher grant cannot narrow what a
-// user-global setting has already widened.
+// Repair an install that predates the mailbox. A settings.json carried forward
+// from before still says true and still trusts the peer clones this script
+// used to add; a launcher grant cannot narrow what a user-global setting has
+// already widened, so both have to be withdrawn here.
 if (settings.allowNonWorkspaceAccess !== false) {
   settings.allowNonWorkspaceAccess = false;
 }
+settings.trustedWorkspaces = settings.trustedWorkspaces.filter(
+  clone => !managedPeerClones.includes(clone)
+);
 
 fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n",
 'utf8');
