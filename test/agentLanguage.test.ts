@@ -28,7 +28,7 @@ import {
   readStartState,
   writeCursorsState
 } from "../src/state.js";
-import { STEP_DEFINITIONS, type EvidenceId, type WorkflowStepId } from "../src/steps.js";
+import { STEP_DEFINITIONS, type WorkflowStepId } from "../src/steps.js";
 import { renderNudgeText } from "../src/tmux.js";
 
 const repoRoot = new URL("..", import.meta.url).pathname;
@@ -143,12 +143,30 @@ const seedAcceptedSubmissions = (paths: ReturnType<typeof fixture>) => {
     paths,
     cursorsStateSchema.parse({
       ...current,
-      reviser: "codex",
-      selection: {
-        planAgents: ["claude"],
-        implementationAgent: "codex",
-        implementationPin: "5".repeat(40),
-        reviser: "codex"
+      derived: {
+        planSelection: {
+          algorithm: "plurality-active-roster-v1",
+          inputSetHash: "a".repeat(64),
+          activeRoster: current.activeRoster,
+          inputs: [],
+          decisionId: "plan-selection:test",
+          supersedes: null,
+          decidedAt: now,
+          selectedAgents: ["claude"]
+        },
+        implementationSelection: {
+          algorithm: "plurality-active-roster-v1",
+          inputSetHash: "b".repeat(64),
+          activeRoster: current.activeRoster,
+          inputs: [],
+          decisionId: "implementation-selection:test",
+          supersedes: null,
+          decidedAt: now,
+          winner: "codex",
+          implementationPin: "5".repeat(40),
+          reviser: "codex"
+        },
+        consensus: null
       },
       accepted,
       updatedAt: now
@@ -289,14 +307,14 @@ describe("agent-facing language", () => {
   });
 
   it("covers every workflow step and every evidence id", () => {
-    expect(everyStep).toHaveLength(13);
+    expect(everyStep).toHaveLength(10);
     const subjects = new Set<string>();
     for (const stepId of everyStep) {
       const subject = agentFacingSubject(STEP_DEFINITIONS[stepId].evidenceId);
       expect(subject, stepId).toBeTruthy();
       subjects.add(subject);
     }
-    expect(subjects.size).toBe(13);
+    expect(subjects.size).toBe(10);
     for (const subject of agentFacingSubjects()) {
       expect(findAgentLanguageViolations(subject), subject).toEqual([]);
     }
@@ -446,17 +464,9 @@ describe("agent-facing language", () => {
   });
 
   it("does not flag the outcome-named paths the workflow still publishes", () => {
-    const evidenceIds = everyStep.map((stepId) => STEP_DEFINITIONS[stepId].evidenceId);
-    expect(evidenceIds).toContain<EvidenceId>("reviser-authorized");
-    // The evidence id `reviser-authorized` is banned, so the published path uses
-    // the artifact's own name instead. A suffix-shaped rule would reject both.
-    expect(STEP_DEFINITIONS["R5.reviser-auth"].requiredPath(1, "codex", null)).toBe(
-      ".signals/issue-1/reviser-authorization.json"
-    );
     for (const path of [
       ".signals/issue-1/participation-ready-codex.json",
       ".signals/issue-1/implementation-ready-codex.json",
-      ".signals/issue-1/reviser-authorization.json",
       ".signals/issue-1/revision-ready-codex-round-1.json",
       ".signals/issue-1/finalization-ready-codex.json"
     ]) {

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -67,7 +67,7 @@ const initialize = () => {
 describe("operational state", () => {
   it("writes strict versioned start, cursor, and journal state atomically", () => {
     const { paths } = initialize();
-    expect(readStartState(paths)).toMatchObject({ formatVersion: 2, maxRevisionRounds: 3 });
+    expect(readStartState(paths)).toMatchObject({ formatVersion: 3, maxRevisionRounds: 3 });
     expect(readCursorsState(paths).activeRoster).toEqual(["claude", "codex"]);
     expect(readJournal(paths).map((event) => event.type)).toEqual(["started"]);
     appendJournal(paths, { type: "paused", details: {} }, "2026-08-11T10:01:00.000Z");
@@ -88,6 +88,15 @@ describe("operational state", () => {
     expect(cursorsStateSchema.safeParse({ ...cursors, mystery: true }).success).toBe(false);
     expect(cursorsStateSchema.safeParse({ ...cursors, formatVersion: 1 }).success).toBe(false);
     expect(startStateSchema.safeParse({ ...start, maxRevisionRounds: 4 }).success).toBe(false);
+  });
+
+  it("rejects runtime format version 2 with wipe and restart guidance", () => {
+    const { paths } = initialize();
+    writeFileSync(
+      paths.cursors,
+      `${JSON.stringify({ ...readCursorsState(paths), formatVersion: 2 }, null, 2)}\n`
+    );
+    expect(() => readCursorsState(paths)).toThrow(/Wipe this issue/);
   });
 
   it("rejects stale whole-state writes after an owner control revision", () => {

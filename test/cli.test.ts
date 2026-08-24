@@ -697,25 +697,23 @@ describe("CLI", () => {
       cursorsStateSchema.parse({
         ...current,
         issueCursor: { stepId: "R6.revise", gateId: "gate-6-consensus", round: 1 },
-        reviser: "cursor",
-        selection: {
-          planAgents: ["codex"],
-          implementationAgent: "cursor",
-          implementationPin: "e".repeat(40),
-          reviser: "cursor"
+        derived: {
+          planSelection: null,
+          implementationSelection: {
+            algorithm: "plurality-active-roster-v1",
+            inputSetHash: "b".repeat(64),
+            activeRoster: current.activeRoster,
+            inputs: [],
+            decisionId: "implementation-selection:test",
+            supersedes: null,
+            decidedAt: now,
+            winner: "cursor",
+            implementationPin: "e".repeat(40),
+            reviser: "cursor"
+          },
+          consensus: null
         },
-        accepted: [
-          {
-            stepId: "R5.reviser-auth",
-            agent: "codex",
-            round: null,
-            submissionSha: "f".repeat(40),
-            productPin: "e".repeat(40),
-            reviser: "cursor",
-            path: ".signals/issue-1/reviser-authorization.json",
-            acceptedAt: now
-          }
-        ],
+        accepted: [],
         updatedAt: now
       })
     );
@@ -728,7 +726,7 @@ describe("CLI", () => {
     ).toBe(2);
     const after = readCursorsState(paths);
     expect(after.activeRoster).toContain("cursor");
-    expect(after.selection.reviser).toBe("cursor");
+    expect(after.derived.implementationSelection?.reviser).toBe("cursor");
     expect(errors.join("")).toContain("Cannot drop authorized reviser cursor");
   });
 

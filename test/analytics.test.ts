@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 const start = startStateSchema.parse({
-  formatVersion: 2,
+  formatVersion: 3,
   issue: 89,
   issueSessionId: `issue-89:${"a".repeat(40)}`,
   baselineSha: "a".repeat(40),
@@ -148,7 +148,7 @@ describe("analytics aggregation", () => {
       -1,
       0,
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 12,
         at: "2026-08-21T00:02:10.000Z",
         type: "action-prepared",
@@ -157,7 +157,7 @@ describe("analytics aggregation", () => {
         details: { requiredPath: ".plans/issue-89/review.md" }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 13,
         at: "2026-08-21T00:02:11.000Z",
         type: "nudged",
@@ -200,14 +200,14 @@ describe("analytics aggregation", () => {
     const actionId = "44444444-4444-4444-8444-444444444444";
     const journal = [
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 0,
         at: "2026-08-21T00:00:00.000Z",
         type: "started",
         details: { issue: 89, profile: "consensus" }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 1,
         at: "2026-08-21T00:00:00.000Z",
         type: "nudged",
@@ -216,7 +216,7 @@ describe("analytics aggregation", () => {
         details: {}
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 2,
         at: "2026-08-21T00:00:10.000Z",
         type: "intent-seen",
@@ -226,7 +226,7 @@ describe("analytics aggregation", () => {
         details: {}
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 3,
         at: "2026-08-21T00:00:20.000Z",
         type: "nudged",
@@ -235,7 +235,7 @@ describe("analytics aggregation", () => {
         details: {}
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 4,
         at: "2026-08-21T00:00:25.000Z",
         type: "intent-seen",
@@ -259,22 +259,20 @@ describe("analytics aggregation", () => {
       { sequence: 4, at: "2026-08-21T00:00:01.000Z", type: "agent-lifecycle", agent: "claude", actionId, details: { vendor: "claude", event: "UserPromptSubmit", kind: "prompt-submitted", execution: "working", health: "healthy", sessionId: "session-claude", turnId: "turn-claude-1" } },
       { sequence: 5, at: "2026-08-21T00:00:03.500Z", type: "agent-lifecycle", agent: "claude", details: { vendor: "claude", event: "Stop", kind: "stopped", execution: "idle", health: "healthy", sessionId: "session-claude", turnId: "turn-claude-1" } },
       { sequence: 6, at: "2026-08-21T00:00:04.000Z", type: "gate-advanced", details: { from: "R6.revise", to: "R6.ballot", round: 1 } },
-      { sequence: 7, at: "2026-08-21T00:00:05.000Z", type: "gate-advanced", details: { from: "R6.ballot", to: "R6.declare", round: 1 } },
-      { sequence: 8, at: "2026-08-21T00:00:06.000Z", type: "gate-advanced", details: { from: "R6.declare", to: "R6.revise", round: 2 } },
+      { sequence: 7, at: "2026-08-21T00:00:05.000Z", type: "gate-advanced", details: { from: "R6.ballot", to: "R7.finalize", round: null } },
+      { sequence: 8, at: "2026-08-21T00:00:06.000Z", type: "gate-advanced", details: { from: "R7.finalize", to: "R6.revise", round: 2 } },
       { sequence: 9, at: "2026-08-21T00:00:07.000Z", type: "gate-advanced", details: { from: "R6.revise", to: "R6.ballot", round: 2 } },
-      { sequence: 10, at: "2026-08-21T00:00:08.000Z", type: "gate-advanced", details: { from: "R6.ballot", to: "R6.declare", round: 2 } },
-      { sequence: 11, at: "2026-08-21T00:00:09.000Z", type: "gate-advanced", details: { from: "R6.declare", to: null, round: null } }
+      { sequence: 10, at: "2026-08-21T00:00:08.000Z", type: "gate-advanced", details: { from: "R6.ballot", to: "R7.finalize", round: null } },
+      { sequence: 11, at: "2026-08-21T00:00:09.000Z", type: "gate-advanced", details: { from: "R7.finalize", to: null, round: null } }
     ];
-    const journal = raw.map((event) => journalEventSchema.parse({ formatVersion: 2, ...event }));
+    const journal = raw.map((event) => journalEventSchema.parse({ formatVersion: 3, ...event }));
     const report = buildAnalytics({ start, journal, activeRoster: ["claude"], transcriptRoots: transcriptRoots() });
 
     expect(report.phases.filter((phase) => phase.name.startsWith("R6.")).map((phase) => [phase.name, phase.round])).toEqual([
       ["R6.revise", 1],
       ["R6.ballot", 1],
-      ["R6.declare", 1],
       ["R6.revise", 2],
-      ["R6.ballot", 2],
-      ["R6.declare", 2]
+      ["R6.ballot", 2]
     ]);
     const rendered = renderAnalytics(report);
     expect(rendered.match(/R6\.revise round 1/g)).toHaveLength(3);
@@ -325,14 +323,14 @@ describe("analytics aggregation", () => {
     });
     const journal = [
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 0,
         at: "2026-08-21T00:00:00.000Z",
         type: "started",
         details: { issue: 94, profile: "solo" }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 1,
         at: "2026-08-21T00:00:01.000Z",
         type: "action-prepared",
@@ -341,7 +339,7 @@ describe("analytics aggregation", () => {
         details: { requiredPath: ".plans/issue-94/plan.md" }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 2,
         at: "2026-08-21T00:00:02.000Z",
         type: "agent-lifecycle",
@@ -356,7 +354,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 3,
         at: "2026-08-21T00:00:03.000Z",
         type: "agent-usage",
@@ -371,7 +369,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 4,
         at: "2026-08-21T00:00:04.000Z",
         type: "agent-usage",
@@ -386,7 +384,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 5,
         at: "2026-08-21T00:00:05.000Z",
         type: "agent-lifecycle",
@@ -400,7 +398,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 6,
         at: "2026-08-21T00:01:00.000Z",
         type: "gate-advanced",

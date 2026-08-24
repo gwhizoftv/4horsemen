@@ -14,6 +14,7 @@ import {
   dropAgent,
   initializeOperationalState,
   readCursorsState,
+  readJournal,
   readStartState,
   writeCursorsState
 } from "../src/state.js";
@@ -255,23 +256,9 @@ Implement the selected product files.
       }
       await loop.runTick();
 
-      expectStep("R3.publish-selection");
-      {
-        const order = currentOrder("claude");
-        submit(
-          "claude",
-          JSON.stringify({
-            ...commonArtifact(order, "selection"),
-            inputSetHash: computeInputSetHash(order.inputs),
-            selectedAgents: ["codex"],
-            ballots: order.inputs.map(({ agent, commitSha, path }) => ({ agent, commitSha, path }))
-          })
-        );
-      }
-      await loop.runTick();
-
       expectStep("R4.implement");
-      expect(readCursorsState(paths).selection.planAgents).toEqual(["codex"]);
+      expect(readCursorsState(paths).derived.planSelection?.selectedAgents).toEqual(["codex"]);
+      expect(readJournal(paths).some((event) => event.type === "decision-derived")).toBe(true);
       for (const agent of activeAfterDrop) {
         const order = currentOrder(agent);
         expect(order.inputs.map((input) => input.agent)).toEqual(["codex"]);
@@ -311,28 +298,9 @@ Implement the selected product files.
       }
       await loop.runTick();
 
-      expectStep("R5.reviser-auth");
-      {
-        const order = currentOrder("claude");
-        const selectedPin = order.inputs.find(
-          (input) => input.kind === "implementation" && input.agent === "cursor"
-        )?.commitSha;
-        if (selectedPin === undefined) throw new Error("No selected implementation pin.");
-        submit(
-          "claude",
-          JSON.stringify({
-            ...commonArtifact(order, "reviser-authorization"),
-            inputSetHash: computeInputSetHash(order.inputs),
-            reviser: "cursor",
-            implementationCommitSha: selectedPin
-          })
-        );
-      }
-      await loop.runTick();
-
       expectStep("R6.revise");
-      expect(readCursorsState(paths).selection).toMatchObject({
-        implementationAgent: "cursor",
+      expect(readCursorsState(paths).derived.implementationSelection).toMatchObject({
+        winner: "cursor",
         reviser: "cursor"
       });
       expect(existsSync(agentRuntimePaths(paths, "claude").action)).toBe(false);
@@ -371,25 +339,11 @@ Implement the selected product files.
       }
       await loop.runTick();
 
-      expectStep("R6.declare");
-      {
-        const order = currentOrder("cursor");
-        submit(
-          "cursor",
-          JSON.stringify({
-            ...commonArtifact(order, "consensus-declaration"),
-            inputSetHash: computeInputSetHash(order.inputs),
-            round: 1,
-            consensusCommitSha: revisionPin,
-            ballots: order.inputs
-              .filter((input) => input.kind === "consensus-ballot")
-              .map(({ agent, commitSha, path }) => ({ agent, commitSha, path }))
-          })
-        );
-      }
-      await loop.runTick();
-
       expectStep("R7.finalize");
+      expect(readCursorsState(paths).derived.consensus).toMatchObject({
+        round: 1,
+        consensusPin: revisionPin
+      });
       const cursorClone = clones.get("cursor") as string;
       for (const directory of [".plans/issue-1", ".signals/issue-1", ".code-reviews/issue-1"]) {
         rmSync(join(cursorClone, directory), { recursive: true, force: true });

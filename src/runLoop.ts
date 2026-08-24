@@ -13,7 +13,7 @@ import {
   orderAgentAction,
   readAgentLifecycle
 } from "./agentLifecycle.js";
-import { evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
+import { computeInputSetHash, evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
 import { BareMirror, hermeticGitEnv } from "./mirror.js";
 import { renderArtifactScaffold } from "./orderScaffold.js";
@@ -29,7 +29,11 @@ import {
   requireStateMutation,
   StateConflictError,
   type AcceptedSubmission,
+  type ConsensusDerived,
   type CursorsState,
+  type DerivedInputCitation,
+  type ImplementationSelectionDerived,
+  type PlanSelectionDerived,
   type StartState
 } from "./state.js";
 import {
@@ -193,6 +197,99 @@ export const deterministicWinner = (
   return winner;
 };
 
+export const deriveDecisionId = (
+  kind: "plan-selection" | "implementation-selection" | "consensus",
+  inputSetHash: string,
+  round?: number | null
+): string => (round == null ? `${kind}:${inputSetHash}` : `${kind}:${inputSetHash}:r${round}`);
+
+const submissionCitation = (submission: AcceptedSubmission, kind: string): DerivedInputCitation => ({
+  kind,
+  agent: submission.agent,
+  submissionSha: submission.submissionSha,
+  path: submission.path,
+  ...(submission.productPin === undefined ? {} : { productPin: submission.productPin })
+});
+
+export const computePlanSelectionDerived = (cursors: CursorsState, now: string): PlanSelectionDerived | null => {
+  const planEligible = acceptedAt(cursors, "R2.plan").map((submission) => submission.agent);
+  const winner = deterministicWinner(cursors, "R3.plan-ballot", planEligible);
+  if (winner === null) return null;
+  const ballots = acceptedAt(cursors, "R3.plan-ballot");
+  const boundInputs = ballots.map((submission) => inputFromSubmission(submission, "plan-ballot"));
+  const inputSetHash = computeInputSetHash(boundInputs);
+  return {
+    algorithm: "plurality-active-roster-v1",
+    inputSetHash,
+    activeRoster: [...cursors.activeRoster],
+    inputs: ballots.map((submission) => submissionCitation(submission, "plan-ballot")),
+    decisionId: deriveDecisionId("plan-selection", inputSetHash),
+    supersedes: cursors.derived.planSelection?.decisionId ?? null,
+    decidedAt: now,
+    selectedAgents: [winner]
+  };
+};
+
+export const computeImplementationSelectionDerived = (
+  cursors: CursorsState,
+  now: string
+): ImplementationSelectionDerived | null => {
+  const implementationEligible = acceptedAt(cursors, "R4.implement").map((submission) => submission.agent);
+  const winner = deterministicWinner(cursors, "R5.compare-ballot", implementationEligible);
+  if (winner === null) return null;
+  const implementation = acceptedAt(cursors, "R4.implement").find((submission) => submission.agent === winner);
+  if (implementation?.productPin === undefined) return null;
+  const ballots = acceptedAt(cursors, "R5.compare-ballot");
+  const boundInputs = [
+    ...acceptedAt(cursors, "R4.implement").map((submission) => inputFromSubmission(submission, "implementation", true)),
+    ...ballots.map((submission) => inputFromSubmission(submission, "comparison-ballot"))
+  ];
+  const inputSetHash = computeInputSetHash(boundInputs);
+  return {
+    algorithm: "plurality-active-roster-v1",
+    inputSetHash,
+    activeRoster: [...cursors.activeRoster],
+    inputs: [
+      ...acceptedAt(cursors, "R4.implement").map((submission) => submissionCitation(submission, "implementation")),
+      ...ballots.map((submission) => submissionCitation(submission, "comparison-ballot"))
+    ],
+    decisionId: deriveDecisionId("implementation-selection", inputSetHash),
+    supersedes: cursors.derived.implementationSelection?.decisionId ?? null,
+    decidedAt: now,
+    winner,
+    implementationPin: implementation.productPin,
+    reviser: winner
+  };
+};
+
+export const computeConsensusDerived = (cursors: CursorsState, round: number, now: string): ConsensusDerived | null => {
+  const revision = acceptedAt(cursors, "R6.revise", true, round).find(
+    (submission) => submission.agent === cursors.derived.implementationSelection?.reviser
+  );
+  if (revision?.productPin === undefined) return null;
+  const ballots = acceptedAt(cursors, "R6.ballot", true, round);
+  if (ballots.some((ballot) => ballot.disposition !== "approve")) return null;
+  const boundInputs = [
+    ...acceptedAt(cursors, "R6.revise", true, round).map((submission) => inputFromSubmission(submission, "revision", true)),
+    ...ballots.map((submission) => inputFromSubmission(submission, "consensus-ballot"))
+  ];
+  const inputSetHash = computeInputSetHash(boundInputs);
+  return {
+    algorithm: "unanimous-active-roster-v1",
+    inputSetHash,
+    activeRoster: [...cursors.activeRoster],
+    inputs: [
+      ...acceptedAt(cursors, "R6.revise", true, round).map((submission) => submissionCitation(submission, "revision")),
+      ...ballots.map((submission) => submissionCitation(submission, "consensus-ballot"))
+    ],
+    decisionId: deriveDecisionId("consensus", inputSetHash, round),
+    supersedes: cursors.derived.consensus?.decisionId ?? null,
+    decidedAt: now,
+    round,
+    consensusPin: revision.productPin
+  };
+};
+
 export const deriveBoundInputs = (
   start: StartState,
   cursors: CursorsState,
@@ -206,12 +303,10 @@ export const deriveBoundInputs = (
       ...acceptedAt(cursors, "R3.review").map((value) => inputFromSubmission(value, "review"))
     ];
   }
-  if (stepId === "R3.publish-selection") {
-    return acceptedAt(cursors, "R3.plan-ballot").map((value) => inputFromSubmission(value, "plan-ballot"));
-  }
   if (stepId === "R4.implement") {
-    const selected = cursors.selection.planAgents.filter((agent) => cursors.activeRoster.includes(agent));
-    const planAgents = selected.length > 0 ? selected : [cursors.activeRoster[0] as string];
+    const selectedAgents =
+      cursors.derived.planSelection?.selectedAgents.filter((agent) => cursors.activeRoster.includes(agent)) ?? [];
+    const planAgents = selectedAgents.length > 0 ? selectedAgents : [cursors.activeRoster[0] as string];
     return acceptedAt(cursors, "R2.plan")
       .filter((submission) => planAgents.includes(submission.agent))
       .map((value) => inputFromSubmission(value, "selected-plan"));
@@ -219,43 +314,38 @@ export const deriveBoundInputs = (
   if (stepId === "R5.compare" || stepId === "R5.compare-ballot") {
     return acceptedAt(cursors, "R4.implement").map((value) => inputFromSubmission(value, "implementation", true));
   }
-  if (stepId === "R5.reviser-auth") {
-    return [
-      ...acceptedAt(cursors, "R4.implement").map((value) => inputFromSubmission(value, "implementation", true)),
-      ...acceptedAt(cursors, "R5.compare-ballot").map((value) => inputFromSubmission(value, "comparison-ballot"))
-    ];
-  }
   if (stepId === "R6.revise") {
     if ((round ?? 1) > 1) {
-      return acceptedAt(cursors, "R6.revise", true, (round ?? 1) - 1).map((value) => inputFromSubmission(value, "prior-revision", true));
+      return acceptedAt(cursors, "R6.revise", true, (round ?? 1) - 1).map((value) =>
+        inputFromSubmission(value, "prior-revision", true)
+      );
     }
+    const derived = cursors.derived.implementationSelection;
     const selected = acceptedAt(cursors, "R4.implement").find(
-      (value) =>
-        value.agent === cursors.selection.implementationAgent && value.productPin === cursors.selection.implementationPin
+      (value) => value.agent === derived?.winner && value.productPin === derived.implementationPin
     );
     return selected === undefined ? [] : [inputFromSubmission(selected, "implementation", true)];
   }
   if (stepId === "R6.ballot") {
     return acceptedAt(cursors, "R6.revise", true, round).map((value) => inputFromSubmission(value, "revision", true));
   }
-  if (stepId === "R6.declare") {
-    return [
-      ...acceptedAt(cursors, "R6.revise", true, round).map((value) => inputFromSubmission(value, "revision", true)),
-      ...acceptedAt(cursors, "R6.ballot", true, round).map((value) => inputFromSubmission(value, "consensus-ballot"))
-    ];
-  }
   if (stepId === "R7.finalize") {
-    const declarations = acceptedAt(cursors, "R6.declare", false);
-    if (declarations.length > 0) return declarations.map((value) => inputFromSubmission(value, "consensus", true));
+    const consensusPin = cursors.derived.consensus?.consensusPin;
+    if (consensusPin !== undefined) {
+      const revision = acceptedAt(cursors, "R6.revise", false, cursors.derived.consensus?.round).find(
+        (submission) => submission.productPin === consensusPin
+      );
+      return revision === undefined ? [] : [inputFromSubmission(revision, "consensus", true)];
+    }
     return acceptedAt(cursors, "R4.implement").map((value) => inputFromSubmission(value, "consensus", true));
   }
   return [];
 };
 
 const selectedPlanAgents = (cursors: CursorsState): string[] => {
-  const selection = acceptedAt(cursors, "R3.publish-selection", false).at(-1);
-  const selected = cursors.selection.planAgents.filter((agent) => cursors.activeRoster.includes(agent));
-  return selected.length > 0 ? selected : (selection?.selectedAgents ?? [...cursors.activeRoster]);
+  const selected =
+    cursors.derived.planSelection?.selectedAgents.filter((agent) => cursors.activeRoster.includes(agent)) ?? [];
+  return selected.length > 0 ? selected : [...cursors.activeRoster];
 };
 
 const approvedPathsForOrder = (cursors: CursorsState, stepId: WorkflowStepId): string[] => {
@@ -358,11 +448,6 @@ export const buildOrder = (
   const inputs = deriveBoundInputs(start, cursors, stepId, round);
   const planChoices = acceptedAt(cursors, "R2.plan").map((submission) => submission.agent);
   const implementationChoices = acceptedAt(cursors, "R4.implement").map((submission) => submission.agent);
-  const selectedPlan = deterministicWinner(cursors, "R3.plan-ballot", planChoices);
-  const selectedImplementation = deterministicWinner(cursors, "R5.compare-ballot", implementationChoices);
-  const selectedImplementationSubmission = acceptedAt(cursors, "R4.implement").find(
-    (submission) => submission.agent === selectedImplementation
-  );
   const approvedPaths =
     approvedPathOverride === undefined ? approvedPathsForOrder(cursors, stepId) : [...approvedPathOverride];
   const eligibleChoices =
@@ -371,7 +456,6 @@ export const buildOrder = (
       : stepId === "R5.compare-ballot"
         ? implementationChoices
         : [];
-  const expectedSelectedAgents = selectedPlan === null ? [] : [selectedPlan];
   const scaffold = renderArtifactScaffold({
     stepId,
     issue: start.issue,
@@ -381,12 +465,6 @@ export const buildOrder = (
     automationDigest: start.automationDigest,
     inputs,
     eligibleChoices,
-    expectedSelectedAgents,
-    ...(selectedImplementation === null ? {} : { expectedImplementationAgent: selectedImplementation }),
-    ...(selectedImplementationSubmission?.productPin === undefined
-      ? {}
-      : { expectedImplementationPin: selectedImplementationSubmission.productPin }),
-    ...(selectedImplementation === null ? {} : { expectedReviser: selectedImplementation }),
     round,
     approvedPaths
   });
@@ -413,13 +491,7 @@ export const buildOrder = (
     contextPaths: [...start.contextPaths],
     changeScope,
     activeRoster: [...cursors.activeRoster],
-    eligibleChoices,
-    expectedSelectedAgents,
-    ...(selectedImplementation === null ? {} : { expectedImplementationAgent: selectedImplementation }),
-    ...(selectedImplementationSubmission?.productPin === undefined
-      ? {}
-      : { expectedImplementationPin: selectedImplementationSubmission.productPin }),
-    ...(selectedImplementation === null ? {} : { expectedReviser: selectedImplementation })
+    eligibleChoices
   };
 };
 
@@ -960,9 +1032,7 @@ export class CoordinatorRunLoop {
       ...(decision.productPin === undefined ? {} : { productPin: decision.productPin }),
       ...(decision.disposition === undefined ? {} : { disposition: decision.disposition }),
       ...(decision.approvedPaths === undefined ? {} : { approvedPaths: [...decision.approvedPaths] }),
-      ...(decision.selectedAgents === undefined ? {} : { selectedAgents: [...decision.selectedAgents] }),
       ...(decision.choice === undefined ? {} : { choice: decision.choice }),
-      ...(decision.reviser === undefined ? {} : { reviser: decision.reviser }),
       ...(decision.checkResults === undefined
         ? {}
         : { checkResults: decision.checkResults.map((result) => ({ ...result, argv: [...result.argv] })) })
@@ -971,9 +1041,6 @@ export class CoordinatorRunLoop {
       (item) => !(item.stepId === accepted.stepId && item.agent === accepted.agent && item.round === accepted.round)
     );
     const next = this.mutate(cursors, (current) => {
-      if (decision.reviser !== undefined && !current.activeRoster.includes(decision.reviser)) {
-        throw new Error(`authorized reviser ${decision.reviser} is not active`);
-      }
       appendJournal(
         this.paths,
         {
@@ -988,21 +1055,6 @@ export class CoordinatorRunLoop {
       const runtime = agentRuntimePaths(this.paths, decision.agent);
       clearCompletion(runtime.complete);
       if (existsSync(runtime.action)) unlinkSync(runtime.action);
-      const selection =
-        accepted.stepId === "R3.publish-selection"
-          ? { ...current.selection, planAgents: [...(accepted.selectedAgents ?? [])] }
-          : accepted.stepId === "R5.reviser-auth"
-            ? {
-                ...current.selection,
-                implementationAgent:
-                  current.accepted.find(
-                    (submission) =>
-                      submission.stepId === "R4.implement" && submission.productPin === accepted.productPin
-                  )?.agent ?? null,
-                implementationPin: accepted.productPin ?? null,
-                reviser: accepted.reviser ?? null
-              }
-            : current.selection;
       const publication =
         accepted.stepId === "R7.finalize" && accepted.productPin !== undefined
           ? {
@@ -1030,8 +1082,6 @@ export class CoordinatorRunLoop {
       }
       return cursorsStateSchema.parse({
         ...current,
-        reviser: accepted.reviser ?? current.reviser,
-        selection,
         publication,
         agents: {
           ...current.agents,
@@ -1249,7 +1299,7 @@ export class CoordinatorRunLoop {
       return this.mutate(authority, (current) => {
         appendJournal(
           this.paths,
-          { type: "pr-created", agent: current.selection.reviser ?? undefined, details: { url: result.url, branch, finalSha } },
+          { type: "pr-created", agent: current.derived.implementationSelection?.reviser ?? undefined, details: { url: result.url, branch, finalSha } },
           this.now()
         );
         if (coordMergesPullRequest(start.prPolicy)) {
@@ -1295,6 +1345,93 @@ export class CoordinatorRunLoop {
     }
   }
 
+  private persistDerivedDecision(
+    start: StartState,
+    cursors: CursorsState,
+    kind: "plan-selection" | "implementation-selection" | "consensus",
+    record: PlanSelectionDerived | ImplementationSelectionDerived | ConsensusDerived,
+    advance: Extract<MachineDecision, { type: "advance-step" }>
+  ): CursorsState {
+    const slot =
+      kind === "plan-selection"
+        ? "planSelection"
+        : kind === "implementation-selection"
+          ? "implementationSelection"
+          : "consensus";
+    const existing = cursors.derived[slot];
+    if (existing?.decisionId === record.decisionId) {
+      this.logPhase(start.issue, advance.to, advance.round, advance.from);
+      return this.advance(cursors, advance);
+    }
+    const next = this.mutate(cursors, (current) => {
+      appendJournal(
+        this.paths,
+        {
+          type: "decision-derived",
+          details: {
+            kind,
+            decisionId: record.decisionId,
+            inputSetHash: record.inputSetHash,
+            algorithm: record.algorithm,
+            ...(kind === "plan-selection"
+              ? { selectedAgents: (record as PlanSelectionDerived).selectedAgents }
+              : kind === "implementation-selection"
+                ? {
+                    winner: (record as ImplementationSelectionDerived).winner,
+                    implementationPin: (record as ImplementationSelectionDerived).implementationPin,
+                    reviser: (record as ImplementationSelectionDerived).reviser
+                  }
+                : {
+                    round: (record as ConsensusDerived).round,
+                    consensusPin: (record as ConsensusDerived).consensusPin
+                  })
+          }
+        },
+        record.decidedAt
+      );
+      return cursorsStateSchema.parse({
+        ...current,
+        derived: { ...current.derived, [slot]: record },
+        updatedAt: record.decidedAt
+      });
+    });
+    this.logPhase(start.issue, advance.to, advance.round, advance.from);
+    return this.advance(next, advance);
+  }
+
+  private applyDerivedPlanSelection(start: StartState, cursors: CursorsState): CursorsState {
+    const record = computePlanSelectionDerived(cursors, this.now());
+    if (record === null) throw new Error("Cannot derive plan selection from the current accepted evidence.");
+    return this.persistDerivedDecision(start, cursors, "plan-selection", record, {
+      type: "advance-step",
+      from: "R3.plan-ballot",
+      to: "R4.implement",
+      round: null
+    });
+  }
+
+  private applyDerivedImplementationSelection(start: StartState, cursors: CursorsState): CursorsState {
+    const record = computeImplementationSelectionDerived(cursors, this.now());
+    if (record === null) throw new Error("Cannot derive implementation selection from the current accepted evidence.");
+    return this.persistDerivedDecision(start, cursors, "implementation-selection", record, {
+      type: "advance-step",
+      from: "R5.compare-ballot",
+      to: "R6.revise",
+      round: 1
+    });
+  }
+
+  private applyDerivedConsensus(start: StartState, cursors: CursorsState, round: number): CursorsState {
+    const record = computeConsensusDerived(cursors, round, this.now());
+    if (record === null) throw new Error("Cannot derive consensus from the current accepted evidence.");
+    return this.persistDerivedDecision(start, cursors, "consensus", record, {
+      type: "advance-step",
+      from: "R6.ballot",
+      to: "R7.finalize",
+      round: null
+    });
+  }
+
   private async applyDecisions(start: StartState, cursors: CursorsState, decisions: readonly MachineDecision[]): Promise<CursorsState> {
     let next = cursors;
     for (const decision of decisions) {
@@ -1307,6 +1444,12 @@ export class CoordinatorRunLoop {
         next = this.mutate(next, (current) =>
           replaceCursor(current, decision.agent, { status: "intent", outstanding: [...decision.outstanding] }, this.now())
         );
+      } else if (decision.type === "derive-plan-selection") {
+        next = this.applyDerivedPlanSelection(start, next);
+      } else if (decision.type === "derive-implementation-selection") {
+        next = this.applyDerivedImplementationSelection(start, next);
+      } else if (decision.type === "derive-consensus") {
+        next = this.applyDerivedConsensus(start, next, decision.round);
       } else if (decision.type === "advance-step") {
         this.logPhase(start.issue, decision.to, decision.round, decision.from);
         next = this.advance(next, decision);

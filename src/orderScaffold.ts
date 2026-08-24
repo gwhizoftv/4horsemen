@@ -10,10 +10,6 @@ export type ArtifactScaffoldContext = {
   automationDigest: string;
   inputs: readonly BoundInput[];
   eligibleChoices: readonly string[];
-  expectedSelectedAgents: readonly string[];
-  expectedImplementationAgent?: string;
-  expectedImplementationPin?: string;
-  expectedReviser?: string;
   round: number | null;
   approvedPaths: readonly string[];
 };
@@ -63,13 +59,6 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
         choice: ctx.eligibleChoices[0] ?? ctx.agent,
         rationale: "<one sentence>"
       };
-    case "R3.publish-selection":
-      return {
-        ...withHash(ctx),
-        artifact: "selection",
-        selectedAgents: [...ctx.expectedSelectedAgents],
-        ballots: citationsOf(ctx.inputs, "plan-ballot")
-      };
     case "R4.implement":
       return {
         ...withHash(ctx),
@@ -84,13 +73,6 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
         implementations: citationsOf(ctx.inputs, "implementation"),
         choice: ctx.eligibleChoices[0] ?? ctx.agent,
         rationale: "<one sentence>"
-      };
-    case "R5.reviser-auth":
-      return {
-        ...withHash(ctx),
-        artifact: "reviser-authorization",
-        reviser: ctx.expectedReviser ?? ctx.agent,
-        implementationCommitSha: ctx.expectedImplementationPin ?? PLACEHOLDER_SHA
       };
     case "R6.revise":
       return {
@@ -108,14 +90,6 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
         revisionCommitSha: ctx.inputs[0]?.commitSha ?? PLACEHOLDER_SHA,
         disposition: "approve",
         rationale: "<one sentence>"
-      };
-    case "R6.declare":
-      return {
-        ...withHash(ctx),
-        artifact: "consensus-declaration",
-        round: ctx.round ?? 1,
-        consensusCommitSha: ctx.inputs.find((input) => input.kind === "revision")?.commitSha ?? PLACEHOLDER_SHA,
-        ballots: citationsOf(ctx.inputs, "consensus-ballot")
       };
     case "R7.finalize":
       return {

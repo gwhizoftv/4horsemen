@@ -6,7 +6,7 @@ const now = "2026-08-11T12:00:00.000Z";
 const roster = ["claude", "codex", "cursor", "antigravity"];
 
 const start = startStateSchema.parse({
-  formatVersion: 2,
+  formatVersion: 3,
   issue: 1,
   issueSessionId: `issue-1:${"a".repeat(40)}`,
   baselineSha: "a".repeat(40),
@@ -104,12 +104,21 @@ describe("pure workflow machine", () => {
     const cursors = cursorsStateSchema.parse({
       ...base,
       issueCursor: { stepId: "R6.revise", gateId: "gate-6-consensus", round: 1 },
-      reviser: "cursor",
-      selection: {
-        planAgents: ["claude"],
-        implementationAgent: "cursor",
-        implementationPin: "d".repeat(40),
-        reviser: "cursor"
+      derived: {
+        planSelection: null,
+        implementationSelection: {
+          algorithm: "plurality-active-roster-v1",
+          inputSetHash: "d".repeat(64),
+          activeRoster: roster,
+          inputs: [],
+          decisionId: "implementation-selection:test",
+          supersedes: null,
+          decidedAt: now,
+          winner: "cursor",
+          implementationPin: "d".repeat(40),
+          reviser: "cursor"
+        },
+        consensus: null
       }
     });
     expect(decide({ start, cursors })).toEqual([
@@ -123,7 +132,20 @@ describe("pure workflow machine", () => {
     const cursors = cursorsStateSchema.parse({
       ...base,
       issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
-      selection: { ...base.selection, planAgents: ["cursor"] }
+      derived: {
+        planSelection: {
+          algorithm: "plurality-active-roster-v1",
+          inputSetHash: "d".repeat(64),
+          activeRoster: reviewed.originalRoster,
+          inputs: [],
+          decisionId: "plan-selection:test",
+          supersedes: null,
+          decidedAt: now,
+          selectedAgents: ["cursor"]
+        },
+        implementationSelection: null,
+        consensus: null
+      }
     });
     expect(decide({ start: reviewed, cursors })).toEqual([
       { type: "prepare-action", agent: "cursor", stepId: "R4.implement", round: null }

@@ -25,14 +25,11 @@ const EVIDENCE_IDS: readonly EvidenceId[] = [
   "plan-published",
   "review-published",
   "plan-ballot-published",
-  "selection-published",
   "implementation-pinned",
   "comparison-published",
   "comparison-ballot-published",
-  "reviser-authorized",
   "revision-pinned",
   "consensus-ballot-published",
-  "consensus-declared",
   "finalization-verified"
 ];
 
@@ -122,14 +119,11 @@ const AGENT_FACING_SUBJECT: Readonly<Record<EvidenceId, string>> = {
   "plan-published": "the plan",
   "review-published": "the plan review",
   "plan-ballot-published": "the plan ballot",
-  "selection-published": "the plan selection",
   "implementation-pinned": "the implementation signal",
   "comparison-published": "the comparison",
   "comparison-ballot-published": "the comparison ballot",
-  "reviser-authorized": "the revision authorization",
   "revision-pinned": "the revision signal",
   "consensus-ballot-published": "the consensus ballot",
-  "consensus-declared": "the consensus declaration",
   "finalization-verified": "the finalization signal"
 };
 

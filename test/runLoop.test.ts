@@ -95,12 +95,21 @@ const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], fina
     cursorsStateSchema.parse({
       ...current,
       issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
-      reviser: "codex",
-      selection: {
-        planAgents: ["claude"],
-        implementationAgent: "codex",
-        implementationPin: "e".repeat(40),
-        reviser: "codex"
+      derived: {
+        planSelection: null,
+        implementationSelection: {
+          algorithm: "plurality-active-roster-v1",
+          inputSetHash: "b".repeat(64),
+          activeRoster: current.activeRoster,
+          inputs: [],
+          decisionId: "implementation-selection:test",
+          supersedes: null,
+          decidedAt: now,
+          winner: "codex",
+          implementationPin: "e".repeat(40),
+          reviser: "codex"
+        },
+        consensus: null
       },
       accepted: [
         {
@@ -179,7 +188,19 @@ describe("effectful run loop", () => {
       cursorsStateSchema.parse({
         ...current,
         issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
-        selection: { ...current.selection, planAgents: ["codex"] },
+        derived: {
+          ...current.derived,
+          planSelection: {
+            algorithm: "plurality-active-roster-v1",
+            inputSetHash: "e".repeat(64),
+            activeRoster: current.activeRoster,
+            inputs: [],
+            decisionId: "plan-selection:test",
+            supersedes: null,
+            decidedAt: now,
+            selectedAgents: ["codex"]
+          }
+        },
         accepted: [
           {
             stepId: "R2.plan",
@@ -188,15 +209,6 @@ describe("effectful run loop", () => {
             submissionSha: "c".repeat(40),
             path: ".plans/issue-1/plan.md",
             approvedPaths: ["src/product.ts"],
-            acceptedAt: now
-          },
-          {
-            stepId: "R3.publish-selection",
-            agent: "codex",
-            round: null,
-            submissionSha: "d".repeat(40),
-            path: ".plans/issue-1/selection.json",
-            selectedAgents: ["codex"],
             acceptedAt: now
           }
         ]
@@ -236,7 +248,19 @@ describe("effectful run loop", () => {
       cursorsStateSchema.parse({
         ...current,
         issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
-        selection: { ...current.selection, planAgents: ["codex"] },
+        derived: {
+          ...current.derived,
+          planSelection: {
+            algorithm: "plurality-active-roster-v1",
+            inputSetHash: "e".repeat(64),
+            activeRoster: current.activeRoster,
+            inputs: [],
+            decisionId: "plan-selection:test",
+            supersedes: null,
+            decidedAt: now,
+            selectedAgents: ["codex"]
+          }
+        },
         agents: {
           ...current.agents,
           claude: {
@@ -270,15 +294,6 @@ describe("effectful run loop", () => {
             submissionSha: "c".repeat(40),
             path: ".plans/issue-1/plan.md",
             approvedPaths: ["src/product.ts"],
-            acceptedAt: now
-          },
-          {
-            stepId: "R3.publish-selection",
-            agent: "codex",
-            round: null,
-            submissionSha: "d".repeat(40),
-            path: ".plans/issue-1/selection.json",
-            selectedAgents: ["codex"],
             acceptedAt: now
           }
         ]
@@ -1060,12 +1075,21 @@ describe("effectful run loop", () => {
     const seeded = cursorsStateSchema.parse({
       ...current,
       issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
-      reviser: "codex",
-      selection: {
-        planAgents: ["claude"],
-        implementationAgent: "codex",
-        implementationPin: "f".repeat(40),
-        reviser: "codex"
+      derived: {
+        planSelection: null,
+        implementationSelection: {
+          algorithm: "plurality-active-roster-v1",
+          inputSetHash: "b".repeat(64),
+          activeRoster: current.activeRoster,
+          inputs: [],
+          decisionId: "implementation-selection:test",
+          supersedes: null,
+          decidedAt: now,
+          winner: "codex",
+          implementationPin: "f".repeat(40),
+          reviser: "codex"
+        },
+        consensus: null
       },
       ownerQuestion: {
         id: "10000000-0000-4000-8000-000000000001",
@@ -1162,12 +1186,21 @@ describe("effectful run loop", () => {
       cursorsStateSchema.parse({
         ...current,
         issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
-        reviser: "codex",
-        selection: {
-          planAgents: ["claude"],
-          implementationAgent: "codex",
-          implementationPin: "e".repeat(40),
-          reviser: "codex"
+        derived: {
+          planSelection: null,
+          implementationSelection: {
+            algorithm: "plurality-active-roster-v1",
+            inputSetHash: "b".repeat(64),
+            activeRoster: current.activeRoster,
+            inputs: [],
+            decisionId: "implementation-selection:test",
+            supersedes: null,
+            decidedAt: now,
+            winner: "codex",
+            implementationPin: "e".repeat(40),
+            reviser: "codex"
+          },
+          consensus: null
         },
         accepted: [
           {

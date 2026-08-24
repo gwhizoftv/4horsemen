@@ -20,14 +20,11 @@ const globalOrder: readonly WorkflowStepId[] = [
   "R2.plan",
   "R3.review",
   "R3.plan-ballot",
-  "R3.publish-selection",
   "R4.implement",
   "R5.compare",
   "R5.compare-ballot",
-  "R5.reviser-auth",
   "R6.revise",
   "R6.ballot",
-  "R6.declare",
   "R7.finalize"
 ];
 
@@ -55,6 +52,21 @@ const hasAccepted = (cursors: CursorsState, stepId: WorkflowStepId, agent: strin
     (submission) => submission.stepId === stepId && submission.agent === agent && submission.round === round
   );
 
+const designatedReviser = (cursors: CursorsState): string | undefined =>
+  cursors.derived.implementationSelection?.reviser ?? cursors.activeRoster[0];
+
+const designatedImplementer = (cursors: CursorsState): string | undefined =>
+  cursors.derived.planSelection?.selectedAgents[0] ?? cursors.activeRoster[0];
+
+const needsPlanSelectionDerive = (cursors: CursorsState, profile: WorkflowProfile): boolean =>
+  profile !== "solo" && cursors.derived.planSelection === null;
+
+const needsImplementationSelectionDerive = (cursors: CursorsState): boolean =>
+  cursors.derived.implementationSelection === null;
+
+const needsConsensusDerive = (cursors: CursorsState, round: number): boolean =>
+  cursors.derived.consensus === null || cursors.derived.consensus.round !== round;
+
 export const decide = (input: MachineInput): readonly MachineDecision[] => {
   const { start, cursors } = input;
   if (cursors.abandoned) return [{ type: "wait", reason: "workflow was abandoned" }];
@@ -78,9 +90,7 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
         ...(observation.productPin === undefined ? {} : { productPin: observation.productPin }),
         ...(observation.disposition === undefined ? {} : { disposition: observation.disposition }),
         ...(observation.approvedPaths === undefined ? {} : { approvedPaths: observation.approvedPaths }),
-        ...(observation.selectedAgents === undefined ? {} : { selectedAgents: observation.selectedAgents }),
         ...(observation.choice === undefined ? {} : { choice: observation.choice }),
-        ...(observation.reviser === undefined ? {} : { reviser: observation.reviser }),
         ...(observation.checkResults === undefined ? {} : { checkResults: observation.checkResults })
       });
     }
@@ -109,10 +119,10 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
 
   const designated =
     current === "R4.implement"
-      ? cursors.selection.planAgents[0]
-      : current === "R3.publish-selection" || current === "R5.reviser-auth"
-        ? cursors.activeRoster[0]
-      : (cursors.selection.reviser ?? cursors.reviser ?? cursors.selection.planAgents[0]);
+      ? designatedImplementer(cursors)
+      : current === "R6.revise" || current === "R7.finalize"
+        ? designatedReviser(cursors)
+        : cursors.activeRoster[0];
   const participants = participantsForStep(current, profile, cursors.activeRoster, designated);
   const round = current.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
   const complete = participants.every((agent) => hasAccepted(cursors, current, agent, round));
@@ -149,10 +159,20 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
         }
         return [{ type: "advance-step", from: current, to: "R6.revise", round: (round ?? 1) + 1 }];
       }
+      if (needsConsensusDerive(cursors, round ?? 1)) {
+        return [{ type: "derive-consensus", round: round ?? 1 }];
+      }
+    }
+
+    if (current === "R3.plan-ballot" && needsPlanSelectionDerive(cursors, profile)) {
+      return [{ type: "derive-plan-selection" }];
+    }
+    if (current === "R5.compare-ballot" && needsImplementationSelectionDerive(cursors)) {
+      return [{ type: "derive-implementation-selection" }];
     }
 
     const next = nextStep(current, profile);
-    const nextRound = next === "R6.revise" || next === "R6.ballot" || next === "R6.declare" ? (round ?? 1) : null;
+    const nextRound = next === "R6.revise" || next === "R6.ballot" ? (round ?? 1) : null;
     return [{ type: "advance-step", from: current, to: next, round: nextRound }];
   }
 

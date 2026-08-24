@@ -28,7 +28,6 @@ const order = (overrides: Partial<InternalOrder> = {}): InternalOrder => ({
   approvedPaths: [],
   activeRoster: ["codex"],
   eligibleChoices: [],
-  expectedSelectedAgents: [],
   ...overrides
 });
 
@@ -487,14 +486,11 @@ Implement it.
     ["R2.plan", "plan-published"],
     ["R3.review", "review-published"],
     ["R3.plan-ballot", "plan-ballot-published"],
-    ["R3.publish-selection", "selection-published"],
     ["R4.implement", "implementation-pinned"],
     ["R5.compare", "comparison-published"],
     ["R5.compare-ballot", "comparison-ballot-published"],
-    ["R5.reviser-auth", "reviser-authorized"],
     ["R6.revise", "revision-pinned"],
     ["R6.ballot", "consensus-ballot-published"],
-    ["R6.declare", "consensus-declared"],
     ["R7.finalize", "finalization-verified"]
   ] as const)("rejects missing required-path evidence for %s", async (stepId, evidenceId) => {
     const result = await evaluateEvidence(
@@ -509,13 +505,10 @@ Implement it.
   it.each([
     ["R1.join", "join-published"],
     ["R3.plan-ballot", "plan-ballot-published"],
-    ["R3.publish-selection", "selection-published"],
     ["R4.implement", "implementation-pinned"],
     ["R5.compare-ballot", "comparison-ballot-published"],
-    ["R5.reviser-auth", "reviser-authorized"],
     ["R6.revise", "revision-pinned"],
     ["R6.ballot", "consensus-ballot-published"],
-    ["R6.declare", "consensus-declared"],
     ["R7.finalize", "finalization-verified"]
   ] as const)("rejects malformed structured evidence for %s", async (stepId, evidenceId) => {
     const result = await evaluateEvidence(
@@ -540,7 +533,7 @@ Implement it.
     expect(result).toMatchObject({ status: "rejected" });
   });
 
-  it("validates deterministic ballot selection and reviser authorization", async () => {
+  it("validates deterministic plan ballot choices", async () => {
     const plan = { agent: "claude", commitSha: sha("1"), path: ".plans/issue-1/plan.md", kind: "plan" };
     const review = { agent: "claude", commitSha: sha("2"), path: ".plans/issue-1/review.md", kind: "review" };
     const ballotOrder = order({
@@ -571,49 +564,6 @@ Implement it.
     expect((await evaluateEvidence(ballotOrder, sha("c"), mirror(badChoice))).outstanding.join(" ")).toContain(
       "not an eligible active plan agent"
     );
-
-    const implementation = {
-      agent: "claude",
-      commitSha: sha("3"),
-      path: ".signals/issue-1/implementation-ready-claude.json",
-      kind: "implementation"
-    };
-    const comparisonBallot = {
-      agent: "codex",
-      commitSha: sha("4"),
-      path: ".code-reviews/issue-1/ballot-codex.json",
-      kind: "comparison-ballot"
-    };
-    const authOrder = order({
-      stepId: "R5.reviser-auth",
-      evidenceId: "reviser-authorized",
-      requiredPath: ".signals/issue-1/reviser-authorization.json",
-      inputs: [implementation, comparisonBallot],
-      activeRoster: ["codex", "claude"],
-      expectedImplementationAgent: "claude",
-      expectedImplementationPin: implementation.commitSha,
-      expectedReviser: "claude"
-    });
-    const auth = {
-      protocolVersion: 1,
-      artifact: "reviser-authorization",
-      issue: 1,
-      issueSessionId: authOrder.issueSessionId,
-      agent: "codex",
-      inputSetHash: computeInputSetHash(authOrder.inputs),
-      reviser: "claude",
-      implementationCommitSha: implementation.commitSha
-    };
-    expect(await evaluateEvidence(authOrder, sha("c"), mirror(JSON.stringify(auth)))).toMatchObject({
-      status: "satisfied",
-      reviser: "claude",
-      productPin: implementation.commitSha
-    });
-    expect(
-      (
-        await evaluateEvidence(authOrder, sha("c"), mirror(JSON.stringify({ ...auth, reviser: "cursor" })))
-      ).outstanding.join(" ")
-    ).toContain("deterministic comparison winner");
   });
 
   it("rejects a comparison that omits a bound implementation pin", async () => {
@@ -632,36 +582,6 @@ Implement it.
     const result = await evaluateEvidence(action, sha("c"), mirror("# Comparison\n\nNo bound pin is cited.\n"));
     expect(result).toMatchObject({ status: "rejected" });
     expect(result.outstanding).toContain(`comparison does not cite implementation pin ${input.commitSha}`);
-  });
-
-  it("rejects a published selection that differs from the deterministic tally", async () => {
-    const ballot = {
-      agent: "claude",
-      commitSha: sha("2"),
-      path: ".plans/issue-1/ballot-claude.json",
-      kind: "plan-ballot"
-    };
-    const action = order({
-      stepId: "R3.publish-selection",
-      evidenceId: "selection-published",
-      requiredPath: ".plans/issue-1/selection.json",
-      inputs: [ballot],
-      activeRoster: ["claude", "codex"],
-      expectedSelectedAgents: ["claude"]
-    });
-    const artifact = {
-      protocolVersion: 1,
-      artifact: "selection",
-      issue: 1,
-      issueSessionId: action.issueSessionId,
-      agent: "codex",
-      inputSetHash: computeInputSetHash(action.inputs),
-      selectedAgents: ["codex"],
-      ballots: [{ agent: ballot.agent, commitSha: ballot.commitSha, path: ballot.path }]
-    };
-    const result = await evaluateEvidence(action, sha("c"), mirror(JSON.stringify(artifact)));
-    expect(result).toMatchObject({ status: "rejected" });
-    expect(result.outstanding).toContain("selection result does not equal the coordinator's deterministic ballot tally");
   });
 
   it("rejects a comparison ballot for an ineligible implementation", async () => {
@@ -695,42 +615,6 @@ Implement it.
     const result = await evaluateEvidence(action, sha("c"), mirror(JSON.stringify(artifact)));
     expect(result).toMatchObject({ status: "rejected" });
     expect(result.outstanding).toContain("comparison ballot choice codex is not an eligible active implementation agent");
-  });
-
-  it("rejects a consensus declaration that pins a revision outside its bound inputs", async () => {
-    const revision = {
-      agent: "codex",
-      commitSha: sha("2"),
-      path: ".signals/issue-1/revision-ready-codex-round-1.json",
-      kind: "revision"
-    };
-    const ballot = {
-      agent: "claude",
-      commitSha: sha("3"),
-      path: ".code-reviews/issue-1/consensus-ballot-claude-round-1.json",
-      kind: "consensus-ballot"
-    };
-    const action = order({
-      stepId: "R6.declare",
-      evidenceId: "consensus-declared",
-      requiredPath: ".signals/issue-1/consensus.json",
-      round: 1,
-      inputs: [revision, ballot]
-    });
-    const artifact = {
-      protocolVersion: 1,
-      artifact: "consensus-declaration",
-      issue: 1,
-      issueSessionId: action.issueSessionId,
-      agent: "codex",
-      inputSetHash: computeInputSetHash(action.inputs),
-      round: 1,
-      consensusCommitSha: sha("4"),
-      ballots: [{ agent: ballot.agent, commitSha: ballot.commitSha, path: ballot.path }]
-    };
-    const result = await evaluateEvidence(action, sha("c"), mirror(JSON.stringify(artifact)));
-    expect(result).toMatchObject({ status: "rejected" });
-    expect(result.outstanding).toContain("consensus declaration does not pin the bound revision commit");
   });
 
   it("requires revision lineage, approved paths, and immutable phase separation", async () => {

@@ -27,7 +27,7 @@ import {
   type IssueRuntimePaths
 } from "./paths.js";
 import { gitShaSchema } from "./protocol.js";
-import { CoordinatorRunLoop, deterministicWinner, runArgv, type ProcessRunner } from "./runLoop.js";
+import { CoordinatorRunLoop, runArgv, type ProcessRunner } from "./runLoop.js";
 import {
   appendJournal,
   atomicWriteJson,
@@ -312,9 +312,7 @@ const rederiveAfterDrop = (
         (submission) =>
           submission.stepId === currentStep &&
           submission.round === round &&
-          (submission.choice === dropped ||
-            submission.reviser === dropped ||
-            submission.selectedAgents?.includes(dropped) === true)
+          submission.choice === dropped
       )
       .map((submission) => submission.agent)
   );
@@ -343,33 +341,6 @@ const rederiveAfterDrop = (
             attempts: next.publication.attempts
           }
         : next.publication,
-    updatedAt: now
-  });
-
-  const planEligible = next.accepted
-    .filter((submission) => submission.stepId === "R2.plan" && next.activeRoster.includes(submission.agent))
-    .map((submission) => submission.agent);
-  const implementationEligible = next.accepted
-    .filter((submission) => submission.stepId === "R4.implement" && next.activeRoster.includes(submission.agent))
-    .map((submission) => submission.agent);
-  const planWinner = deterministicWinner(next, "R3.plan-ballot", planEligible);
-  const implementationWinner = deterministicWinner(next, "R5.compare-ballot", implementationEligible);
-  const implementation = next.accepted.find(
-    (submission) => submission.stepId === "R4.implement" && submission.agent === implementationWinner
-  );
-  const reselectPlan = cursors.selection.planAgents.length > 0 && next.selection.planAgents.length === 0;
-  const reselectImplementation =
-    cursors.selection.implementationAgent !== null && next.selection.implementationAgent === null;
-  const reselectReviser = cursors.selection.reviser !== null && next.selection.reviser === null;
-  next = cursorsStateSchema.parse({
-    ...next,
-    reviser: reselectReviser ? implementationWinner : next.reviser,
-    selection: {
-      planAgents: reselectPlan && planWinner !== null ? [planWinner] : next.selection.planAgents,
-      implementationAgent: reselectImplementation ? implementationWinner : next.selection.implementationAgent,
-      implementationPin: reselectImplementation ? (implementation?.productPin ?? null) : next.selection.implementationPin,
-      reviser: reselectReviser ? implementationWinner : next.selection.reviser
-    },
     updatedAt: now
   });
 
@@ -1259,7 +1230,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         }
         if (!current.activeRoster.includes(agent)) throw new Error(`${agent} is not active.`);
         if (current.activeRoster.length === 1) throw new Error("Cannot drop the final active agent.");
-        if (current.selection.reviser === agent || current.reviser === agent) {
+        if (current.derived.implementationSelection?.reviser === agent) {
           throw new Error(
             `Cannot drop authorized reviser ${agent}; revision and finalization must not be rebound without a new authorization.`
           );

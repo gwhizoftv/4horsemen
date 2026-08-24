@@ -12,7 +12,6 @@ describe("orderScaffold", () => {
       automationDigest: "b".repeat(64),
       inputs: [],
       eligibleChoices: [],
-      expectedSelectedAgents: [],
       round: null,
       approvedPaths: []
     };
@@ -40,7 +39,6 @@ describe("orderScaffold", () => {
       automationDigest: "b".repeat(64),
       inputs: [],
       eligibleChoices: [],
-      expectedSelectedAgents: [],
       round: null,
       approvedPaths: []
     });
@@ -58,7 +56,6 @@ describe("orderScaffold", () => {
       automationDigest: "b".repeat(64),
       inputs: [],
       eligibleChoices: [],
-      expectedSelectedAgents: [],
       round: null,
       approvedPaths: []
     });
@@ -81,7 +78,6 @@ describe("orderScaffold", () => {
       automationDigest: "b".repeat(64),
       inputs: [],
       eligibleChoices: [],
-      expectedSelectedAgents: [],
       round: null,
       approvedPaths: []
     });
@@ -100,7 +96,6 @@ describe("orderScaffold", () => {
       automationDigest: "b".repeat(64),
       inputs: [],
       eligibleChoices: [],
-      expectedSelectedAgents: [],
       round: null,
       approvedPaths: []
     });
