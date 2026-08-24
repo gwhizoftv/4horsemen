@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 88,
+  "issueSessionId": "issue-88:76cfd1550c3e74c0b6281cd83be04da9049f5814",
+  "agent": "cursor",
+  "inputSetHash": "f088d3f18e170e5b42dd6b55c7bebf86bf2a7139a7e33ba34571c5f4435edc20",
+  "artifact": "consensus-ballot",
+  "round": 2,
+  "revisionCommitSha": "d0e923e92a04423fd6432a092bff8bf9a8a6d28a",
+  "disposition": "approve",
+  "rationale": "Revision closes the round-1 audit gaps by scanning extensionless hook entrypoints and auditing committed AGENTS.md through HEAD plus in-process protocol stripping while keeping the suite green."
+}
