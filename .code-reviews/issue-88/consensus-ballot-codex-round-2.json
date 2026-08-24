@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 88,
+  "issueSessionId": "issue-88:76cfd1550c3e74c0b6281cd83be04da9049f5814",
+  "agent": "codex",
+  "inputSetHash": "f088d3f18e170e5b42dd6b55c7bebf86bf2a7139a7e33ba34571c5f4435edc20",
+  "artifact": "consensus-ballot",
+  "round": 2,
+  "revisionCommitSha": "d0e923e92a04423fd6432a092bff8bf9a8a6d28a",
+  "disposition": "approve",
+  "rationale": "The revision removes the suffix filter so every canonical hook emitter is audited, reads tracked root guidance from HEAD with the managed overlay removed, and passes the focused language suite."
+}
