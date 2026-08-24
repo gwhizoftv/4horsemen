@@ -1,12 +1,22 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { renderAction } from "../src/action.js";
 import { computeInputSetHash, evaluateEvidence, type EvidenceMirror } from "../src/evidence.js";
-import { AGENT_FACING_BANNED_TERMS, agentFacingSubject, agentFacingSubjects, findAgentLanguageViolations } from "../src/agentLanguage.js";
+import {
+  AGENT_FACING_BANNED_TERMS,
+  AGENT_FACING_PROSE_FILES,
+  agentFacingSubject,
+  agentFacingSubjects,
+  findAgentLanguageViolations,
+  shellEmittedText
+} from "../src/agentLanguage.js";
 import { renderAgentsProtocolBlock } from "../src/agentsProtocol.js";
+import { HookPolicyError, resolveWorkspaceConfig, runVerifyPhase, verifyCommands } from "../src/hookPolicy.js";
+import { coordinatorConfigSchema } from "../src/state.js";
 import { COORD_IDLE_SENTINEL } from "../src/tmux.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
@@ -54,7 +64,8 @@ const fixture = () => {
       { id: "codex", root: "/clones/codex", launcher: "start-codex.sh", delivery: "pull" }
     ],
     checks: [{ name: "check", argv: ["node", "-e", "process.exit(0)"] }],
-    pollIntervalMs: 100
+    pollIntervalMs: 100,
+    contextPaths: ["docs/repo-map.md"]
   });
   return paths;
 };
@@ -147,6 +158,10 @@ const seedAcceptedSubmissions = (paths: ReturnType<typeof fixture>) => {
 const everyStep = Object.keys(STEP_DEFINITIONS) as WorkflowStepId[];
 const roundOf = (stepId: WorkflowStepId): number | null => (stepId.startsWith("R6.") ? 1 : null);
 
+const sampleChangeScope = [
+  { agent: "claude", commitSha: "1".repeat(40), paths: ["src/steps.ts"], truncated: false }
+] as const;
+
 const renderEveryStep = (paths: ReturnType<typeof fixture>, outstanding: readonly string[] = []): Map<WorkflowStepId, string> => {
   const start = readStartState(paths);
   const cursors = readCursorsState(paths);
@@ -160,17 +175,34 @@ const renderEveryStep = (paths: ReturnType<typeof fixture>, outstanding: readonl
       stepId,
       roundOf(stepId),
       "b2337d85-6617-4e9f-8ace-901453764aa4",
-      outstanding
+      outstanding,
+      undefined,
+      sampleChangeScope
     );
     rendered.set(stepId, renderAction(order));
   }
   return rendered;
 };
 
+const walkFiles = (directory: string): string[] => {
+  const found: string[] = [];
+  for (const entry of readdirSync(directory)) {
+    const path = join(directory, entry);
+    if (statSync(path).isDirectory()) {
+      found.push(...walkFiles(path));
+      continue;
+    }
+    found.push(path);
+  }
+  return found;
+};
+
 describe("agent-facing language", () => {
   it("keeps internal vocabulary out of every generated action type", () => {
     const paths = fixture();
     for (const [stepId, body] of renderEveryStep(paths)) {
+      expect(body).toContain("## Repo context");
+      expect(body).toContain("## Changed paths for the bound pins");
       expect(findAgentLanguageViolations(body), stepId).toEqual([]);
     }
   });
@@ -282,6 +314,89 @@ describe("agent-facing language", () => {
     }
   });
 
+  it("keeps internal vocabulary out of every agent-facing prose file", () => {
+    for (const relativePath of AGENT_FACING_PROSE_FILES) {
+      const raw =
+        relativePath === "AGENTS.md"
+          ? execSync("git show :AGENTS.md", { cwd: repoRoot, encoding: "utf8" })
+          : readFileSync(join(repoRoot, relativePath), "utf8");
+      expect(findAgentLanguageViolations(raw), relativePath).toEqual([]);
+    }
+  });
+
+  it("scans the instruction files an agent actually loads", () => {
+    expect(AGENT_FACING_PROSE_FILES).toContain("AGENTS.md");
+    for (const relativePath of AGENT_FACING_PROSE_FILES) {
+      const absolutePath = join(repoRoot, relativePath);
+      expect(statSync(absolutePath).size).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps internal vocabulary out of hook diagnostics an agent sees", () => {
+    const verifyFixture = (overrides: Record<string, unknown> = {}) =>
+      coordinatorConfigSchema.parse({
+        project: "myserver",
+        origin: "https://github.com/example/myserver.git",
+        agents: [{ id: "claude", root: "../myserver-claude", launcher: "start-claude.sh" }],
+        branch: "issue-{issue}/{agent}",
+        checks: [{ name: "test", argv: ["node", "-e", "process.exit(0)"] }],
+        ...overrides
+      });
+    expect(() => verifyCommands(verifyFixture(), "precommit")).toThrow(HookPolicyError);
+    try {
+      verifyCommands(verifyFixture(), "precommit");
+    } catch (error) {
+      expect(findAgentLanguageViolations((error as HookPolicyError).message)).toEqual([]);
+    }
+
+    const logs: string[] = [];
+    runVerifyPhase({
+      clone: repoRoot,
+      config: verifyFixture({
+        verify: {
+          precommit: [{ name: "check", argv: ["node", "-e", "process.exit(0)"] }],
+          prepush: []
+        }
+      }),
+      phase: "precommit",
+      runner: () => 0,
+      log: (line) => logs.push(line)
+    });
+    runVerifyPhase({
+      clone: repoRoot,
+      config: verifyFixture({
+        verify: {
+          precommit: [{ name: "check", argv: ["node", "-e", "process.exit(0)"] }],
+          prepush: []
+        }
+      }),
+      phase: "prepush",
+      runner: () => 0,
+      log: (line) => logs.push(line)
+    });
+    expect(findAgentLanguageViolations(logs.join(""))).toEqual([]);
+
+    const bareClone = mkdtempSync(join(tmpdir(), "coord-language-bare-"));
+    roots.push(bareClone);
+    execSync("git init", { cwd: bareClone, stdio: "ignore" });
+    expect(() => resolveWorkspaceConfig(bareClone)).toThrow(HookPolicyError);
+    try {
+      resolveWorkspaceConfig(bareClone);
+    } catch (error) {
+      expect(findAgentLanguageViolations((error as HookPolicyError).message)).toEqual([]);
+    }
+  });
+
+  it("keeps internal vocabulary out of hook-emitted text", () => {
+    const hookRoots = [join(repoRoot, "githooks"), join(repoRoot, "templates/hooks")];
+    const walked = hookRoots.flatMap((root) => walkFiles(root));
+    expect(walked.length).toBeGreaterThanOrEqual(8);
+    for (const path of walked) {
+      if (!path.endsWith(".sh")) continue;
+      expect(findAgentLanguageViolations(shellEmittedText(readFileSync(path, "utf8"))), path).toEqual([]);
+    }
+  });
+
   it("keeps internal vocabulary out of the installed agent guidance", () => {
     expect(findAgentLanguageViolations(renderAgentsProtocolBlock(repoRoot))).toEqual([]);
     expect(
@@ -312,7 +427,17 @@ describe("agent-facing language", () => {
     );
     expect(findAgentLanguageViolations("they gate pull-request creation")).toContain("gate-vocabulary: gate");
     expect(findAgentLanguageViolations("the current phase")).toContain("phase-vocabulary: phase");
-    expect(findAgentLanguageViolations('"artifact": "join"')).toContain("participation-phase-name: join");
+    expect(findAgentLanguageViolations('"artifact": "join"').some((entry) => entry.startsWith("participation-phase-name:"))).toBe(
+      true
+    );
+    expect(findAgentLanguageViolations("must not commit ungated")).toContain("gate-vocabulary: ungated");
+    expect(findAgentLanguageViolations("must not commit gated")).toContain("gate-vocabulary: gated");
+    expect(findAgentLanguageViolations("still gating commits")).toContain("gate-vocabulary: gating");
+    expect(findAgentLanguageViolations("the current step also appears")).toContain("workflow-sequence: current step");
+    expect(findAgentLanguageViolations("the final cleanup step deletes")).toContain(
+      "workflow-sequence: final cleanup step"
+    );
+    expect(findAgentLanguageViolations("ordinary join paths stay legal")).toEqual([]);
     expect(AGENT_FACING_BANNED_TERMS.length).toBeGreaterThan(0);
   });
 
