@@ -56,7 +56,7 @@ consensus_wiring_present() {
 
 consensus_identity_failed() {
   echo "HOOK BLOCKED: $1" >&2
-  echo "  This clone has coordination hooks installed, so it is an agent clone and must not commit ungated." >&2
+  echo "  This clone has coordination hooks installed, so it is an agent clone and must not commit without running the project's declared checks." >&2
   echo "  Hooks never fall back to a default identity." >&2
   echo "  Fix: coord install --product <product> --coord-root <runtime> --agents <agents>" >&2
   echo "  Then confirm with: git config --local --get consensus.agentId" >&2

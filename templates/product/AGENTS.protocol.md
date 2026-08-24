@@ -7,10 +7,10 @@ message is the task authority; work belongs on the agent's own
 branch, and agents must not fabricate `.plans/`, `.signals/`, `.code-reviews/`,
 `action.md`, or `complete`. Installed hook, verification, identity, no-main,
 and no-force rules remain active.
-The required response format for the current step also appears in that step's
-`action.md` and may change each time — match the headings or JSON scaffold
-listed there. The coordinator accepts only the published artifact. If this file
-and `action.md` disagree on format, `action.md` wins.
+The required response format also appears in the `action.md` you are answering
+and may change each time — match the headings or JSON scaffold listed there.
+The coordinator accepts only the published artifact. If this file and
+`action.md` disagree on format, `action.md` wins.
 
 Coordination checks this clone out on `issue-<n>/<agent>` and re-sets the
 `skip-worktree` bit on `AGENTS.md` before your CLI starts. The branch already

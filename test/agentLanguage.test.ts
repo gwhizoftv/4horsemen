@@ -1,12 +1,20 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { renderAction } from "../src/action.js";
 import { computeInputSetHash, evaluateEvidence, type EvidenceMirror } from "../src/evidence.js";
-import { AGENT_FACING_BANNED_TERMS, agentFacingSubject, agentFacingSubjects, findAgentLanguageViolations } from "../src/agentLanguage.js";
+import {
+  AGENT_FACING_BANNED_TERMS,
+  agentFacingSubject,
+  agentFacingSubjects,
+  findAgentLanguageViolations,
+  shellEmittedText
+} from "../src/agentLanguage.js";
+import { HookPolicyError, runVerifyPhase, verifyCommands } from "../src/hookPolicy.js";
 import { renderAgentsProtocolBlock } from "../src/agentsProtocol.js";
+import { AGENTS_PROTOCOL_MARKERS, removeManagedBlock } from "../src/productIgnore.js";
 import { COORD_IDLE_SENTINEL } from "../src/tmux.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
@@ -15,7 +23,8 @@ import {
   initializeOperationalState,
   readCursorsState,
   readStartState,
-  writeCursorsState
+  writeCursorsState,
+  type CoordinatorConfig
 } from "../src/state.js";
 import { STEP_DEFINITIONS, type EvidenceId, type WorkflowStepId } from "../src/steps.js";
 import { renderNudgeText } from "../src/tmux.js";
@@ -307,13 +316,40 @@ describe("agent-facing language", () => {
     expect(findAgentLanguageViolations("implementation-pinned artifact pins abc")).toContain(
       "evidence-id: implementation-pinned"
     );
-    expect(findAgentLanguageViolations("R7 finalization is deletion-only cleanup")).toContain(
-      "internal-round-label: R7"
+    expect(findAgentLanguageViolations('"artifact": "join"')).toContain(
+      'participation-phase-name: "artifact": "join"'
     );
-    expect(findAgentLanguageViolations("they gate pull-request creation")).toContain("gate-vocabulary: gate");
-    expect(findAgentLanguageViolations("the current phase")).toContain("phase-vocabulary: phase");
-    expect(findAgentLanguageViolations('"artifact": "join"')).toContain("participation-phase-name: join");
+    expect(findAgentLanguageViolations("publish the join artifact")).toContain(
+      "participation-phase-name: join artifact"
+    );
+    expect(findAgentLanguageViolations("must not commit ungated")).toContain(
+      "gate-inflection: ungated"
+    );
+    expect(findAgentLanguageViolations("the checks are gating this push")).toContain(
+      "gate-inflection: gating"
+    );
+    expect(findAgentLanguageViolations("the format for the current step")).toContain(
+      "workflow-sequence: current step"
+    );
+    expect(findAgentLanguageViolations("the final cleanup step deletes those paths")).toContain(
+      "workflow-sequence: final cleanup step"
+    );
     expect(AGENT_FACING_BANNED_TERMS.length).toBeGreaterThan(0);
+  });
+
+  it("leaves the ordinary task English the issue still permits", () => {
+    // The issue allows plain words like plan, review, step, phase, and gate when
+    // they describe the work. Only the phase-shaped forms above are banned, so a
+    // narrowed rule must not start rejecting the prose the workflow depends on.
+    for (const ordinary of [
+      "Full `pnpm check` is what the coordinator runs before the pull request.",
+      "Run the checks that gate acceptance in this repository.",
+      "step through the findings in order",
+      "publish the participation-readiness artifact",
+      "join the two path lists before comparing them"
+    ]) {
+      expect(findAgentLanguageViolations(ordinary), ordinary).toEqual([]);
+    }
   });
 
   it("does not flag the outcome-named paths the workflow still publishes", () => {
@@ -339,5 +375,106 @@ describe("agent-facing language", () => {
     expect(STEP_DEFINITIONS["R1.join"].id).toBe("R1.join");
     expect(STEP_DEFINITIONS["R1.join"].gateId).toBe("gate-1-join");
     expect(STEP_DEFINITIONS["R1.join"].evidenceId).toBe("join-published");
+  });
+
+  it("keeps internal vocabulary out of the instruction file an agent loads here", () => {
+    // The driver's own AGENTS.md is prose an agent reads at the start of every
+    // session, and nothing scanned it until issue 88's second pass. The
+    // installed protocol block is rendered from the template and covered above,
+    // so it is stripped here rather than scanned twice: a clone carrying an
+    // older installed copy must not fail this file's own content.
+    const raw = readFileSync(join(repoRoot, "AGENTS.md"), "utf8");
+    const tracked = removeManagedBlock(raw, "AGENTS.md", AGENTS_PROTOCOL_MARKERS).content;
+    expect(tracked.length).toBeGreaterThan(0);
+    expect(findAgentLanguageViolations(tracked)).toEqual([]);
+  });
+
+  it("keeps internal vocabulary out of the text the installed hooks print", () => {
+    // Hook stderr lands in the agent's own terminal. Only the emitted operands
+    // are agent-facing; the comments around them explain internals to a
+    // maintainer and stay free to name steps, gates, and phases.
+    const walk = (dir: string): string[] =>
+      readdirSync(dir).flatMap((entry) => {
+        const path = join(dir, entry);
+        return statSync(path).isDirectory() ? walk(path) : [path];
+      });
+    const files = [...walk(join(repoRoot, "githooks")), ...walk(join(repoRoot, "templates/hooks"))];
+    // An empty walk would make every assertion below vacuous.
+    expect(files.length).toBeGreaterThan(5);
+    let emittedCount = 0;
+    for (const file of files) {
+      for (const text of shellEmittedText(readFileSync(file, "utf8"))) {
+        emittedCount += 1;
+        expect(findAgentLanguageViolations(text), `${file}: ${text}`).toEqual([]);
+      }
+    }
+    expect(emittedCount).toBeGreaterThan(10);
+  });
+
+  it("extracts only the emitted operands of a shell source", () => {
+    const source = [
+      '# every step is gated here, and this comment may say so',
+      'echo "  clean emitted line" >&2',
+      '  printf "%s\\n" "second emitted line"',
+      'value="not emitted: the current step"'
+    ].join("\n");
+    expect(shellEmittedText(source)).toEqual(["  clean emitted line", "%s\\n", "second emitted line"]);
+  });
+
+  it("keeps internal vocabulary out of the hook diagnostics an agent is shown", () => {
+    const base = { verify: undefined } as unknown as CoordinatorConfig;
+    let thrown: unknown;
+    try {
+      verifyCommands(base, "precommit");
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(HookPolicyError);
+    expect(findAgentLanguageViolations((thrown as Error).message)).toEqual([]);
+
+    const declared = {
+      verify: { precommit: [{ name: "check", argv: ["node", "-e", ""] }], prepush: [] }
+    } as unknown as CoordinatorConfig;
+    const logged: string[] = [];
+    for (const phase of ["precommit", "prepush"] as const) {
+      runVerifyPhase({
+        clone: "/clone",
+        config: declared,
+        phase,
+        log: (message) => logged.push(message),
+        runner: () => 0
+      });
+    }
+    expect(logged.length).toBeGreaterThan(0);
+    expect(findAgentLanguageViolations(logged.join(" "))).toEqual([]);
+  });
+
+  it("keeps internal vocabulary out of an action that carries context and change scope", () => {
+    const paths = fixture();
+    seedAcceptedSubmissions(paths);
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    const order = buildOrder(
+      paths,
+      start,
+      cursors,
+      "codex",
+      "R5.compare",
+      null,
+      "b2337d85-6617-4e9f-8ace-901453764aa4"
+    );
+    const body = renderAction({
+      ...order,
+      contextPaths: ["docs/coord-driver.md", "AGENTS.md"],
+      changeScope: [
+        { agent: "claude", commitSha: "5".repeat(40), paths: ["src/steps.ts"], truncated: false },
+        { agent: "codex", commitSha: "6".repeat(40), paths: [], truncated: true }
+      ]
+    });
+    // Prove both optional sections actually rendered, so this is not a third
+    // pass over a body that omitted them.
+    expect(body).toContain("## Repo context");
+    expect(body).toContain("## Changed paths for the bound pins");
+    expect(findAgentLanguageViolations(body)).toEqual([]);
   });
 });

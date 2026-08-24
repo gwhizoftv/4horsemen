@@ -7,8 +7,18 @@ import type { EvidenceId } from "./steps.js";
  * delivery machinery that carries an action to a harness — are legitimate
  * vocabulary in state, the journal, analytics, CLI output, and operator docs.
  * They must not reach an agent. The surfaces that do reach an agent are the
- * rendered `action.md` body, the typed injection text, and the protocol overlay
- * installed into a clone.
+ * rendered `action.md` body, the typed injection text, the protocol overlay
+ * installed into a clone, the instruction files an agent loads from the
+ * repository root, and the text the installed hooks emit into an agent's own
+ * terminal.
+ *
+ * Two shapes of jargon are banned beyond the bare identifiers. Gate inflections
+ * (`ungated`, `gated`, `gating`) name coordination's barriers rather than the
+ * work; and workflow-sequence phrases (`the current step`, `final cleanup
+ * step`) frame rote publication as a position in the coordinator's sequence
+ * instead of an outcome. Ordinary English that merely contains `step`, `phase`,
+ * or `gate` is deliberately not banned: the issue permits ordinary task words,
+ * so the rules match the phase-shaped forms only.
  *
  * This module is the single list. It is a test-time invariant, not a runtime
  * guard: `outstanding` strings carry git output, branch names, and agent ids
@@ -47,15 +57,35 @@ const evidenceIdAlternation = [...EVIDENCE_IDS]
 
 export const AGENT_FACING_BANNED_TERMS: readonly BannedTerm[] = [
   { label: "internal-step-id", pattern: String.raw`\bR[1-7]\.[a-z][a-z-]*` },
-  { label: "internal-round-label", pattern: String.raw`\bR[1-7]\b` },
   { label: "gate-id", pattern: String.raw`\bgate-[1-7]\b` },
-  { label: "phase-vocabulary", pattern: String.raw`\bphases?\b` },
-  { label: "gate-vocabulary", pattern: String.raw`\bgates?\b` },
   { label: "delivery-vocabulary", pattern: String.raw`\bnudg[a-z]*\b` },
-  { label: "participation-phase-name", pattern: String.raw`\bjoin(ed|ing)?\b` },
+  { label: "gate-inflection", pattern: String.raw`\b(?:ungated|gated|gating)\b` },
+  { label: "workflow-sequence", pattern: String.raw`\b(?:current|this|that|next|previous|every)\s+step\b` },
+  { label: "workflow-sequence", pattern: String.raw`\bfinal cleanup step\b` },
+  { label: "participation-phase-name", pattern: String.raw`\bjoin artifact\b` },
+  { label: "participation-phase-name", pattern: String.raw`"artifact"\s*:\s*"join"` },
+  { label: "participation-phase-name", pattern: String.raw`\bjoined-` },
   { label: "evidence-id", pattern: `\\b(?:${evidenceIdAlternation})\\b` },
   { label: "internal-field-name", pattern: String.raw`\b(?:stepId|gateId|evidenceId)\b` }
 ];
+
+/**
+ * Double-quoted operands of the `echo` and `printf` lines in a shell source.
+ *
+ * The installed hooks print straight into the agent's terminal, so those
+ * operands are agent-facing text even though the file around them is not: the
+ * comments in `githooks/` explain coordination's internals to a maintainer and
+ * stay free to name them. Heredocs are not extracted because no hook emits one;
+ * a caller that adds one must extend this function rather than assume coverage.
+ */
+export const shellEmittedText = (source: string): readonly string[] => {
+  const emitted: string[] = [];
+  for (const line of source.split("\n")) {
+    if (!/^\s*(?:echo|printf)\b/.test(line)) continue;
+    for (const match of line.matchAll(/"([^"]*)"/g)) emitted.push(match[1] as string);
+  }
+  return emitted;
+};
 
 /**
  * Every banned term found in `text`, as `"<label>: <match>"`, sorted and

@@ -29,21 +29,20 @@ no-force, and skip-worktree rules apply in both modes.
 
 This file is the automated-action protocol. Follow it when the coordinator has
 published an `action.md` and you are writing coordinator artifacts.
-The required response format for the current step also appears in that step's
-`action.md` and may change each time — match the headings or JSON scaffold
-listed there. The coordinator accepts only the published artifact. If this file
-and `action.md` disagree on format, `action.md` wins.
+The required response format also appears in the `action.md` you are answering
+and may change each time — match the headings or JSON scaffold listed there.
+The coordinator accepts only the published artifact. If this file and
+`action.md` disagree on format, `action.md` wins.
 
 Do not clear `skip-worktree` on `AGENTS.md`, strip this protocol block, or
 replace the file to “fix” git status. Coordination sets that bit so the
 clone-local protocol section stays hidden. If `AGENTS.md` looks wrong, escalate;
 do not change index flags.
 
-After you write `complete` for an automated action, do not stop. Re-read your
-coordinator `action.md`.
-If `actionId` in the front matter has changed, execute that new action even
-without a typed nudge. Delivery still comes from the coordinator; this watch
-is how you recover when a nudge did not land.
+After you write `complete` for an automated action, do not stop. Before waiting
+for more input, re-read your coordinator `action.md`. If `actionId` in the front
+matter has changed, execute the new instructions immediately; do not wait for
+another coordinator message.
 
 A **plan** (`.plans/issue-<n>/plan.md`) must include every heading below,
 each with a non-empty body:
