@@ -1,0 +1,27 @@
+{
+  "protocolVersion": 1,
+  "issue": 98,
+  "issueSessionId": "issue-98:3fed3f76b6030fffefc699d0530115fddeb847da",
+  "agent": "claude",
+  "inputSetHash": "8a54f4235f4cc9aac95c4251c0ad2200e1152e288a8fdbdb83651706aec6117d",
+  "artifact": "consensus-declaration",
+  "round": 2,
+  "consensusCommitSha": "c432808979675511903058e6df07bb5044a51c6e",
+  "ballots": [
+    {
+      "agent": "cursor",
+      "commitSha": "35328a2471a875bba9ae0dbdc1995dfcd444f582",
+      "path": ".code-reviews/issue-98/consensus-ballot-cursor-round-2.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "f69d2674aa6057398870ca9ed4c917f2c9855e30",
+      "path": ".code-reviews/issue-98/consensus-ballot-codex-round-2.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "0f111e88d74715a3ea0c5583b5c063d4ac246e43",
+      "path": ".code-reviews/issue-98/consensus-ballot-claude-round-2.json"
+    }
+  ]
+}
