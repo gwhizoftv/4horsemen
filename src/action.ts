@@ -62,8 +62,8 @@ const changeScopeSection = (changeScope: readonly ChangeScopeEntry[] = []): stri
   });
   return (
     `\n\n## Changed paths for the bound pins\n\n` +
-    `The coordinator resolved these from the bound pins so that each agent on ` +
-    `this step does not re-derive the same diff. Informational only: the ` +
+    `The coordinator resolved these from the bound pins so that agents receiving ` +
+    `this action do not re-derive the same diff. Informational only: the ` +
     `approved path list remains the sole authority over what an implementation ` +
     `may change. ${PATH_ENCODING_NOTE}\n\n` +
     blocks.join("\n\n")

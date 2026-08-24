@@ -1,21 +1,30 @@
-import { readFileSync } from "node:fs";
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { renderAction } from "../src/action.js";
 import { computeInputSetHash, evaluateEvidence, type EvidenceMirror } from "../src/evidence.js";
-import { AGENT_FACING_BANNED_TERMS, agentFacingSubject, agentFacingSubjects, findAgentLanguageViolations } from "../src/agentLanguage.js";
+import {
+  AGENT_FACING_BANNED_TERMS,
+  agentFacingSubject,
+  agentFacingSubjects,
+  findAgentLanguageViolations,
+  shellEmittedText
+} from "../src/agentLanguage.js";
 import { renderAgentsProtocolBlock } from "../src/agentsProtocol.js";
+import { HookPolicyError, resolveWorkspaceConfig, runVerifyPhase, verifyCommands } from "../src/hookPolicy.js";
 import { COORD_IDLE_SENTINEL } from "../src/tmux.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
 import {
+  coordinatorConfigSchema,
   cursorsStateSchema,
   initializeOperationalState,
   readCursorsState,
   readStartState,
-  writeCursorsState
+  writeCursorsState,
+  type CoordinatorConfig
 } from "../src/state.js";
 import { STEP_DEFINITIONS, type EvidenceId, type WorkflowStepId } from "../src/steps.js";
 import { renderNudgeText } from "../src/tmux.js";
@@ -26,6 +35,22 @@ const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+const config = (overrides: Record<string, unknown> = {}): CoordinatorConfig =>
+  coordinatorConfigSchema.parse({
+    project: "language-test",
+    origin: "https://github.com/example/language-test.git",
+    agents: [{ id: "codex", root: "../language-test-codex", launcher: "start-codex.sh" }],
+    branch: "issue-{issue}/{agent}",
+    checks: [{ name: "check", argv: ["node", "-e", ""] }],
+    ...overrides
+  });
+
+const filesUnder = (root: string): string[] =>
+  readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(root, entry.name);
+    return entry.isDirectory() ? filesUnder(path) : entry.isFile() ? [path] : [];
+  });
 
 const fixture = () => {
   const root = mkdtempSync(join(tmpdir(), "coord-language-"));
@@ -188,6 +213,28 @@ describe("agent-facing language", () => {
     }
   });
 
+  it("keeps populated repository context and changed-pin sections outcome-oriented", () => {
+    const paths = fixture();
+    seedAcceptedSubmissions(paths);
+    const start = { ...readStartState(paths), contextPaths: ["docs/repo-map.md"] };
+    const order = buildOrder(
+      paths,
+      start,
+      readCursorsState(paths),
+      "codex",
+      "R5.compare",
+      null,
+      "b2337d85-6617-4e9f-8ace-901453764aa4",
+      [],
+      undefined,
+      [{ agent: "codex", commitSha: "5".repeat(40), paths: ["src/action.ts"], truncated: false }]
+    );
+    const rendered = renderAction(order);
+    expect(rendered).toContain("## Repo context");
+    expect(rendered).toContain("## Changed paths for the bound pins");
+    expect(findAgentLanguageViolations(rendered)).toEqual([]);
+  });
+
   it("keeps internal vocabulary out of the correction block", () => {
     const paths = fixture();
     seedAcceptedSubmissions(paths);
@@ -289,6 +336,58 @@ describe("agent-facing language", () => {
     ).toEqual([]);
   });
 
+  it("keeps hook-policy diagnostics and progress text outcome-oriented", () => {
+    let missingVerify = "";
+    try {
+      verifyCommands(config(), "precommit");
+    } catch (error) {
+      expect(error).toBeInstanceOf(HookPolicyError);
+      missingVerify = error instanceof Error ? error.message : String(error);
+    }
+    expect(missingVerify).not.toBe("");
+    expect(findAgentLanguageViolations(missingVerify)).toEqual([]);
+
+    const clone = mkdtempSync(join(tmpdir(), "coord-language-hook-"));
+    roots.push(clone);
+    execFileSync("git", ["init", "-q", clone]);
+    let missingConfig = "";
+    try {
+      resolveWorkspaceConfig(clone);
+    } catch (error) {
+      expect(error).toBeInstanceOf(HookPolicyError);
+      missingConfig = error instanceof Error ? error.message : String(error);
+    }
+    expect(missingConfig).not.toBe("");
+    expect(findAgentLanguageViolations(missingConfig)).toEqual([]);
+
+    const logs: string[] = [];
+    const declared = config({
+      verify: {
+        precommit: [{ name: "check", argv: ["node", "-e", ""] }],
+        prepush: []
+      }
+    });
+    for (const phase of ["precommit", "prepush"] as const) {
+      expect(
+        runVerifyPhase({ clone, config: declared, phase, log: (message) => logs.push(message), runner: () => 0 }).ok
+      ).toBe(true);
+    }
+    expect(findAgentLanguageViolations(logs.join("\n"))).toEqual([]);
+  });
+
+  it("keeps text emitted by canonical and vendored shell hooks outcome-oriented", () => {
+    const hookFiles = [...filesUnder(join(repoRoot, "githooks")), ...filesUnder(join(repoRoot, "templates/hooks"))];
+    expect(hookFiles.length).toBeGreaterThan(2);
+    let emitters = 0;
+    for (const path of hookFiles) {
+      const emitted = shellEmittedText(readFileSync(path, "utf8"));
+      if (emitted !== "") emitters += 1;
+      expect(findAgentLanguageViolations(emitted), path).toEqual([]);
+    }
+    expect(emitters).toBeGreaterThan(2);
+    expect(findAgentLanguageViolations(shellEmittedText("# ungated operator comment\necho \"clean\"\n"))).toEqual([]);
+  });
+
   it("installs the exact idle line the terminal readiness check matches", () => {
     // The sentinel is a contract between the protocol block an agent reads and
     // the matcher in src/tmux.ts. A reword on either side must fail here rather
@@ -311,7 +410,10 @@ describe("agent-facing language", () => {
       "internal-round-label: R7"
     );
     expect(findAgentLanguageViolations("they gate pull-request creation")).toContain("gate-vocabulary: gate");
+    expect(findAgentLanguageViolations("must not commit ungated")).toContain("gate-inflection: ungated");
     expect(findAgentLanguageViolations("the current phase")).toContain("phase-vocabulary: phase");
+    expect(findAgentLanguageViolations("the current step")).toContain("workflow-sequence: current step");
+    expect(findAgentLanguageViolations("the final cleanup step")).toContain("workflow-sequence: final cleanup step");
     expect(findAgentLanguageViolations('"artifact": "join"')).toContain("participation-phase-name: join");
     expect(AGENT_FACING_BANNED_TERMS.length).toBeGreaterThan(0);
   });

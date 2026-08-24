@@ -51,8 +51,13 @@ export const AGENT_FACING_BANNED_TERMS: readonly BannedTerm[] = [
   { label: "gate-id", pattern: String.raw`\bgate-[1-7]\b` },
   { label: "phase-vocabulary", pattern: String.raw`\bphases?\b` },
   { label: "gate-vocabulary", pattern: String.raw`\bgates?\b` },
+  { label: "gate-inflection", pattern: String.raw`\b(?:ungated|gated|gating)\b` },
   { label: "delivery-vocabulary", pattern: String.raw`\bnudg[a-z]*\b` },
   { label: "participation-phase-name", pattern: String.raw`\bjoin(ed|ing)?\b` },
+  {
+    label: "workflow-sequence",
+    pattern: String.raw`\b(?:(?:current|this|that|next|previous|every)\s+steps?|final\s+cleanup\s+step)\b`
+  },
   { label: "evidence-id", pattern: `\\b(?:${evidenceIdAlternation})\\b` },
   { label: "internal-field-name", pattern: String.raw`\b(?:stepId|gateId|evidenceId)\b` }
 ];
@@ -69,6 +74,28 @@ export const findAgentLanguageViolations = (text: string): readonly string[] => 
     }
   }
   return [...found].sort();
+};
+
+/**
+ * Extract quoted operands from shell `echo` and `printf` statements.
+ *
+ * Hook comments and implementation identifiers are operator-facing, but the
+ * quoted strings these two commands write are read directly by an agent. This
+ * deliberately small parser matches the emission forms used by the canonical
+ * and vendored hook bodies without treating the whole shell source as public
+ * prose.
+ */
+export const shellEmittedText = (source: string): string => {
+  const emitted: string[] = [];
+  for (const line of source.split("\n")) {
+    const statement = /^\s*(?:echo|printf)\s+(.+)$/.exec(line);
+    if (statement === null) continue;
+    const operands = statement[1] as string;
+    for (const matched of operands.matchAll(/"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'/g)) {
+      emitted.push((matched[1] ?? matched[2] ?? "").replaceAll(String.raw`\n`, "\n"));
+    }
+  }
+  return emitted.join("\n");
 };
 
 /**

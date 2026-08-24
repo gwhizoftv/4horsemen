@@ -20,7 +20,7 @@ install_root="$(git config --local --get coord.installRoot 2>/dev/null || true)"
 
 if [[ -z "$install_root" ]]; then
   echo "HOOK BLOCKED: coord.installRoot is unset in this clone, so the coordination hook bodies cannot be located." >&2
-  echo "  This clone has coordination hooks installed, so it is an agent clone and must not commit ungated." >&2
+  echo "  This clone has coordination hooks installed, so this agent clone must run the project's declared checks before committing." >&2
   echo "  Fix: coord install --product <product> --coord-root <runtime> --agents <agents>" >&2
   echo "  Or remove the wiring entirely: coord uninstall --product <product> --coord-root <runtime>" >&2
   exit 1
