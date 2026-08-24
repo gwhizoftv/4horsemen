@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 98,
+  "issueSessionId": "issue-98:3fed3f76b6030fffefc699d0530115fddeb847da",
+  "agent": "claude",
+  "inputSetHash": "8a4bc1710c0b89b933b7a4364a5ca38797f2939d78d9ed6859e4e3fc3bed5c03",
+  "artifact": "consensus-ballot",
+  "round": 2,
+  "revisionCommitSha": "c432808979675511903058e6df07bb5044a51c6e",
+  "disposition": "approve",
+  "rationale": "Executing the pin's own embedded Antigravity settings program shows the round-1 gap closed and nothing over-reached — an upgrade drops only the sibling clones that script itself wrote while keeping the Antigravity clone, an owner-added workspace, a cursor clone it never managed, and the owner's allow entries, with a fresh install and a second run both correct — and the core deliverable still holds at this pin: the launcher grants exactly issue-17/claude under /bin/bash 3.2 and starts clean in manual mode, with build, lint, typecheck, 462 fast tests and 2 end-to-end tests green, leaving only the src/action.ts symlink hardening and a doctor mailbox check, both outside the approved paths, for a follow-up issue."
+}
