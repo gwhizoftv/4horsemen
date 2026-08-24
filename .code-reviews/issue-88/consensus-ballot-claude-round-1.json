@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 88,
+  "issueSessionId": "issue-88:76cfd1550c3e74c0b6281cd83be04da9049f5814",
+  "agent": "claude",
+  "inputSetHash": "b3ba9b895ca4064dac7e15e46b9c1edde11f8694a35d875f002b2c51d7620f50",
+  "artifact": "consensus-ballot",
+  "round": 1,
+  "revisionCommitSha": "14496c05001a9e72f0a72301c5f12d0ebd597f75",
+  "disposition": "revise",
+  "rationale": "Both acceptance criteria hold at this pin and the suite is green at 439/439 — every agent-facing surface scans clean and the internal ids survive in steps.ts, analytics.ts and cli.ts — but the revision changed no code (revisedBranchHead equals basedOn equals the original implementation), so the blind spot my comparison proved is still shipping: test/agentLanguage.test.ts:395 filters the hook walk to *.sh, which skips githooks/pre-commit, pre-push, post-merge, post-commit and commit-msg (27 of the 35 emitting lines and the only stderr an agent sees on a blocked commit), while the expect(walked.length).toBeGreaterThanOrEqual(8) guard on the line above is satisfied by the very files the loop skips; appending echo \"the current step is gated by R6\" to githooks/pre-commit at this pin still passes 15/15, so deleting line 395 — and, separately, replacing the git show :AGENTS.md subprocess at line 321 with the in-process removeManagedBlock strip so the fixture stops depending on mutable index state — are the two one-line changes that close an audit gap of exactly the kind this issue exists to remove."
+}
