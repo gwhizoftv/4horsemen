@@ -1,12 +1,12 @@
 {
   "protocolVersion": 1,
   "issue": 88,
-  "issueSessionId": "issue-88:26de98aae01426d582d17d15d1e33e1b6b3e3f90",
+  "issueSessionId": "issue-88:76cfd1550c3e74c0b6281cd83be04da9049f5814",
   "agent": "cursor",
-  "inputSetHash": "603f351783580c1e10bf821c66e8477d223fb3776657c4d2e77f32ba578ee74d",
+  "inputSetHash": "b3ba9b895ca4064dac7e15e46b9c1edde11f8694a35d875f002b2c51d7620f50",
   "artifact": "consensus-ballot",
   "round": 1,
-  "revisionCommitSha": "b4aec11886c776a2ef6dc38812f34fac8693eee8",
+  "revisionCommitSha": "14496c05001a9e72f0a72301c5f12d0ebd597f75",
   "disposition": "approve",
-  "rationale": "Revision adds evaluateEvidence-backed pin-subject and correction-block tests so a reverted agentFacingSubject wiring would fail, closing the regression gap without weakening the participation-ready public contract."
+  "rationale": "Revision pins the comparison-winning implementation that fixes tracked AGENTS.md, retains strict oracle guards, audits hook emissions and index-staged prose, and stays within the approved file map."
 }
