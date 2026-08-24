@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 98,
+  "issueSessionId": "issue-98:3fed3f76b6030fffefc699d0530115fddeb847da",
+  "agent": "codex",
+  "inputSetHash": "f3ed1b8fe3fdfb353d520530f1d4778050d27faaf60ab663b61e6cc993f3243b",
+  "artifact": "consensus-ballot",
+  "round": 1,
+  "revisionCommitSha": "2a6d666376dc05432cb63dcaa181b11955ab04b2",
+  "disposition": "approve",
+  "rationale": "Approve because the bound revision passes build, lint, typecheck, 461 fast tests, and 2 end-to-end tests while adding the public mailbox override, cross-workspace claim guard, Antigravity settings repair, and real /bin/bash exact-drop launcher coverage."
+}
