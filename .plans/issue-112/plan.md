@@ -5,12 +5,14 @@
 - `src/githubIssue.ts` — add `readGitHubIssueSnapshot` (load runtime `github-issue.json`) and `formatFinalizationPullRequest` (title + body with `Closes #N`)
 - `src/runLoop.ts` — use those helpers in `publishAcceptedFinalization` instead of the hard-coded `Issue N: coordinated implementation` title/body
 - `test/runLoop.test.ts` — seed `github-issue.json` in publication fixtures; assert opener receives title with issue title and body containing `Closes #1`
-- `test/githubIssue.test.ts` — unit coverage for snapshot read + PR text formatting (create if missing, else extend)
+- `test/integration.test.ts` — seed `github-issue.json` in the four-agent canary; assert PR title/body
+- `test/githubIssue.test.ts` — unit coverage for snapshot read + PR text formatting
 - `package.json` — bump `0.0.20` → `0.0.21` for the PR version gate
 
 ## Tests
 
 - `pnpm check:fast` (lint, typecheck, fast tests — live `verify.precommit`)
+- `pnpm test:e2e` (pre-push when `package.json` changes)
 - New/extended unit assertions on PR title/body; existing publication ticks keep passing
 
 ## Alternatives Rejected

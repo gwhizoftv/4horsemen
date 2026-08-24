@@ -92,6 +92,20 @@ describe("four-agent coordinator canary", () => {
         checks: [{ name: "fixture-check", argv: ["node", "-e", "process.exit(0)"] }],
         pollIntervalMs: 100
       });
+      writeFileSync(
+        paths.issueSnapshot,
+        `${JSON.stringify(
+          {
+            repository: "example/fixture",
+            number: 1,
+            title: "Four-agent coordinator canary",
+            body: "Drive consensus through finalization.",
+            url: "https://github.com/example/fixture/issues/1"
+          },
+          null,
+          2
+        )}\n`
+      );
 
       const checkArgv: string[][] = [];
       const mirror = new BareMirror(paths.mirror, origin);
@@ -101,6 +115,8 @@ describe("four-agent coordinator canary", () => {
         pullRequestOpener: async (input) => {
           expect(input.draft).toBe(true);
           expect(input.head).toBe("issue-1/cursor-final");
+          expect(input.title).toBe("Issue 1: Four-agent coordinator canary");
+          expect(input.body).toContain("Closes #1");
           return { url: "https://github.com/example/fixture/pull/1" };
         },
         processRunner: async (argv) => {
