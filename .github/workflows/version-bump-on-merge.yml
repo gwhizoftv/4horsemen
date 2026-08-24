@@ -1,0 +1,74 @@
+name: version-bump-on-merge
+
+# Pre-1.0 releases use 0.0.N, and the patch must advance whenever work lands so a
+# reinstall is visibly newer. That advance happens HERE and nowhere else.
+#
+# It used to be a `pull_request` gate that failed unless the branch was already
+# ahead of main, which meant a human had to reserve the next number while
+# protocol work was still in flight — two PRs merging the same afternoon would
+# both claim it and one would fail. Issue 95 removed the same rule from
+# `pnpm check:fast` and `pnpm check` for the same reason. Nothing on a branch
+# checks or changes the version any more: issue branches sit at main's version
+# for the whole run, and plans must not list package.json for a bump.
+on:
+  push:
+    branches: [main]
+
+# Serialize, never cancel. Two merges landing seconds apart must produce two
+# bumps; cancelling the older run would skip a release number and leave main at a
+# version some clone has already installed.
+concurrency:
+  group: version-bump-on-merge
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    # A push made with the default GITHUB_TOKEN does not trigger further workflow
+    # runs, so the bump commit normally never re-enters this workflow. That guard
+    # is invisible and stops holding the day someone swaps in a PAT, so the
+    # commit prefix is checked explicitly too.
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore: release ') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Bump package.json and push to main
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          # The fetch and the bump both live inside the retry. Computing the next
+          # version once and retrying only the push would re-send a number that
+          # the run which beat us has already taken.
+          for attempt in 1 2; do
+            git fetch --no-tags origin main
+            git reset --hard origin/main
+            node dist/bumpVersion.js
+            version="$(node -p 'require("./package.json").version')"
+            git add package.json
+            git commit -m "chore: release ${version}"
+            if git push origin "HEAD:main"; then
+              echo "published ${version} on main"
+              exit 0
+            fi
+            echo "push of ${version} was rejected (attempt ${attempt}); re-reading origin/main" >&2
+          done
+          echo "could not publish a version bump on main after 2 attempts" >&2
+          exit 1

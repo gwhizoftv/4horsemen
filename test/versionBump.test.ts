@@ -1,10 +1,10 @@
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
 import {
-  checkVersionBump,
+  bumpManifestSource,
+  bumpPatchVersion,
   isStrictlyGreater,
   parseDotVersion
 } from "../src/versionBump.js";
@@ -25,77 +25,110 @@ describe("version bump compare", () => {
   });
 });
 
-const repos: string[] = [];
-afterEach(() => {
-  for (const repo of repos.splice(0)) rmSync(repo, { recursive: true, force: true });
+describe("bumpPatchVersion", () => {
+  it("advances the patch and leaves major and minor alone", () => {
+    expect(bumpPatchVersion("0.0.20")).toBe("0.0.21");
+    expect(bumpPatchVersion("1.2.3")).toBe("1.2.4");
+  });
+
+  it("carries past a digit boundary without widening the triple", () => {
+    expect(bumpPatchVersion("0.0.9")).toBe("0.0.10");
+    expect(bumpPatchVersion("0.0.99")).toBe("0.0.100");
+  });
+
+  it("refuses anything that is not a dotted triple", () => {
+    expect(bumpPatchVersion("0.0.3-beta")).toBeNull();
+    expect(bumpPatchVersion("v0.0.3")).toBeNull();
+    expect(bumpPatchVersion("")).toBeNull();
+  });
 });
 
-const writeManifest = (root: string, version: string): void => {
-  writeFileSync(
-    join(root, "package.json"),
-    `${JSON.stringify({ name: "version-bump-fixture", version }, null, 2)}\n`
-  );
-};
-
 /**
- * A throwaway repository whose `main` carries `baseVersion` and whose worktree
- * manifest carries `headVersion`. The gate reads head from the file and base
- * through `git show`, so the head version needs no commit of its own.
- *
- * Each case asserts `headVersion` and `baseVersion` alongside the verdict: a
- * regression that resolves `baseRef` to some other parseable ref would keep the
- * verdict correct for these inputs while comparing against the wrong manifest.
+ * Shaped like the real manifest on purpose: single-line `dependencies` and
+ * `engines` objects are exactly what a parse-mutate-stringify rewrite would
+ * silently expand, so they belong in the fixture the byte-stability case reads.
  */
-const fixture = (baseVersion: string, headVersion: string): string => {
-  const root = mkdtempSync(join(tmpdir(), "coord-versionbump-"));
-  repos.push(root);
-  const git = (...args: string[]): void => {
-    execFileSync("git", args, { cwd: root, stdio: "pipe" });
-  };
-  git("init", "-q", "-b", "main", ".");
-  git("config", "user.email", "fixture@example.com");
-  git("config", "user.name", "fixture");
-  writeManifest(root, baseVersion);
-  git("add", "package.json");
-  git("commit", "-qm", "base");
-  if (headVersion !== baseVersion) writeManifest(root, headVersion);
-  return root;
-};
+const manifest = (version: string): string =>
+  `{
+  "name": "@coord/coordination",
+  "version": "${version}",
+  "private": true,
+  "scripts": { "build": "tsc -p tsconfig.json" },
+  "dependencies": { "zod": "^4.4.3" },
+  "engines": { "node": ">=26.0.0" }
+}
+`;
 
-describe("version bump gate decision", () => {
-  it("rejects a branch whose version has not advanced past the base", () => {
-    const root = fixture("0.0.1", "0.0.1");
-    const result = checkVersionBump(root, { baseRef: "main", headRef: "issue-95/fixture" });
-    expect(result.enforce).toBe(true);
-    expect(result.ok).toBe(false);
-    expect(result.headVersion).toBe("0.0.1");
-    expect(result.baseVersion).toBe("0.0.1");
+describe("bumpManifestSource", () => {
+  it("reports the old and new versions", () => {
+    const result = bumpManifestSource(manifest("0.0.20"));
+    expect(result.from).toBe("0.0.20");
+    expect(result.to).toBe("0.0.21");
   });
 
-  it("accepts a branch whose version is strictly greater than the base", () => {
-    const root = fixture("0.0.1", "0.0.2");
-    const result = checkVersionBump(root, { baseRef: "main", headRef: "issue-95/fixture" });
-    expect(result.enforce).toBe(true);
-    expect(result.ok).toBe(true);
-    expect(result.headVersion).toBe("0.0.2");
-    expect(result.baseVersion).toBe("0.0.1");
+  it("rewrites the version line and no other byte", () => {
+    const before = manifest("0.0.20");
+    const after = bumpManifestSource(before).source;
+    // Line-by-line rather than a whole-string compare: a helper that produced
+    // the right version while reformatting `dependencies` onto three lines would
+    // still satisfy a "contains 0.0.21" assertion, and is exactly the regression
+    // this case exists to catch.
+    const beforeLines = before.split("\n");
+    const afterLines = after.split("\n");
+    expect(afterLines).toHaveLength(beforeLines.length);
+    const changed = beforeLines
+      .map((line, index) => (line === afterLines[index] ? null : index))
+      .filter((index): index is number => index !== null);
+    expect(changed).toEqual([2]);
+    expect(afterLines[2]).toBe('  "version": "0.0.21",');
   });
 
-  it("exempts the base branch itself so main never requires an advance", () => {
-    const root = fixture("0.0.1", "0.0.1");
-    const result = checkVersionBump(root, { baseRef: "main", headRef: "main" });
-    expect(result.enforce).toBe(false);
-    expect(result.ok).toBe(true);
-    expect(result.headVersion).toBe("0.0.1");
-    expect(result.baseVersion).toBe("0.0.1");
+  it("refuses a manifest with no top-level version line", () => {
+    const source = '{\n  "name": "@coord/coordination"\n}\n';
+    expect(() => bumpManifestSource(source)).toThrow(/no top-level "version" line/);
   });
 
-  it("rejects a head version that is not a dotted triple", () => {
-    const root = fixture("0.0.1", "0.0.2-beta");
-    const result = checkVersionBump(root, { baseRef: "main", headRef: "issue-95/fixture" });
-    expect(result.enforce).toBe(true);
-    expect(result.ok).toBe(false);
-    expect(result.headVersion).toBe("0.0.2-beta");
-    expect(result.baseVersion).toBe("0.0.1");
+  it("refuses a manifest with more than one candidate version line", () => {
+    const source = `{
+  "name": "@coord/coordination",
+  "version": "0.0.20",
+  "packageManager": {
+    "version": "11.10.0"
+  }
+}
+`;
+    expect(() => bumpManifestSource(source)).toThrow(/2 candidate "version" lines/);
+  });
+
+  it("refuses a version that is not a dotted triple", () => {
+    expect(() => bumpManifestSource(manifest("0.0.20-beta"))).toThrow(/not a dotted triple/);
+  });
+
+  it("refuses when the one matched line is not the manifest's own version", () => {
+    // The package's version shares a line with another key, so it never starts a
+    // line and the pattern cannot see it; the nested one does. Exactly one match,
+    // and it is the wrong one — which is the case the `JSON.parse` cross-check
+    // exists to catch, and the case a match-count check alone would sail past.
+    const source = `{
+  "name": "@coord/coordination", "version": "0.0.20",
+  "tooling": {
+    "version": "11.10.0"
+  }
+}
+`;
+    expect(() => bumpManifestSource(source)).toThrow(/JSON\.parse reports/);
+  });
+
+  it("bumps this repository's own package.json", () => {
+    // The fixture cases all use a manifest this test file wrote. This one reads
+    // the real file, which is the input the workflow actually hands the helper.
+    const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+    const source = readFileSync(join(root, "package.json"), "utf8");
+    const result = bumpManifestSource(source);
+    const parsed = JSON.parse(result.source) as { version: string; scripts: Record<string, string> };
+    expect(parsed.version).toBe(result.to);
+    expect(result.to).not.toBe(result.from);
+    // Still the same manifest, not just still valid JSON.
+    expect(parsed.scripts["bump-version"]).toBe("pnpm build && node dist/bumpVersion.js");
   });
 });

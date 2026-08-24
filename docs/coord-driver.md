@@ -130,15 +130,17 @@ Uninstall performs the same workspace-scoped cleanup even when there are no
 ## Starting and running
 
 Confirm the installed driver with `coord --version` (or `-V`). Pre-1.0 releases
-use `0.0.N` and bump the patch before each merge so a merge is visible after
-reinstall/refresh. That bump is required on the **PR into `main`** and nowhere
-else: the `version-bump` GitHub Action runs `pnpm check:version-bump` on every
-pull request into `main` and blocks it unless `package.json` is strictly greater
-than the PR base. `pnpm check:fast` (precommit) and `pnpm check` do not check it,
-so issue branches may sit at the same version as `origin/main` for as long as the
-work takes. Make the bump a deliberate commit on the PR branch once the base is
-current; concurrent PRs must claim distinct next versions (e.g. `0.0.3` then
-`0.0.4`).
+use `0.0.N`, and the patch advances on every merge so a merge is visible after
+reinstall/refresh. **Nobody bumps it by hand.** The `version-bump-on-merge`
+GitHub Action runs on each push to `main`, advances `package.json`, and pushes a
+`chore: release 0.0.N` commit back to `main`. Runs are serialized, so two PRs
+merging minutes apart get two distinct versions without either one reserving a
+number in advance.
+
+Nothing on a branch requires or checks a version advance — not `pnpm check:fast`,
+not `pnpm check`, not any PR workflow — so an issue branch stays at `main`'s
+version for as long as the work takes, and a plan that lists `package.json` for a
+bump is listing a file the protocol will never need to change.
 
 After `coord onboard`, the daily command is:
 

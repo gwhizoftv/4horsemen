@@ -58,15 +58,17 @@ it, which is why neither has its own copy.
   that touches product code. This is the declared `verify.precommit`.
 - `pnpm check` — build plus `check:fast` plus e2e. The coordinator's gate.
 - `pnpm test:e2e` — the declared `verify.prepush` for workflow-critical paths.
-- `pnpm check:version-bump` — the pre-1.0 merge gate, run by the `version-bump`
-  workflow on a PR into `main`. It is the **only** place `package.json` is
-  required to be strictly ahead of the base.
+- `pnpm bump-version` — advances `package.json` by one patch. Run by the
+  `version-bump-on-merge` workflow on a push to `main`; there is no reason to
+  run it by hand.
 
-Neither `check:fast` nor `check` compares `package.json` with `origin/main`, so
-an issue branch may sit at the same version as `main` for the whole issue. Bump
-`0.0.N` in a deliberate commit on the PR branch before merging; the workflow
-blocks the merge if you forget. `test/versionBump.test.ts` covers the gate's
-decisions against a throwaway repository, never against this checkout.
+Nothing on a branch checks or changes the version. `check:fast`, `check`, and
+the PR workflows never compare `package.json` with `origin/main`, so an issue
+branch sits at `main`'s version for the whole issue and a plan must not list
+`package.json` for a bump. The `0.0.N` advance happens after the merge, as a
+`chore: release 0.0.N` commit pushed to `main` by CI.
+`test/versionBump.test.ts` covers the bump helpers against fixture manifests and
+against this repository's own `package.json`, never writing either back.
 
 Tests live in `test/`, one file per module, with shared fixtures under
 `test/support/`.
