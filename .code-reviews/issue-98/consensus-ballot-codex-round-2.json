@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 98,
+  "issueSessionId": "issue-98:3fed3f76b6030fffefc699d0530115fddeb847da",
+  "agent": "codex",
+  "inputSetHash": "8a4bc1710c0b89b933b7a4364a5ca38797f2939d78d9ed6859e4e3fc3bed5c03",
+  "artifact": "consensus-ballot",
+  "round": 2,
+  "revisionCommitSha": "c432808979675511903058e6df07bb5044a51c6e",
+  "disposition": "approve",
+  "rationale": "Approve because the bound revision passes build, lint, typecheck, 462 fast tests, and 2 end-to-end tests while withdrawing only the legacy Antigravity peer-clone trust managed by the installer and preserving owner-authored trusted workspaces."
+}
