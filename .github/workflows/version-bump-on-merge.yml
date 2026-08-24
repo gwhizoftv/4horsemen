@@ -30,7 +30,7 @@ jobs:
     # runs, so the bump commit normally never re-enters this workflow. That guard
     # is invisible and stops holding the day someone swaps in a PAT, so the
     # commit prefix is checked explicitly too.
-    if: ${{ !startsWith(github.event.head_commit.message, 'chore: release ') }}
+    if: "${{ !startsWith(github.event.head_commit.message, 'chore: release ') }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
