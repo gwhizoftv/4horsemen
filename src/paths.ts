@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
@@ -102,6 +102,86 @@ export const resolveSafeCoordRoot = (options: SafeCoordRootOptions): string => {
   return requested;
 };
 
+/**
+ * The completion mailbox: a third tree that is a sibling of both the agent
+ * clones and the coordinator runtime.
+ *
+ * `complete` is the only runtime file an agent writes. Leaving it beside
+ * `action.md` forced every harness to hold a writable grant on the whole coord
+ * root, which also holds `cursors.json`, `journal.jsonl`, and every peer's
+ * order. Codex ran `--sandbox danger-full-access` for exactly that reason. The
+ * mailbox is granted per issue and per agent, so a harness can publish its SHA
+ * without reaching coordinator state or a peer's receipt.
+ */
+/**
+ * Sibling `completes/`, then one segment identifying the workspace whose
+ * receipts live under it.
+ *
+ * Both parts are load-bearing. The mailbox is a *sibling* of the coord root so
+ * granting it never grants coordinator state — that is the whole point of the
+ * third tree. The trailing segment exists because one outer root can hold
+ * several workspaces (nested installs put each product at
+ * `<outer>/workspaces/<project>`): without it two products would share
+ * `completes/issue-42/claude/complete`, and the coordinator would read a peer
+ * product's intent as its own.
+ *
+ * The identity is always the coord root's own directory name, plus the project
+ * for a nested workspace. Both segments are needed: the project alone is not
+ * unique (two outer roots under one parent can each hold a `beta`), and the
+ * runtime name alone is not unique across the products nested inside it. The
+ * result mirrors how the runtime itself nests — `<outer>/workspaces/<project>`
+ * sits inside `<outer>` — so the same rule that keeps one workspace's teardown
+ * off another's runtime keeps it off another's mailbox.
+ */
+export const defaultCompletesRoot = (coordRoot: string, workspaceName?: string): string => {
+  const root = resolve(coordRoot);
+  const identity = workspaceName === undefined ? [basename(root)] : [basename(root), workspaceName];
+  return resolve(dirname(root), "completes", ...identity);
+};
+
+export type SafeCompletesRootOptions = {
+  completesRoot: string;
+  coordRoot: string;
+  agentRoots?: readonly string[];
+  create?: boolean;
+};
+
+/**
+ * Resolve and validate the mailbox root. Unlike the coord root, this tree has
+ * directories inside it that agents can write, so the containment checks matter
+ * more here rather than less: a symlinked component would let a receipt write
+ * land anywhere the coordinator later reads as intent.
+ */
+export const resolveSafeCompletesRoot = (options: SafeCompletesRootOptions): string => {
+  const requested = resolve(options.completesRoot);
+  assertNoSymlink(requested, requested);
+  const completesReal = nearestExistingRealPath(requested);
+  const coordReal = nearestExistingRealPath(options.coordRoot);
+
+  if (isPathInside(coordReal, completesReal) || isPathInside(completesReal, coordReal)) {
+    throw new PathSafetyError(
+      `Completion mailbox ${completesReal} overlaps the coordinator runtime ${coordReal}. ` +
+        "Granting the mailbox would grant coordinator state; choose a separate sibling path."
+    );
+  }
+
+  for (const agentRoot of options.agentRoots ?? []) {
+    const agentReal = nearestExistingRealPath(agentRoot);
+    if (isPathInside(agentReal, completesReal) || isPathInside(completesReal, agentReal)) {
+      throw new PathSafetyError(
+        `Completion mailbox ${completesReal} overlaps configured agent clone ${agentReal}. ` +
+          "The mailbox must sit outside every clone."
+      );
+    }
+  }
+
+  if (options.create === true) {
+    mkdirSync(requested, { recursive: true, mode: 0o700 });
+    assertNoSymlink(requested, requested);
+  }
+  return requested;
+};
+
 export type IssueRuntimePaths = {
   coordRoot: string;
   tmuxNamespace: string | null;
@@ -120,19 +200,37 @@ export type IssueRuntimePaths = {
   journal: string;
   issueSnapshot: string;
   agents: string;
+  /** Issue number, retained because the mailbox path is derived from it. */
+  issue: number;
+  /** Root of the completion mailbox tree; never inside `coordRoot`. */
+  completesRoot: string;
+  /** This issue's mailbox subtree: one directory per agent lives under it. */
+  completesIssueRoot: string;
 };
 
 /** Short stable fingerprint of a workspace root for Terminal title grouping. */
 export const workspaceTerminalGroup = (coordRoot: string): string =>
   createHash("sha256").update(resolve(coordRoot)).digest("hex").slice(0, 10);
 
-export const issueRuntimePaths = (coordRoot: string, issue: number): IssueRuntimePaths => {
+export const issueRuntimePaths = (
+  coordRoot: string,
+  issue: number,
+  completesRoot?: string
+): IssueRuntimePaths => {
   if (!Number.isInteger(issue) || issue < 1) {
     throw new PathSafetyError("Issue must be a positive integer.");
   }
   const root = resolve(coordRoot);
   const issueRoot = containedPath(root, `issue-${issue}`);
   const terminalGroup = workspaceTerminalGroup(root);
+  // Derived only when the caller has no configured root. Every path that must
+  // survive an issue (start.json, resume, wipe) passes the persisted value.
+  const mailbox = resolve(completesRoot ?? defaultCompletesRoot(root));
+  if (isPathInside(root, mailbox) || isPathInside(mailbox, root)) {
+    throw new PathSafetyError(
+      `Completion mailbox ${mailbox} overlaps the coordinator runtime ${root}.`
+    );
+  }
   return {
     coordRoot: root,
     // Nested workspaces also namespace tmux sessions; flat keeps legacy coord-N.
@@ -145,7 +243,10 @@ export const issueRuntimePaths = (coordRoot: string, issue: number): IssueRuntim
     agentLifecycle: containedPath(issueRoot, "agent-lifecycle.json"),
     journal: containedPath(issueRoot, "journal.jsonl"),
     issueSnapshot: containedPath(issueRoot, "github-issue.json"),
-    agents: containedPath(issueRoot, "agents")
+    agents: containedPath(issueRoot, "agents"),
+    issue,
+    completesRoot: mailbox,
+    completesIssueRoot: containedPath(mailbox, `issue-${issue}`)
   };
 };
 
@@ -154,6 +255,11 @@ export type AgentRuntimePaths = {
   action: string;
   complete: string;
   renderLog: string;
+  /**
+   * The directory holding `complete`, and the exact path a harness is granted.
+   * Separate from `root`: the order is coordinator-owned, the receipt is not.
+   */
+  completeDir: string;
 };
 
 const agentPattern = /^[a-z][a-z0-9-]{0,63}$/;
@@ -163,11 +269,14 @@ export const agentRuntimePaths = (paths: IssueRuntimePaths, agent: string): Agen
     throw new PathSafetyError(`Invalid agent id: ${agent}`);
   }
   const root = containedPath(paths.agents, agent);
+  const completeDir = containedPath(paths.completesIssueRoot, agent);
   return {
     root,
     action: containedPath(root, "action.md"),
-    complete: containedPath(root, "complete"),
-    renderLog: containedPath(root, "render.log")
+    // The receipt leaves the coord root; the order and the log do not.
+    complete: containedPath(completeDir, "complete"),
+    renderLog: containedPath(root, "render.log"),
+    completeDir
   };
 };
 
@@ -178,10 +287,30 @@ export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly st
   assertNoSymlink(paths.coordRoot, paths.agents);
   mkdirSync(paths.agents, { recursive: true, mode: 0o700 });
   assertNoSymlink(paths.coordRoot, paths.agents);
+  assertNoSymlink(paths.completesRoot, paths.completesIssueRoot);
+  mkdirSync(paths.completesIssueRoot, { recursive: true, mode: 0o700 });
+  assertNoSymlink(paths.completesRoot, paths.completesIssueRoot);
   for (const agent of agents) {
     const runtime = agentRuntimePaths(paths, agent);
     assertNoSymlink(paths.coordRoot, runtime.root);
     mkdirSync(runtime.root, { recursive: true, mode: 0o700 });
     assertNoSymlink(paths.coordRoot, runtime.root);
+    // Checked against the mailbox root, not the coord root: the two trees are
+    // deliberately disjoint, so containment must be asserted within each.
+    assertNoSymlink(paths.completesRoot, runtime.completeDir);
+    mkdirSync(runtime.completeDir, { recursive: true, mode: 0o700 });
+    assertNoSymlink(paths.completesRoot, runtime.completeDir);
   }
+};
+
+/**
+ * Remove this issue's mailbox subtree. Separate from the coord-root teardown
+ * because the two trees fail independently: a stale receipt left behind is read
+ * as completion intent by a later run that reuses the issue number.
+ */
+export const removeIssueMailbox = (paths: IssueRuntimePaths): boolean => {
+  if (!existsSync(paths.completesIssueRoot)) return false;
+  assertNoSymlink(paths.completesRoot, paths.completesIssueRoot);
+  rmSync(paths.completesIssueRoot, { recursive: true, force: true });
+  return true;
 };

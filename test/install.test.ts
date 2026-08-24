@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { findAgentLanguageViolations } from "../src/agentLanguage.js";
 import { assertInstallDeletionAllowed, install, uninstall } from "../src/install.js";
@@ -503,6 +503,63 @@ describe("coord uninstall — scope", () => {
     const fixture = product();
     const installed = installOnce(fixture, { bootstrap: false });
     expectCoordinationDeletionRefused(fixture, installed);
+  });
+});
+
+describe("completion mailbox wiring", () => {
+  /**
+   * The grant is resolved by the generated launcher at exec time, not baked in
+   * at install: `githooks/post-merge` regenerates that file with no issue
+   * number in hand, so a baked-in path would disagree with whichever writer ran
+   * last. The clone key is how both writers reach the same mailbox.
+   */
+  it("records the mailbox root in the clone and grants only the current drop", () => {
+    const fixture = product();
+    const result = installOnce(fixture, { agents: ["claude", "codex"] });
+    const config = JSON.parse(readFileSync(result.configPath, "utf8")) as {
+      completesRoot?: string;
+      coordination?: { completesRoot?: string };
+    };
+    const mailbox = config.completesRoot as string;
+
+    expect(mailbox).toBeDefined();
+    expect(isAbsolute(mailbox)).toBe(true);
+    // A sibling, not a child: granting a path inside the coord root would grant
+    // cursors.json and every peer's action.md along with it.
+    expect(mailbox.startsWith(`${resolve(fixture.coordRoot)}/`)).toBe(false);
+    expect(existsSync(mailbox)).toBe(true);
+    expect(config.coordination?.completesRoot).toBe(mailbox);
+
+    for (const clone of result.clones) {
+      expect(git(clone, "config", "--local", "--get", "coord.completesRoot")).toBe(mailbox);
+    }
+
+    const launcher = readFileSync(join(result.clones[0] as string, "start-claude.sh"), "utf8");
+    expect(launcher).toContain("--add-dir");
+    expect(launcher).toContain('coord_drop="$coord_completes_root/issue-$COORD_ISSUE/claude"');
+    // Never the whole mailbox (peers' receipts) and never the runtime.
+    expect(launcher).not.toContain(`--add-dir "${mailbox}"`);
+    expect(launcher).not.toContain(resolve(fixture.coordRoot));
+  });
+
+  it("stops launching Codex with blanket filesystem access", () => {
+    const fixture = product();
+    const result = installOnce(fixture, { agents: ["codex"] });
+    const launcher = readFileSync(join(result.clones[0] as string, "start-codex.sh"), "utf8");
+    // danger-full-access existed only because `complete` sat under the coord
+    // root; the mailbox grant replaces the reason for it.
+    expect(launcher).not.toContain("danger-full-access");
+    expect(launcher).toContain("--sandbox workspace-write");
+    expect(launcher).toContain("--ask-for-approval never");
+  });
+
+  it("uninstall clears the mailbox key so a stale grant cannot survive", () => {
+    const fixture = product();
+    const installed = installOnce(fixture, { agents: ["claude"] });
+    uninstallOnce(fixture);
+    expect(tryGit(installed.clones[0] as string, "config", "--local", "--get", "coord.completesRoot").exitCode).not.toBe(
+      0
+    );
   });
 });
 

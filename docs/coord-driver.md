@@ -22,15 +22,42 @@ within derived runtime paths are rejected.
   mirror.git/
   issue-<n>/
     github-issue.json immutable start-time GitHub title/body snapshot
-    start.json       immutable session/config baseline
+    start.json       immutable session/config baseline, incl. completesRoot
     cursors.json     workflow pointers (not the Cursor agent): step, roster, pins
     agent-lifecycle.json  coordinator-owned CLI delivery/activity observations
     journal.jsonl    append-only owner/effect audit
     agents/<agent>/
       action.md      restricted public order
-      complete       exact pushed SHA supplied by the agent
       render.log     optional human log
+
+<parent-of-coord-root>/completes/<coord-root-name>[/<project>]/
+  issue-<n>/<agent>/
+    complete         exact pushed SHA supplied by the agent
 ```
+
+The completion receipt is the **only** runtime file an agent writes, and it is
+the only one outside the coord root. It lives in a third tree — a sibling of
+both the runtime and the clones — so a harness can be granted the one directory
+it must write without being granted `cursors.json`, `journal.jsonl`, or a peer's
+`action.md`. Codex ran `--sandbox danger-full-access` purely because `complete`
+used to sit under the coord root; it now runs `workspace-write` plus a grant on
+its own drop.
+
+The grant is exactly `<completesRoot>/issue-<n>/<agent>` — never the whole
+mailbox, which holds peers' receipts. The generated `start-<agent>.sh` resolves
+it at launch from the clone-local `coord.completesRoot` and `COORD_ISSUE`, so
+the launcher file itself stays free of issue-specific state and
+`githooks/post-merge` can regenerate it without knowing an issue number.
+
+The identity segments separate products that share one outer root: without them
+two workspaces would resolve `issue-42/claude/complete` to the same file. The
+coord root's own directory name is always present; a nested workspace adds its
+project, because the project alone is not unique across outer roots.
+
+`completesRoot` defaults to that derived path and may be set explicitly in the
+workspace config; the resolved absolute value is frozen into `start.json` at
+`coord start`, and every later command for that issue reads it from there rather
+than from a config that a reinstall may have moved.
 
 For a fresh single-product onboard, `<workspace-root>` is the outer coord root
 and `config.json` is flat beside these paths. Additional products sharing that
@@ -40,7 +67,9 @@ Existing nested installs and their compatible legacy outer runtime state remain
 resolvable; ambiguous duplicate state fails closed.
 
 `action.md` exposes only an opaque action UUID, the caller identity, required
-path, concrete task, exact bound input commits, and absolute completion path.
+path, concrete task, exact bound input commits, and absolute completion path —
+the last being an absolute path under `completesRoot`, carried in the action
+body rather than the restricted front matter.
 Internal step/gate/evidence identifiers remain in `cursors.json`.
 
 ## Configuration

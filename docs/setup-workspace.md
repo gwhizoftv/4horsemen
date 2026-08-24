@@ -189,15 +189,44 @@ owner replaces the managed Antigravity status-line command after installation,
 uninstall leaves that new command and its recovery metadata in place rather
 than guessing what to restore.
 
+### The completion mailbox
+
+Agents publish one runtime file: the pushed commit SHA, written to `complete`.
+That file does not live under the coord root. It lives in a sibling tree so the
+harness can be granted the single directory it must write without also being
+granted `cursors.json`, the journal, or another agent's `action.md`:
+
+```text
+/path/to/completes/<coord-root-name>[/<project>]/issue-<n>/<agent>/complete
+```
+
+`completesRoot` defaults to `<parent-of-coord-root>/completes/<coord-root-name>`
+for a flat install, with the project appended for a nested one, and is created by
+`coord install`. Those segments are what keep two products sharing an outer root
+— or two outer roots sharing a parent — from resolving the same
+`issue-42/claude/complete`. Set `completesRoot` explicitly in the workspace
+config when neither derived location suits the layout — the value must be
+absolute, outside the coord root, and outside every agent clone, or install
+refuses it.
+
+Install records the resolved root in each clone as `coord.completesRoot`. The
+generated `start-<agent>.sh` combines it with `COORD_ISSUE` at launch and passes
+only that one directory to the harness (`--add-dir`). Nothing issue-specific is
+written into the launcher, which is why `githooks/post-merge` can still
+regenerate it. A harness started outside an automated issue gets no grant and
+says so on stdout.
+
 Five scoping rules matter:
 
 - By default only the workspace config is deleted; an empty nested workspace
   directory may also be removed. Issue snapshots and run state stay unless
   `--wipe-runtime` is explicit.
 - `--wipe-runtime` removes this product's issue state and, when no other
-  workspace still uses the outer coord root, deletes that folder too (e.g.
-  `./coord-runtime`). If nested siblings share the root, wipe stays scoped to
-  this product's targets and keeps the outer directory—even with `--force`.
+  workspace still uses the outer coord root, deletes that folder and the
+  workspace's completion mailbox too (e.g. `./coord-runtime` and
+  `./completes/coord-runtime`). If nested siblings share the root, wipe stays
+  scoped to this product's targets and keeps the outer directory and every
+  mailbox—even with `--force`.
   Without force, a shared flat runtime is still refused as an extra confirmation
   boundary.
 - Owner tmux/Terminal teardown is limited to issue identities under this

@@ -96,12 +96,22 @@ describe("wipeIssue", () => {
     });
     writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
     mkdirSync(join(coordRoot, "issue-9", "agents"), { recursive: true });
+    // A receipt left in the mailbox outlives the runtime it belongs to: the
+    // next run that reuses issue 9 would read it as that agent's completion.
+    const completesRoot = join(workspace, "completes");
+    const claudeDrop = join(completesRoot, "issue-9", "claude");
+    const keptDrop = join(completesRoot, "issue-10", "claude");
+    mkdirSync(claudeDrop, { recursive: true });
+    mkdirSync(keptDrop, { recursive: true });
+    writeFileSync(join(claudeDrop, "complete"), `${"a".repeat(40)}\n`);
+    writeFileSync(join(keptDrop, "complete"), `${"b".repeat(40)}\n`);
 
     const outcome = await wipeIssue({
       issue: 9,
       config,
       configPath,
       coordRoot,
+      completesRoot,
       terminalCloser: null,
       log: () => undefined
     });
@@ -114,6 +124,10 @@ describe("wipeIssue", () => {
     ]);
     expect(outcome.wipedRuntime).toBe(join(coordRoot, "issue-9"));
     expect(existsSync(join(coordRoot, "issue-9"))).toBe(false);
+    expect(outcome.wipedCompletes).toBe(join(completesRoot, "issue-9"));
+    expect(existsSync(join(completesRoot, "issue-9"))).toBe(false);
+    // Only this issue: another issue's receipts are not this wipe's business.
+    expect(existsSync(join(keptDrop, "complete"))).toBe(true);
     expect(git(claude, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
     expect(git(codex, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
     expect(tryGit(claude, "show-ref", "--verify", "--quiet", "refs/heads/issue-9/claude").exitCode).not.toBe(0);

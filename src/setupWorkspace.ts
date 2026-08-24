@@ -248,6 +248,12 @@ export type WorkspaceConfigInput = {
   workspaceDir: string;
   declared: WorkspaceDeclaration | null;
   proposal: ProjectPolicyProposal;
+  /**
+   * Resolved absolute completion mailbox root. Written into the config so
+   * `coord start` and `coord doctor` read one authority, and so a nested
+   * workspace that cannot use the derived sibling still has a stated root.
+   */
+  completesRoot: string;
 };
 
 /**
@@ -295,6 +301,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     ...(verify === undefined ? {} : { verify }),
     workflowCriticalPrefixes: declared.workflowCriticalPrefixes ?? input.proposal.workflowCriticalPrefixes,
     workflowCriticalFiles: declared.workflowCriticalFiles ?? input.proposal.workflowCriticalFiles,
+    completesRoot: input.completesRoot,
     coordination: stamp
   });
 };
@@ -515,7 +522,19 @@ export type CloneIdentity = {
   installRoot: string | null;
   cliEntry: string;
   workspaceConfig: string;
+  /** Absolute mailbox root; the launcher adds the issue and agent segments. */
+  completesRoot: string;
 };
+
+/**
+ * Where this clone's harness finds the completion mailbox.
+ *
+ * Recorded per clone rather than passed into the launcher so the generated
+ * `start-<agent>.sh` stays path-independent: `githooks/post-merge` regenerates
+ * it with no issue number and no config in hand, and a launcher carrying a
+ * baked-in issue path would disagree with whichever writer ran last.
+ */
+export const COMPLETES_ROOT_KEY = "coord.completesRoot";
 
 const IDENTITY_KEYS: readonly string[] = [
   "consensus.agentId",
@@ -524,7 +543,8 @@ const IDENTITY_KEYS: readonly string[] = [
   "consensus.remoteName",
   INSTALL_ROOT_KEY,
   CLI_ENTRY_KEY,
-  WORKSPACE_CONFIG_KEY
+  WORKSPACE_CONFIG_KEY,
+  COMPLETES_ROOT_KEY
 ];
 
 export const configureCloneIdentity = (clone: string, identity: CloneIdentity, options: EffectOptions): void => {
@@ -535,7 +555,8 @@ export const configureCloneIdentity = (clone: string, identity: CloneIdentity, o
     ["consensus.remoteName", identity.remoteName],
     [INSTALL_ROOT_KEY, identity.installRoot],
     [CLI_ENTRY_KEY, identity.cliEntry],
-    [WORKSPACE_CONFIG_KEY, identity.workspaceConfig]
+    [WORKSPACE_CONFIG_KEY, identity.workspaceConfig],
+    [COMPLETES_ROOT_KEY, identity.completesRoot]
   ];
   const stale = desired.filter(([key, value]) => localConfigGet(clone, key) !== value);
   if (stale.length === 0) {

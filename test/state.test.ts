@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -25,9 +25,11 @@ afterEach(() => {
 });
 
 const initialize = () => {
-  const root = mkdtempSync(join(tmpdir(), "coord-state-"));
-  roots.push(root);
-  const paths = issueRuntimePaths(root, 1);
+  const workspace = mkdtempSync(join(tmpdir(), "coord-state-"));
+  roots.push(workspace);
+  const root = join(workspace, "coord-runtime");
+  mkdirSync(root, { recursive: true });
+  const paths = issueRuntimePaths(root, 1, join(workspace, "completes"));
   createIssueRuntime(paths, ["claude", "codex"]);
   return {
     paths,

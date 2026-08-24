@@ -18,15 +18,25 @@
 #
 # Emits the shell lines that launch one agent. This is the only place a vendor's
 # flags are recorded; setup scripts and the post-merge hook both read them here.
+#
+# Every vendor below accepts --add-dir for an extra writable root, so the
+# completion mailbox is granted with "${coord_grant[@]}" rather than by widening
+# the sandbox. That array is computed by the generated launcher at exec time
+# (see write_launcher); it is empty when there is no current issue. The
+# expansion is written as ${a[@]+"${a[@]}"} because macOS /bin/bash is 3.2,
+# where a plain "${a[@]}" on an empty array aborts under `set -u`.
 launcher_command() {
   case "$1" in
     claude)
-      printf 'exec claude --permission-mode auto\n'
+      printf 'exec claude --permission-mode auto ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     codex)
-      # complete lives under coord-runtime (outside the clone). workspace-write
-      # still prompts for that path; agent clones need unattended out-of-tree writes.
-      printf 'exec codex --ask-for-approval never --sandbox danger-full-access\n'
+      # The completion receipt now lives in the mailbox, which is granted
+      # explicitly, so workspace-write is enough. danger-full-access was only
+      # ever here because `complete` sat under coord-runtime and workspace-write
+      # prompted for it — that reason is gone, and the broad grant reached
+      # cursors.json and peers' orders along with it.
+      printf 'exec codex --ask-for-approval never --sandbox workspace-write ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     antigravity)
       # agy installs into ~/.local/bin, which a login shell does not always
@@ -38,13 +48,15 @@ launcher_command() {
       # max ~2.3 h on a product run). --dangerously-skip-permissions is a
       # separate flag, so keep the mode and add the grant. Codex already
       # launches unattended for the same reason.
-      printf 'export PATH="$HOME/.local/bin:$PATH"\nexec agy --mode accept-edits --dangerously-skip-permissions\n'
+      printf 'export PATH="$HOME/.local/bin:$PATH"\nexec agy --mode accept-edits --dangerously-skip-permissions ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     gemini)
+      # No mailbox grant: gemini is not a configured coordination harness and
+      # has no completion receipt to write.
       printf 'exec gemini\n'
       ;;
     cursor)
-      printf 'exec agent\n'
+      printf 'exec agent ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     *)
       return 1
@@ -56,6 +68,17 @@ launcher_command() {
 #
 # Writes an executable launcher, or returns 1 for an agent with no known launch
 # command rather than emitting a truncated script.
+#
+# The signature stays at four arguments on purpose. The mailbox grant is
+# per-issue, and neither caller knows an issue number: `coord install` runs
+# before any issue exists, and `githooks/post-merge` has only the clone's
+# identity. Baking a drop directory in here would need a fifth argument the hook
+# cannot supply, and re-rendering the file at `coord start` would make the
+# coordinator write inside agent clones and give the hook a second, disagreeing
+# template. So the generated launcher stays path-independent and resolves the
+# current drop itself, from the clone-local coord.completesRoot key plus
+# COORD_ISSUE, which coordination exports on the tmux session before the harness
+# starts.
 write_launcher() {
   local path="$1" agent="$2" label="$3" shared="$4" command
 
@@ -92,6 +115,26 @@ fi
 if [[ -f pnpm-lock.yaml ]] && command -v corepack >/dev/null; then
   corepack enable pnpm >/dev/null 2>&1 || true
   command -v pnpm >/dev/null && echo "pnpm: \$(pnpm --version)"
+fi
+
+# Grant this harness exactly one extra writable directory: the current issue's
+# own drop inside the completion mailbox. Not the coordinator runtime (which
+# holds cursors.json, the journal, and peers' orders) and not the whole mailbox
+# (which holds peers' receipts). Empty outside an automated issue.
+coord_grant=()
+coord_completes_root="\$(git config --local --get coord.completesRoot 2>/dev/null || true)"
+if [[ -n "\$coord_completes_root" && "\${COORD_ISSUE:-}" =~ ^[1-9][0-9]*\$ ]]; then
+  coord_drop="\$coord_completes_root/issue-\$COORD_ISSUE/$agent"
+  if [[ -d "\$coord_drop" ]]; then
+    coord_grant=(--add-dir "\$coord_drop")
+    echo "Completion mailbox: \$coord_drop"
+  else
+    echo "WARNING: completion mailbox \$coord_drop does not exist; this harness cannot publish its SHA." >&2
+    echo "  Fix: coord doctor, or restart the issue so coord start recreates it." >&2
+  fi
+elif [[ -z "\$coord_completes_root" ]]; then
+  echo "WARNING: coord.completesRoot is unset in this clone; no completion mailbox will be granted." >&2
+  echo "  Fix: re-run coord install for this workspace." >&2
 fi
 
 echo "=== $label agent | branches issue-<n>/$agent or $agent/<name> | shared: $shared ==="

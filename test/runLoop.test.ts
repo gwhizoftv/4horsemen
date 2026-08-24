@@ -37,9 +37,14 @@ afterEach(() => {
 });
 
 const fixture = (options: { prPolicy?: "owner-only" | "coord-open-unmerged" | "coord-merged"; origin?: string } = {}) => {
-  const root = mkdtempSync(join(tmpdir(), "coord-loop-"));
-  roots.push(root);
-  const paths = issueRuntimePaths(root, 1);
+  const workspace = mkdtempSync(join(tmpdir(), "coord-loop-"));
+  roots.push(workspace);
+  // Coord root and mailbox both inside the fixture's own directory, so the
+  // receipts this test writes and clears cannot be seen by a parallel worker
+  // and are removed with the rest of the fixture.
+  const root = join(workspace, "coord-runtime");
+  mkdirSync(root, { recursive: true });
+  const paths = issueRuntimePaths(root, 1, join(workspace, "completes"));
   createIssueRuntime(paths, ["claude", "codex"]);
   initializeOperationalState(paths, {
     issue: 1,
@@ -1007,6 +1012,10 @@ describe("effectful run loop", () => {
       const loop = new CoordinatorRunLoop(paths, { tmux: null, mirror });
       await loop.runTick();
       const completion = agentRuntimePaths(paths, "codex").complete;
+      // The receipt is the one runtime file an agent writes, and it must not be
+      // inside the tree that holds cursors.json and every peer's action.md.
+      expect(completion.startsWith(`${paths.completesRoot}/`)).toBe(true);
+      expect(completion.startsWith(`${paths.coordRoot}/`)).toBe(false);
       writeFileSync(completion, `${"d".repeat(40)}\n`);
       const pendingTick = loop.runTick();
       await fetchStarted;

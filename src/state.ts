@@ -130,7 +130,13 @@ export const installStampSchema = z
      */
     ownsInstallRoot: z.boolean(),
     wroteProductIgnore: z.boolean(),
-    wroteAgentsMd: z.boolean()
+    wroteAgentsMd: z.boolean(),
+    /**
+     * Resolved absolute mailbox root this workspace was installed against.
+     * Optional so a stamp written before the mailbox existed still parses; a
+     * reinstall fills it in.
+     */
+    completesRoot: z.string().min(1).optional()
   })
   .strict();
 
@@ -182,6 +188,13 @@ export const coordinatorConfigSchema = z
     verify: verifyConfigSchema.optional(),
     workflowCriticalPrefixes: z.array(pathTokenSchema).default([]),
     workflowCriticalFiles: z.array(pathTokenSchema).default([]),
+    /**
+     * Absolute root of the completion mailbox. Optional: a flat workspace
+     * derives the sibling of the coord root. Nested or shared runtimes that do
+     * not share that parent must state it, because the derived sibling would
+     * put two products' receipts in one tree.
+     */
+    completesRoot: z.string().min(1).optional(),
     coordination: installStampSchema.optional()
   })
   .strict()
@@ -264,6 +277,19 @@ export const startStateSchema = z
     trustedSourceCommit: gitShaSchema,
     origin: z.string().min(1),
     coordRoot: z.string().min(1),
+    /**
+     * Where this issue's receipts live, frozen for the issue session.
+     *
+     * Read from here rather than from config on resume: `coord install` may
+     * rewrite config mid-issue, and a mailbox that moved under a running action
+     * would leave the coordinator polling a tree no agent holds a grant to.
+     *
+     * Optional for the same reason `contextPaths` is defaulted — a `start.json`
+     * written before this field existed must still parse under the strict
+     * schema. Every issue started since carries it, and readers fall back to the
+     * derived default only for those older documents.
+     */
+    completesRoot: z.string().min(1).optional(),
     configPath: z.string().min(1),
     agents: z.array(agentConfigSchema).min(1),
     checks: z.array(checkCommandSchema).min(1),
@@ -445,9 +471,18 @@ export type JournalEvent = z.infer<typeof journalEventSchema>;
  * re-adding it as optional keeps every existing typed initializer compiling —
  * a defaulted field must not become a required constructor argument.
  */
-export type StartStateInput = Omit<StartState, "formatVersion" | "createdAt" | "contextPaths"> & {
+export type StartStateInput = Omit<
+  StartState,
+  "formatVersion" | "createdAt" | "contextPaths" | "completesRoot"
+> & {
   createdAt?: string;
   contextPaths?: readonly string[];
+  /**
+   * Omitted by callers: it is taken from the `IssueRuntimePaths` the state is
+   * written with, so `start.json` cannot record a mailbox other than the one
+   * the coordinator is actually using for this issue.
+   */
+  completesRoot?: string;
 };
 
 const parseFile = <T>(path: string, schema: z.ZodType<T>): T => {
@@ -538,7 +573,12 @@ export const initializeOperationalState = (
   if (existsSync(paths.start) || existsSync(paths.cursors) || existsSync(paths.journal)) {
     throw new Error(`Runtime state already exists for issue ${input.issue}. Use resume or abandon it explicitly.`);
   }
-  const start = startStateSchema.parse({ ...input, formatVersion: RUNTIME_FORMAT_VERSION, createdAt: input.createdAt ?? now });
+  const start = startStateSchema.parse({
+    ...input,
+    formatVersion: RUNTIME_FORMAT_VERSION,
+    completesRoot: input.completesRoot ?? paths.completesRoot,
+    createdAt: input.createdAt ?? now
+  });
   const cursors = initialCursors(start, now);
   atomicWriteJson(paths.coordRoot, paths.start, start);
   atomicWriteJson(paths.coordRoot, paths.cursors, cursors);
