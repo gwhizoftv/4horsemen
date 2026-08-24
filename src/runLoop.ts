@@ -45,7 +45,7 @@ import {
   type WorkflowStepId
 } from "./steps.js";
 import { renderIssueReport } from "./issueReport.js";
-import { githubRepositoryFromOrigin } from "./githubIssue.js";
+import { formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import { TmuxController } from "./tmux.js";
 import { sha256OfFile } from "./hash.js";
@@ -1217,17 +1217,27 @@ export class CoordinatorRunLoop {
       if (finalSha === null || branch === null) throw new Error("Pending publication is missing its final pin or branch.");
       const repository = githubRepositoryFromOrigin(start.origin);
       if (repository === null) throw new Error(`Cannot derive a GitHub repository from origin ${start.origin}.`);
+      const issueSnapshot = readGitHubIssueSnapshot(this.paths.issueSnapshot);
+      if (issueSnapshot.number !== start.issue) {
+        throw new Error(
+          `GitHub issue snapshot number ${issueSnapshot.number} does not match start issue ${start.issue}.`
+        );
+      }
       await this.mirror.publishBranch(finalSha, branch);
       this.authority(authority, true);
       const draft = !coordMergesPullRequest(start.prPolicy);
+      const { title, body } = formatFinalizationPullRequest({
+        issue: start.issue,
+        title: issueSnapshot.title,
+        finalSha,
+        draft
+      });
       const result = await this.pullRequestOpener({
         repository,
         base: start.baseBranch,
         head: branch,
-        title: `Issue ${start.issue}: coordinated implementation`,
-        body: draft
-          ? `Draft PR for issue ${start.issue}. Owner merges. Final pin: ${finalSha}.`
-          : `PR for issue ${start.issue}. Coordinator merges. Final pin: ${finalSha}.`,
+        title,
+        body,
         draft
       });
       openedUrl = result.url;

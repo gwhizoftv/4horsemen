@@ -1,5 +1,19 @@
-import { describe, expect, it } from "vitest";
-import { fetchGitHubIssue, githubRepositoryFromOrigin, renderGitHubIssueSnapshot } from "../src/githubIssue.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  fetchGitHubIssue,
+  formatFinalizationPullRequest,
+  githubRepositoryFromOrigin,
+  readGitHubIssueSnapshot,
+  renderGitHubIssueSnapshot
+} from "../src/githubIssue.js";
+
+const roots: string[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 describe("GitHub issue snapshots", () => {
   it("derives supported repositories and binds lookup to origin rather than cwd", async () => {
@@ -93,5 +107,39 @@ describe("GitHub issue snapshots", () => {
       })
     });
     expect(snapshot.body).toBe("");
+  });
+
+  it("reads a durable runtime snapshot and formats finalization PR text", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-issue-snap-"));
+    roots.push(root);
+    const path = join(root, "github-issue.json");
+    const snapshot = {
+      repository: "acme/app",
+      number: 112,
+      title: "Have PR's include the issue title",
+      body: "Close on merge.",
+      url: "https://github.com/acme/app/issues/112"
+    };
+    writeFileSync(path, renderGitHubIssueSnapshot(snapshot));
+    expect(readGitHubIssueSnapshot(path)).toEqual(snapshot);
+    expect(
+      formatFinalizationPullRequest({
+        issue: 112,
+        title: snapshot.title,
+        finalSha: "a".repeat(40),
+        draft: true
+      })
+    ).toEqual({
+      title: "Issue 112: Have PR's include the issue title",
+      body: `Closes #112\n\nDraft PR for issue 112. Owner merges. Final pin: ${"a".repeat(40)}.`
+    });
+    expect(
+      formatFinalizationPullRequest({
+        issue: 112,
+        title: "  ",
+        finalSha: "b".repeat(40),
+        draft: false
+      }).title
+    ).toBe("Issue 112: coordinated implementation");
   });
 });

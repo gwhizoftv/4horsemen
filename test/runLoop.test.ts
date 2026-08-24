@@ -75,6 +75,20 @@ const fixture = (options: { prPolicy?: "owner-only" | "coord-open-unmerged" | "c
 
 const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], finalSha = "f".repeat(40)) => {
   const now = "2026-08-11T17:00:00.000Z";
+  writeFileSync(
+    paths.issueSnapshot,
+    `${JSON.stringify(
+      {
+        repository: "example/project",
+        number: 1,
+        title: "Improve coordinator PR text",
+        body: "Make the PR useful.",
+        url: "https://github.com/example/project/issues/1"
+      },
+      null,
+      2
+    )}\n`
+  );
   const current = readCursorsState(paths);
   writeCursorsState(
     paths,
@@ -1128,6 +1142,20 @@ describe("effectful run loop", () => {
     const { paths } = fixture({ prPolicy: "coord-open-unmerged", origin: "https://github.com/example/project.git" });
     const now = "2026-08-11T17:00:00.000Z";
     const finalSha = "f".repeat(40);
+    writeFileSync(
+      paths.issueSnapshot,
+      `${JSON.stringify(
+        {
+          repository: "example/project",
+          number: 1,
+          title: "Improve coordinator PR text",
+          body: "Make the PR useful.",
+          url: "https://github.com/example/project/issues/1"
+        },
+        null,
+        2
+      )}\n`
+    );
     const current = readCursorsState(paths);
     writeCursorsState(
       paths,
@@ -1210,16 +1238,22 @@ describe("effectful run loop", () => {
       stdout: Buffer.alloc(0),
       stderr: ""
     }));
-    const opened: boolean[] = [];
+    const opened: Array<{ draft: boolean; title: string; body: string }> = [];
     const result = await new CoordinatorRunLoop(paths, {
       tmux: null,
       mirror,
       pullRequestOpener: async (input) => {
-        opened.push(input.draft);
+        opened.push({ draft: input.draft, title: input.title, body: input.body });
         return { url: "https://github.com/example/project/pull/2" };
       }
     }).runTick();
-    expect(opened).toEqual([true]);
+    expect(opened).toEqual([
+      {
+        draft: true,
+        title: "Issue 1: Improve coordinator PR text",
+        body: "Closes #1\n\nDraft PR for issue 1. Owner merges. Final pin: ffffffffffffffffffffffffffffffffffffffff."
+      }
+    ]);
     expect(result.publication).toMatchObject({
       status: "completed",
       url: "https://github.com/example/project/pull/2",
@@ -1241,6 +1275,9 @@ describe("effectful run loop", () => {
       mirror,
       pullRequestOpener: async (input) => {
         expect(input.draft).toBe(false);
+        expect(input.title).toBe("Issue 1: Improve coordinator PR text");
+        expect(input.body).toContain("Closes #1");
+        expect(input.body).toContain("Coordinator merges");
         return { url: "https://github.com/example/project/pull/3" };
       },
       pullRequestMerger: async (input) => {
