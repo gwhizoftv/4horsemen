@@ -1,6 +1,7 @@
 {
   "project": "coordination",
   "origin": "https://github.com/example/coordination.git",
+  "completesRoot": "/absolute/path/to/completes",
   "agents": [
     {
       "id": "claude",

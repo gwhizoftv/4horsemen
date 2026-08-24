@@ -43,6 +43,7 @@ describe("wipeIssue", () => {
     const claude = join(workspace, "app-claude");
     const codex = join(workspace, "app-codex");
     const coordRoot = join(workspace, "coord-runtime");
+    const completesRoot = join(workspace, "completes");
     const mirror = join(coordRoot, "mirror.git");
     mkdirSync(coordRoot, { recursive: true });
 
@@ -80,6 +81,7 @@ describe("wipeIssue", () => {
     const config = coordinatorConfigSchema.parse({
       project: "app",
       origin,
+      completesRoot,
       agents: [
         { id: "claude", root: claude, launcher: "start-claude.sh", delivery: "both" },
         { id: "codex", root: codex, launcher: "start-codex.sh", delivery: "both" }
@@ -96,6 +98,22 @@ describe("wipeIssue", () => {
     });
     writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
     mkdirSync(join(coordRoot, "issue-9", "agents"), { recursive: true });
+    mkdirSync(join(completesRoot, "issue-9", "claude"), { recursive: true });
+    mkdirSync(join(completesRoot, "issue-10", "claude"), { recursive: true });
+
+    const dryRun = await wipeIssue({
+      issue: 9,
+      config,
+      configPath,
+      coordRoot,
+      dryRun: true,
+      terminalCloser: null,
+      log: () => undefined
+    });
+    expect(dryRun.wipedRuntime).toBe(join(coordRoot, "issue-9"));
+    expect(dryRun.wipedCompletes).toBe(join(completesRoot, "issue-9"));
+    expect(existsSync(join(coordRoot, "issue-9"))).toBe(true);
+    expect(existsSync(join(completesRoot, "issue-9"))).toBe(true);
 
     const outcome = await wipeIssue({
       issue: 9,
@@ -113,7 +131,10 @@ describe("wipeIssue", () => {
       "issue-9/codex"
     ]);
     expect(outcome.wipedRuntime).toBe(join(coordRoot, "issue-9"));
+    expect(outcome.wipedCompletes).toBe(join(completesRoot, "issue-9"));
     expect(existsSync(join(coordRoot, "issue-9"))).toBe(false);
+    expect(existsSync(join(completesRoot, "issue-9"))).toBe(false);
+    expect(existsSync(join(completesRoot, "issue-10"))).toBe(true);
     expect(git(claude, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
     expect(git(codex, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
     expect(tryGit(claude, "show-ref", "--verify", "--quiet", "refs/heads/issue-9/claude").exitCode).not.toBe(0);
@@ -145,6 +166,7 @@ describe("wipeIssue", () => {
     const claude = join(workspace, "app-claude");
     const codex = join(workspace, "app-codex");
     const coordRoot = join(workspace, "coord-runtime");
+    const completesRoot = join(workspace, "completes");
     mkdirSync(coordRoot, { recursive: true });
 
     mkdirSync(product, { recursive: true });
@@ -181,6 +203,7 @@ describe("wipeIssue", () => {
     const config = coordinatorConfigSchema.parse({
       project: "app",
       origin,
+      completesRoot,
       agents: [
         { id: "claude", root: claude, launcher: "start-claude.sh", delivery: "both" },
         { id: "codex", root: codex, launcher: "start-codex.sh", delivery: "both" }
@@ -196,6 +219,7 @@ describe("wipeIssue", () => {
       coordination: stamp(workspace, product)
     });
     writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    mkdirSync(join(completesRoot, "issue-9", "codex"), { recursive: true });
 
     const outcome = await wipeIssue({
       issue: 9,
@@ -207,6 +231,9 @@ describe("wipeIssue", () => {
     });
 
     expect(outcome.keptProductBranches.sort()).toEqual(["issue-9/claude", "issue-9/codex"]);
+    expect(outcome.wipedRuntime).toBeNull();
+    expect(outcome.wipedCompletes).toBe(join(completesRoot, "issue-9"));
+    expect(existsSync(join(completesRoot, "issue-9"))).toBe(false);
     expect(git(product, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/codex");
     expect(existsSync(join(product, "scratch.txt"))).toBe(true);
     expect(tryGit(product, "show-ref", "--verify", "--quiet", "refs/heads/issue-9/claude").exitCode).toBe(0);
@@ -228,6 +255,7 @@ describe("wipeIssue", () => {
     const product = join(workspace, "app");
     const claude = join(workspace, "app-claude");
     const coordRoot = join(workspace, "runtime");
+    const completesRoot = join(workspace, "completes");
     mkdirSync(coordRoot, { recursive: true });
     mkdirSync(product, { recursive: true });
     git(product, "init", "-q", "--initial-branch=main");
@@ -256,6 +284,7 @@ describe("wipeIssue", () => {
     const config = coordinatorConfigSchema.parse({
       project: "app",
       origin,
+      completesRoot,
       agents: [{ id: "claude", root: claude, launcher: "start-claude.sh", delivery: "both" }],
       branch: "issue-{issue}/{agent}",
       baseBranch: "main",
@@ -293,6 +322,7 @@ describe("wipeIssue", () => {
     const product = join(workspace, "app");
     const claude = join(workspace, "app-claude");
     const coordRoot = join(workspace, "runtime");
+    const completesRoot = join(workspace, "completes");
     mkdirSync(coordRoot, { recursive: true });
     mkdirSync(product, { recursive: true });
     git(product, "init", "-q", "--initial-branch=main");
@@ -315,6 +345,7 @@ describe("wipeIssue", () => {
     const config = coordinatorConfigSchema.parse({
       project: "app",
       origin,
+      completesRoot,
       agents: [{ id: "claude", root: claude, launcher: "start-claude.sh", delivery: "both" }],
       branch: "issue-{issue}/{agent}",
       baseBranch: "main",
@@ -352,6 +383,7 @@ describe("wipeIssue", () => {
     const product = join(workspace, "app");
     const claude = join(workspace, "app-claude");
     const coordRoot = join(workspace, "runtime");
+    const completesRoot = join(workspace, "completes");
     mkdirSync(coordRoot, { recursive: true });
     mkdirSync(product, { recursive: true });
     git(product, "init", "-q", "--initial-branch=main");
@@ -370,6 +402,7 @@ describe("wipeIssue", () => {
     const config = coordinatorConfigSchema.parse({
       project: "app",
       origin,
+      completesRoot,
       agents: [{ id: "claude", root: claude, launcher: "start-claude.sh", delivery: "both" }],
       branch: "issue-{issue}/{agent}",
       baseBranch: "main",

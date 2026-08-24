@@ -74,7 +74,7 @@ describe("coord onboard", () => {
     mkdirSync(aliasParent);
     symlinkSync(fixture.productRoot, productAlias, "dir");
     expect(
-      await runCli(["onboard", productAlias], {
+      await runCli(["onboard", productAlias, "--completes-root", join(fixture.workspaceRoot, "completes")], {
         home,
         io: { stdout: (message) => output.push(message), stderr: (message) => output.push(message) }
       })
@@ -85,18 +85,23 @@ describe("coord onboard", () => {
     expect(existsSync(configPath)).toBe(true);
     expect(existsSync(join(aliasParent, "coord-runtime"))).toBe(false);
     expect(
-      await runCli(["onboard", fixture.productRoot], {
+      await runCli(
+        ["onboard", fixture.productRoot, "--completes-root", join(fixture.workspaceRoot, "completes")],
+        {
         home,
         io: { stdout: (message) => output.push(message), stderr: (message) => output.push(message) }
-      })
+        }
+      )
     ).toBe(0);
     expect(existsSync(join(coordRoot, "workspaces"))).toBe(false);
     const config = JSON.parse(readFileSync(configPath, "utf8")) as {
       profile: string;
+      completesRoot: string;
       digestPaths: string[];
       agents: Array<{ id: string }>;
     };
     expect(config.profile).toBe("consensus");
+    expect(config.completesRoot).toBe(join(fixture.workspaceRoot, "completes"));
     expect(config.digestPaths).toEqual([]);
     expect(config.agents.map((agent) => agent.id)).toEqual(["claude", "codex", "cursor", "antigravity"]);
     expect(localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBe(realpathSync(configPath));
@@ -143,7 +148,16 @@ describe("coord onboard", () => {
   it("persists a selected profile and numeric dispatch resumes without refetching", async () => {
     const fixture = product();
     expect(
-      await runCli(["onboard", fixture.productRoot, "--agents", "claude", "--profile", "reviewed"], {
+      await runCli([
+        "onboard",
+        fixture.productRoot,
+        "--completes-root",
+        join(fixture.workspaceRoot, "completes"),
+        "--agents",
+        "claude",
+        "--profile",
+        "reviewed"
+      ], {
         io: { stdout: () => undefined }
       })
     ).toBe(0);
@@ -192,14 +206,36 @@ describe("coord onboard", () => {
     const sharedRoot = first.coordRoot;
     expect(
       await runCli(
-        ["onboard", first.productRoot, "--coord-root", sharedRoot, "--agents", "claude", "--profile", "solo"],
+        [
+          "onboard",
+          first.productRoot,
+          "--coord-root",
+          sharedRoot,
+          "--completes-root",
+          join(first.workspaceRoot, "completes"),
+          "--agents",
+          "claude",
+          "--profile",
+          "solo"
+        ],
         { io: { stdout: () => undefined } }
       )
     ).toBe(0);
     const firstConfigBytes = readFileSync(join(sharedRoot, "config.json"), "utf8");
     expect(
       await runCli(
-        ["onboard", second.productRoot, "--coord-root", sharedRoot, "--agents", "claude", "--profile", "solo"],
+        [
+          "onboard",
+          second.productRoot,
+          "--coord-root",
+          sharedRoot,
+          "--completes-root",
+          join(second.workspaceRoot, "completes"),
+          "--agents",
+          "claude",
+          "--profile",
+          "solo"
+        ],
         { io: { stdout: () => undefined } }
       )
     ).toBe(0);
@@ -219,6 +255,8 @@ describe("coord onboard", () => {
     const nested = issueRuntimePaths(dirname(nestedConfigPath(sharedRoot, "beta")), 42);
     expect(readStartState(flat).configPath).toBe(join(sharedRoot, "config.json"));
     expect(readStartState(nested).configPath).toBe(nestedConfigPath(sharedRoot, "beta"));
+    expect(readStartState(flat).completesRoot).toBe(join(first.workspaceRoot, "completes"));
+    expect(readStartState(nested).completesRoot).toBe(join(second.workspaceRoot, "completes"));
     expect(flat.issueRoot).not.toBe(nested.issueRoot);
     expect(flat.mirror).not.toBe(nested.mirror);
     expect(flat.tmuxNamespace).toBeNull();
@@ -295,6 +333,7 @@ describe("coord onboard", () => {
       const result = onboard({
         installRoot: repoRoot,
         productRoot: fixture.productRoot,
+        completesRoot: join(fixture.workspaceRoot, "completes"),
         agents: ["claude"],
         profile: "solo",
         log: silence().log
@@ -312,6 +351,7 @@ describe("coord onboard", () => {
     const first = onboard({
       installRoot: repoRoot,
       productRoot: fixture.productRoot,
+      completesRoot: join(fixture.workspaceRoot, "completes"),
       agents: ["claude"],
       profile: "solo",
       log: silence().log
@@ -326,6 +366,7 @@ describe("coord onboard", () => {
       const second = onboard({
         installRoot: repoRoot,
         productRoot: fixture.productRoot,
+        completesRoot: join(fixture.workspaceRoot, "completes"),
         agents: ["claude"],
         profile: "solo",
         log: silence().log

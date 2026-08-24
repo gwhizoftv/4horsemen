@@ -241,6 +241,7 @@ export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal
 export type WorkspaceConfigInput = {
   project: string;
   origin: string;
+  completesRoot: string;
   baseBranch: string;
   agents: readonly string[];
   profile: string;
@@ -272,6 +273,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
   return coordinatorConfigSchema.parse({
     project: input.project,
     origin: input.origin,
+    completesRoot: resolve(input.completesRoot),
     agents: input.agents.map((agent) => ({
       id: agent,
       // Config-relative, so a workspace directory can be moved with its clones.

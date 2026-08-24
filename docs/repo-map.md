@@ -14,8 +14,10 @@ evidence they publish, and advances a workflow state machine. It is not the
 product it coordinates — the product lives in its own repository, and hooks and
 tests stay decoupled from it on purpose.
 
-Runtime state lives **outside every clone**, under the `--coord-root` directory.
-Nothing in this repository writes issue state into the working tree.
+Runtime state lives **outside every clone**. Owner authority is under
+`--coord-root`; the one agent-authored receipt lives under the separate absolute
+`completesRoot`. Nothing in this repository writes issue state into the working
+tree.
 
 ## Module groups
 
@@ -36,8 +38,10 @@ it, which is why neither has its own copy.
 
 ## Invariants worth knowing before you plan
 
-- **Runtime state is outside the clone.** `action.md` and `complete` live under
-  the coord root, never in the working tree.
+- **Control state and receipts are separated.** `action.md`, cursors, journals,
+  and render logs live under the coord root. Only the completion SHA lives in
+  sibling `completes/issue-N/<agent>/complete`; it is neither in a clone nor
+  beside `cursors.json`.
 - **`AGENTS.md` is skip-worktree in every agent clone.** It carries a managed
   protocol overlay. Editing it from a clone stages nothing, and clearing the bit
   is forbidden. See `src/agentsProtocol.ts`.

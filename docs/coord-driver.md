@@ -14,22 +14,25 @@ into an owner-side bare mirror and evaluates blobs at the exact submission SHA.
 
 ## Runtime topology
 
-`--coord-root` must resolve outside every configured clone. Existing symlinks
-within derived runtime paths are rejected.
+`--coord-root` and the configured absolute `completesRoot` must resolve outside
+every configured clone and must not overlap each other. Existing symlinks in
+either derived tree are rejected.
 
 ```text
-<workspace-root>/
-  mirror.git/
-  issue-<n>/
-    github-issue.json immutable start-time GitHub title/body snapshot
-    start.json       immutable session/config baseline
-    cursors.json     workflow pointers (not the Cursor agent): step, roster, pins
-    agent-lifecycle.json  coordinator-owned CLI delivery/activity observations
-    journal.jsonl    append-only owner/effect audit
-    agents/<agent>/
-      action.md      restricted public order
-      complete       exact pushed SHA supplied by the agent
-      render.log     optional human log
+<workspace-parent>/
+  coord-runtime/                    owner-only control plane (`--coord-root`)
+    mirror.git/
+    issue-<n>/
+      github-issue.json immutable start-time GitHub title/body snapshot
+      start.json       immutable session/config baseline, including completesRoot
+      cursors.json     workflow pointers (not the Cursor agent): step, roster, pins
+      agent-lifecycle.json  coordinator-owned CLI delivery/activity observations
+      journal.jsonl    append-only owner/effect audit
+      agents/<agent>/
+        action.md      restricted public order
+        render.log     optional human log
+  completes/                       agent-writable receipt mailbox
+    issue-<n>/<agent>/complete      exact pushed SHA supplied by that agent
 ```
 
 For a fresh single-product onboard, `<workspace-root>` is the outer coord root
@@ -40,7 +43,9 @@ Existing nested installs and their compatible legacy outer runtime state remain
 resolvable; ambiguous duplicate state fails closed.
 
 `action.md` exposes only an opaque action UUID, the caller identity, required
-path, concrete task, exact bound input commits, and absolute completion path.
+path, concrete task, exact bound input commits, and an absolute completion path
+under the persisted `completesRoot`. It never tells an agent to traverse to
+`../completes`, and old `coord-runtime/.../complete` files are not read.
 Internal step/gate/evidence identifiers remain in `cursors.json`.
 
 ## Configuration
@@ -48,6 +53,8 @@ Internal step/gate/evidence identifiers remain in `cursors.json`.
 Start from `config.example.json`:
 
 - `origin`: canonical Git origin used by the bare mirror
+- `completesRoot`: optional installed absolute override for the completion
+  mailbox; new install/onboard configs always persist the resolved value
 - `agents[]`: stable id, clone root, executable launcher, delivery policy, and
   optional foreground harness process
 - `branch`: must contain `{issue}` and `{agent}`
@@ -179,8 +186,9 @@ baseline, the running coordinator checkout's real `HEAD` as its trusted source
 commit, digest inputs, confined non-symlink executable launchers, mirror, and tmux. It
 creates an attachable `coord-<issue>` session and invokes each configured
 `start-<agent>.sh` before committing active issue state. A failed partial tmux
-launch or later startup write is cleaned up, including the issue snapshot, and
-no apparently active issue runtime is left behind.
+launch or later startup write is cleaned up, including both
+`coord-root/issue-N` and `completesRoot/issue-N`, and no apparently active issue
+runtime or stale completion receipt is left behind.
 Once state is committed, a failure in the initial tick is reported without
 deleting the resumable runtime or terminating the successfully launched panes.
 
@@ -215,7 +223,8 @@ and `*-final` branches, and drops leftover `refs/remotes/origin/issue-N/*`
 tracking refs in clones, the product worktree, and `coord-runtime/mirror.git`.
 A local `issue-N/*` branch in the product is kept when it has uncommitted work
 or commits that are not just a checkout of the clone. Removes
-`coord-runtime/issue-N`, and runs the same UI teardown as `detach`. It does
+`coord-runtime/issue-N` and `completesRoot/issue-N`, and runs the same UI
+teardown as `detach`. It does
 **not** close the GitHub issue or uninstall the product. Dirty clones refuse
 unless `--force`. Clone-local skip-worktree on `AGENTS.md` is lifted so checkout
 onto the base branch can proceed.

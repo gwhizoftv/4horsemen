@@ -248,7 +248,7 @@ describe("agent lifecycle policy", () => {
   it("persists injection and degrades missing observations without authorizing a resend", () => {
     const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
     roots.push(root);
-    const paths = issueRuntimePaths(root, 1);
+    const paths = issueRuntimePaths(root, 1, join(root, "completes"));
     createIssueRuntime(paths, ["codex"]);
     initializeAgentLifecycle(paths, ["codex"], now);
     orderAgentAction(paths, "codex", actionId, digest, now);
@@ -263,7 +263,7 @@ describe("agent lifecycle policy", () => {
   it("classifies a degrade as correlation lag unless no session was ever announced", () => {
     const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
     roots.push(root);
-    const paths = issueRuntimePaths(root, 1);
+    const paths = issueRuntimePaths(root, 1, join(root, "completes"));
     createIssueRuntime(paths, ["codex"]);
     initializeAgentLifecycle(paths, ["codex"], now);
     orderAgentAction(paths, "codex", actionId, digest, now);
@@ -277,7 +277,7 @@ describe("agent lifecycle policy", () => {
 
     const second = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
     roots.push(second);
-    const other = issueRuntimePaths(second, 1);
+    const other = issueRuntimePaths(second, 1, join(second, "completes"));
     createIssueRuntime(other, ["codex"]);
     initializeAgentLifecycle(other, ["codex"], now);
     // The session announced itself before this delivery, so hooks are live and
@@ -300,7 +300,7 @@ describe("agent lifecycle policy", () => {
   it("never degrades an action whose work already reached the workflow", () => {
     const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
     roots.push(root);
-    const paths = issueRuntimePaths(root, 1);
+    const paths = issueRuntimePaths(root, 1, join(root, "completes"));
     createIssueRuntime(paths, ["codex"]);
     initializeAgentLifecycle(paths, ["codex"], now);
     orderAgentAction(paths, "codex", actionId, digest, now);
@@ -317,7 +317,7 @@ describe("agent lifecycle policy", () => {
   it("clears a degraded alert when the workflow proves the delivery worked", () => {
     const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
     roots.push(root);
-    const paths = issueRuntimePaths(root, 1);
+    const paths = issueRuntimePaths(root, 1, join(root, "completes"));
     createIssueRuntime(paths, ["codex"]);
     initializeAgentLifecycle(paths, ["codex"], now);
     orderAgentAction(paths, "codex", actionId, digest, now);
@@ -364,7 +364,7 @@ describe("agent lifecycle policy", () => {
   it("does not rewrite lifecycle state for duplicate status-line renders", () => {
     const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
     roots.push(root);
-    const paths = issueRuntimePaths(root, 1);
+    const paths = issueRuntimePaths(root, 1, join(root, "completes"));
     createIssueRuntime(paths, ["antigravity"]);
     initializeAgentLifecycle(paths, ["antigravity"], now);
     const observation = {

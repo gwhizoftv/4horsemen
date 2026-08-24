@@ -12,7 +12,7 @@ import {
   unlinkSync,
   writeFileSync
 } from "node:fs";
-import { dirname, relative } from "node:path";
+import { dirname, isAbsolute, relative } from "node:path";
 import { z } from "zod";
 import { agentIdSchema, digestSchema, gitShaSchema, issueSchema, issueSessionIdSchema } from "./protocol.js";
 import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.js";
@@ -154,6 +154,11 @@ export const coordinatorConfigSchema = z
   .object({
     project: z.string().min(1),
     origin: z.string().min(1),
+    completesRoot: z
+      .string()
+      .min(1)
+      .refine((value) => isAbsolute(value), "completesRoot must be absolute")
+      .optional(),
     agents: z.array(agentConfigSchema).min(1),
     branch: z.string().refine((value) => value.includes("{issue}") && value.includes("{agent}")),
     baseBranch: z.string().min(1).default("main"),
@@ -264,6 +269,11 @@ export const startStateSchema = z
     trustedSourceCommit: gitShaSchema,
     origin: z.string().min(1),
     coordRoot: z.string().min(1),
+    completesRoot: z
+      .string()
+      .min(1)
+      .refine((value) => isAbsolute(value), "completesRoot must be absolute")
+      .optional(),
     configPath: z.string().min(1),
     agents: z.array(agentConfigSchema).min(1),
     checks: z.array(checkCommandSchema).min(1),
@@ -445,9 +455,10 @@ export type JournalEvent = z.infer<typeof journalEventSchema>;
  * re-adding it as optional keeps every existing typed initializer compiling —
  * a defaulted field must not become a required constructor argument.
  */
-export type StartStateInput = Omit<StartState, "formatVersion" | "createdAt" | "contextPaths"> & {
+export type StartStateInput = Omit<StartState, "formatVersion" | "createdAt" | "contextPaths" | "completesRoot"> & {
   createdAt?: string;
   contextPaths?: readonly string[];
+  completesRoot?: string;
 };
 
 const parseFile = <T>(path: string, schema: z.ZodType<T>): T => {
@@ -538,7 +549,12 @@ export const initializeOperationalState = (
   if (existsSync(paths.start) || existsSync(paths.cursors) || existsSync(paths.journal)) {
     throw new Error(`Runtime state already exists for issue ${input.issue}. Use resume or abandon it explicitly.`);
   }
-  const start = startStateSchema.parse({ ...input, formatVersion: RUNTIME_FORMAT_VERSION, createdAt: input.createdAt ?? now });
+  const start = startStateSchema.parse({
+    ...input,
+    completesRoot: input.completesRoot ?? paths.completesRoot,
+    formatVersion: RUNTIME_FORMAT_VERSION,
+    createdAt: input.createdAt ?? now
+  });
   const cursors = initialCursors(start, now);
   atomicWriteJson(paths.coordRoot, paths.start, start);
   atomicWriteJson(paths.coordRoot, paths.cursors, cursors);

@@ -19,7 +19,9 @@ import {
   assertNoSymlink,
   containedPath,
   createIssueRuntime,
+  defaultCompletesRoot,
   issueRuntimePaths,
+  resolveSafeCompletesRoot,
   resolveSafeCoordRoot,
   type IssueRuntimePaths
 } from "./paths.js";
@@ -164,11 +166,17 @@ const parseIssue = (value: string): number => {
   return issue;
 };
 
+const persistedIssueRuntimePaths = (paths: IssueRuntimePaths): IssueRuntimePaths => {
+  if (!existsSync(paths.start)) return paths;
+  const start = readStartState(paths);
+  return issueRuntimePaths(paths.coordRoot, paths.issue, start.completesRoot ?? paths.completesRoot);
+};
+
 const context = (parsed: ParsedArgs, io: CliIo): IssueRuntimePaths => {
   const coordRoot = requireFlag(parsed, "coord-root");
   const issueValue = parsed.flags.get("issue") ?? io.env.COORD_ISSUE;
   if (issueValue === undefined) throw new Error("--issue or COORD_ISSUE is required.");
-  return issueRuntimePaths(resolve(io.cwd, coordRoot), parseIssue(issueValue));
+  return persistedIssueRuntimePaths(issueRuntimePaths(resolve(io.cwd, coordRoot), parseIssue(issueValue)));
 };
 
 const allowedFlags = (parsed: ParsedArgs, allowed: readonly string[]): void => {
@@ -181,11 +189,11 @@ const help = `coord — owner-side workflow driver
 
 Usage:
   coord --version | -V | version
-  coord onboard <product> [--coord-root <path>] [--agents <a,b,c>] [--profile <p>]
+  coord onboard <product> [--coord-root <path>] [--completes-root <path>] [--agents <a,b,c>] [--profile <p>]
   coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord manual [--product <path> | --config <path> --coord-root <path>]
   coord install --product <path> --coord-root <external-path> --agents <a,b,c> [--profile <p>]
-                [--clone-root <dir>] [--declare <file>] [--write-product] [--vendor]
+                [--completes-root <path>] [--clone-root <dir>] [--declare <file>] [--write-product] [--vendor]
                 [--bootstrap-coordination] [--dry-run]
   coord uninstall --coord-root <path> --product <path> [--delete-clones] [--force]
                   [--wipe-runtime] [--delete-coordination] [--dry-run]
@@ -440,12 +448,17 @@ const matchesConfig = (paths: IssueRuntimePaths, configPath: string): boolean =>
 
 /** Find durable state for product-resolved commands, including old nested installs. */
 const existingIssueRuntime = (resolution: StartResolution, issue: number): IssueRuntimePaths | null => {
-  const current = issueRuntimePaths(resolution.runtimeRoot, issue);
+  const configuredCompletesRoot = resolution.config.completesRoot ?? defaultCompletesRoot(resolution.runtimeRoot);
+  const current = persistedIssueRuntimePaths(
+    issueRuntimePaths(resolution.runtimeRoot, issue, configuredCompletesRoot)
+  );
   const currentMatches = matchesConfig(current, resolution.configPath);
   let legacy: IssueRuntimePaths | null = null;
   let legacyMatches = false;
   if (resolution.workspace?.layout === "nested") {
-    legacy = issueRuntimePaths(resolution.workspace.coordRoot, issue);
+    legacy = persistedIssueRuntimePaths(
+      issueRuntimePaths(resolution.workspace.coordRoot, issue, configuredCompletesRoot)
+    );
     legacyMatches = matchesConfig(legacy, resolution.configPath);
   }
   if (currentMatches && legacyMatches) {
@@ -681,8 +694,17 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       agentRoots: agents.map((agent) => agent.root),
       create: false
     });
-    const paths = issueRuntimePaths(coordRoot, issue);
-    if (existsSync(paths.issueRoot)) {
+    const completesRoot = resolveSafeCompletesRoot({
+      completesRoot: config.completesRoot ?? defaultCompletesRoot(coordRoot),
+      protectedRoots: [
+        coordRoot,
+        ...(config.coordination === undefined ? [] : [config.coordination.productRoot]),
+        ...agents.map((agent) => agent.root)
+      ],
+      create: true
+    });
+    const paths = issueRuntimePaths(coordRoot, issue, completesRoot);
+    if (existsSync(paths.issueRoot) || existsSync(paths.completesIssueRoot)) {
       throw new Error(`Runtime state already exists for issue ${issue}. Use coord ${issue} to resume or abandon it explicitly.`);
     }
 
@@ -715,8 +737,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     });
 
     let effects: { cleanup: () => Promise<void> } | null = null;
-    createIssueRuntime(paths, roster.map((agent) => agent.id));
     try {
+      createIssueRuntime(paths, roster.map((agent) => agent.id));
       atomicWriteJson(paths.coordRoot, paths.issueSnapshot, snapshot);
       initializeOperationalState(paths, {
         issue,
@@ -734,6 +756,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         trustedSourceCommit: trustedSourceCommit.data,
         origin: config.origin,
         coordRoot,
+        completesRoot,
         configPath,
         agents: roster,
         checks: config.checks,
@@ -746,6 +769,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       effects = await startEffects({ paths, issue, origin: config.origin, agents: roster, log: io.stdout });
     } catch (error) {
       rmSync(paths.issueRoot, { recursive: true, force: true });
+      rmSync(paths.completesIssueRoot, { recursive: true, force: true });
       if (effects !== null) {
         try {
           await effects.cleanup();
@@ -818,7 +842,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "onboard") {
-      allowedFlags(parsed, ["coord-root", "clone-root", "agents", "profile"]);
+      allowedFlags(parsed, ["coord-root", "completes-root", "clone-root", "agents", "profile"]);
       if (parsed.positionals.length !== 1) throw new Error("onboard requires exactly one product path.");
       const agents = (parsed.flags.get("agents") ?? "claude,codex,cursor,antigravity")
         .split(",")
@@ -833,6 +857,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         agents,
         profile,
         ...(parsed.flags.has("coord-root") ? { coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")) } : {}),
+        ...(parsed.flags.has("completes-root")
+          ? { completesRoot: resolve(io.cwd, requireFlag(parsed, "completes-root")) }
+          : {}),
         ...(parsed.flags.has("clone-root") ? { cloneRoot: resolve(io.cwd, requireFlag(parsed, "clone-root")) } : {}),
         ...(dependencies.home === undefined ? {} : { home: dependencies.home }),
         log: io.stdout
@@ -845,6 +872,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       allowedFlags(parsed, [
         "product",
         "coord-root",
+        "completes-root",
         "agents",
         "profile",
         "clone-root",
@@ -867,6 +895,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         installRoot: coordinatorSourceRoot,
         productRoot: resolve(io.cwd, requireFlag(parsed, "product")),
         coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
+        ...(parsed.flags.has("completes-root")
+          ? { completesRoot: resolve(io.cwd, requireFlag(parsed, "completes-root")) }
+          : {}),
         agents,
         profile,
         ...(parsed.flags.has("clone-root") ? { cloneRoot: resolve(io.cwd, requireFlag(parsed, "clone-root")) } : {}),

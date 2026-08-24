@@ -19,7 +19,13 @@ import {
   writeCloneHooks,
   type HookMode
 } from "./hookSync.js";
-import { isPathInside, resolveSafeCoordRoot, workspaceTerminalGroup } from "./paths.js";
+import {
+  defaultCompletesRoot,
+  isPathInside,
+  resolveSafeCompletesRoot,
+  resolveSafeCoordRoot,
+  workspaceTerminalGroup
+} from "./paths.js";
 import { clearManagedIgnoreFile, DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile } from "./productIgnore.js";
 import {
   agentCloneDirectory,
@@ -41,6 +47,7 @@ import {
   type Logger
 } from "./setupWorkspace.js";
 import {
+  atomicWriteJson,
   readConfig,
   workspaceDeclarationSchema,
   type CoordinatorConfig,
@@ -65,6 +72,26 @@ import {
   syncAntigravityStatusLine
 } from "./agentHookSync.js";
 
+const restrictAntigravityWorkspaceAccess = (home: string, options: EffectOptions): void => {
+  const settingsPath = join(resolve(home), ".gemini", "antigravity-cli", "settings.json");
+  let settings: Record<string, unknown> = {};
+  if (existsSync(settingsPath)) {
+    const parsed = JSON.parse(readFileSync(settingsPath, "utf8")) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`Cannot restrict invalid Antigravity settings ${settingsPath}.`);
+    }
+    settings = parsed as Record<string, unknown>;
+  }
+  if (settings.allowNonWorkspaceAccess === false) return;
+  options.changes.push("disable broad Antigravity non-workspace access");
+  options.log(
+    `${options.dryRun ? "would disable" : "disabled"} broad Antigravity non-workspace access in ${settingsPath}\n`
+  );
+  if (!options.dryRun) {
+    atomicWriteJson(resolve(home), settingsPath, { ...settings, allowNonWorkspaceAccess: false });
+  }
+};
+
 /**
  * `coord install` / `coord uninstall`.
  *
@@ -81,6 +108,7 @@ export type InstallOptions = {
   installRoot: string;
   productRoot: string;
   coordRoot: string;
+  completesRoot?: string;
   agents: readonly string[];
   profile: string;
   cloneRoot?: string;
@@ -99,6 +127,7 @@ export type InstallOptions = {
 
 export type InstallResult = {
   configPath: string;
+  completesRoot: string;
   changes: string[];
   clones: string[];
 };
@@ -255,10 +284,23 @@ export const install = (options: InstallOptions): InstallResult => {
   assertContainment({ productRoot, coordRoot: resolve(options.coordRoot), cloneRoot });
   const coordRoot = resolveSafeCoordRoot({
     coordRoot: resolve(options.coordRoot),
-    agentRoots: options.agents.map((agent) => agentCloneDirectory(cloneRoot, project, agent)),
+    agentRoots: agents.map((agent) => agentCloneDirectory(cloneRoot, project, agent)),
     create: !options.dryRun
   });
   const workspace = selectWorkspaceLocation(coordRoot, project);
+  const defaultMailbox = defaultCompletesRoot(coordRoot);
+  const requestedCompletesRoot = resolve(
+    options.completesRoot ?? (workspace.layout === "nested" ? join(defaultMailbox, project) : defaultMailbox)
+  );
+  const completesRoot = resolveSafeCompletesRoot({
+    completesRoot: requestedCompletesRoot,
+    protectedRoots: [
+      coordRoot,
+      productRoot,
+      ...agents.map((agent) => agentCloneDirectory(cloneRoot, project, agent))
+    ],
+    create: false
+  });
 
   const origin = options.origin ?? localConfigGet(productRoot, "remote.origin.url");
   if (origin === null || origin === "") {
@@ -281,6 +323,20 @@ export const install = (options: InstallOptions): InstallResult => {
   }
 
   const configPath = workspace.configPath;
+  for (const otherConfigPath of otherWorkspaceConfigs(coordRoot, configPath)) {
+    try {
+      const otherConfig = readConfig(otherConfigPath);
+      if (otherConfig.completesRoot !== undefined && resolve(otherConfig.completesRoot) === completesRoot) {
+        throw new Error(
+          `Completion mailbox ${completesRoot} is already claimed by ${otherConfigPath}. Choose a workspace-specific --completes-root.`
+        );
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Completion mailbox ")) throw error;
+      // A malformed sibling config is diagnosed by doctor for that workspace;
+      // it cannot safely claim an unknown path here.
+    }
+  }
   const proposal = proposeProjectPolicy(productRoot);
   const declared = options.declarePath === undefined ? null : readDeclaration(options.declarePath);
   const mode: HookMode = options.vendor ? "vendor" : "shim";
@@ -320,6 +376,7 @@ export const install = (options: InstallOptions): InstallResult => {
     {
       project,
       origin,
+      completesRoot,
       baseBranch,
       agents,
       profile: options.profile,
@@ -337,6 +394,25 @@ export const install = (options: InstallOptions): InstallResult => {
       ? previous.coordination
       : stamp
   );
+
+  // The root is an installation effect, not preflight. Validate above, then
+  // create it only after declarations and the strict generated config pass.
+  const createsCompletesRoot = !existsSync(completesRoot);
+  if (createsCompletesRoot) {
+    effects.changes.push(`create completion mailbox ${completesRoot}`);
+  }
+  resolveSafeCompletesRoot({
+    completesRoot,
+    protectedRoots: [
+      coordRoot,
+      productRoot,
+      ...agents.map((agent) => agentCloneDirectory(cloneRoot, project, agent))
+    ],
+    create: !options.dryRun
+  });
+  if (createsCompletesRoot) {
+    effects.log(`${options.dryRun ? "would create" : "created"} completion mailbox ${completesRoot}\n`);
+  }
 
   // ---- steps 2-5: per-agent clone wiring ----------------------------------
   const clones: string[] = [];
@@ -414,6 +490,7 @@ export const install = (options: InstallOptions): InstallResult => {
   const lifecycleHome = options.home === undefined ? homedir() : options.home;
   if (agents.includes("antigravity") && lifecycleHome !== null) {
     syncAntigravityStatusLine({ home: lifecycleHome, cliEntry, options: effects });
+    restrictAntigravityWorkspaceAccess(lifecycleHome, effects);
   }
 
   // ---- optional, opt-in: tracked changes in the product --------------------
@@ -451,6 +528,7 @@ export const install = (options: InstallOptions): InstallResult => {
       "",
       `Installed ${project} for agents: ${agents.join(", ")}.`,
       `  workspace config : ${configPath}`,
+      `  completion mailbox: ${completesRoot}`,
       `  hook delivery    : ${mode}${options.vendor ? " (copies stamped at " + sourceCommit.slice(0, 12) + ")" : ""}`,
       `  product tree     : ${options.writeProduct ? "opt-in tracked changes written" : "untouched (git status unchanged)"}`,
       "",
@@ -463,7 +541,7 @@ export const install = (options: InstallOptions): InstallResult => {
     ].join("\n")
   );
 
-  return { configPath, changes: effects.changes, clones };
+  return { configPath, completesRoot, changes: effects.changes, clones };
 };
 
 // ------------------------------------------------------------- uninstall ----
@@ -528,6 +606,21 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
   const stamp = config.coordination;
   const kept: string[] = [];
   const clonePaths = config.agents.map((agent) => ({ agent, clone: resolve(dirname(configPath), agent.root) }));
+  const configuredCompletesRoot = resolve(
+    config.completesRoot ??
+      (workspace.layout === "nested"
+        ? join(defaultCompletesRoot(coordRoot), project)
+        : defaultCompletesRoot(coordRoot))
+  );
+  const safeCompletesRoot = resolveSafeCompletesRoot({
+    completesRoot: configuredCompletesRoot,
+    protectedRoots: [
+      coordRoot,
+      ...(stamp === undefined ? [] : [stamp.productRoot]),
+      ...clonePaths.map(({ clone }) => clone)
+    ],
+    create: false
+  });
 
   // ---- preflight: every refusal is decided before anything is mutated ------
   // Checking dirtiness inside the deletion loop meant a refusal arrived after
@@ -698,6 +791,30 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
       if (!options.dryRun) rmSync(target, { recursive: true, force: true });
       effects.log(`${options.dryRun ? "would wipe" : "wiped"} ${target}\n`);
     }
+    const mailboxClaimedElsewhere = others.some((otherConfig) => {
+      try {
+        const other = readConfig(otherConfig);
+        return other.completesRoot !== undefined && resolve(other.completesRoot) === safeCompletesRoot;
+      } catch {
+        return true;
+      }
+    });
+    if (mailboxClaimedElsewhere) {
+      kept.push(`${safeCompletesRoot}: another workspace may still claim this completion mailbox`);
+    } else if (others.length > 0 && workspace.layout === "flat" && existsSync(safeCompletesRoot)) {
+      const issueMailboxes = readdirSync(safeCompletesRoot)
+        .filter((entry) => /^issue-[1-9][0-9]*$/.test(entry))
+        .map((entry) => join(safeCompletesRoot, entry));
+      for (const mailbox of issueMailboxes) {
+        effects.changes.push(`wipe ${mailbox}`);
+        if (!options.dryRun) rmSync(mailbox, { recursive: true, force: true });
+        effects.log(`${options.dryRun ? "would wipe" : "wiped"} ${mailbox}\n`);
+      }
+    } else if (existsSync(safeCompletesRoot)) {
+      effects.changes.push(`wipe ${safeCompletesRoot}`);
+      if (!options.dryRun) rmSync(safeCompletesRoot, { recursive: true, force: true });
+      effects.log(`${options.dryRun ? "would wipe" : "wiped"} ${safeCompletesRoot}\n`);
+    }
   }
 
   if (options.deleteCoordination && stamp !== undefined) {
@@ -719,6 +836,7 @@ export type OnboardOptions = {
   installRoot: string;
   productRoot: string;
   coordRoot?: string;
+  completesRoot?: string;
   cloneRoot?: string;
   agents?: readonly string[];
   profile?: string;
@@ -736,6 +854,7 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     installRoot: options.installRoot,
     productRoot,
     coordRoot,
+    ...(options.completesRoot === undefined ? {} : { completesRoot: resolve(options.completesRoot) }),
     cloneRoot: resolve(options.cloneRoot ?? parent),
     agents: options.agents ?? ["claude", "codex", "cursor", "antigravity"],
     profile: options.profile ?? "consensus",

@@ -17,7 +17,7 @@ const order = (overrides: Partial<InternalOrder> = {}): InternalOrder => ({
   stepId: "R2.plan",
   evidenceId: "plan-published",
   requiredPath: ".plans/issue-1/plan.md",
-  completePath: "/runtime/issue-1/agents/codex/complete",
+  completePath: "/completes/issue-1/codex/complete",
   branch: "issue-1/codex",
   round: null,
   issueSessionId: `issue-1:${sha("a")}`,

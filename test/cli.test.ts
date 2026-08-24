@@ -33,6 +33,7 @@ const setup = () => {
     JSON.stringify({
       project: "fixture",
       origin: "https://github.com/example/fixture.git",
+      completesRoot: join(root, "completes"),
       agents: [
         { id: "codex", root: "clone-codex", launcher: "start-codex.sh", delivery: "pull" },
         { id: "claude", root: "clone-claude", launcher: "start-claude.sh", delivery: "pull" },
@@ -48,7 +49,7 @@ const setup = () => {
       pollIntervalMs: 100
     })
   );
-  return { root, configPath, runtime: join(root, "runtime") };
+  return { root, configPath, runtime: join(root, "runtime"), completesRoot: join(root, "completes") };
 };
 
 const fakeLoop = (paths: ReturnType<typeof issueRuntimePaths>): CliRunLoop => ({
@@ -494,6 +495,24 @@ describe("CLI", () => {
     expect(existsSync(join(fixture.runtime, "issue-999"))).toBe(false);
   });
 
+  it("rejects an orphaned completion mailbox before recreating an issue", async () => {
+    const fixture = setup();
+    mkdirSync(join(fixture.completesRoot, "issue-1", "codex"), { recursive: true });
+    const errors: string[] = [];
+    expect(
+      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stderr: (message) => errors.push(message) },
+        processRunner: async () => {
+          throw new Error("orphan detection must precede issue lookup");
+        },
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(2);
+    expect(errors.join("")).toContain("Runtime state already exists for issue 1");
+    expect(existsSync(join(fixture.runtime, "issue-1"))).toBe(false);
+    expect(existsSync(join(fixture.completesRoot, "issue-1"))).toBe(true);
+  });
+
   it("fails closed when the running coordinator source commit cannot be resolved", async () => {
     const fixture = setup();
     const errors: string[] = [];
@@ -534,6 +553,7 @@ describe("CLI", () => {
     ).toBe(2);
     expect(errors.join("")).toContain("mirror preflight failed");
     expect(existsSync(join(fixture.runtime, "issue-1"))).toBe(false);
+    expect(existsSync(join(fixture.completesRoot, "issue-1"))).toBe(false);
   });
 
   it("materializes lifecycle state before launching agents and removes it when launch fails", async () => {
@@ -554,6 +574,7 @@ describe("CLI", () => {
     ).toBe(2);
     expect(errors.join("")).toContain("launch after lifecycle handshake failed");
     expect(existsSync(paths.issueRoot)).toBe(false);
+    expect(existsSync(paths.completesIssueRoot)).toBe(false);
   });
 
   it("retains resumable state and launched effects when the first tick fails", async () => {
@@ -579,7 +600,10 @@ describe("CLI", () => {
       })
     ).toBe(2);
     const paths = issueRuntimePaths(fixture.runtime, 1);
-    expect(readStartState(paths)).toMatchObject({ trustedSourceCommit: trustedSourceSha });
+    expect(readStartState(paths)).toMatchObject({
+      trustedSourceCommit: trustedSourceSha,
+      completesRoot: fixture.completesRoot
+    });
     expect(readCursorsState(paths).abandoned).toBe(false);
     expect(cleanups).toBe(0);
     expect(errors.join("")).toContain("was started durably");
@@ -861,6 +885,8 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     product.productRoot,
     "--coord-root",
     product.coordRoot,
+    "--completes-root",
+    join(product.workspaceRoot, "completes"),
     "--agents",
     "claude",
     "--profile",
@@ -898,7 +924,9 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     expect(started).toBe(0);
     expect(messages.join("")).not.toContain("Invalid");
     expect(messages.join("")).not.toContain("Unknown option");
-    expect(existsSync(issueRuntimePaths(runtime, 1).issueSnapshot)).toBe(true);
+    const config = readConfig(configPath);
+    expect(config.completesRoot).toBe(join(product.workspaceRoot, "completes"));
+    expect(existsSync(issueRuntimePaths(runtime, 1, config.completesRoot).issueSnapshot)).toBe(true);
   });
 
   it("resolves analytics through an onboarded product", async () => {

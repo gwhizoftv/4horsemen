@@ -91,15 +91,12 @@ const fs = require('fs');
 const path = require('path');
 const [,, settingsPath, cloneDir] = process.argv;
 
-// Derive clone paths for all three agents in the same parent directory
-const parentDir = path.dirname(cloneDir);
-const projectName = path.basename(cloneDir).replace(/-antigravity$/, '');
-const agentClones = ['antigravity', 'claude', 'codex'].map(agent =>
-  path.join(parentDir, `${projectName}-${agent}`)
-);
+// Trust only this harness's clone. The issue-specific completion drop is added
+// by start-antigravity.sh and peer clones are never Antigravity workspaces.
+const agentClones = [path.resolve(cloneDir)];
 
 let settings = {
-  allowNonWorkspaceAccess: true,
+  allowNonWorkspaceAccess: false,
   colorScheme: "tokyo night",
   enableTelemetry: false,
   model: "Gemini 3.5 Flash (High)",
@@ -120,6 +117,9 @@ if (fs.existsSync(settingsPath)) {
 settings.permissions = settings.permissions || {};
 settings.permissions.allow = settings.permissions.allow || [];
 settings.trustedWorkspaces = settings.trustedWorkspaces || [];
+// Completion writes are granted per issue by start-antigravity.sh. A global
+// non-workspace grant would also expose coord-runtime and defeat that boundary.
+settings.allowNonWorkspaceAccess = false;
 
 // The list of canonical commands to allow without prompt
 const requiredCommands = [

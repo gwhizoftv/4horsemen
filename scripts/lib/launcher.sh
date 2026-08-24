@@ -21,12 +21,12 @@
 launcher_command() {
   case "$1" in
     claude)
-      printf 'exec claude --permission-mode auto\n'
+      printf 'exec claude --permission-mode auto "${completion_args[@]}"\n'
       ;;
     codex)
-      # complete lives under coord-runtime (outside the clone). workspace-write
-      # still prompts for that path; agent clones need unattended out-of-tree writes.
-      printf 'exec codex --ask-for-approval never --sandbox danger-full-access\n'
+      # The clone and only the current completion drop are writable. The
+      # coordinator runtime is deliberately not an added directory.
+      printf 'exec codex --ask-for-approval never --sandbox workspace-write "${completion_args[@]}"\n'
       ;;
     antigravity)
       # agy installs into ~/.local/bin, which a login shell does not always
@@ -38,13 +38,13 @@ launcher_command() {
       # max ~2.3 h on a product run). --dangerously-skip-permissions is a
       # separate flag, so keep the mode and add the grant. Codex already
       # launches unattended for the same reason.
-      printf 'export PATH="$HOME/.local/bin:$PATH"\nexec agy --mode accept-edits --dangerously-skip-permissions\n'
+      printf 'export PATH="$HOME/.local/bin:$PATH"\nif (( ${#completion_args[@]} > 0 )); then\n  exec agy --mode accept-edits --dangerously-skip-permissions --sandbox "${completion_args[@]}"\nelse\n  exec agy --mode accept-edits --dangerously-skip-permissions\nfi\n'
       ;;
     gemini)
       printf 'exec gemini\n'
       ;;
     cursor)
-      printf 'exec agent\n'
+      printf 'if (( ${#completion_args[@]} > 0 )); then\n  exec agent --sandbox enabled "${completion_args[@]}"\nelse\n  exec agent\nfi\n'
       ;;
     *)
       return 1
@@ -92,6 +92,41 @@ fi
 if [[ -f pnpm-lock.yaml ]] && command -v corepack >/dev/null; then
   corepack enable pnpm >/dev/null 2>&1 || true
   command -v pnpm >/dev/null && echo "pnpm: \$(pnpm --version)"
+fi
+
+# Automated harnesses receive one additional writable root: the current
+# issue/current-agent completion drop. The absolute root comes from the strict
+# installed workspace config and the issue comes only from the coordinator's
+# tmux environment. A direct/manual launch receives no external grant even if
+# its clone is still on an issue branch. Never pass a parent-relative path.
+completion_args=()
+coord_issue="\${COORD_ISSUE:-}"
+if [[ -n "\$coord_issue" ]]; then
+  if [[ ! "\$coord_issue" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: COORD_ISSUE must be a positive integer; got '\$coord_issue'." >&2
+    exit 1
+  fi
+  workspace_config="\$(git config --local --get coord.workspaceConfig 2>/dev/null || true)"
+  if [[ -z "\$workspace_config" || ! -f "\$workspace_config" ]]; then
+    echo "ERROR: automated mode cannot read coord.workspaceConfig. Re-run coord install." >&2
+    exit 1
+  fi
+  completes_root="\$(node -e '
+    const fs = require("fs");
+    const path = require("path");
+    const config = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    if (typeof config.completesRoot !== "string" || !path.isAbsolute(config.completesRoot)) process.exit(2);
+    process.stdout.write(path.resolve(config.completesRoot));
+  ' "\$workspace_config")" || {
+    echo "ERROR: workspace config has no absolute completesRoot. Re-run coord install." >&2
+    exit 1
+  }
+  complete_dir="\$completes_root/issue-\$coord_issue/$agent"
+  if [[ ! -d "\$complete_dir" || -L "\$complete_dir" ]]; then
+    echo "ERROR: completion drop is missing or unsafe: \$complete_dir" >&2
+    exit 1
+  fi
+  completion_args=(--add-dir "\$complete_dir")
 fi
 
 echo "=== $label agent | branches issue-<n>/$agent or $agent/<name> | shared: $shared ==="

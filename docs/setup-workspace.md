@@ -68,6 +68,7 @@ The default coord root and clone root are the product's parent directory:
 /path/to/app-cursor/
 /path/to/app-antigravity/
 /path/to/coord-runtime/config.json
+/path/to/completes/issue-N/<agent>/complete
 ```
 
 Onboard is a preset over the same installer described below. It selects the
@@ -78,7 +79,15 @@ product worktree's **local** Git config. It does not set the three agent-wiring
 keys on that product. The locator is untracked and does not appear in a fresh
 human clone.
 
-Overrides kept on the simple command are `--coord-root`, `--clone-root`,
+The generated config persists an absolute `completesRoot`. Its flat default is
+the `completes/` sibling of `coord-runtime`; a nested product sharing an outer
+runtime defaults to `completes/<project>/`. Both layouts then use
+`issue-N/<agent>/complete`. `--completes-root /absolute/path` selects an exact
+owner-chosen override. The installer rejects relative paths, symlinks, overlap
+with the product/runtime/agent clones, and a root already claimed by another
+workspace.
+
+Overrides kept on the simple command are `--coord-root`, `--completes-root`, `--clone-root`,
 `--agents`, and `--profile`. Use advanced install for policy declarations,
 vendoring, tracked product changes, origin/base overrides, or dry runs.
 
@@ -88,6 +97,7 @@ vendoring, tracked product changes, origin/base overrides, or dry runs.
 coord install \
   --product /path/to/app \
   --coord-root /path/to/coord-runtime \
+  --completes-root /path/to/completes \
   --agents claude,codex,cursor,antigravity \
   --profile consensus
   # --write-product            # opt-in tracked product changes (additive only)
@@ -101,12 +111,12 @@ coord install \
 | Step | Default action |
 | --- | --- |
 | 0 | Optional bootstrap/build of the coordination install |
-| 1 | Preflight and containment (product ⊄ coord-root, clone root ⊄ product, …) |
+| 1 | Preflight and containment (product ⊄ coord-root, mailbox separate from runtime/product/clones, …) |
 | 2 | Create missing `<product>-<agent>` clones; adopt only a worktree of this product; fast-forward a clean one; **never reset one** |
 | 3 | Write `start-<agent>.sh`; add the managed block to each clone's `.git/info/exclude` |
 | 4 | Record `consensus.*`, `coord.installRoot`, `coord.cliEntry`, `coord.workspaceConfig` in each clone |
 | 5 | Install fail-closed shims into each agent clone's `.git/hooks/` |
-| 6 | Emit the selected flat or nested workspace config under `--coord-root` |
+| 6 | Create the 0700 mailbox root and emit the selected flat or nested workspace config under `--coord-root` |
 | 7 | Print explicit `coord doctor` / `coord manual` / `coord start` / `coord run` next steps — nothing is auto-started |
 
 Not written by default: the product's `githooks/`, `.gitignore`, `package.json`,
@@ -129,6 +139,17 @@ policy, hooks, and a launcher into an unrelated repository.
 reinstall does not leave an agent working from a stale baseline. A dirty or
 diverged clone is reported and left exactly as it is; coordination never rewrites
 a clone.
+
+**Completion sandbox.** The generated launcher stays issue-independent and is
+never rewritten by `coord start`. In automated mode it validates `COORD_ISSUE`,
+reads the installed config, and grants only
+`completesRoot/issue-N/<agent>/`: Claude uses `--add-dir`; Codex uses
+`workspace-write --add-dir` instead of `danger-full-access`; Cursor enables its
+sandbox with `--add-dir`; and Antigravity retains unattended approvals inside
+its sandbox with `--add-dir`. Manual mode has no `COORD_ISSUE` and receives no
+external completion grant. Install/reinstall also forces Antigravity's global
+`allowNonWorkspaceAccess` setting off so an older broad permission cannot
+bypass the per-issue grant.
 
 ## Uninstall
 
@@ -198,6 +219,9 @@ Five scoping rules matter:
   workspace still uses the outer coord root, deletes that folder too (e.g.
   `./coord-runtime`). If nested siblings share the root, wipe stays scoped to
   this product's targets and keeps the outer directory—even with `--force`.
+  The matching completion mailbox is wiped with the same scope: a sole
+  workspace removes its root, while a shared flat workspace removes only its
+  direct `issue-N` children and preserves project-namespaced siblings.
   Without force, a shared flat runtime is still refused as an extra confirmation
   boundary.
 - Owner tmux/Terminal teardown is limited to issue identities under this

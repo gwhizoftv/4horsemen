@@ -67,7 +67,7 @@ describe("four-agent coordinator canary", () => {
       }
 
       const runtimeRoot = join(root, "runtime");
-      const paths = issueRuntimePaths(runtimeRoot, 1);
+      const paths = issueRuntimePaths(runtimeRoot, 1, join(root, "completes"));
       createIssueRuntime(paths, agents);
       const githubOrigin = "https://github.com/example/fixture.git";
       initializeOperationalState(paths, {
@@ -87,6 +87,7 @@ describe("four-agent coordinator canary", () => {
         // Publication needs a github.com origin for gh; fetch/push still use the local bare via the injected mirror.
         origin: githubOrigin,
         coordRoot: runtimeRoot,
+        completesRoot: paths.completesRoot,
         configPath: join(root, "config.json"),
         agents: agents.map((id) => ({ id, root: clones.get(id) as string, launcher: `start-${id}.sh`, delivery: "pull" })),
         checks: [{ name: "fixture-check", argv: ["node", "-e", "process.exit(0)"] }],
@@ -409,7 +410,7 @@ describe("lifecycle nudge canary", () => {
   it("does not pile a second prompt after 45 seconds and permits one after the matching turn stops", async () => {
     const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-e2e-"));
     roots.push(root);
-    const paths = issueRuntimePaths(root, 1);
+    const paths = issueRuntimePaths(root, 1, join(root, "completes"));
     createIssueRuntime(paths, ["codex"]);
     initializeOperationalState(paths, {
       issue: 1,
@@ -427,6 +428,7 @@ describe("lifecycle nudge canary", () => {
       trustedSourceCommit: "c".repeat(40),
       origin: "https://github.com/example/fixture.git",
       coordRoot: root,
+      completesRoot: paths.completesRoot,
       configPath: join(root, "config.json"),
       agents: [
         {

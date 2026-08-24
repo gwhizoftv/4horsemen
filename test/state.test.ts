@@ -27,7 +27,7 @@ afterEach(() => {
 const initialize = () => {
   const root = mkdtempSync(join(tmpdir(), "coord-state-"));
   roots.push(root);
-  const paths = issueRuntimePaths(root, 1);
+  const paths = issueRuntimePaths(root, 1, join(root, "completes"));
   createIssueRuntime(paths, ["claude", "codex"]);
   return {
     paths,
@@ -49,6 +49,7 @@ const initialize = () => {
         trustedSourceCommit: "c".repeat(40),
         origin: "file:///origin.git",
         coordRoot: root,
+        completesRoot: paths.completesRoot,
         configPath: join(root, "config.json"),
         agents: [
           { id: "claude", root: "/clones/claude", launcher: "start-claude.sh", delivery: "nudge" },
@@ -65,7 +66,11 @@ const initialize = () => {
 describe("operational state", () => {
   it("writes strict versioned start, cursor, and journal state atomically", () => {
     const { paths } = initialize();
-    expect(readStartState(paths)).toMatchObject({ formatVersion: 2, maxRevisionRounds: 3 });
+    expect(readStartState(paths)).toMatchObject({
+      formatVersion: 2,
+      maxRevisionRounds: 3,
+      completesRoot: paths.completesRoot
+    });
     expect(readCursorsState(paths).activeRoster).toEqual(["claude", "codex"]);
     expect(readJournal(paths).map((event) => event.type)).toEqual(["started"]);
     appendJournal(paths, { type: "paused", details: {} }, "2026-08-11T10:01:00.000Z");
@@ -86,6 +91,7 @@ describe("operational state", () => {
     expect(cursorsStateSchema.safeParse({ ...cursors, mystery: true }).success).toBe(false);
     expect(cursorsStateSchema.safeParse({ ...cursors, formatVersion: 1 }).success).toBe(false);
     expect(startStateSchema.safeParse({ ...start, maxRevisionRounds: 4 }).success).toBe(false);
+    expect(startStateSchema.safeParse({ ...start, completesRoot: "relative/completes" }).success).toBe(false);
   });
 
   it("rejects stale whole-state writes after an owner control revision", () => {
@@ -144,5 +150,12 @@ describe("context paths", () => {
   it("keeps the field optional at the typed initializer boundary", () => {
     const { start } = initialize();
     expect(start.contextPaths).toEqual([]);
+  });
+});
+
+describe("completion mailbox config", () => {
+  it("accepts only an absolute configured override", () => {
+    expect(coordinatorConfigSchema.safeParse({ ...configFixture(), completesRoot: "/owner/completes" }).success).toBe(true);
+    expect(coordinatorConfigSchema.safeParse({ ...configFixture(), completesRoot: "../completes" }).success).toBe(false);
   });
 });

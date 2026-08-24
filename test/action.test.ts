@@ -17,7 +17,7 @@ const order = (root: string): InternalOrder => ({
   stepId: "R3.review",
   evidenceId: "review-published",
   requiredPath: ".plans/issue-1/review.md",
-  completePath: join(root, "agents/codex/complete"),
+  completePath: join(root, "completes/issue-1/codex/complete"),
   branch: "issue-1/codex",
   round: null,
   issueSessionId: `issue-1:${"1".repeat(40)}`,
@@ -41,6 +41,7 @@ describe("agent actions", () => {
       requiredPath: ".plans/issue-1/review.md"
     });
     expect(raw).toContain("3".repeat(40));
+    expect(raw).toContain("/external/coord/completes/issue-1/codex/complete");
     expect(raw).toContain("Before waiting for more input, re-read");
     expect(raw).toContain("If `actionId` in the front matter has changed");
     expect(raw).not.toContain("nudge");
@@ -52,11 +53,12 @@ describe("agent actions", () => {
   it("round trips an atomically written action", () => {
     const root = mkdtempSync(join(tmpdir(), "coord-action-"));
     roots.push(root);
-    mkdirSync(join(root, "agents/codex"), { recursive: true });
-    const path = join(root, "agents/codex/action.md");
-    writeAction(root, path, order(root));
+    const coordRoot = join(root, "coord-runtime");
+    mkdirSync(join(coordRoot, "issue-1/agents/codex"), { recursive: true });
+    const path = join(coordRoot, "issue-1/agents/codex/action.md");
+    writeAction(coordRoot, path, order(root));
     expect(readAction(path).agent).toBe("codex");
-    expect(readFileSync(path, "utf8")).toContain(join(root, "agents/codex/complete"));
+    expect(readFileSync(path, "utf8")).toContain(join(root, "completes/issue-1/codex/complete"));
   });
 
   it.each([

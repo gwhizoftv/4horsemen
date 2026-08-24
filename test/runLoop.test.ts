@@ -39,7 +39,7 @@ afterEach(() => {
 const fixture = (options: { prPolicy?: "owner-only" | "coord-open-unmerged" | "coord-merged"; origin?: string } = {}) => {
   const root = mkdtempSync(join(tmpdir(), "coord-loop-"));
   roots.push(root);
-  const paths = issueRuntimePaths(root, 1);
+  const paths = issueRuntimePaths(root, 1, join(root, "completes"));
   createIssueRuntime(paths, ["claude", "codex"]);
   initializeOperationalState(paths, {
     issue: 1,
@@ -57,6 +57,7 @@ const fixture = (options: { prPolicy?: "owner-only" | "coord-open-unmerged" | "c
     trustedSourceCommit: "c".repeat(40),
     origin: options.origin ?? "/origin.git",
     coordRoot: root,
+    completesRoot: paths.completesRoot,
     configPath: join(root, "config.json"),
     agents: [
       { id: "claude", root: "/clones/claude", launcher: "start-claude.sh", delivery: "pull" },

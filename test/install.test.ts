@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { findAgentLanguageViolations } from "../src/agentLanguage.js";
@@ -39,6 +40,7 @@ const installOnce = (
     installRoot: repoRoot,
     productRoot: fixture.productRoot,
     coordRoot: fixture.coordRoot,
+    completesRoot: join(fixture.workspaceRoot, "completes"),
     agents: ["claude"],
     profile: "solo",
     writeProduct: false,
@@ -169,6 +171,59 @@ describe("coord install — emitted config", () => {
     expect(config.coordination?.version).toBe(expected);
     expect(config.coordination?.vendored).toBe(false);
     expect(config.agents[0]?.launcher).toBe("start-claude.sh");
+    expect(config.completesRoot).toBe(join(fixture.workspaceRoot, "completes"));
+    expect(lstatSync(config.completesRoot as string).mode & 0o777).toBe(0o700);
+  });
+
+  it("derives distinct flat and nested mailbox defaults", () => {
+    const first = product();
+    const coordRoot = join(first.workspaceRoot, "coord-runtime");
+    const firstResult = installOnce(first, { coordRoot, completesRoot: undefined });
+    expect(readConfig(firstResult.configPath).completesRoot).toBe(join(first.workspaceRoot, "completes"));
+
+    const second = makeProduct("go", "otherserver");
+    fixtures.push(second);
+    const secondResult = install({
+      installRoot: repoRoot,
+      productRoot: second.productRoot,
+      coordRoot,
+      agents: ["codex"],
+      profile: "solo",
+      declarePath: writeDeclaration(second.workspaceRoot, { checks: declaredChecks, verify: passingVerify }),
+      writeProduct: false,
+      vendor: false,
+      bootstrap: false,
+      dryRun: false,
+      log: silence().log
+    });
+    expect(readConfig(secondResult.configPath).completesRoot).toBe(
+      join(first.workspaceRoot, "completes", "otherserver")
+    );
+  });
+
+  it("rejects protected overlap and a mailbox already claimed by another workspace", () => {
+    const first = product();
+    expect(() => installOnce(first, { completesRoot: join(first.productRoot, "completes") })).toThrow(/overlaps/);
+    const installed = installOnce(first);
+
+    const second = makeProduct("go", "otherserver");
+    fixtures.push(second);
+    expect(() =>
+      install({
+        installRoot: repoRoot,
+        productRoot: second.productRoot,
+        coordRoot: first.coordRoot,
+        completesRoot: installed.completesRoot,
+        agents: ["codex"],
+        profile: "solo",
+        declarePath: writeDeclaration(second.workspaceRoot, { checks: declaredChecks, verify: passingVerify }),
+        writeProduct: false,
+        vendor: false,
+        bootstrap: false,
+        dryRun: false,
+        log: silence().log
+      })
+    ).toThrow(/already claimed/);
   });
 
   it("records the install stamp under coord-root, never in the product tree", () => {
@@ -300,6 +355,7 @@ describe("coord uninstall", () => {
     expect(tryGit(clone, "config", "--local", "--get", "consensus.agentId").exitCode).not.toBe(0);
     expect(readFileSync(join(clone, ".git", "info", "exclude"), "utf8")).not.toContain("coordination managed block");
     expect(existsSync(result.configPath)).toBe(false);
+    expect(existsSync(result.completesRoot)).toBe(true);
   });
 
   it("removes the managed product ignore block only when the install wrote it", () => {
@@ -439,6 +495,7 @@ describe("coord uninstall — scope", () => {
       installRoot: repoRoot,
       productRoot: fixture.productRoot,
       coordRoot: fixture.coordRoot,
+      completesRoot: join(fixture.workspaceRoot, "completes"),
       agents: ["claude", "codex"],
       profile: "consensus",
       declarePath: writeDeclaration(fixture.workspaceRoot, { checks: declaredChecks, verify: passingVerify }, "two"),
@@ -459,11 +516,12 @@ describe("coord uninstall — scope", () => {
 
   it("flat --wipe-runtime deletes the outer root when it is the sole workspace", () => {
     const fixture = product();
-    installOnce(fixture);
+    const installed = installOnce(fixture);
     mkdirSync(join(fixture.coordRoot, "issue-1"));
     mkdirSync(join(fixture.coordRoot, "mirror.git"));
     uninstallOnce(fixture, { wipeRuntime: true });
     expect(existsSync(fixture.coordRoot)).toBe(false);
+    expect(existsSync(installed.completesRoot)).toBe(false);
   });
 
   it("flat --wipe-runtime never deletes nested siblings when forced on a shared root", () => {
@@ -475,6 +533,7 @@ describe("coord uninstall — scope", () => {
       installRoot: repoRoot,
       productRoot: second.productRoot,
       coordRoot: first.coordRoot,
+      completesRoot: join(first.workspaceRoot, "completes", "otherserver"),
       agents: ["codex"],
       profile: "solo",
       declarePath: writeDeclaration(second.workspaceRoot, { checks: declaredChecks, verify: passingVerify }),
@@ -489,6 +548,8 @@ describe("coord uninstall — scope", () => {
     expect(existsSync(otherWorkspace)).toBe(true);
     mkdirSync(join(first.coordRoot, "issue-1"));
     mkdirSync(join(first.coordRoot, "mirror.git"));
+    mkdirSync(join(first.workspaceRoot, "completes", "issue-1"), { recursive: true });
+    mkdirSync(join(first.workspaceRoot, "completes", "otherserver", "issue-1"), { recursive: true });
 
     expect(() => uninstallOnce(first, { wipeRuntime: true })).toThrow(/other workspace/);
     expect(existsSync(otherWorkspace)).toBe(true);
@@ -497,6 +558,8 @@ describe("coord uninstall — scope", () => {
     expect(existsSync(nestedConfigPath(first.coordRoot, "otherserver"))).toBe(true);
     expect(existsSync(join(first.coordRoot, "issue-1"))).toBe(false);
     expect(existsSync(join(first.coordRoot, "mirror.git"))).toBe(false);
+    expect(existsSync(join(first.workspaceRoot, "completes", "issue-1"))).toBe(false);
+    expect(existsSync(join(first.workspaceRoot, "completes", "otherserver", "issue-1"))).toBe(true);
   });
 
   it("refuses --delete-coordination because no install owns the checkout", () => {
@@ -516,10 +579,84 @@ describe("generated agent launchers", () => {
    */
   it("launches Antigravity unattended without losing its execution mode", () => {
     const fixture = product();
-    const result = installOnce(fixture, { agents: ["antigravity"] });
+    const home = join(fixture.workspaceRoot, "home");
+    const settings = join(home, ".gemini", "antigravity-cli", "settings.json");
+    mkdirSync(join(settings, ".."), { recursive: true });
+    writeFileSync(settings, `${JSON.stringify({ allowNonWorkspaceAccess: true })}\n`);
+    const result = installOnce(fixture, { agents: ["antigravity"], home });
     const clone = result.clones[0] as string;
     const launcher = readFileSync(join(clone, "start-antigravity.sh"), "utf8");
     expect(launcher).toContain("exec agy --mode accept-edits --dangerously-skip-permissions");
+    expect(launcher).toContain('--sandbox "${completion_args[@]}"');
+    expect(launcher).toContain('completion_args=(--add-dir "$complete_dir")');
+    expect(JSON.parse(readFileSync(settings, "utf8"))).toMatchObject({ allowNonWorkspaceAccess: false });
     expect(launcher).toContain('export PATH="$HOME/.local/bin:$PATH"');
+  });
+
+  it("grants each automated harness only its current drop and grants manual mode none", () => {
+    const fixture = product("plain");
+    const completesRoot = join(fixture.workspaceRoot, "completion mailbox");
+    const home = join(fixture.workspaceRoot, "home");
+    const agents = ["claude", "codex", "cursor", "antigravity"] as const;
+    const result = installOnce(fixture, { agents, completesRoot, home });
+    const bin = join(fixture.workspaceRoot, "stub-bin");
+    mkdirSync(bin);
+    const commands = { claude: "claude", codex: "codex", cursor: "agent", antigravity: "agy" } as const;
+    for (const command of Object.values(commands)) {
+      writeFileSync(join(bin, command), "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\n", {
+        mode: 0o755
+      });
+    }
+
+    const expectedPrefix = {
+      claude: ["--permission-mode", "auto"],
+      codex: ["--ask-for-approval", "never", "--sandbox", "workspace-write"],
+      cursor: ["--sandbox", "enabled"],
+      antigravity: ["--mode", "accept-edits", "--dangerously-skip-permissions", "--sandbox"]
+    } as const;
+    for (const [index, agent] of agents.entries()) {
+      const clone = result.clones[index] as string;
+      const drop = join(completesRoot, "issue-17", agent);
+      mkdirSync(drop, { recursive: true });
+      const capture = join(fixture.workspaceRoot, `${agent}.args`);
+      execFileSync("bash", [join(clone, `start-${agent}.sh`)], {
+        cwd: clone,
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          HOME: home,
+          COORD_ISSUE: "17",
+          CAPTURE: capture
+        },
+        stdio: "ignore"
+      });
+      const argv = readFileSync(capture, "utf8").trimEnd().split("\n");
+      expect(argv).toEqual([...expectedPrefix[agent], "--add-dir", drop]);
+      expect(argv).not.toContain(fixture.coordRoot);
+      expect(argv).not.toContain(completesRoot);
+      expect(argv).not.toContain(join(completesRoot, "issue-17", agents[(index + 1) % agents.length] as string));
+    }
+
+    const codexIndex = agents.indexOf("codex");
+    const codexClone = result.clones[codexIndex] as string;
+    git(codexClone, "checkout", "-qb", "issue-17/codex");
+    const manualCapture = join(fixture.workspaceRoot, "codex-manual.args");
+    execFileSync("bash", [join(codexClone, "start-codex.sh")], {
+      cwd: codexClone,
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        HOME: home,
+        COORD_ISSUE: "",
+        CAPTURE: manualCapture
+      },
+      stdio: "ignore"
+    });
+    expect(readFileSync(manualCapture, "utf8").trimEnd().split("\n")).toEqual([
+      "--ask-for-approval",
+      "never",
+      "--sandbox",
+      "workspace-write"
+    ]);
   });
 });

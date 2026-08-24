@@ -34,6 +34,7 @@ const runtimeFixture = (agent: "codex" | "claude" | "cursor" | "antigravity") =>
     `${JSON.stringify({
       project: "fixture",
       origin: "https://github.com/example/fixture.git",
+      completesRoot: join(root, "completes"),
       branch: "issue-{issue}/{agent}",
       agents: [configuredAgent],
       checks: [{ name: "true", argv: ["true"] }]
@@ -41,7 +42,7 @@ const runtimeFixture = (agent: "codex" | "claude" | "cursor" | "antigravity") =>
   );
   execFileSync("git", ["config", "--local", "coord.workspaceConfig", configPath], { cwd: clone });
   execFileSync("git", ["config", "--local", "consensus.agentId", agent], { cwd: clone });
-  const paths = issueRuntimePaths(root, 86);
+  const paths = issueRuntimePaths(root, 86, join(root, "completes"));
   createIssueRuntime(paths, [agent]);
   initializeOperationalState(paths, {
     issue: 86,
@@ -59,6 +60,7 @@ const runtimeFixture = (agent: "codex" | "claude" | "cursor" | "antigravity") =>
     trustedSourceCommit: "d".repeat(40),
     origin: "https://github.com/example/fixture.git",
     coordRoot: root,
+    completesRoot: paths.completesRoot,
     configPath,
     agents: [configuredAgent],
     checks: [{ name: "true", argv: ["true"] }],

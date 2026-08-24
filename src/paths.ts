@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
@@ -102,8 +102,47 @@ export const resolveSafeCoordRoot = (options: SafeCoordRootOptions): string => {
   return requested;
 };
 
+export type SafeCompletesRootOptions = {
+  completesRoot: string;
+  protectedRoots: readonly string[];
+  create?: boolean;
+};
+
+/** Resolve the agent-writable mailbox without allowing it to overlap protected state. */
+export const resolveSafeCompletesRoot = (options: SafeCompletesRootOptions): string => {
+  if (!isAbsolute(options.completesRoot)) {
+    throw new PathSafetyError(`Completion mailbox must be absolute: ${options.completesRoot}`);
+  }
+  const requested = resolve(options.completesRoot);
+  assertNoSymlink(requested, requested);
+  const completesReal = nearestExistingRealPath(requested);
+
+  for (const protectedRoot of options.protectedRoots) {
+    const protectedReal = nearestExistingRealPath(protectedRoot);
+    if (isPathInside(protectedReal, completesReal) || isPathInside(completesReal, protectedReal)) {
+      throw new PathSafetyError(
+        `Completion mailbox ${completesReal} overlaps protected path ${protectedReal}. Choose a separate sibling path.`
+      );
+    }
+  }
+
+  if (options.create === true) {
+    mkdirSync(requested, { recursive: true, mode: 0o700 });
+    assertNoSymlink(requested, requested);
+    chmodSync(requested, 0o700);
+  }
+  return requested;
+};
+
+/** Default owner/agent middle ground for a flat workspace. */
+export const defaultCompletesRoot = (coordRoot: string): string =>
+  resolve(dirname(resolve(coordRoot)), "completes");
+
 export type IssueRuntimePaths = {
+  issue: number;
   coordRoot: string;
+  completesRoot: string;
+  completesIssueRoot: string;
   tmuxNamespace: string | null;
   /**
    * Stable short id for this workspace root. Always set (flat and nested) so
@@ -126,15 +165,24 @@ export type IssueRuntimePaths = {
 export const workspaceTerminalGroup = (coordRoot: string): string =>
   createHash("sha256").update(resolve(coordRoot)).digest("hex").slice(0, 10);
 
-export const issueRuntimePaths = (coordRoot: string, issue: number): IssueRuntimePaths => {
+export const issueRuntimePaths = (
+  coordRoot: string,
+  issue: number,
+  completesRoot = defaultCompletesRoot(coordRoot)
+): IssueRuntimePaths => {
   if (!Number.isInteger(issue) || issue < 1) {
     throw new PathSafetyError("Issue must be a positive integer.");
   }
   const root = resolve(coordRoot);
+  const completionRoot = resolve(completesRoot);
   const issueRoot = containedPath(root, `issue-${issue}`);
+  const completesIssueRoot = containedPath(completionRoot, `issue-${issue}`);
   const terminalGroup = workspaceTerminalGroup(root);
   return {
+    issue,
     coordRoot: root,
+    completesRoot: completionRoot,
+    completesIssueRoot,
     // Nested workspaces also namespace tmux sessions; flat keeps legacy coord-N.
     tmuxNamespace: basename(dirname(root)) === "workspaces" ? terminalGroup : null,
     terminalGroup,
@@ -152,6 +200,7 @@ export const issueRuntimePaths = (coordRoot: string, issue: number): IssueRuntim
 export type AgentRuntimePaths = {
   root: string;
   action: string;
+  completeDir: string;
   complete: string;
   renderLog: string;
 };
@@ -163,10 +212,12 @@ export const agentRuntimePaths = (paths: IssueRuntimePaths, agent: string): Agen
     throw new PathSafetyError(`Invalid agent id: ${agent}`);
   }
   const root = containedPath(paths.agents, agent);
+  const completeDir = containedPath(paths.completesIssueRoot, agent);
   return {
     root,
     action: containedPath(root, "action.md"),
-    complete: containedPath(root, "complete"),
+    completeDir,
+    complete: containedPath(completeDir, "complete"),
     renderLog: containedPath(root, "render.log")
   };
 };
@@ -178,10 +229,16 @@ export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly st
   assertNoSymlink(paths.coordRoot, paths.agents);
   mkdirSync(paths.agents, { recursive: true, mode: 0o700 });
   assertNoSymlink(paths.coordRoot, paths.agents);
+  assertNoSymlink(paths.completesRoot, paths.completesIssueRoot);
+  mkdirSync(paths.completesIssueRoot, { recursive: true, mode: 0o700 });
+  assertNoSymlink(paths.completesRoot, paths.completesIssueRoot);
   for (const agent of agents) {
     const runtime = agentRuntimePaths(paths, agent);
     assertNoSymlink(paths.coordRoot, runtime.root);
     mkdirSync(runtime.root, { recursive: true, mode: 0o700 });
     assertNoSymlink(paths.coordRoot, runtime.root);
+    assertNoSymlink(paths.completesRoot, runtime.completeDir);
+    mkdirSync(runtime.completeDir, { recursive: true, mode: 0o700 });
+    assertNoSymlink(paths.completesRoot, runtime.completeDir);
   }
 };
