@@ -1,0 +1,44 @@
+{
+  "protocolVersion": 1,
+  "issue": 98,
+  "issueSessionId": "issue-98:3fed3f76b6030fffefc699d0530115fddeb847da",
+  "agent": "cursor",
+  "inputSetHash": "9a9368002b6d8c0842c8a1ee994dc02994eb706d91460a3ea803e1abe199e7ae",
+  "artifact": "plan-ballot",
+  "plans": [
+    {
+      "agent": "cursor",
+      "commitSha": "4f96e513360d5ddf60d77b957336b5d61334a264",
+      "path": ".plans/issue-98/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "cf42e129554604df5a61a5ca917157cc6deb9053",
+      "path": ".plans/issue-98/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "208c3833c1815b78ab2496b2f4aab30de96aa416",
+      "path": ".plans/issue-98/plan.md"
+    }
+  ],
+  "reviews": [
+    {
+      "agent": "codex",
+      "commitSha": "d497b9e4301fcb6dbba9aa21b1f4606c40496793",
+      "path": ".plans/issue-98/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "1daca08c784261c5841d45a84c8f30dc4f2ae636",
+      "path": ".plans/issue-98/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "c111724385bd84987367d34e93afde5019271e44",
+      "path": ".plans/issue-98/review.md"
+    }
+  ],
+  "choice": "cursor",
+  "rationale": "Cursor's plan is the only one that keeps the owner's completes/issue-N/<agent> layout, while Claude's agent-first order and Codex's config-only mailbox root each fail a stated invariant even though Cursor still needs launch-time grants and mailbox I/O hardening."
+}
