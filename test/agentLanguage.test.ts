@@ -16,6 +16,7 @@ import {
 } from "../src/agentLanguage.js";
 import { renderAgentsProtocolBlock } from "../src/agentsProtocol.js";
 import { HookPolicyError, resolveWorkspaceConfig, runVerifyPhase, verifyCommands } from "../src/hookPolicy.js";
+import { AGENTS_PROTOCOL_MARKERS, removeManagedBlock } from "../src/productIgnore.js";
 import { coordinatorConfigSchema } from "../src/state.js";
 import { COORD_IDLE_SENTINEL } from "../src/tmux.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
@@ -318,7 +319,11 @@ describe("agent-facing language", () => {
     for (const relativePath of AGENT_FACING_PROSE_FILES) {
       const raw =
         relativePath === "AGENTS.md"
-          ? execSync("git show :AGENTS.md", { cwd: repoRoot, encoding: "utf8" })
+          ? removeManagedBlock(
+              execSync("git show HEAD:AGENTS.md", { cwd: repoRoot, encoding: "utf8" }),
+              relativePath,
+              AGENTS_PROTOCOL_MARKERS
+            ).content
           : readFileSync(join(repoRoot, relativePath), "utf8");
       expect(findAgentLanguageViolations(raw), relativePath).toEqual([]);
     }
@@ -392,7 +397,6 @@ describe("agent-facing language", () => {
     const walked = hookRoots.flatMap((root) => walkFiles(root));
     expect(walked.length).toBeGreaterThanOrEqual(8);
     for (const path of walked) {
-      if (!path.endsWith(".sh")) continue;
       expect(findAgentLanguageViolations(shellEmittedText(readFileSync(path, "utf8"))), path).toEqual([]);
     }
   });
