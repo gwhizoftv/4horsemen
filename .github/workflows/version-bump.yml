@@ -1,7 +1,9 @@
 name: version-bump
 
 # Merge gate: every PR into main must advance package.json past origin/main (0.0.N).
-# Also enforced locally by test/versionBump.test.ts inside pnpm check:fast / precommit.
+# This workflow, together with the `pnpm check:version-bump` script it runs, is the
+# only place that advance is enforced. `pnpm check:fast` (precommit) and `pnpm check`
+# deliberately do not check it, so ordinary branch commits need no version bump.
 on:
   pull_request:
     branches: [main]

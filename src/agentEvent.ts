@@ -6,6 +6,7 @@ import {
   type LifecycleObservation,
   type AgentLifecycleState
 } from "./agentLifecycle.js";
+import { extractCursorTokenUsage, type CursorUsageJournalDetails } from "./cursorHookUsage.js";
 import { localConfigGet } from "./gitExec.js";
 import { resolveWorkspaceConfig } from "./hookPolicy.js";
 import { agentRuntimePaths, issueRuntimePaths } from "./paths.js";
@@ -205,6 +206,56 @@ export const normalizeAgentEvent = (
   return null;
 };
 
+/** Normalize Cursor analytics hook payloads into journaled usage records. */
+export const normalizeCursorUsageEvent = (
+  vendor: LifecycleVendor,
+  rawValue: unknown,
+  explicitEvent?: string
+): CursorUsageJournalDetails | null => {
+  if (vendor !== "cursor") return null;
+  const raw = object(rawValue);
+  if (raw === null) return null;
+  const eventName = eventNameOf(raw, explicitEvent);
+  const normalizedName = eventName.toLowerCase();
+  const sessionId = stringField(raw, "conversation_id", "session_id");
+  const turnId = stringField(raw, "generation_id", "turn_id");
+  if (sessionId === undefined || turnId === undefined) return null;
+
+  if (normalizedName === "posttooluse") {
+    return {
+      vendor: "cursor",
+      event: eventName,
+      kind: "tool-used",
+      sessionId,
+      turnId,
+      toolCalls: 1
+    };
+  }
+  if (normalizedName === "posttoolusefailure") {
+    return {
+      vendor: "cursor",
+      event: eventName,
+      kind: "tool-failed",
+      sessionId,
+      turnId,
+      toolCalls: 0
+    };
+  }
+  if (normalizedName === "afteragentresponse" || normalizedName === "stop") {
+    const tokens = extractCursorTokenUsage(raw);
+    if (tokens === null) return null;
+    return {
+      vendor: "cursor",
+      event: eventName,
+      kind: "turn-usage",
+      sessionId,
+      turnId,
+      tokens
+    };
+  }
+  return null;
+};
+
 const issueFromRaw = (raw: JsonObject): number | null => {
   const prompt = stringField(raw, "prompt");
   const action = prompt === undefined ? null : extractPromptActionIdentity(prompt);
@@ -277,36 +328,55 @@ export const handleAgentEvent = (input: HandleAgentEventInput): HandleAgentEvent
   if (!existsSync(paths.start)) return { observed: false, issue, agent, state: null };
   const start = readStartState(paths);
   if (!start.originalRoster.includes(agent)) throw new Error(`Agent ${agent} is not in issue ${issue}'s roster.`);
-  const observation = normalizeAgentEvent(input.vendor, raw, input.explicitEvent);
-  if (observation === null) return { observed: false, issue, agent, state: null };
-  if (
-    observation.actionPath !== undefined &&
-    resolve(observation.actionPath) !== resolve(agentRuntimePaths(paths, agent).action)
-  ) {
-    throw new Error("Lifecycle prompt names an action path outside the configured agent runtime.");
-  }
   const now = input.now ?? new Date().toISOString();
-  const result = observeAgentLifecycleWithResult(paths, agent, observation, now);
-  const journalsTurnBoundary = observation.kind === "prompt-submitted" || observation.kind === "stopped";
-  if (result.changed || journalsTurnBoundary) {
+  const observation = normalizeAgentEvent(input.vendor, raw, input.explicitEvent);
+  const usage = normalizeCursorUsageEvent(input.vendor, raw, input.explicitEvent);
+  if (observation === null && usage === null) return { observed: false, issue, agent, state: null };
+
+  let state: AgentLifecycleState | null = null;
+  if (observation !== null) {
+    if (
+      observation.actionPath !== undefined &&
+      resolve(observation.actionPath) !== resolve(agentRuntimePaths(paths, agent).action)
+    ) {
+      throw new Error("Lifecycle prompt names an action path outside the configured agent runtime.");
+    }
+    const result = observeAgentLifecycleWithResult(paths, agent, observation, now);
+    state = result.state;
+    const journalsTurnBoundary = observation.kind === "prompt-submitted" || observation.kind === "stopped";
+    if (result.changed || journalsTurnBoundary) {
+      appendJournal(
+        paths,
+        {
+          type: "agent-lifecycle",
+          agent,
+          ...(observation.actionId === undefined ? {} : { actionId: observation.actionId }),
+          details: {
+            vendor: input.vendor,
+            event: observation.eventName,
+            kind: observation.kind,
+            execution: result.state.agents[agent]?.execution ?? "unknown",
+            health: result.state.agents[agent]?.health ?? "unknown",
+            ...(observation.sessionId === undefined ? {} : { sessionId: observation.sessionId }),
+            ...(observation.turnId === undefined ? {} : { turnId: observation.turnId })
+          }
+        },
+        now
+      );
+    }
+  }
+
+  if (usage !== null) {
     appendJournal(
       paths,
       {
-        type: "agent-lifecycle",
+        type: "agent-usage",
         agent,
-        ...(observation.actionId === undefined ? {} : { actionId: observation.actionId }),
-        details: {
-          vendor: input.vendor,
-          event: observation.eventName,
-          kind: observation.kind,
-          execution: result.state.agents[agent]?.execution ?? "unknown",
-          health: result.state.agents[agent]?.health ?? "unknown",
-          ...(observation.sessionId === undefined ? {} : { sessionId: observation.sessionId }),
-          ...(observation.turnId === undefined ? {} : { turnId: observation.turnId })
-        }
+        details: usage
       },
       now
     );
   }
-  return { observed: true, issue, agent, state: result.state };
+
+  return { observed: true, issue, agent, state };
 };

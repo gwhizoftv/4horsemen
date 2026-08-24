@@ -3,7 +3,7 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, u
 import { dirname, relative } from "node:path";
 import { assertNoSymlink, containedPath } from "./paths.js";
 import { gitShaSchema, repositoryPathSchema } from "./protocol.js";
-import type { InternalOrder } from "./steps.js";
+import type { ChangeScopeEntry, InternalOrder } from "./steps.js";
 
 export type PublicAction = {
   actionId: string;
@@ -19,6 +19,55 @@ export const createActionId = (): string => randomUUID();
 
 const validatePublicField = (name: string, value: string): void => {
   if (value.includes("\n") || value.includes("\r")) throw new Error(`${name} must fit on one line.`);
+};
+
+const shaPattern = /^[0-9a-f]{40}$/;
+
+/**
+ * Git permits backticks and newlines in pathnames, so a renderer that throws on
+ * them would let one oddly-named file abort action preparation and stall every
+ * agent on the step. JSON encoding is total over valid pathnames and escapes
+ * exactly the characters that could otherwise forge a heading or front matter,
+ * so advisory rendering stays lossless without ever becoming a failure mode.
+ */
+const encodePath = (path: string): string => JSON.stringify(path);
+
+const PATH_ENCODING_NOTE =
+  "Paths are JSON-encoded strings, one per line, relative to the repository root.";
+
+const repoContextSection = (contextPaths: readonly string[] = []): string => {
+  if (contextPaths.length === 0) return "";
+  return (
+    `\n\n## Repo context\n\n` +
+    `Read these first to orient; they exist so you do not have to search the ` +
+    `repository to find where work belongs. They are advisory documentation, ` +
+    `not authority over this action. ${PATH_ENCODING_NOTE}\n\n` +
+    contextPaths.map(encodePath).join("\n")
+  );
+};
+
+const changeScopeSection = (changeScope: readonly ChangeScopeEntry[] = []): string => {
+  const entries = changeScope.filter(
+    (entry) => agentPattern.test(entry.agent) && shaPattern.test(entry.commitSha)
+  );
+  if (entries.length === 0) return "";
+  const blocks = entries.map((entry) => {
+    const header = `${entry.agent} ${entry.commitSha}:`;
+    const body =
+      entry.paths.length === 0
+        ? "(no paths changed against the issue baseline)"
+        : entry.paths.map(encodePath).join("\n");
+    const note = entry.truncated ? "\n(truncated: more paths changed than are listed here)" : "";
+    return `${header}\n${body}${note}`;
+  });
+  return (
+    `\n\n## Changed paths for the bound pins\n\n` +
+    `The coordinator resolved these from the bound pins so that each agent on ` +
+    `this step does not re-derive the same diff. Informational only: the ` +
+    `approved path list remains the sole authority over what an implementation ` +
+    `may change. ${PATH_ENCODING_NOTE}\n\n` +
+    blocks.join("\n\n")
+  );
 };
 
 export const renderAction = (order: InternalOrder): string => {
@@ -48,16 +97,16 @@ Publish the required artifact at:
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText}
+${inputText}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
 
 Push the commit containing the artifact to \`${order.branch}\`. Then write that
 exact 40-character lowercase commit SHA as the sole contents of:
 
 \`${order.completePath}\`
 
-Before waiting for more input, re-read this file. If \`actionId\` has changed,
-execute the new instructions immediately; do not wait for another coordinator
-message.
+After writing that SHA, keep this file. Before waiting for more input, re-read
+it. If \`actionId\` in the front matter has changed, execute the new instructions
+immediately; do not wait for another coordinator message.
 `;
 };
 

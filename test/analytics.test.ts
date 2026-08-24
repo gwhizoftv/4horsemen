@@ -316,4 +316,105 @@ describe("analytics aggregation", () => {
     expect(cursor?.phases.every((phase) => phase.tokens === null && phase.toolCalls === null)).toBe(true);
     expect(report.usage?.tokenTotal).toBeNull();
   });
+
+  it("aggregates Cursor hook usage from journaled agent-usage events", () => {
+    const cursorStart = startStateSchema.parse({
+      ...start,
+      originalRoster: ["cursor"],
+      agents: [{ id: "cursor", root: "/clone-cursor", launcher: "start-cursor.sh", delivery: "pull" }]
+    });
+    const journal = [
+      journalEventSchema.parse({
+        formatVersion: 2,
+        sequence: 0,
+        at: "2026-08-21T00:00:00.000Z",
+        type: "started",
+        details: { issue: 94, profile: "solo" }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 2,
+        sequence: 1,
+        at: "2026-08-21T00:00:01.000Z",
+        type: "action-prepared",
+        agent: "cursor",
+        actionId: "11111111-1111-4111-8111-111111111111",
+        details: { requiredPath: ".plans/issue-94/plan.md" }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 2,
+        sequence: 2,
+        at: "2026-08-21T00:00:02.000Z",
+        type: "agent-lifecycle",
+        agent: "cursor",
+        actionId: "11111111-1111-4111-8111-111111111111",
+        details: {
+          vendor: "cursor",
+          event: "beforeSubmitPrompt",
+          kind: "prompt-submitted",
+          sessionId: "conversation-1",
+          turnId: "generation-1"
+        }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 2,
+        sequence: 3,
+        at: "2026-08-21T00:00:03.000Z",
+        type: "agent-usage",
+        agent: "cursor",
+        details: {
+          vendor: "cursor",
+          event: "postToolUse",
+          kind: "tool-used",
+          sessionId: "conversation-1",
+          turnId: "generation-1",
+          toolCalls: 1
+        }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 2,
+        sequence: 4,
+        at: "2026-08-21T00:00:04.000Z",
+        type: "agent-usage",
+        agent: "cursor",
+        details: {
+          vendor: "cursor",
+          event: "afterAgentResponse",
+          kind: "turn-usage",
+          sessionId: "conversation-1",
+          turnId: "generation-1",
+          tokens: { input_tokens: 40, output_tokens: 8, cache_read_tokens: 12, cache_write_tokens: 0 }
+        }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 2,
+        sequence: 5,
+        at: "2026-08-21T00:00:05.000Z",
+        type: "agent-lifecycle",
+        agent: "cursor",
+        details: {
+          vendor: "cursor",
+          event: "stop",
+          kind: "stopped",
+          sessionId: "conversation-1",
+          turnId: "generation-1"
+        }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 2,
+        sequence: 6,
+        at: "2026-08-21T00:01:00.000Z",
+        type: "gate-advanced",
+        details: { from: "R1.join", to: null, round: null }
+      })
+    ];
+    const report = buildAnalytics({ start: cursorStart, journal });
+    const cursor = report.usage?.agents.find((agent) => agent.agent === "cursor");
+    expect(cursor).toMatchObject({
+      vendor: "cursor",
+      tokenCoverage: "complete",
+      toolCoverage: "complete",
+      phases: [{ phase: "R1.join", tokens: { input: 40, output: 8, cacheRead: 12, cacheWrite: 0 }, toolCalls: 1 }]
+    });
+    expect(renderAnalytics(report)).toContain("cursor: coverage=complete");
+  });
 });

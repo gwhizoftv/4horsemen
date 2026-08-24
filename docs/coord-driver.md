@@ -58,12 +58,40 @@ Start from `config.example.json`:
   `coord-merged` (coord merges), or legacy `owner-only` (same as open-unmerged)
 - `digestPaths`: optional additional config-relative, confined source
   templates; the list may be empty
+- `contextPaths`: optional confined product-relative files an agent should read
+  first to orient — a repo map, an architecture note. Coordination names them
+  in a `## Repo context` section of every `action.md`; it never inlines their
+  contents, because the measured cost is what enters an agent's context, and
+  naming a short list is what replaces a repository-wide search rather than
+  adding to it. They are advisory documentation and are deliberately **not**
+  digest material: an owner must be able to correct a stale context note
+  mid-run without invalidating every published artifact.
 - `checks[]`: explicit argv arrays executed in a clean worktree at the final
   pin; no shell is invoked
 - `pollIntervalMs`: bounded completion-file polling interval
 
 Any `{worktree}` token in one check argument is replaced with the verification
 worktree path. Expansion never creates shell text.
+
+## Advisory sections in `action.md`
+
+Two body sections are rendered only when they have content, so a step with
+neither is byte-identical to what it produced before they existed.
+
+- `## Repo context` lists the configured `contextPaths`.
+- `## Changed paths for the bound pins` lists, for each bound input that pins a
+  product commit, the paths that commit changed against the issue baseline.
+  Coordination resolves each pin once per tick, so N agents comparing the same
+  pins cost N diffs rather than N×N. The list is capped per pin and marked when
+  truncated.
+
+Both are informational. `approvedPaths` remains the only authority over what an
+implementation may change, and neither section is read back by any verifier.
+
+Paths in both sections are JSON-encoded strings, one per line. Git permits
+backticks and newlines in pathnames, and an advisory hint must never be able to
+abort action preparation or forge a heading — so the encoding is total over
+valid pathnames rather than rejecting the awkward ones.
 
 Every new run always hashes the exact config bytes and a canonical snapshot of
 GitHub issue N from `config.origin`; optional `digestPaths` are added after
@@ -102,12 +130,15 @@ Uninstall performs the same workspace-scoped cleanup even when there are no
 ## Starting and running
 
 Confirm the installed driver with `coord --version` (or `-V`). Pre-1.0 releases
-use `0.0.N` and bump the patch on every shipped change so a merge is visible
-after reinstall/refresh. That bump is mechanical: `pnpm check:fast` (precommit)
-fails on a non-`main` branch whose `package.json` version is not strictly greater
-than `origin/main`, and the `version-bump` GitHub Action enforces the same on
-every PR into `main`. Concurrent PRs must claim distinct next versions (e.g.
-`0.0.3` then `0.0.4`).
+use `0.0.N` and bump the patch before each merge so a merge is visible after
+reinstall/refresh. That bump is required on the **PR into `main`** and nowhere
+else: the `version-bump` GitHub Action runs `pnpm check:version-bump` on every
+pull request into `main` and blocks it unless `package.json` is strictly greater
+than the PR base. `pnpm check:fast` (precommit) and `pnpm check` do not check it,
+so issue branches may sit at the same version as `origin/main` for as long as the
+work takes. Make the bump a deliberate commit on the PR branch once the base is
+current; concurrent PRs must claim distinct next versions (e.g. `0.0.3` then
+`0.0.4`).
 
 After `coord onboard`, the daily command is:
 
@@ -250,12 +281,26 @@ Use `coord N -v` for tick-level nudge and roster logs.
 
 ### Agent-facing language boundary
 
-Internal step ids (`R1.join`, …), gate ids, evidence ids, journal delivery
-events (`nudged`), and operator docs may keep coordinator vocabulary. Generated
-`action.md` bodies, injected prompt text from `renderNudgeText`, and the
-installed `AGENTS.md` protocol overlay must not. The single forbidden-term list
-and evidence-subject map live in `src/agentLanguage.ts`
-(`findAgentLanguageViolations`, `agentFacingSubject`).
+Internal step ids (`R1.join`), gate ids (`gate-1-join`), evidence ids
+(`join-published`), and delivery vocabulary stay in cursors state, the journal,
+analytics, CLI output, and this document. They are the operator's and the
+owner's view of the workflow, and nothing here needs sanitizing.
+
+Three surfaces do reach an agent and must stay free of that vocabulary: the
+rendered `action.md` body, the typed injection text, and the protocol overlay
+installed into a clone. `src/agentLanguage.ts` holds the single banned-term list
+plus `agentFacingSubject`, which names the artifact behind an evidence id so a
+pin-lineage rejection can be reported without the id itself — those diagnostics
+are re-rendered to the agent under `Correct these outstanding items:`.
+`test/agentLanguage.test.ts` scans every entry in `STEP_DEFINITIONS`, with and
+without bound inputs and with a non-empty correction block, so a new step cannot
+be added without being covered.
+
+The checker is a test-time invariant, not a runtime guard: `outstanding` strings
+carry git output and branch names from outside the process, so a false positive
+must fail a test rather than abort a run loop. Do not "fix" the operator
+documentation or analytics tables to satisfy it; they are deliberately out of
+scope.
 
 ### CLI lifecycle state
 

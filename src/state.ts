@@ -168,6 +168,14 @@ export const coordinatorConfigSchema = z
           .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "digest path must be confined")
       )
       .default([]),
+    contextPaths: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "context path must be confined")
+      )
+      .default([]),
     checks: z.array(checkCommandSchema).min(1),
     pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000),
     toolchain: z.string().min(1).optional(),
@@ -184,6 +192,9 @@ export const coordinatorConfigSchema = z
     }
     if (new Set(config.digestPaths).size !== config.digestPaths.length) {
       context.addIssue({ code: "custom", message: "digest paths must be unique", path: ["digestPaths"] });
+    }
+    if (new Set(config.contextPaths).size !== config.contextPaths.length) {
+      context.addIssue({ code: "custom", message: "context paths must be unique", path: ["contextPaths"] });
     }
   });
 
@@ -212,6 +223,14 @@ export const workspaceDeclarationSchema = z
           .string()
           .min(1)
           .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "digest path must be confined")
+      )
+      .optional(),
+    contextPaths: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "context path must be confined")
       )
       .optional(),
     pollIntervalMs: z.number().int().min(100).max(60_000).optional()
@@ -249,6 +268,12 @@ export const startStateSchema = z
     agents: z.array(agentConfigSchema).min(1),
     checks: z.array(checkCommandSchema).min(1),
     pollIntervalMs: z.number().int().min(100).max(60_000),
+    /**
+     * Advisory reading named in every action. Defaulted rather than required so
+     * a start.json written before this field existed still parses under the
+     * strict schema; see `StartStateInput` for the construction boundary.
+     */
+    contextPaths: z.array(z.string().min(1)).default([]),
     createdAt: timestampSchema
   })
   .strict();
@@ -374,7 +399,10 @@ export const journalEventSchema = z
       "action-prepared",
       "nudged",
       "agent-lifecycle",
+      "agent-usage",
       "agent-observability-degraded",
+      "agent-observability-recovered",
+      "nudge-deferred",
       "intent-seen",
       "verify-result",
       "gate-advanced",
@@ -411,7 +439,16 @@ export type AcceptedSubmission = z.infer<typeof acceptedSubmissionSchema>;
 export type CursorsState = z.infer<typeof cursorsStateSchema>;
 export type JournalEvent = z.infer<typeof journalEventSchema>;
 
-export type StartStateInput = Omit<StartState, "formatVersion" | "createdAt"> & { createdAt?: string };
+/**
+ * A Zod `.default()` is only optional on the *input* side; `z.infer` reports the
+ * parsed output, where the field is present. Omitting `contextPaths` here and
+ * re-adding it as optional keeps every existing typed initializer compiling —
+ * a defaulted field must not become a required constructor argument.
+ */
+export type StartStateInput = Omit<StartState, "formatVersion" | "createdAt" | "contextPaths"> & {
+  createdAt?: string;
+  contextPaths?: readonly string[];
+};
 
 const parseFile = <T>(path: string, schema: z.ZodType<T>): T => {
   let value: unknown;

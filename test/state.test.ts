@@ -15,6 +15,7 @@ import {
   setPaused,
   StateConflictError,
   startStateSchema,
+  coordinatorConfigSchema,
   writeCursorsState
 } from "../src/state.js";
 
@@ -96,5 +97,52 @@ describe("operational state", () => {
     expect(staleWrite.applied).toBe(false);
     expect(staleWrite.state.paused).toBe(true);
     expect(new StateConflictError("conflict").name).toBe("StateConflictError");
+  });
+});
+
+const configFixture = (contextPaths?: unknown) => ({
+  project: "coordination",
+  origin: "https://github.com/example/coordination.git",
+  agents: [{ id: "claude", root: "../coordination-claude", launcher: "start-claude.sh" }],
+  branch: "issue-{issue}/{agent}",
+  checks: [{ name: "check", argv: ["pnpm", "check"] }],
+  ...(contextPaths === undefined ? {} : { contextPaths })
+});
+
+describe("context paths", () => {
+  it("defaults to an empty list and accepts confined product-relative files", () => {
+    expect(coordinatorConfigSchema.parse(configFixture()).contextPaths).toEqual([]);
+    expect(coordinatorConfigSchema.parse(configFixture(["docs/repo-map.md"])).contextPaths).toEqual([
+      "docs/repo-map.md"
+    ]);
+  });
+
+  it("refuses escapes and duplicates the way digest paths are refused", () => {
+    expect(coordinatorConfigSchema.safeParse(configFixture(["/etc/passwd"])).success).toBe(false);
+    expect(coordinatorConfigSchema.safeParse(configFixture(["../secrets.md"])).success).toBe(false);
+    expect(coordinatorConfigSchema.safeParse(configFixture(["a/../../b.md"])).success).toBe(false);
+    expect(coordinatorConfigSchema.safeParse(configFixture(["docs/x.md", "docs/x.md"])).success).toBe(false);
+  });
+
+  /**
+   * An issue started before this field existed must keep running after the
+   * upgrade: start.json is strict, so a missing key has to parse, not fail.
+   */
+  it("parses a start state written before the field existed", () => {
+    const { start } = initialize();
+    const legacy: Record<string, unknown> = { ...start };
+    delete legacy.contextPaths;
+    const parsed = startStateSchema.safeParse(legacy);
+    expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
+    expect(parsed.success && parsed.data.contextPaths).toEqual([]);
+  });
+
+  /**
+   * The defaulted field must not become a required constructor argument: every
+   * existing `initializeOperationalState` call site omits it.
+   */
+  it("keeps the field optional at the typed initializer boundary", () => {
+    const { start } = initialize();
+    expect(start.contextPaths).toEqual([]);
   });
 });

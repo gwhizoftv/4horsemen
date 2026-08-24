@@ -1,10 +1,12 @@
 import type { JournalEvent, StartState } from "./state.js";
+import { readCursorHookUsage } from "./cursorHookUsage.js";
 import {
   readTranscript,
   type AnalyticsCoverage,
   type TokenUsage,
   type TranscriptReadResult,
-  type TranscriptVendor
+  type TranscriptVendor,
+  type UsageVendor
 } from "./transcriptRead.js";
 
 export type MetricState = "complete" | "in-progress" | "invalid";
@@ -39,7 +41,7 @@ export type PhaseUsageAnalytics = {
 
 export type AgentUsageAnalytics = {
   agent: string;
-  vendor: TranscriptVendor | null;
+  vendor: UsageVendor | null;
   tokenCoverage: AnalyticsCoverage;
   tokenReason: string | null;
   toolCoverage: AnalyticsCoverage;
@@ -268,7 +270,8 @@ const deriveWaits = (roster: readonly string[], journal: readonly JournalEvent[]
     .sort((left, right) => left.agent.localeCompare(right.agent));
 };
 
-const vendorForAgent = (agent: string, journal: readonly JournalEvent[]): TranscriptVendor | null => {
+const usageVendorForAgent = (agent: string, journal: readonly JournalEvent[]): UsageVendor | null => {
+  if (agent === "cursor") return "cursor";
   for (const event of [...journal].reverse()) {
     if (event.type !== "agent-lifecycle" || event.agent !== agent) continue;
     const vendor = string(object(event.details)?.vendor);
@@ -279,7 +282,7 @@ const vendorForAgent = (agent: string, journal: readonly JournalEvent[]): Transc
 
 const unavailableUsage = (
   agent: string,
-  vendor: TranscriptVendor | null,
+  vendor: UsageVendor | null,
   phases: readonly PhaseAnalytics[],
   reason: string
 ): AgentUsageAnalytics => ({
@@ -335,7 +338,7 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
   if (hasSessionIdentity) {
     const agents: AgentUsageAnalytics[] = [];
     for (const agent of roster) {
-      const vendor = vendorForAgent(agent, input.journal);
+      const vendor = usageVendorForAgent(agent, input.journal);
       if (vendor === null) {
         agents.push(unavailableUsage(agent, vendor, phases, "no supported local usage store for this agent"));
         continue;
@@ -354,7 +357,9 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
       const boundActions = new Set(agentTurns.map((turn) => turn.actionId));
       const missingIdentity = [...attemptedActions].filter((actionId) => !boundActions.has(actionId));
       const results = sessions.map((sessionId) =>
-        readTranscript({ vendor, sessionId, root: input.transcriptRoots?.[vendor] ?? null })
+        vendor === "cursor"
+          ? readCursorHookUsage(input.journal, sessionId)
+          : readTranscript({ vendor, sessionId, root: input.transcriptRoots?.[vendor] ?? null })
       );
       let tokenCoverage = combineTranscriptCoverage(results, "tokenCoverage");
       let toolCoverage = combineTranscriptCoverage(results, "toolCoverage");

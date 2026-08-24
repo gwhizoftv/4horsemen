@@ -384,7 +384,10 @@ At every new start, coordination reads the requested issue with `gh issue view
 --repo <owner/repo>` derived from the configured origin. The canonical
 `github-issue.json` snapshot is mandatory digest material together with the
 exact config bytes. `digestPaths` is only a list of optional additional,
-config-relative inputs and may be empty. The owner does **not** write a plan
+config-relative inputs and may be empty. `contextPaths` is deliberately excluded
+from digest material: those files are advisory reading named in every action,
+not authority over a run, and folding them in would make correcting a stale
+context note invalidate every artifact already published for the issue. The owner does **not** write a plan
 before start. After launch, each agent creates `.plans/issue-<n>/plan.md` on its
 own issue branch as R2 evidence. Coordination checks that clone out on
 `issue-N/<agent>` at the issue baseline before JOIN (lifting skip-worktree on

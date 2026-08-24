@@ -88,7 +88,12 @@ const nestedEvents: Record<"codex" | "claude", readonly string[]> = {
   claude: ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"]
 };
 
-const cursorEvents = ["sessionStart", "beforeSubmitPrompt", "stop", "sessionEnd"] as const;
+/** Lifecycle hooks that drive nudge delivery and idle detection. */
+export const cursorLifecycleEvents = ["sessionStart", "beforeSubmitPrompt", "stop", "sessionEnd"] as const;
+/** Analytics hooks: tool counts and optional per-turn token fields on stdin. */
+export const cursorUsageEvents = ["postToolUse", "postToolUseFailure", "afterAgentResponse"] as const;
+export const cursorManagedEvents = [...cursorLifecycleEvents, ...cursorUsageEvents] as const;
+const cursorEvents = cursorManagedEvents;
 const antigravityEvents = ["PreInvocation", "PostInvocation", "Stop"] as const;
 
 const plannedDocument = (input: {

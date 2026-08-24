@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readAction, writeAction } from "../src/action.js";
-import { observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
+import { decideLifecycleNudge, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { computeInputSetHash } from "../src/evidence.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
@@ -14,7 +14,9 @@ import {
   deterministicWinner,
   githubRepositoryFromOrigin,
   NUDGE_RETRY_MS,
-  resolveApprovedPaths
+  resolveApprovedPaths,
+  resolveChangeScope,
+  CHANGE_SCOPE_PATH_LIMIT
 } from "../src/runLoop.js";
 import {
   cursorsStateSchema,
@@ -430,6 +432,166 @@ describe("effectful run loop", () => {
     expect(literalNudges).toBeGreaterThan(firstNudges);
   });
 
+
+  it("journals a reason code for every deferred delivery and keeps repeats off normal output", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    const messages: string[] = [];
+    const foreground = "bash";
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: `0\t${foreground}\t0\t0\n`, stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: "some output", stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) });
+    await loop.runTick();
+    const first = readJournal(paths).filter((event) => event.type === "nudge-deferred" && event.agent === "codex");
+    expect(first).toHaveLength(1);
+    expect(first[0]?.details).toMatchObject({
+      layer: "scrape",
+      code: "foreground-mismatch",
+      detail: "bash",
+      // The action is out and unanswered, so the workflow is blocked on it.
+      gateWaiting: true
+    });
+    expect(first[0]?.details.human).toBe("the foreground process is not this agent's harness");
+    const printedOnce = messages.filter((message) => message.includes("foreground-mismatch"));
+    expect(printedOnce).toHaveLength(1);
+    // A second tick with an unchanged reason journals again but does not repeat on stdout.
+    await loop.runTick();
+    expect(
+      readJournal(paths).filter((event) => event.type === "nudge-deferred" && event.agent === "codex").length
+    ).toBeGreaterThan(1);
+    expect(messages.filter((message) => message.includes("foreground-mismatch"))).toHaveLength(1);
+  });
+
+  it("records hooks and pane on one event when they disagree", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    const messages: string[] = [];
+    let paneReady = true;
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") {
+        return { exitCode: 0, stdout: `0\t${paneReady ? "codex" : "bash"}\t0\t0\n`, stderr: "" };
+      }
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: "❯ ", stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) });
+    await loop.runTick();
+    const action = readAgentLifecycle(paths).agents.codex?.action;
+    expect(action).not.toBeNull();
+    // Hooks say the agent finished and is idle; the pane says it cannot be typed into.
+    observeAgentLifecycle(paths, "codex", {
+      kind: "prompt-submitted",
+      eventName: "UserPromptSubmit",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      actionId: action!.actionId,
+      actionDigest: action!.actionDigest
+    });
+    observeAgentLifecycle(paths, "codex", {
+      kind: "stopped",
+      eventName: "Stop",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      backgroundActive: false
+    });
+    expect(readAgentLifecycle(paths).agents.codex).toMatchObject({ execution: "idle", health: "healthy" });
+    paneReady = false;
+    await loop.runTick();
+    const split = readJournal(paths).filter(
+      (event) => event.type === "nudge-deferred" && event.details.splitBrain === true
+    );
+    expect(split).toHaveLength(1);
+    expect(split[0]?.details).toMatchObject({
+      layer: "scrape",
+      code: "foreground-mismatch",
+      hooks: { execution: "idle", health: "healthy" }
+    });
+    expect(messages.some((message) => message.includes("looks idle to its lifecycle hooks"))).toBe(true);
+  });
+
+  it("blames correlation lag rather than the CLI when lifecycle hooks are live", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
+    let paneText = "";
+    const messages: string[] = [];
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: paneText, stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, {
+      tmux,
+      now: () => new Date(nowMs).toISOString(),
+      nudgeRetryMs: NUDGE_RETRY_MS,
+      log: (message) => messages.push(message)
+    });
+    // The session announced itself, so the bridge is demonstrably up.
+    observeAgentLifecycle(
+      paths,
+      "codex",
+      { kind: "session-start", eventName: "SessionStart", sessionId: "session-1" },
+      new Date(nowMs).toISOString()
+    );
+    nowMs += 1_000;
+    await loop.runTick();
+    const actionId = readCursorsState(paths).agents.codex?.actionId;
+    paneText = actionId as string;
+    nowMs += NUDGE_RETRY_MS + 1;
+    await loop.runTick();
+    expect(readAgentLifecycle(paths).agents.codex).toMatchObject({
+      health: "degraded",
+      degradedCause: "correlation-lagged"
+    });
+    const text = messages.join("\n");
+    expect(text).toContain("no lifecycle signal correlated with the last delivery");
+    expect(text).not.toContain("Restart");
+    const degraded = readJournal(paths).find((event) => event.type === "agent-observability-degraded");
+    expect(degraded?.details).toMatchObject({ cause: "correlation-lagged" });
+  });
+
   it("uses 45 seconds only as a health watchdog and nudges once after a positive idle transition", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);
@@ -550,6 +712,149 @@ describe("effectful run loop", () => {
     expect(readAgentLifecycle(paths).agents.codex?.action?.delivery).toBe("injected");
     await loop.runTick();
     expect(literalNudges).toBe(1);
+  });
+
+  it("retries an idle-exhausted action only when the pane proves the action is absent", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
+    let literalNudges = 0;
+    let paneText = "";
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: paneText, stderr: "" };
+      if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, {
+      tmux,
+      now: () => new Date(nowMs).toISOString(),
+      nudgeRetryMs: NUDGE_RETRY_MS
+    });
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+    const action = readAgentLifecycle(paths).agents.codex?.action;
+    const actionId = action!.actionId;
+    paneText = `❯ ${actionId}`;
+
+    // A real turn ran and stopped: that positive idle transition authorizes the
+    // one ordinary resend, which spends it.
+    observeAgentLifecycle(
+      paths,
+      "codex",
+      {
+        kind: "prompt-submitted",
+        eventName: "UserPromptSubmit",
+        sessionId: "session-1",
+        turnId: "turn-1",
+        actionId,
+        actionDigest: action!.actionDigest
+      },
+      new Date(nowMs + 1).toISOString()
+    );
+    observeAgentLifecycle(
+      paths,
+      "codex",
+      {
+        kind: "stopped",
+        eventName: "Stop",
+        sessionId: "session-1",
+        turnId: "turn-1",
+        backgroundActive: false
+      },
+      new Date(nowMs + 2).toISOString()
+    );
+    // The resend happens after that acceptance, so it is a fresh delivery
+    // awaiting acceptance rather than an already-accepted one.
+    nowMs += 10;
+    await loop.runTick();
+    expect(literalNudges).toBe(2);
+    expect(readAgentLifecycle(paths).agents.codex?.action).toMatchObject({
+      delivery: "injected",
+      turnId: null
+    });
+    const exhausted = readAgentLifecycle(paths).agents.codex!;
+    expect(decideLifecycleNudge(exhausted, actionId, action!.actionDigest).code).toBe(
+      "idle-transition-already-used"
+    );
+
+    // Elapsed time alone is not authority: the action is still on screen, so
+    // the send was not lost and nothing may resend.
+    nowMs += NUDGE_RETRY_MS + 1;
+    await loop.runTick();
+    expect(literalNudges).toBe(2);
+
+    // A ready prompt with no trace of the action is the positive proof.
+    paneText = "❯ ready";
+    await loop.runTick();
+    expect(literalNudges).toBe(3);
+
+    // The opportunity is consumed; a further tick sends nothing more.
+    await loop.runTick();
+    expect(literalNudges).toBe(3);
+  });
+
+  it("retracts a degraded warning once the agent's work reaches the workflow", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
+    const messages: string[] = [];
+    let paneText = "❯ ";
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: paneText, stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, {
+      tmux,
+      now: () => new Date(nowMs).toISOString(),
+      nudgeRetryMs: NUDGE_RETRY_MS,
+      log: (message) => messages.push(message)
+    });
+    await loop.runTick();
+    const codex = readCursorsState(paths).agents.codex;
+    const actionId = codex?.actionId as string;
+    // The action is on screen, so the delivery was not lost and the watchdog
+    // alert stands until workflow truth disproves it.
+    paneText = `❯ ${actionId}`;
+    nowMs += NUDGE_RETRY_MS + 1;
+    await loop.runTick();
+    expect(readAgentLifecycle(paths).agents.codex?.health).toBe("degraded");
+
+    // Workflow truth arrives late: the agent had the action all along.
+    const { markActionWorkflowComplete } = await import("../src/agentLifecycle.js");
+    const cleared = markActionWorkflowComplete(paths, "codex", actionId, new Date(nowMs).toISOString());
+    expect(cleared.clearedDegraded).toBe(true);
+    expect(readAgentLifecycle(paths).agents.codex).toMatchObject({
+      health: "healthy",
+      degradedCause: null
+    });
   });
 
   it("retries once when a later ready prompt proves an injected action is absent", async () => {
@@ -1071,5 +1376,152 @@ describe("effectful run loop", () => {
     expect(pushes).toBe(0);
     expect(opens).toBe(0);
     expect(readCursorsState(paths).publication.status).toBe("not-required");
+  });
+});
+
+describe("coordinator-resolved change scope", () => {
+  const pinnedInputs = (pins: readonly [string, string][]) =>
+    pins.map(([agent, commitSha]) => ({
+      agent,
+      commitSha,
+      path: `.signals/issue-1/implementation-ready-${agent}.json`,
+      kind: "implementation"
+    }));
+
+  const countingMirror = (paths: readonly string[]) => {
+    const calls: string[] = [];
+    return {
+      calls,
+      changedPaths: async (base: string, tip: string) => {
+        calls.push(`${base}..${tip}`);
+        return [...paths];
+      }
+    };
+  };
+
+  it("resolves one entry per pinned input", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const mirror = countingMirror(["src/b.ts", "src/a.ts"]);
+    const scope = await resolveChangeScope(
+      mirror,
+      start,
+      pinnedInputs([
+        ["claude", "1".repeat(40)],
+        ["codex", "2".repeat(40)]
+      ])
+    );
+    expect(scope.map((entry) => entry.agent)).toEqual(["claude", "codex"]);
+    expect(scope[0]?.paths).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(scope[0]?.truncated).toBe(false);
+  });
+
+  /**
+   * The whole point of resolving centrally: four agents comparing the same pins
+   * must cost one diff per pin, not one per agent per pin.
+   */
+  it("reads each distinct pin once even when several inputs share it", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const mirror = countingMirror(["src/a.ts"]);
+    const shared = "3".repeat(40);
+    await resolveChangeScope(
+      mirror,
+      start,
+      pinnedInputs([
+        ["claude", shared],
+        ["codex", shared],
+        ["cursor", "4".repeat(40)]
+      ])
+    );
+    expect(mirror.calls).toEqual([`${start.baselineSha}..${shared}`, `${start.baselineSha}..${"4".repeat(40)}`]);
+  });
+
+  it("does no git work for a step with no pinned inputs", async () => {
+    const { paths } = fixture();
+    const mirror = countingMirror(["src/a.ts"]);
+    const scope = await resolveChangeScope(mirror, readStartState(paths), [
+      { agent: "claude", commitSha: "5".repeat(40), path: ".plans/issue-1/plan.md", kind: "plan" }
+    ]);
+    expect(scope).toEqual([]);
+    expect(mirror.calls).toEqual([]);
+  });
+
+  it("caps a large diff and marks it truncated", async () => {
+    const { paths } = fixture();
+    const many = Array.from({ length: CHANGE_SCOPE_PATH_LIMIT + 5 }, (_, index) =>
+      `src/f${String(index).padStart(4, "0")}.ts`
+    );
+    const scope = await resolveChangeScope(countingMirror(many), readStartState(paths), pinnedInputs([["claude", "6".repeat(40)]]));
+    expect(scope[0]?.paths).toHaveLength(CHANGE_SCOPE_PATH_LIMIT);
+    expect(scope[0]?.truncated).toBe(true);
+  });
+
+  /**
+   * Advisory scope must never be able to stall a step: an unreadable pin is
+   * omitted, and the action is still prepared.
+   */
+  it("omits a pin whose diff cannot be read rather than failing preparation", async () => {
+    const { paths } = fixture();
+    const failing = {
+      changedPaths: async () => {
+        throw new Error("unknown revision");
+      }
+    };
+    const scope = await resolveChangeScope(failing, readStartState(paths), pinnedInputs([["claude", "7".repeat(40)]]));
+    expect(scope).toEqual([]);
+  });
+
+  /**
+   * The memoisation guarantee has to hold on the failure path too. Caching only
+   * successes meant four agents bound to one unreadable pin produced four
+   * failing git invocations per tick — the exact per-agent repetition this
+   * feature exists to remove, surviving in the branch no test covered.
+   */
+  it("attempts an unreadable pin once per tick, not once per input", async () => {
+    const { paths } = fixture();
+    let attempts = 0;
+    const failing = {
+      changedPaths: async () => {
+        attempts += 1;
+        throw new Error("unknown revision");
+      }
+    };
+    const broken = "8".repeat(40);
+    const scope = await resolveChangeScope(
+      failing,
+      readStartState(paths),
+      pinnedInputs([
+        ["claude", broken],
+        ["codex", broken],
+        ["cursor", broken]
+      ])
+    );
+    expect(scope).toEqual([]);
+    expect(attempts).toBe(1);
+  });
+
+  // The branch is prepared before any agent starts, but an agent that compacts
+  // or restarts only has the action in front of it. It used to be told once, on
+  // the first action of the run.
+  it("tells every action that the branch is already checked out", () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    for (const stepId of ["R1.join", "R2.plan", "R4.implement", "R7.finalize"] as const) {
+      const order = buildOrder(paths, start, cursors, "claude", stepId, null);
+      expect(order.task, stepId).toContain("already checked this clone out");
+      expect(order.task, stepId).toContain("Do not create that branch");
+      // Said once, not twice, on the step that used to carry it inline.
+      expect(order.task.split("already checked this clone out").length - 1, stepId).toBe(1);
+    }
+  });
+
+  it("carries configured context paths from start state into every order", () => {
+    const { paths } = fixture();
+    const start = { ...readStartState(paths), contextPaths: ["docs/repo-map.md"] };
+    const order = buildOrder(paths, start, readCursorsState(paths), "claude", "R2.plan", null);
+    expect(order.contextPaths).toEqual(["docs/repo-map.md"]);
+    expect(order.changeScope).toEqual([]);
   });
 });

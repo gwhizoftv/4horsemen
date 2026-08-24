@@ -37,6 +37,8 @@ export const agentLifecycleEntrySchema = z
     backgroundActive: z.boolean().nullable(),
     idleEpoch: z.number().int().nonnegative(),
     health: z.enum(["unknown", "healthy", "degraded"]),
+    /** Why health degraded, so the operator message names what was observed. */
+    degradedCause: z.enum(["hooks-never-seen", "correlation-lagged"]).nullable().default(null),
     lastEvent: z.string().min(1).nullable(),
     lastEventAt: timestampSchema.nullable(),
     updatedAt: timestampSchema
@@ -81,6 +83,7 @@ const emptyEntry = (now: string): AgentLifecycleEntry => ({
   backgroundActive: null,
   idleEpoch: 0,
   health: "unknown",
+  degradedCause: null,
   lastEvent: null,
   lastEventAt: null,
   updatedAt: now
@@ -229,6 +232,7 @@ export const markActionInjected = (
       {
         ...current,
         health: acceptedDuringAttempt ? "healthy" : "unknown",
+        degradedCause: null,
         action: {
           ...action,
           delivery: acceptedDuringAttempt ? "accepted" : "injected",
@@ -312,22 +316,38 @@ export const markActionInjectionDeferred = (
     );
   });
 
+export type WorkflowCompleteResult = { state: AgentLifecycleState; clearedDegraded: boolean };
+
+/**
+ * Workflow truth outranks observability. The agent published and pushed, so a
+ * watchdog alert raised against this action is disproven: clear it, and record
+ * that it was cleared so the operator sees the retraction.
+ */
 export const markActionWorkflowComplete = (
   paths: IssueRuntimePaths,
   agent: string,
   actionId: string,
   now = new Date().toISOString()
-): AgentLifecycleState =>
-  mutateAgentLifecycle(paths, (state) => {
-    const current = state.agents[agent];
-    if (current?.action?.actionId !== actionId) return state;
+): WorkflowCompleteResult => {
+  let clearedDegraded = false;
+  const state = mutateAgentLifecycle(paths, (current0) => {
+    const current = current0.agents[agent];
+    if (current?.action?.actionId !== actionId) return current0;
+    clearedDegraded = current.health === "degraded";
     return replaceEntry(
-      state,
+      current0,
       agent,
-      { ...current, action: { ...current.action, workflowCompleteAt: now } },
+      {
+        ...current,
+        health: clearedDegraded ? "healthy" : current.health,
+        degradedCause: clearedDegraded ? null : current.degradedCause,
+        action: { ...current.action, workflowCompleteAt: now }
+      },
       now
     );
   });
+  return { state, clearedDegraded };
+};
 
 const positiveIdle = (entry: AgentLifecycleEntry, nextExecution: AgentLifecycleEntry["execution"]): number =>
   (nextExecution === "idle" || nextExecution === "failed") &&
@@ -462,6 +482,7 @@ export const applyLifecycleObservation = (
     backgroundActive,
     idleEpoch,
     health: "healthy",
+    degradedCause: null,
     lastEvent: observation.eventName,
     lastEventAt: now,
     updatedAt: now
@@ -505,7 +526,20 @@ export const observeAgentLifecycle = (
   now = new Date().toISOString()
 ): AgentLifecycleState => observeAgentLifecycleWithResult(paths, agent, observation, now).state;
 
-export type NudgeDecision = { kind: "send"; reason: "eligible-idle" } | { kind: "wait"; reason: string };
+/** Every reason delivery can be held back, as a closed union. */
+export type NudgeWaitCode =
+  | "unmatched-action"
+  | "workflow-complete"
+  | "pending-input"
+  | "background-active"
+  | "unknown"
+  | "queued"
+  | "working"
+  | "idle-transition-already-used";
+
+export type NudgeDecision =
+  | { kind: "send"; reason: "eligible-idle"; code: "eligible-idle" }
+  | { kind: "wait"; reason: string; code: NudgeWaitCode };
 
 export const decideLifecycleNudge = (
   entry: AgentLifecycleEntry,
@@ -514,39 +548,64 @@ export const decideLifecycleNudge = (
 ): NudgeDecision => {
   const action = entry.action;
   if (action === null || action.actionId !== actionId || action.actionDigest !== actionDigest) {
-    return { kind: "wait", reason: "unmatched-action" };
+    return { kind: "wait", reason: "unmatched-action", code: "unmatched-action" };
   }
-  if (action.workflowCompleteAt !== null) return { kind: "wait", reason: "workflow-complete" };
+  if (action.workflowCompleteAt !== null) {
+    return { kind: "wait", reason: "workflow-complete", code: "workflow-complete" };
+  }
   if (entry.pendingInputCount !== null && entry.pendingInputCount > 0) {
-    return { kind: "wait", reason: "pending-input" };
+    return { kind: "wait", reason: "pending-input", code: "pending-input" };
   }
-  if (entry.backgroundActive === true) return { kind: "wait", reason: "background-active" };
+  if (entry.backgroundActive === true) {
+    return { kind: "wait", reason: "background-active", code: "background-active" };
+  }
   if (entry.execution !== "idle" && entry.execution !== "failed") {
-    return { kind: "wait", reason: entry.execution };
+    // `failed` is an eligible idle state below; the rest are wait codes.
+    return { kind: "wait", reason: entry.execution, code: entry.execution };
   }
   if (action.lastNudgedIdleEpoch === entry.idleEpoch) {
-    return { kind: "wait", reason: "idle-transition-already-used" };
+    return { kind: "wait", reason: "idle-transition-already-used", code: "idle-transition-already-used" };
   }
-  return { kind: "send", reason: "eligible-idle" };
+  return { kind: "send", reason: "eligible-idle", code: "eligible-idle" };
 };
 
+export type DegradedCause = "hooks-never-seen" | "correlation-lagged";
+
+export type ObservabilityDegradeResult = {
+  changed: boolean;
+  state: AgentLifecycleState;
+  cause: DegradedCause | null;
+};
+
+/**
+ * The watchdog proves one thing only: no lifecycle event correlated with the
+ * last delivery inside the window. That is `correlation-lagged`, and it is not
+ * evidence that the hook bridge is down — an agent finishing a previous turn
+ * produces it routinely. Only an agent that never announced a session at all is
+ * `hooks-never-seen`, which is the sole case where restarting the CLI is the
+ * right remedy. An action that already reached workflow completion is never
+ * degraded: delivery is proven, so there is nothing to warn about.
+ */
 export const markObservabilityDegraded = (
   paths: IssueRuntimePaths,
   agent: string,
   now = new Date().toISOString(),
   watchdogMs = AGENT_OBSERVABILITY_WATCHDOG_MS
-): { changed: boolean; state: AgentLifecycleState } => {
+): ObservabilityDegradeResult => {
   let changed = false;
+  let cause: DegradedCause | null = null;
   const state = mutateAgentLifecycle(paths, (current) => {
     const entry = current.agents[agent];
     const action = entry?.action;
     if (entry === undefined || action === null || entry.health === "degraded") return current;
+    if (action.workflowCompleteAt !== null) return current;
     const expectedAfter = action.injectedAt ?? action.orderedAt;
     if (entry.lastEventAt !== null && Date.parse(entry.lastEventAt) >= Date.parse(expectedAfter)) return current;
     const elapsed = Date.parse(now) - Date.parse(expectedAfter);
     if (!Number.isFinite(elapsed) || elapsed < watchdogMs) return current;
     changed = true;
-    return replaceEntry(current, agent, { ...entry, health: "degraded" }, now);
+    cause = entry.lastEvent === null && entry.sessionId === null ? "hooks-never-seen" : "correlation-lagged";
+    return replaceEntry(current, agent, { ...entry, health: "degraded", degradedCause: cause }, now);
   });
-  return { changed, state };
+  return { changed, state, cause };
 };

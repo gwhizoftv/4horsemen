@@ -1,5 +1,5 @@
-import { sha256 } from "./hash.js";
 import { agentFacingSubject } from "./agentLanguage.js";
+import { sha256 } from "./hash.js";
 import type { FetchResult } from "./mirror.js";
 import {
   comparisonBallotArtifactSchema,
@@ -7,8 +7,8 @@ import {
   consensusDeclarationArtifactSchema,
   finalizationArtifactSchema,
   implementationReadyArtifactSchema,
-  parseJsonWithSchema,
   participationReadyArtifactSchema,
+  parseJsonWithSchema,
   planBallotArtifactSchema,
   reviserAuthorizationArtifactSchema,
   revisionReadyArtifactSchema,
@@ -280,12 +280,8 @@ export const evaluateEvidence = async (
     const parsed = parseJsonWithSchema(blob, participationReadyArtifactSchema);
     if (!parsed.ok) return rejected(order, submissionSha, [`invalid participation-readiness artifact: ${parsed.error}`]);
     const errors = commonErrors(parsed.value, order);
-    if (parsed.value.baselineSha !== order.baselineSha) {
-      errors.push("participation-readiness baselineSha does not match the issue baseline");
-    }
-    if (parsed.value.automationDigest !== order.automationDigest) {
-      errors.push("participation-readiness automationDigest does not match");
-    }
+    if (parsed.value.baselineSha !== order.baselineSha) errors.push("participation-readiness baselineSha does not match the issue baseline");
+    if (parsed.value.automationDigest !== order.automationDigest) errors.push("participation-readiness automationDigest does not match");
     return errors.length === 0 ? satisfied(order, submissionSha) : rejected(order, submissionSha, errors);
   }
 

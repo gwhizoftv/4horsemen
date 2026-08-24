@@ -12,15 +12,32 @@ The required response format for the current step also appears in that step's
 listed there. The coordinator accepts only the published artifact. If this file
 and `action.md` disagree on format, `action.md` wins.
 
+Coordination checks this clone out on `issue-<n>/<agent>` and re-sets the
+`skip-worktree` bit on `AGENTS.md` before your CLI starts. The branch already
+exists and is already current: do not create it, do not switch to it, and do not
+check out or pull the shared branch first. Every automated action names the
+branch to push to, and that is the branch you are already on.
+
 Do not clear `skip-worktree` on `AGENTS.md`, strip this protocol block, or
 replace the file to “fix” git status. Coordination sets that bit so the
 clone-local protocol section stays hidden. If `AGENTS.md` looks wrong, escalate;
 do not change index flags.
 
-After you write `complete` for an automated action, do not stop. Re-read your
-coordinator `action.md`.
-If `actionId` in the front matter has changed, execute the new instructions
-immediately; do not wait for another coordinator message.
+After you write `complete`, do not stop. Before waiting for more input, re-read
+your `action.md`. If `actionId` in the front matter has changed, execute the new
+instructions immediately; do not wait for another coordinator message.
+
+If that re-read shows the same `actionId` — there is no new work yet — end your
+reply with this exact line, on its own, with nothing after it:
+
+```
+COORD-IDLE: waiting for the next coordinator action file
+```
+
+Coordination reads your terminal to decide whether it is safe to type into it.
+That line is how it can tell an idle window from one that is still rendering.
+Print it only when you are genuinely finished and waiting; never print it while
+work is still in progress.
 
 A **plan** (`.plans/issue-<n>/plan.md`) must include every heading below,
 each with a non-empty body:

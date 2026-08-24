@@ -9,7 +9,9 @@ git obligations. This file describes the rules that apply to **agent clones**
 ## Branch scheme
 
 - `{{BASE_BRANCH}}` — shared truth. Agents never commit or push to it.
-- `issue-<n>/<agent>` — an agent's working branch for issue n.
+- `issue-<n>/<agent>` — an agent's working branch for issue n. For automated
+  work coordination creates and checks this out before the agent CLI starts, so
+  the agent never creates it or switches to it.
 - `<agent>/<name>` — an agent-owned scratch branch for owner-driven manual work.
 - `issue-<n>/final` — the consensus branch, updated only by merging a reviewed
   pull request.
@@ -31,7 +33,7 @@ declares, as argument vectors, in the owner's workspace config:
 
 - `verify.precommit` / `verify.prepush` — run in the agent's clone by its hooks.
 - `checks` — run by the coordinator in a throwaway worktree at the exact
-  approved commit, and they must pass before pull-request creation.
+  approved commit, and they must pass before a pull request is created.
 
 Toolchain: `{{TOOLCHAIN}}`.
 
@@ -39,8 +41,8 @@ Toolchain: `{{TOOLCHAIN}}`.
 
 When the coordinator publishes an automated `action.md`, issue branches carry `.plans/issue-<n>/`,
 `.signals/issue-<n>/`, and `.code-reviews/issue-<n>/`. They are the protocol's
-evidence. The final cleanup step deletes exactly those paths, so a
-merge-ready pull request contains none of them and `{{BASE_BRANCH}}` never does.
+evidence. The final cleanup step deletes exactly those paths, so a merge-ready
+pull request contains none of them and `{{BASE_BRANCH}}` never does.
 
 In owner-driven manual mode there is no coordinator action or evidence. Follow
 the owner's chat request on your own `<agent>/<name>` scratch branch unless the

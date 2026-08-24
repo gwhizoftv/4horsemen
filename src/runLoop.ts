@@ -10,7 +10,8 @@ import {
   markActionWorkflowComplete,
   markInjectedActionAbsent,
   markObservabilityDegraded,
-  orderAgentAction
+  orderAgentAction,
+  readAgentLifecycle
 } from "./agentLifecycle.js";
 import { evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
@@ -32,10 +33,12 @@ import {
   type StartState
 } from "./state.js";
 import {
+  BRANCH_PREPARED_NOTE,
   STEP_DEFINITIONS,
   coordMergesPullRequest,
   describeWorkflowStep,
   type BoundInput,
+  type ChangeScopeEntry,
   type EvidenceObservation,
   type InternalOrder,
   type MachineDecision,
@@ -290,6 +293,52 @@ export const resolveApprovedPaths = async (
   return paths.size > 0 ? [...paths].sort() : frozen;
 };
 
+/** Kinds whose bound `commitSha` is a product pin with a diff worth resolving. */
+const PINNED_INPUT_KINDS = new Set(["implementation", "revision", "prior-revision"]);
+
+/** Cap on rendered paths per pin; a large diff must not unbound the action. */
+export const CHANGE_SCOPE_PATH_LIMIT = 200;
+
+/**
+ * Resolve the changed paths of each pinned bound input once, memoised per pin,
+ * so four agents comparing the same four pins cost four diffs rather than
+ * sixteen. A pin whose diff cannot be read is omitted rather than fatal: the
+ * scope is advisory and must never block action preparation.
+ */
+export const resolveChangeScope = async (
+  mirror: Pick<EvidenceMirror, "changedPaths">,
+  start: StartState,
+  inputs: readonly BoundInput[]
+): Promise<ChangeScopeEntry[]> => {
+  const pinned = inputs.filter((input) => PINNED_INPUT_KINDS.has(input.kind));
+  if (pinned.length === 0) return [];
+  // `null` records a pin whose diff could not be read. Caching the failure as
+  // well as the success is what makes "one diff per distinct pin" hold on the
+  // unreadable path too: without it, four inputs sharing one broken pin cost
+  // four failing git invocations per tick instead of one.
+  const byPin = new Map<string, readonly string[] | null>();
+  const scope: ChangeScopeEntry[] = [];
+  for (const input of pinned) {
+    let cached = byPin.get(input.commitSha);
+    if (cached === undefined) {
+      try {
+        cached = [...(await mirror.changedPaths(start.baselineSha, input.commitSha))].sort();
+      } catch {
+        cached = null;
+      }
+      byPin.set(input.commitSha, cached);
+    }
+    if (cached === null) continue;
+    scope.push({
+      agent: input.agent,
+      commitSha: input.commitSha,
+      paths: cached.slice(0, CHANGE_SCOPE_PATH_LIMIT),
+      truncated: cached.length > CHANGE_SCOPE_PATH_LIMIT
+    });
+  }
+  return scope;
+};
+
 export const buildOrder = (
   paths: IssueRuntimePaths,
   start: StartState,
@@ -299,7 +348,8 @@ export const buildOrder = (
   round: number | null,
   actionId = createActionId(),
   outstanding: readonly string[] = [],
-  approvedPathOverride?: readonly string[]
+  approvedPathOverride?: readonly string[],
+  changeScope: readonly ChangeScopeEntry[] = []
 ): InternalOrder => {
   const definition = STEP_DEFINITIONS[stepId];
   const runtime = agentRuntimePaths(paths, agent);
@@ -357,9 +407,11 @@ export const buildOrder = (
     issueSessionId: start.issueSessionId,
     baselineSha: start.baselineSha,
     automationDigest: start.automationDigest,
-    task: `${definition.task}${binding}${scaffold}${correction}`,
+    task: `${definition.task}${BRANCH_PREPARED_NOTE}${binding}${scaffold}${correction}`,
     inputs,
     approvedPaths,
+    contextPaths: [...start.contextPaths],
+    changeScope,
     activeRoster: [...cursors.activeRoster],
     eligibleChoices,
     expectedSelectedAgents,
@@ -370,6 +422,35 @@ export const buildOrder = (
     ...(selectedImplementation === null ? {} : { expectedReviser: selectedImplementation })
   };
 };
+
+/**
+ * The operator-facing sentence for each refusal code. Every code in
+ * `GateReason`, `PromptBlockedReason`, and `NudgeWaitCode` has an entry, so a
+ * journal line always says what was actually observed.
+ */
+const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
+  "pane-dead": "the terminal pane for this agent is gone",
+  "owner-typing": "the pane is in copy mode or the owner is typing in it",
+  "input-off": "the pane has input disabled",
+  "foreground-mismatch": "the foreground process is not this agent's harness",
+  "trust-dialog": "the harness is waiting on its trust-this-folder prompt",
+  "claude-no-prompt": "no idle prompt is visible in the pane",
+  "cursor-turn-chrome": "the pane shows in-flight turn chrome",
+  "antigravity-turn-chrome": "the pane shows in-flight turn chrome",
+  "antigravity-verify-overlay": "the account-verify overlay is up and discards keystrokes",
+  "antigravity-no-prompt": "no idle prompt is visible in the pane",
+  "unmatched-action": "the recorded lifecycle action does not match the current one",
+  "workflow-complete": "this agent already published its work for this action",
+  "pending-input": "the agent has queued input of its own",
+  "background-active": "the agent has background work running",
+  unknown: "no lifecycle signal has been correlated yet",
+  queued: "the agent has accepted work that has not started",
+  working: "the agent is mid-turn",
+  "idle-transition-already-used": "this action was already delivered on the current idle transition"
+};
+
+const deferralRationale = (code: string): string =>
+  DEFERRAL_RATIONALE[code] ?? "the terminal or lifecycle layer refused delivery";
 
 export class CoordinatorRunLoop {
   private readonly mirror: BareMirror;
@@ -385,6 +466,8 @@ export class CoordinatorRunLoop {
   private readonly observabilityWatchdogMs: number;
   /** Last RN/round announced on `log`, so resume and first prepare do not repeat. */
   private loggedPhaseKey: string | null = null;
+  /** Last deferral code printed per `<agent>:<actionId>`, so an unchanged reason stays quiet. */
+  private readonly loggedDeferral = new Map<string, string>();
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
@@ -405,12 +488,25 @@ export class CoordinatorRunLoop {
     const start = readStartState(this.paths);
     const authority = readCursorsState(this.paths);
     this.authority(authority);
+    // Resume used to swallow a config read failure to null, and null used to
+    // mean "skip the overlay restore entirely". The restore no longer depends on
+    // resolving a root — it falls back to the overlay already in the clone — so
+    // the remaining job here is to report the failure instead of hiding it.
+    //
+    // Deliberately not defaulting to this checkout the way `coord start` does:
+    // synthesising a root makes the restore render a protocol overlay into
+    // clones that were never installed against it, adding an untracked
+    // AGENTS.md that an agent's `git add -A` then sweeps into its commit.
     let installRoot: string | null = null;
     if (existsSync(start.configPath)) {
       try {
         installRoot = readConfig(start.configPath).coordination?.installRoot ?? null;
-      } catch {
-        installRoot = null;
+      } catch (error) {
+        this.log(
+          `could not read ${start.configPath} for the install root ` +
+            `(${error instanceof Error ? error.message : String(error)}); ` +
+            "restoring the AGENTS.md overlay from each clone's own copy"
+        );
       }
     }
     prepareAgentIssueBranches({
@@ -479,8 +575,20 @@ export class CoordinatorRunLoop {
     const cursor = cursors.agents[agent];
     if (cursor === undefined) throw new Error(`Unknown agent ${agent}.`);
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
+    const changeScope = await resolveChangeScope(this.mirror, start, deriveBoundInputs(start, cursors, stepId, round));
     this.authority(cursors);
-    const order = buildOrder(this.paths, start, cursors, agent, stepId, round, this.actionId(), [], approvedPaths);
+    const order = buildOrder(
+      this.paths,
+      start,
+      cursors,
+      agent,
+      stepId,
+      round,
+      this.actionId(),
+      [],
+      approvedPaths,
+      changeScope
+    );
     const runtime = agentRuntimePaths(this.paths, agent);
     let next = this.mutate(cursors, (current) => {
       writeAction(this.paths.coordRoot, runtime.action, order);
@@ -518,25 +626,42 @@ export class CoordinatorRunLoop {
         actionDigest
       );
       this.authority(next);
-      if (result === "sent") {
+      if (result.status === "sent") {
         markActionInjected(this.paths, agent, order.actionId, actionDigest, injectionStartedAt);
         this.verbose(`nudged ${agent} (${stepId}) → ${runtime.action}`);
+        this.loggedDeferral.delete(`${agent}\u0000${order.actionId}`);
         next = this.mutate(next, (current) => {
           appendJournal(
             this.paths,
-            { type: "nudged", agent, actionId: order.actionId, details: { actionDigest } },
+            {
+              type: "nudged",
+              agent,
+              actionId: order.actionId,
+              details: { actionDigest, readiness: result.detail ?? "vendor-prompt" }
+            },
             this.now()
           );
           return current;
         });
-      } else if (result === "gone") {
-        this.verbose(`nudge skipped for ${agent}: harness gone`);
+      } else if (result.status === "gone") {
+        this.verbose(`nudge skipped for ${agent}: harness gone (${result.reason})`);
         next = this.mutate(next, (current) => replaceCursor(current, agent, { status: "harness-gone" }, this.now()));
-      } else {
-        if (result === "busy") {
-          markActionInjectionDeferred(this.paths, agent, order.actionId, actionDigest, this.now());
-        }
-        this.verbose(`nudge deferred for ${agent}: ${result}`);
+      } else if (result.status === "busy") {
+        markActionInjectionDeferred(this.paths, agent, order.actionId, actionDigest, this.now());
+        next = this.mutate(next, (current) => {
+          this.journalDeferral(
+            start,
+            current,
+            agent,
+            order.actionId,
+            actionDigest,
+            "scrape",
+            result.reason,
+            deferralRationale(result.reason),
+            result.detail
+          );
+          return current;
+        });
       }
     } else {
       this.verbose(`ordered ${agent} (${stepId}) → ${runtime.action}`);
@@ -559,6 +684,11 @@ export class CoordinatorRunLoop {
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
     this.authority(cursors);
     const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+    const changeScope = await resolveChangeScope(
+      this.mirror,
+      start,
+      deriveBoundInputs(start, cursors, cursor.stepId, round)
+    );
     const order = buildOrder(
       this.paths,
       start,
@@ -568,13 +698,77 @@ export class CoordinatorRunLoop {
       round,
       actionId,
       cursor.outstanding,
-      approvedPaths
+      approvedPaths,
+      changeScope
     );
     writeAction(this.paths.coordRoot, runtime.action, order);
     if (readAction(runtime.action).body !== previous) {
       this.verbose(`refreshed ${agent} action ${actionId} with current approved paths`);
     }
     return cursors;
+  }
+
+  /**
+   * Record one delivery refusal with a machine-readable code.
+   *
+   * Both sides of the disagreement go on a single event: when the pane scrape
+   * refuses while hooks say the agent is idle and healthy, `splitBrain` marks
+   * it so status and debug do not have to be reconciled across two axes. The
+   * line reaches normal stdout when the workflow is actually waiting on this
+   * agent or when the two layers disagree; a repeat of an unchanged code stays
+   * verbose so a long stall does not flood the operator.
+   */
+  private journalDeferral(
+    start: StartState,
+    cursors: CursorsState,
+    agent: string,
+    actionId: string,
+    actionDigest: string,
+    layer: "scrape" | "lifecycle",
+    code: string,
+    human: string,
+    detail?: string
+  ): void {
+    const entry = readAgentLifecycle(this.paths).agents[agent];
+    const splitBrain =
+      layer === "scrape" && entry?.execution === "idle" && entry.health !== "degraded";
+    // The workflow is blocked on this delivery only while the action is out and
+    // unanswered. A deferral for an agent that is verifying or waiting on a peer
+    // is background detail, so it belongs in the journal but not on stdout.
+    const gateWaiting = cursors.agents[agent]?.status === "ordered";
+    appendJournal(
+      this.paths,
+      {
+        type: "nudge-deferred",
+        agent,
+        actionId,
+        details: {
+          layer,
+          code,
+          human,
+          ...(detail === undefined ? {} : { detail }),
+          ...(splitBrain ? { splitBrain: true } : {}),
+          gateWaiting,
+          actionDigest,
+          hooks: {
+            execution: entry?.execution ?? "unknown",
+            health: entry?.health ?? "unknown",
+            pendingInputCount: entry?.pendingInputCount ?? null,
+            backgroundActive: entry?.backgroundActive ?? null
+          }
+        }
+      },
+      this.now()
+    );
+    const key = `${agent}\u0000${actionId}`;
+    const repeated = this.loggedDeferral.get(key) === code;
+    this.loggedDeferral.set(key, code);
+    const detailText = detail === undefined ? "" : ` (${detail})`;
+    const message = splitBrain
+      ? `Issue ${start.issue}: ${agent} looks idle to its lifecycle hooks but its terminal is not ready to accept typing (${code}${detailText}); ${human}`
+      : `Issue ${start.issue}: delivery to ${agent} deferred: ${code}${detailText}; ${human}`;
+    if ((gateWaiting || splitBrain) && !repeated) this.log(message);
+    else this.verbose(message);
   }
 
   private async maybeLifecycleNudge(
@@ -610,13 +804,21 @@ export class CoordinatorRunLoop {
             type: "agent-observability-degraded",
             agent,
             actionId,
-            details: { actionDigest, watchdogMs: this.observabilityWatchdogMs }
+            details: { actionDigest, watchdogMs: this.observabilityWatchdogMs, cause: degraded.cause }
           },
           this.now()
         );
+        // The watchdog proves correlation lag, not a dead hook bridge. Only an
+        // agent that never announced a session gets the restart remedy; telling
+        // an operator to restart a healthy CLI kills the turn that was about to
+        // write `complete`.
         this.log(
-          `Issue ${start.issue}: lifecycle observability degraded for ${agent}; duplicate nudge suppressed. ` +
-            `Restart ${agent}'s CLI so it loads coordinator lifecycle hooks.`
+          degraded.cause === "hooks-never-seen"
+            ? `Issue ${start.issue}: no lifecycle signal has ever arrived from ${agent}; duplicate send suppressed. ` +
+                `Restart ${agent}'s CLI so it loads coordinator lifecycle hooks.`
+            : `Issue ${start.issue}: no lifecycle signal correlated with the last delivery to ${agent} within ` +
+                `${this.observabilityWatchdogMs}ms; duplicate send suppressed. The agent may still be finishing its ` +
+                `previous turn — no action needed unless it stays quiet.`
         );
       }
       const entry = degraded.state.agents[agent];
@@ -636,6 +838,14 @@ export class CoordinatorRunLoop {
             entry.lastEventAt !== null &&
             Date.parse(entry.lastEventAt) >= Date.parse(injected.injectedAt);
           const tmux = this.tmux;
+          // A send that was never accepted and whose watchdog has elapsed can be
+          // retried, but only on the positive scrape proof below. Elapsed time
+          // and a missing `complete` never authorize a retry on their own.
+          const watchdogElapsed =
+            injected !== null &&
+            injected !== undefined &&
+            injected.injectedAt !== null &&
+            Date.parse(this.now()) - Date.parse(injected.injectedAt) >= this.observabilityWatchdogMs;
           const canProveLostInjection =
             tmux !== null &&
             injected?.delivery === "injected" &&
@@ -643,13 +853,25 @@ export class CoordinatorRunLoop {
             (entry.pendingInputCount ?? 0) === 0 &&
             entry.backgroundActive !== true &&
             ((entry.execution === "queued" && observedAfterInjection) ||
-              (entry.execution === "unknown" && entry.health === "degraded"));
+              (entry.execution === "unknown" && entry.health === "degraded") ||
+              (entry.execution === "idle" &&
+                decision.code === "idle-transition-already-used" &&
+                watchdogElapsed));
           if (
             !canProveLostInjection ||
             tmux === null ||
             !(await tmux.actionAbsentAtReadyPrompt(start.issue, config, actionId, () => this.authority(cursors)))
           ) {
-            this.verbose(`nudge deferred for ${agent}: ${decision.reason}`);
+            this.journalDeferral(
+              start,
+              cursors,
+              agent,
+              actionId,
+              actionDigest,
+              "lifecycle",
+              decision.code,
+              deferralRationale(decision.code)
+            );
             return cursors;
           }
           this.authority(cursors);
@@ -680,9 +902,10 @@ export class CoordinatorRunLoop {
       actionDigest
     );
     this.authority(cursors);
-    if (result === "sent") {
+    if (result.status === "sent") {
       markActionInjected(this.paths, agent, actionId, actionDigest, injectionStartedAt);
       this.verbose(`nudged ${agent} (${reason}) → ${runtime.action}`);
+      this.loggedDeferral.delete(`${agent}\u0000${actionId}`);
       return this.mutate(cursors, (current) => {
         appendJournal(
           this.paths,
@@ -690,21 +913,35 @@ export class CoordinatorRunLoop {
             type: "nudged",
             agent,
             actionId,
-            details: { actionDigest, ...(reason === "idle" ? { idle: true } : { reissue: true }) }
+            details: {
+              actionDigest,
+              readiness: result.detail ?? "vendor-prompt",
+              ...(reason === "idle" ? { idle: true } : { reissue: true })
+            }
           },
           this.now()
         );
         return current;
       });
     }
-    if (result === "gone") {
-      this.verbose(`nudge ${reason} skipped for ${agent}: harness gone`);
+    if (result.status === "gone") {
+      this.verbose(`nudge ${reason} skipped for ${agent}: harness gone (${result.reason})`);
       return this.mutate(cursors, (current) => replaceCursor(current, agent, { status: "harness-gone" }, this.now()));
     }
-    if (result === "busy") {
+    if (result.status === "busy") {
       markActionInjectionDeferred(this.paths, agent, actionId, actionDigest, this.now());
+      this.journalDeferral(
+        start,
+        cursors,
+        agent,
+        actionId,
+        actionDigest,
+        "scrape",
+        result.reason,
+        deferralRationale(result.reason),
+        result.detail
+      );
     }
-    this.verbose(`nudge ${reason} deferred for ${agent}: ${result}`);
     return cursors;
   }
 
@@ -811,7 +1048,24 @@ export class CoordinatorRunLoop {
         updatedAt: this.now()
       });
     });
-    markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
+    const completion = markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
+    if (completion.clearedDegraded) {
+      // The agent published and pushed, so the earlier watchdog warning is
+      // disproven. Retract it explicitly rather than leaving it standing.
+      appendJournal(
+        this.paths,
+        {
+          type: "agent-observability-recovered",
+          agent: decision.agent,
+          actionId: cursor.actionId,
+          details: { reason: "workflow-complete-after-degraded" }
+        },
+        this.now()
+      );
+      this.log(
+        `Issue ${start.issue}: ${decision.agent} completed its work; the earlier lifecycle warning is cleared.`
+      );
+    }
     return next;
   }
 
@@ -828,8 +1082,20 @@ export class CoordinatorRunLoop {
     const stepId = cursor.stepId;
     const round = stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
+    const changeScope = await resolveChangeScope(this.mirror, start, deriveBoundInputs(start, cursors, stepId, round));
     this.authority(cursors);
-    const order = buildOrder(this.paths, start, cursors, agent, stepId, round, actionId, outstanding, approvedPaths);
+    const order = buildOrder(
+      this.paths,
+      start,
+      cursors,
+      agent,
+      stepId,
+      round,
+      actionId,
+      outstanding,
+      approvedPaths,
+      changeScope
+    );
     this.verbose(`reissued ${agent} action ${actionId}: ${outstanding.join("; ")}`);
     const next = this.mutate(cursors, (current) => {
       appendJournal(

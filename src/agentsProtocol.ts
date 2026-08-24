@@ -45,9 +45,74 @@ export const liftCloneAgentsProtocol = (clone: string, options: Effects): void =
   git(clone, "checkout", "HEAD", "--", "AGENTS.md");
 };
 
-const skipWorktreeAgentsMd = (clone: string): void => {
+/**
+ * Re-set the bit that hides the overlay from `git status`. Exported because
+ * branch preparation must be able to put it back on its own: it clears the bit
+ * to move `HEAD`, and a clone left with the bit clear shows AGENTS.md as an
+ * uncommitted change that the agent is forbidden to clean up by hand.
+ */
+export const ensureAgentsMdSkipWorktree = (clone: string): void => {
   if (!agentsMdTracked(clone)) return;
   gitOrThrow(clone, "update-index", "--skip-worktree", "--", "AGENTS.md");
+};
+
+const protocolBlockIn = (content: string): string | null => {
+  const begin = content.indexOf(AGENTS_PROTOCOL_MARKERS.begin);
+  if (begin === -1) return null;
+  const end = content.indexOf(AGENTS_PROTOCOL_MARKERS.end, begin);
+  if (end === -1) return null;
+  return content.slice(begin, end + AGENTS_PROTOCOL_MARKERS.end.length);
+};
+
+/**
+ * Take a copy of the clone's current overlay before something clears it.
+ *
+ * A vendored clone records no install root (`configureCloneIdentity`), so the
+ * template the overlay was rendered from cannot be located afterwards. The
+ * bytes already in the clone are that same text, and they are always readable.
+ */
+export const captureCloneAgentsProtocol = (clone: string): string | null => {
+  const path = join(clone, "AGENTS.md");
+  if (!existsSync(path)) return null;
+  return protocolBlockIn(readFileSync(path, "utf8"));
+};
+
+/** Put a captured overlay back on top of whatever AGENTS.md the new HEAD brought in. */
+export const restoreCapturedAgentsProtocol = (clone: string, block: string): void => {
+  const path = join(clone, "AGENTS.md");
+  const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const result = applyDelimitedBlock(existing, block, path, AGENTS_PROTOCOL_MARKERS);
+  if (result.changed) writeFileSync(path, result.content, "utf8");
+  ensureAgentsMdSkipWorktree(clone);
+};
+
+/**
+ * True when the worktree AGENTS.md differs from HEAD only by the managed
+ * overlay. That is exactly the state a run leaves behind when it clears the bit
+ * and then fails to restore it, and it must not be mistaken for a dirty clone.
+ */
+export const agentsMdDiffersOnlyByProtocol = (clone: string): boolean => {
+  const path = join(clone, "AGENTS.md");
+  if (!existsSync(path)) return false;
+  const head = git(clone, "show", "HEAD:AGENTS.md");
+  if (head.exitCode !== 0) return false;
+  try {
+    return removeManagedBlock(readFileSync(path, "utf8"), path, AGENTS_PROTOCOL_MARKERS).content === head.stdout;
+  } catch {
+    // A begin marker with no end marker is a real edit, not our overlay.
+    return false;
+  }
+};
+
+/** What branch preparation must be able to assert about a clone before launch. */
+export const cloneAgentsProtocolState = (
+  clone: string
+): { tracked: boolean; overlayPresent: boolean; skipWorktree: boolean } => {
+  const tracked = agentsMdTracked(clone);
+  const path = join(clone, "AGENTS.md");
+  const overlayPresent = existsSync(path) && protocolBlockIn(readFileSync(path, "utf8")) !== null;
+  const skipWorktree = tracked && git(clone, "ls-files", "-v", "--", "AGENTS.md").stdout.startsWith("S");
+  return { tracked, overlayPresent, skipWorktree };
 };
 
 /**
@@ -65,13 +130,13 @@ export const writeCloneAgentsProtocol = (input: {
   const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
   const outcome = writeProtocolFile(path, existing, input.installRoot, input.options.dryRun);
   if (!outcome.changed) {
-    if (!input.options.dryRun) skipWorktreeAgentsMd(input.clone);
+    if (!input.options.dryRun) ensureAgentsMdSkipWorktree(input.clone);
     input.options.log(`AGENTS.md protocol already current in ${input.clone}\n`);
     return;
   }
   input.options.changes.push(`write AGENTS.md protocol in ${input.clone}`);
   input.options.log(`${input.options.dryRun ? "would write" : "wrote"} AGENTS.md protocol in ${input.clone}\n`);
-  if (!input.options.dryRun) skipWorktreeAgentsMd(input.clone);
+  if (!input.options.dryRun) ensureAgentsMdSkipWorktree(input.clone);
 };
 
 export const writeProductAgentsProtocol = (input: {

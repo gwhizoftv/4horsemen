@@ -46,6 +46,21 @@ export type GateId =
   | "gate-6-consensus"
   | "gate-7-finalized";
 
+/**
+ * Appended to every action, not only the first one.
+ *
+ * Coordination checks the clone out and re-sets the skip-worktree bit before
+ * any agent starts, but an agent that compacts, restarts, or reads only the
+ * action in front of it has no memory of that. It used to be told once, on the
+ * first action of the run, which is exactly the wrong place for a fact it needs
+ * on every step.
+ */
+export const BRANCH_PREPARED_NOTE =
+  "\n\nCoordination has already checked this clone out on the branch named below " +
+  "and re-set the skip-worktree bit on AGENTS.md. Do not create that branch, " +
+  "switch to it, or clear skip-worktree to make a checkout work. If the clone " +
+  "looks wrong, report that instead of repairing it by hand.";
+
 export type StepDefinition = {
   id: WorkflowStepId;
   gateId: GateId;
@@ -62,7 +77,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     evidenceId: "join-published",
     participants: "all",
     requiredPath: (issue, agent) => `.signals/issue-${issue}/participation-ready-${agent}.json`,
-    task: "Publish the participation-readiness artifact for this issue. Coordination already checked this clone out on your issue branch; do not clear skip-worktree on AGENTS.md or switch branches to make checkout work."
+    task: "Publish the participation-readiness artifact for this issue."
   },
   "R2.plan": {
     id: "R2.plan",
@@ -125,7 +140,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     gateId: "gate-5-comparison",
     evidenceId: "reviser-authorized",
     participants: "reviser",
-    requiredPath: (issue) => `.signals/issue-${issue}/revision-authorization.json`,
+    requiredPath: (issue) => `.signals/issue-${issue}/reviser-authorization.json`,
     task: "Publish the automated reviser authorization from the bound comparison ballots."
   },
   "R6.revise": {
@@ -224,6 +239,20 @@ export type BoundInput = {
   kind: string;
 };
 
+/**
+ * Changed paths of one bound pin, resolved by the coordinator so that N agents
+ * comparing the same pins do not each re-derive the same diff. Advisory only:
+ * `approvedPaths` remains the sole authority over what an implementation may
+ * touch.
+ */
+export type ChangeScopeEntry = {
+  agent: string;
+  commitSha: string;
+  paths: readonly string[];
+  /** True when `paths` was capped and does not list the whole diff. */
+  truncated: boolean;
+};
+
 export type InternalOrder = {
   actionId: string;
   issue: number;
@@ -240,6 +269,13 @@ export type InternalOrder = {
   task: string;
   inputs: readonly BoundInput[];
   approvedPaths: readonly string[];
+  /**
+   * Advisory, and optional on purpose: an added hint must not become a required
+   * argument at every site that builds an order, and rendering must cope with
+   * its absence rather than making callers supply an empty list.
+   */
+  contextPaths?: readonly string[];
+  changeScope?: readonly ChangeScopeEntry[];
   activeRoster: readonly string[];
   eligibleChoices: readonly string[];
   expectedSelectedAgents: readonly string[];

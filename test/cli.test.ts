@@ -10,7 +10,7 @@ import { buildOrder } from "../src/runLoop.js";
 import { cursorsStateSchema, readConfig, readCursorsState, readStartState, writeCursorsState } from "../src/state.js";
 import { DOCTOR_CODES } from "../src/doctor.js";
 import { renderGitHubIssueSnapshot } from "../src/githubIssue.js";
-import { ensureBuilt, makeProduct, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
+import { ensureBuilt, makeProduct, repoRoot, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
 
 const roots: string[] = [];
 const productFixtures: ProductFixture[] = [];
@@ -94,10 +94,14 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
 
 describe("CLI version", () => {
   it("prints package.json version for --version, -V, and version", async () => {
+    // Read the manifest here rather than through `packageVersion`: the CLI prints
+    // that helper's return value, so calling it would compare it with itself.
+    const expected = (JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { version: string })
+      .version;
     for (const argv of [["--version"], ["-V"], ["version"]] as const) {
       const lines: string[] = [];
       expect(await runCli([...argv], { io: { stdout: (message) => lines.push(message) } })).toBe(0);
-      expect(lines.join("").trim()).toBe("0.0.14");
+      expect(lines.join("").trim()).toBe(expected);
     }
   });
 });
@@ -708,7 +712,7 @@ describe("CLI", () => {
             submissionSha: "f".repeat(40),
             productPin: "e".repeat(40),
             reviser: "cursor",
-            path: ".signals/issue-1/revision-authorization.json",
+            path: ".signals/issue-1/reviser-authorization.json",
             acceptedAt: now
           }
         ],
