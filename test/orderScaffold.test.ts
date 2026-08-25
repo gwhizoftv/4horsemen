@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { artifactScaffoldValue, renderArtifactScaffold } from "../src/orderScaffold.js";
+import { WORKFLOW_STEP_ORDER } from "../src/steps.js";
 
 describe("orderScaffold", () => {
   it("renders a filled join JSON scaffold", () => {
@@ -12,7 +13,6 @@ describe("orderScaffold", () => {
       automationDigest: "b".repeat(64),
       inputs: [],
       eligibleChoices: [],
-      expectedSelectedAgents: [],
       round: null,
       approvedPaths: []
     };
@@ -40,7 +40,6 @@ describe("orderScaffold", () => {
       automationDigest: "b".repeat(64),
       inputs: [],
       eligibleChoices: [],
-      expectedSelectedAgents: [],
       round: null,
       approvedPaths: []
     });
@@ -58,7 +57,6 @@ describe("orderScaffold", () => {
       automationDigest: "b".repeat(64),
       inputs: [],
       eligibleChoices: [],
-      expectedSelectedAgents: [],
       round: null,
       approvedPaths: []
     });
@@ -81,7 +79,6 @@ describe("orderScaffold", () => {
       automationDigest: "b".repeat(64),
       inputs: [],
       eligibleChoices: [],
-      expectedSelectedAgents: [],
       round: null,
       approvedPaths: []
     });
@@ -100,7 +97,6 @@ describe("orderScaffold", () => {
       automationDigest: "b".repeat(64),
       inputs: [],
       eligibleChoices: [],
-      expectedSelectedAgents: [],
       round: null,
       approvedPaths: []
     });
@@ -109,5 +105,39 @@ describe("orderScaffold", () => {
     expect(rendered).toContain("no em dash or subtitle");
     expect(rendered).toContain("file path and line number");
     expect(rendered).not.toContain("```json");
+  });
+
+  it("has no scaffold for a step that publishes no artifact", () => {
+    // Every remaining step that names a required path is agent-authored. If a
+    // coordinator-owned decision ever grew a scaffold again, an action body
+    // could ask an agent to re-serialize a result the coordinator already owns.
+    const scaffolded = WORKFLOW_STEP_ORDER.filter(
+      (stepId) =>
+        artifactScaffoldValue({
+          stepId,
+          issue: 1,
+          issueSessionId: "s",
+          agent: "claude",
+          baselineSha: "a".repeat(40),
+          automationDigest: "b".repeat(64),
+          inputs: [],
+          eligibleChoices: [],
+          round: null,
+          approvedPaths: []
+        }) !== null
+    );
+    expect(scaffolded).toEqual([
+      "R1.join",
+      "R3.plan-ballot",
+      "R4.implement",
+      "R5.compare-ballot",
+      "R6.revise",
+      "R6.ballot",
+      "R7.finalize"
+    ]);
+    const markdownOnly = WORKFLOW_STEP_ORDER.filter((stepId) =>
+      ["R2.plan", "R3.review", "R5.compare"].includes(stepId)
+    );
+    expect([...scaffolded, ...markdownOnly].sort()).toEqual([...WORKFLOW_STEP_ORDER].sort());
   });
 });

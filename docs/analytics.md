@@ -20,6 +20,48 @@ treat the absolute values as a baseline to beat, not as a stable average.
 
 ---
 
+## 0. The workflow being measured
+
+Agent-facing work is **10 phases** under `consensus`, **6** under `reviewed`,
+and **4** under `solo`:
+
+```text
+consensus   R1.join  R2.plan  R3.review  R3.plan-ballot
+            R4.implement  R5.compare  R5.compare-ballot
+            R6.revise  R6.ballot  R7.finalize
+reviewed    R1.join  R2.plan  R3.review  R3.plan-ballot  R4.implement  R7.finalize
+solo        R1.join  R2.plan  R4.implement  R7.finalize
+```
+
+Three results the coordinator already computed and enforced — the plan winner,
+the implementation winner with its pin and reviser, and consensus — are no
+longer published by an agent. Issue 109 removed `R3.publish-selection`,
+`R5.reviser-auth`, and `R6.declare`, along with `.plans/issue-<n>/selection.json`,
+`.signals/issue-<n>/reviser-authorization.json`, and
+`.signals/issue-<n>/consensus.json`. The coordinator derives each result from
+the accepted evidence, records it in `cursors.derived`, journals one
+`decision-derived` event, and advances straight to the next agent-facing phase:
+
+```text
+R3.plan-ballot     -> derive plan selection        -> R4.implement
+R5.compare-ballot  -> derive implementation winner -> R6.revise (round 1)
+R6.ballot (all approve) -> derive consensus        -> R7.finalize
+```
+
+`decision-derived` is **audit metadata, not a phase**. It prepares no
+`action.md`, sends nothing to an agent, and produces no accepted submission, so
+it consumes no wall clock and no tokens. Phase analytics continues to segment
+only on `gate-advanced`, which now records the direct boundaries above. A
+decision carries the algorithm name, the active-roster order that decided
+eligibility and ties, an input-set hash, exact accepted-submission citations,
+the result, and the identity of any decision it superseded after a permitted
+drop — enough to recompute it without consulting coordinator state.
+
+The measurements in §2 predate this change and are labelled where they include
+the removed phases.
+
+---
+
 ## 1. Sources of truth that exist today
 
 ### 1.1 `journal.jsonl` — the only durable, append-only history
@@ -41,7 +83,7 @@ Issue-76 record counts:
 | `intent-seen` | 39 | agent wrote `complete` with a SHA |
 | `verify-result` | 39 | coordinator accepted/rejected the submission |
 | `action-prepared` | 37 | an `action.md` was written |
-| `gate-advanced` | 13 | **phase boundaries** |
+| `gate-advanced` | 13 | **phase boundaries** (13 under the pre-issue-109 topology; 10 today) |
 | `agent-observability-degraded` | 10 | watchdog fired (45s, `AGENT_OBSERVABILITY_WATCHDOG_MS`) |
 | `final-check` | 2 | hermetic `checks` tier at the approved commit |
 | `started` / `publication-pending` / `pr-created` | 1 each | run boundaries |
@@ -119,15 +161,19 @@ Issue-76 result — **64.47 min wall clock** from `started` to the terminal
 | R2.plan | 5.39 | 8.4% |
 | R3.review | 4.38 | 6.8% |
 | R3.plan-ballot | 1.05 | 1.6% |
-| R3.publish-selection | 1.11 | 1.7% |
 | **R4.implement** | **19.27** | **29.9%** |
 | **R5.compare** | **9.19** | **14.3%** |
 | R5.compare-ballot | 2.01 | 3.1% |
-| R5.reviser-auth | 0.61 | 0.9% |
 | R6.revise | 5.49 | 8.5% |
 | R6.ballot | 3.04 | 4.7% |
-| R6.declare | 0.59 | 0.9% |
 | R7.finalize | 5.78 | 9.0% |
+| _obsolete publication overhead_ | _2.31_ | _3.6%_ |
+
+The last row is the aggregate of the three artifact-publication rounds issue 109
+removed (`R3.publish-selection` 1.11, `R5.reviser-auth` 0.61, `R6.declare`
+0.59). It is kept only so the column still sums to the measured 64.47 min; a run
+under the current topology has no phase corresponding to it, and the three LLM
+turns and their Git/push/fetch/verify tool calls are gone with it.
 
 Implement + compare are 44% of the run. Every phase is gated on the **slowest**
 agent, so phase length is a max, not a sum — which is why §2.3 matters.
@@ -153,15 +199,18 @@ Issue-76 result — **claude agent only**, 411 assistant messages, two sessions
 | R2.plan | 76 | 6,103,727 | 409,706 | 58,557 |
 | R3.review | 40 | 5,252,286 | 70,707 | 58,686 |
 | R3.plan-ballot | 14 | 1,877,190 | 19,020 | 6,675 |
-| R3.publish-selection | 13 | 1,868,847 | 15,513 | 7,729 |
 | **R4.implement** | 138 | **26,457,563** | 136,205 | 90,707 |
 | **R5.compare** | 58 | **14,453,144** | 73,863 | 38,194 |
 | R5.compare-ballot | 21 | 5,774,183 | 25,707 | 14,379 |
-| R5.reviser-auth | 8 | 2,263,279 | 5,249 | 3,853 |
 | R6.revise | 2 | 569,840 | 1,334 | 778 |
 | R6.ballot | 24 | 6,969,033 | 22,785 | 13,317 |
-| R6.declare | 2 | 592,720 | 760 | 816 |
+| _obsolete publication overhead_ | _23_ | _4,724,846_ | _21,522_ | _12,398_ |
 | **total** | **411** | **72,603,954** | **848,260** | **297,218** |
+
+As in §2.1, the italic row aggregates the three removed publication rounds so
+the total still reconciles. Under the current topology that 4.7M cache-read and
+23 assistant turns are not spent at all — the coordinator derives those three
+results with no model turn.
 
 Codex, for the same window, reports cumulatively via its final `token_count`
 event: **37,147,795 total tokens**, of which **36,210,176 were cached input**
@@ -369,8 +418,8 @@ search turns it removes — which §2.2's per-phase message counts can now measu
 directly, before and after.
 
 **Two phases own the budget.** R4.implement and R5.compare: 44% of wall clock,
-56% of claude's tokens, 196 of 411 turns. Consolidating messaging in the other
-eleven phases optimizes the 44%.
+56% of claude's tokens, 196 of 411 turns. Consolidating messaging in the
+remaining phases optimizes the 44%.
 
 **Coordinator work is nearly free.** §2.4: median verification is 1.05 s against
 agent medians of 38–249 s. Moving work into the coordinator is a good trade on

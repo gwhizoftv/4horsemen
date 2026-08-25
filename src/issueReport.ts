@@ -16,7 +16,19 @@ export const renderIssueReport = (
 ): string => {
   const r7 = finalization(cursors);
   const pin = cursors.publication.finalSha ?? r7?.productPin ?? null;
-  const chosen = cursors.selection.implementationAgent ?? r7?.agent ?? cursors.selection.reviser;
+  // Consensus runs name the winner in the canonical decision. Reviewed and solo
+  // runs never hold that election, so the sole accepted implementation — or,
+  // failing that, whoever finalized — is the honest answer.
+  const implementationSelection = cursors.derived.implementationSelection;
+  const soleImplementation = cursors.accepted.filter((submission) => submission.stepId === "R4.implement");
+  const chosen =
+    implementationSelection?.implementationAgent ??
+    (soleImplementation.length === 1 ? soleImplementation[0]?.agent : undefined) ??
+    r7?.agent;
+  const implementationPin =
+    implementationSelection?.implementationPin ??
+    (soleImplementation.length === 1 ? soleImplementation[0]?.productPin : undefined) ??
+    null;
   const branch = cursors.publication.branch;
   const url = cursors.publication.url;
   const phase = cursors.abandoned
@@ -30,7 +42,7 @@ export const renderIssueReport = (
     `Issue ${start.issue}: ${phase}`,
     `Policy: ${start.prPolicy}`,
     `Chosen agent: ${chosen ?? "(not selected yet)"}`,
-    `Implementation pin: ${cursors.selection.implementationPin ?? "(none)"}`,
+    `Implementation pin: ${implementationPin ?? "(none)"}`,
     `Final pin (PR head): ${pin ?? "(none)"}`,
     `Published branch: ${branch ?? "(not pushed yet)"}`
   ];

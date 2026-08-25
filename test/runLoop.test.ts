@@ -73,6 +73,48 @@ const fixture = (options: { prPolicy?: "owner-only" | "coord-open-unmerged" | "c
   return { root, paths };
 };
 
+/**
+ * Canonical derived-decision fixtures. Tests that start mid-workflow need the
+ * coordinator's own results present, because routing and binding now read them
+ * rather than an accepted artifact.
+ */
+const planSelectionFor = (agent: string) => ({
+  identity: { kind: "plan-selection" as const, inputSetHash: "1".repeat(64), round: null },
+  algorithm: "plurality-active-roster-v1" as const,
+  activeRoster: ["claude", "codex"],
+  inputs: [
+    {
+      kind: "plan" as const,
+      agent,
+      submissionSha: "c".repeat(40),
+      path: ".plans/issue-1/plan.md"
+    }
+  ],
+  selectedAgents: [agent],
+  decidedAt: "2026-08-11T17:00:00.000Z",
+  supersedes: null
+});
+
+const implementationSelectionFor = (agent: string, pin: string) => ({
+  identity: { kind: "implementation-selection" as const, inputSetHash: "2".repeat(64), round: null },
+  algorithm: "plurality-active-roster-v1" as const,
+  activeRoster: ["claude", "codex"],
+  inputs: [
+    {
+      kind: "implementation" as const,
+      agent,
+      submissionSha: "b".repeat(40),
+      path: `.signals/issue-1/implementation-ready-${agent}.json`,
+      productPin: pin
+    }
+  ],
+  implementationAgent: agent,
+  implementationPin: pin,
+  reviser: agent,
+  decidedAt: "2026-08-11T17:00:00.000Z",
+  supersedes: null
+});
+
 const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], finalSha = "f".repeat(40)) => {
   const now = "2026-08-11T17:00:00.000Z";
   writeFileSync(
@@ -95,12 +137,10 @@ const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], fina
     cursorsStateSchema.parse({
       ...current,
       issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
-      reviser: "codex",
-      selection: {
-        planAgents: ["claude"],
-        implementationAgent: "codex",
-        implementationPin: "e".repeat(40),
-        reviser: "codex"
+      derived: {
+        planSelection: planSelectionFor("claude"),
+        implementationSelection: implementationSelectionFor("codex", "e".repeat(40)),
+        consensus: null
       },
       accepted: [
         {
@@ -179,7 +219,7 @@ describe("effectful run loop", () => {
       cursorsStateSchema.parse({
         ...current,
         issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
-        selection: { ...current.selection, planAgents: ["codex"] },
+        derived: { ...current.derived, planSelection: planSelectionFor("codex") },
         accepted: [
           {
             stepId: "R2.plan",
@@ -188,15 +228,6 @@ describe("effectful run loop", () => {
             submissionSha: "c".repeat(40),
             path: ".plans/issue-1/plan.md",
             approvedPaths: ["src/product.ts"],
-            acceptedAt: now
-          },
-          {
-            stepId: "R3.publish-selection",
-            agent: "codex",
-            round: null,
-            submissionSha: "d".repeat(40),
-            path: ".plans/issue-1/selection.json",
-            selectedAgents: ["codex"],
             acceptedAt: now
           }
         ]
@@ -236,7 +267,7 @@ describe("effectful run loop", () => {
       cursorsStateSchema.parse({
         ...current,
         issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
-        selection: { ...current.selection, planAgents: ["codex"] },
+        derived: { ...current.derived, planSelection: planSelectionFor("codex") },
         agents: {
           ...current.agents,
           claude: {
@@ -270,15 +301,6 @@ describe("effectful run loop", () => {
             submissionSha: "c".repeat(40),
             path: ".plans/issue-1/plan.md",
             approvedPaths: ["src/product.ts"],
-            acceptedAt: now
-          },
-          {
-            stepId: "R3.publish-selection",
-            agent: "codex",
-            round: null,
-            submissionSha: "d".repeat(40),
-            path: ".plans/issue-1/selection.json",
-            selectedAgents: ["codex"],
             acceptedAt: now
           }
         ]
@@ -1060,12 +1082,10 @@ describe("effectful run loop", () => {
     const seeded = cursorsStateSchema.parse({
       ...current,
       issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
-      reviser: "codex",
-      selection: {
-        planAgents: ["claude"],
-        implementationAgent: "codex",
-        implementationPin: "f".repeat(40),
-        reviser: "codex"
+      derived: {
+        planSelection: planSelectionFor("claude"),
+        implementationSelection: implementationSelectionFor("codex", "f".repeat(40)),
+        consensus: null
       },
       ownerQuestion: {
         id: "10000000-0000-4000-8000-000000000001",
@@ -1162,12 +1182,10 @@ describe("effectful run loop", () => {
       cursorsStateSchema.parse({
         ...current,
         issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
-        reviser: "codex",
-        selection: {
-          planAgents: ["claude"],
-          implementationAgent: "codex",
-          implementationPin: "e".repeat(40),
-          reviser: "codex"
+        derived: {
+          planSelection: planSelectionFor("claude"),
+          implementationSelection: implementationSelectionFor("codex", "e".repeat(40)),
+          consensus: null
         },
         accepted: [
           {
@@ -1361,7 +1379,7 @@ describe("effectful run loop", () => {
     const seed = join(root, "final-seed");
     execFileSync("git", ["init", "-q", seed]);
     mkdirSync(join(seed, ".signals/issue-1"), { recursive: true });
-    writeFileSync(join(seed, ".signals/issue-1/consensus.json"), "{}\n");
+    writeFileSync(join(seed, ".signals/issue-1/revision-ready-codex-round-1.json"), "{}\n");
     execFileSync("git", ["-C", seed, "add", "."]);
     execFileSync("git", ["-C", seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "consensus"]);
     const consensusSha = execFileSync("git", ["-C", seed, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -1394,7 +1412,7 @@ describe("effectful run loop", () => {
         {
           agent: "codex",
           commitSha: consensusSha,
-          path: ".signals/issue-1/consensus.json",
+          path: ".signals/issue-1/revision-ready-codex-round-1.json",
           kind: "consensus"
         }
       ]
@@ -1569,5 +1587,247 @@ describe("coordinator-resolved change scope", () => {
     const order = buildOrder(paths, start, readCursorsState(paths), "claude", "R2.plan", null);
     expect(order.contextPaths).toEqual(["docs/repo-map.md"]);
     expect(order.changeScope).toEqual([]);
+  });
+});
+
+describe("coordinator-derived decisions", () => {
+  const now = "2026-08-11T17:00:00.000Z";
+
+  /** Accepted plans and ballots for both agents, with `claude` the winner. */
+  const seedBallots = (paths: ReturnType<typeof fixture>["paths"], winner = "claude") => {
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R3.plan-ballot", gateId: "gate-3-selection", round: null },
+        accepted: [
+          ...current.activeRoster.map((agent) => ({
+            stepId: "R2.plan" as const,
+            agent,
+            round: null,
+            submissionSha: "1".repeat(40),
+            approvedPaths: ["src/product.ts"],
+            path: ".plans/issue-1/plan.md",
+            acceptedAt: now
+          })),
+          ...current.activeRoster.map((agent) => ({
+            stepId: "R3.plan-ballot" as const,
+            agent,
+            round: null,
+            submissionSha: "2".repeat(40),
+            choice: winner,
+            path: `.plans/issue-1/ballot-${agent}.json`,
+            acceptedAt: now
+          }))
+        ],
+        updatedAt: now
+      })
+    );
+  };
+
+  it("persists and journals the decision once, then advances with no action of its own", async () => {
+    const { paths } = fixture();
+    seedBallots(paths);
+    const loop = new CoordinatorRunLoop(paths, { tmux: null });
+    const after = await loop.runTick();
+
+    expect(after.derived.planSelection).toMatchObject({
+      algorithm: "plurality-active-roster-v1",
+      selectedAgents: ["claude"],
+      activeRoster: ["claude", "codex"],
+      supersedes: null
+    });
+    expect(after.issueCursor.stepId).toBe("R4.implement");
+
+    const derivations = readJournal(paths).filter((event) => event.type === "decision-derived");
+    expect(derivations).toHaveLength(1);
+    const event = derivations[0];
+    expect(event?.agent).toBeUndefined();
+    expect(event?.actionId).toBeUndefined();
+    expect(event?.details.identity).toEqual(after.derived.planSelection?.identity);
+    expect(event?.details.result).toEqual({ selectedAgents: ["claude"] });
+    // The citations are the whole audit trail: each names an accepted
+    // submission at the SHA it was accepted on.
+    expect(event?.details.inputs).toEqual(after.derived.planSelection?.inputs);
+    // No action was prepared for the decision itself; the only actions written
+    // are for the implementation step it unblocked.
+    for (const prepared of readJournal(paths).filter((entry) => entry.type === "action-prepared")) {
+      expect(prepared.details.requiredPath).not.toBe(".plans/issue-1/selection.json");
+    }
+    expect(after.accepted.some((submission) => submission.path === ".plans/issue-1/selection.json")).toBe(false);
+  });
+
+  it("is idempotent across repeated ticks and across a crash between journal and state", async () => {
+    const { paths } = fixture();
+    seedBallots(paths);
+    const loop = new CoordinatorRunLoop(paths, { tmux: null });
+    const first = await loop.runTick();
+    const decided = first.derived.planSelection;
+    await loop.runTick();
+    await loop.runTick();
+    expect(readJournal(paths).filter((event) => event.type === "decision-derived")).toHaveLength(1);
+    expect(readCursorsState(paths).derived.planSelection).toEqual(decided);
+
+    // Simulate the crash window: the journal entry survived, the state
+    // replacement did not. Re-deriving must reuse the recorded event and its
+    // timestamp rather than appending a second one.
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R3.plan-ballot", gateId: "gate-3-selection", round: null },
+        derived: { ...current.derived, planSelection: null },
+        updatedAt: now
+      })
+    );
+    const recovered = await new CoordinatorRunLoop(paths, { tmux: null }).runTick();
+    expect(readJournal(paths).filter((event) => event.type === "decision-derived")).toHaveLength(1);
+    expect(recovered.derived.planSelection).toEqual(decided);
+  });
+
+  it("binds the implementation action to the derived winner's accepted plan", async () => {
+    const { paths } = fixture();
+    seedBallots(paths, "codex");
+    await new CoordinatorRunLoop(paths, { tmux: null }).runTick();
+    const cursors = readCursorsState(paths);
+    expect(cursors.derived.planSelection?.selectedAgents).toEqual(["codex"]);
+    const order = buildOrder(paths, readStartState(paths), cursors, "claude", "R4.implement", null);
+    expect(order.inputs).toEqual([
+      { agent: "codex", commitSha: "1".repeat(40), path: ".plans/issue-1/plan.md", kind: "selected-plan" }
+    ]);
+    expect(order.approvedPaths).toEqual(["src/product.ts"]);
+  });
+
+  it("binds revision round one to the derived implementation pin", () => {
+    const { paths } = fixture();
+    const implementationPin = "9".repeat(40);
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R6.revise", gateId: "gate-6-consensus", round: 1 },
+        derived: {
+          planSelection: planSelectionFor("claude"),
+          implementationSelection: implementationSelectionFor("codex", implementationPin),
+          consensus: null
+        },
+        accepted: [
+          {
+            stepId: "R2.plan",
+            agent: "claude",
+            round: null,
+            submissionSha: "1".repeat(40),
+            approvedPaths: ["src/product.ts"],
+            path: ".plans/issue-1/plan.md",
+            acceptedAt: now
+          },
+          {
+            stepId: "R4.implement",
+            agent: "codex",
+            round: null,
+            submissionSha: "3".repeat(40),
+            productPin: implementationPin,
+            path: ".signals/issue-1/implementation-ready-codex.json",
+            acceptedAt: now
+          }
+        ],
+        updatedAt: now
+      })
+    );
+    const cursors = readCursorsState(paths);
+    const order = buildOrder(paths, readStartState(paths), cursors, "codex", "R6.revise", 1);
+    expect(order.inputs).toEqual([
+      {
+        agent: "codex",
+        commitSha: implementationPin,
+        path: ".signals/issue-1/implementation-ready-codex.json",
+        kind: "implementation"
+      }
+    ]);
+  });
+
+  it("binds consensus finalization to the revision pin, and reviewed/solo to their implementation pin", () => {
+    const { paths } = fixture();
+    const revisionPin = "8".repeat(40);
+    const implementationPin = "9".repeat(40);
+    const accepted = [
+      {
+        stepId: "R4.implement" as const,
+        agent: "codex",
+        round: null,
+        submissionSha: "3".repeat(40),
+        productPin: implementationPin,
+        path: ".signals/issue-1/implementation-ready-codex.json",
+        acceptedAt: now
+      },
+      {
+        stepId: "R6.revise" as const,
+        agent: "codex",
+        round: 1,
+        submissionSha: "4".repeat(40),
+        productPin: revisionPin,
+        path: ".signals/issue-1/revision-ready-codex-round-1.json",
+        acceptedAt: now
+      }
+    ];
+    const consensus = {
+      identity: { kind: "consensus" as const, inputSetHash: "3".repeat(64), round: 1 },
+      algorithm: "unanimous-active-roster-v1" as const,
+      activeRoster: ["claude", "codex"],
+      inputs: [
+        {
+          kind: "revision" as const,
+          agent: "codex",
+          submissionSha: "4".repeat(40),
+          path: ".signals/issue-1/revision-ready-codex-round-1.json",
+          productPin: revisionPin
+        }
+      ],
+      round: 1,
+      consensusAgent: "codex",
+      consensusPin: revisionPin,
+      decidedAt: now,
+      supersedes: null
+    };
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
+        derived: {
+          planSelection: planSelectionFor("claude"),
+          implementationSelection: implementationSelectionFor("codex", implementationPin),
+          consensus
+        },
+        accepted,
+        updatedAt: now
+      })
+    );
+    const start = readStartState(paths);
+    const withConsensus = buildOrder(paths, start, readCursorsState(paths), "codex", "R7.finalize", null);
+    expect(withConsensus.inputs).toEqual([
+      {
+        agent: "codex",
+        commitSha: revisionPin,
+        path: ".signals/issue-1/revision-ready-codex-round-1.json",
+        kind: "consensus"
+      }
+    ]);
+
+    // Reviewed and solo runs never derive consensus, so finalization stands on
+    // the accepted implementation pin instead.
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        derived: { ...current.derived, consensus: null },
+        accepted: accepted.filter((submission) => submission.stepId === "R4.implement"),
+        updatedAt: now
+      })
+    );
+    const withoutConsensus = buildOrder(paths, start, readCursorsState(paths), "codex", "R7.finalize", null);
+    expect(withoutConsensus.inputs).toEqual([
+      {
+        agent: "codex",
+        commitSha: implementationPin,
+        path: ".signals/issue-1/implementation-ready-codex.json",
+        kind: "consensus"
+      }
+    ]);
   });
 });

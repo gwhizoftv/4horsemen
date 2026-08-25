@@ -18,18 +18,28 @@ import { verifyFinalization } from "./finalization.js";
 import { BareMirror, hermeticGitEnv } from "./mirror.js";
 import { renderArtifactScaffold } from "./orderScaffold.js";
 import { agentRuntimePaths, containedPath, type IssueRuntimePaths } from "./paths.js";
-import { decide } from "./machine.js";
+import {
+  decide,
+  deriveConsensus,
+  deriveImplementationSelection,
+  derivePlanSelection,
+  sameDecisionIdentity
+} from "./machine.js";
 import {
   appendJournal,
   cursorsStateSchema,
   readConfig,
   readCursorsState,
+  readJournal,
   readStartState,
   replaceCursor,
   requireStateMutation,
   StateConflictError,
   type AcceptedSubmission,
   type CursorsState,
+  type DecisionIdentity,
+  type DerivedDecision,
+  type JournalEvent,
   type StartState
 } from "./state.js";
 import {
@@ -169,29 +179,8 @@ const acceptedAt = (
       (round === undefined || submission.round === round)
   );
 
-export const deterministicWinner = (
-  cursors: CursorsState,
-  stepId: "R3.plan-ballot" | "R5.compare-ballot",
-  eligible: readonly string[]
-): string | null => {
-  const counts = new Map<string, number>();
-  for (const submission of acceptedAt(cursors, stepId)) {
-    if (submission.choice === undefined || !eligible.includes(submission.choice)) continue;
-    counts.set(submission.choice, (counts.get(submission.choice) ?? 0) + 1);
-  }
-  if (counts.size === 0) return null;
-  let winner: string | null = null;
-  let best = -1;
-  for (const agent of cursors.activeRoster) {
-    if (!eligible.includes(agent)) continue;
-    const count = counts.get(agent) ?? 0;
-    if (count > best) {
-      winner = agent;
-      best = count;
-    }
-  }
-  return winner;
-};
+/** The election itself lives with the rest of the pure derivation. */
+export { deterministicWinner } from "./machine.js";
 
 export const deriveBoundInputs = (
   start: StartState,
@@ -206,12 +195,8 @@ export const deriveBoundInputs = (
       ...acceptedAt(cursors, "R3.review").map((value) => inputFromSubmission(value, "review"))
     ];
   }
-  if (stepId === "R3.publish-selection") {
-    return acceptedAt(cursors, "R3.plan-ballot").map((value) => inputFromSubmission(value, "plan-ballot"));
-  }
   if (stepId === "R4.implement") {
-    const selected = cursors.selection.planAgents.filter((agent) => cursors.activeRoster.includes(agent));
-    const planAgents = selected.length > 0 ? selected : [cursors.activeRoster[0] as string];
+    const planAgents = selectedPlanAgents(cursors);
     return acceptedAt(cursors, "R2.plan")
       .filter((submission) => planAgents.includes(submission.agent))
       .map((value) => inputFromSubmission(value, "selected-plan"));
@@ -219,43 +204,55 @@ export const deriveBoundInputs = (
   if (stepId === "R5.compare" || stepId === "R5.compare-ballot") {
     return acceptedAt(cursors, "R4.implement").map((value) => inputFromSubmission(value, "implementation", true));
   }
-  if (stepId === "R5.reviser-auth") {
-    return [
-      ...acceptedAt(cursors, "R4.implement").map((value) => inputFromSubmission(value, "implementation", true)),
-      ...acceptedAt(cursors, "R5.compare-ballot").map((value) => inputFromSubmission(value, "comparison-ballot"))
-    ];
-  }
   if (stepId === "R6.revise") {
     if ((round ?? 1) > 1) {
       return acceptedAt(cursors, "R6.revise", true, (round ?? 1) - 1).map((value) => inputFromSubmission(value, "prior-revision", true));
     }
+    // Round one revises the winning implementation. The pin comes from the
+    // canonical decision, but the submission is looked up again so a record
+    // whose evidence has since been invalidated binds nothing rather than
+    // binding a pin no accepted submission still stands behind.
+    const selection = cursors.derived.implementationSelection;
+    if (selection === null) return [];
     const selected = acceptedAt(cursors, "R4.implement").find(
-      (value) =>
-        value.agent === cursors.selection.implementationAgent && value.productPin === cursors.selection.implementationPin
+      (value) => value.agent === selection.implementationAgent && value.productPin === selection.implementationPin
     );
     return selected === undefined ? [] : [inputFromSubmission(selected, "implementation", true)];
   }
   if (stepId === "R6.ballot") {
     return acceptedAt(cursors, "R6.revise", true, round).map((value) => inputFromSubmission(value, "revision", true));
   }
-  if (stepId === "R6.declare") {
-    return [
-      ...acceptedAt(cursors, "R6.revise", true, round).map((value) => inputFromSubmission(value, "revision", true)),
-      ...acceptedAt(cursors, "R6.ballot", true, round).map((value) => inputFromSubmission(value, "consensus-ballot"))
-    ];
-  }
   if (stepId === "R7.finalize") {
-    const declarations = acceptedAt(cursors, "R6.declare", false);
-    if (declarations.length > 0) return declarations.map((value) => inputFromSubmission(value, "consensus", true));
+    const consensus = cursors.derived.consensus;
+    if (consensus !== null) {
+      const revision = cursors.accepted.find(
+        (value) =>
+          value.stepId === "R6.revise" &&
+          value.round === consensus.round &&
+          value.agent === consensus.consensusAgent &&
+          value.productPin === consensus.consensusPin
+      );
+      if (revision !== undefined) return [inputFromSubmission(revision, "consensus", true)];
+    }
+    // Reviewed and solo runs never derive consensus: their sole accepted
+    // implementation pin is what finalization stands on.
     return acceptedAt(cursors, "R4.implement").map((value) => inputFromSubmission(value, "consensus", true));
   }
   return [];
 };
 
+/**
+ * The plan the implementation must follow.
+ *
+ * Consensus and reviewed runs read the canonical election. Solo runs hold no
+ * plan ballot at all, so there is no election to read and the one active
+ * agent's own accepted plan is the selected plan.
+ */
 const selectedPlanAgents = (cursors: CursorsState): string[] => {
-  const selection = acceptedAt(cursors, "R3.publish-selection", false).at(-1);
-  const selected = cursors.selection.planAgents.filter((agent) => cursors.activeRoster.includes(agent));
-  return selected.length > 0 ? selected : (selection?.selectedAgents ?? [...cursors.activeRoster]);
+  const selected =
+    cursors.derived.planSelection?.selectedAgents.filter((agent) => cursors.activeRoster.includes(agent)) ?? [];
+  if (selected.length > 0) return selected;
+  return acceptedAt(cursors, "R2.plan").map((submission) => submission.agent);
 };
 
 const approvedPathsForOrder = (cursors: CursorsState, stepId: WorkflowStepId): string[] => {
@@ -358,11 +355,6 @@ export const buildOrder = (
   const inputs = deriveBoundInputs(start, cursors, stepId, round);
   const planChoices = acceptedAt(cursors, "R2.plan").map((submission) => submission.agent);
   const implementationChoices = acceptedAt(cursors, "R4.implement").map((submission) => submission.agent);
-  const selectedPlan = deterministicWinner(cursors, "R3.plan-ballot", planChoices);
-  const selectedImplementation = deterministicWinner(cursors, "R5.compare-ballot", implementationChoices);
-  const selectedImplementationSubmission = acceptedAt(cursors, "R4.implement").find(
-    (submission) => submission.agent === selectedImplementation
-  );
   const approvedPaths =
     approvedPathOverride === undefined ? approvedPathsForOrder(cursors, stepId) : [...approvedPathOverride];
   const eligibleChoices =
@@ -371,7 +363,6 @@ export const buildOrder = (
       : stepId === "R5.compare-ballot"
         ? implementationChoices
         : [];
-  const expectedSelectedAgents = selectedPlan === null ? [] : [selectedPlan];
   const scaffold = renderArtifactScaffold({
     stepId,
     issue: start.issue,
@@ -381,12 +372,6 @@ export const buildOrder = (
     automationDigest: start.automationDigest,
     inputs,
     eligibleChoices,
-    expectedSelectedAgents,
-    ...(selectedImplementation === null ? {} : { expectedImplementationAgent: selectedImplementation }),
-    ...(selectedImplementationSubmission?.productPin === undefined
-      ? {}
-      : { expectedImplementationPin: selectedImplementationSubmission.productPin }),
-    ...(selectedImplementation === null ? {} : { expectedReviser: selectedImplementation }),
     round,
     approvedPaths
   });
@@ -413,13 +398,7 @@ export const buildOrder = (
     contextPaths: [...start.contextPaths],
     changeScope,
     activeRoster: [...cursors.activeRoster],
-    eligibleChoices,
-    expectedSelectedAgents,
-    ...(selectedImplementation === null ? {} : { expectedImplementationAgent: selectedImplementation }),
-    ...(selectedImplementationSubmission?.productPin === undefined
-      ? {}
-      : { expectedImplementationPin: selectedImplementationSubmission.productPin }),
-    ...(selectedImplementation === null ? {} : { expectedReviser: selectedImplementation })
+    eligibleChoices
   };
 };
 
@@ -448,6 +427,46 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   working: "the agent is mid-turn",
   "idle-transition-already-used": "this action was already delivered on the current idle transition"
 };
+
+/**
+ * The audit body of a derived decision: enough to recompute the result from the
+ * cited submissions without consulting coordinator state at all.
+ */
+export const derivedDecisionDetails = (decision: DerivedDecision): Record<string, unknown> => ({
+  identity: decision.identity,
+  kind: decision.identity.kind,
+  algorithm: decision.algorithm,
+  activeRoster: decision.activeRoster,
+  inputSetHash: decision.identity.inputSetHash,
+  round: decision.identity.round,
+  inputs: decision.inputs,
+  supersedes: decision.supersedes,
+  result:
+    "selectedAgents" in decision
+      ? { selectedAgents: decision.selectedAgents }
+      : "implementationAgent" in decision
+        ? {
+            implementationAgent: decision.implementationAgent,
+            implementationPin: decision.implementationPin,
+            reviser: decision.reviser
+          }
+        : { consensusAgent: decision.consensusAgent, consensusPin: decision.consensusPin }
+});
+
+/** The journal entry already recorded for this exact decision, if any. */
+export const findDerivedDecisionEvent = (
+  journal: readonly JournalEvent[],
+  identity: DecisionIdentity
+): JournalEvent | undefined =>
+  journal.find((event) => {
+    if (event.type !== "decision-derived") return false;
+    const recorded = event.details.identity as DecisionIdentity | undefined;
+    return (
+      recorded?.kind === identity.kind &&
+      recorded.inputSetHash === identity.inputSetHash &&
+      (recorded.round ?? null) === identity.round
+    );
+  });
 
 const deferralRationale = (code: string): string =>
   DEFERRAL_RATIONALE[code] ?? "the terminal or lifecycle layer refused delivery";
@@ -960,9 +979,7 @@ export class CoordinatorRunLoop {
       ...(decision.productPin === undefined ? {} : { productPin: decision.productPin }),
       ...(decision.disposition === undefined ? {} : { disposition: decision.disposition }),
       ...(decision.approvedPaths === undefined ? {} : { approvedPaths: [...decision.approvedPaths] }),
-      ...(decision.selectedAgents === undefined ? {} : { selectedAgents: [...decision.selectedAgents] }),
       ...(decision.choice === undefined ? {} : { choice: decision.choice }),
-      ...(decision.reviser === undefined ? {} : { reviser: decision.reviser }),
       ...(decision.checkResults === undefined
         ? {}
         : { checkResults: decision.checkResults.map((result) => ({ ...result, argv: [...result.argv] })) })
@@ -971,9 +988,6 @@ export class CoordinatorRunLoop {
       (item) => !(item.stepId === accepted.stepId && item.agent === accepted.agent && item.round === accepted.round)
     );
     const next = this.mutate(cursors, (current) => {
-      if (decision.reviser !== undefined && !current.activeRoster.includes(decision.reviser)) {
-        throw new Error(`authorized reviser ${decision.reviser} is not active`);
-      }
       appendJournal(
         this.paths,
         {
@@ -988,21 +1002,6 @@ export class CoordinatorRunLoop {
       const runtime = agentRuntimePaths(this.paths, decision.agent);
       clearCompletion(runtime.complete);
       if (existsSync(runtime.action)) unlinkSync(runtime.action);
-      const selection =
-        accepted.stepId === "R3.publish-selection"
-          ? { ...current.selection, planAgents: [...(accepted.selectedAgents ?? [])] }
-          : accepted.stepId === "R5.reviser-auth"
-            ? {
-                ...current.selection,
-                implementationAgent:
-                  current.accepted.find(
-                    (submission) =>
-                      submission.stepId === "R4.implement" && submission.productPin === accepted.productPin
-                  )?.agent ?? null,
-                implementationPin: accepted.productPin ?? null,
-                reviser: accepted.reviser ?? null
-              }
-            : current.selection;
       const publication =
         accepted.stepId === "R7.finalize" && accepted.productPin !== undefined
           ? {
@@ -1030,8 +1029,6 @@ export class CoordinatorRunLoop {
       }
       return cursorsStateSchema.parse({
         ...current,
-        reviser: accepted.reviser ?? current.reviser,
-        selection,
         publication,
         agents: {
           ...current.agents,
@@ -1152,6 +1149,67 @@ export class CoordinatorRunLoop {
     });
   }
 
+  /**
+   * Persist one coordinator-owned deterministic result.
+   *
+   * The record is re-derived from the locked state rather than carried on the
+   * decision, so a derivation queued behind a permitted drop cannot write a
+   * winner the current roster no longer supports. Nothing is written when the
+   * stored record already has the same durable identity, which is what makes a
+   * repeated tick a no-op instead of a second audit entry.
+   */
+  private deriveDecision(
+    cursors: CursorsState,
+    decision: Extract<
+      MachineDecision,
+      { type: "derive-plan-selection" | "derive-implementation-selection" | "derive-consensus" }
+    >
+  ): CursorsState {
+    const slot =
+      decision.type === "derive-plan-selection"
+        ? "planSelection"
+        : decision.type === "derive-implementation-selection"
+          ? "implementationSelection"
+          : "consensus";
+    const derive = (state: CursorsState, decidedAt: string): DerivedDecision | null =>
+      decision.type === "derive-plan-selection"
+        ? derivePlanSelection(state, decidedAt)
+        : decision.type === "derive-implementation-selection"
+          ? deriveImplementationSelection(state, decidedAt)
+          : deriveConsensus(state, decision.round, decidedAt);
+    // A state mutation bumps the revision even when the callback changes
+    // nothing, so an undecidable gate would rewrite cursors on every tick
+    // forever. Decide outside the lock whether there is anything to write; the
+    // authoritative re-derivation still happens inside it.
+    const preview = derive(cursors, "");
+    if (preview === null || sameDecisionIdentity(cursors.derived[slot]?.identity ?? null, preview.identity)) {
+      return cursors;
+    }
+    return this.mutate(cursors, (current) => {
+      const now = this.now();
+      const candidate = derive(current, now);
+      if (candidate === null) return current;
+      if (sameDecisionIdentity(current.derived[slot]?.identity ?? null, candidate.identity)) return current;
+      // A crash between the journal append and the state replacement must not
+      // produce a second event on retry: the identity is content-derived, so an
+      // existing event for it is this same decision and its timestamp is the
+      // one the record has to carry.
+      const existing = findDerivedDecisionEvent(readJournal(this.paths), candidate.identity);
+      const record = { ...candidate, decidedAt: existing?.at ?? now };
+      if (existing === undefined) {
+        appendJournal(this.paths, { type: "decision-derived", details: derivedDecisionDetails(record) }, now);
+      }
+      this.verbose(
+        `derived ${record.identity.kind} ${record.identity.inputSetHash.slice(0, 12)} from ${record.inputs.length} accepted input(s)`
+      );
+      return cursorsStateSchema.parse({
+        ...current,
+        derived: { ...current.derived, [slot]: record },
+        updatedAt: now
+      });
+    });
+  }
+
   async verifyFinalizationChecks(
     start: StartState,
     order: InternalOrder,
@@ -1249,7 +1307,11 @@ export class CoordinatorRunLoop {
       return this.mutate(authority, (current) => {
         appendJournal(
           this.paths,
-          { type: "pr-created", agent: current.selection.reviser ?? undefined, details: { url: result.url, branch, finalSha } },
+          {
+            type: "pr-created",
+            agent: current.derived.implementationSelection?.reviser ?? undefined,
+            details: { url: result.url, branch, finalSha }
+          },
           this.now()
         );
         if (coordMergesPullRequest(start.prPolicy)) {
@@ -1310,6 +1372,12 @@ export class CoordinatorRunLoop {
       } else if (decision.type === "advance-step") {
         this.logPhase(start.issue, decision.to, decision.round, decision.from);
         next = this.advance(next, decision);
+      } else if (
+        decision.type === "derive-plan-selection" ||
+        decision.type === "derive-implementation-selection" ||
+        decision.type === "derive-consensus"
+      ) {
+        next = this.deriveDecision(next, decision);
       } else if (decision.type === "owner-action-required") {
         if (next.ownerQuestion === null) {
           next = this.mutate(next, (current) => {

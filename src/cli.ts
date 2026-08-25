@@ -27,7 +27,13 @@ import {
   type IssueRuntimePaths
 } from "./paths.js";
 import { gitShaSchema } from "./protocol.js";
-import { CoordinatorRunLoop, deterministicWinner, runArgv, type ProcessRunner } from "./runLoop.js";
+import {
+  deriveConsensus,
+  deriveImplementationSelection,
+  derivePlanSelection,
+  sameDecisionIdentity
+} from "./machine.js";
+import { CoordinatorRunLoop, derivedDecisionDetails, runArgv, type ProcessRunner } from "./runLoop.js";
 import {
   appendJournal,
   atomicWriteJson,
@@ -42,10 +48,13 @@ import {
   replaceCursor,
   setPaused,
   verifyPhaseSchema,
+  type ConsensusDecision,
   type CoordinatorConfig,
-  type CursorsState
+  type CursorsState,
+  type ImplementationSelectionDecision,
+  type PlanSelectionDecision
 } from "./state.js";
-import type { WorkflowProfile } from "./steps.js";
+import { STEP_DEFINITIONS, WORKFLOW_STEP_ORDER, type WorkflowProfile, type WorkflowStepId } from "./steps.js";
 import {
   resolveAgentLauncher,
   TmuxController,
@@ -297,6 +306,36 @@ export const automationDigestMaterial = (
   };
 };
 
+/**
+ * The result a decision reached, independent of which inputs produced it.
+ *
+ * Identity changes on every roster change, so identity alone cannot answer the
+ * question that matters after a drop: did the *binding* move? Downstream work
+ * is only void when this string changes.
+ */
+const decisionResultKey = (
+  decision: PlanSelectionDecision | ImplementationSelectionDecision | ConsensusDecision | null
+): string | null => {
+  if (decision === null) return null;
+  if ("selectedAgents" in decision) return decision.selectedAgents.join(",");
+  if ("implementationAgent" in decision) {
+    return `${decision.implementationAgent}\u0000${decision.implementationPin}\u0000${decision.reviser}`;
+  }
+  return `${decision.round}\u0000${decision.consensusAgent}\u0000${decision.consensusPin}`;
+};
+
+const stepRank = (stepId: WorkflowStepId): number => WORKFLOW_STEP_ORDER.indexOf(stepId);
+
+/**
+ * Re-establish every coordinator-owned decision after a permitted drop.
+ *
+ * A drop can change who won, which invalidates not just the decision but every
+ * accepted submission produced against it. Each decision that had already been
+ * taken is recomputed from the evidence that remains; when its result moves,
+ * the work bound to the old result is cleared and the run is rewound to the
+ * earliest step whose binding changed, so nothing downstream keeps pointing at
+ * an agent or pin the active roster no longer supports.
+ */
 const rederiveAfterDrop = (
   paths: IssueRuntimePaths,
   cursors: CursorsState,
@@ -310,11 +349,7 @@ const rederiveAfterDrop = (
     next.accepted
       .filter(
         (submission) =>
-          submission.stepId === currentStep &&
-          submission.round === round &&
-          (submission.choice === dropped ||
-            submission.reviser === dropped ||
-            submission.selectedAgents?.includes(dropped) === true)
+          submission.stepId === currentStep && submission.round === round && submission.choice === dropped
       )
       .map((submission) => submission.agent)
   );
@@ -329,6 +364,105 @@ const rederiveAfterDrop = (
         )
     ),
     ownerQuestion: null,
+    updatedAt: now
+  });
+
+  let rewindTo: WorkflowStepId | null = null;
+  const rewind = (stepId: WorkflowStepId): void => {
+    if (rewindTo === null || stepRank(stepId) < stepRank(rewindTo)) rewindTo = stepId;
+  };
+  const clearFrom = (stepId: WorkflowStepId): void => {
+    next = cursorsStateSchema.parse({
+      ...next,
+      accepted: next.accepted.filter((submission) => stepRank(submission.stepId) < stepRank(stepId)),
+      updatedAt: now
+    });
+  };
+  const record = (decision: PlanSelectionDecision | ImplementationSelectionDecision | ConsensusDecision): void => {
+    appendJournal(paths, { type: "decision-derived", details: derivedDecisionDetails(decision) }, now);
+  };
+  /**
+   * The identity a recomputation replaces is the one held *before* the drop.
+   * `dropAgent` has already cleared a falsified record, so re-deriving from the
+   * post-drop state would report `supersedes: null` and lose the link between
+   * the two results.
+   */
+  const superseding = <T extends { supersedes: unknown }>(candidate: T, prior: { identity: unknown } | null): T => ({
+    ...candidate,
+    supersedes: prior?.identity ?? candidate.supersedes
+  });
+
+  // Only decisions that had already been taken are recomputed. Deriving one
+  // that was never reached would decide a ballot that is still open.
+  if (cursors.derived.planSelection !== null) {
+    const candidate = derivePlanSelection(next, now);
+    if (candidate !== null && !sameDecisionIdentity(next.derived.planSelection?.identity ?? null, candidate.identity)) {
+      const replacement = superseding(candidate, cursors.derived.planSelection);
+      record(replacement);
+      next = cursorsStateSchema.parse({
+        ...next,
+        derived: { ...next.derived, planSelection: replacement },
+        updatedAt: now
+      });
+    }
+    if (decisionResultKey(next.derived.planSelection) !== decisionResultKey(cursors.derived.planSelection)) {
+      clearFrom("R4.implement");
+      next = cursorsStateSchema.parse({
+        ...next,
+        derived: { ...next.derived, implementationSelection: null, consensus: null },
+        updatedAt: now
+      });
+      rewind("R4.implement");
+    }
+  }
+
+  if (cursors.derived.implementationSelection !== null && next.derived.implementationSelection !== null) {
+    const candidate = deriveImplementationSelection(next, now);
+    if (
+      candidate !== null &&
+      !sameDecisionIdentity(next.derived.implementationSelection.identity, candidate.identity)
+    ) {
+      const replacement = superseding(candidate, cursors.derived.implementationSelection);
+      record(replacement);
+      next = cursorsStateSchema.parse({
+        ...next,
+        derived: { ...next.derived, implementationSelection: replacement },
+        updatedAt: now
+      });
+    }
+  }
+  if (
+    decisionResultKey(next.derived.implementationSelection) !==
+    decisionResultKey(cursors.derived.implementationSelection)
+  ) {
+    clearFrom("R6.revise");
+    next = cursorsStateSchema.parse({ ...next, derived: { ...next.derived, consensus: null }, updatedAt: now });
+    rewind("R6.revise");
+  }
+
+  if (cursors.derived.consensus !== null && next.derived.consensus !== null) {
+    const candidate = deriveConsensus(next, next.derived.consensus.round, now);
+    if (candidate !== null && !sameDecisionIdentity(next.derived.consensus.identity, candidate.identity)) {
+      const replacement = superseding(candidate, cursors.derived.consensus);
+      record(replacement);
+      next = cursorsStateSchema.parse({
+        ...next,
+        derived: { ...next.derived, consensus: replacement },
+        updatedAt: now
+      });
+    }
+  }
+  if (decisionResultKey(next.derived.consensus) !== decisionResultKey(cursors.derived.consensus)) {
+    clearFrom("R7.finalize");
+    rewind("R7.finalize");
+  }
+
+  const resumeAt: WorkflowStepId =
+    rewindTo !== null && stepRank(rewindTo) < stepRank(currentStep) ? rewindTo : currentStep;
+  const resumeRound = resumeAt.startsWith("R6.") ? (resumeAt === currentStep ? round : 1) : null;
+  next = cursorsStateSchema.parse({
+    ...next,
+    issueCursor: { stepId: resumeAt, gateId: STEP_DEFINITIONS[resumeAt].gateId, round: resumeRound },
     publication:
       next.publication.finalSha !== null &&
       !next.accepted.some(
@@ -346,39 +480,13 @@ const rederiveAfterDrop = (
     updatedAt: now
   });
 
-  const planEligible = next.accepted
-    .filter((submission) => submission.stepId === "R2.plan" && next.activeRoster.includes(submission.agent))
-    .map((submission) => submission.agent);
-  const implementationEligible = next.accepted
-    .filter((submission) => submission.stepId === "R4.implement" && next.activeRoster.includes(submission.agent))
-    .map((submission) => submission.agent);
-  const planWinner = deterministicWinner(next, "R3.plan-ballot", planEligible);
-  const implementationWinner = deterministicWinner(next, "R5.compare-ballot", implementationEligible);
-  const implementation = next.accepted.find(
-    (submission) => submission.stepId === "R4.implement" && submission.agent === implementationWinner
-  );
-  const reselectPlan = cursors.selection.planAgents.length > 0 && next.selection.planAgents.length === 0;
-  const reselectImplementation =
-    cursors.selection.implementationAgent !== null && next.selection.implementationAgent === null;
-  const reselectReviser = cursors.selection.reviser !== null && next.selection.reviser === null;
-  next = cursorsStateSchema.parse({
-    ...next,
-    reviser: reselectReviser ? implementationWinner : next.reviser,
-    selection: {
-      planAgents: reselectPlan && planWinner !== null ? [planWinner] : next.selection.planAgents,
-      implementationAgent: reselectImplementation ? implementationWinner : next.selection.implementationAgent,
-      implementationPin: reselectImplementation ? (implementation?.productPin ?? null) : next.selection.implementationPin,
-      reviser: reselectReviser ? implementationWinner : next.selection.reviser
-    },
-    updatedAt: now
-  });
-
   const droppedRuntime = agentRuntimePaths(paths, dropped);
   clearCompletion(droppedRuntime.complete);
   if (existsSync(droppedRuntime.action)) unlinkSync(droppedRuntime.action);
   for (const agent of next.activeRoster) {
     const alreadySatisfied = next.accepted.some(
-      (submission) => submission.stepId === currentStep && submission.agent === agent && submission.round === round
+      (submission) =>
+        submission.stepId === resumeAt && submission.agent === agent && submission.round === resumeRound
     );
     if (alreadySatisfied) continue;
     const runtime = agentRuntimePaths(paths, agent);
@@ -386,7 +494,7 @@ const rederiveAfterDrop = (
     next = replaceCursor(
       next,
       agent,
-      { actionId: null, status: "idle", submissionSha: null, outstanding: [] },
+      { stepId: resumeAt, actionId: null, status: "idle", submissionSha: null, outstanding: [] },
       now
     );
   }
@@ -1259,7 +1367,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         }
         if (!current.activeRoster.includes(agent)) throw new Error(`${agent} is not active.`);
         if (current.activeRoster.length === 1) throw new Error("Cannot drop the final active agent.");
-        if (current.selection.reviser === agent || current.reviser === agent) {
+        if (current.derived.implementationSelection?.reviser === agent) {
           throw new Error(
             `Cannot drop authorized reviser ${agent}; revision and finalization must not be rebound without a new authorization.`
           );

@@ -7,7 +7,15 @@ import { writeAction } from "../src/action.js";
 import { automationDigestMaterial, runCli, type CliRunLoop } from "../src/cli.js";
 import { agentRuntimePaths, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
-import { cursorsStateSchema, readConfig, readCursorsState, readStartState, writeCursorsState } from "../src/state.js";
+import {
+  cursorsStateSchema,
+  readConfig,
+  readCursorsState,
+  readJournal,
+  readStartState,
+  writeCursorsState
+} from "../src/state.js";
+import { derivePlanSelection } from "../src/machine.js";
 import { DOCTOR_CODES } from "../src/doctor.js";
 import { renderGitHubIssueSnapshot } from "../src/githubIssue.js";
 import { ensureBuilt, makeProduct, repoRoot, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
@@ -697,25 +705,29 @@ describe("CLI", () => {
       cursorsStateSchema.parse({
         ...current,
         issueCursor: { stepId: "R6.revise", gateId: "gate-6-consensus", round: 1 },
-        reviser: "cursor",
-        selection: {
-          planAgents: ["codex"],
-          implementationAgent: "cursor",
-          implementationPin: "e".repeat(40),
-          reviser: "cursor"
-        },
-        accepted: [
-          {
-            stepId: "R5.reviser-auth",
-            agent: "codex",
-            round: null,
-            submissionSha: "f".repeat(40),
-            productPin: "e".repeat(40),
+        derived: {
+          planSelection: null,
+          implementationSelection: {
+            identity: { kind: "implementation-selection", inputSetHash: "1".repeat(64), round: null },
+            algorithm: "plurality-active-roster-v1",
+            activeRoster: current.activeRoster,
+            inputs: [
+              {
+                kind: "implementation",
+                agent: "cursor",
+                submissionSha: "f".repeat(40),
+                path: ".signals/issue-1/implementation-ready-cursor.json",
+                productPin: "e".repeat(40)
+              }
+            ],
+            implementationAgent: "cursor",
+            implementationPin: "e".repeat(40),
             reviser: "cursor",
-            path: ".signals/issue-1/reviser-authorization.json",
-            acceptedAt: now
-          }
-        ],
+            decidedAt: now,
+            supersedes: null
+          },
+          consensus: null
+        },
         updatedAt: now
       })
     );
@@ -728,8 +740,138 @@ describe("CLI", () => {
     ).toBe(2);
     const after = readCursorsState(paths);
     expect(after.activeRoster).toContain("cursor");
-    expect(after.selection.reviser).toBe("cursor");
+    expect(after.derived.implementationSelection?.reviser).toBe("cursor");
     expect(errors.join("")).toContain("Cannot drop authorized reviser cursor");
+  });
+
+  it("recomputes a derived decision after a permitted drop and journals the supersession", async () => {
+    const fixture = setup();
+    await runCli(["start", "1", "--profile", "consensus", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      processRunner: successfulStartGit,
+      makeRunLoop: fakeLoop
+    });
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const now = "2026-08-11T17:00:00.000Z";
+    const current = readCursorsState(paths);
+    const roster = current.activeRoster;
+    const seeded = cursorsStateSchema.parse({
+      ...current,
+      issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
+      accepted: [
+        ...roster.map((agent) => ({
+          stepId: "R2.plan" as const,
+          agent,
+          round: null,
+          submissionSha: "1".repeat(40),
+          approvedPaths: ["src/product.ts"],
+          path: ".plans/issue-1/plan.md",
+          acceptedAt: now
+        })),
+        // cursor wins on its own vote plus claude's; dropping it leaves codex.
+        ...roster.map((agent) => ({
+          stepId: "R3.plan-ballot" as const,
+          agent,
+          round: null,
+          submissionSha: "2".repeat(40),
+          choice: agent === "codex" ? "codex" : "cursor",
+          path: `.plans/issue-1/ballot-${agent}.json`,
+          acceptedAt: now
+        })),
+        {
+          stepId: "R4.implement" as const,
+          agent: "claude",
+          round: null,
+          submissionSha: "3".repeat(40),
+          productPin: "4".repeat(40),
+          path: ".signals/issue-1/implementation-ready-claude.json",
+          acceptedAt: now
+        }
+      ],
+      updatedAt: now
+    });
+    writeCursorsState(
+      paths,
+      cursorsStateSchema.parse({
+        ...seeded,
+        derived: { ...seeded.derived, planSelection: derivePlanSelection(seeded, now) },
+        updatedAt: now
+      })
+    );
+    const before = readCursorsState(paths);
+    expect(before.derived.planSelection?.selectedAgents).toEqual(["cursor"]);
+
+    expect(
+      await runCli(["drop", "cursor", "--issue", "1", "--coord-root", fixture.runtime], { makeRunLoop: fakeLoop })
+    ).toBe(0);
+    const after = readCursorsState(paths);
+    // The winner moved, so the plan the implementation was written against is
+    // gone: the accepted implementation and the cursor position must go with it.
+    expect(after.derived.planSelection?.selectedAgents).toEqual(["codex"]);
+    expect(after.derived.planSelection?.supersedes).toEqual(before.derived.planSelection?.identity);
+    expect(after.derived.planSelection?.activeRoster).toEqual(after.activeRoster);
+    expect(after.accepted.some((submission) => submission.stepId === "R4.implement")).toBe(false);
+    expect(after.issueCursor.stepId).toBe("R4.implement");
+    const derivations = readJournal(paths).filter((event) => event.type === "decision-derived");
+    expect(derivations).toHaveLength(1);
+    expect(derivations[0]?.details.result).toEqual({ selectedAgents: ["codex"] });
+    expect(derivations[0]?.details.supersedes).toEqual(before.derived.planSelection?.identity);
+  });
+
+  it("drops the ballots of a dropped agent from the tally without touching an unaffected winner", async () => {
+    const fixture = setup();
+    await runCli(["start", "1", "--profile", "consensus", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      processRunner: successfulStartGit,
+      makeRunLoop: fakeLoop
+    });
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const now = "2026-08-11T17:00:00.000Z";
+    const current = readCursorsState(paths);
+    const roster = current.activeRoster;
+    const seeded = cursorsStateSchema.parse({
+      ...current,
+      issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
+      accepted: [
+        ...roster.map((agent) => ({
+          stepId: "R2.plan" as const,
+          agent,
+          round: null,
+          submissionSha: "1".repeat(40),
+          approvedPaths: ["src/product.ts"],
+          path: ".plans/issue-1/plan.md",
+          acceptedAt: now
+        })),
+        ...roster.map((agent) => ({
+          stepId: "R3.plan-ballot" as const,
+          agent,
+          round: null,
+          submissionSha: "2".repeat(40),
+          choice: "codex",
+          path: `.plans/issue-1/ballot-${agent}.json`,
+          acceptedAt: now
+        }))
+      ],
+      updatedAt: now
+    });
+    writeCursorsState(
+      paths,
+      cursorsStateSchema.parse({
+        ...seeded,
+        derived: { ...seeded.derived, planSelection: derivePlanSelection(seeded, now) },
+        updatedAt: now
+      })
+    );
+    const before = readCursorsState(paths);
+    expect(
+      await runCli(["drop", "cursor", "--issue", "1", "--coord-root", fixture.runtime], { makeRunLoop: fakeLoop })
+    ).toBe(0);
+    const after = readCursorsState(paths);
+    expect(after.derived.planSelection?.selectedAgents).toEqual(["codex"]);
+    // The result did not move, so nothing downstream is invalidated — but the
+    // decision is still re-recorded under the roster that actually decided it.
+    expect(after.derived.planSelection?.activeRoster).toEqual(after.activeRoster);
+    expect(after.derived.planSelection?.identity).not.toEqual(before.derived.planSelection?.identity);
+    expect(after.derived.planSelection?.inputs.some((input) => input.agent === "cursor")).toBe(false);
+    expect(after.issueCursor.stepId).toBe("R4.implement");
   });
 
   it("preserves peer acceptance and pending intent when another agent is dropped", async () => {

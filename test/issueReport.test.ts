@@ -8,8 +8,9 @@ const impl = "e".repeat(40);
 
 const start = (policy: StartState["prPolicy"]): StartState =>
   ({
-    formatVersion: 2,
+    formatVersion: 3,
     issue: 1,
+    contextPaths: [],
     issueSessionId: `issue-1:${"a".repeat(40)}`,
     baselineSha: "a".repeat(40),
     profile: "consensus",
@@ -33,17 +34,33 @@ const start = (policy: StartState["prPolicy"]): StartState =>
 
 const complete = (overrides: Partial<CursorsState["publication"]> = {}): CursorsState =>
   ({
-    formatVersion: 2,
+    formatVersion: 3,
     stateRevision: 1,
     issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
     activeRoster: ["cursor"],
     droppedAgents: [],
-    reviser: "cursor",
-    selection: {
-      planAgents: ["cursor"],
-      implementationAgent: "cursor",
-      implementationPin: impl,
-      reviser: "cursor"
+    derived: {
+      planSelection: null,
+      implementationSelection: {
+        identity: { kind: "implementation-selection", inputSetHash: "c".repeat(64), round: null },
+        algorithm: "plurality-active-roster-v1",
+        activeRoster: ["cursor"],
+        inputs: [
+          {
+            kind: "implementation",
+            agent: "cursor",
+            submissionSha: "b".repeat(40),
+            path: ".signals/issue-1/implementation-ready-cursor.json",
+            productPin: impl
+          }
+        ],
+        implementationAgent: "cursor",
+        implementationPin: impl,
+        reviser: "cursor",
+        decidedAt: "2026-08-13T00:00:00.000Z",
+        supersedes: null
+      },
+      consensus: null
     },
     ownerQuestion: null,
     lastOwnerAnswer: null,
@@ -112,5 +129,36 @@ describe("issue report", () => {
     expect(renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle)).toContain(
       "Agent cursor: none / queued / healthy, pending=2, background-active"
     );
+  });
+  it("reports the consensus winner and pin from the canonical decision", () => {
+    const text = renderIssueReport(start("coord-open-unmerged"), complete());
+    expect(text).toContain("Chosen agent: cursor");
+    expect(text).toContain(`Implementation pin: ${impl}`);
+  });
+
+  it("falls back to the sole accepted implementation for reviewed and solo runs", () => {
+    // Neither profile holds a comparison ballot, so no implementation-selection
+    // decision exists. Reporting "(not selected yet)" for a finished solo run
+    // would be wrong: that run does have exactly one implementation.
+    const cursors = complete();
+    const soloish = {
+      ...cursors,
+      derived: { planSelection: null, implementationSelection: null, consensus: null },
+      accepted: [
+        ...cursors.accepted,
+        {
+          stepId: "R4.implement" as const,
+          agent: "cursor",
+          round: null,
+          submissionSha: "b".repeat(40),
+          productPin: impl,
+          path: ".signals/issue-1/implementation-ready-cursor.json",
+          acceptedAt: "2026-08-13T00:00:00.000Z"
+        }
+      ]
+    } as CursorsState;
+    const text = renderIssueReport(start("coord-open-unmerged"), soloish);
+    expect(text).toContain("Chosen agent: cursor");
+    expect(text).toContain(`Implementation pin: ${impl}`);
   });
 });

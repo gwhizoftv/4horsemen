@@ -21,6 +21,7 @@ import { coordinatorConfigSchema } from "../src/state.js";
 import { COORD_IDLE_SENTINEL } from "../src/tmux.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
+import { deriveConsensus, deriveImplementationSelection, derivePlanSelection } from "../src/machine.js";
 import {
   cursorsStateSchema,
   initializeOperationalState,
@@ -139,18 +140,16 @@ const seedAcceptedSubmissions = (paths: ReturnType<typeof fixture>) => {
       acceptedAt: now
     }))
   ];
+  const seeded = cursorsStateSchema.parse({ ...current, accepted, updatedAt: now });
   writeCursorsState(
     paths,
     cursorsStateSchema.parse({
-      ...current,
-      reviser: "codex",
-      selection: {
-        planAgents: ["claude"],
-        implementationAgent: "codex",
-        implementationPin: "5".repeat(40),
-        reviser: "codex"
+      ...seeded,
+      derived: {
+        planSelection: derivePlanSelection(seeded, now),
+        implementationSelection: deriveImplementationSelection(seeded, now),
+        consensus: deriveConsensus(seeded, 1, now)
       },
-      accepted,
       updatedAt: now
     })
   );
@@ -289,14 +288,14 @@ describe("agent-facing language", () => {
   });
 
   it("covers every workflow step and every evidence id", () => {
-    expect(everyStep).toHaveLength(13);
+    expect(everyStep).toHaveLength(10);
     const subjects = new Set<string>();
     for (const stepId of everyStep) {
       const subject = agentFacingSubject(STEP_DEFINITIONS[stepId].evidenceId);
       expect(subject, stepId).toBeTruthy();
       subjects.add(subject);
     }
-    expect(subjects.size).toBe(13);
+    expect(subjects.size).toBe(10);
     for (const subject of agentFacingSubjects()) {
       expect(findAgentLanguageViolations(subject), subject).toEqual([]);
     }
@@ -447,20 +446,49 @@ describe("agent-facing language", () => {
 
   it("does not flag the outcome-named paths the workflow still publishes", () => {
     const evidenceIds = everyStep.map((stepId) => STEP_DEFINITIONS[stepId].evidenceId);
-    expect(evidenceIds).toContain<EvidenceId>("reviser-authorized");
-    // The evidence id `reviser-authorized` is banned, so the published path uses
-    // the artifact's own name instead. A suffix-shaped rule would reject both.
-    expect(STEP_DEFINITIONS["R5.reviser-auth"].requiredPath(1, "codex", null)).toBe(
-      ".signals/issue-1/reviser-authorization.json"
+    expect(evidenceIds).toContain<EvidenceId>("implementation-pinned");
+    // The evidence id `implementation-pinned` is banned, so the published path
+    // uses the artifact's own name instead. A suffix-shaped rule would reject
+    // both.
+    expect(STEP_DEFINITIONS["R4.implement"].requiredPath(1, "codex", null)).toBe(
+      ".signals/issue-1/implementation-ready-codex.json"
     );
     for (const path of [
       ".signals/issue-1/participation-ready-codex.json",
       ".signals/issue-1/implementation-ready-codex.json",
-      ".signals/issue-1/reviser-authorization.json",
       ".signals/issue-1/revision-ready-codex-round-1.json",
       ".signals/issue-1/finalization-ready-codex.json"
     ]) {
       expect(findAgentLanguageViolations(path), path).toEqual([]);
+    }
+  });
+
+  it("has no agent-facing surface left for the three coordinator-owned decisions", () => {
+    // These were agent-facing steps until issue 109. If any of them still had a
+    // step definition, an evidence id, or a required path, the coordinator could
+    // ask an agent to publish a result it now owns.
+    const stepIds = everyStep as string[];
+    const evidenceIds = everyStep.map((stepId) => STEP_DEFINITIONS[stepId].evidenceId) as string[];
+    for (const removed of ["R3.publish-selection", "R5.reviser-auth", "R6.declare"]) {
+      expect(stepIds).not.toContain(removed);
+    }
+    for (const removed of ["selection-published", "reviser-authorized", "consensus-declared"]) {
+      expect(evidenceIds).not.toContain(removed);
+    }
+    const requiredPaths = everyStep.map((stepId) =>
+      STEP_DEFINITIONS[stepId].requiredPath(1, "codex", roundOf(stepId))
+    );
+    for (const removed of [
+      ".plans/issue-1/selection.json",
+      ".signals/issue-1/reviser-authorization.json",
+      ".signals/issue-1/consensus.json"
+    ]) {
+      expect(requiredPaths).not.toContain(removed);
+    }
+    for (const subject of agentFacingSubjects()) {
+      expect(subject).not.toContain("plan selection");
+      expect(subject).not.toContain("revision authorization");
+      expect(subject).not.toContain("consensus declaration");
     }
   });
 

@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 const start = startStateSchema.parse({
-  formatVersion: 2,
+  formatVersion: 3,
   issue: 89,
   issueSessionId: `issue-89:${"a".repeat(40)}`,
   baselineSha: "a".repeat(40),
@@ -148,7 +148,7 @@ describe("analytics aggregation", () => {
       -1,
       0,
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 12,
         at: "2026-08-21T00:02:10.000Z",
         type: "action-prepared",
@@ -157,7 +157,7 @@ describe("analytics aggregation", () => {
         details: { requiredPath: ".plans/issue-89/review.md" }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 13,
         at: "2026-08-21T00:02:11.000Z",
         type: "nudged",
@@ -200,14 +200,14 @@ describe("analytics aggregation", () => {
     const actionId = "44444444-4444-4444-8444-444444444444";
     const journal = [
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 0,
         at: "2026-08-21T00:00:00.000Z",
         type: "started",
         details: { issue: 89, profile: "consensus" }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 1,
         at: "2026-08-21T00:00:00.000Z",
         type: "nudged",
@@ -216,7 +216,7 @@ describe("analytics aggregation", () => {
         details: {}
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 2,
         at: "2026-08-21T00:00:10.000Z",
         type: "intent-seen",
@@ -226,7 +226,7 @@ describe("analytics aggregation", () => {
         details: {}
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 3,
         at: "2026-08-21T00:00:20.000Z",
         type: "nudged",
@@ -235,7 +235,7 @@ describe("analytics aggregation", () => {
         details: {}
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 4,
         at: "2026-08-21T00:00:25.000Z",
         type: "intent-seen",
@@ -259,26 +259,104 @@ describe("analytics aggregation", () => {
       { sequence: 4, at: "2026-08-21T00:00:01.000Z", type: "agent-lifecycle", agent: "claude", actionId, details: { vendor: "claude", event: "UserPromptSubmit", kind: "prompt-submitted", execution: "working", health: "healthy", sessionId: "session-claude", turnId: "turn-claude-1" } },
       { sequence: 5, at: "2026-08-21T00:00:03.500Z", type: "agent-lifecycle", agent: "claude", details: { vendor: "claude", event: "Stop", kind: "stopped", execution: "idle", health: "healthy", sessionId: "session-claude", turnId: "turn-claude-1" } },
       { sequence: 6, at: "2026-08-21T00:00:04.000Z", type: "gate-advanced", details: { from: "R6.revise", to: "R6.ballot", round: 1 } },
-      { sequence: 7, at: "2026-08-21T00:00:05.000Z", type: "gate-advanced", details: { from: "R6.ballot", to: "R6.declare", round: 1 } },
-      { sequence: 8, at: "2026-08-21T00:00:06.000Z", type: "gate-advanced", details: { from: "R6.declare", to: "R6.revise", round: 2 } },
-      { sequence: 9, at: "2026-08-21T00:00:07.000Z", type: "gate-advanced", details: { from: "R6.revise", to: "R6.ballot", round: 2 } },
-      { sequence: 10, at: "2026-08-21T00:00:08.000Z", type: "gate-advanced", details: { from: "R6.ballot", to: "R6.declare", round: 2 } },
-      { sequence: 11, at: "2026-08-21T00:00:09.000Z", type: "gate-advanced", details: { from: "R6.declare", to: null, round: null } }
+      // A `revise` round now goes straight back to R6.revise, and the derived
+      // consensus that ends the loop is journal metadata between two gates —
+      // never a phase of its own.
+      { sequence: 7, at: "2026-08-21T00:00:06.000Z", type: "gate-advanced", details: { from: "R6.ballot", to: "R6.revise", round: 2 } },
+      { sequence: 8, at: "2026-08-21T00:00:07.000Z", type: "gate-advanced", details: { from: "R6.revise", to: "R6.ballot", round: 2 } },
+      {
+        sequence: 9,
+        at: "2026-08-21T00:00:08.500Z",
+        type: "decision-derived",
+        details: {
+          identity: { kind: "consensus", inputSetHash: "a".repeat(64), round: 2 },
+          kind: "consensus",
+          algorithm: "unanimous-active-roster-v1",
+          activeRoster: ["claude"],
+          inputSetHash: "a".repeat(64),
+          round: 2,
+          inputs: [],
+          supersedes: null,
+          result: { consensusAgent: "claude", consensusPin: "b".repeat(40) }
+        }
+      },
+      { sequence: 10, at: "2026-08-21T00:00:09.000Z", type: "gate-advanced", details: { from: "R6.ballot", to: null, round: null } }
     ];
-    const journal = raw.map((event) => journalEventSchema.parse({ formatVersion: 2, ...event }));
+    const journal = raw.map((event) => journalEventSchema.parse({ formatVersion: 3, ...event }));
     const report = buildAnalytics({ start, journal, activeRoster: ["claude"], transcriptRoots: transcriptRoots() });
 
     expect(report.phases.filter((phase) => phase.name.startsWith("R6.")).map((phase) => [phase.name, phase.round])).toEqual([
       ["R6.revise", 1],
       ["R6.ballot", 1],
-      ["R6.declare", 1],
       ["R6.revise", 2],
-      ["R6.ballot", 2],
-      ["R6.declare", 2]
+      ["R6.ballot", 2]
     ]);
+    // The derivation is audit metadata: it opens no phase and attributes no
+    // agent work, so R6.ballot round 2 owns the whole interval up to the end.
+    expect(report.phases.map((phase) => phase.name)).not.toContain("decision-derived");
+    expect(report.phases.find((phase) => phase.name === "R6.ballot" && phase.round === 2)?.durationMs).toBe(2_000);
     const rendered = renderAnalytics(report);
     expect(rendered.match(/R6\.revise round 1/g)).toHaveLength(3);
     expect(rendered.match(/R6\.revise round 2/g)).toHaveLength(3);
+  });
+
+  it("segments a consensus run into exactly ten agent-facing phases", () => {
+    const sequenceOf = [
+      "R1.join",
+      "R2.plan",
+      "R3.review",
+      "R3.plan-ballot",
+      "R4.implement",
+      "R5.compare",
+      "R5.compare-ballot",
+      "R6.revise",
+      "R6.ballot",
+      "R7.finalize"
+    ];
+    const at = (offset: number): string => new Date(Date.parse("2026-08-21T00:00:00.000Z") + offset * 1000).toISOString();
+    const derivation = (sequence: number, kind: string, round: number | null) => ({
+      sequence,
+      at: at(sequence),
+      type: "decision-derived",
+      details: {
+        identity: { kind, inputSetHash: "a".repeat(64), round },
+        kind,
+        algorithm: kind === "consensus" ? "unanimous-active-roster-v1" : "plurality-active-roster-v1",
+        activeRoster: ["claude"],
+        inputSetHash: "a".repeat(64),
+        round,
+        inputs: [],
+        supersedes: null,
+        result: {}
+      }
+    });
+    const raw: Array<Record<string, unknown>> = [
+      { sequence: 0, at: at(0), type: "started", details: { issue: 89, profile: "consensus" } }
+    ];
+    let sequence = 1;
+    for (const [index, from] of sequenceOf.entries()) {
+      const to = sequenceOf[index + 1] ?? null;
+      // The coordinator derives its result immediately before the gate it
+      // unblocks, so the derivation lands inside the phase it ends.
+      if (from === "R3.plan-ballot") raw.push(derivation(sequence++, "plan-selection", null));
+      if (from === "R5.compare-ballot") raw.push(derivation(sequence++, "implementation-selection", null));
+      if (from === "R6.ballot") raw.push(derivation(sequence++, "consensus", 1));
+      raw.push({
+        sequence: sequence++,
+        at: at(sequence),
+        type: "gate-advanced",
+        details: { from, to, round: from.startsWith("R6.") ? 1 : null }
+      });
+    }
+    const journal = raw.map((event) => journalEventSchema.parse({ formatVersion: 3, ...event }));
+    const report = buildAnalytics({ start, journal, activeRoster: ["claude"] });
+    expect(report.phases.map((phase) => phase.name)).toEqual(sequenceOf);
+    for (const removed of ["R3.publish-selection", "R5.reviser-auth", "R6.declare"]) {
+      expect(report.phases.map((phase) => phase.name)).not.toContain(removed);
+    }
+    // Three coordinator decisions, zero agent actions attributed to them.
+    expect(journal.filter((event) => event.type === "decision-derived")).toHaveLength(3);
+    expect(journal.filter((event) => event.type === "action-prepared")).toHaveLength(0);
   });
 
   it("labels a timestamp-window attribution partial and leaves unmatched records unassigned", () => {
@@ -325,14 +403,14 @@ describe("analytics aggregation", () => {
     });
     const journal = [
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 0,
         at: "2026-08-21T00:00:00.000Z",
         type: "started",
         details: { issue: 94, profile: "solo" }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 1,
         at: "2026-08-21T00:00:01.000Z",
         type: "action-prepared",
@@ -341,7 +419,7 @@ describe("analytics aggregation", () => {
         details: { requiredPath: ".plans/issue-94/plan.md" }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 2,
         at: "2026-08-21T00:00:02.000Z",
         type: "agent-lifecycle",
@@ -356,7 +434,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 3,
         at: "2026-08-21T00:00:03.000Z",
         type: "agent-usage",
@@ -371,7 +449,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 4,
         at: "2026-08-21T00:00:04.000Z",
         type: "agent-usage",
@@ -386,7 +464,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 5,
         at: "2026-08-21T00:00:05.000Z",
         type: "agent-lifecycle",
@@ -400,7 +478,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 6,
         at: "2026-08-21T00:01:00.000Z",
         type: "gate-advanced",

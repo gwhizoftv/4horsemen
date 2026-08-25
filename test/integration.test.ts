@@ -14,6 +14,7 @@ import {
   dropAgent,
   initializeOperationalState,
   readCursorsState,
+  readJournal,
   readStartState,
   writeCursorsState
 } from "../src/state.js";
@@ -174,6 +175,12 @@ describe("four-agent coordinator canary", () => {
         expect(readCursorsState(paths).issueCursor.stepId).toBe(stepId);
       };
 
+      const implementationPins = new Map<string, string>();
+      const gateBoundaries = (): Array<{ from: unknown; to: unknown }> =>
+        readJournal(paths)
+          .filter((event) => event.type === "gate-advanced")
+          .map((event) => ({ from: event.details.from, to: event.details.to }));
+
       expectStep("R1.join");
       for (const agent of agents) {
         const order = currentOrder(agent);
@@ -255,27 +262,24 @@ Implement the selected product files.
       }
       await loop.runTick();
 
-      expectStep("R3.publish-selection");
-      {
-        const order = currentOrder("claude");
-        submit(
-          "claude",
-          JSON.stringify({
-            ...commonArtifact(order, "selection"),
-            inputSetHash: computeInputSetHash(order.inputs),
-            selectedAgents: ["codex"],
-            ballots: order.inputs.map(({ agent, commitSha, path }) => ({ agent, commitSha, path }))
-          })
-        );
-      }
-      await loop.runTick();
-
+      // No action, nudge, completion, fetch, or accepted submission stands
+      // between the last ballot and the implementation: the coordinator derives
+      // the winner and advances.
       expectStep("R4.implement");
-      expect(readCursorsState(paths).selection.planAgents).toEqual(["codex"]);
+      const planDecision = readCursorsState(paths).derived.planSelection;
+      expect(planDecision).toMatchObject({
+        algorithm: "plurality-active-roster-v1",
+        selectedAgents: ["codex"],
+        activeRoster: [...activeAfterDrop],
+        supersedes: null
+      });
+      expect(planDecision?.inputs.every((input) => input.agent !== "antigravity")).toBe(true);
+      expect(gateBoundaries()).toContainEqual({ from: "R3.plan-ballot", to: "R4.implement" });
       for (const agent of activeAfterDrop) {
         const order = currentOrder(agent);
         expect(order.inputs.map((input) => input.agent)).toEqual(["codex"]);
         const pin = commitAndPush(agent, `src/product-${agent}.txt`, `${agent} product\n`, `product ${agent}`);
+        implementationPins.set(agent, pin);
         submit(
           agent,
           JSON.stringify({
@@ -311,30 +315,16 @@ Implement the selected product files.
       }
       await loop.runTick();
 
-      expectStep("R5.reviser-auth");
-      {
-        const order = currentOrder("claude");
-        const selectedPin = order.inputs.find(
-          (input) => input.kind === "implementation" && input.agent === "cursor"
-        )?.commitSha;
-        if (selectedPin === undefined) throw new Error("No selected implementation pin.");
-        submit(
-          "claude",
-          JSON.stringify({
-            ...commonArtifact(order, "reviser-authorization"),
-            inputSetHash: computeInputSetHash(order.inputs),
-            reviser: "cursor",
-            implementationCommitSha: selectedPin
-          })
-        );
-      }
-      await loop.runTick();
-
       expectStep("R6.revise");
-      expect(readCursorsState(paths).selection).toMatchObject({
+      const implementationDecision = readCursorsState(paths).derived.implementationSelection;
+      expect(implementationDecision).toMatchObject({
+        algorithm: "plurality-active-roster-v1",
         implementationAgent: "cursor",
-        reviser: "cursor"
+        implementationPin: implementationPins.get("cursor"),
+        reviser: "cursor",
+        activeRoster: [...activeAfterDrop]
       });
+      expect(gateBoundaries()).toContainEqual({ from: "R5.compare-ballot", to: "R6.revise" });
       expect(existsSync(agentRuntimePaths(paths, "claude").action)).toBe(false);
       expect(existsSync(agentRuntimePaths(paths, "codex").action)).toBe(false);
       let revisionPin = "";
@@ -371,25 +361,22 @@ Implement the selected product files.
       }
       await loop.runTick();
 
-      expectStep("R6.declare");
-      {
-        const order = currentOrder("cursor");
-        submit(
-          "cursor",
-          JSON.stringify({
-            ...commonArtifact(order, "consensus-declaration"),
-            inputSetHash: computeInputSetHash(order.inputs),
-            round: 1,
-            consensusCommitSha: revisionPin,
-            ballots: order.inputs
-              .filter((input) => input.kind === "consensus-ballot")
-              .map(({ agent, commitSha, path }) => ({ agent, commitSha, path }))
-          })
-        );
-      }
-      await loop.runTick();
-
       expectStep("R7.finalize");
+      expect(readCursorsState(paths).derived.consensus).toMatchObject({
+        algorithm: "unanimous-active-roster-v1",
+        round: 1,
+        consensusAgent: "cursor",
+        consensusPin: revisionPin
+      });
+      expect(gateBoundaries()).toContainEqual({ from: "R6.ballot", to: "R7.finalize" });
+      expect(currentOrder("cursor").inputs).toEqual([
+        {
+          agent: "cursor",
+          commitSha: revisionPin,
+          path: ".signals/issue-1/revision-ready-cursor-round-1.json",
+          kind: "consensus"
+        }
+      ]);
       const cursorClone = clones.get("cursor") as string;
       for (const directory of [".plans/issue-1", ".signals/issue-1", ".code-reviews/issue-1"]) {
         rmSync(join(cursorClone, directory), { recursive: true, force: true });
@@ -420,6 +407,52 @@ Implement the selected product files.
       });
       expect(checkArgv).toEqual([["node", "-e", "process.exit(0)"]]);
       expect(final.accepted.find((submission) => submission.stepId === "R7.finalize")?.productPin).toBe(finalSha);
+
+      const journal = readJournal(paths);
+      // Each coordinator-owned result appears exactly once, as audit metadata
+      // and never as agent work: no action was written, no completion round trip
+      // happened, and nothing was accepted for it.
+      const derivations = journal.filter((event) => event.type === "decision-derived");
+      expect(derivations.map((event) => (event.details.identity as { kind: string }).kind)).toEqual([
+        "plan-selection",
+        "implementation-selection",
+        "consensus"
+      ]);
+      for (const derivation of derivations) {
+        expect(derivation.agent).toBeUndefined();
+        expect(derivation.actionId).toBeUndefined();
+        expect(derivation.details.algorithm).toBeTruthy();
+        expect(derivation.details.inputSetHash).toMatch(/^[a-f0-9]{64}$/);
+        expect((derivation.details.inputs as unknown[]).length).toBeGreaterThan(0);
+      }
+      expect(
+        journal.filter((event) => event.type === "action-prepared").map((event) => event.details.requiredPath)
+      ).not.toContain(".plans/issue-1/selection.json");
+      const acceptedPaths = final.accepted.map((submission) => submission.path);
+      for (const obsolete of [
+        ".plans/issue-1/selection.json",
+        ".signals/issue-1/reviser-authorization.json",
+        ".signals/issue-1/consensus.json"
+      ]) {
+        expect(acceptedPaths).not.toContain(obsolete);
+        for (const agent of agents) {
+          expect(existsSync(join(clones.get(agent) as string, obsolete)), `${agent}:${obsolete}`).toBe(false);
+        }
+      }
+      // 10 agent-facing steps for consensus, one drop removing nothing from the
+      // sequence: 9 boundaries plus the terminal one.
+      expect(gateBoundaries().map((boundary) => boundary.to)).toEqual([
+        "R2.plan",
+        "R3.review",
+        "R3.plan-ballot",
+        "R4.implement",
+        "R5.compare",
+        "R5.compare-ballot",
+        "R6.revise",
+        "R6.ballot",
+        "R7.finalize",
+        null
+      ]);
     },
     30_000
   );
