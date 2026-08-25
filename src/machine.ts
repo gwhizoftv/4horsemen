@@ -20,14 +20,11 @@ const globalOrder: readonly WorkflowStepId[] = [
   "R2.plan",
   "R3.review",
   "R3.plan-ballot",
-  "R3.publish-selection",
   "R4.implement",
   "R5.compare",
   "R5.compare-ballot",
-  "R5.reviser-auth",
   "R6.revise",
   "R6.ballot",
-  "R6.declare",
   "R7.finalize"
 ];
 
@@ -55,6 +52,23 @@ const hasAccepted = (cursors: CursorsState, stepId: WorkflowStepId, agent: strin
     (submission) => submission.stepId === stepId && submission.agent === agent && submission.round === round
   );
 
+const sameRoster = (left: readonly string[], right: readonly string[]): boolean =>
+  left.length === right.length && left.every((agent, index) => agent === right[index]);
+
+const needsPlanSelectionDerive = (cursors: CursorsState, profile: WorkflowProfile): boolean =>
+  profile !== "solo" &&
+  (cursors.derived.planSelection === null ||
+    !sameRoster(cursors.derived.planSelection.activeRoster, cursors.activeRoster));
+
+const needsImplementationSelectionDerive = (cursors: CursorsState): boolean =>
+  cursors.derived.implementationSelection === null ||
+  !sameRoster(cursors.derived.implementationSelection.activeRoster, cursors.activeRoster);
+
+const needsConsensusDerive = (cursors: CursorsState, round: number): boolean =>
+  cursors.derived.consensus === null ||
+  cursors.derived.consensus.round !== round ||
+  !sameRoster(cursors.derived.consensus.activeRoster, cursors.activeRoster);
+
 export const decide = (input: MachineInput): readonly MachineDecision[] => {
   const { start, cursors } = input;
   if (cursors.abandoned) return [{ type: "wait", reason: "workflow was abandoned" }];
@@ -78,9 +92,7 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
         ...(observation.productPin === undefined ? {} : { productPin: observation.productPin }),
         ...(observation.disposition === undefined ? {} : { disposition: observation.disposition }),
         ...(observation.approvedPaths === undefined ? {} : { approvedPaths: observation.approvedPaths }),
-        ...(observation.selectedAgents === undefined ? {} : { selectedAgents: observation.selectedAgents }),
         ...(observation.choice === undefined ? {} : { choice: observation.choice }),
-        ...(observation.reviser === undefined ? {} : { reviser: observation.reviser }),
         ...(observation.checkResults === undefined ? {} : { checkResults: observation.checkResults })
       });
     }
@@ -107,12 +119,42 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
     return [{ type: "advance-step", from: current, to: normalized, round }];
   }
 
+  if (current === "R4.implement" && profile !== "solo" && needsPlanSelectionDerive(cursors, profile)) {
+    return [{ type: "wait", reason: "canonical plan selection is missing or stale" }];
+  }
+  if ((current === "R6.revise" || current === "R6.ballot") && needsImplementationSelectionDerive(cursors)) {
+    return [{ type: "wait", reason: "canonical implementation selection is missing or stale" }];
+  }
+  if (
+    current === "R7.finalize" &&
+    profile === "consensus" &&
+    (cursors.derived.consensus === null ||
+      !sameRoster(cursors.derived.consensus.activeRoster, cursors.activeRoster)) &&
+    !cursors.accepted.some(
+      (submission) =>
+        submission.stepId === "R7.finalize" && cursors.activeRoster.includes(submission.agent)
+    )
+  ) {
+    return [{ type: "wait", reason: "canonical consensus decision is missing" }];
+  }
+  if (current === "R7.finalize" && profile === "reviewed" && needsPlanSelectionDerive(cursors, profile)) {
+    return [{ type: "wait", reason: "canonical plan selection is missing or stale" }];
+  }
+
   const designated =
     current === "R4.implement"
-      ? cursors.selection.planAgents[0]
-      : current === "R3.publish-selection" || current === "R5.reviser-auth"
+      ? profile === "solo"
         ? cursors.activeRoster[0]
-      : (cursors.selection.reviser ?? cursors.reviser ?? cursors.selection.planAgents[0]);
+        : cursors.derived.planSelection?.selectedAgents[0]
+      : current === "R6.revise"
+        ? cursors.derived.implementationSelection?.reviser
+        : current === "R7.finalize"
+          ? profile === "consensus"
+            ? cursors.derived.implementationSelection?.reviser
+            : profile === "reviewed"
+              ? cursors.derived.planSelection?.selectedAgents[0]
+              : cursors.activeRoster[0]
+        : cursors.activeRoster[0];
   const participants = participantsForStep(current, profile, cursors.activeRoster, designated);
   const round = current.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
   const complete = participants.every((agent) => hasAccepted(cursors, current, agent, round));
@@ -149,10 +191,20 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
         }
         return [{ type: "advance-step", from: current, to: "R6.revise", round: (round ?? 1) + 1 }];
       }
+      if (needsConsensusDerive(cursors, round ?? 1)) {
+        return [{ type: "derive-consensus", round: round ?? 1 }];
+      }
+    }
+
+    if (current === "R3.plan-ballot" && needsPlanSelectionDerive(cursors, profile)) {
+      return [{ type: "derive-plan-selection" }];
+    }
+    if (current === "R5.compare-ballot" && needsImplementationSelectionDerive(cursors)) {
+      return [{ type: "derive-implementation-selection" }];
     }
 
     const next = nextStep(current, profile);
-    const nextRound = next === "R6.revise" || next === "R6.ballot" || next === "R6.declare" ? (round ?? 1) : null;
+    const nextRound = next === "R6.revise" || next === "R6.ballot" ? (round ?? 1) : null;
     return [{ type: "advance-step", from: current, to: next, round: nextRound }];
   }
 

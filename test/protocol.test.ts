@@ -3,6 +3,7 @@ import {
   implementationReadyArtifactSchema,
   participationReadyArtifactSchema,
   parseJsonWithSchema,
+  publishedArtifactSchema,
   revisionReadyArtifactSchema
 } from "../src/protocol.js";
 
@@ -63,5 +64,11 @@ describe("published protocol schemas", () => {
   it("reports JSON and schema errors without returning unchecked values", () => {
     expect(parseJsonWithSchema("{", participationReadyArtifactSchema)).toMatchObject({ ok: false });
     expect(parseJsonWithSchema(JSON.stringify({ nope: true }), participationReadyArtifactSchema)).toMatchObject({ ok: false });
+  });
+
+  it("rejects the removed coordinator-derived artifact discriminators", () => {
+    for (const artifact of ["selection", "reviser-authorization", "consensus-declaration"]) {
+      expect(publishedArtifactSchema.safeParse({ ...common, artifact }).success).toBe(false);
+    }
   });
 });

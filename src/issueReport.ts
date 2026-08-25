@@ -1,5 +1,4 @@
 import type { CursorsState, StartState } from "./state.js";
-import type { AgentLifecycleState } from "./agentLifecycle.js";
 import { coordMergesPullRequest } from "./steps.js";
 
 const finalization = (cursors: CursorsState) =>
@@ -12,11 +11,23 @@ const finalization = (cursors: CursorsState) =>
 export const renderIssueReport = (
   start: StartState,
   cursors: CursorsState,
-  lifecycle?: AgentLifecycleState
+  lifecycle?: import("./agentLifecycle.js").AgentLifecycleState
 ): string => {
   const r7 = finalization(cursors);
+  const acceptedImplementation = cursors.accepted
+    .filter(
+      (submission) =>
+        submission.stepId === "R4.implement" && cursors.activeRoster.includes(submission.agent)
+    )
+    .at(-1);
   const pin = cursors.publication.finalSha ?? r7?.productPin ?? null;
-  const chosen = cursors.selection.implementationAgent ?? r7?.agent ?? cursors.selection.reviser;
+  const chosen =
+    cursors.derived.implementationSelection?.winner ?? acceptedImplementation?.agent ?? r7?.agent;
+  const implementationPin =
+    cursors.derived.implementationSelection?.implementationPin ??
+    acceptedImplementation?.productPin ??
+    r7?.productPin ??
+    null;
   const branch = cursors.publication.branch;
   const url = cursors.publication.url;
   const phase = cursors.abandoned
@@ -30,7 +41,7 @@ export const renderIssueReport = (
     `Issue ${start.issue}: ${phase}`,
     `Policy: ${start.prPolicy}`,
     `Chosen agent: ${chosen ?? "(not selected yet)"}`,
-    `Implementation pin: ${cursors.selection.implementationPin ?? "(none)"}`,
+    `Implementation pin: ${implementationPin ?? "(none)"}`,
     `Final pin (PR head): ${pin ?? "(none)"}`,
     `Published branch: ${branch ?? "(not pushed yet)"}`
   ];
@@ -62,8 +73,6 @@ export const renderIssueReport = (
       if (entry === undefined) continue;
       const queue = entry.pendingInputCount === null ? "" : `, pending=${entry.pendingInputCount}`;
       const background = entry.backgroundActive === true ? ", background-active" : "";
-      // Naming the cause is the difference between "restart this CLI" and
-      // "this agent is still finishing its previous turn".
       const alert = entry.degradedCause === null ? "" : `, alert=${entry.degradedCause}`;
       lines.push(
         `Agent ${agent.id}: ${entry.action?.delivery ?? "none"} / ${entry.execution} / ${entry.health}${queue}${background}${alert}`

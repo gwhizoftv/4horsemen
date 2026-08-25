@@ -10,7 +10,10 @@ import { BareMirror } from "../src/mirror.js";
 import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
   buildOrder,
+  computeDerivedInputSetHash,
+  computePlanSelectionDerived,
   CoordinatorRunLoop,
+  derivedDecisionJournalDetails,
   deterministicWinner,
   githubRepositoryFromOrigin,
   NUDGE_RETRY_MS,
@@ -20,6 +23,7 @@ import {
 } from "../src/runLoop.js";
 import {
   cursorsStateSchema,
+  appendJournal,
   dropAgent,
   initializeOperationalState,
   mutateCursorsState,
@@ -95,12 +99,22 @@ const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], fina
     cursorsStateSchema.parse({
       ...current,
       issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
-      reviser: "codex",
-      selection: {
-        planAgents: ["claude"],
-        implementationAgent: "codex",
-        implementationPin: "e".repeat(40),
-        reviser: "codex"
+      derived: {
+        planSelection: null,
+        implementationSelection: {
+          kind: "implementation-selection",
+          algorithm: "plurality-active-roster-v1",
+          inputSetHash: "b".repeat(64),
+          activeRoster: current.activeRoster,
+          inputs: [],
+          decisionId: "implementation-selection:test",
+          supersedes: null,
+          decidedAt: now,
+          winner: "codex",
+          implementationPin: "e".repeat(40),
+          reviser: "codex"
+        },
+        consensus: null
       },
       accepted: [
         {
@@ -167,6 +181,84 @@ describe("effectful run loop", () => {
     expect(deterministicWinner(reduced, "R3.plan-ballot", ["codex"])).toBe("codex");
   });
 
+  it("hashes the decision policy, roster, and exact accepted plan citations", () => {
+    const { paths } = fixture();
+    const current = readCursorsState(paths);
+    const now = "2026-08-11T17:00:00.000Z";
+    const accepted = [
+      ...current.activeRoster.map((agent, index) => ({
+        stepId: "R2.plan" as const,
+        agent,
+        round: null,
+        submissionSha: String(index + 1).repeat(40),
+        path: `.plans/issue-1/plan-${agent}.md`,
+        acceptedAt: now
+      })),
+      ...current.activeRoster.map((agent, index) => ({
+        stepId: "R3.plan-ballot" as const,
+        agent,
+        round: null,
+        submissionSha: String(index + 3).repeat(40),
+        choice: agent,
+        path: `.plans/issue-1/ballot-${agent}.json`,
+        acceptedAt: now
+      }))
+    ];
+    const state = cursorsStateSchema.parse({ ...current, accepted });
+    const decision = computePlanSelectionDerived(state, now);
+    expect(decision?.inputs.map((input) => input.kind)).toEqual([
+      "plan",
+      "plan",
+      "plan-ballot",
+      "plan-ballot"
+    ]);
+    expect(decision?.selectedAgents).toEqual(["claude"]);
+    expect(
+      computeDerivedInputSetHash("plan-selection", [...state.activeRoster].reverse(), decision?.inputs ?? [])
+    ).not.toBe(decision?.inputSetHash);
+    expect(
+      computeDerivedInputSetHash("implementation-selection", state.activeRoster, decision?.inputs ?? [])
+    ).not.toBe(decision?.inputSetHash);
+  });
+
+  it("deduplicates a derived journal append left durable before cursor replacement", async () => {
+    const { paths } = fixture();
+    const now = "2026-08-11T17:00:00.000Z";
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R3.plan-ballot", gateId: "gate-3-selection", round: null },
+        accepted: [
+          ...current.activeRoster.map((agent, index) => ({
+            stepId: "R2.plan" as const,
+            agent,
+            round: null,
+            submissionSha: String(index + 1).repeat(40),
+            path: `.plans/issue-1/plan-${agent}.md`,
+            acceptedAt: now
+          })),
+          ...current.activeRoster.map((agent, index) => ({
+            stepId: "R3.plan-ballot" as const,
+            agent,
+            round: null,
+            submissionSha: String(index + 3).repeat(40),
+            choice: "codex",
+            path: `.plans/issue-1/ballot-${agent}.json`,
+            acceptedAt: now
+          }))
+        ]
+      })
+    );
+    const record = computePlanSelectionDerived(readCursorsState(paths), now);
+    expect(record).not.toBeNull();
+    appendJournal(paths, { type: "decision-derived", details: derivedDecisionJournalDetails(record!) }, now);
+
+    const after = await new CoordinatorRunLoop(paths, { tmux: null, now: () => now }).runTick();
+    expect(after.issueCursor.stepId).toBe("R4.implement");
+    expect(after.derived.planSelection?.decidedAt).toBe(now);
+    expect(readJournal(paths).filter((event) => event.type === "decision-derived")).toHaveLength(1);
+  });
+
   it("re-extracts brace-expanded plan paths when binding implement actions", async () => {
     const { paths } = fixture();
     const plan = `# Plan
@@ -179,7 +271,20 @@ describe("effectful run loop", () => {
       cursorsStateSchema.parse({
         ...current,
         issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
-        selection: { ...current.selection, planAgents: ["codex"] },
+        derived: {
+          ...current.derived,
+          planSelection: {
+            kind: "plan-selection",
+            algorithm: "plurality-active-roster-v1",
+            inputSetHash: "e".repeat(64),
+            activeRoster: current.activeRoster,
+            inputs: [],
+            decisionId: "plan-selection:test",
+            supersedes: null,
+            decidedAt: now,
+            selectedAgents: ["codex"]
+          }
+        },
         accepted: [
           {
             stepId: "R2.plan",
@@ -188,15 +293,6 @@ describe("effectful run loop", () => {
             submissionSha: "c".repeat(40),
             path: ".plans/issue-1/plan.md",
             approvedPaths: ["src/product.ts"],
-            acceptedAt: now
-          },
-          {
-            stepId: "R3.publish-selection",
-            agent: "codex",
-            round: null,
-            submissionSha: "d".repeat(40),
-            path: ".plans/issue-1/selection.json",
-            selectedAgents: ["codex"],
             acceptedAt: now
           }
         ]
@@ -236,7 +332,20 @@ describe("effectful run loop", () => {
       cursorsStateSchema.parse({
         ...current,
         issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
-        selection: { ...current.selection, planAgents: ["codex"] },
+        derived: {
+          ...current.derived,
+          planSelection: {
+            kind: "plan-selection",
+            algorithm: "plurality-active-roster-v1",
+            inputSetHash: "e".repeat(64),
+            activeRoster: current.activeRoster,
+            inputs: [],
+            decisionId: "plan-selection:test",
+            supersedes: null,
+            decidedAt: now,
+            selectedAgents: ["codex"]
+          }
+        },
         agents: {
           ...current.agents,
           claude: {
@@ -270,15 +379,6 @@ describe("effectful run loop", () => {
             submissionSha: "c".repeat(40),
             path: ".plans/issue-1/plan.md",
             approvedPaths: ["src/product.ts"],
-            acceptedAt: now
-          },
-          {
-            stepId: "R3.publish-selection",
-            agent: "codex",
-            round: null,
-            submissionSha: "d".repeat(40),
-            path: ".plans/issue-1/selection.json",
-            selectedAgents: ["codex"],
             acceptedAt: now
           }
         ]
@@ -1060,12 +1160,22 @@ describe("effectful run loop", () => {
     const seeded = cursorsStateSchema.parse({
       ...current,
       issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
-      reviser: "codex",
-      selection: {
-        planAgents: ["claude"],
-        implementationAgent: "codex",
-        implementationPin: "f".repeat(40),
-        reviser: "codex"
+      derived: {
+        planSelection: null,
+        implementationSelection: {
+          kind: "implementation-selection",
+          algorithm: "plurality-active-roster-v1",
+          inputSetHash: "b".repeat(64),
+          activeRoster: current.activeRoster,
+          inputs: [],
+          decisionId: "implementation-selection:test",
+          supersedes: null,
+          decidedAt: now,
+          winner: "codex",
+          implementationPin: "f".repeat(40),
+          reviser: "codex"
+        },
+        consensus: null
       },
       ownerQuestion: {
         id: "10000000-0000-4000-8000-000000000001",
@@ -1162,12 +1272,22 @@ describe("effectful run loop", () => {
       cursorsStateSchema.parse({
         ...current,
         issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
-        reviser: "codex",
-        selection: {
-          planAgents: ["claude"],
-          implementationAgent: "codex",
-          implementationPin: "e".repeat(40),
-          reviser: "codex"
+        derived: {
+          planSelection: null,
+          implementationSelection: {
+            kind: "implementation-selection",
+            algorithm: "plurality-active-roster-v1",
+            inputSetHash: "b".repeat(64),
+            activeRoster: current.activeRoster,
+            inputs: [],
+            decisionId: "implementation-selection:test",
+            supersedes: null,
+            decidedAt: now,
+            winner: "codex",
+            implementationPin: "e".repeat(40),
+            reviser: "codex"
+          },
+          consensus: null
         },
         accepted: [
           {
@@ -1361,10 +1481,10 @@ describe("effectful run loop", () => {
     const seed = join(root, "final-seed");
     execFileSync("git", ["init", "-q", seed]);
     mkdirSync(join(seed, ".signals/issue-1"), { recursive: true });
-    writeFileSync(join(seed, ".signals/issue-1/consensus.json"), "{}\n");
+    writeFileSync(join(seed, ".signals/issue-1/revision-ready-codex.json"), "{}\n");
     execFileSync("git", ["-C", seed, "add", "."]);
-    execFileSync("git", ["-C", seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "consensus"]);
-    const consensusSha = execFileSync("git", ["-C", seed, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    execFileSync("git", ["-C", seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "revision"]);
+    const revisionSha = execFileSync("git", ["-C", seed, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     rmSync(join(seed, ".signals/issue-1"), { recursive: true });
     execFileSync("git", ["-C", seed, "add", "-A"]);
     execFileSync("git", ["-C", seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "cleanup"]);
@@ -1393,8 +1513,8 @@ describe("effectful run loop", () => {
       inputs: [
         {
           agent: "codex",
-          commitSha: consensusSha,
-          path: ".signals/issue-1/consensus.json",
+          commitSha: revisionSha,
+          path: ".signals/issue-1/revision-ready-codex.json",
           kind: "consensus"
         }
       ]

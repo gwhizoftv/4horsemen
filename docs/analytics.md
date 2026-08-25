@@ -111,7 +111,9 @@ coord analytics --issue 76 --coord-root /Volumes/4TB-SOURCE/REPOS/coord/coord-ru
 ```
 
 Issue-76 result — **64.47 min wall clock** from `started` to the terminal
-`gate-advanced` boundary:
+`gate-advanced` boundary. The live consensus workflow has **10 agent-facing
+phases** (format 3); the three removed coordinator-derived phases below appear
+only in this pre-change historical measurement:
 
 | phase | minutes | share |
 | --- | ---: | ---: |
@@ -119,14 +121,12 @@ Issue-76 result — **64.47 min wall clock** from `started` to the terminal
 | R2.plan | 5.39 | 8.4% |
 | R3.review | 4.38 | 6.8% |
 | R3.plan-ballot | 1.05 | 1.6% |
-| R3.publish-selection | 1.11 | 1.7% |
 | **R4.implement** | **19.27** | **29.9%** |
 | **R5.compare** | **9.19** | **14.3%** |
 | R5.compare-ballot | 2.01 | 3.1% |
-| R5.reviser-auth | 0.61 | 0.9% |
 | R6.revise | 5.49 | 8.5% |
 | R6.ballot | 3.04 | 4.7% |
-| R6.declare | 0.59 | 0.9% |
+| obsolete deterministic publications (pre-format-3 aggregate) | 2.31 | 3.5% |
 | R7.finalize | 5.78 | 9.0% |
 
 Implement + compare are 44% of the run. Every phase is gated on the **slowest**
@@ -153,14 +153,12 @@ Issue-76 result — **claude agent only**, 411 assistant messages, two sessions
 | R2.plan | 76 | 6,103,727 | 409,706 | 58,557 |
 | R3.review | 40 | 5,252,286 | 70,707 | 58,686 |
 | R3.plan-ballot | 14 | 1,877,190 | 19,020 | 6,675 |
-| R3.publish-selection | 13 | 1,868,847 | 15,513 | 7,729 |
 | **R4.implement** | 138 | **26,457,563** | 136,205 | 90,707 |
 | **R5.compare** | 58 | **14,453,144** | 73,863 | 38,194 |
 | R5.compare-ballot | 21 | 5,774,183 | 25,707 | 14,379 |
-| R5.reviser-auth | 8 | 2,263,279 | 5,249 | 3,853 |
 | R6.revise | 2 | 569,840 | 1,334 | 778 |
 | R6.ballot | 24 | 6,969,033 | 22,785 | 13,317 |
-| R6.declare | 2 | 592,720 | 760 | 816 |
+| obsolete deterministic publications (pre-format-3 aggregate) | 23 | 4,724,846 | 21,522 | 12,398 |
 | **total** | **411** | **72,603,954** | **848,260** | **297,218** |
 
 Codex, for the same window, reports cumulatively via its final `token_count`

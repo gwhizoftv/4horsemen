@@ -40,7 +40,7 @@ describe("cursor hook usage", () => {
   it("aggregates journaled tool and token records by generation id", () => {
     const journal = [
       {
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 0,
         at: "2026-08-21T00:00:00.000Z",
         type: "agent-lifecycle",
@@ -55,7 +55,7 @@ describe("cursor hook usage", () => {
         }
       },
       {
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 1,
         at: "2026-08-21T00:00:01.000Z",
         type: "agent-usage",
@@ -70,7 +70,7 @@ describe("cursor hook usage", () => {
         }
       },
       {
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 2,
         at: "2026-08-21T00:00:02.000Z",
         type: "agent-usage",
@@ -90,7 +90,7 @@ describe("cursor hook usage", () => {
         }
       },
       {
-        formatVersion: 2,
+        formatVersion: 3,
         sequence: 3,
         at: "2026-08-21T00:00:03.000Z",
         type: "agent-lifecycle",

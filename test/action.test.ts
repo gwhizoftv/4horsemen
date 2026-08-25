@@ -27,8 +27,7 @@ const order = (root: string): InternalOrder => ({
   inputs: [{ agent: "claude", commitSha: "3".repeat(40), path: ".plans/issue-1/plan.md", kind: "plan" }],
   approvedPaths: [],
   activeRoster: ["codex", "claude"],
-  eligibleChoices: [],
-  expectedSelectedAgents: []
+  eligibleChoices: []
 });
 
 describe("agent actions", () => {

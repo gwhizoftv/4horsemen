@@ -8,7 +8,7 @@ const impl = "e".repeat(40);
 
 const start = (policy: StartState["prPolicy"]): StartState =>
   ({
-    formatVersion: 2,
+    formatVersion: 3,
     issue: 1,
     issueSessionId: `issue-1:${"a".repeat(40)}`,
     baselineSha: "a".repeat(40),
@@ -28,22 +28,33 @@ const start = (policy: StartState["prPolicy"]): StartState =>
     agents: [{ id: "cursor", root: "/c", launcher: "start-cursor.sh", delivery: "pull" }],
     checks: [{ name: "check", argv: ["true"] }],
     pollIntervalMs: 1000,
+    contextPaths: [],
     createdAt: "2026-08-13T00:00:00.000Z"
   }) as StartState;
 
 const complete = (overrides: Partial<CursorsState["publication"]> = {}): CursorsState =>
   ({
-    formatVersion: 2,
+    formatVersion: 3,
     stateRevision: 1,
     issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
     activeRoster: ["cursor"],
     droppedAgents: [],
-    reviser: "cursor",
-    selection: {
-      planAgents: ["cursor"],
-      implementationAgent: "cursor",
-      implementationPin: impl,
-      reviser: "cursor"
+    derived: {
+      planSelection: null,
+      implementationSelection: {
+        kind: "implementation-selection",
+        algorithm: "plurality-active-roster-v1",
+        inputSetHash: "b".repeat(64),
+        activeRoster: ["cursor"],
+        inputs: [],
+        decisionId: "implementation-selection:test",
+        supersedes: null,
+        decidedAt: "2026-08-13T00:00:00.000Z",
+        winner: "cursor",
+        implementationPin: impl,
+        reviser: "cursor"
+      },
+      consensus: null
     },
     ownerQuestion: null,
     lastOwnerAnswer: null,
