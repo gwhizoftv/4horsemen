@@ -106,8 +106,16 @@ const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], fina
           algorithm: "plurality-active-roster-v1",
           inputSetHash: "b".repeat(64),
           activeRoster: current.activeRoster,
-          inputs: [],
-          decisionId: "implementation-selection:test",
+          inputs: [
+            {
+              kind: "implementation",
+              agent: "codex",
+              submissionSha: "d".repeat(40),
+              path: ".signals/issue-1/implementation-ready-codex.json",
+              productPin: "e".repeat(40)
+            }
+          ],
+          decisionId: `implementation-selection:${"b".repeat(64)}`,
           supersedes: null,
           decidedAt: now,
           winner: "codex",
@@ -278,8 +286,15 @@ describe("effectful run loop", () => {
             algorithm: "plurality-active-roster-v1",
             inputSetHash: "e".repeat(64),
             activeRoster: current.activeRoster,
-            inputs: [],
-            decisionId: "plan-selection:test",
+            inputs: [
+              {
+                kind: "plan",
+                agent: "codex",
+                submissionSha: "b".repeat(40),
+                path: ".plans/issue-1/plan.md"
+              }
+            ],
+            decisionId: `plan-selection:${"e".repeat(64)}`,
             supersedes: null,
             decidedAt: now,
             selectedAgents: ["codex"]
@@ -339,8 +354,15 @@ describe("effectful run loop", () => {
             algorithm: "plurality-active-roster-v1",
             inputSetHash: "e".repeat(64),
             activeRoster: current.activeRoster,
-            inputs: [],
-            decisionId: "plan-selection:test",
+            inputs: [
+              {
+                kind: "plan",
+                agent: "codex",
+                submissionSha: "b".repeat(40),
+                path: ".plans/issue-1/plan.md"
+              }
+            ],
+            decisionId: `plan-selection:${"e".repeat(64)}`,
             supersedes: null,
             decidedAt: now,
             selectedAgents: ["codex"]
@@ -1167,8 +1189,16 @@ describe("effectful run loop", () => {
           algorithm: "plurality-active-roster-v1",
           inputSetHash: "b".repeat(64),
           activeRoster: current.activeRoster,
-          inputs: [],
-          decisionId: "implementation-selection:test",
+          inputs: [
+            {
+              kind: "implementation",
+              agent: "codex",
+              submissionSha: "d".repeat(40),
+              path: ".signals/issue-1/implementation-ready-codex.json",
+              productPin: "f".repeat(40)
+            }
+          ],
+          decisionId: `implementation-selection:${"b".repeat(64)}`,
           supersedes: null,
           decidedAt: now,
           winner: "codex",
@@ -1279,8 +1309,16 @@ describe("effectful run loop", () => {
             algorithm: "plurality-active-roster-v1",
             inputSetHash: "b".repeat(64),
             activeRoster: current.activeRoster,
-            inputs: [],
-            decisionId: "implementation-selection:test",
+            inputs: [
+              {
+                kind: "implementation",
+                agent: "codex",
+                submissionSha: "d".repeat(40),
+                path: ".signals/issue-1/implementation-ready-codex.json",
+                productPin: "e".repeat(40)
+              }
+            ],
+            decisionId: `implementation-selection:${"b".repeat(64)}`,
             supersedes: null,
             decidedAt: now,
             winner: "codex",

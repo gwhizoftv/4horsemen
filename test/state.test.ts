@@ -5,10 +5,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
   appendJournal,
+  consensusDerivedSchema,
   cursorsStateSchema,
   dropAgent,
+  implementationSelectionDerivedSchema,
   initializeOperationalState,
   mutateCursorsState,
+  planSelectionDerivedSchema,
   readCursorsState,
   readJournal,
   readStartState,
@@ -108,6 +111,84 @@ describe("operational state", () => {
     expect(staleWrite.applied).toBe(false);
     expect(staleWrite.state.paused).toBe(true);
     expect(new StateConflictError("conflict").name).toBe("StateConflictError");
+  });
+});
+
+describe("derived decision state", () => {
+  const inputSetHash = "d".repeat(64);
+  const decidedAt = "2026-08-11T10:00:00.000Z";
+  const base = {
+    inputSetHash,
+    activeRoster: ["claude", "codex"],
+    inputs: [
+      {
+        kind: "plan" as const,
+        agent: "codex",
+        submissionSha: "a".repeat(40),
+        path: ".plans/issue-1/plan.md"
+      }
+    ],
+    supersedes: null,
+    decidedAt
+  };
+
+  it("requires a cited input and a hash-bound identity for every derived decision", () => {
+    const records = [
+      {
+        schema: planSelectionDerivedSchema,
+        value: {
+          ...base,
+          kind: "plan-selection" as const,
+          algorithm: "plurality-active-roster-v1" as const,
+          decisionId: `plan-selection:${inputSetHash}`,
+          selectedAgents: ["codex"]
+        }
+      },
+      {
+        schema: implementationSelectionDerivedSchema,
+        value: {
+          ...base,
+          kind: "implementation-selection" as const,
+          algorithm: "plurality-active-roster-v1" as const,
+          decisionId: `implementation-selection:${inputSetHash}`,
+          winner: "codex",
+          implementationPin: "b".repeat(40),
+          reviser: "codex"
+        }
+      },
+      {
+        schema: consensusDerivedSchema,
+        value: {
+          ...base,
+          kind: "consensus" as const,
+          algorithm: "unanimous-active-roster-v1" as const,
+          decisionId: `consensus:${inputSetHash}:r2`,
+          round: 2,
+          consensusPin: "b".repeat(40)
+        }
+      }
+    ];
+
+    for (const { schema, value } of records) {
+      expect(schema.safeParse(value).success).toBe(true);
+      expect(schema.safeParse({ ...value, inputs: [] }).success).toBe(false);
+      expect(schema.safeParse({ ...value, decisionId: "arbitrary" }).success).toBe(false);
+      expect(schema.safeParse({ ...value, decisionId: value.decisionId.replace(inputSetHash, "e".repeat(64)) }).success).toBe(
+        false
+      );
+    }
+  });
+
+  it("binds consensus decision identities to their persisted round", () => {
+    const value = {
+      ...base,
+      kind: "consensus" as const,
+      algorithm: "unanimous-active-roster-v1" as const,
+      decisionId: `consensus:${inputSetHash}:r2`,
+      round: 1,
+      consensusPin: "b".repeat(40)
+    };
+    expect(consensusDerivedSchema.safeParse(value).success).toBe(false);
   });
 });
 

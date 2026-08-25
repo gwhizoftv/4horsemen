@@ -711,8 +711,16 @@ describe("CLI", () => {
             algorithm: "plurality-active-roster-v1",
             inputSetHash: "b".repeat(64),
             activeRoster: current.activeRoster,
-            inputs: [],
-            decisionId: "implementation-selection:test",
+            inputs: [
+              {
+                kind: "implementation",
+                agent: "cursor",
+                submissionSha: "d".repeat(40),
+                path: ".signals/issue-1/implementation-ready-cursor.json",
+                productPin: "e".repeat(40)
+              }
+            ],
+            decisionId: `implementation-selection:${"b".repeat(64)}`,
             supersedes: null,
             decidedAt: now,
             winner: "cursor",
@@ -760,7 +768,14 @@ describe("CLI", () => {
             algorithm: "plurality-active-roster-v1",
             inputSetHash: "f".repeat(64),
             activeRoster: current.activeRoster,
-            inputs: [],
+            inputs: [
+              {
+                kind: "plan",
+                agent: "codex",
+                submissionSha: "1".repeat(40),
+                path: ".plans/issue-1/plan-codex.md"
+              }
+            ],
             decisionId: priorDecisionId,
             supersedes: null,
             decidedAt: now,

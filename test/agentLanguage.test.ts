@@ -149,8 +149,15 @@ const seedAcceptedSubmissions = (paths: ReturnType<typeof fixture>) => {
           algorithm: "plurality-active-roster-v1",
           inputSetHash: "a".repeat(64),
           activeRoster: current.activeRoster,
-          inputs: [],
-          decisionId: "plan-selection:test",
+          inputs: [
+            {
+              kind: "plan",
+              agent: "claude",
+              submissionSha: "1".repeat(40),
+              path: ".plans/issue-1/plan.md"
+            }
+          ],
+          decisionId: `plan-selection:${"a".repeat(64)}`,
           supersedes: null,
           decidedAt: now,
           selectedAgents: ["claude"]
@@ -160,8 +167,16 @@ const seedAcceptedSubmissions = (paths: ReturnType<typeof fixture>) => {
           algorithm: "plurality-active-roster-v1",
           inputSetHash: "b".repeat(64),
           activeRoster: current.activeRoster,
-          inputs: [],
-          decisionId: "implementation-selection:test",
+          inputs: [
+            {
+              kind: "implementation",
+              agent: "codex",
+              submissionSha: "4".repeat(40),
+              path: ".signals/issue-1/implementation-ready-codex.json",
+              productPin: "5".repeat(40)
+            }
+          ],
+          decisionId: `implementation-selection:${"b".repeat(64)}`,
           supersedes: null,
           decidedAt: now,
           winner: "codex",

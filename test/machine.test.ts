@@ -49,8 +49,16 @@ const implementationDerived = {
   algorithm: "plurality-active-roster-v1" as const,
   inputSetHash: "d".repeat(64),
   activeRoster: roster,
-  inputs: [],
-  decisionId: "implementation-selection:test",
+  inputs: [
+    {
+      kind: "implementation" as const,
+      agent: "codex",
+      submissionSha: "e".repeat(40),
+      path: ".signals/issue-1/implementation-ready-codex.json",
+      productPin: "d".repeat(40)
+    }
+  ],
+  decisionId: `implementation-selection:${"d".repeat(64)}`,
   supersedes: null,
   decidedAt: now,
   winner: "codex",
@@ -126,8 +134,16 @@ describe("pure workflow machine", () => {
           algorithm: "plurality-active-roster-v1",
           inputSetHash: "d".repeat(64),
           activeRoster: roster,
-          inputs: [],
-          decisionId: "implementation-selection:test",
+          inputs: [
+            {
+              kind: "implementation",
+              agent: "cursor",
+              submissionSha: "e".repeat(40),
+              path: ".signals/issue-1/implementation-ready-cursor.json",
+              productPin: "d".repeat(40)
+            }
+          ],
+          decisionId: `implementation-selection:${"d".repeat(64)}`,
           supersedes: null,
           decidedAt: now,
           winner: "cursor",
@@ -154,8 +170,15 @@ describe("pure workflow machine", () => {
           algorithm: "plurality-active-roster-v1",
           inputSetHash: "d".repeat(64),
           activeRoster: reviewed.originalRoster,
-          inputs: [],
-          decisionId: "plan-selection:test",
+          inputs: [
+            {
+              kind: "plan",
+              agent: "cursor",
+              submissionSha: "e".repeat(40),
+              path: ".plans/issue-1/plan-cursor.md"
+            }
+          ],
+          decisionId: `plan-selection:${"d".repeat(64)}`,
           supersedes: null,
           decidedAt: now,
           selectedAgents: ["cursor"]

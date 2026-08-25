@@ -46,8 +46,16 @@ const complete = (overrides: Partial<CursorsState["publication"]> = {}): Cursors
         algorithm: "plurality-active-roster-v1",
         inputSetHash: "b".repeat(64),
         activeRoster: ["cursor"],
-        inputs: [],
-        decisionId: "implementation-selection:test",
+        inputs: [
+          {
+            kind: "implementation",
+            agent: "cursor",
+            submissionSha: "c".repeat(40),
+            path: ".signals/issue-1/implementation-ready-cursor.json",
+            productPin: impl
+          }
+        ],
+        decisionId: `implementation-selection:${"b".repeat(64)}`,
         supersedes: null,
         decidedAt: "2026-08-13T00:00:00.000Z",
         winner: "cursor",

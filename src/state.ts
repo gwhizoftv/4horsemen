@@ -350,39 +350,67 @@ const derivedDecisionBaseSchema = z
   .object({
     inputSetHash: digestSchema,
     activeRoster: z.array(agentIdSchema).min(1),
-    inputs: z.array(derivedInputCitationSchema),
-    decisionId: z.string().min(1),
-    supersedes: z.string().min(1).nullable(),
+    inputs: z.array(derivedInputCitationSchema).min(1),
     decidedAt: timestampSchema
   })
   .strict();
+
+const planSelectionDecisionIdSchema = z
+  .string()
+  .regex(/^plan-selection:[a-f0-9]{64}$/, "expected a plan-selection decision identity");
+
+const implementationSelectionDecisionIdSchema = z
+  .string()
+  .regex(/^implementation-selection:[a-f0-9]{64}$/, "expected an implementation-selection decision identity");
+
+const consensusDecisionIdSchema = z
+  .string()
+  .regex(/^consensus:[a-f0-9]{64}:r[1-9][0-9]*$/, "expected a round-bound consensus decision identity");
 
 export const planSelectionDerivedSchema = derivedDecisionBaseSchema
   .extend({
     kind: z.literal("plan-selection"),
     algorithm: z.literal("plurality-active-roster-v1"),
+    decisionId: planSelectionDecisionIdSchema,
+    supersedes: planSelectionDecisionIdSchema.nullable(),
     selectedAgents: z.array(agentIdSchema).min(1)
   })
-  .strict();
+  .strict()
+  .refine((record) => record.decisionId === `plan-selection:${record.inputSetHash}`, {
+    path: ["decisionId"],
+    message: "decision identity must match the plan-selection input hash"
+  });
 
 export const implementationSelectionDerivedSchema = derivedDecisionBaseSchema
   .extend({
     kind: z.literal("implementation-selection"),
     algorithm: z.literal("plurality-active-roster-v1"),
+    decisionId: implementationSelectionDecisionIdSchema,
+    supersedes: implementationSelectionDecisionIdSchema.nullable(),
     winner: agentIdSchema,
     implementationPin: gitShaSchema,
     reviser: agentIdSchema
   })
-  .strict();
+  .strict()
+  .refine((record) => record.decisionId === `implementation-selection:${record.inputSetHash}`, {
+    path: ["decisionId"],
+    message: "decision identity must match the implementation-selection input hash"
+  });
 
 export const consensusDerivedSchema = derivedDecisionBaseSchema
   .extend({
     kind: z.literal("consensus"),
     algorithm: z.literal("unanimous-active-roster-v1"),
+    decisionId: consensusDecisionIdSchema,
+    supersedes: consensusDecisionIdSchema.nullable(),
     round: z.number().int().min(1),
     consensusPin: gitShaSchema
   })
-  .strict();
+  .strict()
+  .refine((record) => record.decisionId === `consensus:${record.inputSetHash}:r${record.round}`, {
+    path: ["decisionId"],
+    message: "decision identity must match the consensus input hash and round"
+  });
 
 export const derivedStateSchema = z
   .object({
