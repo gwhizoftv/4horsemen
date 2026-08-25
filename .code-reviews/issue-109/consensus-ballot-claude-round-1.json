@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 109,
+  "issueSessionId": "issue-109:67b94dffca82af2475d00e8fcd2a7d48cd76ae72",
+  "agent": "claude",
+  "inputSetHash": "93e7810b5b06fbd850ad0e6230a27f624ca98c00b2ba8da1a70befb217a66dfb",
+  "artifact": "consensus-ballot",
+  "round": 1,
+  "revisionCommitSha": "d8bbb986877bcb06ccfe9b1789376c5c7003642c",
+  "disposition": "approve",
+  "rationale": "The revision typechecks, lints, passes the end-to-end canary and every fast suite that does not require a built workspace checkout (383 passing; the 6 remaining files fail identically for every pin including my own, so they are a worktree artifact rather than a regression), it hardens each derived-decision schema so an identity must match its own input hash and round and cannot be carried on a record citing no inputs, and it preserves the fail-closed behaviour I approved of at comparison time, where a missing or stale canonical decision yields a typed wait with empty bindings and empty approved paths instead of falling back to roster position."
+}
