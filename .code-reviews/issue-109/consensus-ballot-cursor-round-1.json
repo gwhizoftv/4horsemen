@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 109,
+  "issueSessionId": "issue-109:67b94dffca82af2475d00e8fcd2a7d48cd76ae72",
+  "agent": "cursor",
+  "inputSetHash": "93e7810b5b06fbd850ad0e6230a27f624ca98c00b2ba8da1a70befb217a66dfb",
+  "artifact": "consensus-ballot",
+  "round": 1,
+  "revisionCommitSha": "d8bbb986877bcb06ccfe9b1789376c5c7003642c",
+  "disposition": "approve",
+  "rationale": "Revision hardens derived-decision schemas with hash-bound identity refinements, non-empty citation requirements, and state-layer regression tests that pass check:fast."
+}
