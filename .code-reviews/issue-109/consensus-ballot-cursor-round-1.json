@@ -8,5 +8,5 @@
   "round": 1,
   "revisionCommitSha": "d8bbb986877bcb06ccfe9b1789376c5c7003642c",
   "disposition": "approve",
-  "rationale": "Revision hardens derived-decision schemas with hash-bound identity refinements, non-empty citation requirements, and state-layer regression tests that pass check:fast."
+  "rationale": "Revision hardens derived-decision Zod schemas with hash-bound identity, non-empty citations, and state tests that pass check:fast."
 }
