@@ -1,0 +1,29 @@
+{
+  "actionId": "5d331538-3a93-43c3-bd1a-ce71f3ff2980",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "d198c34682ddaafd3967d8c2ea94f9761ece9fae",
+      "path": ".signals/issue-120/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "4b17f983a143f21f57bb1cace7d61e9d58cc1a1e",
+      "path": ".signals/issue-120/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "64a9e958421d067fcf5e23d399fd9471a18abe20",
+      "path": ".signals/issue-120/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "f89a5453651c5b146d3a7d95b4a2c1a175c27bec41ef3cff93c16c44e0ee19a6",
+  "issue": 120,
+  "issueSessionId": "issue-120:a98c04b3cf48bee4f5d6855f313d718b3069b818",
+  "protocolVersion": 2,
+  "rationale": "Running all three compiled helpers against identical fixtures with the baseline a98c04b3 as a control, claude d198c346 is the only pin that does not orphan an unpushed local-base commit (cursor 64a9e958 and codex 4b17f983 both lose it to an unconditional checkout -B, which codex's own comparison concedes) and the only one besides cursor that still cleans when origin is unreachable, while codex additionally turns a wipe-issue that succeeds on the baseline into a hard throw on a clean clone with no --force remedy; its two real defects — the completion-path batch abort that both peers rightly flag, and a baseSynced label that stays true when the fetch failed or when HEAD stays on a diverged local base — are localized fixes that should adopt codex's batchPolicy split and fetch-result check, whereas the peers' defects are silent loss of committed work and a regression against behavior that works today.",
+  "responseSha256": "c44f327c0e8b78a7bfc0c27163166ad92e5e79725613cd376f12a56562c12a54"
+}

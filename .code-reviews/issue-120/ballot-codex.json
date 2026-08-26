@@ -1,0 +1,29 @@
+{
+  "actionId": "e5f37472-4115-449c-81be-cd5888ec0d8c",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "d198c34682ddaafd3967d8c2ea94f9761ece9fae",
+      "path": ".signals/issue-120/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "4b17f983a143f21f57bb1cace7d61e9d58cc1a1e",
+      "path": ".signals/issue-120/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "64a9e958421d067fcf5e23d399fd9471a18abe20",
+      "path": ".signals/issue-120/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "f89a5453651c5b146d3a7d95b4a2c1a175c27bec41ef3cff93c16c44e0ee19a6",
+  "issue": 120,
+  "issueSessionId": "issue-120:a98c04b3cf48bee4f5d6855f313d718b3069b818",
+  "protocolVersion": 2,
+  "rationale": "Codex provides the strongest basis through strict fetch handling, explicit completion-versus-wipe policies, shared wipe integration, and postcondition checks, with smaller remaining fixes than the other candidates.",
+  "responseSha256": "86fac9bb48985711398dce1cff7f20caedf2f647f9d6b7ddac5dc473c0a92b30"
+}

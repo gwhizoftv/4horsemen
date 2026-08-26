@@ -1,0 +1,29 @@
+{
+  "actionId": "b1abf847-6d07-496f-a0b7-22e568403c98",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "d198c34682ddaafd3967d8c2ea94f9761ece9fae",
+      "path": ".signals/issue-120/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "4b17f983a143f21f57bb1cace7d61e9d58cc1a1e",
+      "path": ".signals/issue-120/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "64a9e958421d067fcf5e23d399fd9471a18abe20",
+      "path": ".signals/issue-120/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "f89a5453651c5b146d3a7d95b4a2c1a175c27bec41ef3cff93c16c44e0ee19a6",
+  "issue": 120,
+  "issueSessionId": "issue-120:a98c04b3cf48bee4f5d6855f313d718b3069b818",
+  "protocolVersion": 2,
+  "rationale": "Codex alone keeps per-clone continue on completion while using refuse-all only for wipe, and binds checkout plus postcondition to fetched origin/base without Claude’s completion batch-abort regression.",
+  "responseSha256": "15a2ea7bd3085fbab77671dcc556e4a7f5c4969b89897bcc5d492ff72e311f43"
+}
