@@ -831,6 +831,29 @@ describe("CLI", () => {
     ).toBe(0);
     expect(refusedOutput.join("")).toContain("refused 1");
     expect(readFileSync(join(clone, "owner.txt"), "utf8")).toBe("keep\n");
+
+    rmSync(join(clone, "owner.txt"));
+    execFileSync("git", ["checkout", "-q", "issue-1/codex"], { cwd: clone });
+    writeFileSync(join(clone, "late-wip.txt"), "discard before checkout failure\n");
+    writeFileSync(
+      join(clone, ".git", "hooks", "post-checkout"),
+      "#!/bin/sh\necho 'blocked checkout for audit test' >&2\nexit 1\n",
+      { mode: 0o700 }
+    );
+    const failedCheckoutOutput: string[] = [];
+    expect(
+      await runCli(["run", "--issue", "1", "--coord-root", fixture.runtime], {
+        io: { stdout: (message) => failedCheckoutOutput.push(message) },
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    expect(failedCheckoutOutput.join("")).toContain("discarded 1 path(s)");
+    expect(failedCheckoutOutput.join("")).toContain("Clone readiness: cleaned 1");
+    expect(failedCheckoutOutput.join("")).toContain("refused 1");
+    expect(existsSync(join(clone, "late-wip.txt"))).toBe(false);
+    expect(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: clone, encoding: "utf8" }).trim()).toBe(
+      "main"
+    );
   });
 
   it("refuses to drop the final active agent", async () => {

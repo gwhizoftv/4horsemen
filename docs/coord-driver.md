@@ -249,7 +249,11 @@ when `HEAD` is exactly that agent's configured `issue-N/<agent>` branch for the
 completed issue; dirt on any other branch is left unchanged and logged with a
 manual-stash/forced-wipe remediation. Eligible and already-clean clones fetch
 origin, check out the configured base at `origin/<base>`, and restore the
-managed protocol overlay and skip-worktree bit. The summary distinguishes
+managed protocol overlay and skip-worktree bit. If origin is temporarily
+unavailable, cleanup uses and identifies the existing local base instead; if a
+fresh fetch shows that local base contains commits absent from origin, normal
+completion refuses before discarding anything rather than orphaning them
+(`wipe-issue --force` is the explicit override). The summary distinguishes
 discarded, checked-out, refused, and skipped clones, and the coordinator never
 creates a cleanup commit or pushes from this path.
 `coord uninstall` tears down owner tmux/Terminal for discovered issues and the

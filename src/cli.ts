@@ -781,7 +781,9 @@ const detachCompletedIssue = async (paths: IssueRuntimePaths, io: CliIo): Promis
     installRoot,
     log: io.stdout
   });
-  const cleaned = readiness.filter((result) => result.discardedPaths.length > 0 && result.action !== "refused").length;
+  // A later checkout can fail after reset/clean succeeded. Count the completed
+  // discard from the structured result even when final readiness was refused.
+  const cleaned = readiness.filter((result) => result.discardedPaths.length > 0).length;
   const checkedOut = readiness.filter((result) => result.action === "checked-out").length;
   const alreadyBase = readiness.filter((result) => result.action === "already-base").length;
   const refused = readiness.filter((result) => result.action === "refused").length;
