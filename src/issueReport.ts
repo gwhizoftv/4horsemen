@@ -1,12 +1,19 @@
-import type { CursorsState, StartState } from "./state.js";
+import type { BallotBatch, CursorsState, StartState } from "./state.js";
 import { coordMergesPullRequest } from "./steps.js";
 
 const finalization = (cursors: CursorsState) =>
   [...cursors.accepted].reverse().find((submission) => submission.stepId === "R7.finalize");
 
+const latestBatchByUpdatedAt = (batches: readonly BallotBatch[]): BallotBatch | null => {
+  if (batches.length === 0) return null;
+  return [...batches].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt)).at(-1) ?? null;
+};
+
 /**
  * What the owner needs after a run: who won, which commit is the PR head,
- * which branch coord pushed, and whether they still have to merge.
+ * which branch coord pushed, evidence publication state, and whether they
+ * still have to merge. Never exposes ballot choices, dispositions, rationales,
+ * or pending response bytes.
  */
 export const renderIssueReport = (
   start: StartState,
@@ -67,6 +74,38 @@ export const renderIssueReport = (
   if (cursors.publication.error !== null && cursors.publication.status === "failed") {
     lines.push(`Error: ${cursors.publication.error}`);
   }
+
+  const evidenceBranch = cursors.evidence.branch;
+  const evidenceTip = cursors.evidence.tip;
+  if (evidenceBranch !== null) {
+    lines.push(
+      `Evidence branch: ${evidenceBranch}` +
+        (evidenceTip !== null ? ` (latest published tip ${evidenceTip})` : " (no published tip yet)")
+    );
+  } else {
+    lines.push("Evidence branch: (none yet)");
+  }
+
+  const pending = cursors.ballotBatches.filter((batch) => batch.status === "pending");
+  const failed = cursors.ballotBatches.filter((batch) => batch.status === "failed");
+  const pendingLatest = latestBatchByUpdatedAt(pending);
+  const failedLatest = latestBatchByUpdatedAt(failed);
+  if (pendingLatest !== null) {
+    lines.push(
+      `Evidence publication: pending (${pendingLatest.kind}` +
+        (pendingLatest.round === null ? "" : ` round ${pendingLatest.round}`) +
+        `, commit ${pendingLatest.commitSha})`
+    );
+  } else if (failedLatest !== null) {
+    lines.push(
+      `Evidence publication: failed (${failedLatest.kind}` +
+        (failedLatest.round === null ? "" : ` round ${failedLatest.round}`) +
+        `${failedLatest.error === null ? "" : `: ${failedLatest.error}`})`
+    );
+  } else if (cursors.ballotBatches.some((batch) => batch.status === "published")) {
+    lines.push("Evidence publication: published");
+  }
+
   if (lifecycle !== undefined) {
     for (const agent of start.agents) {
       const entry = lifecycle.agents[agent.id];

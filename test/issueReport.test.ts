@@ -8,7 +8,7 @@ const impl = "e".repeat(40);
 
 const start = (policy: StartState["prPolicy"]): StartState =>
   ({
-    formatVersion: 3,
+    formatVersion: 4,
     issue: 1,
     issueSessionId: `issue-1:${"a".repeat(40)}`,
     baselineSha: "a".repeat(40),
@@ -34,7 +34,7 @@ const start = (policy: StartState["prPolicy"]): StartState =>
 
 const complete = (overrides: Partial<CursorsState["publication"]> = {}): CursorsState =>
   ({
-    formatVersion: 3,
+    formatVersion: 4,
     stateRevision: 1,
     issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
     activeRoster: ["cursor"],
@@ -75,6 +75,10 @@ const complete = (overrides: Partial<CursorsState["publication"]> = {}): Cursors
       attempts: 1,
       ...overrides
     },
+    evidence: {
+      branch: "issue-1/coordinator-evidence",
+      tip: "d".repeat(40)
+    },
     paused: false,
     abandoned: false,
     completed: true,
@@ -90,6 +94,8 @@ const complete = (overrides: Partial<CursorsState["publication"]> = {}): Cursors
         acceptedAt: "2026-08-13T00:00:00.000Z"
       }
     ],
+    acceptedResponses: [],
+    ballotBatches: [],
     updatedAt: "2026-08-13T00:00:00.000Z"
   }) as CursorsState;
 
@@ -102,6 +108,8 @@ describe("issue report", () => {
     expect(text).toContain("Published branch: issue-1/cursor-final");
     expect(text).toContain("Pull request: https://github.com/example/project/pull/9");
     expect(text).toContain("owner merges");
+    expect(text).toContain("Evidence branch: issue-1/coordinator-evidence");
+    expect(text).toContain(`latest published tip ${"d".repeat(40)}`);
   });
 
   it("says the coordinator merged under coord-merged", () => {
@@ -117,6 +125,16 @@ describe("issue report", () => {
     expect(text).toContain(`Final pin (PR head): ${pin}`);
     expect(text).toContain("legacy owner-only");
     expect(text).toContain("not from issue-1/<agent>");
+  });
+
+  it("reports when the evidence branch has not been published yet", () => {
+    const withoutEvidence = {
+      ...complete(),
+      evidence: { branch: null, tip: null }
+    };
+    expect(renderIssueReport(start("coord-open-unmerged"), withoutEvidence)).toContain(
+      "Evidence branch: (none yet)"
+    );
   });
 
   it("shows delivery, execution, health, queue, and background state", () => {

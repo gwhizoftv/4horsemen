@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  agentResponsePath,
   agentRuntimePaths,
   assertMailboxClaim,
   createIssueRuntime,
@@ -11,7 +12,8 @@ import {
   mailboxClaimPath,
   PathSafetyError,
   removeIssueMailbox,
-  resolveSafeCompletesRoot
+  resolveSafeCompletesRoot,
+  RESERVED_EVIDENCE_AGENT
 } from "../src/paths.js";
 
 const roots: string[] = [];
@@ -202,5 +204,17 @@ describe("completion mailbox paths", () => {
     const paths = issueRuntimePaths(coordRoot, 98);
     expect(resolve(paths.completesRoot).startsWith(resolve(coordRoot))).toBe(false);
     expect(paths.issue).toBe(98);
+  });
+
+  it("confines ballot response paths under the agent responses directory", () => {
+    const { coordRoot, completesRoot } = workspace();
+    const paths = issueRuntimePaths(coordRoot, 98, completesRoot);
+    createIssueRuntime(paths, ["claude"]);
+    const actionId = "b2337d85-6617-4e9f-8ace-901453764aa4";
+    const response = agentResponsePath(paths, "claude", actionId);
+    expect(response).toBe(join(coordRoot, "issue-98", "agents", "claude", "responses", `${actionId}.json`));
+    expect(response.startsWith(agentRuntimePaths(paths, "claude").responsesDir)).toBe(true);
+    expect(() => agentResponsePath(paths, "claude", "../escape")).toThrow(PathSafetyError);
+    expect(() => createIssueRuntime(paths, [RESERVED_EVIDENCE_AGENT])).toThrow(PathSafetyError);
   });
 });

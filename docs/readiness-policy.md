@@ -8,7 +8,7 @@ can carry.
 | --- | --- | --- |
 | Delivery readiness | tmux pane scrape (`harnessLooksReady`, `harnessPromptReadiness`) | whether it is safe to type into the pane |
 | Observability | vendor lifecycle hooks (`SessionStart`, prompt-submit, `Stop`) | whether a second send would be a duplicate |
-| Workflow truth | the `complete` file and the pushed commit | whether the work actually happened |
+| Workflow truth | the `complete` file plus Git pin **or** accepted response + published batch | whether the work actually happened |
 
 ## The three rules
 
@@ -24,10 +24,13 @@ may be retried whenever the scrape becomes ready. After a send succeeds, another
 send needs `decideLifecycleNudge` to return `send`, or the lost-delivery
 recovery below.
 
-**Workflow truth outranks both.** `complete` plus a pushed commit proves the
-action arrived, whatever the other two layers believe. An action that reached
-workflow completion is never marked degraded, and completing one clears a
-degraded alert already raised against it.
+**Workflow truth outranks both.** For Git-mode actions, `complete` plus a
+pushed commit proves the action arrived. For ballot response-mode actions,
+workflow truth is the completion marker (`response <actionId>`) plus an
+accepted private response, and the gate advances only after the coordinator
+publishes that roster's evidence batch. An action that reached workflow
+completion is never marked degraded, and completing one clears a degraded alert
+already raised against it.
 
 ## Positive evidence is additive
 

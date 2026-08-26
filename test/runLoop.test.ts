@@ -5,9 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readAction, writeAction } from "../src/action.js";
 import { decideLifecycleNudge, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
-import { computeInputSetHash } from "../src/evidence.js";
 import { BareMirror } from "../src/mirror.js";
-import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import { agentResponsePath, agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
   buildOrder,
   computeDerivedInputSetHash,
@@ -34,11 +33,93 @@ import {
   writeCursorsState
 } from "../src/state.js";
 import { TmuxController } from "../src/tmux.js";
+import { writeAgentResponse } from "../src/ballotResponse.js";
+import type { ConsensusBallotResponse } from "../src/protocol.js";
+import type { AcceptedResponse, BallotBatch } from "../src/state.js";
+import { createHash } from "node:crypto";
 
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+const responseDigestFixture = (seed: string): string =>
+  createHash("sha256").update(seed, "utf8").digest("hex");
+const gitShaFixture = (seed: string): string =>
+  createHash("sha256").update(`git:${seed}`, "utf8").digest("hex").slice(0, 40);
+const actionIdFor = (agent: string, index = 0): string => {
+  const nibble = (agent.charCodeAt(0) % 10).toString();
+  const suffix = `${nibble}${index}`.padStart(12, "0").slice(-12);
+  return `10000000-0000-4000-8000-${suffix}`;
+};
+const acceptedResponseFixture = (input: {
+  stepId: AcceptedResponse["stepId"];
+  agent: string;
+  round?: number | null;
+  choice?: string;
+  disposition?: AcceptedResponse["disposition"];
+  acceptedAt?: string;
+  actionId?: string;
+  responseSha256?: string;
+  rationale?: string;
+  path?: string;
+}): AcceptedResponse => {
+  const actionId = input.actionId ?? actionIdFor(input.agent);
+  return {
+    stepId: input.stepId,
+    agent: input.agent,
+    actionId,
+    round: input.round === undefined ? null : input.round,
+    responseSha256: input.responseSha256 ?? responseDigestFixture(input.agent),
+    rationale: input.rationale ?? "fixture rationale",
+    path: input.path ?? `/runtime/accepted-responses/${input.agent}/${actionId}.json`,
+    acceptedAt: input.acceptedAt ?? "2026-08-11T12:00:00.000Z",
+    ...(input.choice === undefined ? {} : { choice: input.choice }),
+    ...(input.disposition === undefined ? {} : { disposition: input.disposition })
+  };
+};
+const publishedBallotBatchFixture = (input: {
+  kind: BallotBatch["kind"];
+  activeRoster: readonly string[];
+  round?: number | null;
+  commitSha?: string;
+  parentSha?: string;
+  inputSetHash?: string;
+  createdAt?: string;
+  status?: BallotBatch["status"];
+  batchId?: string;
+}): BallotBatch => {
+  const now = input.createdAt ?? "2026-08-11T12:00:00.000Z";
+  const round = input.round === undefined ? null : input.round;
+  return {
+    batchId: input.batchId ?? "20000000-0000-4000-8000-000000000001",
+    kind: input.kind,
+    round,
+    inputSetHash: input.inputSetHash ?? responseDigestFixture("batch"),
+    activeRoster: [...input.activeRoster],
+    responses: input.activeRoster.map((agent) => ({
+      agent,
+      actionId: actionIdFor(agent),
+      responseSha256: responseDigestFixture(agent)
+    })),
+    paths: input.activeRoster.map((agent) =>
+      input.kind === "plan-ballot-batch"
+        ? `.plans/issue-1/ballot-${agent}.json`
+        : input.kind === "comparison-ballot-batch"
+          ? `.code-reviews/issue-1/ballot-${agent}.json`
+          : `.code-reviews/issue-1/consensus-ballot-${agent}-round-${round ?? 1}.json`
+    ),
+    branch: "issue-1/coordinator-evidence",
+    parentSha: input.parentSha ?? gitShaFixture("a"),
+    commitSha: input.commitSha ?? gitShaFixture("b"),
+    status: input.status ?? "published",
+    attempts: 1,
+    error: null,
+    supersedes: null,
+    createdAt: now,
+    updatedAt: now
+  };
+};
 
 const fixture = (options: { prPolicy?: "owner-only" | "coord-open-unmerged" | "coord-merged"; origin?: string } = {}) => {
   const workspace = mkdtempSync(join(tmpdir(), "coord-loop-"));
@@ -163,25 +244,19 @@ describe("effectful run loop", () => {
     const now = "2026-08-11T17:00:00.000Z";
     const ballots = cursorsStateSchema.parse({
       ...current,
-      accepted: [
-        {
+      acceptedResponses: [
+        acceptedResponseFixture({
           stepId: "R3.plan-ballot",
           agent: "claude",
-          round: null,
-          submissionSha: "c".repeat(40),
           choice: "claude",
-          path: ".plans/issue-1/ballot-claude.json",
           acceptedAt: now
-        },
-        {
+        }),
+        acceptedResponseFixture({
           stepId: "R3.plan-ballot",
           agent: "codex",
-          round: null,
-          submissionSha: "d".repeat(40),
           choice: "codex",
-          path: ".plans/issue-1/ballot-codex.json",
           acceptedAt: now
-        }
+        })
       ]
     });
     expect(deterministicWinner(ballots, "R3.plan-ballot", ["claude", "codex"])).toBe("claude");
@@ -193,26 +268,37 @@ describe("effectful run loop", () => {
     const { paths } = fixture();
     const current = readCursorsState(paths);
     const now = "2026-08-11T17:00:00.000Z";
-    const accepted = [
-      ...current.activeRoster.map((agent, index) => ({
-        stepId: "R2.plan" as const,
+    const accepted = current.activeRoster.map((agent, index) => ({
+      stepId: "R2.plan" as const,
+      agent,
+      round: null,
+      submissionSha: String(index + 1).repeat(40),
+      path: `.plans/issue-1/plan-${agent}.md`,
+      acceptedAt: now
+    }));
+    const acceptedResponses = current.activeRoster.map((agent) =>
+      acceptedResponseFixture({
+        stepId: "R3.plan-ballot",
         agent,
-        round: null,
-        submissionSha: String(index + 1).repeat(40),
-        path: `.plans/issue-1/plan-${agent}.md`,
-        acceptedAt: now
-      })),
-      ...current.activeRoster.map((agent, index) => ({
-        stepId: "R3.plan-ballot" as const,
-        agent,
-        round: null,
-        submissionSha: String(index + 3).repeat(40),
         choice: agent,
-        path: `.plans/issue-1/ballot-${agent}.json`,
-        acceptedAt: now
-      }))
-    ];
-    const state = cursorsStateSchema.parse({ ...current, accepted });
+        acceptedAt: now,
+        responseSha256: responseDigestFixture(agent)
+      })
+    );
+    const state = cursorsStateSchema.parse({
+      ...current,
+      accepted,
+      acceptedResponses,
+      ballotBatches: [
+        publishedBallotBatchFixture({
+          kind: "plan-ballot-batch",
+          activeRoster: current.activeRoster,
+          createdAt: now,
+          commitSha: "9".repeat(40)
+        })
+      ],
+      evidence: { branch: "issue-1/coordinator-evidence", tip: "9".repeat(40) }
+    });
     const decision = computePlanSelectionDerived(state, now);
     expect(decision?.inputs.map((input) => input.kind)).toEqual([
       "plan",
@@ -236,25 +322,31 @@ describe("effectful run loop", () => {
       cursorsStateSchema.parse({
         ...current,
         issueCursor: { stepId: "R3.plan-ballot", gateId: "gate-3-selection", round: null },
-        accepted: [
-          ...current.activeRoster.map((agent, index) => ({
-            stepId: "R2.plan" as const,
+        accepted: current.activeRoster.map((agent, index) => ({
+          stepId: "R2.plan" as const,
+          agent,
+          round: null,
+          submissionSha: String(index + 1).repeat(40),
+          path: `.plans/issue-1/plan-${agent}.md`,
+          acceptedAt: now
+        })),
+        acceptedResponses: current.activeRoster.map((agent) =>
+          acceptedResponseFixture({
+            stepId: "R3.plan-ballot",
             agent,
-            round: null,
-            submissionSha: String(index + 1).repeat(40),
-            path: `.plans/issue-1/plan-${agent}.md`,
-            acceptedAt: now
-          })),
-          ...current.activeRoster.map((agent, index) => ({
-            stepId: "R3.plan-ballot" as const,
-            agent,
-            round: null,
-            submissionSha: String(index + 3).repeat(40),
             choice: "codex",
-            path: `.plans/issue-1/ballot-${agent}.json`,
             acceptedAt: now
-          }))
-        ]
+          })
+        ),
+        ballotBatches: [
+          publishedBallotBatchFixture({
+            kind: "plan-ballot-batch",
+            activeRoster: current.activeRoster,
+            createdAt: now,
+            commitSha: "9".repeat(40)
+          })
+        ],
+        evidence: { branch: "issue-1/coordinator-evidence", tip: "9".repeat(40) }
       })
     );
     const record = computePlanSelectionDerived(readCursorsState(paths), now);
@@ -464,7 +556,10 @@ describe("effectful run loop", () => {
     expect(cursors.agents.claude?.status).toBe("ordered");
     expect(cursors.agents.codex?.status).toBe("ordered");
     const action = readAction(agentRuntimePaths(paths, "codex").action);
-    expect(action.requiredPath).toBe(".signals/issue-1/participation-ready-codex.json");
+    expect(action.submissionMode).not.toBe("response");
+    if (action.submissionMode !== "response") {
+      expect(action.requiredPath).toBe(".signals/issue-1/participation-ready-codex.json");
+    }
     expect(action.body).not.toContain("gate-1-join");
     expect(action.body).toContain('"artifact": "participation-ready"');
     expect(action.body).toContain("```json");
@@ -1178,7 +1273,6 @@ describe("effectful run loop", () => {
     const now = "2026-08-11T17:00:00.000Z";
     const actionId = "ce80f31a-6884-42cf-b0ff-b0fb27fc6cc8";
     const revisionPin = "e".repeat(40);
-    const submissionSha = "d".repeat(40);
     const seeded = cursorsStateSchema.parse({
       ...current,
       issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
@@ -1219,7 +1313,8 @@ describe("effectful run loop", () => {
         claude: {
           ...current.agents.claude,
           stepId: "R6.ballot",
-          evidenceId: "consensus-ballot-published",
+          evidenceId: "consensus-response-accepted",
+          submissionMode: "response",
           actionId,
           status: "ordered",
           updatedAt: now
@@ -1241,41 +1336,29 @@ describe("effectful run loop", () => {
     writeCursorsState(paths, seeded);
     const order = buildOrder(paths, start, seeded, "claude", "R6.ballot", 1, actionId);
     writeAction(paths.coordRoot, agentRuntimePaths(paths, "claude").action, order);
-    writeFileSync(agentRuntimePaths(paths, "claude").complete, `${submissionSha}\n`);
-    const artifact = JSON.stringify({
-      protocolVersion: 1,
-      artifact: "consensus-ballot",
-      issue: 1,
-      issueSessionId: start.issueSessionId,
-      agent: "claude",
-      inputSetHash: computeInputSetHash(order.inputs),
-      round: 1,
-      revisionCommitSha: revisionPin,
+    const response: ConsensusBallotResponse = {
+      actionId,
       disposition: "approve",
       rationale: "The revision is ready."
-    });
-    const mirror = new BareMirror(paths.mirror, "/origin.git");
-    mirror.fetchBranch = async () => ({
-      ok: true,
-      ref: "refs/remotes/origin/issue-1/claude",
-      tip: submissionSha
-    });
-    mirror.isReachable = async () => true;
-    mirror.readBlob = async () => artifact;
+    };
+    const responsePath = agentResponsePath(paths, "claude", actionId);
+    writeAgentResponse(responsePath, paths.issueRoot, response);
+    writeFileSync(agentRuntimePaths(paths, "claude").complete, `response ${actionId}\n`);
 
-    const after = await new CoordinatorRunLoop(paths, { tmux: null, mirror }).runTick();
+    const after = await new CoordinatorRunLoop(paths, { tmux: null }).runTick();
     expect(after.ownerQuestion?.id).toBe("10000000-0000-4000-8000-000000000001");
-    expect(after.accepted).toContainEqual(
+    expect(after.acceptedResponses).toContainEqual(
       expect.objectContaining({
         stepId: "R6.ballot",
         agent: "claude",
         round: 1,
-        submissionSha,
-        disposition: "approve"
+        disposition: "approve",
+        actionId
       })
     );
     expect(after.agents.claude?.status).toBe("waiting-peer");
     expect(existsSync(agentRuntimePaths(paths, "claude").complete)).toBe(false);
+    expect(existsSync(responsePath)).toBe(false);
   });
 
   it("publishes exactly from durable accepted R7 outbox state and records retryable failure", async () => {

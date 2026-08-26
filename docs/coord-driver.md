@@ -23,31 +23,34 @@ within derived runtime paths are rejected.
   issue-<n>/
     github-issue.json immutable start-time GitHub title/body snapshot
     start.json       immutable session/config baseline, incl. completesRoot
-    cursors.json     workflow pointers (not the Cursor agent): step, roster, pins
+    cursors.json     workflow pointers (not the Cursor agent): step, roster, pins,
+                     acceptedResponses, ballotBatches, evidence tip
     agent-lifecycle.json  coordinator-owned CLI delivery/activity observations
     journal.jsonl    append-only owner/effect audit
+    accepted-responses/  coordinator-owned archive of accepted ballot bytes
     agents/<agent>/
       action.md      restricted public order
       render.log     optional human log
+      responses/     agent-writable private ballot JSON (one file per actionId)
 
 <parent-of-coord-root>/completes/<coord-root-name>[/<project>]/
   issue-<n>/<agent>/
-    complete         exact pushed SHA supplied by the agent
+    complete         exact pushed SHA or `response <actionId>` marker
 ```
 
-The completion receipt is the **only** runtime file an agent writes, and it is
-the only one outside the coord root. It lives in a third tree — a sibling of
-both the runtime and the clones — so a harness can be granted the one directory
-it must write without being granted `cursors.json`, `journal.jsonl`, or a peer's
-`action.md`. Codex ran `--sandbox danger-full-access` purely because `complete`
-used to sit under the coord root; it now runs `workspace-write` plus a grant on
-its own drop.
+Agents write at most two runtime paths: the completion marker in the mailbox,
+and (for ballot actions) a private response under `agents/<agent>/responses/`.
+Neither grant reaches `cursors.json`, `journal.jsonl`, peers, or the
+accepted-response archive. Codex ran `--sandbox danger-full-access` purely
+because `complete` used to sit under the coord root; it now runs
+`workspace-write` plus narrow `--add-dir` grants on its own drop and response
+directory.
 
-The grant is exactly `<completesRoot>/issue-<n>/<agent>` — never the whole
-mailbox, which holds peers' receipts. The generated `start-<agent>.sh` resolves
-it at launch from the clone-local `coord.completesRoot` and `COORD_ISSUE`, so
-the launcher file itself stays free of issue-specific state and
-`githooks/post-merge` can regenerate it without knowing an issue number.
+The mailbox grant is exactly `<completesRoot>/issue-<n>/<agent>` — never the
+whole mailbox. The response grant is exactly
+`<coordRoot>/issue-<n>/agents/<agent>/responses` when that directory exists.
+The generated `start-<agent>.sh` resolves both at launch from
+`coord.completesRoot`, `coord.workspaceConfig`, and `COORD_ISSUE`.
 
 The identity segments separate products that share one outer root: without them
 two workspaces would resolve `issue-42/claude/complete` to the same file. The
@@ -242,11 +245,12 @@ exact workspace-grouped manual identity. It never closes bare agent-named tabs
 or another product's sessions.
 
 `coord wipe-issue N` is the owner reset for reusing a GitHub issue number: it
-checks out each agent clone on the base branch, deletes origin `issue-N/<agent>`
-and `*-final` branches, and drops leftover `refs/remotes/origin/issue-N/*`
-tracking refs in clones, the product worktree, and `coord-runtime/mirror.git`.
-A local `issue-N/*` branch in the product is kept when it has uncommitted work
-or commits that are not just a checkout of the clone. Removes
+checks out each agent clone on the base branch, deletes origin `issue-N/<agent>`,
+`*-final`, and `issue-N/coordinator-evidence` branches, and drops leftover
+`refs/remotes/origin/issue-N/*` tracking refs in clones, the product worktree,
+and `coord-runtime/mirror.git`. A local `issue-N/*` branch in the product is
+kept when it has uncommitted work or commits that are not just a checkout of the
+clone (arbitrary owner branches are not treated as coordinator-owned). Removes
 `coord-runtime/issue-N`, and runs the same UI teardown as `detach`. It does
 **not** close the GitHub issue or uninstall the product. Dirty clones refuse
 unless `--force`. Clone-local skip-worktree on `AGENTS.md` is lifted so checkout
@@ -390,10 +394,13 @@ for indefinitely unless the owner explicitly drops it.
   and ballots; one reviser prepares up to three rounds.
 
 Plan and implementation choices are tallied from the exact accepted active
-ballot set. The highest vote count wins; ties use persisted active-roster
-order. Selected plans, the implementation owner/pin, and the authorized
-reviser are stored separately. Round 1 binds only the selected implementation,
-and later rounds bind only the preceding accepted revision.
+ballot set after the coordinator publishes that gate's evidence batch. Agents
+submit private responses; the coordinator archives them, builds one
+fast-forward commit on `issue-<n>/coordinator-evidence`, and only then derives
+selection or advances. The highest vote count wins; ties use persisted
+active-roster order. Selected plans, the implementation owner/pin, and the
+authorized reviser are stored separately. Round 1 binds only the selected
+implementation, and later rounds bind only the preceding accepted revision.
 
 When drops leave one active agent, future unresolved work degrades to the solo
 sequence. Completed historical gates and immutable product pins are retained.
@@ -433,7 +440,8 @@ question, is idempotent for the same answer, and cannot create round 4.
 
 On restart, pending completion SHAs are reverified, current actions are reused,
 and satisfied origin evidence prevents duplicate advancement. Runtime format
-mismatches fail closed.
+mismatches fail closed (formats 2 and 3 require `coord wipe-issue` and a fresh
+start under format 4).
 
 Finalization binds the accepted consensus/product pin to a separate cleanup
 pin. From consensus to cleanup, only deletion of the current issue's
@@ -441,8 +449,9 @@ pin. From consensus to cleanup, only deletion of the current issue's
 then materializes a clean detached worktree at the cleanup pin and runs every
 configured argv check. Any verifier or check failure blocks PR creation. After
 accepted R7 the driver pushes `issue-<n>/<chosen-agent>-final` at the cleanup
-pin and opens a PR. `coord-open-unmerged` (and legacy `owner-only`) leaves that
-PR as a draft for the owner to merge. `coord-merged` marks it ready and merges
-it. Publication failures never discard accepted finalization. `coord status`
-and a completed `coord N` print the chosen agent, final pin, published branch,
-and PR URL.
+pin and opens a PR. Ballot evidence stays on `issue-<n>/coordinator-evidence`;
+the product PR head is the ballot-free `finalSha`. `coord-open-unmerged` (and
+legacy `owner-only`) leaves that PR as a draft for the owner to merge.
+`coord-merged` marks it ready and merges it. Publication failures never discard
+accepted finalization. `coord status` and a completed `coord N` print the
+chosen agent, final pin, published branch, evidence branch/tip, and PR URL.

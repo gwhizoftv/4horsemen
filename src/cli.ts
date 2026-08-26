@@ -6,6 +6,7 @@ import { clearCompletion, readAction } from "./action.js";
 import { handleAgentEvent, lifecycleVendorSchema } from "./agentEvent.js";
 import { buildAnalytics, renderAnalytics } from "./analytics.js";
 import { initializeAgentLifecycle, readAgentLifecycle } from "./agentLifecycle.js";
+import { clearAgentResponse } from "./ballotResponse.js";
 import { doctor, renderDoctorReport } from "./doctor.js";
 import { fetchGitHubIssue, renderGitHubIssueSnapshot } from "./githubIssue.js";
 import { sha256 } from "./hash.js";
@@ -15,6 +16,7 @@ import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import {
+  agentResponsePath,
   agentRuntimePaths,
   assertNoSymlink,
   containedPath,
@@ -50,6 +52,7 @@ import {
   replaceCursor,
   setPaused,
   verifyPhaseSchema,
+  type BallotBatch,
   type CoordinatorConfig,
   type CursorsState
 } from "./state.js";
@@ -244,7 +247,9 @@ coord.workspaceConfig and the caller via consensus.agentId (or --agent / COORD_A
 Use \`-v\` / \`--verbose\` on \`coord N\`, start, or run for tick-level nudge logs.
 Phase changes (R1.join → R2.plan, …) always print.
 \`coord --version\` prints the package version (pre-1.0: \`0.0.N\`, advanced by CI on merge to main).
-\`coord status\` prints the chosen agent, final pin, published branch, and PR URL.
+\`coord status\` prints the chosen agent, final pin, published branch, evidence
+branch/tip and publication state, and PR URL. It never exposes ballot choices,
+dispositions, rationales, or pending response bytes.
 
 On macOS, starting or resuming an issue opens one Terminal.app window per agent
 when those windows are not already open, each attached to that agent's tmux
@@ -253,9 +258,11 @@ already running. \`coord detach N\` closes those Terminal windows and kills the
 issue tmux sessions without wiping runtime or branches. A completed \`coord N\` / \`coord run\` does the
 same teardown automatically. \`coord uninstall\` also tears down owner
 tmux/Terminals for the workspace agents. \`coord wipe-issue N\` resets agent clones,
-deletes origin issue-N/<agent> and *-final branches plus leftover tracking refs
-(keeping product-local issue branches that have owner commits or uncommitted work),
-wipes local issue runtime and tmux/Terminals, and leaves the GitHub issue open.
+deletes origin issue-N agent/*-final/coordinator-evidence branches plus leftover
+tracking refs (keeping product-local issue branches that have owner commits or
+uncommitted work), removes the issue runtime and completion mailbox, tears down
+UI, and leaves the GitHub issue open. Runtime format 2 and 3 states must be wiped
+and restarted (format 4).
 
 \`coord manual\` opens or repairs one workspace-scoped harness per configured
 agent, opens only missing Terminal windows, and returns without an issue,
@@ -305,6 +312,29 @@ export const automationDigestMaterial = (
   };
 };
 
+const invalidateUnpublishedBatches = (
+  batches: readonly BallotBatch[],
+  now: string,
+  reason: string
+): BallotBatch[] =>
+  batches.map((batch) =>
+    batch.status === "published" || batch.status === "invalidated"
+      ? batch
+      : {
+          ...batch,
+          status: "invalidated" as const,
+          error: batch.error ?? reason,
+          updatedAt: now
+        }
+  );
+
+const clearAgentLocalWork = (paths: IssueRuntimePaths, agent: string, actionId: string | null): void => {
+  const runtime = agentRuntimePaths(paths, agent);
+  clearCompletion(runtime.complete);
+  if (existsSync(runtime.action)) unlinkSync(runtime.action);
+  if (actionId !== null) clearAgentResponse(agentResponsePath(paths, agent, actionId));
+};
+
 const rederiveAfterDrop = (
   paths: IssueRuntimePaths,
   cursors: CursorsState,
@@ -316,8 +346,10 @@ const rederiveAfterDrop = (
   const priorConsensus = cursors.derived.consensus;
   let next = dropAgent(cursors, dropped, now);
   // A ballot cast for an agent who is no longer eligible must be replaced by
-  // its active author.  Other evidence from the dropped agent remains as
+  // its active author. Other evidence from the dropped agent remains as
   // historical provenance but is excluded by every active-only derivation.
+  // Published ballot batches are retained; unpublished roster batches are
+  // invalidated by dropAgent.
   next = cursorsStateSchema.parse({
     ...next,
     accepted: next.accepted.filter(
@@ -326,6 +358,14 @@ const rederiveAfterDrop = (
           next.activeRoster.includes(submission.agent) &&
           (submission.stepId === "R3.plan-ballot" || submission.stepId === "R5.compare-ballot") &&
           submission.choice === dropped
+        )
+    ),
+    acceptedResponses: next.acceptedResponses.filter(
+      (response) =>
+        !(
+          next.activeRoster.includes(response.agent) &&
+          (response.stepId === "R3.plan-ballot" || response.stepId === "R5.compare-ballot") &&
+          response.choice === dropped
         )
     ),
     ownerQuestion: null,
@@ -347,35 +387,43 @@ const rederiveAfterDrop = (
     state: CursorsState,
     stepId: WorkflowStepId,
     round: number | null,
-    remove: (submission: CursorsState["accepted"][number]) => boolean
+    removeStep: (step: WorkflowStepId) => boolean
   ): CursorsState => {
-    const accepted = state.accepted.filter((submission) => !remove(submission));
+    const accepted = state.accepted.filter((submission) => !removeStep(submission.stepId));
+    const acceptedResponses = state.acceptedResponses.filter((response) => !removeStep(response.stepId));
     const agents = { ...state.agents };
     for (const agent of state.activeRoster) {
       const cursor = agents[agent];
       if (cursor === undefined) continue;
-      const satisfied = accepted.find(
-        (submission) => submission.stepId === stepId && submission.agent === agent && submission.round === round
-      );
+      const definition = STEP_DEFINITIONS[stepId];
+      const satisfied =
+        definition.submissionMode === "response"
+          ? acceptedResponses.find(
+              (response) => response.stepId === stepId && response.agent === agent && response.round === round
+            )
+          : accepted.find(
+              (submission) => submission.stepId === stepId && submission.agent === agent && submission.round === round
+            );
       agents[agent] = {
         ...cursor,
         stepId,
-        evidenceId: STEP_DEFINITIONS[stepId].evidenceId,
+        evidenceId: definition.evidenceId,
         actionId: null,
+        submissionMode: null,
         status: satisfied === undefined ? "idle" : "waiting-peer",
-        submissionSha: satisfied?.submissionSha ?? null,
+        submissionSha: null,
         outstanding: [],
         updatedAt: now
       };
-      const runtime = agentRuntimePaths(paths, agent);
-      clearCompletion(runtime.complete);
-      if (existsSync(runtime.action)) unlinkSync(runtime.action);
+      clearAgentLocalWork(paths, agent, cursor.actionId);
     }
     return cursorsStateSchema.parse({
       ...state,
       issueCursor: { stepId, gateId: STEP_DEFINITIONS[stepId].gateId, round },
       agents,
       accepted,
+      acceptedResponses,
+      ballotBatches: invalidateUnpublishedBatches(state.ballotBatches, now, `invalidated by reset to ${stepId}`),
       ownerQuestion: null,
       publication: {
         status: "not-required",
@@ -394,20 +442,16 @@ const rederiveAfterDrop = (
   if (priorPlan !== null) {
     if (next.activeRoster.length === 1) {
       if (priorPlan.selectedAgents[0] !== next.activeRoster[0]) {
-        next = resetTo(next, "R4.implement", null, (submission) =>
-          ["R4.implement", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(
-            submission.stepId
-          )
+        next = resetTo(next, "R4.implement", null, (step) =>
+          ["R4.implement", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(step)
         );
         reset = true;
       }
     } else {
       const plan = computePlanSelectionDerived(next, now, priorPlan.decisionId);
       if (plan === null) {
-        next = resetTo(next, "R3.plan-ballot", null, (submission) =>
-          ["R4.implement", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(
-            submission.stepId
-          )
+        next = resetTo(next, "R3.plan-ballot", null, (step) =>
+          ["R4.implement", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(step)
         );
         reset = true;
       } else {
@@ -417,10 +461,8 @@ const rederiveAfterDrop = (
           updatedAt: now
         });
         if (plan.selectedAgents[0] !== priorPlan.selectedAgents[0]) {
-          next = resetTo(next, "R4.implement", null, (submission) =>
-            ["R4.implement", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(
-              submission.stepId
-            )
+          next = resetTo(next, "R4.implement", null, (step) =>
+            ["R4.implement", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(step)
           );
           reset = true;
         }
@@ -431,8 +473,8 @@ const rederiveAfterDrop = (
   if (!reset && priorImplementation !== null && next.activeRoster.length > 1) {
     const implementation = computeImplementationSelectionDerived(next, now, priorImplementation.decisionId);
     if (implementation === null) {
-      next = resetTo(next, "R5.compare-ballot", null, (submission) =>
-        ["R6.revise", "R6.ballot", "R7.finalize"].includes(submission.stepId)
+      next = resetTo(next, "R5.compare-ballot", null, (step) =>
+        ["R6.revise", "R6.ballot", "R7.finalize"].includes(step)
       );
       reset = true;
     } else {
@@ -445,8 +487,8 @@ const rederiveAfterDrop = (
         implementation.winner !== priorImplementation.winner ||
         implementation.implementationPin !== priorImplementation.implementationPin
       ) {
-        next = resetTo(next, "R6.revise", 1, (submission) =>
-          ["R6.revise", "R6.ballot", "R7.finalize"].includes(submission.stepId)
+        next = resetTo(next, "R6.revise", 1, (step) =>
+          ["R6.revise", "R6.ballot", "R7.finalize"].includes(step)
         );
         reset = true;
       }
@@ -456,7 +498,7 @@ const rederiveAfterDrop = (
   if (!reset && priorConsensus !== null && next.activeRoster.length > 1) {
     const consensus = computeConsensusDerived(next, priorConsensus.round, now, priorConsensus.decisionId);
     if (consensus === null) {
-      next = resetTo(next, "R6.ballot", priorConsensus.round, (submission) => submission.stepId === "R7.finalize");
+      next = resetTo(next, "R6.ballot", priorConsensus.round, (step) => step === "R7.finalize");
       reset = true;
     } else {
       next = cursorsStateSchema.parse({
@@ -465,26 +507,32 @@ const rederiveAfterDrop = (
         updatedAt: now
       });
       if (consensus.consensusPin !== priorConsensus.consensusPin) {
-        next = resetTo(next, "R7.finalize", null, (submission) => submission.stepId === "R7.finalize");
+        next = resetTo(next, "R7.finalize", null, (step) => step === "R7.finalize");
         reset = true;
       }
     }
   }
 
-  const droppedRuntime = agentRuntimePaths(paths, dropped);
-  clearCompletion(droppedRuntime.complete);
-  if (existsSync(droppedRuntime.action)) unlinkSync(droppedRuntime.action);
+  clearAgentLocalWork(paths, dropped, cursors.agents[dropped]?.actionId ?? null);
   if (reset) return next;
 
   const currentStep = next.issueCursor.stepId;
   const round = currentStep.startsWith("R6.") ? (next.issueCursor.round ?? 1) : null;
+  const definition = STEP_DEFINITIONS[currentStep];
   for (const agent of next.activeRoster) {
-    const alreadySatisfied = next.accepted.some(
-      (submission) => submission.stepId === currentStep && submission.agent === agent && submission.round === round
-    );
+    const alreadySatisfied =
+      definition.submissionMode === "response"
+        ? next.acceptedResponses.some(
+            (response) => response.stepId === currentStep && response.agent === agent && response.round === round
+          )
+        : next.accepted.some(
+            (submission) => submission.stepId === currentStep && submission.agent === agent && submission.round === round
+          );
     if (alreadySatisfied) continue;
     const runtime = agentRuntimePaths(paths, agent);
+    const priorActionId = next.agents[agent]?.actionId ?? null;
     if (existsSync(runtime.action)) unlinkSync(runtime.action);
+    if (priorActionId !== null) clearAgentResponse(agentResponsePath(paths, agent, priorActionId));
     next = replaceCursor(
       next,
       agent,
@@ -1328,12 +1376,23 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
                     (submission) => !(submission.stepId === "R6.ballot" && submission.round === question.round)
                   )
                 : next.accepted,
+            acceptedResponses:
+              answer === "retry"
+                ? next.acceptedResponses.filter(
+                    (response) => !(response.stepId === "R6.ballot" && response.round === question.round)
+                  )
+                : next.acceptedResponses,
+            // Retain published batch history; invalidate only unpublished stale batches.
+            ballotBatches: invalidateUnpublishedBatches(
+              next.ballotBatches,
+              now,
+              `invalidated by owner ${answer}`
+            ),
             updatedAt: now
           });
           for (const agent of next.activeRoster) {
-            const runtime = agentRuntimePaths(paths, agent);
-            clearCompletion(runtime.complete);
-            if (existsSync(runtime.action)) unlinkSync(runtime.action);
+            const priorActionId = next.agents[agent]?.actionId ?? null;
+            clearAgentLocalWork(paths, agent, priorActionId);
             next = replaceCursor(
               next,
               agent,
@@ -1398,11 +1457,20 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         const agents = requestedAgent === null ? current.activeRoster : [requestedAgent];
         if (agents.some((agent) => !current.activeRoster.includes(agent))) throw new Error("restart-action agent must be active.");
         appendJournal(paths, { type: "action-restarted", details: { agents } }, now);
-        let next = current;
+        let next = cursorsStateSchema.parse({
+          ...current,
+          // Preserve still-valid accepted responses; retain published batch history;
+          // invalidate only unpublished stale roster batches.
+          ballotBatches: invalidateUnpublishedBatches(
+            current.ballotBatches,
+            now,
+            "invalidated by restart-action"
+          ),
+          updatedAt: now
+        });
         for (const agent of agents) {
-          const runtime = agentRuntimePaths(paths, agent);
-          clearCompletion(runtime.complete);
-          if (existsSync(runtime.action)) unlinkSync(runtime.action);
+          const priorActionId = next.agents[agent]?.actionId ?? null;
+          clearAgentLocalWork(paths, agent, priorActionId);
           next = replaceCursor(next, agent, { actionId: null, status: "idle", submissionSha: null, outstanding: [] }, now);
         }
         return next;

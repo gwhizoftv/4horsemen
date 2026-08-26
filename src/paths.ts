@@ -317,9 +317,14 @@ export type AgentRuntimePaths = {
    * Separate from `root`: the order is coordinator-owned, the receipt is not.
    */
   completeDir: string;
+  /** Agent-writable ballot response directory under the issue runtime. */
+  responsesDir: string;
 };
 
 const agentPattern = /^[a-z][a-z0-9-]{0,63}$/;
+const actionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export const RESERVED_EVIDENCE_AGENT = "coordinator-evidence";
 
 export const agentRuntimePaths = (paths: IssueRuntimePaths, agent: string): AgentRuntimePaths => {
   if (!agentPattern.test(agent)) {
@@ -333,8 +338,38 @@ export const agentRuntimePaths = (paths: IssueRuntimePaths, agent: string): Agen
     // The receipt leaves the coord root; the order and the log do not.
     complete: containedPath(completeDir, "complete"),
     renderLog: containedPath(root, "render.log"),
-    completeDir
+    completeDir,
+    responsesDir: containedPath(root, "responses")
   };
+};
+
+export const agentResponsePath = (paths: IssueRuntimePaths, agent: string, actionId: string): string => {
+  if (!actionIdPattern.test(actionId)) {
+    throw new PathSafetyError(`Invalid action id for response path: ${actionId}`);
+  }
+  const runtime = agentRuntimePaths(paths, agent);
+  return containedPath(runtime.responsesDir, `${actionId}.json`);
+};
+
+export const acceptedResponseArchivePath = (
+  paths: IssueRuntimePaths,
+  agent: string,
+  actionId: string
+): string => {
+  if (!agentPattern.test(agent)) {
+    throw new PathSafetyError(`Invalid agent id: ${agent}`);
+  }
+  if (!actionIdPattern.test(actionId)) {
+    throw new PathSafetyError(`Invalid action id for archive path: ${actionId}`);
+  }
+  return containedPath(paths.issueRoot, "accepted-responses", agent, `${actionId}.json`);
+};
+
+export const evidenceWorktreePath = (paths: IssueRuntimePaths, label: string): string => {
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(label)) {
+    throw new PathSafetyError(`Invalid evidence worktree label: ${label}`);
+  }
+  return containedPath(paths.issueRoot, "evidence-worktrees", label);
 };
 
 export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly string[]): void => {
@@ -344,14 +379,24 @@ export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly st
   assertNoSymlink(paths.coordRoot, paths.agents);
   mkdirSync(paths.agents, { recursive: true, mode: 0o700 });
   assertNoSymlink(paths.coordRoot, paths.agents);
+  const acceptedRoot = containedPath(paths.issueRoot, "accepted-responses");
+  assertNoSymlink(paths.coordRoot, acceptedRoot);
+  mkdirSync(acceptedRoot, { recursive: true, mode: 0o700 });
+  assertNoSymlink(paths.coordRoot, acceptedRoot);
   assertNoSymlink(paths.completesRoot, paths.completesIssueRoot);
   mkdirSync(paths.completesIssueRoot, { recursive: true, mode: 0o700 });
   assertNoSymlink(paths.completesRoot, paths.completesIssueRoot);
   for (const agent of agents) {
+    if (agent === RESERVED_EVIDENCE_AGENT) {
+      throw new PathSafetyError(`Agent id ${RESERVED_EVIDENCE_AGENT} is reserved for the evidence branch.`);
+    }
     const runtime = agentRuntimePaths(paths, agent);
     assertNoSymlink(paths.coordRoot, runtime.root);
     mkdirSync(runtime.root, { recursive: true, mode: 0o700 });
     assertNoSymlink(paths.coordRoot, runtime.root);
+    assertNoSymlink(paths.coordRoot, runtime.responsesDir);
+    mkdirSync(runtime.responsesDir, { recursive: true, mode: 0o700 });
+    assertNoSymlink(paths.coordRoot, runtime.responsesDir);
     // Checked against the mailbox root, not the coord root: the two trees are
     // deliberately disjoint, so containment must be asserted within each.
     assertNoSymlink(paths.completesRoot, runtime.completeDir);

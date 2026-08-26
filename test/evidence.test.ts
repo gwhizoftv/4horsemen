@@ -16,7 +16,9 @@ const order = (overrides: Partial<InternalOrder> = {}): InternalOrder => ({
   agent: "codex",
   stepId: "R2.plan",
   evidenceId: "plan-published",
+  submissionMode: "git" as const,
   requiredPath: ".plans/issue-1/plan.md",
+  responsePath: null,
   completePath: "/runtime/issue-1/agents/codex/complete",
   branch: "issue-1/codex",
   round: null,
@@ -485,12 +487,12 @@ Implement it.
     ["R1.join", "join-published"],
     ["R2.plan", "plan-published"],
     ["R3.review", "review-published"],
-    ["R3.plan-ballot", "plan-ballot-published"],
+    ["R3.plan-ballot", "plan-response-accepted"],
     ["R4.implement", "implementation-pinned"],
     ["R5.compare", "comparison-published"],
-    ["R5.compare-ballot", "comparison-ballot-published"],
+    ["R5.compare-ballot", "comparison-response-accepted"],
     ["R6.revise", "revision-pinned"],
-    ["R6.ballot", "consensus-ballot-published"],
+    ["R6.ballot", "consensus-response-accepted"],
     ["R7.finalize", "finalization-verified"]
   ] as const)("rejects missing required-path evidence for %s", async (stepId, evidenceId) => {
     const result = await evaluateEvidence(
@@ -504,11 +506,11 @@ Implement it.
 
   it.each([
     ["R1.join", "join-published"],
-    ["R3.plan-ballot", "plan-ballot-published"],
+    ["R3.plan-ballot", "plan-response-accepted"],
     ["R4.implement", "implementation-pinned"],
-    ["R5.compare-ballot", "comparison-ballot-published"],
+    ["R5.compare-ballot", "comparison-response-accepted"],
     ["R6.revise", "revision-pinned"],
-    ["R6.ballot", "consensus-ballot-published"],
+    ["R6.ballot", "consensus-response-accepted"],
     ["R7.finalize", "finalization-verified"]
   ] as const)("rejects malformed structured evidence for %s", async (stepId, evidenceId) => {
     const result = await evaluateEvidence(
@@ -533,37 +535,22 @@ Implement it.
     expect(result).toMatchObject({ status: "rejected" });
   });
 
-  it("validates deterministic plan ballot choices", async () => {
+  it("rejects repository artifacts for plan ballot response steps", async () => {
     const plan = { agent: "claude", commitSha: sha("1"), path: ".plans/issue-1/plan.md", kind: "plan" };
     const review = { agent: "claude", commitSha: sha("2"), path: ".plans/issue-1/review.md", kind: "review" };
     const ballotOrder = order({
       stepId: "R3.plan-ballot",
-      evidenceId: "plan-ballot-published",
-      requiredPath: ".plans/issue-1/ballot-codex.json",
+      evidenceId: "plan-response-accepted",
+      submissionMode: "response",
+      requiredPath: "",
+      responsePath: "/runtime/issue-1/agents/codex/responses/179da8c7-ae22-47eb-b6eb-211ceea6b732.json",
       inputs: [plan, review],
       activeRoster: ["codex", "claude"],
       eligibleChoices: ["claude"]
     });
-    const ballotBlob = JSON.stringify({
-      protocolVersion: 1,
-      artifact: "plan-ballot",
-      issue: 1,
-      issueSessionId: ballotOrder.issueSessionId,
-      agent: "codex",
-      inputSetHash: computeInputSetHash(ballotOrder.inputs),
-      plans: [{ agent: plan.agent, commitSha: plan.commitSha, path: plan.path }],
-      reviews: [{ agent: review.agent, commitSha: review.commitSha, path: review.path }],
-      choice: "claude",
-      rationale: "complete"
-    });
-    expect(await evaluateEvidence(ballotOrder, sha("c"), mirror(ballotBlob))).toMatchObject({
-      status: "satisfied",
-      choice: "claude"
-    });
-    const badChoice = JSON.stringify({ ...JSON.parse(ballotBlob), choice: "cursor" });
-    expect((await evaluateEvidence(ballotOrder, sha("c"), mirror(badChoice))).outstanding.join(" ")).toContain(
-      "not an eligible active plan agent"
-    );
+    const result = await evaluateEvidence(ballotOrder, sha("c"), mirror("{}"));
+    expect(result).toMatchObject({ status: "rejected" });
+    expect(result.outstanding).toContain("ballot steps cannot be satisfied through a repository artifact");
   });
 
   it("rejects a comparison that omits a bound implementation pin", async () => {
@@ -584,7 +571,7 @@ Implement it.
     expect(result.outstanding).toContain(`comparison does not cite implementation pin ${input.commitSha}`);
   });
 
-  it("rejects a comparison ballot for an ineligible implementation", async () => {
+  it("rejects repository artifacts for comparison ballot response steps", async () => {
     const implementation = {
       agent: "claude",
       commitSha: sha("2"),
@@ -593,28 +580,17 @@ Implement it.
     };
     const action = order({
       stepId: "R5.compare-ballot",
-      evidenceId: "comparison-ballot-published",
-      requiredPath: ".code-reviews/issue-1/ballot-codex.json",
+      evidenceId: "comparison-response-accepted",
+      submissionMode: "response",
+      requiredPath: "",
+      responsePath: "/runtime/issue-1/agents/codex/responses/179da8c7-ae22-47eb-b6eb-211ceea6b732.json",
       inputs: [implementation],
       activeRoster: ["claude", "codex"],
       eligibleChoices: ["claude"]
     });
-    const artifact = {
-      protocolVersion: 1,
-      artifact: "comparison-ballot",
-      issue: 1,
-      issueSessionId: action.issueSessionId,
-      agent: "codex",
-      inputSetHash: computeInputSetHash(action.inputs),
-      implementations: [
-        { agent: implementation.agent, commitSha: implementation.commitSha, path: implementation.path }
-      ],
-      choice: "codex",
-      rationale: "Prefer the unbound implementation."
-    };
-    const result = await evaluateEvidence(action, sha("c"), mirror(JSON.stringify(artifact)));
+    const result = await evaluateEvidence(action, sha("c"), mirror("{}"));
     expect(result).toMatchObject({ status: "rejected" });
-    expect(result.outstanding).toContain("comparison ballot choice codex is not an eligible active implementation agent");
+    expect(result.outstanding).toContain("ballot steps cannot be satisfied through a repository artifact");
   });
 
   it("requires revision lineage, approved paths, and immutable phase separation", async () => {

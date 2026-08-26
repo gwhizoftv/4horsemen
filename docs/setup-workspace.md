@@ -142,9 +142,9 @@ coord uninstall --coord-root /path/to/coord-runtime --product /path/to/app
 ```
 
 To reuse a GitHub issue number without closing it (reset clones + delete origin
-`issue-N/<agent>` and `*-final` branches + leftover tracking refs, keeping any
-product-local issue branch that has owner commits or uncommitted work
-+ local issue runtime + tmux/Terminals):
+`issue-N/<agent>`, `*-final`, and `issue-N/coordinator-evidence` branches +
+leftover tracking refs, keeping any product-local issue branch that has owner
+commits or uncommitted work + local issue runtime + tmux/Terminals):
 
 ```bash
 coord wipe-issue N --product /path/to/app
@@ -191,14 +191,20 @@ than guessing what to restore.
 
 ### The completion mailbox
 
-Agents publish one runtime file: the pushed commit SHA, written to `complete`.
-That file does not live under the coord root. It lives in a sibling tree so the
-harness can be granted the single directory it must write without also being
-granted `cursors.json`, the journal, or another agent's `action.md`:
+Agents publish a completion marker to `complete`: either a pushed commit SHA
+(Git-mode actions) or `response <actionId>` (ballot response-mode). That file
+does not live under the coord root. It lives in a sibling tree so the harness
+can be granted the single directory it must write without also being granted
+`cursors.json`, the journal, or another agent's `action.md`:
 
 ```text
 /path/to/completes/<coord-root-name>[/<project>]/issue-<n>/<agent>/complete
 ```
+
+Ballot responses live under the issue runtime at
+`issue-<n>/agents/<agent>/responses/<actionId>.json`. The launcher grants that
+directory when it exists, in addition to the mailbox drop. It never grants the
+issue root, peer paths, or the accepted-response archive.
 
 `completesRoot` defaults to `<parent-of-coord-root>/completes/<coord-root-name>`
 for a flat install, with the project appended for a nested one, and is created by
@@ -218,11 +224,12 @@ claim whose workspace config no longer exists is stale and is taken over
 silently, so uninstalling a product releases its mailbox.
 
 Install records the resolved root in each clone as `coord.completesRoot`. The
-generated `start-<agent>.sh` combines it with `COORD_ISSUE` at launch and passes
-only that one directory to the harness (`--add-dir`). Nothing issue-specific is
-written into the launcher, which is why `githooks/post-merge` can still
-regenerate it. A harness started outside an automated issue gets no grant and
-says so on stdout.
+generated `start-<agent>.sh` combines it with `coord.workspaceConfig` and
+`COORD_ISSUE` at launch and passes up to two directories to the harness
+(`--add-dir`): the mailbox drop and the agent's response directory. Nothing
+issue-specific is written into the launcher, which is why `githooks/post-merge`
+can still regenerate it. A harness started outside an automated issue gets no
+grant and says so on stdout.
 
 Five scoping rules matter:
 

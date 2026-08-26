@@ -6,7 +6,10 @@ import { gitShaSchema, repositoryPathSchema } from "./protocol.js";
 import { validatePhasePin, type PinValidationResult } from "./pinValidation.js";
 
 export type CommandResult = { exitCode: number; stdout: Buffer; stderr: string };
-export type GitRunner = (args: readonly string[], options?: { cwd?: string }) => Promise<CommandResult>;
+export type GitRunner = (
+  args: readonly string[],
+  options?: { cwd?: string; env?: NodeJS.ProcessEnv }
+) => Promise<CommandResult>;
 
 const repositoryRedirectors = new Set([
   "GIT_DIR",
@@ -21,11 +24,22 @@ const repositoryRedirectors = new Set([
   "GIT_DISCOVERY_ACROSS_FILESYSTEM"
 ]);
 
+const identityEnvKeys = [
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_AUTHOR_DATE",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+  "GIT_COMMITTER_DATE"
+] as const;
+
 export const hermeticGitEnv = (source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = { ...source, GIT_TERMINAL_PROMPT: "0" };
   for (const key of Object.keys(env)) {
     if (repositoryRedirectors.has(key) || key === "GIT_CONFIG" || key.startsWith("GIT_CONFIG_")) delete env[key];
   }
+  // Ambient identity overrides `-c user.*` and would poison evidence authorship.
+  for (const key of identityEnvKeys) delete env[key];
   return env;
 };
 
@@ -34,7 +48,7 @@ export const runGitCommand: GitRunner = (args, options = {}) =>
     const child = spawn("git", [...args], {
       cwd: options.cwd ?? tmpdir(),
       stdio: ["ignore", "pipe", "pipe"],
-      env: hermeticGitEnv()
+      env: { ...hermeticGitEnv(), ...options.env }
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];

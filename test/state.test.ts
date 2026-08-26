@@ -70,7 +70,7 @@ const initialize = () => {
 describe("operational state", () => {
   it("writes strict versioned start, cursor, and journal state atomically", () => {
     const { paths } = initialize();
-    expect(readStartState(paths)).toMatchObject({ formatVersion: 3, maxRevisionRounds: 3 });
+    expect(readStartState(paths)).toMatchObject({ formatVersion: 4, maxRevisionRounds: 3 });
     expect(readCursorsState(paths).activeRoster).toEqual(["claude", "codex"]);
     expect(readJournal(paths).map((event) => event.type)).toEqual(["started"]);
     appendJournal(paths, { type: "paused", details: {} }, "2026-08-11T10:01:00.000Z");
@@ -98,6 +98,15 @@ describe("operational state", () => {
     writeFileSync(
       paths.cursors,
       `${JSON.stringify({ ...readCursorsState(paths), formatVersion: 2 }, null, 2)}\n`
+    );
+    expect(() => readCursorsState(paths)).toThrow(/Wipe this issue/);
+  });
+
+  it("rejects runtime format version 3 with wipe and restart guidance", () => {
+    const { paths } = initialize();
+    writeFileSync(
+      paths.cursors,
+      `${JSON.stringify({ ...readCursorsState(paths), formatVersion: 3 }, null, 2)}\n`
     );
     expect(() => readCursorsState(paths)).toThrow(/Wipe this issue/);
   });

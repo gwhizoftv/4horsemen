@@ -38,13 +38,28 @@ Issue-76 record counts:
 | --- | ---: | --- |
 | `agent-lifecycle` | 1119 | vendor hook traffic (95% is one agent — see §3.6) |
 | `nudged` | 46 | coordinator → agent delivery attempt |
-| `intent-seen` | 39 | agent wrote `complete` with a SHA |
+| `intent-seen` | 39 | agent wrote `complete` (SHA or response marker) |
 | `verify-result` | 39 | coordinator accepted/rejected the submission |
 | `action-prepared` | 37 | an `action.md` was written |
 | `gate-advanced` | 13 | **phase boundaries** |
 | `agent-observability-degraded` | 10 | watchdog fired (45s, `AGENT_OBSERVABILITY_WATCHDOG_MS`) |
 | `final-check` | 2 | hermetic `checks` tier at the approved commit |
 | `started` / `publication-pending` / `pr-created` | 1 each | run boundaries |
+
+Format 4 also journals ballot events used by analytics:
+
+| type | what it pins down |
+| --- | --- |
+| `response-accepted` | private ballot response archived (agent latency end) |
+| `ballot-batch-pending` | evidence commit frozen; push not yet confirmed |
+| `ballot-batch-published` | evidence branch fast-forward succeeded |
+| `ballot-batch-failed` | push/reconcile failed (retries keep the same commit SHA) |
+| `ballot-batch-invalidated` | unpublished batch superseded (roster/restart) |
+
+`coord analytics` reports agent wait (`nudged` → `intent-seen`), agent response
+latency (`nudged` → `response-accepted`), and coordinator evidence-publication
+latency (`ballot-batch-pending` → `ballot-batch-published`) separately.
+Publication retries are not counted as additional agent turns.
 
 `gate-advanced` is the load-bearing event for all phase analytics. It records
 `{from, to, round}` and nothing else, but with `at` that is enough to cut the

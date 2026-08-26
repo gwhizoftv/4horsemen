@@ -21,7 +21,7 @@ Nothing in this repository writes issue state into the working tree.
 
 | Group | Files | Owns |
 | --- | --- | --- |
-| Protocol and evidence | `src/protocol.ts`, `src/evidence.ts`, `src/pinValidation.ts` | Artifact schemas, evidence acceptance, approved-path matching, pin validation |
+| Protocol and evidence | `src/protocol.ts`, `src/evidence.ts`, `src/pinValidation.ts`, `src/ballotResponse.ts`, `src/ballotPublication.ts` | Artifact schemas, private ballot responses, evidence-branch batch publication, pin validation |
 | State machine and run loop | `src/machine.ts`, `src/steps.ts`, `src/state.ts`, `src/runLoop.ts` | Step definitions, gate transitions, persisted start/cursor/journal state, the tick |
 | Action rendering | `src/action.ts`, `src/orderScaffold.ts` | `action.md` front matter and body, per-step JSON and heading scaffolds |
 | Workspace and install | `src/setupWorkspace.ts`, `src/install.ts`, `src/hookSync.ts`, `src/agentHookSync.ts`, `src/agentsProtocol.ts`, `src/productIgnore.ts` | Config generation, clone setup, git hooks, vendor lifecycle hooks, the AGENTS.md overlay |
@@ -37,11 +37,10 @@ it, which is why neither has its own copy.
 ## Invariants worth knowing before you plan
 
 - **Runtime state is outside the clone.** `action.md` lives under the coord
-  root, never in the working tree. `complete` is not there either: the
-  completion receipt is the one file an agent writes, so it lives in a mailbox
-  beside the coord root — `completes/<workspace>/issue-<n>/<agent>/complete` —
-  not in the clone, and not next to `cursors.json`. `src/paths.ts` owns that
-  boundary; `scripts/lib/launcher.sh` owns the per-issue harness grant.
+  root, never in the working tree. Agents write a mailbox `complete` marker and,
+  for ballots, a private response under `agents/<agent>/responses/`.
+  `src/paths.ts` owns that boundary; `scripts/lib/launcher.sh` owns the two
+  per-issue harness grants (mailbox drop + response dir).
 - **`AGENTS.md` is skip-worktree in every agent clone.** It carries a managed
   protocol overlay. Editing it from a clone stages nothing, and clearing the bit
   is forbidden. See `src/agentsProtocol.ts`.

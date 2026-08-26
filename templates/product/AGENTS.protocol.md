@@ -16,7 +16,12 @@ Coordination checks this clone out on `issue-<n>/<agent>` and re-sets the
 `skip-worktree` bit on `AGENTS.md` before your CLI starts. The branch already
 exists and is already current: do not create it, do not switch to it, and do not
 check out or pull the shared branch first. Every automated action names the
-branch to push to, and that is the branch you are already on.
+branch you are already on.
+
+Commit and push only when the current action's `submissionMode` is `git` (or the
+action text requires a pushed commit SHA). Response-mode ballot actions must not
+commit or push: write only the private response JSON and the completion marker
+`response <actionId>`, then stop Git work for that action.
 
 Do not clear `skip-worktree` on `AGENTS.md`, strip this protocol block, or
 replace the file to “fix” git status. Coordination sets that bit so the
@@ -25,7 +30,8 @@ do not change index flags.
 
 After you write `complete`, do not stop. Before waiting for more input, re-read
 your `action.md`. If `actionId` in the front matter has changed, execute the new
-instructions immediately; do not wait for another coordinator message.
+instructions immediately; do not wait for another coordinator message. This
+re-read applies to both Git-mode and response-mode actions.
 
 If that re-read shows the same `actionId` — there is no new work yet — end your
 reply with this exact line, on its own, with nothing after it:

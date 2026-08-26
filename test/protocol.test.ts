@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  comparisonBallotArtifactSchema,
+  consensusBallotResponseSchema,
   implementationReadyArtifactSchema,
   participationReadyArtifactSchema,
   parseJsonWithSchema,
+  planBallotArtifactSchema,
+  planComparisonBallotResponseSchema,
   publishedArtifactSchema,
   revisionReadyArtifactSchema
 } from "../src/protocol.js";
@@ -13,6 +17,9 @@ const common = {
   issueSessionId: `issue-1:${"a".repeat(40)}`,
   agent: "codex"
 };
+
+const actionId = "b2337d85-6617-4e9f-8ace-901453764aa4";
+const digest = "c".repeat(64);
 
 describe("published protocol schemas", () => {
   it("accepts a strict participation-readiness artifact and rejects unknown or stale shapes", () => {
@@ -70,5 +77,58 @@ describe("published protocol schemas", () => {
     for (const artifact of ["selection", "reviser-authorization", "consensus-declaration"]) {
       expect(publishedArtifactSchema.safeParse({ ...common, artifact }).success).toBe(false);
     }
+  });
+
+  it("accepts private ballot responses and rejects envelope fields", () => {
+    expect(
+      planComparisonBallotResponseSchema.safeParse({
+        actionId,
+        choice: "claude",
+        rationale: "Prefer this plan."
+      }).success
+    ).toBe(true);
+    expect(
+      planComparisonBallotResponseSchema.safeParse({
+        actionId,
+        choice: "claude",
+        rationale: "Prefer this plan.",
+        agent: "codex"
+      }).success
+    ).toBe(false);
+    expect(
+      consensusBallotResponseSchema.safeParse({
+        actionId,
+        disposition: "revise",
+        rationale: "Needs another pass."
+      }).success
+    ).toBe(true);
+  });
+
+  it("requires protocol v2 provenance on published ballot artifacts", () => {
+    const plan = {
+      protocolVersion: 2 as const,
+      issue: 1,
+      issueSessionId: common.issueSessionId,
+      agent: "codex",
+      inputSetHash: digest,
+      actionId,
+      responseSha256: digest,
+      rationale: "Prefer this plan.",
+      artifact: "plan-ballot" as const,
+      plans: [{ agent: "claude", commitSha: "a".repeat(40), path: ".plans/issue-1/plan.md" }],
+      reviews: [],
+      choice: "claude"
+    };
+    expect(planBallotArtifactSchema.parse(plan)).toEqual(plan);
+    expect(planBallotArtifactSchema.safeParse({ ...plan, protocolVersion: 1 }).success).toBe(false);
+    expect(
+      comparisonBallotArtifactSchema.safeParse({
+        ...plan,
+        artifact: "comparison-ballot",
+        implementations: [{ agent: "claude", commitSha: "a".repeat(40), path: ".signals/x.json" }],
+        plans: undefined,
+        reviews: undefined
+      }).success
+    ).toBe(false);
   });
 });

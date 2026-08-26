@@ -249,8 +249,12 @@ describe("agent-facing language", () => {
     const rendered = renderEveryStep(paths);
     // Prove the seeding actually produced bound citations, so this is not a
     // second pass over the same empty-input bodies.
-    expect(rendered.get("R3.plan-ballot")).toContain('"artifact": "plan-ballot"');
+    expect(rendered.get("R3.plan-ballot")).toContain('"actionId"');
+    expect(rendered.get("R3.plan-ballot")).toContain('"choice"');
+    expect(rendered.get("R3.plan-ballot")).toContain('"rationale"');
+    expect(rendered.get("R3.plan-ballot")).not.toContain('"artifact": "plan-ballot"');
     expect(rendered.get("R3.plan-ballot")).toContain("1".repeat(40));
+    expect(rendered.get("R3.plan-ballot")).toContain("submissionMode: response");
     for (const [stepId, body] of rendered) {
       expect(findAgentLanguageViolations(body), stepId).toEqual([]);
     }

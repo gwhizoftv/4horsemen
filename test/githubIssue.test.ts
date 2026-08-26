@@ -127,11 +127,20 @@ describe("GitHub issue snapshots", () => {
         issue: 112,
         title: snapshot.title,
         finalSha: "a".repeat(40),
-        draft: true
+        draft: true,
+        evidenceBranch: "issue-112/coordinator-evidence",
+        evidenceTip: "c".repeat(40)
       })
     ).toEqual({
       title: "Issue 112: Have PR's include the issue title",
-      body: `Closes #112\n\nDraft PR for issue 112. Owner merges. Final pin: ${"a".repeat(40)}.`
+      body: [
+        "Closes #112",
+        "",
+        `Draft PR for issue 112. Owner merges. Final pin: ${"a".repeat(40)}.`,
+        "",
+        `Ballot evidence branch: issue-112/coordinator-evidence (tip ${"c".repeat(40)}).`,
+        "That branch is coordinator-authored publication of action-bound ballot responses, not a cryptographic agent signature."
+      ].join("\n")
     });
     expect(
       formatFinalizationPullRequest({

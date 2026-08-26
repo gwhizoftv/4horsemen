@@ -1,12 +1,88 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { decide } from "../src/machine.js";
-import { cursorsStateSchema, initialCursors, startStateSchema, type AcceptedSubmission } from "../src/state.js";
+import {
+  cursorsStateSchema,
+  initialCursors,
+  startStateSchema,
+  type AcceptedResponse,
+  type AcceptedSubmission,
+  type BallotBatch
+} from "../src/state.js";
 
 const now = "2026-08-11T12:00:00.000Z";
 const roster = ["claude", "codex", "cursor", "antigravity"];
 
+const responseDigest = (seed: string): string => createHash("sha256").update(seed, "utf8").digest("hex");
+const gitSha = (seed: string): string =>
+  createHash("sha256").update(`git:${seed}`, "utf8").digest("hex").slice(0, 40);
+const actionIdFor = (agent: string): string => {
+  const nibble = (agent.charCodeAt(0) % 10).toString();
+  return `10000000-0000-4000-8000-${`${nibble}0`.padStart(12, "0")}`;
+};
+const acceptedResponseFixture = (input: {
+  stepId: AcceptedResponse["stepId"];
+  agent: string;
+  round?: number | null;
+  choice?: string;
+  disposition?: AcceptedResponse["disposition"];
+  acceptedAt?: string;
+}): AcceptedResponse => {
+  const actionId = actionIdFor(input.agent);
+  return {
+    stepId: input.stepId,
+    agent: input.agent,
+    actionId,
+    round: input.round === undefined ? null : input.round,
+    responseSha256: responseDigest(input.agent),
+    rationale: "fixture rationale",
+    path: `/runtime/accepted-responses/${input.agent}/${actionId}.json`,
+    acceptedAt: input.acceptedAt ?? now,
+    ...(input.choice === undefined ? {} : { choice: input.choice }),
+    ...(input.disposition === undefined ? {} : { disposition: input.disposition })
+  };
+};
+const publishedBallotBatchFixture = (input: {
+  kind: BallotBatch["kind"];
+  activeRoster: readonly string[];
+  round?: number | null;
+  commitSha?: string;
+  createdAt?: string;
+}): BallotBatch => {
+  const createdAt = input.createdAt ?? now;
+  const round = input.round === undefined ? null : input.round;
+  return {
+    batchId: "20000000-0000-4000-8000-000000000001",
+    kind: input.kind,
+    round,
+    inputSetHash: responseDigest("batch"),
+    activeRoster: [...input.activeRoster],
+    responses: input.activeRoster.map((agent) => ({
+      agent,
+      actionId: actionIdFor(agent),
+      responseSha256: responseDigest(agent)
+    })),
+    paths: input.activeRoster.map((agent) =>
+      input.kind === "plan-ballot-batch"
+        ? `.plans/issue-1/ballot-${agent}.json`
+        : input.kind === "comparison-ballot-batch"
+          ? `.code-reviews/issue-1/ballot-${agent}.json`
+          : `.code-reviews/issue-1/consensus-ballot-${agent}-round-${round ?? 1}.json`
+    ),
+    branch: "issue-1/coordinator-evidence",
+    parentSha: gitSha("a"),
+    commitSha: input.commitSha ?? gitSha("b"),
+    status: "published",
+    attempts: 1,
+    error: null,
+    supersedes: null,
+    createdAt,
+    updatedAt: createdAt
+  };
+};
+
 const start = startStateSchema.parse({
-  formatVersion: 3,
+  formatVersion: 4,
   issue: 1,
   issueSessionId: `issue-1:${"a".repeat(40)}`,
   baselineSha: "a".repeat(40),
@@ -43,6 +119,26 @@ const accepted = (
   acceptedAt: now,
   ...(disposition === undefined ? {} : { disposition })
 });
+
+const consensusResponses = (round: number, reviseAgent: string | null, escalateAgent: string | null = null) =>
+  roster.map((agent) =>
+    acceptedResponseFixture({
+      stepId: "R6.ballot",
+      agent,
+      round,
+      acceptedAt: now,
+      disposition:
+        agent === escalateAgent ? "escalate" : agent === reviseAgent ? "revise" : "approve"
+    })
+  );
+
+const consensusBatch = (round: number) =>
+  publishedBallotBatchFixture({
+    kind: "consensus-ballot-batch",
+    activeRoster: roster,
+    round,
+    createdAt: now
+  });
 
 const implementationDerived = {
   kind: "implementation-selection" as const,
@@ -109,7 +205,8 @@ describe("pure workflow machine", () => {
       ...base,
       issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 3 },
       derived: { ...base.derived, implementationSelection: implementationDerived },
-      accepted: roster.map((agent) => accepted("R6.ballot", agent, 3, agent === "codex" ? "revise" : "approve"))
+      acceptedResponses: consensusResponses(3, "codex"),
+      ballotBatches: [consensusBatch(3)]
     });
     expect(decide({ start, cursors })).toEqual([
       {
@@ -198,14 +295,15 @@ describe("pure workflow machine", () => {
       ...base,
       issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
       derived: { ...base.derived, implementationSelection: implementationDerived },
-      accepted: roster.map((agent) => accepted("R6.ballot", agent, 1, agent === "codex" ? "revise" : "approve"))
+      acceptedResponses: consensusResponses(1, "codex"),
+      ballotBatches: [consensusBatch(1)]
     });
     expect(decide({ start, cursors: revision })).toEqual([
       { type: "advance-step", from: "R6.ballot", to: "R6.revise", round: 2 }
     ]);
     const escalation = cursorsStateSchema.parse({
       ...revision,
-      accepted: roster.map((agent) => accepted("R6.ballot", agent, 1, agent === "codex" ? "escalate" : "approve"))
+      acceptedResponses: consensusResponses(1, null, "codex")
     });
     expect(decide({ start, cursors: escalation })).toEqual([
       {
@@ -215,6 +313,20 @@ describe("pure workflow machine", () => {
         round: 1,
         allowedAnswers: ["retry", "revise", "abandon"]
       }
+    ]);
+  });
+
+  it("does not advance a ballot gate before the evidence batch is published", () => {
+    const base = initialCursors(start, now);
+    const cursors = cursorsStateSchema.parse({
+      ...base,
+      issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
+      derived: { ...base.derived, implementationSelection: implementationDerived },
+      acceptedResponses: consensusResponses(1, null),
+      ballotBatches: []
+    });
+    expect(decide({ start, cursors })).toEqual([
+      { type: "publish-ballot-batch", stepId: "R6.ballot", round: 1 }
     ]);
   });
 
@@ -258,7 +370,8 @@ describe("pure workflow machine", () => {
           ...base.agents.claude,
           actionId,
           stepId: "R6.ballot",
-          evidenceId: "consensus-ballot-published",
+          evidenceId: "consensus-response-accepted",
+          submissionMode: "response",
           status: "verifying"
         }
       }
@@ -274,15 +387,18 @@ describe("pure workflow machine", () => {
             submissionSha: "d".repeat(40),
             status: "satisfied",
             outstanding: [],
-            disposition: "approve"
+            disposition: "approve",
+            responseSha256: "e".repeat(64),
+            rationale: "Looks good."
           }
         ]
       })
     ).toEqual([
       {
-        type: "accept-submission",
+        type: "accept-response",
         agent: "claude",
-        submissionSha: "d".repeat(40),
+        responseSha256: "e".repeat(64),
+        rationale: "Looks good.",
         disposition: "approve"
       }
     ]);
