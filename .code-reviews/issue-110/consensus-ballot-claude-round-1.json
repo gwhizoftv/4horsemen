@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 110,
+  "issueSessionId": "issue-110:1e43ba38ba3a0720503d7304a20ff6bd8c9eaf48",
+  "agent": "claude",
+  "inputSetHash": "a433e7083ceac0813ae3513023e9e9013cbb0bcc5a90bb7af574d18b582b3aba",
+  "artifact": "consensus-ballot",
+  "round": 1,
+  "revisionCommitSha": "25c3206548118613dacbee2d256c28e8a9855bdf",
+  "disposition": "approve",
+  "rationale": "I ran the full pnpm check on this exact pin (495 fast plus 2 e2e, zero skipped) and confirmed every finding is addressed: the format-3 journal coercion is gone and the per-line assertRuntimeFormat that the implementation pin had silently dropped from readJournal is restored, a real evidence-commit test now asserts the created tree contains its ballots under a hostile GIT_AUTHOR_ environment, the supersede path finally passes removePaths, the barrier is hardened to bind each published batch to the exact accepted actionId and responseSha256 rather than only the roster, and ordinary wipe now retains issue-N/coordinator-evidence behind an explicit --delete-evidence opt-in, which the implementation pin had violated by deleting it."
+}
