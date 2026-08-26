@@ -641,9 +641,20 @@ export const cursorsStateSchema = z
   })
   .strict();
 
+/**
+ * A journal *event*, as opposed to a journal *file*.
+ *
+ * `formatVersion` is deliberately not pinned to a literal here. Format gating
+ * belongs to `assertRuntimeFormat`, which every read of a journal file goes
+ * through and which is what produces the wipe-and-restart remediation; pinning
+ * the literal a second time in this schema adds no protection — a rejected
+ * format never reaches the parse — while making a single historical event
+ * object unreadable outside that gate. `appendJournal` always stamps
+ * `RUNTIME_FORMAT_VERSION`, so nothing this build writes can carry another one.
+ */
 export const journalEventSchema = z
   .object({
-    formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
+    formatVersion: z.number().int().positive(),
     sequence: z.number().int().nonnegative(),
     at: timestampSchema,
     type: z.enum([

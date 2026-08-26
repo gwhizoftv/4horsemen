@@ -4,8 +4,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
+  RUNTIME_FORMAT_VERSION,
   appendJournal,
   consensusDerivedSchema,
+  journalEventSchema,
   cursorsStateSchema,
   dropAgent,
   implementationSelectionDerivedSchema,
@@ -93,13 +95,40 @@ describe("operational state", () => {
     expect(startStateSchema.safeParse({ ...start, maxRevisionRounds: 4 }).success).toBe(false);
   });
 
-  it("rejects runtime format version 2 with wipe and restart guidance", () => {
+  it("rejects every superseded runtime format with wipe and restart guidance", () => {
+    // Both formats are refused, and by name: an operator meeting this after an
+    // upgrade needs to be told the exact command, and `coord wipe-issue` is the
+    // one that exists.
+    for (const formatVersion of [2, 3]) {
+      const { paths } = initialize();
+      writeFileSync(
+        paths.cursors,
+        `${JSON.stringify({ ...readCursorsState(paths), formatVersion }, null, 2)}\n`
+      );
+      expect(() => readCursorsState(paths)).toThrow(
+        new RegExp(`Runtime format version ${formatVersion} is no longer supported`)
+      );
+      expect(() => readCursorsState(paths)).toThrow(/coord wipe-issue <issue>/);
+    }
+  });
+
+  it("refuses a superseded journal file even though a lone event object parses", () => {
+    // The journal event schema does not pin the version literal; the gate is
+    // `assertRuntimeFormat`, which every file read goes through. This proves
+    // relaxing the literal did not open the file-level path.
     const { paths } = initialize();
-    writeFileSync(
-      paths.cursors,
-      `${JSON.stringify({ ...readCursorsState(paths), formatVersion: 2 }, null, 2)}\n`
-    );
-    expect(() => readCursorsState(paths)).toThrow(/Wipe this issue/);
+    const event = { ...readJournal(paths)[0], formatVersion: 3 };
+    expect(journalEventSchema.safeParse(event).success).toBe(true);
+    writeFileSync(paths.journal, `${JSON.stringify(event)}\n`);
+    expect(() => readJournal(paths)).toThrow(/Runtime format version 3 is no longer supported/);
+    expect(() => readJournal(paths)).toThrow(/coord wipe-issue <issue>/);
+  });
+
+  it("stamps the current format on everything it writes", () => {
+    const { paths } = initialize();
+    expect(readJournal(paths).every((entry) => entry.formatVersion === RUNTIME_FORMAT_VERSION)).toBe(true);
+    const appended = appendJournal(paths, { type: "paused", details: {} });
+    expect(appended.formatVersion).toBe(RUNTIME_FORMAT_VERSION);
   });
 
   it("rejects stale whole-state writes after an owner control revision", () => {

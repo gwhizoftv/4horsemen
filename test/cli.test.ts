@@ -8,6 +8,7 @@ import { automationDigestMaterial, runCli, type CliRunLoop } from "../src/cli.js
 import { agentResponsePath, agentRuntimePaths, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
 import {
+  RUNTIME_FORMAT_VERSION,
   cursorsStateSchema,
   readConfig,
   readCursorsState,
@@ -97,6 +98,25 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
   const [command, ...args] = argv;
   if (command === undefined) return { exitCode: 1, stdout: "", stderr: "empty command" };
   return { exitCode: 0, stdout: execFileSync(command, args, { cwd, encoding: "utf8" }), stderr: "" };
+};
+
+/**
+ * Seed a *live* runtime journal from the historical fixture.
+ *
+ * The fixture predates the current runtime format, and a live journal must be
+ * current-format or `readJournal` refuses the whole file — which is the
+ * fail-closed behaviour, tested directly in `state.test.ts`. Restamping here
+ * keeps these cases about analytics output rather than about format gating.
+ */
+const seedJournalFixture = (journalPath: string): void => {
+  const lines = readFileSync(
+    join(process.cwd(), "test", "support", "fixtures", "analytics-journal.jsonl"),
+    "utf8"
+  )
+    .trim()
+    .split("\n")
+    .map((line) => JSON.stringify({ ...(JSON.parse(line) as object), formatVersion: RUNTIME_FORMAT_VERSION }));
+  writeFileSync(journalPath, `${lines.join("\n")}\n`);
 };
 
 describe("CLI version", () => {
@@ -441,7 +461,7 @@ describe("CLI", () => {
       )
     ).toBe(0);
     const paths = issueRuntimePaths(fixture.runtime, 1);
-    copyFileSync(join(process.cwd(), "test", "support", "fixtures", "analytics-journal.jsonl"), paths.journal);
+    seedJournalFixture(paths.journal);
     const home = join(fixture.root, "home");
     const transcript = join(
       home,
@@ -1110,7 +1130,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
       })
     ).toBe(0);
     const paths = issueRuntimePaths(product.coordRoot, 89);
-    copyFileSync(join(process.cwd(), "test", "support", "fixtures", "analytics-journal.jsonl"), paths.journal);
+    seedJournalFixture(paths.journal);
     const home = join(product.workspaceRoot, "analytics-home");
     const transcript = join(home, ".claude", "projects", "fixture", "session-claude.jsonl");
     mkdirSync(join(transcript, ".."), { recursive: true });
