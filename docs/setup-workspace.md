@@ -191,10 +191,12 @@ than guessing what to restore.
 
 ### The completion mailbox
 
-Agents publish one runtime file: the pushed commit SHA, written to `complete`.
-That file does not live under the coord root. It lives in a sibling tree so the
-harness can be granted the single directory it must write without also being
-granted `cursors.json`, the journal, or another agent's `action.md`:
+Agents write at most two runtime files. The first is the completion line — a
+pushed commit SHA for a Git action, or `response <action-id>` for a ballot —
+written to `complete`. That file does not live under the coord root. It lives in
+a sibling tree so the harness can be granted the single directory it must write
+without also being granted `cursors.json`, the journal, or another agent's
+`action.md`:
 
 ```text
 /path/to/completes/<coord-root-name>[/<project>]/issue-<n>/<agent>/complete
@@ -208,6 +210,36 @@ for a flat install, with the project appended for a nested one, and is created b
 neither derived location suits the layout; the resolved absolute value is
 written to the workspace config. It must be outside the coord root and outside
 every agent clone, or install refuses it.
+
+### The response directory
+
+The second file an agent may write is its private ballot judgment, at
+
+```text
+<coord-root>/issue-<n>/agents/<agent>/responses/<action-id>.json
+```
+
+The generated launcher grants exactly that directory, in addition to the
+mailbox drop, resolving it at launch from the clone-local
+`coord.workspaceConfig` key plus `COORD_ISSUE`. It is a *child* of the agent's
+runtime root rather than the root itself: the root holds `action.md`, the
+document carrying that agent's current authority, and an agent able to rewrite
+its own order could authorize its own ballot. The sibling
+`accepted-responses/` directory — the coordinator's immutable archive of what it
+accepted — is outside both grants, as are the issue root and every peer path.
+
+Because the launcher is written into each clone at install time and is not
+re-rendered by `coord start`, upgrading the install root without re-running
+`coord install` leaves the previous grants in place. `coord doctor` reports that
+drift.
+
+### Destructive operations
+
+`coord wipe-issue <n>` is the explicit owner operation. It resets clones and
+deletes the issue's agent and `-final` branches, but it **keeps**
+`issue-<n>/coordinator-evidence`, which holds the published ballot record, and
+says so in its output. Pass `--delete-evidence` to remove that branch too.
+Ordinary completion never deletes it.
 
 Install also records a claim file at the mailbox root naming the workspace whose
 receipts live there. A second workspace pointed at the same root is refused with

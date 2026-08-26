@@ -2,13 +2,10 @@ import { agentFacingSubject } from "./agentLanguage.js";
 import { sha256 } from "./hash.js";
 import type { FetchResult } from "./mirror.js";
 import {
-  comparisonBallotArtifactSchema,
-  consensusBallotArtifactSchema,
   finalizationArtifactSchema,
   implementationReadyArtifactSchema,
   participationReadyArtifactSchema,
   parseJsonWithSchema,
-  planBallotArtifactSchema,
   revisionReadyArtifactSchema,
   validateCommonArtifactFields
 } from "./protocol.js";
@@ -41,16 +38,6 @@ const canonicalInputs = (inputs: readonly BoundInput[]): string =>
     .join("\n");
 
 export const computeInputSetHash = (inputs: readonly BoundInput[]): string => sha256(canonicalInputs(inputs));
-
-const citationsEqualInputs = (
-  citations: readonly { agent: string; commitSha: string; path: string }[],
-  inputs: readonly BoundInput[]
-): boolean => {
-  const normalize = (values: readonly { agent: string; commitSha: string; path: string }[]): string[] =>
-    values.map((value) => `${value.agent}\0${value.commitSha}\0${value.path}`).sort();
-  const expected = inputs.map(({ agent, commitSha, path }) => ({ agent, commitSha, path }));
-  return JSON.stringify(normalize(citations)) === JSON.stringify(normalize(expected));
-};
 
 const markdownSection = (raw: string, alternatives: readonly string[]): boolean =>
   alternatives.some((heading) => new RegExp(`^#{1,6}\\s+${heading}\\s*$`, "im").test(raw));
@@ -213,12 +200,25 @@ const pinErrors = async (
   return outstanding;
 };
 
+/**
+ * Verify one Git-published artifact.
+ *
+ * Ballot steps are deliberately absent and must never reach here. Their
+ * judgment arrives as a private runtime response, so there is no pushed SHA to
+ * verify; a repository artifact at a ballot path is not a submission and must
+ * not be able to satisfy the step by being pushed to an agent branch.
+ */
 export const evaluateEvidence = async (
   order: InternalOrder,
   submissionSha: string,
   mirror: EvidenceMirror,
   assertAuthority: () => void = () => undefined
 ): Promise<EvidenceObservation> => {
+  if (order.submissionMode !== "git") {
+    return rejected(order, submissionSha, [
+      "this action is answered with a runtime response, not a pushed commit"
+    ]);
+  }
   const fetched = await mirror.fetchBranch(order.branch);
   assertAuthority();
   if (!fetched.ok) {
@@ -279,21 +279,6 @@ export const evaluateEvidence = async (
     return errors.length === 0 ? satisfied(order, submissionSha) : rejected(order, submissionSha, errors);
   }
 
-  if (order.evidenceId === "plan-ballot-published") {
-    const parsed = parseJsonWithSchema(blob, planBallotArtifactSchema);
-    if (!parsed.ok) return rejected(order, submissionSha, [`invalid plan ballot: ${parsed.error}`]);
-    const errors = [...commonErrors(parsed.value, order), ...inputHashErrors(parsed.value.inputSetHash, order)];
-    if (!citationsEqualInputs([...parsed.value.plans, ...parsed.value.reviews], order.inputs)) {
-      errors.push("plan ballot citations do not equal the bound plan/review set");
-    }
-    if (!order.eligibleChoices.includes(parsed.value.choice)) {
-      errors.push(`plan ballot choice ${parsed.value.choice} is not an eligible active plan agent`);
-    }
-    return errors.length === 0
-      ? satisfied(order, submissionSha, { choice: parsed.value.choice })
-      : rejected(order, submissionSha, errors);
-  }
-
   if (order.evidenceId === "implementation-pinned") {
     const parsed = parseJsonWithSchema(blob, implementationReadyArtifactSchema);
     if (!parsed.ok) return rejected(order, submissionSha, [`invalid implementation-ready artifact: ${parsed.error}`]);
@@ -315,19 +300,6 @@ export const evaluateEvidence = async (
     }
     return errors.length === 0
       ? satisfied(order, submissionSha, { productPin: parsed.value.implementationCommitSha })
-      : rejected(order, submissionSha, errors);
-  }
-
-  if (order.evidenceId === "comparison-ballot-published") {
-    const parsed = parseJsonWithSchema(blob, comparisonBallotArtifactSchema);
-    if (!parsed.ok) return rejected(order, submissionSha, [`invalid comparison ballot: ${parsed.error}`]);
-    const errors = [...commonErrors(parsed.value, order), ...inputHashErrors(parsed.value.inputSetHash, order)];
-    if (!citationsEqualInputs(parsed.value.implementations, order.inputs)) errors.push("comparison ballot pins do not equal bound inputs");
-    if (!order.eligibleChoices.includes(parsed.value.choice)) {
-      errors.push(`comparison ballot choice ${parsed.value.choice} is not an eligible active implementation agent`);
-    }
-    return errors.length === 0
-      ? satisfied(order, submissionSha, { choice: parsed.value.choice })
       : rejected(order, submissionSha, errors);
   }
 
@@ -356,19 +328,6 @@ export const evaluateEvidence = async (
     }
     return errors.length === 0
       ? satisfied(order, submissionSha, { productPin: parsed.value.revisedBranchHead })
-      : rejected(order, submissionSha, errors);
-  }
-
-  if (order.evidenceId === "consensus-ballot-published") {
-    const parsed = parseJsonWithSchema(blob, consensusBallotArtifactSchema);
-    if (!parsed.ok) return rejected(order, submissionSha, [`invalid consensus ballot: ${parsed.error}`]);
-    const errors = [...commonErrors(parsed.value, order), ...inputHashErrors(parsed.value.inputSetHash, order)];
-    if (parsed.value.round !== order.round) errors.push(`consensus ballot round must be ${order.round ?? 1}`);
-    if (!order.inputs.some((input) => input.commitSha === parsed.value.revisionCommitSha)) {
-      errors.push("consensus ballot does not cite the bound revision pin");
-    }
-    return errors.length === 0
-      ? satisfied(order, submissionSha, { disposition: parsed.value.disposition })
       : rejected(order, submissionSha, errors);
   }
 

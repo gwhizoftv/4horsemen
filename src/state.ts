@@ -19,6 +19,8 @@ import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.
 import {
   DEFAULT_MAX_REVISION_ROUNDS,
   DEFAULT_PR_POLICY,
+  RESERVED_EVIDENCE_AGENT,
+  evidenceBranchFor,
   type EvidenceId,
   type GateId,
   type PrPolicy,
@@ -26,12 +28,20 @@ import {
   type WorkflowStepId
 } from "./steps.js";
 
-export const RUNTIME_FORMAT_VERSION = 3;
+export const RUNTIME_FORMAT_VERSION = 4;
 
-const LEGACY_RUNTIME_FORMAT_VERSION = 2;
+/**
+ * Every format this build refuses, rather than only the immediately previous
+ * one. Ballot intent moved out of Git entirely at format 4, so a format-2 or
+ * format-3 runtime read under these semantics would treat a gate whose ballots
+ * were pushed commits as a gate with no responses at all. There is no migration
+ * by design; the remedy is a wipe and a restart.
+ */
+const UNSUPPORTED_RUNTIME_FORMAT_VERSIONS = [2, 3] as const;
 
-const RUNTIME_FORMAT_WIPE_MESSAGE =
-  "Runtime format version 2 is no longer supported. Wipe this issue with `coord wipe <issue>` and start it again.";
+const runtimeFormatWipeMessage = (found: number): string =>
+  `Runtime format version ${found} is no longer supported. Wipe this issue with ` +
+  "`coord wipe-issue <issue>` and start it again.";
 
 const workflowProfileSchema = z.enum(["solo", "reviewed", "consensus"]);
 const prPolicySchema = z.enum(["owner-only", "coord-open-unmerged", "coord-merged"]);
@@ -61,14 +71,17 @@ const evidenceIdSchema = z.enum([
   "join-published",
   "plan-published",
   "review-published",
-  "plan-ballot-published",
+  "plan-ballot-accepted",
   "implementation-pinned",
   "comparison-published",
-  "comparison-ballot-published",
+  "comparison-ballot-accepted",
   "revision-pinned",
-  "consensus-ballot-published",
+  "consensus-ballot-accepted",
   "finalization-verified"
 ]);
+
+const submissionModeSchema = z.enum(["git", "response"]);
+const dispositionSchema = z.enum(["approve", "revise", "escalate"]);
 const timestampSchema = z.string().datetime({ offset: true });
 
 export const checkCommandSchema = z
@@ -202,6 +215,17 @@ export const coordinatorConfigSchema = z
     if (new Set(ids).size !== ids.length) {
       context.addIssue({ code: "custom", message: "agent ids must be unique", path: ["agents"] });
     }
+    // Refused where the roster is admitted, not where it is used. The evidence
+    // branch is rendered from this same template, so an agent with this id
+    // would make the coordinator publish its ballot batches onto that agent's
+    // own branch and then let a wipe delete them as agent leftovers.
+    if (ids.includes(RESERVED_EVIDENCE_AGENT)) {
+      context.addIssue({
+        code: "custom",
+        message: `${RESERVED_EVIDENCE_AGENT} is reserved for the coordinator evidence branch`,
+        path: ["agents"]
+      });
+    }
     if (new Set(config.digestPaths).size !== config.digestPaths.length) {
       context.addIssue({ code: "custom", message: "digest paths must be unique", path: ["digestPaths"] });
     }
@@ -308,6 +332,19 @@ export const agentCursorSchema = z
     stepId: stepIdSchema.nullable(),
     evidenceId: evidenceIdSchema.nullable(),
     actionId: z.string().uuid().nullable(),
+    /** How the current action must be answered; null when no action is out. */
+    submissionMode: submissionModeSchema.nullable(),
+    /**
+     * SHA-256 of the exact `action.md` bytes this cursor authorized.
+     *
+     * Workflow authority, not observability: the lifecycle file also records a
+     * digest, but `paths.ts` documents that tree as deliberately separate from
+     * authority, so it cannot be what a response is checked against. A
+     * correction reissues under the *same* action id with different bytes, and
+     * without a digest here a response written against the superseded text
+     * would still match on every id and satisfy the corrected action.
+     */
+    actionDigest: digestSchema.nullable(),
     status: z.enum([
       "idle",
       "ordered",
@@ -336,8 +373,20 @@ const derivedInputKindSchema = z.enum([
   "consensus-ballot"
 ]);
 
-const derivedInputCitationSchema = z
+/**
+ * What a derived decision cites.
+ *
+ * A discriminated union rather than one shape, because the two things a
+ * decision can rest on are not the same kind of fact. A Git submission is
+ * proven by a pushed 40-character commit; a ballot is proven by the SHA-256 of
+ * the exact private response bytes the coordinator accepted, plus the evidence
+ * commit it published them in. Forcing the second into `submissionSha` would
+ * either fail the 40-hex parse or, worse, pass it by truncation and quietly
+ * label a response digest as a commit.
+ */
+const gitSubmissionCitationSchema = z
   .object({
+    source: z.literal("git-submission"),
     kind: derivedInputKindSchema,
     agent: agentIdSchema,
     submissionSha: gitShaSchema,
@@ -345,6 +394,26 @@ const derivedInputCitationSchema = z
     productPin: gitShaSchema.optional()
   })
   .strict();
+
+const responseCitationSchema = z
+  .object({
+    source: z.literal("response"),
+    kind: derivedInputKindSchema,
+    agent: agentIdSchema,
+    /** The action the judgment answered. */
+    actionId: z.string().uuid(),
+    /** SHA-256 over the exact accepted response bytes. */
+    responseSha256: digestSchema,
+    /** The coordinator commit that published this ballot, and its path in it. */
+    evidenceCommitSha: gitShaSchema,
+    path: z.string().min(1)
+  })
+  .strict();
+
+const derivedInputCitationSchema = z.discriminatedUnion("source", [
+  gitSubmissionCitationSchema,
+  responseCitationSchema
+]);
 
 const derivedDecisionBaseSchema = z
   .object({
@@ -417,6 +486,70 @@ export const derivedStateSchema = z
     planSelection: planSelectionDerivedSchema.nullable(),
     implementationSelection: implementationSelectionDerivedSchema.nullable(),
     consensus: consensusDerivedSchema.nullable()
+  })
+  .strict();
+
+/**
+ * One accepted private ballot response.
+ *
+ * Deliberately *not* an `AcceptedSubmission`. That type records what an agent
+ * pushed to Git; this records what an agent privately judged. Keeping them
+ * apart is what lets a derived decision say both "this is the exact handoff the
+ * agent authored" and "this is the commit in which the coordinator published
+ * it" without one masquerading as the other.
+ */
+export const acceptedResponseSchema = z
+  .object({
+    stepId: stepIdSchema,
+    agent: agentIdSchema,
+    actionId: z.string().uuid(),
+    round: z.number().int().min(1).nullable(),
+    responseSha256: digestSchema,
+    choice: agentIdSchema.optional(),
+    disposition: dispositionSchema.optional(),
+    rationale: z.string().min(1),
+    acceptedAt: timestampSchema
+  })
+  .strict();
+
+const ballotBatchKindSchema = z.enum([
+  "plan-ballot-batch",
+  "comparison-ballot-batch",
+  "consensus-ballot-batch"
+]);
+
+/**
+ * One durable publication attempt for a completed ballot gate or round.
+ *
+ * `commitSha` is persisted *before* the push, and every retry pushes that exact
+ * object. Commit metadata is part of a commit's identity, so rebuilding on
+ * retry would produce a different SHA each time and leave a trail of candidate
+ * commits with no way to say which one the decision rested on.
+ *
+ * History is a list, not a slot: consensus can run several rounds, and a roster
+ * change can supersede a batch that is already on origin. Both must stay
+ * readable afterwards.
+ */
+export const ballotBatchSchema = z
+  .object({
+    kind: ballotBatchKindSchema,
+    stepId: stepIdSchema,
+    round: z.number().int().min(1).nullable(),
+    /** Ordered active roster this batch was frozen against. */
+    activeRoster: z.array(agentIdSchema).min(1),
+    /** Hash over kind, round, roster, bound Git citations, and response tuples. */
+    inputSetHash: digestSchema,
+    responseSha256s: z.array(digestSchema).min(1),
+    paths: z.array(z.string().min(1)).min(1),
+    branch: z.string().min(1),
+    parentSha: gitShaSchema,
+    commitSha: gitShaSchema,
+    status: z.enum(["pending", "published", "failed", "invalidated"]),
+    attempts: z.number().int().nonnegative(),
+    error: z.string().min(1).nullable(),
+    supersedes: digestSchema.nullable(),
+    createdAt: timestampSchema,
+    publishedAt: timestampSchema.nullable()
   })
   .strict();
 
@@ -493,6 +626,17 @@ export const cursorsStateSchema = z
     completed: z.boolean(),
     agents: z.record(agentIdSchema, agentCursorSchema),
     accepted: z.array(acceptedSubmissionSchema),
+    /** Accepted private ballot judgments, kept apart from Git submissions. */
+    responses: z.array(acceptedResponseSchema),
+    /** Append-only publication history, including superseded and failed batches. */
+    ballotBatches: z.array(ballotBatchSchema),
+    /** The coordinator-owned evidence branch and its last published tip. */
+    evidence: z
+      .object({
+        branch: z.string().min(1).nullable(),
+        tip: gitShaSchema.nullable()
+      })
+      .strict(),
     updatedAt: timestampSchema
   })
   .strict();
@@ -526,7 +670,13 @@ export const journalEventSchema = z
       "publication-failed",
       "pr-created",
       "pr-merged",
-      "decision-derived"
+      "decision-derived",
+      "response-accepted",
+      "response-rejected",
+      "ballot-batch-pending",
+      "ballot-batch-published",
+      "ballot-batch-failed",
+      "ballot-batch-invalidated"
     ]),
     agent: agentIdSchema.optional(),
     actionId: z.string().uuid().optional(),
@@ -545,6 +695,11 @@ export type WorkspaceDeclaration = z.infer<typeof workspaceDeclarationSchema>;
 export type StartState = z.infer<typeof startStateSchema>;
 export type AgentCursor = z.infer<typeof agentCursorSchema>;
 export type AcceptedSubmission = z.infer<typeof acceptedSubmissionSchema>;
+export type AcceptedResponse = z.infer<typeof acceptedResponseSchema>;
+export type BallotBatch = z.infer<typeof ballotBatchSchema>;
+export type BallotBatchKind = z.infer<typeof ballotBatchKindSchema>;
+export type GitSubmissionCitation = z.infer<typeof gitSubmissionCitationSchema>;
+export type ResponseCitation = z.infer<typeof responseCitationSchema>;
 export type DerivedInputKind = z.infer<typeof derivedInputKindSchema>;
 export type DerivedInputCitation = z.infer<typeof derivedInputCitationSchema>;
 export type PlanSelectionDerived = z.infer<typeof planSelectionDerivedSchema>;
@@ -577,8 +732,11 @@ export type StartStateInput = Omit<
 const assertRuntimeFormat = (path: string, value: unknown): void => {
   if (typeof value !== "object" || value === null || !("formatVersion" in value)) return;
   const formatVersion = (value as { formatVersion: unknown }).formatVersion;
-  if (formatVersion === LEGACY_RUNTIME_FORMAT_VERSION) {
-    throw new Error(`Invalid ${path}: ${RUNTIME_FORMAT_WIPE_MESSAGE}`);
+  if (
+    typeof formatVersion === "number" &&
+    (UNSUPPORTED_RUNTIME_FORMAT_VERSIONS as readonly number[]).includes(formatVersion)
+  ) {
+    throw new Error(`Invalid ${path}: ${runtimeFormatWipeMessage(formatVersion)}`);
   }
 };
 
@@ -629,6 +787,8 @@ export const initialCursors = (start: StartState, now = new Date().toISOString()
       stepId: null,
       evidenceId: null,
       actionId: null,
+      submissionMode: null,
+      actionDigest: null,
       status: "idle",
       attempt: 0,
       submissionSha: null,
@@ -658,6 +818,9 @@ export const initialCursors = (start: StartState, now = new Date().toISOString()
     completed: false,
     agents,
     accepted: [],
+    responses: [],
+    ballotBatches: [],
+    evidence: { branch: evidenceBranchFor(start.branchTemplate, start.issue), tip: null },
     updatedAt: now
   });
 };
@@ -907,6 +1070,12 @@ export const dropAgent = (cursors: CursorsState, agent: string, now = new Date()
     },
     accepted: cursors.accepted.filter(
       (submission) => submission.agent !== agent || submission.stepId !== cursors.issueCursor.stepId
+    ),
+    // Same rule as `accepted`: a dropped agent leaves the denominator, so its
+    // judgment at the step in flight must leave with it. Judgments it already
+    // contributed to a *closed* step stay, because those are already published.
+    responses: cursors.responses.filter(
+      (response) => response.agent !== agent || response.stepId !== cursors.issueCursor.stepId
     ),
     updatedAt: now
   });

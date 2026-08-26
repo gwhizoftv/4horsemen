@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,7 +7,7 @@ import { clearCompletion } from "../src/action.js";
 import { observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { computeInputSetHash } from "../src/evidence.js";
 import { BareMirror } from "../src/mirror.js";
-import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import { agentResponsePath, agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder, CoordinatorRunLoop } from "../src/runLoop.js";
 import {
   appendJournal,
@@ -171,8 +171,42 @@ describe("four-agent coordinator canary", () => {
         return submission;
       };
 
+      /**
+       * Answer a ballot the way an agent does: the judgment to the response
+       * path the action names, then the action-bound marker. No commit, no
+       * push, no repository artifact.
+       */
+      const respond = (agent: string, judgment: Record<string, unknown>): void => {
+        const order = currentOrder(agent);
+        expect(order.submissionMode).toBe("response");
+        const raw = readFileSync(agentRuntimePaths(paths, agent).action, "utf8");
+        expect(raw).not.toContain("Push the commit");
+        expect(raw).not.toContain("requiredPath:");
+        const responsePath = agentResponsePath(paths, agent, order.actionId);
+        // The granted directory, a child of this agent's runtime root.
+        expect(responsePath).toBe(
+          join(paths.agents, agent, "responses", `${order.actionId}.json`)
+        );
+        writeFileSync(responsePath, `${JSON.stringify({ actionId: order.actionId, ...judgment })}\n`);
+        writeFileSync(agentRuntimePaths(paths, agent).complete, `response ${order.actionId}\n`);
+      };
+
       const expectStep = (stepId: WorkflowStepId): void => {
         expect(readCursorsState(paths).issueCursor.stepId).toBe(stepId);
+      };
+
+      /**
+       * Coordinator commits added past the issue baseline, oldest first. The
+       * baseline itself is excluded: the first evidence commit descends from
+       * it, so a plain log would count the product history as evidence.
+       */
+      const evidenceCommits = (): string[] => {
+        const listed = git(seed, "ls-remote", origin, "refs/heads/issue-1/coordinator-evidence");
+        if (listed.trim() === "") return [];
+        git(seed, "fetch", "-q", origin, "+refs/heads/issue-1/coordinator-evidence:refs/heads/evidence-check");
+        return git(seed, "log", "--reverse", "--format=%H", `${baselineSha}..refs/heads/evidence-check`)
+          .split("\n")
+          .filter(Boolean);
       };
 
       expectStep("R1.join");
@@ -240,21 +274,31 @@ Implement the selected product files.
       await loop.runTick();
 
       expectStep("R3.plan-ballot");
+      expect(evidenceCommits()).toEqual([]);
       for (const agent of activeAfterDrop) {
-        const order = currentOrder(agent);
-        submit(
-          agent,
-          JSON.stringify({
-            ...commonArtifact(order, "plan-ballot"),
-            inputSetHash: computeInputSetHash(order.inputs),
-            plans: order.inputs.filter((input) => input.kind === "plan").map(({ agent: citedAgent, commitSha, path }) => ({ agent: citedAgent, commitSha, path })),
-            reviews: order.inputs.filter((input) => input.kind === "review").map(({ agent: citedAgent, commitSha, path }) => ({ agent: citedAgent, commitSha, path })),
-            choice: "codex",
-            rationale: "The plans are mechanically complete."
-          })
-        );
+        respond(agent, { choice: "codex", rationale: "The plans are mechanically complete." });
       }
       await loop.runTick();
+
+      // One coordinator commit for N responses, on its own branch, containing
+      // one canonical ballot per active agent.
+      const afterPlanBallots = evidenceCommits();
+      expect(afterPlanBallots).toHaveLength(1);
+      const planBallotTree = git(seed, "ls-tree", "-r", "--name-only", afterPlanBallots[0] as string).split("\n");
+      for (const agent of activeAfterDrop) {
+        expect(planBallotTree).toContain(`.plans/issue-1/ballot-${agent}.json`);
+      }
+      const publishedBallot = JSON.parse(
+        git(seed, "show", `${afterPlanBallots[0] as string}:.plans/issue-1/ballot-codex.json`)
+      ) as Record<string, unknown>;
+      expect(publishedBallot.protocolVersion).toBe(2);
+      expect(publishedBallot.responseSha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(publishedBallot.choice).toBe("codex");
+      // Authored by the driver, not by any agent that voted.
+      expect(git(seed, "show", "-s", "--format=%an", afterPlanBallots[0] as string)).toContain("coord");
+      expect(git(seed, "show", "-s", "--format=%s", afterPlanBallots[0] as string)).toBe(
+        "Coordinator: publish issue 1 plan ballot batch"
+      );
 
       expectStep("R4.implement");
       expect(readCursorsState(paths).derived.planSelection?.selectedAgents).toEqual(["codex"]);
@@ -284,19 +328,14 @@ Implement the selected product files.
 
       expectStep("R5.compare-ballot");
       for (const agent of activeAfterDrop) {
-        const order = currentOrder(agent);
-        submit(
-          agent,
-          JSON.stringify({
-            ...commonArtifact(order, "comparison-ballot"),
-            inputSetHash: computeInputSetHash(order.inputs),
-            implementations: order.inputs.map(({ agent: citedAgent, commitSha, path }) => ({ agent: citedAgent, commitSha, path })),
-            choice: "cursor",
-            rationale: "Select the Cursor implementation."
-          })
-        );
+        respond(agent, { choice: "cursor", rationale: "Select the Cursor implementation." });
       }
       await loop.runTick();
+
+      // A second commit, fast-forwarding from the first: evidence accumulates.
+      const afterCompareBallots = evidenceCommits();
+      expect(afterCompareBallots).toHaveLength(2);
+      expect(afterCompareBallots[0]).toBe(afterPlanBallots[0]);
 
       expectStep("R6.revise");
       expect(readCursorsState(paths).derived.implementationSelection).toMatchObject({
@@ -324,20 +363,26 @@ Implement the selected product files.
 
       expectStep("R6.ballot");
       for (const agent of activeAfterDrop) {
-        const order = currentOrder(agent);
-        submit(
-          agent,
-          JSON.stringify({
-            ...commonArtifact(order, "consensus-ballot"),
-            inputSetHash: computeInputSetHash(order.inputs),
-            round: 1,
-            revisionCommitSha: revisionPin,
-            disposition: "approve",
-            rationale: "The revision satisfies the plan."
-          })
-        );
+        respond(agent, { disposition: "approve", rationale: "The revision satisfies the plan." });
       }
       await loop.runTick();
+
+      // A third commit: one per consensus round, cumulative on the same branch.
+      const afterConsensusBallots = evidenceCommits();
+      expect(afterConsensusBallots).toHaveLength(3);
+      expect(afterConsensusBallots.slice(0, 2)).toEqual(afterCompareBallots);
+      expect(
+        git(seed, "ls-tree", "-r", "--name-only", afterConsensusBallots[2] as string).split("\n")
+      ).toContain(".code-reviews/issue-1/consensus-ballot-cursor-round-1.json");
+      // Agents committed nothing for any of the three ballot gates: no ballot
+      // file exists anywhere on any agent branch.
+      for (const agent of activeAfterDrop) {
+        git(seed, "fetch", "-q", origin, `+refs/heads/issue-1/${agent}:refs/heads/branch-check-${agent}`);
+        const tree = git(seed, "ls-tree", "-r", "--name-only", `refs/heads/branch-check-${agent}`).split("\n");
+        expect(tree).not.toContain(`.plans/issue-1/ballot-${agent}.json`);
+        expect(tree).not.toContain(`.code-reviews/issue-1/ballot-${agent}.json`);
+        expect(tree).not.toContain(`.code-reviews/issue-1/consensus-ballot-${agent}-round-1.json`);
+      }
 
       expectStep("R7.finalize");
       expect(readCursorsState(paths).derived.consensus).toMatchObject({
@@ -365,6 +410,11 @@ Implement the selected product files.
         );
       }
       const final = await loop.runTick();
+      // The evidence branch is reported and retained, and the product PR head
+      // carries none of it.
+      expect(final.evidence).toMatchObject({ branch: "issue-1/coordinator-evidence" });
+      expect(final.evidence.tip).toBe(afterConsensusBallots[2]);
+      expect(final.ballotBatches.filter((batch) => batch.status === "published")).toHaveLength(3);
       expect(final.completed).toBe(true);
       expect(final.publication).toMatchObject({
         status: "completed",

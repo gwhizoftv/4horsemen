@@ -26,6 +26,76 @@ const commonArtifactFields = {
   agent: agentIdSchema
 } as const;
 
+export const actionIdSchema = z
+  .string()
+  .regex(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    "expected an opaque action UUID"
+  );
+
+/**
+ * The one free-text field an agent supplies. Bounded before anything is
+ * journaled or committed: the journal is append-only and the rationale is
+ * copied verbatim into a Git tree, so an unbounded string would be durable in
+ * two places at once.
+ */
+export const RATIONALE_MAX_LENGTH = 1000;
+
+export const rationaleSchema = z
+  .string()
+  .min(1)
+  .max(RATIONALE_MAX_LENGTH)
+  .refine((value) => value.trim() !== "", "rationale must not be blank");
+
+/**
+ * Canonical ballots are version 2 because they changed authorship, not merely
+ * shape. A version-1 ballot is a file an agent wrote and pushed to its own
+ * branch; a version-2 ballot is one the coordinator wrote from an accepted
+ * private response, and it carries `actionId` and `responseSha256` to say which
+ * handoff it came from. Two incompatible strict shapes sharing one version
+ * literal would make an old ballot fail the new parse with a missing-field
+ * error that points at the wrong thing.
+ */
+const canonicalBallotFields = {
+  protocolVersion: z.literal(2),
+  issue: issueSchema,
+  issueSessionId: issueSessionIdSchema,
+  agent: agentIdSchema,
+  actionId: actionIdSchema,
+  responseSha256: digestSchema
+} as const;
+
+export const dispositionSchema = z.enum(["approve", "revise", "escalate"]);
+
+/**
+ * The private ballot responses.
+ *
+ * Strict by construction, and deliberately tiny: an agent supplies its judgment
+ * and the action it is answering, nothing else. Every binding — issue, session,
+ * agent identity, citations, round, eligible choices, input-set hash, protocol
+ * version — is filled by the coordinator from trusted state, so none of them
+ * appear here and any attempt to supply one is a parse error.
+ */
+export const planComparisonResponseSchema = z
+  .object({
+    actionId: actionIdSchema,
+    choice: agentIdSchema,
+    rationale: rationaleSchema
+  })
+  .strict();
+
+export const consensusResponseSchema = z
+  .object({
+    actionId: actionIdSchema,
+    disposition: dispositionSchema,
+    rationale: rationaleSchema
+  })
+  .strict();
+
+export type PlanComparisonResponse = z.infer<typeof planComparisonResponseSchema>;
+export type ConsensusResponse = z.infer<typeof consensusResponseSchema>;
+export type BallotResponse = PlanComparisonResponse | ConsensusResponse;
+
 export const participationReadyArtifactSchema = z
   .object({
     ...commonArtifactFields,
@@ -37,13 +107,13 @@ export const participationReadyArtifactSchema = z
 
 export const planBallotArtifactSchema = z
   .object({
-    ...commonArtifactFields,
+    ...canonicalBallotFields,
     artifact: z.literal("plan-ballot"),
     inputSetHash: digestSchema,
     plans: z.array(artifactCitationSchema).min(1),
     reviews: z.array(artifactCitationSchema),
     choice: agentIdSchema,
-    rationale: z.string().min(1)
+    rationale: rationaleSchema
   })
   .strict();
 
@@ -59,12 +129,12 @@ export const implementationReadyArtifactSchema = z
 
 export const comparisonBallotArtifactSchema = z
   .object({
-    ...commonArtifactFields,
+    ...canonicalBallotFields,
     artifact: z.literal("comparison-ballot"),
     inputSetHash: digestSchema,
     implementations: z.array(artifactCitationSchema).min(1),
     choice: agentIdSchema,
-    rationale: z.string().min(1)
+    rationale: rationaleSchema
   })
   .strict();
 
@@ -81,13 +151,13 @@ export const revisionReadyArtifactSchema = z
 
 export const consensusBallotArtifactSchema = z
   .object({
-    ...commonArtifactFields,
+    ...canonicalBallotFields,
     artifact: z.literal("consensus-ballot"),
     inputSetHash: digestSchema,
     round: z.number().int().min(1),
     revisionCommitSha: gitShaSchema,
-    disposition: z.enum(["approve", "revise", "escalate"]),
-    rationale: z.string().min(1)
+    disposition: dispositionSchema,
+    rationale: rationaleSchema
   })
   .strict();
 

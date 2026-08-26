@@ -60,18 +60,30 @@ export const formatFinalizationPullRequest = (input: {
   title: string;
   finalSha: string;
   draft: boolean;
+  evidenceBranch?: string | null;
+  evidenceTip?: string | null;
 }): { title: string; body: string } => {
   const issueTitle = input.title.trim() === "" ? "coordinated implementation" : input.title.trim();
-  return {
-    title: `Issue ${input.issue}: ${issueTitle}`,
-    body: [
-      `Closes #${input.issue}`,
+  const lines = [
+    `Closes #${input.issue}`,
+    "",
+    input.draft
+      ? `Draft PR for issue ${input.issue}. Owner merges. Final pin: ${input.finalSha}.`
+      : `PR for issue ${input.issue}. Coordinator merges. Final pin: ${input.finalSha}.`
+  ];
+  // The provenance sentence is not decoration. An evidence commit is the
+  // coordinator's publication of action-bound agent responses; it is not a
+  // cryptographic signature by the agent that voted, and a reader who assumed
+  // otherwise would over-trust it.
+  if (input.evidenceBranch != null && input.evidenceTip != null) {
+    lines.push(
       "",
-      input.draft
-        ? `Draft PR for issue ${input.issue}. Owner merges. Final pin: ${input.finalSha}.`
-        : `PR for issue ${input.issue}. Coordinator merges. Final pin: ${input.finalSha}.`
-    ].join("\n")
-  };
+      `Ballot evidence: \`${input.evidenceBranch}\` at ${input.evidenceTip}.`,
+      "That branch is coordinator-authored publication of action-bound agent responses, not a",
+      "cryptographic agent signature, and it is deliberately not merged into this PR."
+    );
+  }
+  return { title: `Issue ${input.issue}: ${issueTitle}`, body: lines.join("\n") };
 };
 
 export const githubRepositoryFromOrigin = (origin: string): string | null => {

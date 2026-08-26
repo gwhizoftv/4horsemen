@@ -130,16 +130,27 @@ if [[ -f pnpm-lock.yaml ]] && command -v corepack >/dev/null; then
   command -v pnpm >/dev/null && echo "pnpm: \$(pnpm --version)"
 fi
 
-# Grant this harness exactly one extra writable directory: the current issue's
-# own drop inside the completion mailbox. Not the coordinator runtime (which
-# holds cursors.json, the journal, and peers' orders) and not the whole mailbox
-# (which holds peers' receipts). Empty outside an automated issue.
+# Grant this harness exactly two extra writable directories, both scoped to the
+# current issue and this agent:
+#
+#   1. its own drop inside the completion mailbox, and
+#   2. its own responses/ directory inside the coordinator runtime.
+#
+# Never the coordinator runtime itself (which holds cursors.json, the journal,
+# and peers' orders), never the whole mailbox (which holds peers' receipts), and
+# never this agent's own runtime root — that root holds action.md, the document
+# carrying this agent's current authority, and an agent able to rewrite its own
+# order could authorize its own ballot. The accepted-response archive is a
+# sibling of responses/ and is deliberately outside both grants: it is the
+# record of what was accepted, so a vote that could be edited afterwards would
+# not be evidence. Both are empty outside an automated issue.
 coord_grant=()
 coord_completes_root="\$(git config --local --get coord.completesRoot 2>/dev/null || true)"
+coord_workspace_config="\$(git config --local --get coord.workspaceConfig 2>/dev/null || true)"
 if [[ -n "\$coord_completes_root" && "\${COORD_ISSUE:-}" =~ ^[1-9][0-9]*\$ ]]; then
   coord_drop="\$coord_completes_root/issue-\$COORD_ISSUE/$agent"
   if [[ -d "\$coord_drop" ]]; then
-    coord_grant=(--add-dir "\$coord_drop")
+    coord_grant+=(--add-dir "\$coord_drop")
     echo "Completion mailbox: \$coord_drop"
   else
     echo "WARNING: completion mailbox \$coord_drop does not exist; this harness cannot publish its SHA." >&2
@@ -147,6 +158,22 @@ if [[ -n "\$coord_completes_root" && "\${COORD_ISSUE:-}" =~ ^[1-9][0-9]*\$ ]]; t
   fi
 elif [[ -z "\$coord_completes_root" ]]; then
   echo "WARNING: coord.completesRoot is unset in this clone; no completion mailbox will be granted." >&2
+  echo "  Fix: re-run coord install for this workspace." >&2
+fi
+
+# The coordinator runtime root is the directory holding the workspace config, in
+# both the flat and nested layouts.
+if [[ -n "\$coord_workspace_config" && "\${COORD_ISSUE:-}" =~ ^[1-9][0-9]*\$ ]]; then
+  coord_responses="\$(dirname "\$coord_workspace_config")/issue-\$COORD_ISSUE/agents/$agent/responses"
+  if [[ -d "\$coord_responses" ]]; then
+    coord_grant+=(--add-dir "\$coord_responses")
+    echo "Response directory: \$coord_responses"
+  else
+    echo "WARNING: response directory \$coord_responses does not exist; this harness cannot answer a ballot." >&2
+    echo "  Fix: coord doctor, or restart the issue so coord start recreates it." >&2
+  fi
+elif [[ -z "\$coord_workspace_config" ]]; then
+  echo "WARNING: coord.workspaceConfig is unset in this clone; no response directory will be granted." >&2
   echo "  Fix: re-run coord install for this workspace." >&2
 fi
 

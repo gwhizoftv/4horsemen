@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 const start = startStateSchema.parse({
-  formatVersion: 3,
+  formatVersion: 4,
   issue: 89,
   issueSessionId: `issue-89:${"a".repeat(40)}`,
   baselineSha: "a".repeat(40),
@@ -148,7 +148,7 @@ describe("analytics aggregation", () => {
       -1,
       0,
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 12,
         at: "2026-08-21T00:02:10.000Z",
         type: "action-prepared",
@@ -157,7 +157,7 @@ describe("analytics aggregation", () => {
         details: { requiredPath: ".plans/issue-89/review.md" }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 13,
         at: "2026-08-21T00:02:11.000Z",
         type: "nudged",
@@ -200,14 +200,14 @@ describe("analytics aggregation", () => {
     const actionId = "44444444-4444-4444-8444-444444444444";
     const journal = [
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 0,
         at: "2026-08-21T00:00:00.000Z",
         type: "started",
         details: { issue: 89, profile: "consensus" }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 1,
         at: "2026-08-21T00:00:00.000Z",
         type: "nudged",
@@ -216,7 +216,7 @@ describe("analytics aggregation", () => {
         details: {}
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 2,
         at: "2026-08-21T00:00:10.000Z",
         type: "intent-seen",
@@ -226,7 +226,7 @@ describe("analytics aggregation", () => {
         details: {}
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 3,
         at: "2026-08-21T00:00:20.000Z",
         type: "nudged",
@@ -235,7 +235,7 @@ describe("analytics aggregation", () => {
         details: {}
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 4,
         at: "2026-08-21T00:00:25.000Z",
         type: "intent-seen",
@@ -265,7 +265,7 @@ describe("analytics aggregation", () => {
       { sequence: 10, at: "2026-08-21T00:00:08.000Z", type: "gate-advanced", details: { from: "R6.ballot", to: "R7.finalize", round: null } },
       { sequence: 11, at: "2026-08-21T00:00:09.000Z", type: "gate-advanced", details: { from: "R7.finalize", to: null, round: null } }
     ];
-    const journal = raw.map((event) => journalEventSchema.parse({ formatVersion: 3, ...event }));
+    const journal = raw.map((event) => journalEventSchema.parse({ formatVersion: 4, ...event }));
     const report = buildAnalytics({ start, journal, activeRoster: ["claude"], transcriptRoots: transcriptRoots() });
 
     expect(report.phases.filter((phase) => phase.name.startsWith("R6.")).map((phase) => [phase.name, phase.round])).toEqual([
@@ -323,14 +323,14 @@ describe("analytics aggregation", () => {
     });
     const journal = [
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 0,
         at: "2026-08-21T00:00:00.000Z",
         type: "started",
         details: { issue: 94, profile: "solo" }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 1,
         at: "2026-08-21T00:00:01.000Z",
         type: "action-prepared",
@@ -339,7 +339,7 @@ describe("analytics aggregation", () => {
         details: { requiredPath: ".plans/issue-94/plan.md" }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 2,
         at: "2026-08-21T00:00:02.000Z",
         type: "agent-lifecycle",
@@ -354,7 +354,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 3,
         at: "2026-08-21T00:00:03.000Z",
         type: "agent-usage",
@@ -369,7 +369,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 4,
         at: "2026-08-21T00:00:04.000Z",
         type: "agent-usage",
@@ -384,7 +384,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 5,
         at: "2026-08-21T00:00:05.000Z",
         type: "agent-lifecycle",
@@ -398,7 +398,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 6,
         at: "2026-08-21T00:01:00.000Z",
         type: "gate-advanced",
@@ -414,5 +414,50 @@ describe("analytics aggregation", () => {
       phases: [{ phase: "R1.join", tokens: { input: 40, output: 8, cacheRead: 12, cacheWrite: 0 }, toolCalls: 1 }]
     });
     expect(renderAnalytics(report)).toContain("cursor: coverage=complete");
+  });
+});
+
+describe("response and publication latency", () => {
+  const at = (seconds: number): string =>
+    new Date(Date.parse("2026-08-21T00:00:00.000Z") + seconds * 1000).toISOString();
+
+  it("separates agent think time from coordinator publication time", () => {
+    const events = [
+      { type: "started", details: { issue: 1, profile: "consensus" }, at: at(0) },
+      { type: "nudged", agent: "claude", actionId: "179da8c7-ae22-47eb-b6eb-211ceea6b731", details: {}, at: at(1) },
+      {
+        type: "response-accepted",
+        agent: "claude",
+        actionId: "179da8c7-ae22-47eb-b6eb-211ceea6b731",
+        details: { responseSha256: "c".repeat(64) },
+        at: at(11)
+      },
+      { type: "ballot-batch-pending", details: { commitSha: "e".repeat(40) }, at: at(12) },
+      { type: "ballot-batch-failed", details: { commitSha: "e".repeat(40), transient: true }, at: at(13) },
+      { type: "ballot-batch-published", details: { commitSha: "e".repeat(40) }, at: at(16) }
+    ].map((event, sequence) => journalEventSchema.parse({ formatVersion: 4, sequence, ...event }));
+
+    const report = buildAnalytics({
+      start,
+      journal: events,
+      activeRoster: ["claude"],
+      transcriptRoots: { claude: null, codex: null }
+    });
+
+    // 10s of agent think time; 4s of coordinator publication including one
+    // retry. Folding them together would blame the agent for the retry.
+    expect(report.responseWaits.find((wait) => wait.agent === "claude")).toMatchObject({
+      count: 1,
+      medianMs: 10_000,
+      maxMs: 10_000
+    });
+    expect(report.publications).toEqual({ count: 1, medianMs: 4_000, maxMs: 4_000, failures: 1 });
+    // A ballot produces no `intent-seen`, so it never lands in the Git wait.
+    expect(report.waits.find((wait) => wait.agent === "claude")?.count).toBe(0);
+
+    const rendered = renderAnalytics(report);
+    expect(rendered).toContain("Ballot response wait (nudged -> response accepted)");
+    expect(rendered).toContain("Coordinator ballot evidence publication");
+    expect(rendered).toContain("failures=1");
   });
 });

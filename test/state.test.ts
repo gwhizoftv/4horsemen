@@ -70,7 +70,7 @@ const initialize = () => {
 describe("operational state", () => {
   it("writes strict versioned start, cursor, and journal state atomically", () => {
     const { paths } = initialize();
-    expect(readStartState(paths)).toMatchObject({ formatVersion: 3, maxRevisionRounds: 3 });
+    expect(readStartState(paths)).toMatchObject({ formatVersion: 4, maxRevisionRounds: 3 });
     expect(readCursorsState(paths).activeRoster).toEqual(["claude", "codex"]);
     expect(readJournal(paths).map((event) => event.type)).toEqual(["started"]);
     appendJournal(paths, { type: "paused", details: {} }, "2026-08-11T10:01:00.000Z");
@@ -122,10 +122,23 @@ describe("derived decision state", () => {
     activeRoster: ["claude", "codex"],
     inputs: [
       {
+        source: "git-submission" as const,
         kind: "plan" as const,
         agent: "codex",
         submissionSha: "a".repeat(40),
         path: ".plans/issue-1/plan.md"
+      },
+      // A ballot cites the digest of the private handoff plus the coordinator
+      // commit that published it. It has no 40-character submission SHA, which
+      // is exactly why the citation shape had to become a union.
+      {
+        source: "response" as const,
+        kind: "plan-ballot" as const,
+        agent: "codex",
+        actionId: "179da8c7-ae22-47eb-b6eb-211ceea6b732",
+        responseSha256: "c".repeat(64),
+        evidenceCommitSha: "d".repeat(40),
+        path: ".plans/issue-1/ballot-codex.json"
       }
     ],
     supersedes: null,
@@ -171,6 +184,14 @@ describe("derived decision state", () => {
 
     for (const { schema, value } of records) {
       expect(schema.safeParse(value).success).toBe(true);
+      // A response digest is 64 hex and a commit is 40; neither variant may
+      // borrow the other's fields, or a digest could be recorded as a commit.
+      expect(
+        schema.safeParse({
+          ...value,
+          inputs: [{ ...value.inputs[1], source: "git-submission", submissionSha: "d".repeat(40) }]
+        }).success
+      ).toBe(false);
       expect(schema.safeParse({ ...value, inputs: [] }).success).toBe(false);
       expect(schema.safeParse({ ...value, decisionId: "arbitrary" }).success).toBe(false);
       expect(schema.safeParse({ ...value, decisionId: value.decisionId.replace(inputSetHash, "e".repeat(64)) }).success).toBe(

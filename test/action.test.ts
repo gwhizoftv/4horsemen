@@ -12,6 +12,8 @@ afterEach(() => {
 
 const order = (root: string): InternalOrder => ({
   actionId: "b2337d85-6617-4e9f-8ace-901453764aa4",
+  submissionMode: "git",
+  responsePath: null,
   issue: 1,
   agent: "codex",
   stepId: "R3.review",
@@ -37,6 +39,7 @@ describe("agent actions", () => {
     expect(parsed).toMatchObject({
       actionId: "b2337d85-6617-4e9f-8ace-901453764aa4",
       agent: "codex",
+      submissionMode: "git",
       requiredPath: ".plans/issue-1/review.md"
     });
     expect(raw).toContain("3".repeat(40));
@@ -58,20 +61,21 @@ describe("agent actions", () => {
     expect(readFileSync(path, "utf8")).toContain(join(root, "completes", "issue-1", "codex", "complete"));
   });
 
-  it("names the mailbox receipt in the body and keeps front matter to three fields", () => {
+  it("names the mailbox receipt in the body and keeps front matter to its restricted fields", () => {
     const root = mkdtempSync(join(tmpdir(), "coord-action-"));
     roots.push(root);
     const raw = renderAction(order(root));
     const [, frontMatter = "", body = ""] = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(raw) ?? [];
 
     // The absolute receipt path is what an agent acts on, so it belongs in the
-    // body the agent reads. Front matter stays the restricted three fields: a
-    // completePath key there would become a parsed field agents could rely on.
+    // body the agent reads. Front matter stays restricted: a completePath key
+    // there would become a parsed field agents could rely on.
     expect(body).toContain(join(root, "completes", "issue-1", "codex", "complete"));
     expect(frontMatter).not.toContain("complete");
     expect(frontMatter.split("\n").map((line) => line.split(":")[0])).toEqual([
       "actionId",
       "agent",
+      "submissionMode",
       "requiredPath"
     ]);
   });
@@ -96,10 +100,84 @@ describe("agent actions", () => {
 
   it("accepts exactly one lowercase SHA with an optional final newline", () => {
     const sha = "a".repeat(40);
-    expect(parseCompletion(sha)).toEqual({ status: "valid", sha });
-    expect(parseCompletion(`${sha}\n`)).toEqual({ status: "valid", sha });
-    expect(parseCompletion(`commit ${sha}`)).toEqual({ status: "valid", sha });
-    expect(parseCompletion(`commit ${sha}\n`)).toEqual({ status: "valid", sha });
+    const valid = { status: "valid", kind: "git", sha };
+    expect(parseCompletion(sha)).toEqual(valid);
+    expect(parseCompletion(`${sha}\n`)).toEqual(valid);
+    expect(parseCompletion(`commit ${sha}`)).toEqual(valid);
+    expect(parseCompletion(`commit ${sha}\n`)).toEqual(valid);
+  });
+
+  it("binds each completion form to the mode that was ordered", () => {
+    const sha = "a".repeat(40);
+    const actionId = "b2337d85-6617-4e9f-8ace-901453764aa4";
+
+    expect(parseCompletion(`response ${actionId}`)).toEqual({
+      status: "valid",
+      kind: "response",
+      actionId
+    });
+    expect(parseCompletion(`response ${actionId}\n`, "response")).toEqual({
+      status: "valid",
+      kind: "response",
+      actionId
+    });
+
+    // Neither form may answer the other mode's action. Without this an agent
+    // that answered its previous action in the previous mode would look like it
+    // had answered the current one.
+    expect(parseCompletion(sha, "response").status).toBe("malformed");
+    expect(parseCompletion(`response ${actionId}`, "git").status).toBe("malformed");
+    expect(parseCompletion("response not-a-uuid", "response").status).toBe("malformed");
+  });
+
+  it("renders a response action with no repository path, branch, or push step", () => {
+    const base = order("/external/coord");
+    const raw = renderAction({
+      ...base,
+      stepId: "R3.plan-ballot",
+      evidenceId: "plan-ballot-accepted",
+      submissionMode: "response",
+      responsePath: "/external/coord/issue-1/agents/codex/responses/" + base.actionId + ".json",
+      requiredPath: ".plans/issue-1/ballot-codex.json"
+    });
+    const parsed = parseAction(raw);
+    expect(parsed.submissionMode).toBe("response");
+    expect(parsed.submissionMode === "response" && parsed.responsePath).toContain("/responses/");
+    // The agent is never told a repository path, a branch, or to push.
+    expect(raw).not.toContain("requiredPath:");
+    expect(raw).not.toContain(".plans/issue-1/ballot-codex.json");
+    expect(raw).not.toContain("Push the commit");
+    expect(raw).toContain(`response ${base.actionId}`);
+  });
+
+  it("refuses front matter that mixes the two submission modes", () => {
+    const responseHead = [
+      "---",
+      "actionId: b2337d85-6617-4e9f-8ace-901453764aa4",
+      "agent: codex",
+      "submissionMode: response"
+    ];
+    expect(() =>
+      parseAction([...responseHead, "responsePath: /r/x.json", "requiredPath: a.md", "---", "", "body"].join("\n"))
+    ).toThrow(/must not carry requiredPath/);
+    expect(() =>
+      parseAction(
+        [
+          "---",
+          "actionId: b2337d85-6617-4e9f-8ace-901453764aa4",
+          "agent: codex",
+          "submissionMode: git",
+          "requiredPath: a.md",
+          "responsePath: /r/x.json",
+          "---",
+          "",
+          "body"
+        ].join("\n")
+      )
+    ).toThrow(/must not carry responsePath/);
+    expect(() => parseAction([...responseHead, "responsePath: relative.json", "---", "", "b"].join("\n"))).toThrow(
+      /absolute responsePath/
+    );
   });
 });
 
@@ -131,7 +209,8 @@ describe("advisory action sections", () => {
     expect(raw).toContain('"src/a.ts"');
     expect(raw).toContain(`codex ${"5".repeat(40)}:`);
     expect(raw).toContain("(truncated: more paths changed than are listed here)");
-    expect(parseAction(raw).requiredPath).toBe(".plans/issue-1/review.md");
+    const parsed = parseAction(raw);
+    expect(parsed.submissionMode === "git" && parsed.requiredPath).toBe(".plans/issue-1/review.md");
   });
 
   it("reports a pin whose diff is empty rather than rendering a bare header", () => {

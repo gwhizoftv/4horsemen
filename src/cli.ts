@@ -1,4 +1,7 @@
-import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { z } from "zod";
+import { writeAgentResponse } from "./ballotResponse.js";
+import { consensusResponseSchema, planComparisonResponseSchema } from "./protocol.js";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -157,7 +160,8 @@ const parseArgs = (args: readonly string[], booleans: readonly string[] = []): P
 const booleanFlags: Record<string, readonly string[]> = {
   install: ["write-product", "vendor", "bootstrap-coordination", "dry-run"],
   uninstall: ["delete-clones", "wipe-runtime", "delete-coordination", "force", "dry-run"],
-  "wipe-issue": ["force", "dry-run"],
+  "wipe-issue": ["force", "dry-run", "delete-evidence"],
+  respond: [],
   detach: ["dry-run"]
 };
 
@@ -1205,13 +1209,18 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         completesRoot: withStoredMailbox(issueRuntimePaths(resolution.runtimeRoot, issue, resolution.config.completesRoot))
           .completesRoot,
         force: flagIsSet(parsed, "force"),
+        deleteEvidence: flagIsSet(parsed, "delete-evidence"),
         dryRun: flagIsSet(parsed, "dry-run"),
         log: io.stdout
       });
       io.stdout(
         `Wiped issue ${issue}: reset ${outcome.resetClones.length} clone(s), ` +
           `deleted ${outcome.deletedRemoteBranches.length} remote branch(es), ` +
-          `GitHub issue left open.\n`
+          `GitHub issue left open.\n` +
+          (outcome.keptEvidenceBranches.length > 0
+            ? `Kept ballot evidence branch ${outcome.keptEvidenceBranches.join(", ")}; ` +
+              "re-run with --delete-evidence to remove it.\n"
+            : "")
       );
       return 0;
     }
@@ -1277,6 +1286,43 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const action = readAction(actionPath);
       if (action.agent !== agent) throw new Error("Action identity does not match the caller.");
       io.stdout(readFileSync(actionPath, "utf8"));
+      return 0;
+    }
+
+    if (command === "respond") {
+      allowedFlags(parsed, ["issue", "coord-root", "product", "agent", "choice", "disposition", "rationale"]);
+      if (parsed.positionals.length !== 0) throw new Error("respond takes no positional arguments.");
+      const { paths, agent } = nextContext(parsed, io);
+      const runtime = agentRuntimePaths(paths, agent);
+      if (!existsSync(runtime.action)) throw new Error("There is no current action to respond to.");
+      const action = readAction(runtime.action);
+      if (action.agent !== agent) throw new Error("Action identity does not match the caller.");
+      if (action.submissionMode !== "response") {
+        throw new Error("This action is completed by pushing a commit and writing its SHA, not by responding.");
+      }
+      const choice = parsed.flags.get("choice");
+      const disposition = parsed.flags.get("disposition");
+      const rationale = parsed.flags.get("rationale");
+      if (rationale === undefined) throw new Error("--rationale is required.");
+      if ((choice === undefined) === (disposition === undefined)) {
+        throw new Error("Pass exactly one of --choice or --disposition.");
+      }
+      const value =
+        choice === undefined
+          ? { actionId: action.actionId, disposition, rationale }
+          : { actionId: action.actionId, choice, rationale };
+      // Validated here so an obviously malformed response is refused at the
+      // point the agent can still fix it, rather than becoming a rejected
+      // action and a coordinator round-trip.
+      const schema = choice === undefined ? consensusResponseSchema : planComparisonResponseSchema;
+      const parsedValue = schema.safeParse(value);
+      if (!parsedValue.success) throw new Error(z.prettifyError(parsedValue.error));
+      // Response first, marker second: the coordinator reads the response only
+      // after the marker exists, so the reverse order could expose a partial
+      // write.
+      writeAgentResponse(action.responsePath, parsedValue.data);
+      writeFileSync(runtime.complete, `response ${action.actionId}\n`, { mode: 0o600 });
+      io.stdout(`Recorded your response for action ${action.actionId}.\n`);
       return 0;
     }
 

@@ -21,12 +21,13 @@ Nothing in this repository writes issue state into the working tree.
 
 | Group | Files | Owns |
 | --- | --- | --- |
-| Protocol and evidence | `src/protocol.ts`, `src/evidence.ts`, `src/pinValidation.ts` | Artifact schemas, evidence acceptance, approved-path matching, pin validation |
+| Protocol and evidence | `src/protocol.ts`, `src/evidence.ts`, `src/pinValidation.ts` | Artifact schemas, private response schemas, Git evidence acceptance, approved-path matching, pin validation |
+| Ballot responses and publication | `src/ballotResponse.ts`, `src/ballotPublication.ts` | Bounded no-symlink response reading, strict judgment parsing, exact-byte digests, immutable archives; canonical ballot bytes, batch identity, evidence-branch derivation |
 | State machine and run loop | `src/machine.ts`, `src/steps.ts`, `src/state.ts`, `src/runLoop.ts` | Step definitions, gate transitions, persisted start/cursor/journal state, the tick |
 | Action rendering | `src/action.ts`, `src/orderScaffold.ts` | `action.md` front matter and body, per-step JSON and heading scaffolds |
 | Workspace and install | `src/setupWorkspace.ts`, `src/install.ts`, `src/hookSync.ts`, `src/agentHookSync.ts`, `src/agentsProtocol.ts`, `src/productIgnore.ts` | Config generation, clone setup, git hooks, vendor lifecycle hooks, the AGENTS.md overlay |
 | Harness surface | `src/tmux.ts`, `src/agentEvent.ts`, `src/agentLifecycle.ts` | Launching and nudging agent CLIs, readiness detection, lifecycle events (precedence rules: `docs/readiness-policy.md`) |
-| Git access | `src/mirror.ts`, `src/gitExec.ts`, `src/prepareAgentBranch.ts` | The bare mirror, blob and diff reads, issue-branch preparation |
+| Git access | `src/mirror.ts`, `src/gitExec.ts`, `src/prepareAgentBranch.ts` | The bare mirror, blob and diff reads, issue-branch preparation, coordinator evidence commits and fast-forward-only publication |
 | Analytics | `src/analytics.ts`, `src/transcriptRead.ts` | Phase timing, agent wait, token and tool attribution with honest coverage |
 | Entry points | `src/cli.ts`, `src/main.ts` | Command parsing, `start` / `next` / `resume` / `analytics` / `install` |
 
@@ -37,11 +38,25 @@ it, which is why neither has its own copy.
 ## Invariants worth knowing before you plan
 
 - **Runtime state is outside the clone.** `action.md` lives under the coord
-  root, never in the working tree. `complete` is not there either: the
-  completion receipt is the one file an agent writes, so it lives in a mailbox
-  beside the coord root — `completes/<workspace>/issue-<n>/<agent>/complete` —
-  not in the clone, and not next to `cursors.json`. `src/paths.ts` owns that
-  boundary; `scripts/lib/launcher.sh` owns the per-issue harness grant.
+  root, never in the working tree. An agent writes exactly two runtime files:
+  its completion receipt, in a mailbox beside the coord root
+  (`completes/<workspace>/issue-<n>/<agent>/complete`), and — for a ballot
+  action — its private judgment at
+  `issue-<n>/agents/<agent>/responses/<action-id>.json`. Those two directories
+  are the only harness grants. `src/paths.ts` owns that boundary;
+  `scripts/lib/launcher.sh` owns the per-issue grants.
+- **Ballots are not Git submissions.** Plan, comparison, and consensus ballots
+  arrive as private responses and are satisfied by `cursors.responses`, never by
+  a pushed artifact. `evaluateEvidence` refuses them outright, so an agent
+  cannot vote by pushing a ballot-shaped file to its branch.
+- **A ballot gate advances only after its batch is on origin.** The barrier
+  covers every outcome, escalation and revision routing included, and is emitted
+  as a `publish-ballot-batch` decision rather than a `wait` — the run loop acts
+  only on non-`wait` decisions, so a barrier that merely waited would deadlock.
+- **A pending evidence commit is pushed, never rebuilt.** Commit metadata is
+  part of a commit's identity; the persisted SHA is what every retry pushes.
+- **The evidence branch is retained.** `coord wipe-issue` keeps
+  `issue-<n>/coordinator-evidence` unless the owner passes `--delete-evidence`.
 - **`AGENTS.md` is skip-worktree in every agent clone.** It carries a managed
   protocol overlay. Editing it from a clone stages nothing, and clearing the bit
   is forbidden. See `src/agentsProtocol.ts`.
@@ -82,6 +97,8 @@ Tests live in `test/`, one file per module, with shared fixtures under
 | Change | Start in |
 | --- | --- |
 | A new or altered artifact requirement | `src/protocol.ts`, then `src/evidence.ts` |
+| How a ballot judgment is read, bounded, or archived | `src/ballotResponse.ts` |
+| Canonical ballot bytes, batch identity, or the evidence branch | `src/ballotPublication.ts`, then `src/mirror.ts` |
 | Wording or scaffolding of what an agent is asked to do | `src/orderScaffold.ts`, then `src/action.ts` |
 | Step sequence, participants, or gates | `src/steps.ts`, then `src/machine.ts` |
 | What the coordinator resolves and hands to agents | `src/runLoop.ts` |

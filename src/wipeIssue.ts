@@ -8,6 +8,7 @@ import { githubRepositoryFromOrigin } from "./githubIssue.js";
 import { issueRuntimePaths, removeIssueMailbox } from "./paths.js";
 import { cloneIsDirty } from "./setupWorkspace.js";
 import type { CoordinatorConfig } from "./state.js";
+import { evidenceBranchFor } from "./steps.js";
 import type { OwnerTerminalCloser } from "./tmux.js";
 
 export type WipeIssueLogger = (message: string) => void;
@@ -20,12 +21,25 @@ export type WipeIssueOptions = {
   /** Mailbox root for this workspace; defaults to the sibling of coordRoot. */
   completesRoot?: string;
   force?: boolean;
+  /**
+   * Delete the coordinator evidence branch too.
+   *
+   * Off by default, and separate from `force`, because `wipe-issue` is the
+   * ordinary remedy for a stuck runtime — including the format-4 rejection an
+   * owner meets after upgrading. Folding evidence deletion into that path would
+   * destroy the ballot audit trail as a side effect of routine recovery, which
+   * is exactly what "retain by default, delete only on an explicit owner
+   * action" forbids.
+   */
+  deleteEvidence?: boolean;
   dryRun?: boolean;
   log?: WipeIssueLogger;
   terminalCloser?: OwnerTerminalCloser | null;
 };
 
 export type WipeIssueResult = {
+  /** Retained because the owner did not ask for it to be deleted. */
+  keptEvidenceBranches: string[];
   resetClones: string[];
   deletedLocalBranches: string[];
   deletedRemoteBranches: string[];
@@ -194,6 +208,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
   const prefix = issuePrefix(options.issue);
   const result: WipeIssueResult = {
     resetClones: [],
+    keptEvidenceBranches: [],
     deletedLocalBranches: [],
     deletedRemoteBranches: [],
     missingRemoteBranches: [],
@@ -305,9 +320,25 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
       if (remoteBranches.length === 0) {
         log(`remote ${prefix}* already absent\n`);
       }
+      const evidenceBranch = evidenceBranchFor(options.config.branch, options.issue);
       for (const { branch, sha } of remoteBranches) {
         const agent = rosterByBranch.get(branch);
         const isFinal = finalBranches.has(branch);
+        // Named explicitly rather than falling through the generic "not a clone
+        // branch" keep, so the owner can tell deliberate retention of the audit
+        // trail from an unrecognized leftover.
+        if (branch === evidenceBranch) {
+          if (options.deleteEvidence !== true) {
+            keepRemoteBranches.add(branch);
+            recordUnique(result.keptEvidenceBranches, branch);
+            log(`keeping origin/${branch} (ballot evidence; delete it with --delete-evidence)\n`);
+            continue;
+          }
+          log(`${dryRun ? "would delete" : "deleting"} origin/${branch} (ballot evidence, owner requested)\n`);
+          if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch);
+          result.deletedRemoteBranches.push(branch);
+          continue;
+        }
         const cloneSha = agent === undefined ? undefined : cloneTips.get(agent);
         const ownerRemote =
           !isFinal &&

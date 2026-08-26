@@ -1,8 +1,9 @@
 import { computeInputSetHash } from "./evidence.js";
-import type { BoundInput, WorkflowStepId } from "./steps.js";
+import { STEP_DEFINITIONS, type BoundInput, type WorkflowStepId } from "./steps.js";
 
 export type ArtifactScaffoldContext = {
   stepId: WorkflowStepId;
+  actionId: string;
   issue: number;
   issueSessionId: string;
   agent: string;
@@ -15,15 +16,6 @@ export type ArtifactScaffoldContext = {
 };
 
 const PLACEHOLDER_SHA = "<40-lowercase-hex-commit-sha>";
-
-const citation = (input: BoundInput): { agent: string; commitSha: string; path: string } => ({
-  agent: input.agent,
-  commitSha: input.commitSha,
-  path: input.path
-});
-
-const citationsOf = (inputs: readonly BoundInput[], kind: string) =>
-  inputs.filter((input) => input.kind === kind).map(citation);
 
 const common = (ctx: ArtifactScaffoldContext) => ({
   protocolVersion: 1 as const,
@@ -50,13 +42,20 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
         baselineSha: ctx.baselineSha,
         automationDigest: ctx.automationDigest
       };
+    // The three ballot steps render only what the agent authors. Every
+    // binding — citations, round, identity, input hash — is coordinator-filled
+    // and never round-trips through an agent, so none of it appears here.
     case "R3.plan-ballot":
+    case "R5.compare-ballot":
       return {
-        ...withHash(ctx),
-        artifact: "plan-ballot",
-        plans: citationsOf(ctx.inputs, "plan"),
-        reviews: citationsOf(ctx.inputs, "review"),
+        actionId: ctx.actionId,
         choice: ctx.eligibleChoices[0] ?? ctx.agent,
+        rationale: "<one sentence>"
+      };
+    case "R6.ballot":
+      return {
+        actionId: ctx.actionId,
+        disposition: "approve",
         rationale: "<one sentence>"
       };
     case "R4.implement":
@@ -66,14 +65,6 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
         implementationCommitSha: PLACEHOLDER_SHA,
         approvedPaths: ctx.approvedPaths.length > 0 ? [...ctx.approvedPaths] : ["<path-from-selected-plan>"]
       };
-    case "R5.compare-ballot":
-      return {
-        ...withHash(ctx),
-        artifact: "comparison-ballot",
-        implementations: citationsOf(ctx.inputs, "implementation"),
-        choice: ctx.eligibleChoices[0] ?? ctx.agent,
-        rationale: "<one sentence>"
-      };
     case "R6.revise":
       return {
         ...withHash(ctx),
@@ -81,15 +72,6 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
         round: ctx.round ?? 1,
         revisedBranchHead: PLACEHOLDER_SHA,
         basedOn: ctx.inputs.map((input) => input.commitSha)
-      };
-    case "R6.ballot":
-      return {
-        ...withHash(ctx),
-        artifact: "consensus-ballot",
-        round: ctx.round ?? 1,
-        revisionCommitSha: ctx.inputs[0]?.commitSha ?? PLACEHOLDER_SHA,
-        disposition: "approve",
-        rationale: "<one sentence>"
       };
     case "R7.finalize":
       return {
@@ -158,6 +140,19 @@ export const renderArtifactScaffold = (ctx: ArtifactScaffoldContext): string => 
   const value = artifactScaffoldValue(ctx);
   if (value === null) return "";
   const json = JSON.stringify(value, null, 2);
+  if (STEP_DEFINITIONS[ctx.stepId].submissionMode === "response") {
+    const eligible =
+      ctx.eligibleChoices.length === 0
+        ? ""
+        : `\n\nEligible values for \`choice\`: ${ctx.eligibleChoices.join(", ")}.`;
+    return (
+      `\n\nWrite exactly this JSON, with your own values for the judgment fields ` +
+      `(keep \`actionId\` exactly as shown):${eligible}\n\n` +
+      "```json\n" +
+      `${json}\n` +
+      "```"
+    );
+  }
   return (
     `\n\nWrite this JSON to the required path (replace any \`<...>\` placeholders; keep bound citations and digests exact):\n\n` +
     "```json\n" +

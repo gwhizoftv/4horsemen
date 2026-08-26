@@ -1,10 +1,14 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  acceptedResponseArchivePath,
+  agentResponsePath,
   agentRuntimePaths,
   assertMailboxClaim,
+  assertNoSymlink,
+  evidenceWorktreePath,
   createIssueRuntime,
   defaultCompletesRoot,
   issueRuntimePaths,
@@ -202,5 +206,70 @@ describe("completion mailbox paths", () => {
     const paths = issueRuntimePaths(coordRoot, 98);
     expect(resolve(paths.completesRoot).startsWith(resolve(coordRoot))).toBe(false);
     expect(paths.issue).toBe(98);
+  });
+});
+
+describe("runtime response paths", () => {
+  const fixture = () => {
+    const workspace = mkdtempSync(join(tmpdir(), "coord-response-paths-"));
+    roots.push(workspace);
+    // Sibling trees: the mailbox must never sit inside the coordinator runtime.
+    const root = join(workspace, "coord-runtime");
+    mkdirSync(root, { recursive: true });
+    const paths = issueRuntimePaths(root, 7, join(workspace, "completes"));
+    createIssueRuntime(paths, ["claude", "codex"]);
+    return { root: workspace, paths };
+  };
+
+  const ACTION_ID = "179da8c7-ae22-47eb-b6eb-211ceea6b732";
+
+  it("creates the response and archive directories per agent, and keeps them apart", () => {
+    const { paths } = fixture();
+    const runtime = agentRuntimePaths(paths, "claude");
+
+    expect(existsSync(runtime.responsesDir)).toBe(true);
+    expect(existsSync(runtime.acceptedResponsesDir)).toBe(true);
+    // The response directory is a child of the agent root, so granting it does
+    // not grant `action.md`; the archive is a sibling and is never granted.
+    expect(dirname(runtime.responsesDir)).toBe(runtime.root);
+    expect(runtime.acceptedResponsesDir).not.toBe(runtime.responsesDir);
+    expect(runtime.responsesDir).not.toContain(agentRuntimePaths(paths, "codex").root);
+    // 0700 on both: peers are separated by the protocol, not by the mode bits,
+    // but nothing outside this account should read them either.
+    expect(statSync(runtime.responsesDir).mode & 0o777).toBe(0o700);
+    expect(statSync(runtime.acceptedResponsesDir).mode & 0o777).toBe(0o700);
+  });
+
+  it("derives response paths only from a valid action id", () => {
+    const { paths } = fixture();
+    expect(agentResponsePath(paths, "claude", ACTION_ID)).toBe(
+      join(agentRuntimePaths(paths, "claude").responsesDir, `${ACTION_ID}.json`)
+    );
+    // The action id is the only varying segment, so a traversal there would be
+    // a traversal in the one place a caller might pass through unchecked.
+    for (const bad of ["../../escape", "..", "x/y", "not-a-uuid", `${ACTION_ID}/..`]) {
+      expect(() => agentResponsePath(paths, "claude", bad)).toThrow(PathSafetyError);
+      expect(() => acceptedResponseArchivePath(paths, "claude", bad)).toThrow(PathSafetyError);
+    }
+    expect(() => agentResponsePath(paths, "../peer", ACTION_ID)).toThrow(PathSafetyError);
+  });
+
+  it("refuses a symlinked response directory", () => {
+    const { root, paths } = fixture();
+    const runtime = agentRuntimePaths(paths, "codex");
+    rmSync(runtime.responsesDir, { recursive: true, force: true });
+    const outside = join(root, "elsewhere");
+    mkdirSync(outside, { recursive: true });
+    symlinkSync(outside, runtime.responsesDir);
+    expect(() => assertNoSymlink(paths.coordRoot, runtime.responsesDir)).toThrow(PathSafetyError);
+  });
+
+  it("confines the evidence worktree to the issue runtime", () => {
+    const { paths } = fixture();
+    expect(evidenceWorktreePath(paths, "abcdef12")).toContain(paths.issueRoot);
+    // A worktree is a checkout; one that escaped could write into an agent clone.
+    for (const bad of ["../escape", "..", "a/b", "no"]) {
+      expect(() => evidenceWorktreePath(paths, bad)).toThrow(PathSafetyError);
+    }
   });
 });

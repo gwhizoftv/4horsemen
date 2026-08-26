@@ -43,8 +43,21 @@ export const renderIssueReport = (
     `Chosen agent: ${chosen ?? "(not selected yet)"}`,
     `Implementation pin: ${implementationPin ?? "(none)"}`,
     `Final pin (PR head): ${pin ?? "(none)"}`,
-    `Published branch: ${branch ?? "(not pushed yet)"}`
+    `Published branch: ${branch ?? "(not pushed yet)"}`,
+    // Named unconditionally so retention is visible rather than inferred: an
+    // owner has to be able to see the branch exists before deciding to keep or
+    // delete it. Pending judgment is deliberately absent — only the branch and
+    // the published tip appear, never a choice, disposition, or rationale.
+    `Evidence branch: ${cursors.evidence.branch ?? "(none)"}`,
+    `Evidence tip: ${cursors.evidence.tip ?? "(nothing published yet)"}`,
+    `Ballot evidence commits: ${cursors.ballotBatches.filter((batch) => batch.status === "published").length}`
   ];
+  const stuck = cursors.ballotBatches.filter((batch) => batch.status === "pending" && batch.attempts > 0);
+  if (stuck.length > 0) {
+    lines.push(
+      `Evidence publication pending: ${stuck.length} batch(es); last error: ${stuck[stuck.length - 1]?.error ?? "unknown"}`
+    );
+  }
   if (url !== null) lines.push(`Pull request: ${url}`);
   else if (pin !== null && cursors.publication.status === "not-required") {
     lines.push(

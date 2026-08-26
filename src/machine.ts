@@ -1,10 +1,13 @@
 import type { CursorsState, StartState } from "./state.js";
 import {
   STEP_DEFINITIONS,
+  isBallotStep,
   participantsForStep,
   stepsForProfile,
+  type BallotStepId,
   type EvidenceObservation,
   type MachineDecision,
+  type ResponseObservation,
   type WorkflowProfile,
   type WorkflowStepId
 } from "./steps.js";
@@ -13,6 +16,7 @@ export type MachineInput = {
   start: StartState;
   cursors: CursorsState;
   observations?: readonly EvidenceObservation[];
+  responseObservations?: readonly ResponseObservation[];
 };
 
 const globalOrder: readonly WorkflowStepId[] = [
@@ -47,10 +51,47 @@ const nextStep = (current: WorkflowStepId, profile: WorkflowProfile): WorkflowSt
   return index < 0 ? normalizeCurrentStep(current, profile) : (sequence[index + 1] ?? null);
 };
 
+/**
+ * Whether one participant has satisfied a step.
+ *
+ * Ballot steps are satisfied by an accepted *response*, never by an accepted
+ * Git submission: an agent that pushed a ballot-shaped file to its branch has
+ * not voted, and must not be counted as though it had.
+ */
 const hasAccepted = (cursors: CursorsState, stepId: WorkflowStepId, agent: string, round: number | null): boolean =>
-  cursors.accepted.some(
-    (submission) => submission.stepId === stepId && submission.agent === agent && submission.round === round
+  isBallotStep(stepId)
+    ? cursors.responses.some(
+        (response) => response.stepId === stepId && response.agent === agent && response.round === round
+      )
+    : cursors.accepted.some(
+        (submission) => submission.stepId === stepId && submission.agent === agent && submission.round === round
+      );
+
+/**
+ * The batch that covers this exact gate/round, if it is already on origin.
+ *
+ * A batch in any other state — pending, failed, or invalidated by a roster
+ * change — does not count, which is what makes publication a barrier rather
+ * than a formality.
+ */
+const publishedBatch = (cursors: CursorsState, stepId: BallotStepId, round: number | null): boolean =>
+  cursors.ballotBatches.some(
+    (batch) => batch.stepId === stepId && batch.round === round && batch.status === "published"
   );
+
+const ballotDispositions = (
+  cursors: CursorsState,
+  round: number | null,
+  participants: readonly string[]
+): readonly ("approve" | "revise" | "escalate" | undefined)[] =>
+  cursors.responses
+    .filter(
+      (response) =>
+        response.stepId === "R6.ballot" &&
+        response.round === round &&
+        participants.includes(response.agent)
+    )
+    .map((response) => response.disposition);
 
 const sameRoster = (left: readonly string[], right: readonly string[]): boolean =>
   left.length === right.length && left.every((agent, index) => agent === right[index]);
@@ -76,6 +117,24 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
   if (cursors.paused) return [{ type: "wait", reason: "workflow is paused" }];
 
   const decisions: MachineDecision[] = [];
+  for (const observation of input.responseObservations ?? []) {
+    if (!cursors.activeRoster.includes(observation.agent)) continue;
+    const cursor = cursors.agents[observation.agent];
+    if (cursor === undefined || cursor.actionId !== observation.actionId) continue;
+    if (observation.status === "rejected") {
+      decisions.push({ type: "reissue-action", agent: observation.agent, outstanding: observation.outstanding });
+      continue;
+    }
+    if (observation.responseSha256 === undefined || observation.rationale === undefined) continue;
+    decisions.push({
+      type: "accept-response",
+      agent: observation.agent,
+      responseSha256: observation.responseSha256,
+      rationale: observation.rationale,
+      ...(observation.choice === undefined ? {} : { choice: observation.choice }),
+      ...(observation.disposition === undefined ? {} : { disposition: observation.disposition })
+    });
+  }
   for (const observation of input.observations ?? []) {
     if (!cursors.activeRoster.includes(observation.agent)) continue;
     const cursor = cursors.agents[observation.agent];
@@ -160,11 +219,17 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
   const complete = participants.every((agent) => hasAccepted(cursors, current, agent, round));
 
   if (complete) {
+    // Publication is a barrier in front of *every* ballot outcome, not only the
+    // ones that derive a decision. An escalation or a revision round that was
+    // routed before its ballots reached origin would advance the workflow on
+    // evidence no one can read afterwards.
+    if (isBallotStep(current) && !publishedBatch(cursors, current, round)) {
+      return [{ type: "publish-ballot-batch", stepId: current, round }];
+    }
+
     if (current === "R6.ballot") {
-      const ballots = cursors.accepted.filter(
-        (submission) => submission.stepId === current && submission.round === round && participants.includes(submission.agent)
-      );
-      if (ballots.some((ballot) => ballot.disposition === "escalate")) {
+      const ballots = ballotDispositions(cursors, round, participants);
+      if (ballots.some((disposition) => disposition === "escalate")) {
         const currentRound = round ?? 1;
         return [
           {
@@ -177,7 +242,7 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
           }
         ];
       }
-      if (ballots.some((ballot) => ballot.disposition === "revise")) {
+      if (ballots.some((disposition) => disposition === "revise")) {
         if ((round ?? 1) >= start.maxRevisionRounds) {
           return [
             {

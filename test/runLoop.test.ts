@@ -3,11 +3,18 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readAction, writeAction } from "../src/action.js";
+import { readAction, renderAction, writeAction } from "../src/action.js";
 import { decideLifecycleNudge, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
-import { computeInputSetHash } from "../src/evidence.js";
-import { BareMirror } from "../src/mirror.js";
-import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import { BareMirror, GitCommandError } from "../src/mirror.js";
+import {
+  acceptedResponseArchivePath,
+  agentResponsePath,
+  agentRuntimePaths,
+  createIssueRuntime,
+  issueRuntimePaths
+} from "../src/paths.js";
+import { sha256OfFile } from "../src/hash.js";
+import { renderIssueReport } from "../src/issueReport.js";
 import {
   buildOrder,
   computeDerivedInputSetHash,
@@ -108,6 +115,7 @@ const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], fina
           activeRoster: current.activeRoster,
           inputs: [
             {
+              source: "git-submission" as const,
               kind: "implementation",
               agent: "codex",
               submissionSha: "d".repeat(40),
@@ -163,23 +171,25 @@ describe("effectful run loop", () => {
     const now = "2026-08-11T17:00:00.000Z";
     const ballots = cursorsStateSchema.parse({
       ...current,
-      accepted: [
+      responses: [
         {
           stepId: "R3.plan-ballot",
           agent: "claude",
+          actionId: "ce80f31a-6884-42cf-b0ff-b0fb27fc6cc1",
           round: null,
-          submissionSha: "c".repeat(40),
+          responseSha256: "c".repeat(64),
           choice: "claude",
-          path: ".plans/issue-1/ballot-claude.json",
+          rationale: "own plan",
           acceptedAt: now
         },
         {
           stepId: "R3.plan-ballot",
           agent: "codex",
+          actionId: "ce80f31a-6884-42cf-b0ff-b0fb27fc6cc2",
           round: null,
-          submissionSha: "d".repeat(40),
+          responseSha256: "d".repeat(64),
           choice: "codex",
-          path: ".plans/issue-1/ballot-codex.json",
+          rationale: "own plan",
           acceptedAt: now
         }
       ]
@@ -202,23 +212,55 @@ describe("effectful run loop", () => {
         path: `.plans/issue-1/plan-${agent}.md`,
         acceptedAt: now
       })),
-      ...current.activeRoster.map((agent, index) => ({
-        stepId: "R3.plan-ballot" as const,
-        agent,
-        round: null,
-        submissionSha: String(index + 3).repeat(40),
-        choice: agent,
-        path: `.plans/issue-1/ballot-${agent}.json`,
-        acceptedAt: now
-      }))
     ];
-    const state = cursorsStateSchema.parse({ ...current, accepted });
+    const publishedPlanBatch = {
+      kind: "plan-ballot-batch" as const,
+      stepId: "R3.plan-ballot" as const,
+      round: null,
+      activeRoster: current.activeRoster,
+      inputSetHash: "e".repeat(64),
+      responseSha256s: ["3".repeat(64)],
+      paths: [".plans/issue-1/ballot-claude.json"],
+      branch: "issue-1/coordinator-evidence",
+      parentSha: "a".repeat(40),
+      commitSha: "b".repeat(40),
+      status: "published" as const,
+      attempts: 0,
+      error: null,
+      supersedes: null,
+      createdAt: now,
+      publishedAt: now
+    };
+    const responses = current.activeRoster.map((agent, index) => ({
+      stepId: "R3.plan-ballot" as const,
+      agent,
+      actionId: `ce80f31a-6884-42cf-b0ff-b0fb27fc6cc${index}`,
+      round: null,
+      responseSha256: String(index + 3).repeat(64),
+      choice: agent,
+      rationale: "own plan",
+      acceptedAt: now
+    }));
+    const state = cursorsStateSchema.parse({
+      ...current,
+      accepted,
+      responses,
+      ballotBatches: [publishedPlanBatch]
+    });
     const decision = computePlanSelectionDerived(state, now);
     expect(decision?.inputs.map((input) => input.kind)).toEqual([
       "plan",
       "plan",
       "plan-ballot",
       "plan-ballot"
+    ]);
+    // A plan is cited as a pushed commit; a ballot as the digest of the private
+    // handoff plus the commit that published it.
+    expect(decision?.inputs.map((input) => input.source)).toEqual([
+      "git-submission",
+      "git-submission",
+      "response",
+      "response"
     ]);
     expect(decision?.selectedAgents).toEqual(["claude"]);
     expect(
@@ -245,15 +287,36 @@ describe("effectful run loop", () => {
             path: `.plans/issue-1/plan-${agent}.md`,
             acceptedAt: now
           })),
-          ...current.activeRoster.map((agent, index) => ({
+        ],
+        responses: current.activeRoster.map((agent, index) => ({
+          stepId: "R3.plan-ballot" as const,
+          agent,
+          actionId: `ce80f31a-6884-42cf-b0ff-b0fb27fc6cc${index}`,
+          round: null,
+          responseSha256: String(index + 3).repeat(64),
+          choice: "codex",
+          rationale: "clearest",
+          acceptedAt: now
+        })),
+        ballotBatches: [
+          {
+            kind: "plan-ballot-batch" as const,
             stepId: "R3.plan-ballot" as const,
-            agent,
             round: null,
-            submissionSha: String(index + 3).repeat(40),
-            choice: "codex",
-            path: `.plans/issue-1/ballot-${agent}.json`,
-            acceptedAt: now
-          }))
+            activeRoster: current.activeRoster,
+            inputSetHash: "e".repeat(64),
+            responseSha256s: ["3".repeat(64)],
+            paths: [".plans/issue-1/ballot-claude.json"],
+            branch: "issue-1/coordinator-evidence",
+            parentSha: "a".repeat(40),
+            commitSha: "b".repeat(40),
+            status: "published" as const,
+            attempts: 0,
+            error: null,
+            supersedes: null,
+            createdAt: now,
+            publishedAt: now
+          }
         ]
       })
     );
@@ -288,6 +351,7 @@ describe("effectful run loop", () => {
             activeRoster: current.activeRoster,
             inputs: [
               {
+                source: "git-submission" as const,
                 kind: "plan",
                 agent: "codex",
                 submissionSha: "b".repeat(40),
@@ -356,6 +420,7 @@ describe("effectful run loop", () => {
             activeRoster: current.activeRoster,
             inputs: [
               {
+                source: "git-submission" as const,
                 kind: "plan",
                 agent: "codex",
                 submissionSha: "b".repeat(40),
@@ -375,6 +440,8 @@ describe("effectful run loop", () => {
             stepId: "R4.implement",
             evidenceId: "implementation-pinned",
             actionId: null,
+            submissionMode: null,
+            actionDigest: null,
             status: "waiting-peer",
             attempt: 1,
             submissionSha: null,
@@ -464,7 +531,9 @@ describe("effectful run loop", () => {
     expect(cursors.agents.claude?.status).toBe("ordered");
     expect(cursors.agents.codex?.status).toBe("ordered");
     const action = readAction(agentRuntimePaths(paths, "codex").action);
-    expect(action.requiredPath).toBe(".signals/issue-1/participation-ready-codex.json");
+    expect(action.submissionMode === "git" && action.requiredPath).toBe(
+      ".signals/issue-1/participation-ready-codex.json"
+    );
     expect(action.body).not.toContain("gate-1-join");
     expect(action.body).toContain('"artifact": "participation-ready"');
     expect(action.body).toContain("```json");
@@ -1191,6 +1260,7 @@ describe("effectful run loop", () => {
           activeRoster: current.activeRoster,
           inputs: [
             {
+              source: "git-submission" as const,
               kind: "implementation",
               agent: "codex",
               submissionSha: "d".repeat(40),
@@ -1219,8 +1289,9 @@ describe("effectful run loop", () => {
         claude: {
           ...current.agents.claude,
           stepId: "R6.ballot",
-          evidenceId: "consensus-ballot-published",
+          evidenceId: "consensus-ballot-accepted",
           actionId,
+          submissionMode: "response",
           status: "ordered",
           updatedAt: now
         }
@@ -1240,42 +1311,51 @@ describe("effectful run loop", () => {
     });
     writeCursorsState(paths, seeded);
     const order = buildOrder(paths, start, seeded, "claude", "R6.ballot", 1, actionId);
-    writeAction(paths.coordRoot, agentRuntimePaths(paths, "claude").action, order);
-    writeFileSync(agentRuntimePaths(paths, "claude").complete, `${submissionSha}\n`);
-    const artifact = JSON.stringify({
-      protocolVersion: 1,
-      artifact: "consensus-ballot",
-      issue: 1,
-      issueSessionId: start.issueSessionId,
-      agent: "claude",
-      inputSetHash: computeInputSetHash(order.inputs),
-      round: 1,
-      revisionCommitSha: revisionPin,
-      disposition: "approve",
-      rationale: "The revision is ready."
-    });
+    const runtime = agentRuntimePaths(paths, "claude");
+    writeAction(paths.coordRoot, runtime.action, order);
+    // The cursor must carry the digest of the exact bytes it authorized, the
+    // same way prepareAction records it.
+    writeCursorsState(
+      paths,
+      cursorsStateSchema.parse({
+        ...seeded,
+        agents: {
+          ...seeded.agents,
+          claude: { ...seeded.agents.claude, actionDigest: sha256OfFile(runtime.action) }
+        }
+      })
+    );
+    const responsePath = agentResponsePath(paths, "claude", actionId);
+    writeFileSync(
+      responsePath,
+      `${JSON.stringify({ actionId, disposition: "approve", rationale: "The revision is ready." })}\n`
+    );
+    writeFileSync(runtime.complete, `response ${actionId}\n`);
     const mirror = new BareMirror(paths.mirror, "/origin.git");
-    mirror.fetchBranch = async () => ({
-      ok: true,
-      ref: "refs/remotes/origin/issue-1/claude",
-      tip: submissionSha
-    });
-    mirror.isReachable = async () => true;
-    mirror.readBlob = async () => artifact;
 
     const after = await new CoordinatorRunLoop(paths, { tmux: null, mirror }).runTick();
     expect(after.ownerQuestion?.id).toBe("10000000-0000-4000-8000-000000000001");
-    expect(after.accepted).toContainEqual(
+    expect(after.responses).toContainEqual(
       expect.objectContaining({
         stepId: "R6.ballot",
         agent: "claude",
+        actionId,
         round: 1,
-        submissionSha,
-        disposition: "approve"
+        disposition: "approve",
+        rationale: "The revision is ready."
       })
     );
+    // A ballot never becomes a Git submission, and it carries no commit SHA.
+    expect(after.accepted.some((item) => item.stepId === "R6.ballot")).toBe(false);
+    expect(after.responses[0]?.responseSha256).toMatch(/^[0-9a-f]{64}$/);
+    // The exact accepted bytes are archived where the agent cannot reach them,
+    // and the working copy plus marker are cleared.
+    expect(existsSync(acceptedResponseArchivePath(paths, "claude", actionId))).toBe(true);
+    expect(existsSync(responsePath)).toBe(false);
     expect(after.agents.claude?.status).toBe("waiting-peer");
-    expect(existsSync(agentRuntimePaths(paths, "claude").complete)).toBe(false);
+    expect(existsSync(runtime.complete)).toBe(false);
+    void submissionSha;
+    void revisionPin;
   });
 
   it("publishes exactly from durable accepted R7 outbox state and records retryable failure", async () => {
@@ -1311,6 +1391,7 @@ describe("effectful run loop", () => {
             activeRoster: current.activeRoster,
             inputs: [
               {
+                source: "git-submission" as const,
                 kind: "implementation",
                 agent: "codex",
                 submissionSha: "d".repeat(40),
@@ -1727,5 +1808,267 @@ describe("coordinator-resolved change scope", () => {
     const order = buildOrder(paths, start, readCursorsState(paths), "claude", "R2.plan", null);
     expect(order.contextPaths).toEqual(["docs/repo-map.md"]);
     expect(order.changeScope).toEqual([]);
+  });
+});
+
+describe("ballot response acceptance and batch publication", () => {
+  const now = "2026-08-11T17:00:00.000Z";
+  const roster = ["claude", "codex"] as const;
+
+  /** Put both agents on the plan-ballot step with an action out to each. */
+  const seedPlanBallotStep = (paths: ReturnType<typeof fixture>["paths"]) => {
+    const start = readStartState(paths);
+    const current = readCursorsState(paths);
+    const seeded = cursorsStateSchema.parse({
+      ...current,
+      issueCursor: { stepId: "R3.plan-ballot", gateId: "gate-3-selection", round: null },
+      accepted: [
+        ...roster.map((agent, index) => ({
+          stepId: "R2.plan" as const,
+          agent,
+          round: null,
+          submissionSha: String(index + 1).repeat(40),
+          path: ".plans/issue-1/plan.md",
+          acceptedAt: now
+        })),
+        ...roster.map((agent, index) => ({
+          stepId: "R3.review" as const,
+          agent,
+          round: null,
+          submissionSha: String(index + 3).repeat(40),
+          path: ".plans/issue-1/review.md",
+          acceptedAt: now
+        }))
+      ],
+      updatedAt: now
+    });
+    writeCursorsState(paths, seeded);
+    return { start, seeded };
+  };
+
+  /** Render a real action for one agent and answer it the way an agent would. */
+  const answer = (
+    paths: ReturnType<typeof fixture>["paths"],
+    agent: string,
+    actionId: string,
+    body: Record<string, unknown>
+  ) => {
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    const order = buildOrder(paths, start, cursors, agent, "R3.plan-ballot", null, actionId);
+    const runtime = agentRuntimePaths(paths, agent);
+    writeAction(paths.coordRoot, runtime.action, order);
+    writeCursorsState(
+      paths,
+      cursorsStateSchema.parse({
+        ...cursors,
+        agents: {
+          ...cursors.agents,
+          [agent]: {
+            ...cursors.agents[agent],
+            stepId: "R3.plan-ballot",
+            evidenceId: "plan-ballot-accepted",
+            actionId,
+            submissionMode: "response",
+            actionDigest: sha256OfFile(runtime.action),
+            status: "ordered",
+            updatedAt: now
+          }
+        },
+        updatedAt: now
+      })
+    );
+    writeFileSync(agentResponsePath(paths, agent, actionId), `${JSON.stringify(body)}\n`);
+    writeFileSync(runtime.complete, `response ${actionId}\n`);
+    return order;
+  };
+
+  const ACTIONS: Record<string, string> = {
+    claude: "179da8c7-ae22-47eb-b6eb-211ceea6b731",
+    codex: "179da8c7-ae22-47eb-b6eb-211ceea6b732"
+  };
+
+  it("renders a ballot action that asks for no commit and no repository path", () => {
+    const { paths } = fixture();
+    const { start, seeded } = seedPlanBallotStep(paths);
+    const order = buildOrder(paths, start, seeded, "claude", "R3.plan-ballot", null, ACTIONS.claude as string);
+    const raw = renderAction(order);
+
+    expect(order.submissionMode).toBe("response");
+    expect(order.responsePath).toBe(agentResponsePath(paths, "claude", ACTIONS.claude as string));
+    expect(raw).not.toContain("Push the commit");
+    expect(raw).not.toContain("requiredPath:");
+    // The bound commits to read are still there; only the Git write is gone.
+    expect(raw).toContain("1".repeat(40));
+    expect(raw).toContain(`response ${ACTIONS.claude}`);
+  });
+
+  it("accepts both responses, publishes one commit, and only then derives the decision", async () => {
+    const { paths } = fixture();
+    seedPlanBallotStep(paths);
+
+    const published: { sha: string; branch: string }[] = [];
+    const mirror = new BareMirror(paths.mirror, "/origin.git");
+    mirror.remoteTip = async () => ({ ok: true, sha: null });
+    mirror.createEvidenceCommit = async (input) => {
+      // Prove the batch carries one canonical ballot per active agent.
+      expect(input.files.map((file) => file.path)).toEqual([
+        ".plans/issue-1/ballot-claude.json",
+        ".plans/issue-1/ballot-codex.json"
+      ]);
+      expect(input.parentSha).toBe("a".repeat(40));
+      expect(input.identity.name).not.toMatch(/claude|codex/i);
+      return "e".repeat(40);
+    };
+    mirror.publishBranch = async (sha, branch) => {
+      published.push({ sha, branch });
+    };
+    const loop = new CoordinatorRunLoop(paths, { tmux: null, mirror });
+
+    answer(paths, "claude", ACTIONS.claude as string, {
+      actionId: ACTIONS.claude,
+      choice: "codex",
+      rationale: "clearest strategy"
+    });
+    let after = await loop.runTick();
+    // One agent is not the denominator: nothing is published and nothing is
+    // derived while a peer is still out.
+    expect(after.responses).toHaveLength(1);
+    expect(after.ballotBatches).toHaveLength(0);
+    expect(after.derived.planSelection).toBeNull();
+
+    answer(paths, "codex", ACTIONS.codex as string, {
+      actionId: ACTIONS.codex,
+      choice: "codex",
+      rationale: "own plan is clearest"
+    });
+    after = await loop.runTick();
+
+    expect(after.responses).toHaveLength(2);
+    // Exactly one commit for N responses, on the coordinator's own branch.
+    expect(published).toEqual([{ sha: "e".repeat(40), branch: "issue-1/coordinator-evidence" }]);
+    expect(after.ballotBatches).toHaveLength(1);
+    expect(after.ballotBatches[0]).toMatchObject({ status: "published", commitSha: "e".repeat(40) });
+    expect(after.evidence).toEqual({ branch: "issue-1/coordinator-evidence", tip: "e".repeat(40) });
+    // The decision comes after publication, and cites both the response digests
+    // and the commit that published them.
+    expect(after.derived.planSelection?.selectedAgents).toEqual(["codex"]);
+    const ballotCitations = (after.derived.planSelection?.inputs ?? []).filter(
+      (input) => input.source === "response"
+    );
+    expect(ballotCitations).toHaveLength(2);
+    for (const citation of ballotCitations) {
+      if (citation.source !== "response") throw new Error("unreachable");
+      expect(citation.evidenceCommitSha).toBe("e".repeat(40));
+      expect(citation.responseSha256).toMatch(/^[0-9a-f]{64}$/);
+    }
+    // No ballot ever became a Git submission.
+    expect(after.accepted.some((item) => item.stepId === "R3.plan-ballot")).toBe(false);
+  });
+
+  it("keeps accepted judgment and re-pushes the same commit after a transient failure", async () => {
+    const { paths } = fixture();
+    seedPlanBallotStep(paths);
+
+    let created = 0;
+    const attempted: string[] = [];
+    const mirror = new BareMirror(paths.mirror, "/origin.git");
+    mirror.remoteTip = async () => ({ ok: true, sha: null });
+    mirror.createEvidenceCommit = async () => {
+      created += 1;
+      return "e".repeat(40);
+    };
+    mirror.publishBranch = async (sha) => {
+      attempted.push(sha);
+      if (attempted.length === 1) {
+        throw new GitCommandError("connection reset by peer", { exitCode: 128, stdout: Buffer.alloc(0), stderr: "connection reset by peer" }, true);
+      }
+    };
+    const loop = new CoordinatorRunLoop(paths, { tmux: null, mirror });
+
+    answer(paths, "claude", ACTIONS.claude as string, {
+      actionId: ACTIONS.claude,
+      choice: "codex",
+      rationale: "clearest strategy"
+    });
+    await loop.runTick();
+    answer(paths, "codex", ACTIONS.codex as string, {
+      actionId: ACTIONS.codex,
+      choice: "codex",
+      rationale: "own plan is clearest"
+    });
+    const failed = await loop.runTick();
+
+    // The push failed, so nothing advances — but the agents' work survives and
+    // neither of them is asked to do anything again.
+    expect(failed.ballotBatches[0]).toMatchObject({ status: "pending", attempts: 1 });
+    expect(failed.responses).toHaveLength(2);
+    expect(failed.derived.planSelection).toBeNull();
+    expect(failed.issueCursor.stepId).toBe("R3.plan-ballot");
+    for (const agent of roster) {
+      expect(existsSync(agentRuntimePaths(paths, agent).action)).toBe(false);
+      expect(existsSync(agentRuntimePaths(paths, agent).complete)).toBe(false);
+    }
+
+    const recovered = await loop.runTick();
+    // The identical persisted commit is pushed again; it is never rebuilt.
+    expect(attempted).toEqual(["e".repeat(40), "e".repeat(40)]);
+    expect(created).toBe(1);
+    expect(recovered.ballotBatches).toHaveLength(1);
+    expect(recovered.ballotBatches[0]).toMatchObject({ status: "published" });
+    expect(recovered.derived.planSelection?.selectedAgents).toEqual(["codex"]);
+  });
+
+  it("reissues without accepting when a response is malformed or ineligible", async () => {
+    const { paths } = fixture();
+    seedPlanBallotStep(paths);
+    const mirror = new BareMirror(paths.mirror, "/origin.git");
+    const loop = new CoordinatorRunLoop(paths, { tmux: null, mirror });
+
+    answer(paths, "claude", ACTIONS.claude as string, {
+      actionId: ACTIONS.claude,
+      choice: "nobody",
+      rationale: "not an eligible agent"
+    });
+    const after = await loop.runTick();
+
+    expect(after.responses).toHaveLength(0);
+    expect(after.ballotBatches).toHaveLength(0);
+    expect(after.agents.claude?.status).toBe("ordered");
+    expect(after.agents.claude?.outstanding[0]).toContain("not one of the eligible choices");
+    // A rejected response leaves nothing durable behind.
+    expect(existsSync(acceptedResponseArchivePath(paths, "claude", ACTIONS.claude as string))).toBe(false);
+    expect(existsSync(agentRuntimePaths(paths, "claude").complete)).toBe(false);
+
+    // The corrected answer is accepted under the reissued action.
+    const reissuedId = readCursorsState(paths).agents.claude?.actionId as string;
+    answer(paths, "claude", reissuedId, {
+      actionId: reissuedId,
+      choice: "codex",
+      rationale: "corrected"
+    });
+    const corrected = await loop.runTick();
+    expect(corrected.responses).toHaveLength(1);
+    expect(corrected.responses[0]).toMatchObject({ agent: "claude", choice: "codex" });
+  });
+
+  it("never exposes a pending peer response in another agent's action", async () => {
+    const { paths } = fixture();
+    seedPlanBallotStep(paths);
+    answer(paths, "claude", ACTIONS.claude as string, {
+      actionId: ACTIONS.claude,
+      choice: "codex",
+      rationale: "a secret rationale nobody else may read"
+    });
+
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    const peer = renderAction(
+      buildOrder(paths, start, cursors, "codex", "R3.plan-ballot", null, ACTIONS.codex as string)
+    );
+    expect(peer).not.toContain("a secret rationale nobody else may read");
+    expect(peer).not.toContain(ACTIONS.claude as string);
+    // Ordinary status output is equally silent about pending judgment.
+    expect(renderIssueReport(start, cursors)).not.toContain("a secret rationale");
   });
 });

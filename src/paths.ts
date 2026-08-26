@@ -317,6 +317,23 @@ export type AgentRuntimePaths = {
    * Separate from `root`: the order is coordinator-owned, the receipt is not.
    */
   completeDir: string;
+  /**
+   * Working private responses for response-mode actions, one file per action.
+   *
+   * This is the second — and only other — directory a harness is granted. It is
+   * a *child* of the agent's runtime root on purpose: the root itself holds
+   * `action.md`, the document that carries this agent's current authority, and
+   * an agent that could rewrite its own order could authorize its own ballot.
+   * Granting the child leaves the order, every peer directory, the accepted
+   * archive, `cursors.json`, and the journal outside every grant.
+   */
+  responsesDir: string;
+  /**
+   * Immutable accepted-response archive. Coordinator-owned and never granted:
+   * this is the copy that proves what was accepted, so an agent that could
+   * rewrite it could rewrite the evidence of its own vote after the fact.
+   */
+  acceptedResponsesDir: string;
 };
 
 const agentPattern = /^[a-z][a-z0-9-]{0,63}$/;
@@ -333,8 +350,61 @@ export const agentRuntimePaths = (paths: IssueRuntimePaths, agent: string): Agen
     // The receipt leaves the coord root; the order and the log do not.
     complete: containedPath(completeDir, "complete"),
     renderLog: containedPath(root, "render.log"),
-    completeDir
+    completeDir,
+    responsesDir: containedPath(root, "responses"),
+    acceptedResponsesDir: containedPath(root, "accepted-responses")
   };
+};
+
+/**
+ * An opaque action id, as a single path segment.
+ *
+ * Response files are named by action id, and that id is the only part of the
+ * path that varies. Validating its shape here — rather than trusting the
+ * caller — is what makes "resolve the expected path from trusted state" a
+ * property of the path helper instead of a convention every call site has to
+ * remember.
+ */
+const actionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const assertActionId = (actionId: string): void => {
+  if (!actionIdPattern.test(actionId)) {
+    throw new PathSafetyError(`Invalid action id for a runtime response path: ${actionId}`);
+  }
+};
+
+/** Working response path for one action. Never derived from agent-supplied bytes. */
+export const agentResponsePath = (
+  paths: IssueRuntimePaths,
+  agent: string,
+  actionId: string
+): string => {
+  assertActionId(actionId);
+  return containedPath(agentRuntimePaths(paths, agent).responsesDir, `${actionId}.json`);
+};
+
+/** Coordinator-owned archive path for one accepted response. */
+export const acceptedResponseArchivePath = (
+  paths: IssueRuntimePaths,
+  agent: string,
+  actionId: string
+): string => {
+  assertActionId(actionId);
+  return containedPath(agentRuntimePaths(paths, agent).acceptedResponsesDir, `${actionId}.json`);
+};
+
+/**
+ * Scratch worktree for building one coordinator evidence commit.
+ *
+ * Confined to the issue runtime for the same reason finalization checks are:
+ * the coordinator must never create objects, an index, or a checkout inside an
+ * agent clone.
+ */
+export const evidenceWorktreePath = (paths: IssueRuntimePaths, token: string): string => {
+  if (!/^[0-9a-f-]{8,64}$/i.test(token)) {
+    throw new PathSafetyError(`Invalid evidence worktree token: ${token}`);
+  }
+  return containedPath(paths.issueRoot, `.evidence-${token}`);
 };
 
 export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly string[]): void => {
@@ -352,6 +422,14 @@ export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly st
     assertNoSymlink(paths.coordRoot, runtime.root);
     mkdirSync(runtime.root, { recursive: true, mode: 0o700 });
     assertNoSymlink(paths.coordRoot, runtime.root);
+    // Both are created up front so a harness granted `responses/` finds it
+    // present at launch: the launcher warns and drops the grant when the
+    // directory is missing, which would strand every ballot action.
+    for (const directory of [runtime.responsesDir, runtime.acceptedResponsesDir]) {
+      assertNoSymlink(paths.coordRoot, directory);
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      assertNoSymlink(paths.coordRoot, directory);
+    }
     // Checked against the mailbox root, not the coord root: the two trees are
     // deliberately disjoint, so containment must be asserted within each.
     assertNoSymlink(paths.completesRoot, runtime.completeDir);

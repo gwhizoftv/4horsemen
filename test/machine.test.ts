@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { decide } from "../src/machine.js";
-import { cursorsStateSchema, initialCursors, startStateSchema, type AcceptedSubmission } from "../src/state.js";
+import {
+  cursorsStateSchema,
+  initialCursors,
+  startStateSchema,
+  type AcceptedResponse,
+  type AcceptedSubmission,
+  type BallotBatch
+} from "../src/state.js";
 
 const now = "2026-08-11T12:00:00.000Z";
 const roster = ["claude", "codex", "cursor", "antigravity"];
 
 const start = startStateSchema.parse({
-  formatVersion: 3,
+  formatVersion: 4,
   issue: 1,
   issueSessionId: `issue-1:${"a".repeat(40)}`,
   baselineSha: "a".repeat(40),
@@ -44,6 +51,54 @@ const accepted = (
   ...(disposition === undefined ? {} : { disposition })
 });
 
+/**
+ * A ballot is an accepted response now, not an accepted Git submission, so the
+ * consensus routing fixtures build one of these instead.
+ */
+const responded = (
+  stepId: AcceptedResponse["stepId"],
+  agent: string,
+  round: number | null = null,
+  disposition?: AcceptedResponse["disposition"]
+): AcceptedResponse => ({
+  stepId,
+  agent,
+  actionId: `ce80f31a-6884-42cf-b0ff-b0fb27fc6cc${agent.charCodeAt(0) % 10}`,
+  round,
+  responseSha256: (agent.charCodeAt(0) % 10).toString().repeat(64),
+  rationale: "because",
+  acceptedAt: now,
+  ...(disposition === undefined ? {} : { disposition })
+});
+
+/** A published batch covering one gate/round, so the barrier is satisfied. */
+const publishedBatch = (
+  stepId: AcceptedResponse["stepId"],
+  round: number | null
+): BallotBatch => ({
+  kind:
+    stepId === "R3.plan-ballot"
+      ? "plan-ballot-batch"
+      : stepId === "R5.compare-ballot"
+        ? "comparison-ballot-batch"
+        : "consensus-ballot-batch",
+  stepId,
+  round,
+  activeRoster: [...roster],
+  inputSetHash: "a".repeat(64),
+  responseSha256s: ["b".repeat(64)],
+  paths: [".code-reviews/issue-1/consensus-ballot-claude-round-1.json"],
+  branch: "issue-1/coordinator-evidence",
+  parentSha: "c".repeat(40),
+  commitSha: "d".repeat(40),
+  status: "published",
+  attempts: 0,
+  error: null,
+  supersedes: null,
+  createdAt: now,
+  publishedAt: now
+});
+
 const implementationDerived = {
   kind: "implementation-selection" as const,
   algorithm: "plurality-active-roster-v1" as const,
@@ -51,6 +106,7 @@ const implementationDerived = {
   activeRoster: roster,
   inputs: [
     {
+      source: "git-submission" as const,
       kind: "implementation" as const,
       agent: "codex",
       submissionSha: "e".repeat(40),
@@ -109,7 +165,8 @@ describe("pure workflow machine", () => {
       ...base,
       issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 3 },
       derived: { ...base.derived, implementationSelection: implementationDerived },
-      accepted: roster.map((agent) => accepted("R6.ballot", agent, 3, agent === "codex" ? "revise" : "approve"))
+      responses: roster.map((agent) => responded("R6.ballot", agent, 3, agent === "codex" ? "revise" : "approve")),
+      ballotBatches: [publishedBatch("R6.ballot", 3)]
     });
     expect(decide({ start, cursors })).toEqual([
       {
@@ -136,6 +193,7 @@ describe("pure workflow machine", () => {
           activeRoster: roster,
           inputs: [
             {
+              source: "git-submission" as const,
               kind: "implementation",
               agent: "cursor",
               submissionSha: "e".repeat(40),
@@ -172,6 +230,7 @@ describe("pure workflow machine", () => {
           activeRoster: reviewed.originalRoster,
           inputs: [
             {
+              source: "git-submission" as const,
               kind: "plan",
               agent: "cursor",
               submissionSha: "e".repeat(40),
@@ -198,14 +257,16 @@ describe("pure workflow machine", () => {
       ...base,
       issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
       derived: { ...base.derived, implementationSelection: implementationDerived },
-      accepted: roster.map((agent) => accepted("R6.ballot", agent, 1, agent === "codex" ? "revise" : "approve"))
+      responses: roster.map((agent) => responded("R6.ballot", agent, 1, agent === "codex" ? "revise" : "approve")),
+      ballotBatches: [publishedBatch("R6.ballot", 1)]
     });
     expect(decide({ start, cursors: revision })).toEqual([
       { type: "advance-step", from: "R6.ballot", to: "R6.revise", round: 2 }
     ]);
     const escalation = cursorsStateSchema.parse({
       ...revision,
-      accepted: roster.map((agent) => accepted("R6.ballot", agent, 1, agent === "codex" ? "escalate" : "approve"))
+      responses: roster.map((agent) => responded("R6.ballot", agent, 1, agent === "codex" ? "escalate" : "approve")),
+      ballotBatches: [publishedBatch("R6.ballot", 1)]
     });
     expect(decide({ start, cursors: escalation })).toEqual([
       {
@@ -258,7 +319,7 @@ describe("pure workflow machine", () => {
           ...base.agents.claude,
           actionId,
           stepId: "R6.ballot",
-          evidenceId: "consensus-ballot-published",
+          evidenceId: "consensus-ballot-accepted",
           status: "verifying"
         }
       }
@@ -286,5 +347,110 @@ describe("pure workflow machine", () => {
         disposition: "approve"
       }
     ]);
+  });
+});
+
+describe("ballot publication barrier", () => {
+  const planCursors = (overrides: Partial<ReturnType<typeof initialCursors>> = {}) => {
+    const base = initialCursors(start, now);
+    return cursorsStateSchema.parse({
+      ...base,
+      issueCursor: { stepId: "R3.plan-ballot", gateId: "gate-3-selection", round: null },
+      accepted: roster.map((agent) => accepted("R2.plan", agent)),
+      ...overrides
+    });
+  };
+
+  it("asks for publication rather than waiting once the denominator closes", () => {
+    // The barrier has to be a decision, not a `wait`: the run loop acts only on
+    // non-`wait` decisions, so a barrier that merely waited would never produce
+    // the batch it was waiting for and the issue would stall forever.
+    const cursors = planCursors({
+      responses: roster.map((agent) => responded("R3.plan-ballot", agent))
+    });
+    expect(decide({ start, cursors })).toEqual([
+      { type: "publish-ballot-batch", stepId: "R3.plan-ballot", round: null }
+    ]);
+  });
+
+  it("derives only after a batch covering that exact gate is on origin", () => {
+    const responses = roster.map((agent) => responded("R3.plan-ballot", agent));
+
+    // A batch that is pending, failed, or invalidated is not publication.
+    for (const status of ["pending", "failed", "invalidated"] as const) {
+      const cursors = planCursors({
+        responses,
+        ballotBatches: [{ ...publishedBatch("R3.plan-ballot", null), status }]
+      });
+      expect(decide({ start, cursors }), status).toEqual([
+        { type: "publish-ballot-batch", stepId: "R3.plan-ballot", round: null }
+      ]);
+    }
+
+    // Neither is a published batch for a different gate or round.
+    expect(
+      decide({
+        start,
+        cursors: planCursors({ responses, ballotBatches: [publishedBatch("R6.ballot", 1)] })
+      })
+    ).toEqual([{ type: "publish-ballot-batch", stepId: "R3.plan-ballot", round: null }]);
+
+    expect(
+      decide({
+        start,
+        cursors: planCursors({ responses, ballotBatches: [publishedBatch("R3.plan-ballot", null)] })
+      })
+    ).toEqual([{ type: "derive-plan-selection" }]);
+  });
+
+  it("holds escalation and revision routing behind the same barrier", () => {
+    const base = initialCursors(start, now);
+    const consensus = (
+      disposition: "revise" | "escalate",
+      batches: readonly ReturnType<typeof publishedBatch>[]
+    ) =>
+      cursorsStateSchema.parse({
+        ...base,
+        issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
+        derived: { ...base.derived, implementationSelection: implementationDerived },
+        responses: roster.map((agent) =>
+          responded("R6.ballot", agent, 1, agent === "codex" ? disposition : "approve")
+        ),
+        ballotBatches: [...batches]
+      });
+
+    // An outcome routed before its ballots reached origin would advance the
+    // workflow on evidence nobody can read afterwards.
+    for (const disposition of ["revise", "escalate"] as const) {
+      expect(decide({ start, cursors: consensus(disposition, []) }), disposition).toEqual([
+        { type: "publish-ballot-batch", stepId: "R6.ballot", round: 1 }
+      ]);
+    }
+    expect(decide({ start, cursors: consensus("revise", [publishedBatch("R6.ballot", 1)]) })).toEqual([
+      { type: "advance-step", from: "R6.ballot", to: "R6.revise", round: 2 }
+    ]);
+    expect(
+      decide({ start, cursors: consensus("escalate", [publishedBatch("R6.ballot", 1)]) })[0]?.type
+    ).toBe("owner-action-required");
+  });
+
+  it("does not publish while any active agent still owes a response", () => {
+    const cursors = planCursors({
+      responses: [responded("R3.plan-ballot", "claude")]
+    });
+    // An incomplete denominator prepares the missing action instead.
+    expect(decide({ start, cursors }).every((decision) => decision.type !== "publish-ballot-batch")).toBe(true);
+  });
+
+  it("refuses to count a pushed Git artifact as a ballot", () => {
+    // An agent that pushes a ballot-shaped file to its own branch has not voted.
+    const cursors = planCursors({
+      accepted: [
+        ...roster.map((agent) => accepted("R2.plan", agent)),
+        ...roster.map((agent) => accepted("R3.plan-ballot", agent))
+      ]
+    });
+    expect(decide({ start, cursors }).every((decision) => decision.type !== "publish-ballot-batch")).toBe(true);
+    expect(decide({ start, cursors }).every((decision) => decision.type !== "derive-plan-selection")).toBe(true);
   });
 });

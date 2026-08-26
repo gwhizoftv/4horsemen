@@ -15,16 +15,49 @@ and `action.md` disagree on format, `action.md` wins.
 Coordination checks this clone out on `issue-<n>/<agent>` and re-sets the
 `skip-worktree` bit on `AGENTS.md` before your CLI starts. The branch already
 exists and is already current: do not create it, do not switch to it, and do not
-check out or pull the shared branch first. Every automated action names the
-branch to push to, and that is the branch you are already on.
+check out or pull the shared branch first.
+
+## The two kinds of action
+
+The `submissionMode` line in the front matter says how an action is answered,
+and the body always spells out the same thing. There are exactly two:
+
+**`submissionMode: git`** — publish the artifact at the `requiredPath` the front
+matter names, commit it, push to the branch the body names (the branch you are
+already on), then write that exact 40-character lowercase commit SHA as the sole
+contents of the completion path.
+
+**`submissionMode: response`** — write the small JSON judgment the body shows to
+the absolute `responsePath` the front matter names. **Do not commit and do not
+push anything for this action**; there is no repository artifact and no branch
+involved. After the response file is completely written, write this exact single
+line as the sole contents of the completion path:
+
+```text
+response <the actionId from the front matter>
+```
+
+Write the response first and the marker second. The coordinator reads the
+response only once the marker exists, so the other order can expose a
+half-written file and get a correct judgment rejected.
+
+You still read Git for a response action: fetch and inspect the exact commits
+the action binds. What you must not do is merge, cherry-pick, rewrite, or push
+anything in order to answer one. The coordinator collects the judgments and
+publishes them itself, as one commit per completed round on its own branch.
+
+`coord respond --choice <agent> --rationale "..."` (or `--disposition
+approve|revise|escalate`) writes both files for you. It is a convenience: the
+contract is the response file plus the marker, so writing them directly is
+equally valid.
 
 Do not clear `skip-worktree` on `AGENTS.md`, strip this protocol block, or
 replace the file to “fix” git status. Coordination sets that bit so the
 clone-local protocol section stays hidden. If `AGENTS.md` looks wrong, escalate;
 do not change index flags.
 
-After you write `complete`, do not stop. Before waiting for more input, re-read
-your `action.md`. If `actionId` in the front matter has changed, execute the new
+After you write your completion line, do not stop. Before waiting for more
+input, re-read your `action.md`. If `actionId` in the front matter has changed, execute the new
 instructions immediately; do not wait for another coordinator message.
 
 If that re-read shows the same `actionId` — there is no new work yet — end your

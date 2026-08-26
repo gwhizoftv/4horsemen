@@ -24,12 +24,12 @@ const EVIDENCE_IDS: readonly EvidenceId[] = [
   "join-published",
   "plan-published",
   "review-published",
-  "plan-ballot-published",
+  "plan-ballot-accepted",
   "implementation-pinned",
   "comparison-published",
-  "comparison-ballot-published",
+  "comparison-ballot-accepted",
   "revision-pinned",
-  "consensus-ballot-published",
+  "consensus-ballot-accepted",
   "finalization-verified"
 ];
 
@@ -118,12 +118,12 @@ const AGENT_FACING_SUBJECT: Readonly<Record<EvidenceId, string>> = {
   "join-published": "the participation-readiness artifact",
   "plan-published": "the plan",
   "review-published": "the plan review",
-  "plan-ballot-published": "the plan ballot",
+  "plan-ballot-accepted": "the plan ballot",
   "implementation-pinned": "the implementation signal",
   "comparison-published": "the comparison",
-  "comparison-ballot-published": "the comparison ballot",
+  "comparison-ballot-accepted": "the comparison ballot",
   "revision-pinned": "the revision signal",
-  "consensus-ballot-published": "the consensus ballot",
+  "consensus-ballot-accepted": "the consensus ballot",
   "finalization-verified": "the finalization signal"
 };
 

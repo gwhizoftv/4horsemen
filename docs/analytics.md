@@ -398,6 +398,16 @@ It reports four metrics:
   duration. Per-agent waits pair each `intent-seen` with the immediately
   preceding unmatched `nudged` for the same `(agent, actionId)`; the displayed
   median uses the upper middle value, matching the issue-76 acceptance table.
+- **Ballot response wait** — the same pairing, but terminated by
+  `response-accepted` rather than `intent-seen`, so a ballot's think time is
+  measured to the point the judgment was actually accepted. A ballot emits no
+  `intent-seen`, so it never appears in the Git wait above.
+- **Coordinator publication** — `ballot-batch-pending` to
+  `ballot-batch-published`, keyed by the exact persisted commit SHA, plus a
+  count of `ballot-batch-failed` events. Reported apart from agent wait on
+  purpose: a slow agent is a prompt or model problem, a slow publication is a
+  network or Git problem, and folding retries into agent wait would blame agents
+  for the coordinator's own round-trips.
 - **Token count** — `input`, `output`, `cacheRead`, `cacheWrite`, and
   `reasoning` when the vendor reports it. Claude uses de-duplicated per-message
   `usage`. Codex uses `last_token_usage` deltas and never sums cumulative

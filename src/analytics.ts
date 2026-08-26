@@ -29,6 +29,22 @@ export type WaitAnalytics = {
   maxMs: number | null;
 };
 
+/**
+ * How long the coordinator itself spent turning closed ballot gates into origin
+ * commits.
+ *
+ * Reported apart from agent wait because the two have different owners and
+ * different remedies: a slow agent is a prompt or model problem, while a slow
+ * publication is a network or Git problem. Folding publication retries into
+ * agent wait would blame agents for the coordinator's own round-trips.
+ */
+export type PublicationAnalytics = {
+  count: number;
+  medianMs: number | null;
+  maxMs: number | null;
+  failures: number;
+};
+
 export type PhaseUsageAnalytics = {
   phaseIndex: number;
   phase: string;
@@ -67,6 +83,10 @@ export type AnalyticsReport = {
   };
   phases: PhaseAnalytics[];
   waits: WaitAnalytics[];
+  /** Agent think time for private ballots: nudged to response accepted. */
+  responseWaits: WaitAnalytics[];
+  /** Coordinator publication time: batch frozen to batch on origin. */
+  publications: PublicationAnalytics;
   usage: {
     agents: AgentUsageAnalytics[];
     tokenTotal: TokenUsage | null;
@@ -237,6 +257,76 @@ const deriveActionTurns = (journal: readonly JournalEvent[], phases: readonly Ph
     });
   }
   return turns;
+};
+
+/**
+ * Nudge-to-acceptance for response actions.
+ *
+ * Keyed the same way as `deriveWaits` but terminated by `response-accepted`
+ * rather than `intent-seen`, so a ballot's think time is measured to the point
+ * the judgment was actually accepted rather than to the moment a marker
+ * appeared.
+ */
+const deriveResponseWaits = (
+  roster: readonly string[],
+  journal: readonly JournalEvent[]
+): WaitAnalytics[] => {
+  const waits = new Map<string, number[]>();
+  for (const agent of roster) waits.set(agent, []);
+  const pending = new Map<string, number>();
+  for (const event of journal) {
+    if (event.actionId === undefined || event.agent === undefined) continue;
+    const key = `${event.agent}\u0000${event.actionId}`;
+    if (event.type === "nudged") {
+      const at = milliseconds(event.at);
+      if (at !== null) pending.set(key, at);
+    } else if (event.type === "response-accepted") {
+      const from = pending.get(key);
+      const to = milliseconds(event.at);
+      if (from !== undefined && to !== null && to >= from) {
+        const values = waits.get(event.agent) ?? [];
+        values.push(to - from);
+        waits.set(event.agent, values);
+        pending.delete(key);
+      }
+    }
+  }
+  return [...waits.entries()]
+    .map(([agent, values]) => ({
+      agent,
+      count: values.length,
+      medianMs: median(values),
+      maxMs: values.length === 0 ? null : Math.max(...values)
+    }))
+    .sort((left, right) => left.agent.localeCompare(right.agent));
+};
+
+const derivePublications = (journal: readonly JournalEvent[]): PublicationAnalytics => {
+  const durations: number[] = [];
+  const pending = new Map<string, number>();
+  let failures = 0;
+  for (const event of journal) {
+    const commitSha = typeof event.details.commitSha === "string" ? event.details.commitSha : null;
+    if (event.type === "ballot-batch-pending" && commitSha !== null) {
+      const at = milliseconds(event.at);
+      if (at !== null) pending.set(commitSha, at);
+    } else if (event.type === "ballot-batch-published" && commitSha !== null) {
+      const from = pending.get(commitSha);
+      const to = milliseconds(event.at);
+      if (from !== undefined && to !== null && to >= from) {
+        durations.push(to - from);
+        pending.delete(commitSha);
+      }
+    } else if (event.type === "ballot-batch-failed") {
+      failures += 1;
+    }
+  }
+  return {
+    count: durations.length,
+    medianMs: median(durations),
+    maxMs: durations.length === 0 ? null : Math.max(...durations),
+    failures
+  };
 };
 
 const deriveWaits = (roster: readonly string[], journal: readonly JournalEvent[]): WaitAnalytics[] => {
@@ -517,6 +607,8 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
     },
     phases,
     waits: deriveWaits(roster, input.journal),
+    responseWaits: deriveResponseWaits(roster, input.journal),
+    publications: derivePublications(input.journal),
     usage
   };
 };
@@ -555,7 +647,19 @@ export const renderAnalytics = (report: AnalyticsReport): string => {
     ...report.waits.map(
       (wait) =>
         `- ${wait.agent}: count=${wait.count} median=${wait.medianMs === null ? "unavailable" : `${(wait.medianMs / 1000).toFixed(1)}s`} max=${wait.maxMs === null ? "unavailable" : `${(wait.maxMs / 1000).toFixed(1)}s`}`
-    )
+    ),
+    "",
+    "Ballot response wait (nudged -> response accepted)",
+    ...report.responseWaits.map(
+      (wait) =>
+        `- ${wait.agent}: count=${wait.count} median=${wait.medianMs === null ? "unavailable" : `${(wait.medianMs / 1000).toFixed(1)}s`} max=${wait.maxMs === null ? "unavailable" : `${(wait.maxMs / 1000).toFixed(1)}s`}`
+    ),
+    "",
+    "Coordinator ballot evidence publication (batch frozen -> pushed to origin)",
+    `- count=${report.publications.count}` +
+      ` median=${report.publications.medianMs === null ? "unavailable" : `${(report.publications.medianMs / 1000).toFixed(1)}s`}` +
+      ` max=${report.publications.maxMs === null ? "unavailable" : `${(report.publications.maxMs / 1000).toFixed(1)}s`}` +
+      ` failures=${report.publications.failures}`
   ];
   if (report.usage !== null) {
     lines.push("", "Token count");

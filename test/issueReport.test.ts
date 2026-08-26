@@ -8,7 +8,7 @@ const impl = "e".repeat(40);
 
 const start = (policy: StartState["prPolicy"]): StartState =>
   ({
-    formatVersion: 3,
+    formatVersion: 4,
     issue: 1,
     issueSessionId: `issue-1:${"a".repeat(40)}`,
     baselineSha: "a".repeat(40),
@@ -34,10 +34,13 @@ const start = (policy: StartState["prPolicy"]): StartState =>
 
 const complete = (overrides: Partial<CursorsState["publication"]> = {}): CursorsState =>
   ({
-    formatVersion: 3,
+    formatVersion: 4,
     stateRevision: 1,
     issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
     activeRoster: ["cursor"],
+    responses: [],
+    ballotBatches: [],
+    evidence: { branch: null, tip: null },
     droppedAgents: [],
     derived: {
       planSelection: null,
@@ -48,6 +51,7 @@ const complete = (overrides: Partial<CursorsState["publication"]> = {}): Cursors
         activeRoster: ["cursor"],
         inputs: [
           {
+            source: "git-submission" as const,
             kind: "implementation",
             agent: "cursor",
             submissionSha: "c".repeat(40),
@@ -131,5 +135,61 @@ describe("issue report", () => {
     expect(renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle)).toContain(
       "Agent cursor: none / queued / healthy, pending=2, background-active"
     );
+  });
+});
+
+describe("ballot evidence in the issue report", () => {
+  it("names the evidence branch and tip without leaking any pending judgment", () => {
+    const cursors = complete();
+    const withEvidence = {
+      ...cursors,
+      evidence: { branch: "issue-1/coordinator-evidence", tip: "e".repeat(40) },
+      responses: [
+        {
+          stepId: "R3.plan-ballot" as const,
+          agent: "cursor",
+          actionId: "179da8c7-ae22-47eb-b6eb-211ceea6b732",
+          round: null,
+          responseSha256: "c".repeat(64),
+          choice: "cursor",
+          rationale: "a rationale that must not reach ordinary status output",
+          acceptedAt: "2026-08-13T00:00:00.000Z"
+        }
+      ],
+      ballotBatches: [
+        {
+          kind: "plan-ballot-batch" as const,
+          stepId: "R3.plan-ballot" as const,
+          round: null,
+          activeRoster: ["cursor"],
+          inputSetHash: "d".repeat(64),
+          responseSha256s: ["c".repeat(64)],
+          paths: [".plans/issue-1/ballot-cursor.json"],
+          branch: "issue-1/coordinator-evidence",
+          parentSha: "a".repeat(40),
+          commitSha: "e".repeat(40),
+          status: "published" as const,
+          attempts: 0,
+          error: null,
+          supersedes: null,
+          createdAt: "2026-08-13T00:00:00.000Z",
+          publishedAt: "2026-08-13T00:00:00.000Z"
+        }
+      ]
+    } as CursorsState;
+
+    const report = renderIssueReport(start("coord-open-unmerged"), withEvidence);
+    expect(report).toContain("Evidence branch: issue-1/coordinator-evidence");
+    expect(report).toContain(`Evidence tip: ${"e".repeat(40)}`);
+    expect(report).toContain("Ballot evidence commits: 1");
+    // Judgment is never ordinary status output, published or not.
+    expect(report).not.toContain("must not reach ordinary status output");
+    expect(report).not.toContain("choice");
+  });
+
+  it("says nothing has been published yet when no batch has reached origin", () => {
+    const report = renderIssueReport(start("coord-open-unmerged"), complete());
+    expect(report).toContain("Evidence tip: (nothing published yet)");
+    expect(report).toContain("Ballot evidence commits: 0");
   });
 });

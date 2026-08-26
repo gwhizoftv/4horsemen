@@ -8,7 +8,7 @@ can carry.
 | --- | --- | --- |
 | Delivery readiness | tmux pane scrape (`harnessLooksReady`, `harnessPromptReadiness`) | whether it is safe to type into the pane |
 | Observability | vendor lifecycle hooks (`SessionStart`, prompt-submit, `Stop`) | whether a second send would be a duplicate |
-| Workflow truth | the `complete` file and the pushed commit | whether the work actually happened |
+| Workflow truth | the `complete` file, plus the pushed commit or the accepted response | whether the work actually happened |
 
 ## The three rules
 
@@ -24,10 +24,18 @@ may be retried whenever the scrape becomes ready. After a send succeeds, another
 send needs `decideLifecycleNudge` to return `send`, or the lost-delivery
 recovery below.
 
-**Workflow truth outranks both.** `complete` plus a pushed commit proves the
-action arrived, whatever the other two layers believe. An action that reached
-workflow completion is never marked degraded, and completing one clears a
-degraded alert already raised against it.
+**Workflow truth outranks both.** For a Git action, `complete` plus a pushed
+commit proves it arrived. For a ballot, `complete` carries
+`response <action-id>` instead, and the proof is the accepted response: the
+marker alone is not truth, because a response can still be rejected as stale,
+malformed, or ineligible. Whichever form applies, it outranks whatever the other
+two layers believe. An action that reached workflow completion is never marked
+degraded, and completing one clears a degraded alert already raised against it.
+
+A ballot gate has a second, later truth that belongs to the coordinator rather
+than to any agent: the gate advances only once the canonical batch carrying
+those judgments is durably on origin. Accepted responses are agent intent;
+the published evidence commit is what the workflow moves on.
 
 ## Positive evidence is additive
 

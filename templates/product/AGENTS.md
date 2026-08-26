@@ -15,9 +15,16 @@ git obligations. This file describes the rules that apply to **agent clones**
 - `<agent>/<name>` — an agent-owned scratch branch for owner-driven manual work.
 - `issue-<n>/final` — the consensus branch, updated only by merging a reviewed
   pull request.
+- `issue-<n>/coordinator-evidence` — written only by the coordination driver,
+  which publishes agents' ballot judgments there as one commit per completed
+  round. No agent commits to it, and it is never merged into a pull request.
 
 ## Rules enforced in agent clones
 
+- Some automated actions are answered by writing a small JSON judgment to the
+  absolute path the action names, plus a one-line completion marker — with no
+  commit and no push at all. The action's `submissionMode` says which kind it
+  is; follow what the action in front of you says.
 - Commit only on branches carrying your own agent name.
 - Commit messages start with your agent label, e.g. `Claude: fix login redirect`.
 - No `--no-verify`, no force-push, no editing `core.hooksPath` to get around a

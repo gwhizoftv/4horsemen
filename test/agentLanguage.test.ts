@@ -151,6 +151,7 @@ const seedAcceptedSubmissions = (paths: ReturnType<typeof fixture>) => {
           activeRoster: current.activeRoster,
           inputs: [
             {
+              source: "git-submission" as const,
               kind: "plan",
               agent: "claude",
               submissionSha: "1".repeat(40),
@@ -169,6 +170,7 @@ const seedAcceptedSubmissions = (paths: ReturnType<typeof fixture>) => {
           activeRoster: current.activeRoster,
           inputs: [
             {
+              source: "git-submission" as const,
               kind: "implementation",
               agent: "codex",
               submissionSha: "4".repeat(40),
@@ -248,9 +250,13 @@ describe("agent-facing language", () => {
     seedAcceptedSubmissions(paths);
     const rendered = renderEveryStep(paths);
     // Prove the seeding actually produced bound citations, so this is not a
-    // second pass over the same empty-input bodies.
-    expect(rendered.get("R3.plan-ballot")).toContain('"artifact": "plan-ballot"');
+    // second pass over the same empty-input bodies. A ballot action still binds
+    // the exact commits to read; what it no longer carries is a Git artifact
+    // envelope for the agent to copy.
     expect(rendered.get("R3.plan-ballot")).toContain("1".repeat(40));
+    expect(rendered.get("R3.plan-ballot")).toContain('"choice"');
+    expect(rendered.get("R3.plan-ballot")).not.toContain('"artifact"');
+    expect(rendered.get("R4.implement")).toContain('"artifact": "implementation-ready"');
     for (const [stepId, body] of rendered) {
       expect(findAgentLanguageViolations(body), stepId).toEqual([]);
     }

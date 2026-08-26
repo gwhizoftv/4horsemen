@@ -5,6 +5,7 @@ describe("orderScaffold", () => {
   it("renders a filled join JSON scaffold", () => {
     const ctx = {
       stepId: "R1.join" as const,
+      actionId: "179da8c7-ae22-47eb-b6eb-211ceea6b732",
       issue: 1,
       issueSessionId: "issue-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       agent: "antigravity",
@@ -32,6 +33,7 @@ describe("orderScaffold", () => {
   it("renders JSON for implementation-ready", () => {
     const rendered = renderArtifactScaffold({
       stepId: "R4.implement",
+      actionId: "179da8c7-ae22-47eb-b6eb-211ceea6b732",
       issue: 1,
       issueSessionId: "s",
       agent: "claude",
@@ -49,6 +51,7 @@ describe("orderScaffold", () => {
   it("lists required plan headings for R2.plan", () => {
     const rendered = renderArtifactScaffold({
       stepId: "R2.plan",
+      actionId: "179da8c7-ae22-47eb-b6eb-211ceea6b732",
       issue: 1,
       issueSessionId: "s",
       agent: "claude",
@@ -71,6 +74,7 @@ describe("orderScaffold", () => {
   it("lists required review headings for R3.review", () => {
     const rendered = renderArtifactScaffold({
       stepId: "R3.review",
+      actionId: "179da8c7-ae22-47eb-b6eb-211ceea6b732",
       issue: 1,
       issueSessionId: "s",
       agent: "codex",
@@ -89,6 +93,7 @@ describe("orderScaffold", () => {
   it("lists required comparison headings for R5.compare", () => {
     const rendered = renderArtifactScaffold({
       stepId: "R5.compare",
+      actionId: "179da8c7-ae22-47eb-b6eb-211ceea6b732",
       issue: 1,
       issueSessionId: "s",
       agent: "cursor",

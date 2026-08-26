@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { gitShaSchema, repositoryPathSchema } from "./protocol.js";
 import { validatePhasePin, type PinValidationResult } from "./pinValidation.js";
 
@@ -21,10 +21,32 @@ const repositoryRedirectors = new Set([
   "GIT_DISCOVERY_ACROSS_FILESYSTEM"
 ]);
 
+/**
+ * Ambient identity, stripped alongside the repository redirectors.
+ *
+ * `GIT_AUTHOR_*` and `GIT_COMMITTER_*` outrank `-c user.name` / `-c user.email`,
+ * so a coordinator running anywhere those are exported — a git hook, a CI step,
+ * a shell that set them once — would stamp that identity onto its own evidence
+ * commits. The whole point of a coordinator-authored commit is that it is
+ * attributable to the driver and not to any person or voting agent, so the
+ * identity has to come from this process rather than from its environment.
+ */
+const identityOverrides = ["NAME", "EMAIL", "DATE"].flatMap((field) => [
+  `GIT_AUTHOR_${field}`,
+  `GIT_COMMITTER_${field}`
+]);
+
 export const hermeticGitEnv = (source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = { ...source, GIT_TERMINAL_PROMPT: "0" };
   for (const key of Object.keys(env)) {
-    if (repositoryRedirectors.has(key) || key === "GIT_CONFIG" || key.startsWith("GIT_CONFIG_")) delete env[key];
+    if (
+      repositoryRedirectors.has(key) ||
+      identityOverrides.includes(key) ||
+      key === "GIT_CONFIG" ||
+      key.startsWith("GIT_CONFIG_")
+    ) {
+      delete env[key];
+    }
   }
   return env;
 };
@@ -170,6 +192,107 @@ export class BareMirror {
   async removeWorktree(target: string): Promise<void> {
     await this.git(["worktree", "remove", "--force", target], true);
     await this.git(["worktree", "prune"], true);
+  }
+
+  /**
+   * Origin's current tip for a branch, or null when the branch does not exist.
+   *
+   * `fetchBranch` cannot answer this: a missing remote ref and a network
+   * failure both come back as `ok: false`, and guessing between them from the
+   * stderr text is exactly the kind of inference that would make a transient
+   * outage look like "the evidence branch has not been created yet" and reset
+   * the parent to the baseline.
+   */
+  async remoteTip(
+    branch: string
+  ): Promise<{ ok: true; sha: string | null } | { ok: false; transient: boolean; error: string }> {
+    if (!branchPattern.test(branch) || branch.startsWith("-") || branch.includes("..")) {
+      return { ok: false, transient: false, error: `invalid branch name ${branch}` };
+    }
+    const result = await this.git(["ls-remote", "--exit-code", "origin", `refs/heads/${branch}`], true);
+    // 2 is ls-remote's documented "no matching refs": a definite answer, not a
+    // failure.
+    if (result.exitCode === 2) return { ok: true, sha: null };
+    if (result.exitCode !== 0) {
+      return { ok: false, transient: isTransientGitFailure(result.stderr), error: result.stderr };
+    }
+    const sha = result.stdout.toString("utf8").split(/\s+/)[0] ?? "";
+    if (!/^[0-9a-f]{40}$/.test(sha)) {
+      return { ok: false, transient: false, error: `unreadable ls-remote output for ${branch}` };
+    }
+    return { ok: true, sha };
+  }
+
+  /**
+   * Create one commit in a coordinator-owned detached worktree.
+   *
+   * A worktree rather than `hash-object`/`mktree` plumbing: those read their
+   * input on stdin, which `runGitCommand` opens as `ignore`, so `mktree` would
+   * see EOF, return the *empty tree*, and produce a commit that pushes
+   * successfully while containing none of the ballots. A worktree also supplies
+   * the index that nested canonical paths need.
+   *
+   * The worktree is always inside the coordinator runtime and never an agent
+   * clone, and it is removed on every path including failure.
+   */
+  async createEvidenceCommit(input: {
+    worktree: string;
+    parentSha: string;
+    files: readonly { path: string; content: string }[];
+    message: string;
+    identity: { name: string; email: string };
+  }): Promise<string> {
+    gitShaSchema.parse(input.parentSha);
+    if (input.files.length === 0) throw new Error("An evidence commit must contain at least one ballot.");
+    for (const file of input.files) repositoryPathSchema.parse(file.path);
+    await this.materializeWorktree(input.worktree, input.parentSha);
+    try {
+      for (const file of input.files) {
+        const absolute = join(input.worktree, file.path);
+        mkdirSync(dirname(absolute), { recursive: true });
+        writeFileSync(absolute, file.content, "utf8");
+      }
+      const paths = input.files.map((file) => file.path);
+      const added = await this.runner(["add", "--", ...paths], { cwd: input.worktree });
+      if (added.exitCode !== 0) {
+        throw new GitCommandError(`cannot stage evidence ballots: ${added.stderr}`, added, false);
+      }
+      const committed = await this.runner(
+        [
+          "-c",
+          `user.name=${input.identity.name}`,
+          "-c",
+          `user.email=${input.identity.email}`,
+          "commit",
+          "-m",
+          input.message
+        ],
+        { cwd: input.worktree }
+      );
+      if (committed.exitCode !== 0) {
+        throw new GitCommandError(`cannot create the evidence commit: ${committed.stderr}`, committed, false);
+      }
+      const head = await this.runner(["rev-parse", "--verify", "HEAD^{commit}"], { cwd: input.worktree });
+      if (head.exitCode !== 0) {
+        throw new GitCommandError(`cannot read the evidence commit: ${head.stderr}`, head, false);
+      }
+      const sha = head.stdout.toString("utf8").trim();
+      gitShaSchema.parse(sha);
+      // An empty tree is what a broken commit path produces while every exit
+      // code still reports success, so the created object is proved to contain
+      // the ballots rather than assumed to.
+      const listed = await this.git(["ls-tree", "-r", "--name-only", sha], true);
+      if (listed.exitCode !== 0) {
+        throw new GitCommandError(`cannot inspect the evidence commit: ${listed.stderr}`, listed, false);
+      }
+      const present = new Set(listed.stdout.toString("utf8").split("\n").filter((line) => line !== ""));
+      const missing = paths.filter((path) => !present.has(path));
+      if (missing.length > 0) throw new Error(`The evidence commit is missing ${missing.join(", ")}.`);
+      return sha;
+    } finally {
+      await this.removeWorktree(input.worktree);
+      rmSync(input.worktree, { recursive: true, force: true });
+    }
   }
 
   async publishBranch(sha: string, branch: string): Promise<void> {

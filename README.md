@@ -1,9 +1,18 @@
 # coordination
 
 `coordination` is the standalone owner-side workflow driver. It gives each
-agent one concrete action, verifies the exact pushed commit named by the agent,
-and advances only when the required origin-backed evidence passes. It never
-merges a pull request.
+agent one concrete action and advances only when the required origin-backed
+evidence passes. It never merges a pull request.
+
+Actions come in two kinds. Most are answered in Git: the agent publishes an
+artifact, pushes, and names the exact commit, which the driver then verifies.
+Ballots are answered privately instead — the agent writes only its choice or
+disposition and a one-sentence rationale to a runtime path outside every clone,
+with no commit and no push. The driver validates those judgments, holds them
+until the round closes, and then publishes them itself as one commit per
+completed round on a dedicated `issue-<n>/coordinator-evidence` branch. Both
+kinds end up as durable evidence on origin; only the second removes the
+mechanical Git work from the agent.
 
 ## Happy path
 
@@ -169,7 +178,15 @@ Explicit forms remain available:
 COORD_AGENT=codex coord next --issue 42 --coord-root /path/to/runtime
 ```
 
-The action names an absolute `complete` path. After pushing the commit that
-contains the required artifact, the agent writes that exact lowercase 40-hex
-SHA—or `commit <sha>`—to `complete`. Branch-tip movement alone never completes
-an action.
+The action names an absolute `complete` path, and its `submissionMode` says what
+to write there.
+
+For `submissionMode: git`, the agent pushes the commit containing the required
+artifact and writes that exact lowercase 40-hex SHA—or `commit <sha>`—to
+`complete`. Branch-tip movement alone never completes an action.
+
+For `submissionMode: response`, the agent writes its judgment to the absolute
+`responsePath` the action names and then the single line
+`response <action-id>` to `complete`. `coord respond --choice <agent>
+--rationale "..."` (or `--disposition approve|revise|escalate`) writes both.
+Neither form can satisfy the other kind of action.

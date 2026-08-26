@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeAction } from "../src/action.js";
 import { automationDigestMaterial, runCli, type CliRunLoop } from "../src/cli.js";
-import { agentRuntimePaths, issueRuntimePaths } from "../src/paths.js";
+import { agentResponsePath, agentRuntimePaths, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
 import {
   cursorsStateSchema,
@@ -345,6 +345,72 @@ describe("CLI", () => {
     expect(action).not.toContain("evidence:");
     expect(action).not.toContain("gate-");
     expect(readFileSync(runtime.action, "utf8")).toBe(action);
+
+    // `coord respond` is a convenience over the durable protocol, so it must
+    // refuse an action that is answered by pushing a commit.
+    await expect(
+      runCli(
+        [
+          "respond",
+          "--issue",
+          "1",
+          "--coord-root",
+          fixture.runtime,
+          "--agent",
+          "codex",
+          "--choice",
+          "codex",
+          "--rationale",
+          "x"
+        ],
+        { io: { stdout: () => undefined } }
+      )
+    ).resolves.not.toBe(0);
+
+    // On a ballot action it writes the response first and the marker second.
+    const ballotId = "179da8c7-ae22-47eb-b6eb-211ceea6b732";
+    writeAction(
+      paths.coordRoot,
+      runtime.action,
+      buildOrder(paths, start, cursors, "codex", "R3.plan-ballot", null, ballotId)
+    );
+    expect(
+      await runCli(
+        [
+          "respond",
+          "--issue",
+          "1",
+          "--coord-root",
+          fixture.runtime,
+          "--agent",
+          "codex",
+          "--choice",
+          "codex",
+          "--rationale",
+          "own plan is clearest"
+        ],
+        { io: { stdout: () => undefined } }
+      )
+    ).toBe(0);
+    expect(JSON.parse(readFileSync(agentResponsePath(paths, "codex", ballotId), "utf8"))).toEqual({
+      actionId: ballotId,
+      choice: "codex",
+      rationale: "own plan is clearest"
+    });
+    expect(readFileSync(runtime.complete, "utf8")).toBe(`response ${ballotId}\n`);
+
+    // Exactly one judgment field, and a bounded rationale.
+    for (const argv of [
+      ["--choice", "codex", "--disposition", "approve", "--rationale", "x"],
+      ["--rationale", "x"],
+      ["--choice", "codex", "--rationale", "x".repeat(1001)]
+    ]) {
+      await expect(
+        runCli(["respond", "--issue", "1", "--coord-root", fixture.runtime, "--agent", "codex", ...argv], {
+          io: { stdout: () => undefined }
+        })
+      ).resolves.not.toBe(0);
+    }
   });
 
   it("prints chosen pin and PR fields from coord status", async () => {
@@ -713,6 +779,7 @@ describe("CLI", () => {
             activeRoster: current.activeRoster,
             inputs: [
               {
+                source: "git-submission" as const,
                 kind: "implementation",
                 agent: "cursor",
                 submissionSha: "d".repeat(40),
@@ -770,6 +837,7 @@ describe("CLI", () => {
             activeRoster: current.activeRoster,
             inputs: [
               {
+                source: "git-submission" as const,
                 kind: "plan",
                 agent: "codex",
                 submissionSha: "1".repeat(40),
@@ -791,15 +859,38 @@ describe("CLI", () => {
             path: `.plans/issue-1/plan-${agent}.md`,
             acceptedAt: now
           })),
-          ...current.activeRoster.map((agent, index) => ({
+        ],
+        // Ballots are accepted responses now, and a decision may not be derived
+        // until the batch carrying them is on origin.
+        responses: current.activeRoster.map((agent, index) => ({
+          stepId: "R3.plan-ballot" as const,
+          agent,
+          actionId: `ce80f31a-6884-42cf-b0ff-b0fb27fc6cc${index}`,
+          round: null,
+          responseSha256: String(index + 4).repeat(64),
+          choice: agent === "claude" ? "claude" : "codex",
+          rationale: "clearest plan",
+          acceptedAt: now
+        })),
+        ballotBatches: [
+          {
+            kind: "plan-ballot-batch" as const,
             stepId: "R3.plan-ballot" as const,
-            agent,
             round: null,
-            submissionSha: String(index + 4).repeat(40),
-            choice: agent === "claude" ? "claude" : "codex",
-            path: `.plans/issue-1/ballot-${agent}.json`,
-            acceptedAt: now
-          }))
+            activeRoster: current.activeRoster,
+            inputSetHash: "e".repeat(64),
+            responseSha256s: ["4".repeat(64)],
+            paths: [".plans/issue-1/ballot-codex.json"],
+            branch: "issue-1/coordinator-evidence",
+            parentSha: "a".repeat(40),
+            commitSha: "b".repeat(40),
+            status: "published" as const,
+            attempts: 0,
+            error: null,
+            supersedes: null,
+            createdAt: now,
+            publishedAt: now
+          }
         ],
         updatedAt: now
       })

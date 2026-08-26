@@ -586,6 +586,10 @@ describe("completion mailbox wiring", () => {
       const clone = result.clones[index] as string;
       const drop = join(completesRoot, "issue-17", agent);
       mkdirSync(drop, { recursive: true });
+      // The second grant: this agent's own response directory, a child of its
+      // runtime root so `action.md` beside it stays unwritable.
+      const responses = join(fixture.coordRoot, "issue-17", "agents", agent, "responses");
+      mkdirSync(responses, { recursive: true });
       const capture = join(fixture.workspaceRoot, `${agent}.args`);
       // /bin/bash, not `bash`: macOS ships 3.2, where expanding an empty array
       // as "${a[@]}" under `set -u` aborts. A test that resolves a newer bash
@@ -597,11 +601,19 @@ describe("completion mailbox wiring", () => {
         stdio: "ignore"
       });
       const argv = readFileSync(capture, "utf8").trimEnd().split("\n");
-      expect(argv).toEqual([...expected[agent], "--add-dir", drop]);
-      // Never the runtime, never the whole mailbox, never a peer's drop.
+      expect(argv).toEqual([...expected[agent], "--add-dir", drop, "--add-dir", responses]);
+      // Never the runtime, never the whole mailbox, never a peer's drop, never
+      // this agent's own runtime root (which holds its action.md), and never
+      // the accepted-response archive that records what it already voted.
       expect(argv).not.toContain(fixture.coordRoot);
       expect(argv).not.toContain(completesRoot);
       expect(argv).not.toContain(join(completesRoot, "issue-17", agents[(index + 1) % agents.length]));
+      expect(argv).not.toContain(join(fixture.coordRoot, "issue-17"));
+      expect(argv).not.toContain(join(fixture.coordRoot, "issue-17", "agents", agent));
+      expect(argv).not.toContain(join(fixture.coordRoot, "issue-17", "agents", agent, "accepted-responses"));
+      expect(argv).not.toContain(
+        join(fixture.coordRoot, "issue-17", "agents", agents[(index + 1) % agents.length], "responses")
+      );
     }
 
     // Manual mode: no issue, so no grant — and the harness must still start.
@@ -612,6 +624,7 @@ describe("completion mailbox wiring", () => {
       env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_ISSUE: "", CAPTURE: manual },
       stdio: "ignore"
     });
+    // Manual mode grants neither directory.
     expect(readFileSync(manual, "utf8").trimEnd().split("\n")).toEqual(["--permission-mode", "auto"]);
   });
 

@@ -143,3 +143,36 @@ describe("GitHub issue snapshots", () => {
     ).toBe("Issue 112: coordinated implementation");
   });
 });
+
+describe("evidence provenance in the pull request body", () => {
+  it("names the branch and tip and refuses to call it an agent signature", () => {
+    const pr = formatFinalizationPullRequest({
+      issue: 110,
+      title: "Submit ballots through private runtime",
+      finalSha: "f".repeat(40),
+      draft: true,
+      evidenceBranch: "issue-110/coordinator-evidence",
+      evidenceTip: "e".repeat(40)
+    });
+    expect(pr.body).toContain("issue-110/coordinator-evidence");
+    expect(pr.body).toContain("e".repeat(40));
+    // The qualification is the point: a reader who took the commit for a
+    // cryptographic agent signature would over-trust it.
+    expect(pr.body).toContain("not a");
+    expect(pr.body).toContain("cryptographic agent signature");
+    expect(pr.body).toContain("not merged into this PR");
+    // The product PR still points only at the deletion-clean final pin.
+    expect(pr.body).toContain(`Final pin: ${"f".repeat(40)}`);
+  });
+
+  it("omits the evidence section entirely when nothing was published", () => {
+    const pr = formatFinalizationPullRequest({
+      issue: 110,
+      title: "Anything",
+      finalSha: "f".repeat(40),
+      draft: false
+    });
+    expect(pr.body).not.toContain("Ballot evidence");
+    expect(pr.body).toContain("Closes #110");
+  });
+});

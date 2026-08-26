@@ -69,6 +69,8 @@ describe("wipeIssue", () => {
       git(clone, "push", "-q", "-u", "origin", branch);
     }
     git(claude, "push", "-q", origin, "issue-9/claude:refs/heads/issue-9/claude-final");
+    // Coordinator-published ballot evidence, on its own reserved branch.
+    git(claude, "push", "-q", origin, "issue-9/claude:refs/heads/issue-9/coordinator-evidence");
     git(product, "fetch", "-q", "origin");
     git(product, "branch", "issue-9/claude", "origin/issue-9/claude");
     git(claude, "fetch", "-q", "origin");
@@ -106,6 +108,23 @@ describe("wipeIssue", () => {
     writeFileSync(join(claudeDrop, "complete"), `${"a".repeat(40)}\n`);
     writeFileSync(join(keptDrop, "complete"), `${"b".repeat(40)}\n`);
 
+    // The evidence branch survives an ordinary wipe, so a dry run with the
+    // explicit opt-in is what proves deletion is owner-driven rather than a
+    // side effect of routine recovery.
+    const optIn = await wipeIssue({
+      issue: 9,
+      config,
+      configPath,
+      coordRoot,
+      completesRoot,
+      deleteEvidence: true,
+      dryRun: true,
+      terminalCloser: null,
+      log: () => undefined
+    });
+    expect(optIn.keptEvidenceBranches).toEqual([]);
+    expect(optIn.deletedRemoteBranches).toContain("issue-9/coordinator-evidence");
+
     const outcome = await wipeIssue({
       issue: 9,
       config,
@@ -117,6 +136,13 @@ describe("wipeIssue", () => {
     });
 
     expect(outcome.resetClones).toEqual([claude, codex]);
+    // Retention is the default and is reported, so an owner can tell a kept
+    // audit trail from an unrecognized leftover.
+    expect(outcome.keptEvidenceBranches).toEqual(["issue-9/coordinator-evidence"]);
+    expect(outcome.deletedRemoteBranches).not.toContain("issue-9/coordinator-evidence");
+    expect(
+      git(origin, "rev-parse", "--verify", "--quiet", "refs/heads/issue-9/coordinator-evidence")
+    ).toMatch(/^[0-9a-f]{40}$/);
     expect(outcome.deletedRemoteBranches.sort()).toEqual([
       "issue-9/claude",
       "issue-9/claude-final",

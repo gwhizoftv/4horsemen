@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { clearCompletion, createActionId, readAction, readCompletion, writeAction } from "./action.js";
 import {
@@ -14,10 +14,24 @@ import {
   readAgentLifecycle
 } from "./agentLifecycle.js";
 import { evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
+import { archiveAcceptedResponse, clearAgentResponse, evaluateResponse } from "./ballotResponse.js";
+import {
+  COORDINATOR_IDENTITY,
+  buildBallotBatch,
+  resolveEvidenceBranch,
+  type BallotBatchPlan
+} from "./ballotPublication.js";
 import { verifyFinalization } from "./finalization.js";
-import { BareMirror, hermeticGitEnv } from "./mirror.js";
+import { BareMirror, GitCommandError, hermeticGitEnv } from "./mirror.js";
 import { renderArtifactScaffold } from "./orderScaffold.js";
-import { agentRuntimePaths, containedPath, type IssueRuntimePaths } from "./paths.js";
+import {
+  acceptedResponseArchivePath,
+  agentResponsePath,
+  agentRuntimePaths,
+  containedPath,
+  evidenceWorktreePath,
+  type IssueRuntimePaths
+} from "./paths.js";
 import { decide } from "./machine.js";
 import {
   appendJournal,
@@ -29,7 +43,9 @@ import {
   replaceCursor,
   requireStateMutation,
   StateConflictError,
+  type AcceptedResponse,
   type AcceptedSubmission,
+  type BallotBatch,
   type ConsensusDerived,
   type CursorsState,
   type DerivedInputCitation,
@@ -48,6 +64,7 @@ import {
   type EvidenceObservation,
   type InternalOrder,
   type MachineDecision,
+  type ResponseObservation,
   type WorkflowStepId
 } from "./steps.js";
 import { renderIssueReport } from "./issueReport.js";
@@ -175,13 +192,38 @@ const acceptedAt = (
       (round === undefined || submission.round === round)
   );
 
+/** Accepted private judgments at one step, restricted to the active roster. */
+export const responsesAt = (
+  cursors: CursorsState,
+  stepId: WorkflowStepId,
+  round?: number | null
+): AcceptedResponse[] =>
+  cursors.responses.filter(
+    (response) =>
+      response.stepId === stepId &&
+      cursors.activeRoster.includes(response.agent) &&
+      (round === undefined || response.round === round)
+  );
+
+/** The published batch covering one gate/round, if there is one. */
+export const publishedBatchFor = (
+  cursors: CursorsState,
+  stepId: WorkflowStepId,
+  round: number | null
+): BallotBatch | undefined =>
+  [...cursors.ballotBatches]
+    .reverse()
+    .find(
+      (batch) => batch.stepId === stepId && batch.round === round && batch.status === "published"
+    );
+
 export const deterministicWinner = (
   cursors: CursorsState,
   stepId: "R3.plan-ballot" | "R5.compare-ballot",
   eligible: readonly string[]
 ): string | null => {
   const counts = new Map<string, number>();
-  for (const submission of acceptedAt(cursors, stepId)) {
+  for (const submission of responsesAt(cursors, stepId)) {
     if (submission.choice === undefined || !eligible.includes(submission.choice)) continue;
     counts.set(submission.choice, (counts.get(submission.choice) ?? 0) + 1);
   }
@@ -207,8 +249,34 @@ export const deriveDecisionId = (
 
 const lengthPrefixed = (value: string): string => `${Buffer.byteLength(value, "utf8")}:${value}`;
 
+/**
+ * Both citation variants hash through one total function.
+ *
+ * The `source` discriminator is inside the hash, so a Git submission and a
+ * response can never collide even if every other field aliased; each variant
+ * contributes exactly the fields it actually has rather than padding to a
+ * common shape.
+ */
 const canonicalDerivedCitation = (citation: DerivedInputCitation): string =>
-  [citation.kind, citation.agent, citation.submissionSha, citation.path, citation.productPin ?? ""]
+  (citation.source === "git-submission"
+    ? [
+        citation.source,
+        citation.kind,
+        citation.agent,
+        citation.submissionSha,
+        citation.path,
+        citation.productPin ?? ""
+      ]
+    : [
+        citation.source,
+        citation.kind,
+        citation.agent,
+        citation.actionId,
+        citation.responseSha256,
+        citation.evidenceCommitSha,
+        citation.path
+      ]
+  )
     .map(lengthPrefixed)
     .join("");
 
@@ -238,6 +306,7 @@ export const computeDerivedInputSetHash = (
 };
 
 const submissionCitation = (submission: AcceptedSubmission, kind: DerivedInputKind): DerivedInputCitation => ({
+  source: "git-submission",
   kind,
   agent: submission.agent,
   submissionSha: submission.submissionSha,
@@ -245,9 +314,42 @@ const submissionCitation = (submission: AcceptedSubmission, kind: DerivedInputKi
   ...(submission.productPin === undefined ? {} : { productPin: submission.productPin })
 });
 
+/**
+ * Cite one ballot by both of the things that make it evidence: the digest of
+ * the private handoff the agent authored, and the coordinator commit that
+ * published it. The digest proves which judgment was accepted; the commit
+ * proves it is durable on origin.
+ */
+const responseCitation = (
+  response: AcceptedResponse,
+  kind: DerivedInputKind,
+  batch: BallotBatch
+): DerivedInputCitation => ({
+  source: "response",
+  kind,
+  agent: response.agent,
+  actionId: response.actionId,
+  responseSha256: response.responseSha256,
+  evidenceCommitSha: batch.commitSha,
+  path: STEP_DEFINITIONS[response.stepId].requiredPath(
+    batchIssueOf(batch),
+    response.agent,
+    response.round
+  )
+});
+
+/**
+ * The issue number a batch was published for, recovered from its own canonical
+ * paths so the citation path never has to be passed down separately.
+ */
+const batchIssueOf = (batch: BallotBatch): number => {
+  const matched = /issue-(\d+)\//.exec(batch.paths[0] ?? "");
+  return matched === null ? 0 : Number(matched[1]);
+};
+
 const hasCompleteActiveDenominator = (
   cursors: CursorsState,
-  submissions: readonly AcceptedSubmission[]
+  submissions: readonly { agent: string }[]
 ): boolean =>
   submissions.length === cursors.activeRoster.length &&
   cursors.activeRoster.every((agent) => submissions.some((submission) => submission.agent === agent));
@@ -259,13 +361,18 @@ export const computePlanSelectionDerived = (
 ): PlanSelectionDerived | null => {
   const plans = acceptedAt(cursors, "R2.plan");
   const planEligible = plans.map((submission) => submission.agent);
-  const ballots = acceptedAt(cursors, "R3.plan-ballot");
+  const ballots = responsesAt(cursors, "R3.plan-ballot");
   if (!hasCompleteActiveDenominator(cursors, ballots)) return null;
+  // The published batch is a precondition of the decision, not merely of the
+  // advance: a decision that cited responses which never reached origin would
+  // rest on evidence no one else can read.
+  const batch = publishedBatchFor(cursors, "R3.plan-ballot", null);
+  if (batch === undefined) return null;
   const winner = deterministicWinner(cursors, "R3.plan-ballot", planEligible);
   if (winner === null) return null;
   const inputs = [
     ...plans.map((submission) => submissionCitation(submission, "plan")),
-    ...ballots.map((submission) => submissionCitation(submission, "plan-ballot"))
+    ...ballots.map((response) => responseCitation(response, "plan-ballot", batch))
   ];
   const inputSetHash = computeDerivedInputSetHash("plan-selection", cursors.activeRoster, inputs);
   return {
@@ -288,15 +395,17 @@ export const computeImplementationSelectionDerived = (
 ): ImplementationSelectionDerived | null => {
   const implementations = acceptedAt(cursors, "R4.implement");
   const implementationEligible = implementations.map((submission) => submission.agent);
-  const ballots = acceptedAt(cursors, "R5.compare-ballot");
+  const ballots = responsesAt(cursors, "R5.compare-ballot");
   if (!hasCompleteActiveDenominator(cursors, ballots)) return null;
+  const batch = publishedBatchFor(cursors, "R5.compare-ballot", null);
+  if (batch === undefined) return null;
   const winner = deterministicWinner(cursors, "R5.compare-ballot", implementationEligible);
   if (winner === null) return null;
   const implementation = implementations.find((submission) => submission.agent === winner);
   if (implementation?.productPin === undefined) return null;
   const inputs = [
     ...implementations.map((submission) => submissionCitation(submission, "implementation")),
-    ...ballots.map((submission) => submissionCitation(submission, "comparison-ballot"))
+    ...ballots.map((response) => responseCitation(response, "comparison-ballot", batch))
   ];
   const inputSetHash = computeDerivedInputSetHash("implementation-selection", cursors.activeRoster, inputs);
   return {
@@ -324,13 +433,15 @@ export const computeConsensusDerived = (
     (submission) => submission.agent === cursors.derived.implementationSelection?.reviser
   );
   if (revision?.productPin === undefined) return null;
-  const ballots = acceptedAt(cursors, "R6.ballot", true, round);
+  const ballots = responsesAt(cursors, "R6.ballot", round);
   if (!hasCompleteActiveDenominator(cursors, ballots) || ballots.some((ballot) => ballot.disposition !== "approve")) {
     return null;
   }
+  const batch = publishedBatchFor(cursors, "R6.ballot", round);
+  if (batch === undefined) return null;
   const inputs = [
     submissionCitation(revision, "revision"),
-    ...ballots.map((submission) => submissionCitation(submission, "consensus-ballot"))
+    ...ballots.map((response) => responseCitation(response, "consensus-ballot", batch))
   ];
   const inputSetHash = computeDerivedInputSetHash("consensus", cursors.activeRoster, inputs, round);
   return {
@@ -415,10 +526,17 @@ export const deriveBoundInputs = (
   if (stepId === "R7.finalize") {
     const consensus = cursors.derived.consensus;
     if (consensus !== null) {
-      const revisionCitation = consensus.inputs.find((input) => input.kind === "revision");
+      // The revision is always a Git submission; the ballots beside it are
+      // responses. Narrowing on `source` is what keeps this lookup honest now
+      // that the two live in one citation list.
+      const revisionCitation = consensus.inputs.find(
+        (input) => input.kind === "revision" && input.source === "git-submission"
+      );
       const revision = acceptedAt(cursors, "R6.revise", false, consensus.round).find(
         (submission) =>
-          submission.submissionSha === revisionCitation?.submissionSha &&
+          revisionCitation !== undefined &&
+          revisionCitation.source === "git-submission" &&
+          submission.submissionSha === revisionCitation.submissionSha &&
           submission.productPin === consensus.consensusPin
       );
       return revision === undefined ? [] : [inputFromSubmission(revision, "consensus", true)];
@@ -553,6 +671,7 @@ export const buildOrder = (
         : [];
   const scaffold = renderArtifactScaffold({
     stepId,
+    actionId,
     issue: start.issue,
     issueSessionId: start.issueSessionId,
     agent,
@@ -563,8 +682,11 @@ export const buildOrder = (
     round,
     approvedPaths
   });
+  // A response carries no protocol version: the agent writes three fields and
+  // the coordinator supplies every binding, so there is no envelope for a
+  // version to describe.
   const binding =
-    scaffold === ""
+    scaffold === "" || definition.submissionMode === "response"
       ? ""
       : `\n\nUse protocolVersion 1. Bound values below are authoritative; do not invent alternate digests or citations.`;
   return {
@@ -573,7 +695,10 @@ export const buildOrder = (
     agent,
     stepId,
     evidenceId: definition.evidenceId,
+    submissionMode: definition.submissionMode,
     requiredPath: definition.requiredPath(start.issue, agent, round),
+    responsePath:
+      definition.submissionMode === "response" ? agentResponsePath(paths, agent, actionId) : null,
     completePath: runtime.complete,
     branch,
     round,
@@ -771,6 +896,10 @@ export class CoordinatorRunLoop {
           stepId,
           evidenceId: order.evidenceId,
           actionId: order.actionId,
+          submissionMode: order.submissionMode,
+          // Recorded from the bytes just written, so acceptance compares a
+          // response against the exact text that authorized it.
+          actionDigest: sha256OfFile(runtime.action),
           status: "ordered",
           attempt: cursor.attempt + 1,
           submissionSha: null,
@@ -1183,6 +1312,8 @@ export class CoordinatorRunLoop {
           [decision.agent]: {
             ...cursor,
             actionId: null,
+            submissionMode: null,
+            actionDigest: null,
             status: "waiting-peer",
             submissionSha: null,
             outstanding: [],
@@ -1212,6 +1343,337 @@ export class CoordinatorRunLoop {
       );
     }
     return next;
+  }
+
+  /**
+   * Persist one accepted private judgment.
+   *
+   * The archive is written before the state mutation and the working bytes are
+   * cleared only after it: a crash in between leaves a byte-identical archive
+   * that the next attempt accepts, rather than a vote that was cleared without
+   * ever being recorded.
+   */
+  private acceptResponse(
+    start: StartState,
+    cursors: CursorsState,
+    decision: Extract<MachineDecision, { type: "accept-response" }>
+  ): CursorsState {
+    const cursor = cursors.agents[decision.agent];
+    if (cursor === undefined || cursor.stepId === null || cursor.actionId === null) return cursors;
+    const actionId = cursor.actionId;
+    const stepId = cursor.stepId;
+    const round = stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+    const runtime = agentRuntimePaths(this.paths, decision.agent);
+    const responsePath = agentResponsePath(this.paths, decision.agent, actionId);
+    const archivePath = acceptedResponseArchivePath(this.paths, decision.agent, actionId);
+
+    const bytes = readFileSync(responsePath);
+    const archived = archiveAcceptedResponse(this.paths.coordRoot, archivePath, bytes);
+    if (archived.status === "conflict") {
+      this.log(`Owner action required: ${archived.message}`);
+      return cursors;
+    }
+
+    const accepted: AcceptedResponse = {
+      stepId,
+      agent: decision.agent,
+      actionId,
+      round,
+      responseSha256: decision.responseSha256,
+      rationale: decision.rationale,
+      acceptedAt: this.now(),
+      ...(decision.choice === undefined ? {} : { choice: decision.choice }),
+      ...(decision.disposition === undefined ? {} : { disposition: decision.disposition })
+    };
+    // Keyed by step/agent/round rather than appended, so a corrected response
+    // replaces the judgment it corrects instead of double-counting it.
+    const withoutPrior = cursors.responses.filter(
+      (item) => !(item.stepId === stepId && item.agent === decision.agent && item.round === round)
+    );
+
+    const next = this.mutate(cursors, (current) => {
+      appendJournal(
+        this.paths,
+        {
+          type: "response-accepted",
+          agent: decision.agent,
+          actionId,
+          details: {
+            stepId,
+            round,
+            responseSha256: decision.responseSha256,
+            rationale: decision.rationale,
+            ...(decision.choice === undefined ? {} : { choice: decision.choice }),
+            ...(decision.disposition === undefined ? {} : { disposition: decision.disposition })
+          }
+        },
+        this.now()
+      );
+      clearCompletion(runtime.complete);
+      clearAgentResponse(responsePath);
+      if (existsSync(runtime.action)) unlinkSync(runtime.action);
+      return cursorsStateSchema.parse({
+        ...current,
+        agents: {
+          ...current.agents,
+          [decision.agent]: {
+            ...cursor,
+            actionId: null,
+            submissionMode: null,
+            actionDigest: null,
+            status: "waiting-peer",
+            submissionSha: null,
+            outstanding: [],
+            updatedAt: this.now()
+          }
+        },
+        responses: [...withoutPrior, accepted],
+        updatedAt: this.now()
+      });
+    });
+    markActionWorkflowComplete(this.paths, decision.agent, actionId, this.now());
+    this.verbose(`accepted ${decision.agent} response for ${stepId}`);
+    void start;
+    return next;
+  }
+
+  /**
+   * Publish one completed ballot gate or round as exactly one origin commit.
+   *
+   * The commit is created once and its SHA persisted before the push; every
+   * later attempt pushes that same object. Rebuilding on retry would mint a new
+   * SHA each time — commit metadata is part of a commit's identity — and leave
+   * a trail of candidate commits with no way to say which one a decision rested
+   * on.
+   */
+  private async publishBallotBatch(
+    start: StartState,
+    cursors: CursorsState,
+    decision: Extract<MachineDecision, { type: "publish-ballot-batch" }>
+  ): Promise<CursorsState> {
+    const { stepId, round } = decision;
+    const branch = resolveEvidenceBranch({
+      branchTemplate: start.branchTemplate,
+      issue: start.issue,
+      roster: start.originalRoster,
+      baseBranch: start.baseBranch
+    });
+    const inputs = deriveBoundInputs(start, cursors, stepId, round);
+    const responses = responsesAt(cursors, stepId, round);
+    const plan = buildBallotBatch({
+      stepId,
+      start,
+      activeRoster: cursors.activeRoster,
+      responses,
+      inputs,
+      round
+    });
+
+    let pending = [...cursors.ballotBatches]
+      .reverse()
+      .find((batch) => batch.stepId === stepId && batch.round === round && batch.status !== "invalidated");
+
+    // A batch frozen against a roster that has since changed is not the batch
+    // this gate now needs. It is retired rather than reused, and its history
+    // stays readable.
+    if (pending !== undefined && pending.inputSetHash !== plan.inputSetHash) {
+      if (pending.status === "published") {
+        this.verbose(`superseding published batch ${pending.commitSha} for ${stepId}`);
+      } else {
+        const stale = pending;
+        cursors = this.mutate(cursors, (current) => {
+          appendJournal(
+            this.paths,
+            {
+              type: "ballot-batch-invalidated",
+              details: { stepId, round, inputSetHash: stale.inputSetHash, commitSha: stale.commitSha }
+            },
+            this.now()
+          );
+          return cursorsStateSchema.parse({
+            ...current,
+            ballotBatches: current.ballotBatches.map((batch) =>
+              batch.commitSha === stale.commitSha && batch.status !== "published"
+                ? { ...batch, status: "invalidated" as const }
+                : batch
+            ),
+            updatedAt: this.now()
+          });
+        });
+        pending = undefined;
+      }
+    }
+
+    const supersedes = pending?.status === "published" ? pending.inputSetHash : null;
+    if (pending?.status === "published" && pending.inputSetHash === plan.inputSetHash) return cursors;
+
+    if (pending === undefined || pending.status === "published") {
+      const tip = await this.mirror.remoteTip(branch);
+      this.authority(cursors);
+      if (!tip.ok) {
+        return this.recordBatchFailure(cursors, plan, branch, tip.error, tip.transient);
+      }
+      // The first commit descends from the issue baseline; every later one
+      // fast-forwards from whatever origin actually holds.
+      const parentSha = tip.sha ?? start.baselineSha;
+      let commitSha: string;
+      try {
+        commitSha = await this.mirror.createEvidenceCommit({
+          worktree: evidenceWorktreePath(this.paths, randomUUID()),
+          parentSha,
+          files: plan.files,
+          message: plan.message,
+          identity: COORDINATOR_IDENTITY
+        });
+      } catch (error) {
+        this.authority(cursors);
+        return this.recordBatchFailure(
+          cursors,
+          plan,
+          branch,
+          error instanceof Error ? error.message : String(error),
+          false,
+          parentSha
+        );
+      }
+      this.authority(cursors);
+      const created: BallotBatch = {
+        kind: plan.kind,
+        stepId,
+        round,
+        activeRoster: [...plan.activeRoster],
+        inputSetHash: plan.inputSetHash,
+        responseSha256s: [...plan.responseSha256s],
+        paths: plan.files.map((file) => file.path),
+        branch,
+        parentSha,
+        commitSha,
+        status: "pending",
+        attempts: 0,
+        error: null,
+        supersedes,
+        createdAt: this.now(),
+        publishedAt: null
+      };
+      cursors = this.mutate(cursors, (current) => {
+        appendJournal(
+          this.paths,
+          {
+            type: "ballot-batch-pending",
+            details: { stepId, round, branch, parentSha, commitSha, paths: created.paths }
+          },
+          this.now()
+        );
+        return cursorsStateSchema.parse({
+          ...current,
+          ballotBatches: [...current.ballotBatches, created],
+          evidence: { branch, tip: current.evidence.tip },
+          updatedAt: this.now()
+        });
+      });
+      pending = created;
+    }
+
+    const batch = pending;
+    try {
+      await this.mirror.publishBranch(batch.commitSha, branch);
+    } catch (error) {
+      this.authority(cursors);
+      const transient = error instanceof GitCommandError ? error.transient : false;
+      return this.recordBatchFailure(
+        cursors,
+        plan,
+        branch,
+        error instanceof Error ? error.message : String(error),
+        transient,
+        batch.parentSha,
+        batch.commitSha
+      );
+    }
+    this.authority(cursors);
+    this.log(`Issue ${start.issue}: published ballot evidence ${batch.commitSha.slice(0, 12)} to ${branch}`);
+    return this.mutate(cursors, (current) => {
+      appendJournal(
+        this.paths,
+        {
+          type: "ballot-batch-published",
+          details: { stepId, round, branch, commitSha: batch.commitSha, paths: batch.paths }
+        },
+        this.now()
+      );
+      return cursorsStateSchema.parse({
+        ...current,
+        ballotBatches: current.ballotBatches.map((item) =>
+          item.commitSha === batch.commitSha
+            ? { ...item, status: "published" as const, error: null, publishedAt: this.now() }
+            : item
+        ),
+        evidence: { branch, tip: batch.commitSha },
+        updatedAt: this.now()
+      });
+    });
+  }
+
+  /**
+   * Record a failed publication attempt without touching accepted judgment.
+   *
+   * Nothing here clears a response, an archive, or an agent cursor: the agents
+   * did their work correctly and must not be asked to repeat it because the
+   * coordinator could not reach origin.
+   */
+  private recordBatchFailure(
+    cursors: CursorsState,
+    plan: BallotBatchPlan,
+    branch: string,
+    message: string,
+    transient: boolean,
+    parentSha?: string,
+    commitSha?: string
+  ): CursorsState {
+    this.verbose(`ballot evidence publication failed (${transient ? "transient" : "fatal"}): ${message}`);
+    if (!transient) {
+      this.log(
+        `Issue ${cursors.issueCursor.stepId}: ballot evidence could not be published to ${branch}: ${message}`
+      );
+    }
+    return this.mutate(cursors, (current) => {
+      appendJournal(
+        this.paths,
+        {
+          type: "ballot-batch-failed",
+          details: {
+            stepId: plan.stepId,
+            round: plan.round,
+            branch,
+            error: message,
+            transient,
+            ...(commitSha === undefined ? {} : { commitSha })
+          }
+        },
+        this.now()
+      );
+      const existing =
+        commitSha === undefined
+          ? undefined
+          : current.ballotBatches.find((batch) => batch.commitSha === commitSha);
+      if (existing === undefined) {
+        void parentSha;
+        return cursorsStateSchema.parse({
+          ...current,
+          evidence: { branch, tip: current.evidence.tip },
+          updatedAt: this.now()
+        });
+      }
+      return cursorsStateSchema.parse({
+        ...current,
+        ballotBatches: current.ballotBatches.map((batch) =>
+          batch.commitSha === commitSha
+            ? { ...batch, attempts: batch.attempts + 1, error: message, status: "pending" as const }
+            : batch
+        ),
+        updatedAt: this.now()
+      });
+    });
   }
 
   private async reissue(
@@ -1249,11 +1711,23 @@ export class CoordinatorRunLoop {
         this.now()
       );
       clearCompletion(runtime.complete);
+      // A correction supersedes whatever the agent wrote against the previous
+      // text: the working response is removed with the marker so a stale file
+      // cannot answer the corrected action, and the new digest is recorded so
+      // it could not do so even if it survived.
+      if (order.responsePath !== null) clearAgentResponse(order.responsePath);
       writeAction(this.paths.coordRoot, runtime.action, order);
       return replaceCursor(
         current,
         agent,
-        { status: "ordered", attempt: cursor.attempt + 1, submissionSha: null, outstanding: [...outstanding] },
+        {
+          status: "ordered",
+          attempt: cursor.attempt + 1,
+          submissionMode: order.submissionMode,
+          actionDigest: sha256OfFile(runtime.action),
+          submissionSha: null,
+          outstanding: [...outstanding]
+        },
         this.now()
       );
     });
@@ -1270,6 +1744,8 @@ export class CoordinatorRunLoop {
           stepId: decision.to,
           evidenceId: decision.to === null ? null : STEP_DEFINITIONS[decision.to].evidenceId,
           actionId: null,
+          submissionMode: null,
+          actionDigest: null,
           status: decision.to === null ? "complete" : "idle",
           submissionSha: null,
           outstanding: [],
@@ -1375,7 +1851,9 @@ export class CoordinatorRunLoop {
         issue: start.issue,
         title: issueSnapshot.title,
         finalSha,
-        draft
+        draft,
+        evidenceBranch: cursors.evidence.branch,
+        evidenceTip: cursors.evidence.tip
       });
       const result = await this.pullRequestOpener({
         repository,
@@ -1542,6 +2020,10 @@ export class CoordinatorRunLoop {
         this.logPhase(start.issue, decision.stepId, decision.round);
         next = await this.prepareAction(start, next, decision.agent, decision.stepId, decision.round);
       } else if (decision.type === "accept-submission") next = this.accept(start, next, decision);
+      else if (decision.type === "accept-response") next = this.acceptResponse(start, next, decision);
+      else if (decision.type === "publish-ballot-batch") {
+        next = await this.publishBallotBatch(start, next, decision);
+      }
       else if (decision.type === "reissue-action") next = await this.reissue(start, next, decision.agent, decision.outstanding);
       else if (decision.type === "retry-verification") {
         next = this.mutate(next, (current) =>
@@ -1601,13 +2083,24 @@ export class CoordinatorRunLoop {
       let cursors = readCursorsState(this.paths);
       if (cursors.paused || cursors.abandoned || cursors.completed) return cursors;
       const observations: EvidenceObservation[] = [];
+      const responseObservations: ResponseObservation[] = [];
 
-      for (const dropped of cursors.droppedAgents) clearCompletion(agentRuntimePaths(this.paths, dropped).complete);
+      for (const dropped of cursors.droppedAgents) {
+        const droppedRuntime = agentRuntimePaths(this.paths, dropped);
+        clearCompletion(droppedRuntime.complete);
+        // A dropped agent's pending judgment leaves with it: it is outside the
+        // denominator, so leaving the file behind would let a later action at
+        // the same path adopt it.
+        const droppedCursor = cursors.agents[dropped];
+        if (droppedCursor?.actionId != null) {
+          clearAgentResponse(agentResponsePath(this.paths, dropped, droppedCursor.actionId));
+        }
+      }
       for (const agent of cursors.activeRoster) {
       const cursor = cursors.agents[agent];
       if (cursor === undefined || cursor.actionId === null || cursor.stepId === null) continue;
       const runtime = agentRuntimePaths(this.paths, agent);
-      const completion = readCompletion(runtime.complete);
+      const completion = readCompletion(runtime.complete, cursor.submissionMode ?? undefined);
       if (completion.status === "missing") {
         let harnessGone = cursor.status === "harness-gone";
         if (this.tmux !== null) {
@@ -1672,6 +2165,63 @@ export class CoordinatorRunLoop {
         cursors = await this.reissue(start, cursors, agent, [completion.message]);
         continue;
       }
+      const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+
+      if (completion.kind === "response") {
+        // The action bytes are re-hashed now and compared with the digest the
+        // cursor authorized. A correction reissues under the same action id
+        // with different text, so ids alone cannot tell a fresh answer from one
+        // written against the superseded order.
+        const currentDigest = existsSync(runtime.action) ? sha256OfFile(runtime.action) : null;
+        if (cursor.actionDigest !== null && currentDigest !== cursor.actionDigest) {
+          cursors = await this.reissue(start, cursors, agent, [
+            "the response was written against a superseded version of this action; re-read it and answer again"
+          ]);
+          continue;
+        }
+        cursors = this.mutate(cursors, (current) => {
+          appendJournal(
+            this.paths,
+            { type: "intent-seen", agent, actionId: cursor.actionId as string, details: { response: true } },
+            this.now()
+          );
+          return replaceCursor(current, agent, { status: "verifying" }, this.now());
+        });
+        const order = buildOrder(
+          this.paths,
+          start,
+          cursors,
+          agent,
+          cursor.stepId,
+          round,
+          cursor.actionId,
+          cursor.outstanding
+        );
+        const observation = evaluateResponse({
+          root: this.paths.coordRoot,
+          order,
+          markerActionId: completion.actionId
+        });
+        this.authority(cursors);
+        if (observation.status === "rejected") {
+          cursors = this.mutate(cursors, (current) => {
+            appendJournal(
+              this.paths,
+              {
+                type: "response-rejected",
+                agent,
+                actionId: cursor.actionId as string,
+                details: { outstanding: observation.outstanding }
+              },
+              this.now()
+            );
+            return current;
+          });
+        }
+        responseObservations.push(observation);
+        continue;
+      }
+
       cursors = this.mutate(cursors, (current) => {
         appendJournal(
           this.paths,
@@ -1688,7 +2238,7 @@ export class CoordinatorRunLoop {
         cursors,
         agent,
         cursor.stepId,
-        cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
+        round,
         cursor.actionId,
         cursor.outstanding,
         approvedPaths
@@ -1702,7 +2252,13 @@ export class CoordinatorRunLoop {
       observations.push(observation);
       }
 
-      if (observations.length > 0) cursors = await this.applyDecisions(start, cursors, decide({ start, cursors, observations }));
+      if (observations.length > 0 || responseObservations.length > 0) {
+        cursors = await this.applyDecisions(
+          start,
+          cursors,
+          decide({ start, cursors, observations, responseObservations })
+        );
+      }
       if (cursors.publication.status === "pending" || cursors.publication.status === "failed") {
         cursors = await this.publishAcceptedFinalization(start, cursors);
         if (cursors.publication.status !== "completed") return cursors;
@@ -1712,6 +2268,22 @@ export class CoordinatorRunLoop {
         const decisions = decide({ start, cursors }).filter((decision) => decision.type !== "wait");
         if (decisions.length === 0) break;
         cursors = await this.applyDecisions(start, cursors, decisions);
+        // A publication that did not reach origin ends the tick rather than
+        // being retried immediately: the remedy for a network failure is the
+        // normal poll cadence, not a tight loop against a failing remote. The
+        // accepted responses stay put, so the next tick resumes from the exact
+        // persisted commit.
+        const unpublished = decisions.find(
+          (decision) =>
+            decision.type === "publish-ballot-batch" &&
+            !cursors.ballotBatches.some(
+              (batch) =>
+                batch.stepId === decision.stepId &&
+                batch.round === decision.round &&
+                batch.status === "published"
+            )
+        );
+        if (unpublished !== undefined) return cursors;
         if (cursors.publication.status === "pending" || cursors.publication.status === "failed") {
           cursors = await this.publishAcceptedFinalization(start, cursors);
           if (cursors.publication.status !== "completed") return cursors;

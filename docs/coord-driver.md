@@ -29,25 +29,101 @@ within derived runtime paths are rejected.
     agents/<agent>/
       action.md      restricted public order
       render.log     optional human log
+      responses/<action-id>.json   agent-written private ballot judgment
+      accepted-responses/<action-id>.json  immutable coordinator archive
 
 <parent-of-coord-root>/completes/<coord-root-name>[/<project>]/
   issue-<n>/<agent>/
-    complete         exact pushed SHA supplied by the agent
+    complete         pushed SHA, or `response <action-id>`
 ```
 
-The completion receipt is the **only** runtime file an agent writes, and it is
-the only one outside the coord root. It lives in a third tree — a sibling of
-both the runtime and the clones — so a harness can be granted the one directory
-it must write without being granted `cursors.json`, `journal.jsonl`, or a peer's
-`action.md`. Codex ran `--sandbox danger-full-access` purely because `complete`
-used to sit under the coord root; it now runs `workspace-write` plus a grant on
-its own drop.
+An agent writes exactly two runtime files: its completion receipt and, for a
+ballot action, its response. Everything else in both trees is coordinator-owned.
 
-The grant is exactly `<completesRoot>/issue-<n>/<agent>` — never the whole
-mailbox, which holds peers' receipts. The generated `start-<agent>.sh` resolves
-it at launch from the clone-local `coord.completesRoot` and `COORD_ISSUE`, so
-the launcher file itself stays free of issue-specific state and
+The receipt lives in a third tree — a sibling of both the runtime and the
+clones — so a harness can be granted the one directory it must write without
+being granted `cursors.json`, `journal.jsonl`, or a peer's `action.md`. Codex
+ran `--sandbox danger-full-access` purely because `complete` used to sit under
+the coord root; it now runs `workspace-write` plus two narrow grants.
+
+Those grants are exactly `<completesRoot>/issue-<n>/<agent>` and
+`<coord-root>/issue-<n>/agents/<agent>/responses` — never the whole mailbox
+(peers' receipts), never the issue root, never a peer's response directory, and
+never the agent's *own* runtime root, which holds the `action.md` that carries
+its current authority. `accepted-responses/` is a sibling of `responses/` and is
+deliberately outside both grants: it is the record of what was accepted, so a
+vote that could be edited afterwards would not be evidence. The generated
+`start-<agent>.sh` resolves both at launch from the clone-local
+`coord.completesRoot` / `coord.workspaceConfig` keys plus `COORD_ISSUE`, so the
+launcher file itself stays free of issue-specific state and
 `githooks/post-merge` can regenerate it without knowing an issue number.
+
+Because the launcher is rendered into each clone at install time and is not
+re-rendered at `coord start`, upgrading the install root without re-running
+`coord install` leaves the old grant in place. `coord doctor` reports that
+stamp drift.
+
+## Ballot responses and coordinator evidence
+
+Three steps — plan ballot, comparison ballot, and every consensus round — are
+answered privately rather than in Git. Their actions render
+`submissionMode: response` plus an absolute `responsePath`, and their bodies
+name no repository path, no branch, and no push. The agent writes
+
+```json
+{ "actionId": "<the current action id>", "choice": "<agent>", "rationale": "..." }
+```
+
+(or `disposition` in place of `choice` for a consensus round), then the single
+line `response <action-id>` to its completion path. Response first, marker
+second: the driver reads the response only once the marker exists, so the other
+order can expose a half-written file.
+
+The driver never trusts anything in those bytes beyond the judgment itself. It
+resolves the expected path from its own state, refuses symlinks, non-regular
+files, and anything over 8 KiB before parsing, requires the response `actionId`,
+the marker's action id, the cursor's action id, and the SHA-256 of the current
+`action.md` to all agree, and checks the choice against the eligible set it
+computed. It computes the response digest itself — agents never supply one —
+archives the exact accepted bytes where no agent can reach them, journals the
+full bounded judgment, and only then clears the working response and marker.
+
+Pending judgments are never rendered into a peer's action, `coord status`, the
+issue report, or any commit. Publication happens only once the active
+denominator closes, which makes balloting secret-until-close **at the protocol
+level**. It is not OS or cryptographic isolation: agents run under one account,
+and stronger secrecy would need separate process identities.
+
+When every active agent has responded, the driver freezes the set, builds one
+canonical ballot per agent at the familiar paths
+(`.plans/issue-<n>/ballot-<agent>.json`,
+`.code-reviews/issue-<n>/ballot-<agent>.json`,
+`.code-reviews/issue-<n>/consensus-ballot-<agent>-round-<r>.json`), and creates
+**one** commit for the whole round on `issue-<n>/coordinator-evidence`. Those
+files are `protocolVersion: 2` and carry `actionId` plus `responseSha256`: the
+commit proves what the coordinator published, the digest proves which private
+handoff supplied the judgment. Citations are rebuilt from accepted Git evidence
+and never copied from a response.
+
+The first evidence commit descends from the issue baseline; later ones
+fast-forward from the persisted tip. Commit author and committer are the
+coordination driver, never a voting agent — agent attribution lives *inside* the
+ballot. The push is a normal fast-forward; an unexpected origin tip fails closed
+and is never forced.
+
+Publication is a barrier in front of every ballot outcome, including escalation
+and revision routing, not only the ones that derive a decision. The commit SHA
+is persisted before the push and every retry pushes that exact object: commit
+metadata is part of a commit's identity, so rebuilding on retry would mint a new
+SHA each time. A failed push keeps the batch pending, keeps every accepted
+response, ends the tick, and re-nudges nobody.
+
+The evidence branch is retained after normal completion and is reported by
+`coord status`, the issue report, and the final PR body. `coord wipe-issue`
+keeps it unless the owner passes `--delete-evidence`; the ordinary wipe an owner
+runs to clear a stuck runtime must not destroy the audit trail as a side effect.
+It is never merged into the product PR, which still publishes only the
+deletion-clean `finalSha`.
 
 The identity segments separate products that share one outer root: without them
 two workspaces would resolve `issue-42/claude/complete` to the same file. The
