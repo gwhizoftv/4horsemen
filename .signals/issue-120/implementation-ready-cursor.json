@@ -5,7 +5,7 @@
   "agent": "cursor",
   "inputSetHash": "84509b92af7b7304e9d94abeeb7a111bc904b28a4ed12c6520d40936052426bc",
   "artifact": "implementation-ready",
-  "implementationCommitSha": "982a446d84d37506ce3eeb5fa22a404e42a92b28",
+  "implementationCommitSha": "64a9e958421d067fcf5e23d399fd9471a18abe20",
   "approvedPaths": [
     "0.0.N",
     "AGENTS.md",
