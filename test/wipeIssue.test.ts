@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -477,5 +477,111 @@ describe("wipeIssue", () => {
       wipeIssue({ issue: 3, config, configPath, coordRoot, terminalCloser: null, log: () => undefined })
     ).rejects.toThrow(/uncommitted changes/);
     expect(existsSync(join(claude, "dirty.txt"))).toBe(true);
+  });
+
+  it("cleans leftover work on this issue's own agent branch without --force", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "coord-wipe-issue-wip-"));
+    roots.push(workspace);
+    const origin = join(workspace, "origin.git");
+    const product = join(workspace, "app");
+    const claude = join(workspace, "app-claude");
+    const coordRoot = join(workspace, "runtime");
+    mkdirSync(coordRoot, { recursive: true });
+    mkdirSync(product, { recursive: true });
+    git(product, "init", "-q", "--initial-branch=main");
+    git(product, "config", "user.name", "Fixture");
+    git(product, "config", "user.email", "fixture@example.com");
+    writeFileSync(join(product, "README.md"), "# app\n");
+    git(product, "add", "README.md");
+    git(product, "commit", "-qm", "init");
+    git(product, "clone", "--bare", "-q", product, origin);
+    git(product, "remote", "add", "origin", origin);
+    git(product, "push", "-q", "-u", "origin", "main");
+    initClone(claude, origin);
+    git(claude, "checkout", "-qb", "issue-3/claude");
+    git(claude, "push", "-q", "-u", "origin", "issue-3/claude");
+    // Exactly the state a finished run leaves behind: unpublished edits and
+    // untracked evidence on this issue's own branch.
+    writeFileSync(join(claude, "README.md"), "half-finished revision\n");
+    writeFileSync(join(claude, "leftover.txt"), "wip\n");
+
+    const configPath = join(coordRoot, "config.json");
+    const config = coordinatorConfigSchema.parse({
+      project: "app",
+      origin,
+      agents: [{ id: "claude", root: claude, launcher: "start-claude.sh", delivery: "both" }],
+      branch: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      profile: "solo",
+      maxRevisionRounds: 3,
+      prPolicy: "owner-only",
+      digestPaths: [],
+      pollIntervalMs: 1000,
+      checks: [{ name: "true", argv: ["true"] }],
+      coordination: stamp(workspace, product)
+    });
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const outcome = await wipeIssue({
+      issue: 3,
+      config,
+      configPath,
+      coordRoot,
+      terminalCloser: null,
+      log: () => undefined
+    });
+
+    expect(outcome.resetClones).toContain(claude);
+    expect(git(claude, "status", "--porcelain")).toBe("");
+    expect(git(claude, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(existsSync(join(claude, "leftover.txt"))).toBe(false);
+    expect(readFileSync(join(claude, "README.md"), "utf8")).toBe("# app\n");
+    expect(tryGit(claude, "show-ref", "--verify", "--quiet", "refs/heads/issue-3/claude").exitCode).not.toBe(0);
+  });
+
+  it("still refuses when dirt sits on a branch this wipe does not own", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "coord-wipe-other-branch-"));
+    roots.push(workspace);
+    const origin = join(workspace, "origin.git");
+    const product = join(workspace, "app");
+    const claude = join(workspace, "app-claude");
+    const coordRoot = join(workspace, "runtime");
+    mkdirSync(coordRoot, { recursive: true });
+    mkdirSync(product, { recursive: true });
+    git(product, "init", "-q", "--initial-branch=main");
+    git(product, "config", "user.name", "Fixture");
+    git(product, "config", "user.email", "fixture@example.com");
+    writeFileSync(join(product, "README.md"), "# app\n");
+    git(product, "add", "README.md");
+    git(product, "commit", "-qm", "init");
+    git(product, "clone", "--bare", "-q", product, origin);
+    git(product, "remote", "add", "origin", origin);
+    git(product, "push", "-q", "-u", "origin", "main");
+    initClone(claude, origin);
+    git(claude, "checkout", "-qb", "issue-4/claude");
+    writeFileSync(join(claude, "other-issue.txt"), "issue 4 wip\n");
+
+    const configPath = join(coordRoot, "config.json");
+    const config = coordinatorConfigSchema.parse({
+      project: "app",
+      origin,
+      agents: [{ id: "claude", root: claude, launcher: "start-claude.sh", delivery: "both" }],
+      branch: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      profile: "solo",
+      maxRevisionRounds: 3,
+      prPolicy: "owner-only",
+      digestPaths: [],
+      pollIntervalMs: 1000,
+      checks: [{ name: "true", argv: ["true"] }],
+      coordination: stamp(workspace, product)
+    });
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    await expect(
+      wipeIssue({ issue: 3, config, configPath, coordRoot, terminalCloser: null, log: () => undefined })
+    ).rejects.toThrow(/uncommitted changes/);
+    expect(existsSync(join(claude, "other-issue.txt"))).toBe(true);
+    expect(git(claude, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-4/claude");
   });
 });

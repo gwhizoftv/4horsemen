@@ -8,9 +8,12 @@ finalization the driver opens a pull request. Default `prPolicy` is
 `coord-open-unmerged` (draft PR; owner merges). `coord-merged` opens a ready PR
 and merges it. Legacy `owner-only` is the same as `coord-open-unmerged`.
 
-The coordinator never writes agent clones. Agents publish work to their own
-`issue-<n>/<agent>` origin branches. The coordinator fetches those branches
-into an owner-side bare mirror and evaluates blobs at the exact submission SHA.
+The coordinator never authors, stages, stashes, or pushes agent work. Agents
+publish to their own `issue-<n>/<agent>` origin branches; the coordinator
+fetches those branches into an owner-side bare mirror and evaluates blobs at the
+exact submission SHA. It does mutate agent clones for *readiness* — branch
+checkout before a run, and reset/clean/checkout after one — never to create
+history. No coordinator-authored commit ever appears in an agent's `git log`.
 
 ## Runtime topology
 
@@ -436,6 +439,33 @@ overwrite a concurrent pause, drop, or abandon. `restart-action` reissues
 pending work without changing a gate. `answer` consumes one typed pending
 question, is idempotent for the same answer, and cannot create round 4.
 `abandon` stops the workflow while retaining its audit state.
+
+### End-of-issue clone readiness
+
+When an issue reaches a terminal end, `coord <issue>` and `coord run` share one
+tear-down path: kill the tmux session and owner Terminal windows, then leave
+every configured agent clone ready for the next issue. Per clone the driver
+lifts the managed `AGENTS.md` overlay, discards leftover work with
+`git reset --hard HEAD` and `git clean -fd`, checks out the configured base
+branch at the fetched `origin/<base>`, and restores the overlay and the
+skip-worktree bit. It logs what it discarded, skipped, or refused.
+
+A discard is authorized only when the clone's `HEAD` is exactly
+`issue-<n>/<agent>` for the issue that just finished. Dirt on the base branch, on
+a detached `HEAD`, or on another issue's branch is refused, and every clone is
+classified read-only before the first destructive command — so one ambiguous
+clone leaves all of them untouched, with the remediation printed. A refusal is
+not a run failure: a completed issue still detaches its UI and still exits 0.
+
+Cleanup runs only after the panes are dead. A reset under a live agent CLI races
+a process that can still write the worktree.
+
+`coord wipe-issue <n>` applies the same rule at its dirty gate: leftover work on
+that issue's own agent branches no longer needs `--force`. Any other dirty state
+still refuses and changes nothing, and `--force` keeps its existing meaning.
+A clone whose local base branch carries commits `origin` does not have is
+checked out where it stands rather than reset onto `origin/<base>`, so cleanup
+cannot orphan work that only the local base ref reaches.
 
 ## Recovery and finalization
 

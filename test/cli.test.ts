@@ -762,6 +762,10 @@ describe("CLI", () => {
     ).toBe(0);
     expect(output.join("")).toContain("Issue 1 complete: killed");
     expect(output.join("")).not.toContain("Tip: coord attach");
+    // The readiness pass runs on the same completed-run path. This fixture's
+    // agent roots are plain directories, so every clone is a skip -- which is
+    // what proves the call happens at all.
+    expect(output.join("")).toContain("Clone readiness: 0 on base (0 cleaned), 0 refused, 1 skipped.");
   });
 
   it("refuses to drop the final active agent", async () => {

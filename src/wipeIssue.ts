@@ -6,6 +6,7 @@ import { deriveEvidenceBranch } from "./ballotPublication.js";
 import { detachIssue } from "./detachIssue.js";
 import { git, gitOrThrow, hasUncommittedChanges } from "./gitExec.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
+import { makeAgentClonesBaseReady } from "./prepareAgentBranch.js";
 import { issueRuntimePaths, removeIssueMailbox, RESERVED_EVIDENCE_AGENT } from "./paths.js";
 import { cloneIsDirty } from "./setupWorkspace.js";
 import type { CoordinatorConfig } from "./state.js";
@@ -223,7 +224,23 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     branch: branchFor(options.config.branch, options.issue, agent.id)
   }));
 
-  const dirty = clones.filter(({ root }) => existsSync(root) && cloneIsDirty(root)).map(({ root }) => root);
+  let dirty = clones.filter(({ root }) => existsSync(root) && cloneIsDirty(root)).map(({ root }) => root);
+  // Leftover WIP on this wipe's own `issue-N/<agent>` branch is the common case
+  // and needs no `--force`: the owner already named the issue, and the branch is
+  // the same authorization boundary completion cleanup uses. The helper refuses
+  // as a batch, so ambiguous dirt anywhere leaves every clone untouched and the
+  // refusal below still tells the truth about what it did not change.
+  if (dirty.length > 0 && !force && !dryRun) {
+    makeAgentClonesBaseReady({
+      agents: clones.map(({ agent, root }) => ({ id: agent, root })),
+      issue: options.issue,
+      branchTemplate: options.config.branch,
+      baseBranch: base,
+      installRoot: options.config.coordination?.installRoot ?? null,
+      log
+    });
+    dirty = clones.filter(({ root }) => existsSync(root) && cloneIsDirty(root)).map(({ root }) => root);
+  }
   if (dirty.length > 0 && !force) {
     throw new Error(
       `Refusing wipe-issue: uncommitted changes in ${dirty.join(", ")}. ` +

@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { liftCloneAgentsProtocol, writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
-import { prepareAgentIssueBranches } from "../src/prepareAgentBranch.js";
+import { makeAgentClonesBaseReady, prepareAgentIssueBranches } from "../src/prepareAgentBranch.js";
 import { git, repoRoot, tryGit } from "./support/workspaceFixture.js";
+
+const baseBranchName = "main";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -279,5 +281,205 @@ describe("prepareAgentIssueBranches", () => {
     ).toThrow(/uncommitted changes/);
     expect(existsSync(join(clone, "dirty.txt"))).toBe(true);
     expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+  });
+});
+
+describe("makeAgentClonesBaseReady", () => {
+  /** Put the clone on the finished issue's branch, the way a run leaves it. */
+  const onIssueBranch = (issue = 9): { clone: string; tip: string } => {
+    const { clone, baseline } = seedClone();
+    prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+    return { clone, tip: git(clone, "rev-parse", "HEAD") };
+  };
+
+  const ready = (clone: string, issue = 9) =>
+    makeAgentClonesBaseReady({
+      agents: [{ id: "claude", root: clone }],
+      issue,
+      branchTemplate: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+  it("discards leftover work on the finished issue branch and lands on the fetched base", () => {
+    const { clone, tip } = onIssueBranch();
+    writeFileSync(join(clone, "README.md"), "agent edit\n");
+    git(clone, "add", "README.md");
+    writeFileSync(join(clone, "scratch.txt"), "unstaged\n");
+    mkdirSync(join(clone, ".plans", "issue-9"), { recursive: true });
+    writeFileSync(join(clone, ".plans", "issue-9", "plan.md"), "# plan\n");
+    const before = git(clone, "rev-list", "--count", "issue-9/claude");
+
+    const [result] = ready(clone);
+
+    expect(result?.action).toBe("checked-out");
+    expect([...(result?.discardedPaths ?? [])].sort()).toEqual([".plans/", "README.md", "scratch.txt"]);
+    expect(git(clone, "status", "--porcelain")).toBe("");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe(baseBranchName);
+    expect(result?.baseTip).toBe(git(clone, "rev-parse", `origin/${baseBranchName}`));
+    expect(result?.baseSynced).toBe(true);
+    expect(existsSync(join(clone, ".plans"))).toBe(false);
+    expect(existsSync(join(clone, "scratch.txt"))).toBe(false);
+    // The discard is worktree-only: the published branch and its history stand.
+    expect(git(clone, "rev-list", "--count", "issue-9/claude")).toBe(before);
+    expect(git(clone, "rev-parse", "issue-9/claude")).toBe(tip);
+  });
+
+  it("restores the AGENTS.md overlay and the skip-worktree bit after a discard", () => {
+    const { clone } = onIssueBranch();
+    writeFileSync(join(clone, "scratch.txt"), "wip\n");
+
+    const [result] = ready(clone);
+
+    expect(result?.protocol).toBe("overlay");
+    expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toContain("coordination protocol");
+    expect(skipWorktree(clone)).toBe(true);
+    expect(git(clone, "status", "--porcelain")).toBe("");
+  });
+
+  it("checks a clean clone out on base without discarding anything", () => {
+    const { clone } = onIssueBranch();
+
+    const [result] = ready(clone);
+
+    expect(result?.action).toBe("checked-out");
+    expect(result?.discardedPaths).toEqual([]);
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe(baseBranchName);
+    expect(git(clone, "rev-parse", "HEAD")).toBe(git(clone, "rev-parse", `origin/${baseBranchName}`));
+    expect(tryGit(clone, "show-ref", "--verify", "--quiet", "refs/heads/issue-9/claude").exitCode).toBe(0);
+  });
+
+  it("refuses dirt on a branch that is not the finished issue's and changes nothing", () => {
+    const { clone } = seedClone();
+    writeFileSync(join(clone, "owner.txt"), "owner work\n");
+    const status = git(clone, "status", "--porcelain");
+
+    const [result] = ready(clone);
+
+    expect(result?.action).toBe("refused");
+    expect(result?.reason).toMatch(/uncommitted changes on .*, not issue-9\/claude/);
+    expect(result?.discardedPaths).toEqual([]);
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe(baseBranchName);
+    expect(git(clone, "status", "--porcelain")).toBe(status);
+    expect(readFileSync(join(clone, "owner.txt"), "utf8")).toBe("owner work\n");
+  });
+
+  it("refuses dirt on another issue's branch", () => {
+    const { clone } = onIssueBranch(8);
+    writeFileSync(join(clone, "scratch.txt"), "issue 8 wip\n");
+
+    const [result] = ready(clone, 9);
+
+    expect(result?.action).toBe("refused");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-8/claude");
+    expect(existsSync(join(clone, "scratch.txt"))).toBe(true);
+  });
+
+  it("leaves every clone untouched when one of them is dirty on the wrong branch", () => {
+    const eligible = onIssueBranch();
+    const ambiguous = seedClone();
+    writeFileSync(join(eligible.clone, "scratch.txt"), "eligible wip\n");
+    writeFileSync(join(ambiguous.clone, "owner.txt"), "owner work\n");
+
+    const results = makeAgentClonesBaseReady({
+      agents: [
+        { id: "claude", root: eligible.clone },
+        { id: "codex", root: ambiguous.clone }
+      ],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(results.map((result) => result.action)).toEqual(["refused", "refused"]);
+    expect(results[0]?.reason).toMatch(/another agent clone has unauthorized changes/);
+    expect(results[0]?.reason).toContain(ambiguous.clone);
+    expect(existsSync(join(eligible.clone, "scratch.txt"))).toBe(true);
+    expect(git(eligible.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
+  });
+
+  it("skips a missing path and a directory that is not a worktree", () => {
+    const plain = mkdtempSync(join(tmpdir(), "coord-not-a-repo-"));
+    roots.push(plain);
+    const absent = join(plain, "gone");
+
+    const results = makeAgentClonesBaseReady({
+      agents: [
+        { id: "codex", root: absent },
+        { id: "cursor", root: plain }
+      ],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(results.map((result) => result.action)).toEqual(["skipped-missing", "skipped-missing"]);
+    expect(results.every((result) => result.discardedPaths.length === 0)).toBe(true);
+  });
+
+  it("treats an overlay-only AGENTS.md delta as clean rather than as agent work", () => {
+    const { clone } = onIssueBranch();
+    // The state a run leaves when it clears the bit and fails to restore it.
+    git(clone, "update-index", "--no-skip-worktree", "--", "AGENTS.md");
+    expect(git(clone, "status", "--porcelain")).not.toBe("");
+
+    const [result] = ready(clone);
+
+    expect(result?.action).toBe("checked-out");
+    expect(result?.discardedPaths).toEqual([]);
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe(baseBranchName);
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("keeps a local base branch that origin does not contain instead of resetting it", () => {
+    // The commit lands on the base branch before the run starts, so the clone is
+    // on `issue-9/claude` with a local base that origin has never seen.
+    const { clone, baseline } = seedClone();
+    writeFileSync(join(clone, "local-only.txt"), "unpushed\n");
+    git(clone, "add", "local-only.txt");
+    git(clone, "commit", "-qm", "unpushed local base commit");
+    const localBase = git(clone, "rev-parse", baseBranchName);
+    prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: baseBranchName,
+      installRoot: repoRoot
+    });
+    writeFileSync(join(clone, "scratch.txt"), "wip\n");
+
+    const [result] = ready(clone);
+
+    expect(result?.action).toBe("checked-out");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe(baseBranchName);
+    // Only issue-9 work was authorized for discard; the unpushed base commit stands.
+    expect(git(clone, "rev-parse", baseBranchName)).toBe(localBase);
+    expect(existsSync(join(clone, "local-only.txt"))).toBe(true);
+    expect(existsSync(join(clone, "scratch.txt"))).toBe(false);
+  });
+
+  it("reports the local base when the origin base cannot be resolved", () => {
+    const { clone } = onIssueBranch();
+    git(clone, "remote", "remove", "origin");
+    git(clone, "update-ref", "-d", `refs/remotes/origin/${baseBranchName}`);
+    writeFileSync(join(clone, "scratch.txt"), "wip\n");
+
+    const [result] = ready(clone);
+
+    expect(result?.action).toBe("checked-out");
+    expect(result?.baseSynced).toBe(false);
+    expect(result?.baseTip).toBe(git(clone, "rev-parse", baseBranchName));
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe(baseBranchName);
+    expect(git(clone, "status", "--porcelain")).toBe("");
   });
 });

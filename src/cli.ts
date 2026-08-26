@@ -14,7 +14,11 @@ import { renderHookScope, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONF
 import { install, onboard, packageVersion, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
-import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
+import {
+  makeAgentClonesBaseReady,
+  prepareAgentIssueBranches,
+  type CloneBaseReadyResult
+} from "./prepareAgentBranch.js";
 import {
   agentResponsePath,
   agentRuntimePaths,
@@ -750,6 +754,37 @@ const defaultManualUi = async (input: {
   return tmux.openOwnerAgentClients("manual", input.agents, { onlyMissing: true });
 };
 
+/**
+ * The template root for the AGENTS.md overlay restore, when config still names
+ * one. A config that has moved or been rewritten since the issue started must
+ * not stop cleanup: the helper falls back to each clone's own captured overlay.
+ */
+const completionInstallRoot = (configPath: string, io: CliIo): string | null => {
+  if (!existsSync(configPath)) return null;
+  try {
+    return readConfig(configPath).coordination?.installRoot ?? null;
+  } catch (error) {
+    io.stdout(
+      `Could not read ${configPath} for the install root ` +
+        `(${error instanceof Error ? error.message : String(error)}); ` +
+        "restoring each clone's AGENTS.md overlay from its own copy.\n"
+    );
+    return null;
+  }
+};
+
+const reportCloneReadiness = (results: readonly CloneBaseReadyResult[], io: CliIo): void => {
+  const cleaned = results.filter((result) => result.discardedPaths.length > 0).length;
+  const onBase = results.filter((result) => result.action === "checked-out" || result.action === "already-base").length;
+  const refused = results.filter((result) => result.action === "refused");
+  const skipped = results.filter((result) => result.action === "skipped-missing").length;
+  io.stdout(
+    `Clone readiness: ${onBase} on base (${cleaned} cleaned), ` +
+      `${refused.length} refused, ${skipped} skipped.\n`
+  );
+  for (const result of refused) io.stdout(`  ${result.clone}: ${result.reason ?? "refused"}\n`);
+};
+
 const detachCompletedIssue = async (paths: IssueRuntimePaths, io: CliIo): Promise<void> => {
   const cursors = readCursorsState(paths);
   if (!cursors.completed) return;
@@ -767,6 +802,21 @@ const detachCompletedIssue = async (paths: IssueRuntimePaths, io: CliIo): Promis
         ? `, closed ${outcome.closedTerminalTitles.length} Terminal window(s)`
         : "") +
       ".\n"
+  );
+  // Only after the panes are dead: the reset would otherwise race an agent CLI
+  // that can still write its worktree. A refusal here is an expected outcome of
+  // a successful run, so it is counted and logged, never thrown -- throwing
+  // would turn a completed issue into a non-zero exit from runCli's catch.
+  reportCloneReadiness(
+    makeAgentClonesBaseReady({
+      agents: start.agents,
+      issue: start.issue,
+      branchTemplate: start.branchTemplate,
+      baseBranch: start.baseBranch,
+      installRoot: completionInstallRoot(start.configPath, io),
+      log: io.stdout
+    }),
+    io
   );
 };
 
