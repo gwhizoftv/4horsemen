@@ -99,13 +99,23 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
         "(or Exact File Map / File Map / File Creation Order / Proposed Architecture)\n\n" +
         "## Exact file list to be created\n" +
         "(or Exact File Map / File Map / File Creation Order / Proposed Architecture)\n\n" +
+        "## Reuse and Scope\n" +
+        "(or Reuse / Scope and Reuse)\n\n" +
         "## Tests\n" +
         "(or Test / Validation)\n\n" +
         "## Alternatives Rejected\n" +
         "(or Alternatives)\n\n" +
         "## Risks and Mitigations\n" +
         "(or Risks)\n\n" +
-        "## Conclusion\n"
+        "## Conclusion\n\n" +
+        "Reuse and Scope names the existing functions, types, helpers, and test " +
+        "fixtures this change builds on, and gives the reason for every new file " +
+        "it proposes. A path cited only there is read, not rewritten: citing it " +
+        "does not add it to what the implementation may change, so a path this " +
+        "plan intends to change belongs in a file list as well.\n\n" +
+        "Under Tests, name the fewest tests that fail before the change and pass " +
+        "after it, name the existing test file each one joins, and name the real " +
+        "commands that run them.\n"
       );
     case "R3.review":
       return (
@@ -117,7 +127,9 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
         "(or Verdict)\n\n" +
         "Plan-review findings must state, in order: the plan claim or section; the rule that must hold; " +
         "a concrete failure if the plan is followed as written; then optionally the smallest correction. " +
-        "The rule and the failure are the deliverable.\n"
+        "The rule and the failure are the deliverable.\n\n" +
+        "Scope and reuse are review criteria, not taste: a plan that adds a file, an abstraction, or a " +
+        "test the issue does not require, where an existing one would serve, is a finding.\n"
       );
     case "R5.compare":
       return (
@@ -129,7 +141,9 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
         "Cite every bound implementation pin SHA from the inputs list below.\n\n" +
         "When a finding reviews implementation code, state in order: file path and line number; " +
         "the rule that must hold; a concrete failure that follows from breaking it; then optionally " +
-        "the smallest illustrative test — or a fix sketch if a test cannot express it. Prefer a test over a fix.\n"
+        "the smallest illustrative test — or a fix sketch if a test cannot express it. Prefer a test over a fix.\n\n" +
+        "Weigh how much each implementation had to add for the same result: new files and new test files " +
+        "where existing ones would serve, and duplicated logic, count against it.\n"
       );
     default:
       return "";

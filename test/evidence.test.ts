@@ -114,6 +114,9 @@ describe("evidence evaluation", () => {
 - \`src/product.ts\`
 - \`test/product.test.ts\`
 
+## Reuse and Scope
+Extends the existing renderer.
+
 ## Tests
 Run tests.
 
@@ -133,7 +136,7 @@ Implement it.
     });
   });
 
-  it("accepts the split changed/created file-list headings", async () => {
+  it("accepts the split file-list headings and keeps reuse citations out of the approved paths", async () => {
     const plan = `# Plan
 
 ## Exact File List to be changed or deleted
@@ -141,6 +144,39 @@ Implement it.
 
 ## Exact file list to be created
 - \`test/product.test.ts\`
+
+## Reuse and Scope
+Builds on \`src/existing-helper.ts\`; adds no module of its own.
+
+## Tests
+Run tests.
+
+## Alternatives Rejected
+None.
+
+## Risks and Mitigations
+Keep pins immutable.
+
+## Conclusion
+Implement it.
+`;
+    const result = await evaluateEvidence(order(), sha("c"), mirror(plan));
+    // `src/existing-helper.ts` is cited under Reuse and Scope only: reading a
+    // module must not buy permission to rewrite it.
+    expect(result).toMatchObject({
+      status: "satisfied",
+      approvedPaths: ["src/product.ts", "test/product.test.ts"]
+    });
+  });
+
+  it("rejects a plan that omits the reuse and scope section", async () => {
+    const plan = `# Plan
+
+## Exact File List to be changed or deleted
+- \`src/product.ts\`
+
+## Exact file list to be created
+None.
 
 ## Tests
 Run tests.
@@ -156,8 +192,8 @@ Implement it.
 `;
     const result = await evaluateEvidence(order(), sha("c"), mirror(plan));
     expect(result).toMatchObject({
-      status: "satisfied",
-      approvedPaths: ["src/product.ts", "test/product.test.ts"]
+      status: "rejected",
+      outstanding: ["plan is missing a non-empty Reuse and Scope section"]
     });
   });
 
@@ -169,6 +205,9 @@ Implement it.
 - \`apps/web/src/session/mapSessionVideo.test.ts\`
 - \`VIDEO_DOMAINS\`
 - \`toDomain\`
+
+## Reuse and Scope
+Reuses \`packages/core/src/domain/parse.ts\`.
 
 ## Tests
 Run tests.

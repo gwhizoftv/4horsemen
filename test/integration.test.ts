@@ -217,6 +217,9 @@ describe("four-agent coordinator canary", () => {
 - \`src/product-antigravity.txt\`
 - \`src/revision.txt\`
 
+## Reuse and Scope
+Reuses the canary fixtures already in the workspace.
+
 ## Tests
 Run the integration canary.
 

@@ -55,6 +55,28 @@ export const BRANCH_PREPARED_NOTE =
   "switch to it, or clear skip-worktree to make a checkout work. If the clone " +
   "looks wrong, report that instead of repairing it by hand.";
 
+/**
+ * Carried by the instructions that decide how much code gets written: planning,
+ * implementing, and revising.
+ *
+ * The standing protocol overlay has always asked for the smallest correction,
+ * and agents still arrive with new modules where an existing one would serve.
+ * Prose an agent read once loses to the action in front of it, so the rule is
+ * repeated where the choice is actually made. It is deliberately absent from
+ * reviewing, comparing, and ballot instructions: those judge work rather than
+ * write it, and the criteria they need are in their own artifact scaffolds.
+ */
+export const BUILD_DISCIPLINE_NOTE =
+  "\n\nBuild the smallest change that fully resolves the issue. Reuse the " +
+  "existing functions, types, and test helpers this repository already has " +
+  "before adding new ones; a new module earns its place only when no existing " +
+  "one can host the behavior, and the reason belongs in the plan. Do not add " +
+  "capability, configuration, abstraction, or refactoring the issue did not " +
+  "ask for. Add the fewest tests that fail before the change and pass after " +
+  "it, put each one in the existing test file that already covers the area, " +
+  "and do not add a slow test when a fast one proves the same rule. None of " +
+  "this weakens the checks this repository already requires.";
+
 export type StepDefinition = {
   id: WorkflowStepId;
   gateId: GateId;
@@ -87,7 +109,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     participants: "all",
     submissionMode: "git",
     requiredPath: (issue) => `.plans/issue-${issue}/plan.md`,
-    task: "Write and publish a mechanically complete implementation plan."
+    task: `Write and publish a mechanically complete implementation plan.${BUILD_DISCIPLINE_NOTE}`
   },
   "R3.review": {
     id: "R3.review",
@@ -114,7 +136,9 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     participants: "implementer",
     submissionMode: "git",
     requiredPath: (issue, agent) => `.signals/issue-${issue}/implementation-ready-${agent}.json`,
-    task: "Implement the selected plan and publish an implementation-ready signal that pins the product commit."
+    task:
+      "Implement the selected plan and publish an implementation-ready signal that pins the product commit." +
+      BUILD_DISCIPLINE_NOTE
   },
   "R5.compare": {
     id: "R5.compare",
@@ -142,7 +166,9 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     submissionMode: "git",
     requiredPath: (issue, agent, round) =>
       `.signals/issue-${issue}/revision-ready-${agent}-round-${round ?? 1}.json`,
-    task: "Prepare the requested revision and publish a signal pinning the revised product commit."
+    task:
+      "Prepare the requested revision and publish a signal pinning the revised product commit." +
+      BUILD_DISCIPLINE_NOTE
   },
   "R6.ballot": {
     id: "R6.ballot",

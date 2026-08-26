@@ -53,6 +53,8 @@ each with a non-empty body:
 
 ## Exact file list to be created
 
+## Reuse and Scope
+
 ## Tests
 
 ## Alternatives Rejected
@@ -64,7 +66,14 @@ each with a non-empty body:
 
 Accepted aliases for the file lists: Exact File Map / File Map / File Creation
 Order / Proposed Architecture (a single legacy file-map heading still satisfies
-both list sections). Also accepted: Test / Validation; Alternatives; Risks.
+both list sections). Also accepted: Reuse / Scope and Reuse; Test / Validation;
+Alternatives; Risks.
+
+Reuse and Scope names the existing functions, types, helpers, and test fixtures
+the change builds on, and gives the reason for every new file the plan proposes.
+A path cited only there is read, not rewritten: citing it does not add it to
+what the implementation may change, so a path the plan intends to change belongs
+in a file list as well.
 
 A **plan review** (`.plans/issue-<n>/review.md`) must include:
 
@@ -111,6 +120,18 @@ or
 
 No subtitle on that same line (e.g. `# Comparison — issue 12` fails). Cite every
 bound implementation pin SHA from the current `action.md`.
+
+## Build discipline
+
+Build the smallest change that fully resolves the issue. Reuse the existing
+functions, types, and test helpers this repository already has before adding new
+ones; a new module earns its place only when no existing one can host the
+behavior, and the reason belongs in the plan. Do not add capability,
+configuration, abstraction, or refactoring the issue did not ask for. Add the
+fewest tests that fail before the change and pass after it, put each one in the
+existing test file that already covers the area, and do not add a slow test when
+a fast one proves the same rule. None of this weakens the checks this repository
+already requires.
 
 ## Checks that actually run
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { artifactScaffoldValue, renderArtifactScaffold } from "../src/orderScaffold.js";
+import { BUILD_DISCIPLINE_NOTE, STEP_DEFINITIONS, type WorkflowStepId } from "../src/steps.js";
 
 describe("orderScaffold", () => {
   it("renders a filled join JSON scaffold", () => {
@@ -61,6 +62,7 @@ describe("orderScaffold", () => {
     });
     expect(rendered).toContain("## Exact File List to be changed or deleted");
     expect(rendered).toContain("## Exact file list to be created");
+    expect(rendered).toContain("## Reuse and Scope");
     expect(rendered).toContain("## Tests");
     expect(rendered).toContain("## Alternatives Rejected");
     expect(rendered).toContain("## Risks and Mitigations");
@@ -146,5 +148,17 @@ describe("orderScaffold", () => {
       disposition: "approve",
       rationale: "<one sentence>"
     });
+  });
+
+  it("carries the build discipline note on planning, implementing, and revising only", () => {
+    const carrying: WorkflowStepId[] = ["R2.plan", "R4.implement", "R6.revise"];
+    for (const [stepId, definition] of Object.entries(STEP_DEFINITIONS)) {
+      // Judging work needs criteria in its own scaffold, not a coding checklist:
+      // appending this note everywhere is prompt growth on every action.
+      expect([stepId, definition.task.includes(BUILD_DISCIPLINE_NOTE)]).toEqual([
+        stepId,
+        carrying.includes(stepId as WorkflowStepId)
+      ]);
+    }
   });
 });

@@ -42,6 +42,15 @@ export const computeInputSetHash = (inputs: readonly BoundInput[]): string => sh
 const markdownSection = (raw: string, alternatives: readonly string[]): boolean =>
   alternatives.some((heading) => new RegExp(`^#{1,6}\\s+${heading}\\s*$`, "im").test(raw));
 
+/**
+ * Headings whose body names code the plan builds on rather than code it changes.
+ *
+ * Required so that a plan has to state its reuse claim where reviewers can
+ * argue with it, and excluded from path extraction so that stating it cannot
+ * quietly buy permission to rewrite what it names.
+ */
+export const REUSE_SECTION_HEADINGS = ["Reuse and Scope", "Reuse", "Scope and Reuse"] as const;
+
 const checkPlan = (raw: string): string[] => {
   // Legacy "Exact File Map" (and aliases) still satisfy both of the split list headings.
   const fileListAliases = [
@@ -51,6 +60,7 @@ const checkPlan = (raw: string): string[] => {
   const required: readonly (readonly string[])[] = [
     ["Exact File List to be changed or deleted", ...fileListAliases],
     ["Exact file list to be created", ...fileListAliases],
+    [...REUSE_SECTION_HEADINGS],
     ["Tests?", "Validation"],
     ["Alternatives?(?: Rejected)?"],
     ["Risks?(?: and Mitigations)?"],
@@ -108,9 +118,37 @@ export const expandFileMapBraces = (candidate: string): string[] => {
   return alternatives.map((part) => `${prefix}${part}${suffix}`);
 };
 
+/**
+ * Drop each named section, heading line and body, up to the next ATX heading.
+ *
+ * Line-based rather than one multiline regular expression: a plan body is
+ * arbitrary markdown, and a heading inside a fenced block should end the skip
+ * exactly as a real heading does, which keeps the rule "everything until the
+ * next heading" true no matter what the section contains.
+ */
+const stripSections = (raw: string, headings: readonly string[]): string => {
+  const headingLine = /^#{1,6}\s+(.*?)\s*$/;
+  let skipping = false;
+  return raw
+    .split("\n")
+    .filter((line) => {
+      const matched = headingLine.exec(line);
+      if (matched !== null) skipping = headings.includes(matched[1] ?? "");
+      return !skipping;
+    })
+    .join("\n");
+};
+
+/**
+ * A reuse section names code the implementation reads, not code it may rewrite,
+ * so its citations are removed before extraction. Every other section still
+ * contributes: the file lists are what a plan is judged on, but a path an agent
+ * backticks under Tests or Risks has always counted, and narrowing that here
+ * would silently revoke permissions plans already rely on.
+ */
 export const extractApprovedPaths = (raw: string): string[] => {
   const paths = new Set<string>();
-  for (const match of raw.matchAll(/`([^`\n]+)`/g)) {
+  for (const match of stripSections(raw, REUSE_SECTION_HEADINGS).matchAll(/`([^`\n]+)`/g)) {
     const candidate = match[1];
     if (candidate === undefined) continue;
     for (const expanded of expandFileMapBraces(candidate)) {
