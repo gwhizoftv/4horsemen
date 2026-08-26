@@ -26,6 +26,30 @@ const commonArtifactFields = {
   agent: agentIdSchema
 } as const;
 
+export const actionIdSchema = z.string().uuid();
+export const RESPONSE_MAX_BYTES = 8 * 1024;
+export const RATIONALE_MAX_LENGTH = 1_000;
+export const rationaleSchema = z
+  .string()
+  .max(RATIONALE_MAX_LENGTH)
+  .refine((value) => value.trim().length > 0, "rationale must contain non-whitespace text");
+
+export const planComparisonBallotResponseSchema = z
+  .object({
+    actionId: actionIdSchema,
+    choice: agentIdSchema,
+    rationale: rationaleSchema
+  })
+  .strict();
+
+export const consensusBallotResponseSchema = z
+  .object({
+    actionId: actionIdSchema,
+    disposition: z.enum(["approve", "revise", "escalate"]),
+    rationale: rationaleSchema
+  })
+  .strict();
+
 export const participationReadyArtifactSchema = z
   .object({
     ...commonArtifactFields,
@@ -37,8 +61,13 @@ export const participationReadyArtifactSchema = z
 
 export const planBallotArtifactSchema = z
   .object({
-    ...commonArtifactFields,
+    protocolVersion: z.literal(2),
+    issue: issueSchema,
+    issueSessionId: issueSessionIdSchema,
+    agent: agentIdSchema,
     artifact: z.literal("plan-ballot"),
+    actionId: actionIdSchema,
+    responseSha256: digestSchema,
     inputSetHash: digestSchema,
     plans: z.array(artifactCitationSchema).min(1),
     reviews: z.array(artifactCitationSchema),
@@ -59,8 +88,13 @@ export const implementationReadyArtifactSchema = z
 
 export const comparisonBallotArtifactSchema = z
   .object({
-    ...commonArtifactFields,
+    protocolVersion: z.literal(2),
+    issue: issueSchema,
+    issueSessionId: issueSessionIdSchema,
+    agent: agentIdSchema,
     artifact: z.literal("comparison-ballot"),
+    actionId: actionIdSchema,
+    responseSha256: digestSchema,
     inputSetHash: digestSchema,
     implementations: z.array(artifactCitationSchema).min(1),
     choice: agentIdSchema,
@@ -81,8 +115,13 @@ export const revisionReadyArtifactSchema = z
 
 export const consensusBallotArtifactSchema = z
   .object({
-    ...commonArtifactFields,
+    protocolVersion: z.literal(2),
+    issue: issueSchema,
+    issueSessionId: issueSessionIdSchema,
+    agent: agentIdSchema,
     artifact: z.literal("consensus-ballot"),
+    actionId: actionIdSchema,
+    responseSha256: digestSchema,
     inputSetHash: digestSchema,
     round: z.number().int().min(1),
     revisionCommitSha: gitShaSchema,
@@ -119,6 +158,8 @@ export const publishedArtifactSchema = z.discriminatedUnion("artifact", [
 ]);
 
 export type ParticipationReadyArtifact = z.infer<typeof participationReadyArtifactSchema>;
+export type PlanComparisonBallotResponse = z.infer<typeof planComparisonBallotResponseSchema>;
+export type ConsensusBallotResponse = z.infer<typeof consensusBallotResponseSchema>;
 export type PlanBallotArtifact = z.infer<typeof planBallotArtifactSchema>;
 export type ImplementationReadyArtifact = z.infer<typeof implementationReadyArtifactSchema>;
 export type ComparisonBallotArtifact = z.infer<typeof comparisonBallotArtifactSchema>;

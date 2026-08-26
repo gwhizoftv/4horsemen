@@ -12,6 +12,12 @@ The required response format for the current action also appears in that action'
 listed there. The coordinator accepts only the published artifact. If this file
 and `action.md` disagree on format, `action.md` wins.
 
+For `submissionMode: git`, write the instructed repository artifact, commit, and
+push the prepared issue branch. For `submissionMode: response`, write only the
+small JSON response at the instructed private response path; do not create a
+ballot artifact, commit, or push. Both modes finish with the exact completion
+marker described by `action.md`.
+
 Coordination checks this clone out on `issue-<n>/<agent>` and re-sets the
 `skip-worktree` bit on `AGENTS.md` before your CLI starts. The branch already
 exists and is already current: do not create it, do not switch to it, and do not

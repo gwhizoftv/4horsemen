@@ -485,3 +485,10 @@ clone the installer has not wired.
 
 A clone that still has `core.hooksPath=githooks` from the old layout is migrated
 by the next `coord install`, which unsets it.
+# Response grants and evidence retention
+
+Generated launchers grant only the current agent's completion mailbox directory
+and its issue response directory. They never grant the issue runtime, peer
+responses, or the accepted-response archive. `coord wipe-issue` retains the
+coordinator evidence branch by default; pass `--delete-evidence` for explicit
+destructive removal.

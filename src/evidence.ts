@@ -1,19 +1,43 @@
 import { agentFacingSubject } from "./agentLanguage.js";
 import { sha256 } from "./hash.js";
+import { z } from "zod";
 import type { FetchResult } from "./mirror.js";
 import {
-  comparisonBallotArtifactSchema,
   consensusBallotArtifactSchema,
   finalizationArtifactSchema,
   implementationReadyArtifactSchema,
   participationReadyArtifactSchema,
   parseJsonWithSchema,
-  planBallotArtifactSchema,
   revisionReadyArtifactSchema,
   validateCommonArtifactFields
 } from "./protocol.js";
 import type { BoundInput, EvidenceObservation, InternalOrder } from "./steps.js";
 import type { PinValidationResult } from "./pinValidation.js";
+
+// Compatibility parsers for pre-response ballot fixtures. These are reachable
+// only through the retired `*-ballot-published` evidence ids; active workflow
+// ids use private response records and protocol-version 2 artifacts.
+const legacyBallotBase = {
+  protocolVersion: z.literal(1),
+  issue: z.number().int(),
+  issueSessionId: z.string(),
+  agent: z.string(),
+  inputSetHash: z.string(),
+  rationale: z.string().min(1)
+};
+const legacyPlanBallotSchema = z.object({
+  ...legacyBallotBase,
+  artifact: z.literal("plan-ballot"),
+  plans: z.array(z.object({ agent: z.string(), commitSha: z.string(), path: z.string() })),
+  reviews: z.array(z.object({ agent: z.string(), commitSha: z.string(), path: z.string() })),
+  choice: z.string()
+}).passthrough();
+const legacyComparisonBallotSchema = z.object({
+  ...legacyBallotBase,
+  artifact: z.literal("comparison-ballot"),
+  implementations: z.array(z.object({ agent: z.string(), commitSha: z.string(), path: z.string() })),
+  choice: z.string()
+}).passthrough();
 
 export type EvidenceMirror = {
   fetchBranch(branch: string): Promise<FetchResult>;
@@ -41,16 +65,6 @@ const canonicalInputs = (inputs: readonly BoundInput[]): string =>
     .join("\n");
 
 export const computeInputSetHash = (inputs: readonly BoundInput[]): string => sha256(canonicalInputs(inputs));
-
-const citationsEqualInputs = (
-  citations: readonly { agent: string; commitSha: string; path: string }[],
-  inputs: readonly BoundInput[]
-): boolean => {
-  const normalize = (values: readonly { agent: string; commitSha: string; path: string }[]): string[] =>
-    values.map((value) => `${value.agent}\0${value.commitSha}\0${value.path}`).sort();
-  const expected = inputs.map(({ agent, commitSha, path }) => ({ agent, commitSha, path }));
-  return JSON.stringify(normalize(citations)) === JSON.stringify(normalize(expected));
-};
 
 const markdownSection = (raw: string, alternatives: readonly string[]): boolean =>
   alternatives.some((heading) => new RegExp(`^#{1,6}\\s+${heading}\\s*$`, "im").test(raw));
@@ -270,6 +284,30 @@ export const evaluateEvidence = async (
     return errors.length === 0 ? satisfied(order, submissionSha) : rejected(order, submissionSha, errors);
   }
 
+  if (
+    order.evidenceId === "plan-ballot-response-accepted" ||
+    order.evidenceId === "comparison-ballot-response-accepted" ||
+    order.evidenceId === "consensus-ballot-response-accepted"
+  ) {
+    return rejected(order, submissionSha, ["ballot judgments are private responses, not Git evidence"]);
+  }
+
+  // Legacy format-3 callers are retained for diagnostics only. New workflow
+  // orders use the response-accepted identifiers above and never enter these
+  // Git artifact validators.
+  if (order.evidenceId === "plan-ballot-published") {
+    const parsed = parseJsonWithSchema(blob, legacyPlanBallotSchema);
+    if (!parsed.ok) return rejected(order, submissionSha, [`invalid plan ballot: ${parsed.error}`]);
+    const errors = [
+      ...commonErrors(parsed.value, order),
+      ...inputHashErrors(parsed.value.inputSetHash, order),
+      ...(!order.eligibleChoices.includes(parsed.value.choice)
+        ? [`plan ballot choice ${parsed.value.choice} is not an eligible active plan agent`]
+        : [])
+    ];
+    return errors.length === 0 ? satisfied(order, submissionSha, { choice: parsed.value.choice }) : rejected(order, submissionSha, errors);
+  }
+
   if (order.evidenceId === "join-published") {
     const parsed = parseJsonWithSchema(blob, participationReadyArtifactSchema);
     if (!parsed.ok) return rejected(order, submissionSha, [`invalid participation-readiness artifact: ${parsed.error}`]);
@@ -277,21 +315,6 @@ export const evaluateEvidence = async (
     if (parsed.value.baselineSha !== order.baselineSha) errors.push("participation-readiness baselineSha does not match the issue baseline");
     if (parsed.value.automationDigest !== order.automationDigest) errors.push("participation-readiness automationDigest does not match");
     return errors.length === 0 ? satisfied(order, submissionSha) : rejected(order, submissionSha, errors);
-  }
-
-  if (order.evidenceId === "plan-ballot-published") {
-    const parsed = parseJsonWithSchema(blob, planBallotArtifactSchema);
-    if (!parsed.ok) return rejected(order, submissionSha, [`invalid plan ballot: ${parsed.error}`]);
-    const errors = [...commonErrors(parsed.value, order), ...inputHashErrors(parsed.value.inputSetHash, order)];
-    if (!citationsEqualInputs([...parsed.value.plans, ...parsed.value.reviews], order.inputs)) {
-      errors.push("plan ballot citations do not equal the bound plan/review set");
-    }
-    if (!order.eligibleChoices.includes(parsed.value.choice)) {
-      errors.push(`plan ballot choice ${parsed.value.choice} is not an eligible active plan agent`);
-    }
-    return errors.length === 0
-      ? satisfied(order, submissionSha, { choice: parsed.value.choice })
-      : rejected(order, submissionSha, errors);
   }
 
   if (order.evidenceId === "implementation-pinned") {
@@ -315,19 +338,6 @@ export const evaluateEvidence = async (
     }
     return errors.length === 0
       ? satisfied(order, submissionSha, { productPin: parsed.value.implementationCommitSha })
-      : rejected(order, submissionSha, errors);
-  }
-
-  if (order.evidenceId === "comparison-ballot-published") {
-    const parsed = parseJsonWithSchema(blob, comparisonBallotArtifactSchema);
-    if (!parsed.ok) return rejected(order, submissionSha, [`invalid comparison ballot: ${parsed.error}`]);
-    const errors = [...commonErrors(parsed.value, order), ...inputHashErrors(parsed.value.inputSetHash, order)];
-    if (!citationsEqualInputs(parsed.value.implementations, order.inputs)) errors.push("comparison ballot pins do not equal bound inputs");
-    if (!order.eligibleChoices.includes(parsed.value.choice)) {
-      errors.push(`comparison ballot choice ${parsed.value.choice} is not an eligible active implementation agent`);
-    }
-    return errors.length === 0
-      ? satisfied(order, submissionSha, { choice: parsed.value.choice })
       : rejected(order, submissionSha, errors);
   }
 
@@ -359,17 +369,31 @@ export const evaluateEvidence = async (
       : rejected(order, submissionSha, errors);
   }
 
+  if (order.evidenceId === "comparison-ballot-published") {
+    const parsed = parseJsonWithSchema(blob, legacyComparisonBallotSchema);
+    if (!parsed.ok) return rejected(order, submissionSha, [`invalid comparison ballot: ${parsed.error}`]);
+    const errors = [
+      ...commonErrors(parsed.value, order),
+      ...inputHashErrors(parsed.value.inputSetHash, order),
+      ...(!order.eligibleChoices.includes(parsed.value.choice)
+        ? [`comparison ballot choice ${parsed.value.choice} is not an eligible active implementation agent`]
+        : [])
+    ];
+    return errors.length === 0 ? satisfied(order, submissionSha, { choice: parsed.value.choice }) : rejected(order, submissionSha, errors);
+  }
+
   if (order.evidenceId === "consensus-ballot-published") {
     const parsed = parseJsonWithSchema(blob, consensusBallotArtifactSchema);
     if (!parsed.ok) return rejected(order, submissionSha, [`invalid consensus ballot: ${parsed.error}`]);
-    const errors = [...commonErrors(parsed.value, order), ...inputHashErrors(parsed.value.inputSetHash, order)];
-    if (parsed.value.round !== order.round) errors.push(`consensus ballot round must be ${order.round ?? 1}`);
-    if (!order.inputs.some((input) => input.commitSha === parsed.value.revisionCommitSha)) {
-      errors.push("consensus ballot does not cite the bound revision pin");
-    }
-    return errors.length === 0
-      ? satisfied(order, submissionSha, { disposition: parsed.value.disposition })
-      : rejected(order, submissionSha, errors);
+    const errors = [
+      ...commonErrors(parsed.value, order),
+      ...inputHashErrors(parsed.value.inputSetHash, order),
+      ...(parsed.value.round !== order.round ? [`consensus ballot round must be ${order.round ?? 1}`] : []),
+      ...(!order.inputs.some((input) => input.commitSha === parsed.value.revisionCommitSha)
+        ? ["consensus ballot does not cite the bound revision pin"]
+        : [])
+    ];
+    return errors.length === 0 ? satisfied(order, submissionSha, { disposition: parsed.value.disposition }) : rejected(order, submissionSha, errors);
   }
 
   const parsed = parseJsonWithSchema(blob, finalizationArtifactSchema);

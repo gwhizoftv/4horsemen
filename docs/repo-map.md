@@ -89,3 +89,9 @@ Tests live in `test/`, one file per module, with shared fixtures under
 | Agent launch, nudging, or readiness | `scripts/lib/launcher.sh`, `src/tmux.ts`, `docs/readiness-policy.md` |
 | Clone setup, hooks, ignore files | `src/setupWorkspace.ts`, `src/install.ts` |
 | Reporting on a finished run | `src/analytics.ts` |
+# Private response modules
+
+`src/ballotResponse.ts` owns bounded action-bound response reads and immutable
+archives. `src/ballotPublication.ts` builds canonical batches. Evidence commits
+are created in coordinator-owned temporary worktrees on the reserved
+`coordinator-evidence` branch, never in agent clones or the product PR.

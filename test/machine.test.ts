@@ -44,6 +44,18 @@ const accepted = (
   ...(disposition === undefined ? {} : { disposition })
 });
 
+const acceptedResponse = (agent: string, round: number, disposition: "approve" | "revise" | "escalate") => ({
+  stepId: "R6.ballot" as const,
+  agent,
+  round,
+  actionId: `b2337d85-6617-4e9f-8ace-${["claude", "codex", "cursor", "antigravity"].indexOf(agent).toString().padStart(4, "0")}${"0".repeat(8)}`,
+  responseSha256: `${(agent.charCodeAt(0) % 10).toString().repeat(64)}`,
+  path: `.code-reviews/issue-1/consensus-ballot-${agent}-round-${round}.json`,
+  disposition,
+  rationale: "reason",
+  acceptedAt: now
+});
+
 const implementationDerived = {
   kind: "implementation-selection" as const,
   algorithm: "plurality-active-roster-v1" as const,
@@ -109,17 +121,9 @@ describe("pure workflow machine", () => {
       ...base,
       issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 3 },
       derived: { ...base.derived, implementationSelection: implementationDerived },
-      accepted: roster.map((agent) => accepted("R6.ballot", agent, 3, agent === "codex" ? "revise" : "approve"))
+      acceptedResponses: roster.map((agent) => acceptedResponse(agent, 3, agent === "codex" ? "revise" : "approve"))
     });
-    expect(decide({ start, cursors })).toEqual([
-      {
-        type: "owner-action-required",
-        reason: "revision limit 3 reached; round 4 is forbidden",
-        kind: "revision-limit",
-        round: 3,
-        allowedAnswers: ["retry", "abandon"]
-      }
-    ]);
+    expect(decide({ start, cursors })).toEqual([{ type: "publish-ballot-batch", stepId: "R6.ballot", round: 3 }]);
   });
 
   it("routes revision work to the persisted authorized reviser", () => {
@@ -198,24 +202,14 @@ describe("pure workflow machine", () => {
       ...base,
       issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
       derived: { ...base.derived, implementationSelection: implementationDerived },
-      accepted: roster.map((agent) => accepted("R6.ballot", agent, 1, agent === "codex" ? "revise" : "approve"))
+      acceptedResponses: roster.map((agent) => acceptedResponse(agent, 1, agent === "codex" ? "revise" : "approve"))
     });
-    expect(decide({ start, cursors: revision })).toEqual([
-      { type: "advance-step", from: "R6.ballot", to: "R6.revise", round: 2 }
-    ]);
+    expect(decide({ start, cursors: revision })).toEqual([{ type: "publish-ballot-batch", stepId: "R6.ballot", round: 1 }]);
     const escalation = cursorsStateSchema.parse({
       ...revision,
-      accepted: roster.map((agent) => accepted("R6.ballot", agent, 1, agent === "codex" ? "escalate" : "approve"))
+      acceptedResponses: roster.map((agent) => acceptedResponse(agent, 1, agent === "codex" ? "escalate" : "approve"))
     });
-    expect(decide({ start, cursors: escalation })).toEqual([
-      {
-        type: "owner-action-required",
-        reason: "consensus ballot round 1 requested escalation",
-        kind: "ballot-escalation",
-        round: 1,
-        allowedAnswers: ["retry", "revise", "abandon"]
-      }
-    ]);
+    expect(decide({ start, cursors: escalation })).toEqual([{ type: "publish-ballot-batch", stepId: "R6.ballot", round: 1 }]);
   });
 
   it("keeps retry and rejection separate from acceptance", () => {

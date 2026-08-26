@@ -257,6 +257,10 @@ export type IssueRuntimePaths = {
   journal: string;
   issueSnapshot: string;
   agents: string;
+  /** Coordinator-owned immutable copies of accepted private responses. */
+  acceptedResponses: string;
+  /** Coordinator-owned temporary worktrees used to create evidence commits. */
+  evidenceWorktrees: string;
   /** Issue number, retained because the mailbox path is derived from it. */
   issue: number;
   /** Root of the completion mailbox tree; never inside `coordRoot`. */
@@ -301,6 +305,8 @@ export const issueRuntimePaths = (
     journal: containedPath(issueRoot, "journal.jsonl"),
     issueSnapshot: containedPath(issueRoot, "github-issue.json"),
     agents: containedPath(issueRoot, "agents"),
+    acceptedResponses: containedPath(issueRoot, "accepted-responses"),
+    evidenceWorktrees: containedPath(issueRoot, "evidence-worktrees"),
     issue,
     completesRoot: mailbox,
     completesIssueRoot: containedPath(mailbox, `issue-${issue}`)
@@ -310,6 +316,8 @@ export const issueRuntimePaths = (
 export type AgentRuntimePaths = {
   root: string;
   action: string;
+  /** The only writable child beneath the coordinator-owned agent runtime. */
+  responsesDir: string;
   complete: string;
   renderLog: string;
   /**
@@ -330,11 +338,38 @@ export const agentRuntimePaths = (paths: IssueRuntimePaths, agent: string): Agen
   return {
     root,
     action: containedPath(root, "action.md"),
+    responsesDir: containedPath(root, "responses"),
     // The receipt leaves the coord root; the order and the log do not.
     complete: containedPath(completeDir, "complete"),
     renderLog: containedPath(root, "render.log"),
     completeDir
   };
+};
+
+const actionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const checkedActionId = (actionId: string): string => {
+  if (!actionIdPattern.test(actionId)) throw new PathSafetyError(`Invalid action id: ${actionId}`);
+  return actionId.toLowerCase();
+};
+
+export const agentResponsePath = (paths: IssueRuntimePaths, agent: string, actionId: string): string => {
+  const runtime = agentRuntimePaths(paths, agent);
+  const response = containedPath(runtime.responsesDir, `${checkedActionId(actionId)}.json`);
+  assertNoSymlink(paths.coordRoot, response);
+  return response;
+};
+
+export const acceptedResponseArchivePath = (
+  paths: IssueRuntimePaths,
+  agent: string,
+  actionId: string
+): string => {
+  if (!agentPattern.test(agent)) throw new PathSafetyError(`Invalid agent id: ${agent}`);
+  const directory = containedPath(paths.acceptedResponses, agent);
+  const archive = containedPath(directory, `${checkedActionId(actionId)}.json`);
+  assertNoSymlink(paths.coordRoot, archive);
+  return archive;
 };
 
 export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly string[]): void => {
@@ -344,6 +379,12 @@ export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly st
   assertNoSymlink(paths.coordRoot, paths.agents);
   mkdirSync(paths.agents, { recursive: true, mode: 0o700 });
   assertNoSymlink(paths.coordRoot, paths.agents);
+  assertNoSymlink(paths.coordRoot, paths.acceptedResponses);
+  mkdirSync(paths.acceptedResponses, { recursive: true, mode: 0o700 });
+  assertNoSymlink(paths.coordRoot, paths.acceptedResponses);
+  assertNoSymlink(paths.coordRoot, paths.evidenceWorktrees);
+  mkdirSync(paths.evidenceWorktrees, { recursive: true, mode: 0o700 });
+  assertNoSymlink(paths.coordRoot, paths.evidenceWorktrees);
   assertNoSymlink(paths.completesRoot, paths.completesIssueRoot);
   mkdirSync(paths.completesIssueRoot, { recursive: true, mode: 0o700 });
   assertNoSymlink(paths.completesRoot, paths.completesIssueRoot);
@@ -352,6 +393,9 @@ export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly st
     assertNoSymlink(paths.coordRoot, runtime.root);
     mkdirSync(runtime.root, { recursive: true, mode: 0o700 });
     assertNoSymlink(paths.coordRoot, runtime.root);
+    assertNoSymlink(paths.coordRoot, runtime.responsesDir);
+    mkdirSync(runtime.responsesDir, { recursive: true, mode: 0o700 });
+    assertNoSymlink(paths.coordRoot, runtime.responsesDir);
     // Checked against the mailbox root, not the coord root: the two trees are
     // deliberately disjoint, so containment must be asserted within each.
     assertNoSymlink(paths.completesRoot, runtime.completeDir);

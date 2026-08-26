@@ -1,10 +1,12 @@
 import type { CursorsState, StartState } from "./state.js";
+import { ballotKindFor, isBallotStep } from "./ballotPublication.js";
 import {
   STEP_DEFINITIONS,
   participantsForStep,
   stepsForProfile,
   type EvidenceObservation,
   type MachineDecision,
+  type ResponseObservation,
   type WorkflowProfile,
   type WorkflowStepId
 } from "./steps.js";
@@ -12,7 +14,7 @@ import {
 export type MachineInput = {
   start: StartState;
   cursors: CursorsState;
-  observations?: readonly EvidenceObservation[];
+  observations?: readonly (EvidenceObservation | ResponseObservation)[];
 };
 
 const globalOrder: readonly WorkflowStepId[] = [
@@ -48,9 +50,21 @@ const nextStep = (current: WorkflowStepId, profile: WorkflowProfile): WorkflowSt
 };
 
 const hasAccepted = (cursors: CursorsState, stepId: WorkflowStepId, agent: string, round: number | null): boolean =>
-  cursors.accepted.some(
-    (submission) => submission.stepId === stepId && submission.agent === agent && submission.round === round
-  );
+  isBallotStep(stepId)
+    ? (cursors.acceptedResponses ?? []).some(
+        (response) =>
+          response.stepId === stepId &&
+          response.agent === agent &&
+          response.round === round &&
+          response.supersededAt === undefined
+      ) ||
+      (cursors.formatVersion < 4 &&
+        cursors.accepted.some(
+          (submission) => submission.stepId === stepId && submission.agent === agent && submission.round === round
+        ))
+    : cursors.accepted.some(
+        (submission) => submission.stepId === stepId && submission.agent === agent && submission.round === round
+      );
 
 const sameRoster = (left: readonly string[], right: readonly string[]): boolean =>
   left.length === right.length && left.every((agent, index) => agent === right[index]);
@@ -69,6 +83,34 @@ const needsConsensusDerive = (cursors: CursorsState, round: number): boolean =>
   cursors.derived.consensus.round !== round ||
   !sameRoster(cursors.derived.consensus.activeRoster, cursors.activeRoster);
 
+const hasPublishedBallotBatch = (
+  cursors: CursorsState,
+  stepId: "R3.plan-ballot" | "R5.compare-ballot" | "R6.ballot",
+  round: number | null
+): boolean => {
+  if (cursors.formatVersion < 4) return true;
+  const responses = cursors.activeRoster.map((agent) =>
+    (cursors.acceptedResponses ?? []).find(
+      (response) =>
+        response.stepId === stepId &&
+        response.agent === agent &&
+        response.round === round &&
+        response.supersededAt === undefined
+    )
+  );
+  if (responses.some((response) => response === undefined)) return false;
+  const digests = responses.map((response) => response?.responseSha256 as string);
+  return (cursors.ballotBatches ?? []).some(
+    (batch) =>
+      batch.kind === ballotKindFor(stepId) &&
+      batch.round === round &&
+      batch.status === "published" &&
+      sameRoster(batch.activeRoster, cursors.activeRoster) &&
+      batch.responseSha256s.length === digests.length &&
+      batch.responseSha256s.every((digest, index) => digest === digests[index])
+  );
+};
+
 export const decide = (input: MachineInput): readonly MachineDecision[] => {
   const { start, cursors } = input;
   if (cursors.abandoned) return [{ type: "wait", reason: "workflow was abandoned" }];
@@ -80,11 +122,11 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
     if (!cursors.activeRoster.includes(observation.agent)) continue;
     const cursor = cursors.agents[observation.agent];
     if (cursor === undefined || cursor.actionId !== observation.actionId) continue;
-    if (observation.status === "retry") {
+    if ("submissionSha" in observation && observation.status === "retry") {
       decisions.push({ type: "retry-verification", agent: observation.agent, outstanding: observation.outstanding });
     } else if (observation.status === "rejected") {
       decisions.push({ type: "reissue-action", agent: observation.agent, outstanding: observation.outstanding });
-    } else {
+    } else if ("submissionSha" in observation) {
       decisions.push({
         type: "accept-submission",
         agent: observation.agent,
@@ -95,6 +137,28 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
         ...(observation.choice === undefined ? {} : { choice: observation.choice }),
         ...(observation.checkResults === undefined ? {} : { checkResults: observation.checkResults })
       });
+    } else {
+      if (
+        observation.responseSha256 === undefined ||
+        observation.rationale === undefined ||
+        observation.bytes === undefined
+      ) {
+        decisions.push({
+          type: "reissue-action",
+          agent: observation.agent,
+          outstanding: ["accepted response observation is incomplete"]
+        });
+      } else {
+        decisions.push({
+          type: "accept-response",
+          agent: observation.agent,
+          responseSha256: observation.responseSha256,
+          rationale: observation.rationale,
+          bytes: observation.bytes,
+          ...(observation.choice === undefined ? {} : { choice: observation.choice }),
+          ...(observation.disposition === undefined ? {} : { disposition: observation.disposition })
+        });
+      }
     }
   }
   if (decisions.length > 0) return decisions;
@@ -160,9 +224,19 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
   const complete = participants.every((agent) => hasAccepted(cursors, current, agent, round));
 
   if (complete) {
+    if (isBallotStep(current) && !hasPublishedBallotBatch(cursors, current, round)) {
+      return [{ type: "publish-ballot-batch", stepId: current, round }];
+    }
     if (current === "R6.ballot") {
-      const ballots = cursors.accepted.filter(
-        (submission) => submission.stepId === current && submission.round === round && participants.includes(submission.agent)
+      const ballots = (cursors.formatVersion < 4
+        ? cursors.accepted.map((submission) => ({ ...submission, stepId: submission.stepId as typeof current }))
+        : cursors.acceptedResponses ?? []
+      ).filter(
+        (response) =>
+          response.stepId === current &&
+          response.round === round &&
+          (!("supersededAt" in response) || response.supersededAt === undefined) &&
+          participants.includes(response.agent)
       );
       if (ballots.some((ballot) => ballot.disposition === "escalate")) {
         const currentRound = round ?? 1;

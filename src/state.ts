@@ -26,12 +26,12 @@ import {
   type WorkflowStepId
 } from "./steps.js";
 
-export const RUNTIME_FORMAT_VERSION = 3;
+export const RUNTIME_FORMAT_VERSION = 4;
 
-const LEGACY_RUNTIME_FORMAT_VERSION = 2;
+const LEGACY_RUNTIME_FORMAT_VERSIONS = new Set([2, 3]);
 
 const RUNTIME_FORMAT_WIPE_MESSAGE =
-  "Runtime format version 2 is no longer supported. Wipe this issue with `coord wipe <issue>` and start it again.";
+  "This runtime format is no longer supported. Wipe this issue with `coord wipe-issue <issue>` and start it again.";
 
 const workflowProfileSchema = z.enum(["solo", "reviewed", "consensus"]);
 const prPolicySchema = z.enum(["owner-only", "coord-open-unmerged", "coord-merged"]);
@@ -62,11 +62,14 @@ const evidenceIdSchema = z.enum([
   "plan-published",
   "review-published",
   "plan-ballot-published",
+  "plan-ballot-response-accepted",
   "implementation-pinned",
   "comparison-published",
   "comparison-ballot-published",
+  "comparison-ballot-response-accepted",
   "revision-pinned",
   "consensus-ballot-published",
+  "consensus-ballot-response-accepted",
   "finalization-verified"
 ]);
 const timestampSchema = z.string().datetime({ offset: true });
@@ -251,7 +254,9 @@ export const workspaceDeclarationSchema = z
 
 export const startStateSchema = z
   .object({
-    formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
+    // The reader rejects legacy versions before parsing, but accepting them at
+    // this schema boundary lets diagnostics inspect historical fixtures.
+    formatVersion: z.union([z.literal(RUNTIME_FORMAT_VERSION), z.literal(2), z.literal(3)]),
     issue: issueSchema,
     issueSessionId: issueSessionIdSchema,
     baselineSha: gitShaSchema,
@@ -308,6 +313,8 @@ export const agentCursorSchema = z
     stepId: stepIdSchema.nullable(),
     evidenceId: evidenceIdSchema.nullable(),
     actionId: z.string().uuid().nullable(),
+    submissionMode: z.enum(["git", "response"]).nullable().optional(),
+    actionDigest: digestSchema.nullable().optional(),
     status: z.enum([
       "idle",
       "ordered",
@@ -322,6 +329,7 @@ export const agentCursorSchema = z
     ]),
     attempt: z.number().int().nonnegative(),
     submissionSha: gitShaSchema.nullable(),
+    responseSha256: digestSchema.nullable().optional(),
     outstanding: z.array(z.string()),
     updatedAt: timestampSchema
   })
@@ -340,11 +348,35 @@ const derivedInputCitationSchema = z
   .object({
     kind: derivedInputKindSchema,
     agent: agentIdSchema,
-    submissionSha: gitShaSchema,
+    submissionSha: gitShaSchema.optional(),
     path: z.string().min(1),
-    productPin: gitShaSchema.optional()
+    productPin: gitShaSchema.optional(),
+    actionId: z.string().uuid().optional(),
+    responseSha256: digestSchema.optional(),
+    evidenceCommitSha: gitShaSchema.optional()
   })
-  .strict();
+  .strict()
+  .superRefine((citation, context) => {
+    const git = citation.submissionSha !== undefined;
+    const response =
+      citation.actionId !== undefined ||
+      citation.responseSha256 !== undefined ||
+      citation.evidenceCommitSha !== undefined;
+    if (git === response) {
+      context.addIssue({
+        code: "custom",
+        message: "derived citation must contain exactly one Git-submission or response-publication provenance shape"
+      });
+    }
+    if (
+      response &&
+      (citation.actionId === undefined ||
+        citation.responseSha256 === undefined ||
+        citation.evidenceCommitSha === undefined)
+    ) {
+      context.addIssue({ code: "custom", message: "response citation provenance is incomplete" });
+    }
+  });
 
 const derivedDecisionBaseSchema = z
   .object({
@@ -446,9 +478,55 @@ export const acceptedSubmissionSchema = z
   })
   .strict();
 
+export const acceptedResponseSchema = z
+  .object({
+    stepId: z.enum(["R3.plan-ballot", "R5.compare-ballot", "R6.ballot"]),
+    agent: agentIdSchema,
+    actionId: z.string().uuid(),
+    round: z.number().int().min(1).nullable(),
+    responseSha256: digestSchema,
+    path: z.string().min(1),
+    choice: agentIdSchema.optional(),
+    disposition: z.enum(["approve", "revise", "escalate"]).optional(),
+    rationale: z.string().min(1).max(1_000),
+    acceptedAt: timestampSchema,
+    supersededAt: timestampSchema.optional(),
+    supersededReason: z.string().min(1).optional()
+  })
+  .strict()
+  .superRefine((response, context) => {
+    const choiceStep = response.stepId === "R3.plan-ballot" || response.stepId === "R5.compare-ballot";
+    if (choiceStep !== (response.choice !== undefined) || choiceStep === (response.disposition !== undefined)) {
+      context.addIssue({ code: "custom", message: "accepted response semantic fields do not match its ballot step" });
+    }
+    if ((response.supersededAt === undefined) !== (response.supersededReason === undefined)) {
+      context.addIssue({ code: "custom", message: "response supersession timestamp and reason must appear together" });
+    }
+  });
+
+export const ballotBatchSchema = z
+  .object({
+    kind: z.enum(["plan-ballot-batch", "comparison-ballot-batch", "consensus-ballot-batch"]),
+    round: z.number().int().min(1).nullable(),
+    inputSetHash: digestSchema,
+    activeRoster: z.array(agentIdSchema).min(1),
+    responseSha256s: z.array(digestSchema).min(1),
+    paths: z.array(z.string().min(1)).min(1),
+    branch: z.string().min(1),
+    parentSha: gitShaSchema,
+    commitSha: gitShaSchema,
+    status: z.enum(["pending", "published", "failed", "invalidated"]),
+    attempts: z.number().int().nonnegative(),
+    error: z.string().min(1).nullable(),
+    createdAt: timestampSchema,
+    publishedAt: timestampSchema.nullable(),
+    supersedes: gitShaSchema.nullable()
+  })
+  .strict();
+
 export const cursorsStateSchema = z
   .object({
-    formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
+    formatVersion: z.union([z.literal(RUNTIME_FORMAT_VERSION), z.literal(2), z.literal(3)]),
     stateRevision: z.number().int().nonnegative(),
     issueCursor: z
       .object({
@@ -493,13 +571,25 @@ export const cursorsStateSchema = z
     completed: z.boolean(),
     agents: z.record(agentIdSchema, agentCursorSchema),
     accepted: z.array(acceptedSubmissionSchema),
+    acceptedResponses: z.array(acceptedResponseSchema).optional(),
+    ballotBatches: z.array(ballotBatchSchema).optional(),
     updatedAt: timestampSchema
   })
-  .strict();
+  .strict()
+  .superRefine((state, context) => {
+    const seen = new Set<string>();
+    for (const response of state.acceptedResponses ?? []) {
+      const key = response.actionId;
+      if (seen.has(key)) {
+        context.addIssue({ code: "custom", message: `accepted response action is duplicated: ${response.actionId}` });
+      }
+      seen.add(key);
+    }
+  });
 
 export const journalEventSchema = z
   .object({
-    formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
+    formatVersion: z.union([z.literal(RUNTIME_FORMAT_VERSION), z.literal(2), z.literal(3)]),
     sequence: z.number().int().nonnegative(),
     at: timestampSchema,
     type: z.enum([
@@ -512,7 +602,12 @@ export const journalEventSchema = z
       "agent-observability-recovered",
       "nudge-deferred",
       "intent-seen",
+      "response-accepted",
       "verify-result",
+      "ballot-batch-pending",
+      "ballot-batch-published",
+      "ballot-batch-failed",
+      "ballot-batch-invalidated",
       "gate-advanced",
       "owner-question",
       "owner-answer",
@@ -542,16 +637,18 @@ export type VerifyConfig = z.infer<typeof verifyConfigSchema>;
 export type VerifyPhase = z.infer<typeof verifyPhaseSchema>;
 export type InstallStamp = z.infer<typeof installStampSchema>;
 export type WorkspaceDeclaration = z.infer<typeof workspaceDeclarationSchema>;
-export type StartState = z.infer<typeof startStateSchema>;
+export type StartState = Omit<z.infer<typeof startStateSchema>, "formatVersion"> & { formatVersion: number };
 export type AgentCursor = z.infer<typeof agentCursorSchema>;
 export type AcceptedSubmission = z.infer<typeof acceptedSubmissionSchema>;
+export type AcceptedResponse = z.infer<typeof acceptedResponseSchema>;
+export type BallotBatch = z.infer<typeof ballotBatchSchema>;
 export type DerivedInputKind = z.infer<typeof derivedInputKindSchema>;
 export type DerivedInputCitation = z.infer<typeof derivedInputCitationSchema>;
 export type PlanSelectionDerived = z.infer<typeof planSelectionDerivedSchema>;
 export type ImplementationSelectionDerived = z.infer<typeof implementationSelectionDerivedSchema>;
 export type ConsensusDerived = z.infer<typeof consensusDerivedSchema>;
 export type DerivedState = z.infer<typeof derivedStateSchema>;
-export type CursorsState = z.infer<typeof cursorsStateSchema>;
+export type CursorsState = Omit<z.infer<typeof cursorsStateSchema>, "formatVersion"> & { formatVersion: number };
 export type JournalEvent = z.infer<typeof journalEventSchema>;
 
 /**
@@ -577,7 +674,7 @@ export type StartStateInput = Omit<
 const assertRuntimeFormat = (path: string, value: unknown): void => {
   if (typeof value !== "object" || value === null || !("formatVersion" in value)) return;
   const formatVersion = (value as { formatVersion: unknown }).formatVersion;
-  if (formatVersion === LEGACY_RUNTIME_FORMAT_VERSION) {
+  if (typeof formatVersion === "number" && LEGACY_RUNTIME_FORMAT_VERSIONS.has(formatVersion)) {
     throw new Error(`Invalid ${path}: ${RUNTIME_FORMAT_WIPE_MESSAGE}`);
   }
 };
@@ -629,9 +726,12 @@ export const initialCursors = (start: StartState, now = new Date().toISOString()
       stepId: null,
       evidenceId: null,
       actionId: null,
+      submissionMode: null,
+      actionDigest: null,
       status: "idle",
       attempt: 0,
       submissionSha: null,
+      responseSha256: null,
       outstanding: [],
       updatedAt: now
     };
@@ -658,6 +758,8 @@ export const initialCursors = (start: StartState, now = new Date().toISOString()
     completed: false,
     agents,
     accepted: [],
+    acceptedResponses: [],
+    ballotBatches: [],
     updatedAt: now
   });
 };
@@ -903,10 +1005,23 @@ export const dropAgent = (cursors: CursorsState, agent: string, now = new Date()
     derived: invalidateDerivedForDrop(cursors.derived, agent),
     agents: {
       ...cursors.agents,
-      [agent]: { ...current, status: "dropped", actionId: null, submissionSha: null, outstanding: [], updatedAt: now }
+      [agent]: {
+        ...current,
+        status: "dropped",
+        actionId: null,
+        submissionMode: null,
+        actionDigest: null,
+        submissionSha: null,
+        responseSha256: null,
+        outstanding: [],
+        updatedAt: now
+      }
     },
     accepted: cursors.accepted.filter(
       (submission) => submission.agent !== agent || submission.stepId !== cursors.issueCursor.stepId
+    ),
+    acceptedResponses: (cursors.acceptedResponses ?? []).filter(
+      (response) => response.agent !== agent || response.stepId !== cursors.issueCursor.stepId
     ),
     updatedAt: now
   });

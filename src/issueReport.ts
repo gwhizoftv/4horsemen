@@ -30,6 +30,7 @@ export const renderIssueReport = (
     null;
   const branch = cursors.publication.branch;
   const url = cursors.publication.url;
+  const evidenceBatch = [...(cursors.ballotBatches ?? [])].reverse().find((batch) => batch.status !== "invalidated");
   const phase = cursors.abandoned
     ? "abandoned"
     : cursors.paused
@@ -43,8 +44,13 @@ export const renderIssueReport = (
     `Chosen agent: ${chosen ?? "(not selected yet)"}`,
     `Implementation pin: ${implementationPin ?? "(none)"}`,
     `Final pin (PR head): ${pin ?? "(none)"}`,
-    `Published branch: ${branch ?? "(not pushed yet)"}`
+    `Published branch: ${branch ?? "(not pushed yet)"}`,
+    `Evidence branch: ${evidenceBatch?.branch ?? "(none)"}`,
+    `Evidence tip: ${evidenceBatch?.commitSha ?? "(none)"}`
   ];
+  if (evidenceBatch !== undefined && evidenceBatch.status !== "published") {
+    lines.push(`Evidence publication: ${evidenceBatch.status}${evidenceBatch.error === null ? "" : ` (${evidenceBatch.error})`}`);
+  }
   if (url !== null) lines.push(`Pull request: ${url}`);
   else if (pin !== null && cursors.publication.status === "not-required") {
     lines.push(

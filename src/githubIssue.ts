@@ -60,6 +60,8 @@ export const formatFinalizationPullRequest = (input: {
   title: string;
   finalSha: string;
   draft: boolean;
+  evidenceBranch?: string | null;
+  evidenceTip?: string | null;
 }): { title: string; body: string } => {
   const issueTitle = input.title.trim() === "" ? "coordinated implementation" : input.title.trim();
   return {
@@ -69,7 +71,14 @@ export const formatFinalizationPullRequest = (input: {
       "",
       input.draft
         ? `Draft PR for issue ${input.issue}. Owner merges. Final pin: ${input.finalSha}.`
-        : `PR for issue ${input.issue}. Coordinator merges. Final pin: ${input.finalSha}.`
+        : `PR for issue ${input.issue}. Coordinator merges. Final pin: ${input.finalSha}.`,
+      ...(input.evidenceBranch === undefined || input.evidenceBranch === null
+        ? []
+        : [
+            "",
+            `Coordinator-authored ballot evidence: ${input.evidenceBranch} at ${input.evidenceTip ?? "(pending)"}.`,
+            "This branch records action-bound responses; it is not a cryptographic agent signature."
+          ])
     ].join("\n")
   };
 };

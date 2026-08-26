@@ -28,6 +28,10 @@ git obligations. This file describes the rules that apply to **agent clones**
 
 ## Verification
 
+Automated Git actions use the prepared issue branch and their instructed commit
+and push contract. Ballot actions are response-mode: write only the instructed
+private response JSON and completion marker, with no ballot commit or push.
+
 Coordination adds no tests to this repository. It runs whatever this project
 declares, as argument vectors, in the owner's workspace config:
 

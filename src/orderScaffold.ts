@@ -2,6 +2,7 @@ import { computeInputSetHash } from "./evidence.js";
 import type { BoundInput, WorkflowStepId } from "./steps.js";
 
 export type ArtifactScaffoldContext = {
+  actionId?: string;
   stepId: WorkflowStepId;
   issue: number;
   issueSessionId: string;
@@ -15,15 +16,6 @@ export type ArtifactScaffoldContext = {
 };
 
 const PLACEHOLDER_SHA = "<40-lowercase-hex-commit-sha>";
-
-const citation = (input: BoundInput): { agent: string; commitSha: string; path: string } => ({
-  agent: input.agent,
-  commitSha: input.commitSha,
-  path: input.path
-});
-
-const citationsOf = (inputs: readonly BoundInput[], kind: string) =>
-  inputs.filter((input) => input.kind === kind).map(citation);
 
 const common = (ctx: ArtifactScaffoldContext) => ({
   protocolVersion: 1 as const,
@@ -52,10 +44,7 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
       };
     case "R3.plan-ballot":
       return {
-        ...withHash(ctx),
-        artifact: "plan-ballot",
-        plans: citationsOf(ctx.inputs, "plan"),
-        reviews: citationsOf(ctx.inputs, "review"),
+        actionId: ctx.actionId ?? "<current-action-uuid>",
         choice: ctx.eligibleChoices[0] ?? ctx.agent,
         rationale: "<one sentence>"
       };
@@ -68,9 +57,7 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
       };
     case "R5.compare-ballot":
       return {
-        ...withHash(ctx),
-        artifact: "comparison-ballot",
-        implementations: citationsOf(ctx.inputs, "implementation"),
+        actionId: ctx.actionId ?? "<current-action-uuid>",
         choice: ctx.eligibleChoices[0] ?? ctx.agent,
         rationale: "<one sentence>"
       };
@@ -84,10 +71,7 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
       };
     case "R6.ballot":
       return {
-        ...withHash(ctx),
-        artifact: "consensus-ballot",
-        round: ctx.round ?? 1,
-        revisionCommitSha: ctx.inputs[0]?.commitSha ?? PLACEHOLDER_SHA,
+        actionId: ctx.actionId ?? "<current-action-uuid>",
         disposition: "approve",
         rationale: "<one sentence>"
       };
@@ -158,8 +142,11 @@ export const renderArtifactScaffold = (ctx: ArtifactScaffoldContext): string => 
   const value = artifactScaffoldValue(ctx);
   if (value === null) return "";
   const json = JSON.stringify(value, null, 2);
+  const destination = ["R3.plan-ballot", "R5.compare-ballot", "R6.ballot"].includes(ctx.stepId)
+    ? "response path"
+    : "required path";
   return (
-    `\n\nWrite this JSON to the required path (replace any \`<...>\` placeholders; keep bound citations and digests exact):\n\n` +
+    `\n\nWrite this JSON to the ${destination} (replace any \`<...>\` placeholders; keep bound values exact):\n\n` +
     "```json\n" +
     `${json}\n` +
     "```"

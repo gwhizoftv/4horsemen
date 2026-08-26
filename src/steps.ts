@@ -11,11 +11,14 @@ export type EvidenceId =
   | "join-published"
   | "plan-published"
   | "review-published"
+  | "plan-ballot-response-accepted"
   | "plan-ballot-published"
   | "implementation-pinned"
   | "comparison-published"
+  | "comparison-ballot-response-accepted"
   | "comparison-ballot-published"
   | "revision-pinned"
+  | "consensus-ballot-response-accepted"
   | "consensus-ballot-published"
   | "finalization-verified";
 
@@ -59,6 +62,7 @@ export type StepDefinition = {
   id: WorkflowStepId;
   gateId: GateId;
   evidenceId: EvidenceId;
+  submissionMode?: "git" | "response";
   participants: "all" | "implementer" | "reviser";
   requiredPath: (issue: number, agent: string, round: number | null) => string;
   task: string;
@@ -70,6 +74,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     gateId: "gate-1-join",
     evidenceId: "join-published",
     participants: "all",
+    submissionMode: "git",
     requiredPath: (issue, agent) => `.signals/issue-${issue}/participation-ready-${agent}.json`,
     task: "Publish the participation-readiness artifact for this issue."
   },
@@ -78,6 +83,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     gateId: "gate-2-plans",
     evidenceId: "plan-published",
     participants: "all",
+    submissionMode: "git",
     requiredPath: (issue) => `.plans/issue-${issue}/plan.md`,
     task: "Write and publish a mechanically complete implementation plan."
   },
@@ -86,22 +92,25 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     gateId: "gate-3-selection",
     evidenceId: "review-published",
     participants: "all",
+    submissionMode: "git",
     requiredPath: (issue) => `.plans/issue-${issue}/review.md`,
     task: "Review the bound peer plans and publish the review."
   },
   "R3.plan-ballot": {
     id: "R3.plan-ballot",
     gateId: "gate-3-selection",
-    evidenceId: "plan-ballot-published",
+    evidenceId: "plan-ballot-response-accepted",
     participants: "all",
+    submissionMode: "response",
     requiredPath: (issue, agent) => `.plans/issue-${issue}/ballot-${agent}.json`,
-    task: "Publish a plan ballot citing the exact bound plan and review commits."
+    task: "Submit a private plan choice and rationale after inspecting the exact bound plan and review commits."
   },
   "R4.implement": {
     id: "R4.implement",
     gateId: "gate-4-implementations",
     evidenceId: "implementation-pinned",
     participants: "implementer",
+    submissionMode: "git",
     requiredPath: (issue, agent) => `.signals/issue-${issue}/implementation-ready-${agent}.json`,
     task: "Implement the selected plan and publish an implementation-ready signal that pins the product commit."
   },
@@ -110,22 +119,25 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     gateId: "gate-5-comparison",
     evidenceId: "comparison-published",
     participants: "all",
+    submissionMode: "git",
     requiredPath: (issue) => `.code-reviews/issue-${issue}/comparison.md`,
     task: "Compare the exact bound implementation pins and publish the comparison."
   },
   "R5.compare-ballot": {
     id: "R5.compare-ballot",
     gateId: "gate-5-comparison",
-    evidenceId: "comparison-ballot-published",
+    evidenceId: "comparison-ballot-response-accepted",
     participants: "all",
+    submissionMode: "response",
     requiredPath: (issue, agent) => `.code-reviews/issue-${issue}/ballot-${agent}.json`,
-    task: "Publish a comparison ballot citing every bound implementation pin."
+    task: "Submit a private implementation choice and rationale after inspecting every bound implementation pin."
   },
   "R6.revise": {
     id: "R6.revise",
     gateId: "gate-6-consensus",
     evidenceId: "revision-pinned",
     participants: "reviser",
+    submissionMode: "git",
     requiredPath: (issue, agent, round) =>
       `.signals/issue-${issue}/revision-ready-${agent}-round-${round ?? 1}.json`,
     task: "Prepare the requested revision and publish a signal pinning the revised product commit."
@@ -133,17 +145,19 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
   "R6.ballot": {
     id: "R6.ballot",
     gateId: "gate-6-consensus",
-    evidenceId: "consensus-ballot-published",
+    evidenceId: "consensus-ballot-response-accepted",
     participants: "all",
+    submissionMode: "response",
     requiredPath: (issue, agent, round) =>
       `.code-reviews/issue-${issue}/consensus-ballot-${agent}-round-${round ?? 1}.json`,
-    task: "Review the exact revision pin and publish a consensus disposition."
+    task: "Review the exact revision pin and submit a private consensus disposition and rationale."
   },
   "R7.finalize": {
     id: "R7.finalize",
     gateId: "gate-7-finalized",
     evidenceId: "finalization-verified",
     participants: "reviser",
+    submissionMode: "git",
     requiredPath: (issue, agent) => `.signals/issue-${issue}/finalization-ready-${agent}.json`,
     task: "Finalize the consensus commit, remove only current-issue coordination files, and publish finalization evidence."
   }
@@ -225,7 +239,9 @@ export type InternalOrder = {
   agent: string;
   stepId: WorkflowStepId;
   evidenceId: EvidenceId;
+  submissionMode?: "git" | "response";
   requiredPath: string;
+  responsePath?: string | null;
   completePath: string;
   branch: string;
   round: number | null;
@@ -261,6 +277,18 @@ export type EvidenceObservation = {
   checkResults?: readonly CheckResult[];
 };
 
+export type ResponseObservation = {
+  agent: string;
+  actionId: string;
+  status: "satisfied" | "rejected";
+  outstanding: readonly string[];
+  responseSha256?: string;
+  rationale?: string;
+  choice?: string;
+  disposition?: "approve" | "revise" | "escalate";
+  bytes?: Uint8Array;
+};
+
 export type MachineDecision =
   | { type: "prepare-action"; agent: string; stepId: WorkflowStepId; round: number | null }
   | {
@@ -272,6 +300,20 @@ export type MachineDecision =
       approvedPaths?: readonly string[];
       choice?: string;
       checkResults?: readonly CheckResult[];
+    }
+  | {
+      type: "accept-response";
+      agent: string;
+      responseSha256: string;
+      rationale: string;
+      choice?: string;
+      disposition?: "approve" | "revise" | "escalate";
+      bytes: Uint8Array;
+    }
+  | {
+      type: "publish-ballot-batch";
+      stepId: "R3.plan-ballot" | "R5.compare-ballot" | "R6.ballot";
+      round: number | null;
     }
   | { type: "reissue-action"; agent: string; outstanding: readonly string[] }
   | { type: "retry-verification"; agent: string; outstanding: readonly string[] }

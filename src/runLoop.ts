@@ -3,6 +3,19 @@ import { existsSync, rmSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { clearCompletion, createActionId, readAction, readCompletion, writeAction } from "./action.js";
 import {
+  archiveAcceptedResponse,
+  clearAgentResponse,
+  evaluateBallotResponse
+} from "./ballotResponse.js";
+import {
+  COORDINATOR_GIT_IDENTITY,
+  buildBallotBatch,
+  canonicalBallotPath,
+  evidenceBranchFor,
+  isBallotStep,
+  type BallotStepId
+} from "./ballotPublication.js";
+import {
   AGENT_OBSERVABILITY_WATCHDOG_MS,
   decideLifecycleNudge,
   markActionInjectionDeferred,
@@ -17,7 +30,7 @@ import { evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./e
 import { verifyFinalization } from "./finalization.js";
 import { BareMirror, hermeticGitEnv } from "./mirror.js";
 import { renderArtifactScaffold } from "./orderScaffold.js";
-import { agentRuntimePaths, containedPath, type IssueRuntimePaths } from "./paths.js";
+import { agentResponsePath, agentRuntimePaths, containedPath, type IssueRuntimePaths } from "./paths.js";
 import { decide } from "./machine.js";
 import {
   appendJournal,
@@ -30,6 +43,7 @@ import {
   requireStateMutation,
   StateConflictError,
   type AcceptedSubmission,
+  type AcceptedResponse,
   type ConsensusDerived,
   type CursorsState,
   type DerivedInputCitation,
@@ -48,6 +62,7 @@ import {
   type EvidenceObservation,
   type InternalOrder,
   type MachineDecision,
+  type ResponseObservation,
   type WorkflowStepId
 } from "./steps.js";
 import { renderIssueReport } from "./issueReport.js";
@@ -175,15 +190,37 @@ const acceptedAt = (
       (round === undefined || submission.round === round)
   );
 
+const acceptedResponsesAt = (
+  cursors: CursorsState,
+  stepId: BallotStepId,
+  activeOnly = true,
+  round?: number | null
+): AcceptedResponse[] =>
+  (cursors.acceptedResponses ?? []).filter(
+    (response) =>
+      response.stepId === stepId &&
+      response.supersededAt === undefined &&
+      (!activeOnly || cursors.activeRoster.includes(response.agent)) &&
+      (round === undefined || response.round === round)
+  );
+
 export const deterministicWinner = (
   cursors: CursorsState,
   stepId: "R3.plan-ballot" | "R5.compare-ballot",
   eligible: readonly string[]
 ): string | null => {
   const counts = new Map<string, number>();
-  for (const submission of acceptedAt(cursors, stepId)) {
-    if (submission.choice === undefined || !eligible.includes(submission.choice)) continue;
-    counts.set(submission.choice, (counts.get(submission.choice) ?? 0) + 1);
+  const responses = acceptedResponsesAt(cursors, stepId);
+  if (responses.length > 0 || cursors.formatVersion >= 4) {
+    for (const response of responses) {
+      if (response.choice === undefined || !eligible.includes(response.choice)) continue;
+      counts.set(response.choice, (counts.get(response.choice) ?? 0) + 1);
+    }
+  } else {
+    for (const submission of acceptedAt(cursors, stepId)) {
+      if (submission.choice === undefined || !eligible.includes(submission.choice)) continue;
+      counts.set(submission.choice, (counts.get(submission.choice) ?? 0) + 1);
+    }
   }
   if (counts.size === 0) return null;
   let winner: string | null = null;
@@ -208,7 +245,16 @@ export const deriveDecisionId = (
 const lengthPrefixed = (value: string): string => `${Buffer.byteLength(value, "utf8")}:${value}`;
 
 const canonicalDerivedCitation = (citation: DerivedInputCitation): string =>
-  [citation.kind, citation.agent, citation.submissionSha, citation.path, citation.productPin ?? ""]
+  [
+    citation.kind,
+    citation.agent,
+    citation.submissionSha ?? "",
+    citation.path,
+    citation.productPin ?? "",
+    citation.actionId ?? "",
+    citation.responseSha256 ?? "",
+    citation.evidenceCommitSha ?? ""
+  ]
     .map(lengthPrefixed)
     .join("");
 
@@ -245,9 +291,47 @@ const submissionCitation = (submission: AcceptedSubmission, kind: DerivedInputKi
   ...(submission.productPin === undefined ? {} : { productPin: submission.productPin })
 });
 
+const responseCitation = (
+  cursors: CursorsState,
+  response: AcceptedResponse,
+  kind: Extract<DerivedInputKind, "plan-ballot" | "comparison-ballot" | "consensus-ballot">
+): DerivedInputCitation | null => {
+  const batchKind =
+    response.stepId === "R3.plan-ballot"
+      ? "plan-ballot-batch"
+      : response.stepId === "R5.compare-ballot"
+        ? "comparison-ballot-batch"
+        : "consensus-ballot-batch";
+  const batch = [...(cursors.ballotBatches ?? [])]
+    .reverse()
+    .find((candidate) => {
+      if (
+        candidate.kind !== batchKind ||
+        candidate.round !== response.round ||
+        candidate.status !== "published" ||
+        candidate.activeRoster.length !== cursors.activeRoster.length ||
+        candidate.activeRoster.some((agent, index) => agent !== cursors.activeRoster[index]) ||
+        !candidate.paths.includes(response.path)
+      ) {
+        return false;
+      }
+      const index = candidate.activeRoster.indexOf(response.agent);
+      return index >= 0 && candidate.responseSha256s[index] === response.responseSha256;
+    });
+  if (batch === undefined) return null;
+  return {
+    kind,
+    agent: response.agent,
+    path: response.path,
+    actionId: response.actionId,
+    responseSha256: response.responseSha256,
+    evidenceCommitSha: batch.commitSha
+  };
+};
+
 const hasCompleteActiveDenominator = (
   cursors: CursorsState,
-  submissions: readonly AcceptedSubmission[]
+  submissions: readonly { agent: string }[]
 ): boolean =>
   submissions.length === cursors.activeRoster.length &&
   cursors.activeRoster.every((agent) => submissions.some((submission) => submission.agent === agent));
@@ -259,13 +343,19 @@ export const computePlanSelectionDerived = (
 ): PlanSelectionDerived | null => {
   const plans = acceptedAt(cursors, "R2.plan");
   const planEligible = plans.map((submission) => submission.agent);
-  const ballots = acceptedAt(cursors, "R3.plan-ballot");
-  if (!hasCompleteActiveDenominator(cursors, ballots)) return null;
+  const ballots = acceptedResponsesAt(cursors, "R3.plan-ballot");
+  const legacyBallots = ballots.length === 0 && cursors.formatVersion < 4 ? acceptedAt(cursors, "R3.plan-ballot") : [];
+  if (!hasCompleteActiveDenominator(cursors, ballots.length > 0 ? ballots : legacyBallots)) return null;
   const winner = deterministicWinner(cursors, "R3.plan-ballot", planEligible);
   if (winner === null) return null;
+  const ballotCitations =
+    ballots.length > 0
+      ? ballots.map((response) => responseCitation(cursors, response, "plan-ballot"))
+      : legacyBallots.map((submission) => submissionCitation(submission, "plan-ballot"));
+  if (ballotCitations.some((citation) => citation === null)) return null;
   const inputs = [
     ...plans.map((submission) => submissionCitation(submission, "plan")),
-    ...ballots.map((submission) => submissionCitation(submission, "plan-ballot"))
+    ...(ballotCitations as DerivedInputCitation[])
   ];
   const inputSetHash = computeDerivedInputSetHash("plan-selection", cursors.activeRoster, inputs);
   return {
@@ -288,15 +378,21 @@ export const computeImplementationSelectionDerived = (
 ): ImplementationSelectionDerived | null => {
   const implementations = acceptedAt(cursors, "R4.implement");
   const implementationEligible = implementations.map((submission) => submission.agent);
-  const ballots = acceptedAt(cursors, "R5.compare-ballot");
-  if (!hasCompleteActiveDenominator(cursors, ballots)) return null;
+  const ballots = acceptedResponsesAt(cursors, "R5.compare-ballot");
+  const legacyBallots = ballots.length === 0 && cursors.formatVersion < 4 ? acceptedAt(cursors, "R5.compare-ballot") : [];
+  if (!hasCompleteActiveDenominator(cursors, ballots.length > 0 ? ballots : legacyBallots)) return null;
   const winner = deterministicWinner(cursors, "R5.compare-ballot", implementationEligible);
   if (winner === null) return null;
   const implementation = implementations.find((submission) => submission.agent === winner);
   if (implementation?.productPin === undefined) return null;
+  const ballotCitations =
+    ballots.length > 0
+      ? ballots.map((response) => responseCitation(cursors, response, "comparison-ballot"))
+      : legacyBallots.map((submission) => submissionCitation(submission, "comparison-ballot"));
+  if (ballotCitations.some((citation) => citation === null)) return null;
   const inputs = [
     ...implementations.map((submission) => submissionCitation(submission, "implementation")),
-    ...ballots.map((submission) => submissionCitation(submission, "comparison-ballot"))
+    ...(ballotCitations as DerivedInputCitation[])
   ];
   const inputSetHash = computeDerivedInputSetHash("implementation-selection", cursors.activeRoster, inputs);
   return {
@@ -324,13 +420,20 @@ export const computeConsensusDerived = (
     (submission) => submission.agent === cursors.derived.implementationSelection?.reviser
   );
   if (revision?.productPin === undefined) return null;
-  const ballots = acceptedAt(cursors, "R6.ballot", true, round);
-  if (!hasCompleteActiveDenominator(cursors, ballots) || ballots.some((ballot) => ballot.disposition !== "approve")) {
+  const ballots = acceptedResponsesAt(cursors, "R6.ballot", true, round);
+  const legacyBallots = ballots.length === 0 && cursors.formatVersion < 4 ? acceptedAt(cursors, "R6.ballot", true, round) : [];
+  const activeBallots = ballots.length > 0 ? ballots : legacyBallots;
+  if (!hasCompleteActiveDenominator(cursors, activeBallots) || activeBallots.some((ballot) => ballot.disposition !== "approve")) {
     return null;
   }
+  const ballotCitations =
+    ballots.length > 0
+      ? ballots.map((response) => responseCitation(cursors, response, "consensus-ballot"))
+      : legacyBallots.map((submission) => submissionCitation(submission, "consensus-ballot"));
+  if (ballotCitations.some((citation) => citation === null)) return null;
   const inputs = [
     submissionCitation(revision, "revision"),
-    ...ballots.map((submission) => submissionCitation(submission, "consensus-ballot"))
+    ...(ballotCitations as DerivedInputCitation[])
   ];
   const inputSetHash = computeDerivedInputSetHash("consensus", cursors.activeRoster, inputs, round);
   return {
@@ -537,6 +640,7 @@ export const buildOrder = (
   changeScope: readonly ChangeScopeEntry[] = []
 ): InternalOrder => {
   const definition = STEP_DEFINITIONS[stepId];
+  const submissionMode = definition.submissionMode ?? "git";
   const runtime = agentRuntimePaths(paths, agent);
   const branch = start.branchTemplate.replaceAll("{issue}", String(start.issue)).replaceAll("{agent}", agent);
   const correction = outstanding.length === 0 ? "" : `\n\nCorrect these outstanding items:\n${outstanding.map((item) => `- ${item}`).join("\n")}`;
@@ -552,6 +656,7 @@ export const buildOrder = (
         ? implementationChoices
         : [];
   const scaffold = renderArtifactScaffold({
+    actionId,
     stepId,
     issue: start.issue,
     issueSessionId: start.issueSessionId,
@@ -566,14 +671,18 @@ export const buildOrder = (
   const binding =
     scaffold === ""
       ? ""
-      : `\n\nUse protocolVersion 1. Bound values below are authoritative; do not invent alternate digests or citations.`;
+      : submissionMode === "git"
+        ? `\n\nUse protocolVersion 1. Bound values below are authoritative; do not invent alternate digests or citations.`
+        : `\n\nThe bound action ID and eligible values below are authoritative.`;
   return {
     actionId,
     issue: start.issue,
     agent,
     stepId,
     evidenceId: definition.evidenceId,
+    submissionMode,
     requiredPath: definition.requiredPath(start.issue, agent, round),
+    responsePath: submissionMode === "response" ? agentResponsePath(paths, agent, actionId) : null,
     completePath: runtime.complete,
     branch,
     round,
@@ -588,6 +697,50 @@ export const buildOrder = (
     activeRoster: [...cursors.activeRoster],
     eligibleChoices
   };
+};
+
+const currentActionErrors = (
+  paths: IssueRuntimePaths,
+  start: StartState,
+  cursors: CursorsState,
+  agent: string
+): string[] => {
+  const cursor = cursors.agents[agent];
+  if (cursor === undefined || cursor.actionId === null || cursor.stepId === null) return ["no current action is bound"];
+  const runtime = agentRuntimePaths(paths, agent);
+  if (!existsSync(runtime.action)) return ["coordinator action file is missing"];
+  const errors: string[] = [];
+  try {
+    const action = readAction(runtime.action);
+    const definition = STEP_DEFINITIONS[cursor.stepId];
+    const submissionMode = definition.submissionMode ?? "git";
+    const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+    if (action.actionId !== cursor.actionId) errors.push("action file actionId does not match coordinator state");
+    if (action.agent !== agent) errors.push("action file agent does not match coordinator state");
+    if (action.submissionMode !== submissionMode) errors.push("action file submissionMode does not match the workflow step");
+    if (
+      action.submissionMode === "git" &&
+      action.requiredPath !== definition.requiredPath(start.issue, agent, round)
+    ) {
+      errors.push("action file requiredPath does not match the workflow step");
+    }
+    if (
+      action.submissionMode === "response" &&
+      action.responsePath !== agentResponsePath(paths, agent, cursor.actionId)
+    ) {
+      errors.push("action file responsePath does not match the coordinator-owned response path");
+    }
+    const digest = sha256OfFile(runtime.action);
+    if (cursor.actionDigest === null || cursor.actionDigest === undefined || digest !== cursor.actionDigest) {
+      errors.push("action file digest does not match the digest recorded when the action was prepared");
+    }
+    if (cursor.submissionMode !== undefined && cursor.submissionMode !== null && cursor.submissionMode !== submissionMode) {
+      errors.push("cursor submissionMode does not match the workflow step");
+    }
+  } catch (error) {
+    errors.push(`coordinator action file is invalid: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return errors;
 };
 
 /**
@@ -653,6 +806,7 @@ export class CoordinatorRunLoop {
 
   async initializeEffects(): Promise<void> {
     const start = readStartState(this.paths);
+    evidenceBranchFor(start);
     const authority = readCursorsState(this.paths);
     this.authority(authority);
     // Resume used to swallow a config read failure to null, and null used to
@@ -757,11 +911,24 @@ export class CoordinatorRunLoop {
       changeScope
     );
     const runtime = agentRuntimePaths(this.paths, agent);
+    let actionDigest = "";
     let next = this.mutate(cursors, (current) => {
       writeAction(this.paths.coordRoot, runtime.action, order);
+      actionDigest = sha256OfFile(runtime.action);
       appendJournal(
         this.paths,
-        { type: "action-prepared", agent, actionId: order.actionId, details: { requiredPath: order.requiredPath } },
+        {
+          type: "action-prepared",
+          agent,
+          actionId: order.actionId,
+          details: {
+            submissionMode: order.submissionMode ?? "git",
+            actionDigest,
+            ...(order.submissionMode === "response"
+              ? { responsePath: order.responsePath }
+              : { requiredPath: order.requiredPath })
+          }
+        },
         this.now()
       );
       return replaceCursor(
@@ -771,16 +938,18 @@ export class CoordinatorRunLoop {
           stepId,
           evidenceId: order.evidenceId,
           actionId: order.actionId,
+          submissionMode: order.submissionMode ?? "git",
+          actionDigest,
           status: "ordered",
           attempt: cursor.attempt + 1,
           submissionSha: null,
+          responseSha256: null,
           outstanding: []
         },
         this.now()
       );
     });
     const config = start.agents.find((candidate) => candidate.id === agent);
-    const actionDigest = sha256OfFile(runtime.action);
     orderAgentAction(this.paths, agent, order.actionId, actionDigest, this.now());
     if (this.tmux !== null && config !== undefined) {
       const injectionStartedAt = this.now();
@@ -869,10 +1038,14 @@ export class CoordinatorRunLoop {
       changeScope
     );
     writeAction(this.paths.coordRoot, runtime.action, order);
+    const actionDigest = sha256OfFile(runtime.action);
     if (readAction(runtime.action).body !== previous) {
       this.verbose(`refreshed ${agent} action ${actionId} with current approved paths`);
     }
-    return cursors;
+    if (cursor.actionDigest === actionDigest) return cursors;
+    return this.mutate(cursors, (current) =>
+      replaceCursor(current, agent, { actionDigest, submissionMode: order.submissionMode ?? "git" }, this.now())
+    );
   }
 
   /**
@@ -1183,8 +1356,11 @@ export class CoordinatorRunLoop {
           [decision.agent]: {
             ...cursor,
             actionId: null,
+            submissionMode: null,
+            actionDigest: null,
             status: "waiting-peer",
             submissionSha: null,
+            responseSha256: null,
             outstanding: [],
             updatedAt: this.now()
           }
@@ -1212,6 +1388,306 @@ export class CoordinatorRunLoop {
       );
     }
     return next;
+  }
+
+  private acceptResponse(
+    start: StartState,
+    cursors: CursorsState,
+    decision: Extract<MachineDecision, { type: "accept-response" }>
+  ): CursorsState {
+    const cursor = cursors.agents[decision.agent];
+    if (
+      cursor === undefined ||
+      cursor.actionId === null ||
+      cursor.stepId === null ||
+      !isBallotStep(cursor.stepId)
+    ) {
+      return cursors;
+    }
+    const acceptedAt = this.now();
+    const round = cursor.stepId === "R6.ballot" ? (cursors.issueCursor.round ?? 1) : null;
+    const path = canonicalBallotPath(cursor.stepId, start.issue, decision.agent, round);
+    const prior = (cursors.acceptedResponses ?? []).find((response) => response.actionId === cursor.actionId);
+    if (prior !== undefined) {
+      if (prior.responseSha256 !== decision.responseSha256) {
+        throw new Error(`Accepted response action ${cursor.actionId} has conflicting bytes.`);
+      }
+      const runtime = agentRuntimePaths(this.paths, decision.agent);
+      clearCompletion(runtime.complete);
+      clearAgentResponse(agentResponsePath(this.paths, decision.agent, cursor.actionId));
+      if (existsSync(runtime.action)) unlinkSync(runtime.action);
+      return this.mutate(cursors, (current) =>
+        replaceCursor(
+          current,
+          decision.agent,
+          {
+            actionId: null,
+            submissionMode: null,
+            actionDigest: null,
+            status: "waiting-peer",
+            submissionSha: null,
+            responseSha256: prior.responseSha256,
+            outstanding: []
+          },
+          acceptedAt
+        )
+      );
+    }
+    archiveAcceptedResponse(this.paths, decision.agent, cursor.actionId, decision.bytes);
+    const accepted: AcceptedResponse = {
+      stepId: cursor.stepId,
+      agent: decision.agent,
+      actionId: cursor.actionId,
+      round,
+      responseSha256: decision.responseSha256,
+      path,
+      rationale: decision.rationale,
+      acceptedAt,
+      ...(decision.choice === undefined ? {} : { choice: decision.choice }),
+      ...(decision.disposition === undefined ? {} : { disposition: decision.disposition })
+    };
+    const next = this.mutate(cursors, (current) => {
+      const responses = (current.acceptedResponses ?? []).map((response) =>
+        response.stepId === accepted.stepId &&
+        response.agent === accepted.agent &&
+        response.round === accepted.round &&
+        response.supersededAt === undefined
+          ? {
+              ...response,
+              supersededAt: acceptedAt,
+              supersededReason: `replaced by accepted action ${accepted.actionId}`
+            }
+          : response
+      );
+      appendJournal(
+        this.paths,
+        {
+          type: "response-accepted",
+          agent: decision.agent,
+          actionId: accepted.actionId,
+          details: {
+            stepId: accepted.stepId,
+            round,
+            responseSha256: accepted.responseSha256,
+            path,
+            rationale: accepted.rationale,
+            ...(accepted.choice === undefined ? {} : { choice: accepted.choice }),
+            ...(accepted.disposition === undefined ? {} : { disposition: accepted.disposition })
+          }
+        },
+        acceptedAt
+      );
+      const runtime = agentRuntimePaths(this.paths, decision.agent);
+      clearCompletion(runtime.complete);
+      clearAgentResponse(agentResponsePath(this.paths, decision.agent, accepted.actionId));
+      if (existsSync(runtime.action)) unlinkSync(runtime.action);
+      return cursorsStateSchema.parse({
+        ...current,
+        agents: {
+          ...current.agents,
+          [decision.agent]: {
+            ...cursor,
+            actionId: null,
+            submissionMode: null,
+            actionDigest: null,
+            status: "waiting-peer",
+            submissionSha: null,
+            responseSha256: accepted.responseSha256,
+            outstanding: [],
+            updatedAt: acceptedAt
+          }
+        },
+        acceptedResponses: [...responses, accepted],
+        updatedAt: acceptedAt
+      });
+    });
+    const completion = markActionWorkflowComplete(this.paths, decision.agent, accepted.actionId, acceptedAt);
+    if (completion.clearedDegraded) {
+      appendJournal(
+        this.paths,
+        {
+          type: "agent-observability-recovered",
+          agent: decision.agent,
+          actionId: accepted.actionId,
+          details: { reason: "workflow-complete-after-degraded" }
+        },
+        acceptedAt
+      );
+      this.log(`Issue ${start.issue}: ${decision.agent} completed its private response action.`);
+    }
+    return next;
+  }
+
+  private async publishBallotBatch(
+    start: StartState,
+    cursors: CursorsState,
+    stepId: BallotStepId,
+    round: number | null
+  ): Promise<CursorsState> {
+    const responses = cursors.activeRoster.map((agent) =>
+      acceptedResponsesAt(cursors, stepId, true, round).find((response) => response.agent === agent)
+    );
+    if (responses.some((response) => response === undefined)) return cursors;
+    const activeResponses = responses as AcceptedResponse[];
+    const built = buildBallotBatch({
+      start,
+      stepId,
+      round,
+      activeRoster: cursors.activeRoster,
+      responses: activeResponses,
+      inputs: deriveBoundInputs(start, cursors, stepId, round)
+    });
+    const branch = evidenceBranchFor(start);
+    const matching = (cursors.ballotBatches ?? []).find(
+      (batch) =>
+        batch.kind === built.kind &&
+        batch.round === built.round &&
+        batch.inputSetHash === built.inputSetHash &&
+        batch.activeRoster.length === built.activeRoster.length &&
+        batch.activeRoster.every((agent, index) => agent === built.activeRoster[index]) &&
+        batch.responseSha256s.length === built.responseSha256s.length &&
+        batch.responseSha256s.every((digest, index) => digest === built.responseSha256s[index])
+    );
+    if (matching?.status === "published") return cursors;
+
+    let authority = cursors;
+    let pending = matching;
+    if (pending === undefined || pending.status === "invalidated") {
+      const published = (cursors.ballotBatches ?? []).filter(
+        (batch) => batch.branch === branch && batch.status === "published"
+      );
+      const parentSha = published.at(-1)?.commitSha ?? start.baselineSha;
+      const previousPhase = [...published]
+        .reverse()
+        .find((batch) => batch.kind === built.kind && batch.round === built.round);
+      const removePaths = (previousPhase?.paths ?? []).filter((path) => !built.files.has(path));
+      const createdAt = this.now();
+      const target = containedPath(this.paths.evidenceWorktrees, randomUUID());
+      const commitSha = await this.mirror.createEvidenceCommit({
+        target,
+        parentSha,
+        files: built.files,
+        removePaths,
+        message: built.message,
+        identity: COORDINATOR_GIT_IDENTITY,
+        at: createdAt
+      });
+      pending = {
+        kind: built.kind,
+        round: built.round,
+        inputSetHash: built.inputSetHash,
+        activeRoster: [...built.activeRoster],
+        responseSha256s: [...built.responseSha256s],
+        paths: [...built.files.keys()].sort(),
+        branch,
+        parentSha,
+        commitSha,
+        status: "pending",
+        attempts: 0,
+        error: null,
+        createdAt,
+        publishedAt: null,
+        supersedes: previousPhase?.commitSha ?? null
+      };
+      authority = this.mutate(cursors, (current) => {
+        appendJournal(
+          this.paths,
+          {
+            type: "ballot-batch-pending",
+            details: {
+              kind: pending?.kind,
+              round: pending?.round,
+              inputSetHash: pending?.inputSetHash,
+              branch,
+              parentSha,
+              commitSha
+            }
+          },
+          createdAt
+        );
+        return cursorsStateSchema.parse({
+          ...current,
+          ballotBatches: [...(current.ballotBatches ?? []), pending],
+          updatedAt: createdAt
+        });
+      });
+    }
+    if (pending === undefined) return authority;
+
+    try {
+      const remoteTip = await this.mirror.remoteTip(pending.branch);
+      this.authority(authority);
+      if (remoteTip !== pending.commitSha) {
+        if (remoteTip !== null && remoteTip !== pending.parentSha) {
+          throw new Error(
+            `Evidence branch ${pending.branch} moved to ${remoteTip}; expected ${pending.parentSha}.`
+          );
+        }
+        await this.mirror.publishBranch(pending.commitSha, pending.branch);
+        this.authority(authority);
+      }
+      const publishedAt = this.now();
+      return this.mutate(authority, (current) => {
+        appendJournal(
+          this.paths,
+          {
+            type: "ballot-batch-published",
+            details: {
+              kind: pending?.kind,
+              round: pending?.round,
+              inputSetHash: pending?.inputSetHash,
+              branch: pending?.branch,
+              commitSha: pending?.commitSha
+            }
+          },
+          publishedAt
+        );
+        return cursorsStateSchema.parse({
+          ...current,
+          ballotBatches: (current.ballotBatches ?? []).map((batch) =>
+            batch.commitSha === pending?.commitSha
+              ? {
+                  ...batch,
+                  status: "published",
+                  attempts: batch.attempts + 1,
+                  error: null,
+                  publishedAt
+                }
+              : batch
+          ),
+          updatedAt: publishedAt
+        });
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failedAt = this.now();
+      this.log(`Issue ${start.issue}: ballot evidence publication failed: ${message}`);
+      return this.mutate(authority, (current) => {
+        appendJournal(
+          this.paths,
+          {
+            type: "ballot-batch-failed",
+            details: {
+              kind: pending?.kind,
+              round: pending?.round,
+              branch: pending?.branch,
+              commitSha: pending?.commitSha,
+              error: message
+            }
+          },
+          failedAt
+        );
+        return cursorsStateSchema.parse({
+          ...current,
+          ballotBatches: (current.ballotBatches ?? []).map((batch) =>
+            batch.commitSha === pending?.commitSha
+              ? { ...batch, status: "failed", attempts: batch.attempts + 1, error: message }
+              : batch
+          ),
+          updatedAt: failedAt
+        });
+      });
+    }
   }
 
   private async reissue(
@@ -1249,11 +1725,21 @@ export class CoordinatorRunLoop {
         this.now()
       );
       clearCompletion(runtime.complete);
+      if (isBallotStep(stepId)) clearAgentResponse(agentResponsePath(this.paths, agent, actionId));
       writeAction(this.paths.coordRoot, runtime.action, order);
+      const actionDigest = sha256OfFile(runtime.action);
       return replaceCursor(
         current,
         agent,
-        { status: "ordered", attempt: cursor.attempt + 1, submissionSha: null, outstanding: [...outstanding] },
+        {
+          status: "ordered",
+          attempt: cursor.attempt + 1,
+          submissionMode: order.submissionMode ?? "git",
+          actionDigest,
+          submissionSha: null,
+          responseSha256: null,
+          outstanding: [...outstanding]
+        },
         this.now()
       );
     });
@@ -1270,8 +1756,11 @@ export class CoordinatorRunLoop {
           stepId: decision.to,
           evidenceId: decision.to === null ? null : STEP_DEFINITIONS[decision.to].evidenceId,
           actionId: null,
+          submissionMode: null,
+          actionDigest: null,
           status: decision.to === null ? "complete" : "idle",
           submissionSha: null,
+          responseSha256: null,
           outstanding: [],
           updatedAt: this.now()
         };
@@ -1375,7 +1864,9 @@ export class CoordinatorRunLoop {
         issue: start.issue,
         title: issueSnapshot.title,
         finalSha,
-        draft
+        draft,
+        evidenceBranch: [...(cursors.ballotBatches ?? [])].reverse().find((batch) => batch.status === "published")?.branch ?? null,
+        evidenceTip: [...(cursors.ballotBatches ?? [])].reverse().find((batch) => batch.status === "published")?.commitSha ?? null
       });
       const result = await this.pullRequestOpener({
         repository,
@@ -1542,6 +2033,10 @@ export class CoordinatorRunLoop {
         this.logPhase(start.issue, decision.stepId, decision.round);
         next = await this.prepareAction(start, next, decision.agent, decision.stepId, decision.round);
       } else if (decision.type === "accept-submission") next = this.accept(start, next, decision);
+      else if (decision.type === "accept-response") next = this.acceptResponse(start, next, decision);
+      else if (decision.type === "publish-ballot-batch") {
+        next = await this.publishBallotBatch(start, next, decision.stepId, decision.round);
+      }
       else if (decision.type === "reissue-action") next = await this.reissue(start, next, decision.agent, decision.outstanding);
       else if (decision.type === "retry-verification") {
         next = this.mutate(next, (current) =>
@@ -1600,106 +2095,147 @@ export class CoordinatorRunLoop {
     try {
       let cursors = readCursorsState(this.paths);
       if (cursors.paused || cursors.abandoned || cursors.completed) return cursors;
-      const observations: EvidenceObservation[] = [];
+      const observations: Array<EvidenceObservation | ResponseObservation> = [];
 
       for (const dropped of cursors.droppedAgents) clearCompletion(agentRuntimePaths(this.paths, dropped).complete);
       for (const agent of cursors.activeRoster) {
-      const cursor = cursors.agents[agent];
-      if (cursor === undefined || cursor.actionId === null || cursor.stepId === null) continue;
-      const runtime = agentRuntimePaths(this.paths, agent);
-      const completion = readCompletion(runtime.complete);
-      if (completion.status === "missing") {
-        let harnessGone = cursor.status === "harness-gone";
-        if (this.tmux !== null) {
-          const pane = await this.tmux.inspectPane(this.tmux.target(start.issue, agent));
-          this.authority(cursors);
-          if (!pane.alive) {
-            harnessGone = true;
-            cursors = this.mutate(cursors, (current) =>
-              replaceCursor(current, agent, { status: "harness-gone" }, this.now())
-            );
-          } else if (cursor.status === "ordered") {
-            cursors = await this.maybeLifecycleNudge(start, cursors, agent, cursor.actionId);
-          }
+        const cursor = cursors.agents[agent];
+        if (cursor === undefined || cursor.actionId === null || cursor.stepId === null) continue;
+        const runtime = agentRuntimePaths(this.paths, agent);
+        const mode = STEP_DEFINITIONS[cursor.stepId].submissionMode ?? "git";
+        const actionErrors = currentActionErrors(this.paths, start, cursors, agent);
+        if (actionErrors.length > 0) {
+          cursors = await this.reissue(start, cursors, agent, actionErrors);
+          continue;
         }
-        if (harnessGone) {
-          const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
-          this.authority(cursors);
-          const order = buildOrder(
-            this.paths,
-            start,
-            cursors,
-            agent,
-            cursor.stepId,
-            cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
-            cursor.actionId,
-            cursor.outstanding,
-            approvedPaths
-          );
-          const fetched = await this.mirror.fetchBranch(order.branch);
-          this.authority(cursors);
-          if (fetched.ok) {
-            let observation = await evaluateEvidence(order, fetched.tip, this.mirror as EvidenceMirror, () =>
-              this.authority(cursors)
-            );
+        const completion = readCompletion(runtime.complete);
+        if (completion.status === "missing") {
+          let harnessGone = cursor.status === "harness-gone";
+          if (this.tmux !== null) {
+            const pane = await this.tmux.inspectPane(this.tmux.target(start.issue, agent));
             this.authority(cursors);
-            observation = await this.verifyFinalizationChecks(start, order, observation, cursors);
-            this.authority(cursors);
-            if (observation.status === "satisfied") {
-              cursors = this.mutate(cursors, (current) => {
-                appendJournal(
-                  this.paths,
-                  {
-                    type: "intent-seen",
-                    agent,
-                    actionId: cursor.actionId as string,
-                    submissionSha: fetched.tip,
-                    details: { pushedThenDied: true }
-                  },
-                  this.now()
-                );
-                return current;
-              });
-              observations.push(observation);
-            } else if (observation.status === "rejected") {
-              this.log(`Owner action required: ${agent} harness is gone and origin tip is incomplete: ${observation.outstanding.join("; ")}`);
+            if (!pane.alive) {
+              harnessGone = true;
+              cursors = this.mutate(cursors, (current) =>
+                replaceCursor(current, agent, { status: "harness-gone" }, this.now())
+              );
+            } else if (cursor.status === "ordered") {
+              cursors = await this.maybeLifecycleNudge(start, cursors, agent, cursor.actionId);
             }
           }
+          if (harnessGone && mode === "git") {
+            const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
+            this.authority(cursors);
+            const order = buildOrder(
+              this.paths,
+              start,
+              cursors,
+              agent,
+              cursor.stepId,
+              cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
+              cursor.actionId,
+              cursor.outstanding,
+              approvedPaths
+            );
+            const fetched = await this.mirror.fetchBranch(order.branch);
+            this.authority(cursors);
+            if (fetched.ok) {
+              let observation = await evaluateEvidence(order, fetched.tip, this.mirror as EvidenceMirror, () =>
+                this.authority(cursors)
+              );
+              this.authority(cursors);
+              observation = await this.verifyFinalizationChecks(start, order, observation, cursors);
+              this.authority(cursors);
+              if (observation.status === "satisfied") {
+                cursors = this.mutate(cursors, (current) => {
+                  appendJournal(
+                    this.paths,
+                    {
+                      type: "intent-seen",
+                      agent,
+                      actionId: cursor.actionId as string,
+                      submissionSha: fetched.tip,
+                      details: { pushedThenDied: true }
+                    },
+                    this.now()
+                  );
+                  return current;
+                });
+                observations.push(observation);
+              }
+            }
+          }
+          continue;
         }
-        continue;
-      }
-      if (completion.status === "malformed") {
-        cursors = await this.reissue(start, cursors, agent, [completion.message]);
-        continue;
-      }
-      cursors = this.mutate(cursors, (current) => {
-        appendJournal(
+        if (completion.status === "malformed") {
+          cursors = await this.reissue(start, cursors, agent, [completion.message]);
+          continue;
+        }
+        if (mode === "response") {
+          if (!("kind" in completion) || completion.kind !== "response" || completion.actionId !== cursor.actionId) {
+            cursors = await this.reissue(start, cursors, agent, ["response completion marker does not match the current action"]);
+            continue;
+          }
+          cursors = this.mutate(cursors, (current) => {
+            appendJournal(
+              this.paths,
+              { type: "intent-seen", agent, actionId: cursor.actionId as string, details: { response: true } },
+              this.now()
+            );
+            return replaceCursor(current, agent, { status: "verifying" }, this.now());
+          });
+          const response = evaluateBallotResponse({
+            paths: this.paths,
+            agent,
+            actionId: cursor.actionId,
+            stepId: cursor.stepId,
+            eligibleChoices: buildOrder(
+              this.paths,
+              start,
+              cursors,
+              agent,
+              cursor.stepId,
+              cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
+              cursor.actionId,
+              cursor.outstanding
+            ).eligibleChoices
+          });
+          this.authority(cursors);
+          observations.push(response);
+          continue;
+        }
+        if (!("sha" in completion)) {
+          cursors = await this.reissue(start, cursors, agent, ["Git action requires a Git SHA completion marker"]);
+          continue;
+        }
+        cursors = this.mutate(cursors, (current) => {
+          appendJournal(
+            this.paths,
+            { type: "intent-seen", agent, actionId: cursor.actionId as string, submissionSha: completion.sha, details: {} },
+            this.now()
+          );
+          return replaceCursor(current, agent, { status: "verifying", submissionSha: completion.sha }, this.now());
+        });
+        const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
+        this.authority(cursors);
+        const order = buildOrder(
           this.paths,
-          { type: "intent-seen", agent, actionId: cursor.actionId as string, submissionSha: completion.sha, details: {} },
-          this.now()
+          start,
+          cursors,
+          agent,
+          cursor.stepId,
+          cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
+          cursor.actionId,
+          cursor.outstanding,
+          approvedPaths
         );
-        return replaceCursor(current, agent, { status: "verifying", submissionSha: completion.sha }, this.now());
-      });
-      const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
-      this.authority(cursors);
-      const order = buildOrder(
-        this.paths,
-        start,
-        cursors,
-        agent,
-        cursor.stepId,
-        cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
-        cursor.actionId,
-        cursor.outstanding,
-        approvedPaths
-      );
-      let observation = await evaluateEvidence(order, completion.sha, this.mirror as EvidenceMirror, () =>
-        this.authority(cursors)
-      );
-      this.authority(cursors);
-      observation = await this.verifyFinalizationChecks(start, order, observation, cursors);
-      this.authority(cursors);
-      observations.push(observation);
+        let observation = await evaluateEvidence(order, completion.sha, this.mirror as EvidenceMirror, () =>
+          this.authority(cursors)
+        );
+        this.authority(cursors);
+        observation = await this.verifyFinalizationChecks(start, order, observation, cursors);
+        this.authority(cursors);
+        observations.push(observation);
       }
 
       if (observations.length > 0) cursors = await this.applyDecisions(start, cursors, decide({ start, cursors, observations }));
@@ -1708,10 +2244,14 @@ export class CoordinatorRunLoop {
         if (cursors.publication.status !== "completed") return cursors;
       }
 
-      for (let progress = 0; progress < 4; progress += 1) {
+      for (let progress = 0; progress < 8; progress += 1) {
         const decisions = decide({ start, cursors }).filter((decision) => decision.type !== "wait");
         if (decisions.length === 0) break;
         cursors = await this.applyDecisions(start, cursors, decisions);
+        if (decisions.some((decision) => decision.type === "publish-ballot-batch")) {
+          const failed = (cursors.ballotBatches ?? []).at(-1)?.status === "failed";
+          if (failed) break;
+        }
         if (cursors.publication.status === "pending" || cursors.publication.status === "failed") {
           cursors = await this.publishAcceptedFinalization(start, cursors);
           if (cursors.publication.status !== "completed") return cursors;

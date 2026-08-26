@@ -1,12 +1,16 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname } from "node:path";
+import { assertNoSymlink, containedPath } from "./paths.js";
 import { gitShaSchema, repositoryPathSchema } from "./protocol.js";
 import { validatePhasePin, type PinValidationResult } from "./pinValidation.js";
 
 export type CommandResult = { exitCode: number; stdout: Buffer; stderr: string };
-export type GitRunner = (args: readonly string[], options?: { cwd?: string }) => Promise<CommandResult>;
+export type GitRunner = (
+  args: readonly string[],
+  options?: { cwd?: string; env?: NodeJS.ProcessEnv }
+) => Promise<CommandResult>;
 
 const repositoryRedirectors = new Set([
   "GIT_DIR",
@@ -34,7 +38,7 @@ export const runGitCommand: GitRunner = (args, options = {}) =>
     const child = spawn("git", [...args], {
       cwd: options.cwd ?? tmpdir(),
       stdio: ["ignore", "pipe", "pipe"],
-      env: hermeticGitEnv()
+      env: hermeticGitEnv(options.env ?? process.env)
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
@@ -85,6 +89,22 @@ export class BareMirror {
     return result;
   }
 
+  private async worktreeGit(
+    target: string,
+    args: readonly string[],
+    options: { allowFailure?: boolean; env?: NodeJS.ProcessEnv } = {}
+  ): Promise<CommandResult> {
+    const result = await this.runner(["-C", target, ...args], { env: options.env });
+    if (options.allowFailure !== true && result.exitCode !== 0) {
+      throw new GitCommandError(
+        `git ${args[0] ?? "command"} failed: ${result.stderr}`,
+        result,
+        isTransientGitFailure(result.stderr)
+      );
+    }
+    return result;
+  }
+
   async initialize(): Promise<void> {
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     if (!existsSync(this.path)) {
@@ -115,6 +135,23 @@ export class BareMirror {
     const tip = await this.git(["rev-parse", "--verify", `${ref}^{commit}`], true);
     if (tip.exitCode !== 0) return { ok: false, transient: false, error: tip.stderr };
     return { ok: true, ref, tip: tip.stdout.toString("utf8").trim() };
+  }
+
+  async remoteTip(branch: string): Promise<string | null> {
+    if (!branchPattern.test(branch) || branch.startsWith("-") || branch.includes("..")) {
+      throw new Error(`Invalid publication branch ${branch}.`);
+    }
+    const result = await this.git(["ls-remote", "--heads", "origin", `refs/heads/${branch}`]);
+    const rows = result.stdout
+      .toString("utf8")
+      .trim()
+      .split("\n")
+      .filter((row) => row !== "");
+    if (rows.length === 0) return null;
+    if (rows.length !== 1) throw new Error(`Origin returned multiple tips for ${branch}.`);
+    const [sha, ref] = (rows[0] as string).split("\t");
+    if (ref !== `refs/heads/${branch}`) throw new Error(`Origin returned an unexpected ref for ${branch}.`);
+    return gitShaSchema.parse(sha);
   }
 
   async commitExists(sha: string): Promise<boolean> {
@@ -170,6 +207,69 @@ export class BareMirror {
   async removeWorktree(target: string): Promise<void> {
     await this.git(["worktree", "remove", "--force", target], true);
     await this.git(["worktree", "prune"], true);
+  }
+
+  async createEvidenceCommit(input: {
+    target: string;
+    parentSha: string;
+    files: ReadonlyMap<string, string | Uint8Array>;
+    removePaths?: readonly string[];
+    message: string;
+    identity: { name: string; email: string };
+    at?: string;
+  }): Promise<string> {
+    gitShaSchema.parse(input.parentSha);
+    if (input.files.size === 0) throw new Error("An evidence commit must publish at least one file.");
+    const touched = new Set<string>();
+    for (const path of [...input.files.keys(), ...(input.removePaths ?? [])]) {
+      repositoryPathSchema.parse(path);
+      touched.add(path);
+    }
+    await this.materializeWorktree(input.target, input.parentSha);
+    try {
+      for (const path of input.removePaths ?? []) {
+        const destination = containedPath(input.target, path);
+        assertNoSymlink(input.target, destination);
+        rmSync(destination, { force: true, recursive: true });
+      }
+      for (const [path, bytes] of input.files) {
+        const destination = containedPath(input.target, path);
+        assertNoSymlink(input.target, destination);
+        mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+        assertNoSymlink(input.target, dirname(destination));
+        writeFileSync(destination, bytes, { mode: 0o600 });
+      }
+      await this.worktreeGit(input.target, ["add", "-A", "--", ...[...touched].sort()]);
+      const date = input.at ?? new Date().toISOString();
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        GIT_AUTHOR_NAME: input.identity.name,
+        GIT_AUTHOR_EMAIL: input.identity.email,
+        GIT_COMMITTER_NAME: input.identity.name,
+        GIT_COMMITTER_EMAIL: input.identity.email,
+        GIT_AUTHOR_DATE: date,
+        GIT_COMMITTER_DATE: date
+      };
+      await this.worktreeGit(
+        input.target,
+        [
+          "-c",
+          "core.hooksPath=/dev/null",
+          "-c",
+          "commit.gpgSign=false",
+          "commit",
+          "--no-gpg-sign",
+          "-m",
+          input.message
+        ],
+        { env }
+      );
+      const tip = await this.worktreeGit(input.target, ["rev-parse", "--verify", "HEAD^{commit}"]);
+      return gitShaSchema.parse(tip.stdout.toString("utf8").trim());
+    } finally {
+      await this.removeWorktree(input.target);
+      rmSync(input.target, { recursive: true, force: true });
+    }
   }
 
   async publishBranch(sha: string, branch: string): Promise<void> {

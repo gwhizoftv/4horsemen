@@ -470,3 +470,9 @@ antigravity status debouncing, a `render.log` writer/removal, JSON or aggregate
 dashboards, context indexes, protocol trimming, and any workflow-step or
 message consolidation. None is required to measure phase count, time, tokens,
 or tools accurately, so none belongs in this instrumentation change.
+# Response and publication timing
+
+`response-accepted` events measure agent response latency. The
+`ballot-batch-pending`, `ballot-batch-published`, and `ballot-batch-failed`
+events measure coordinator evidence-publication latency and retries. Publication
+retries are not additional agent turns or waits.

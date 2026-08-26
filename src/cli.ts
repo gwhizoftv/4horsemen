@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { clearCompletion, readAction } from "./action.js";
 import { handleAgentEvent, lifecycleVendorSchema } from "./agentEvent.js";
 import { buildAnalytics, renderAnalytics } from "./analytics.js";
+import { evidenceBranchFor } from "./ballotPublication.js";
 import { initializeAgentLifecycle, readAgentLifecycle } from "./agentLifecycle.js";
 import { doctor, renderDoctorReport } from "./doctor.js";
 import { fetchGitHubIssue, renderGitHubIssueSnapshot } from "./githubIssue.js";
@@ -157,7 +158,7 @@ const parseArgs = (args: readonly string[], booleans: readonly string[] = []): P
 const booleanFlags: Record<string, readonly string[]> = {
   install: ["write-product", "vendor", "bootstrap-coordination", "dry-run"],
   uninstall: ["delete-clones", "wipe-runtime", "delete-coordination", "force", "dry-run"],
-  "wipe-issue": ["force", "dry-run"],
+  "wipe-issue": ["force", "dry-run", "delete-evidence"],
   detach: ["dry-run"]
 };
 
@@ -229,7 +230,7 @@ Usage:
   coord attach <issue> [--product <path> | --coord-root <path>]
   coord detach <issue> [--product <path> | --coord-root <path>] [--dry-run]
   coord detach manual [--product <path> | --config <path> --coord-root <path>] [--dry-run]
-  coord wipe-issue <issue> [--product <path> | --config <path> --coord-root <path>] [--force] [--dry-run]
+  coord wipe-issue <issue> [--product <path> | --config <path> --coord-root <path>] [--force] [--dry-run] [--delete-evidence]
 
 Called by the agent-clone hooks, not by operators:
   coord hook-verify --clone <path> --phase <precommit|prepush>
@@ -328,6 +329,31 @@ const rederiveAfterDrop = (
           submission.choice === dropped
         )
     ),
+    acceptedResponses: (next.acceptedResponses ?? []).map((response) =>
+      next.activeRoster.includes(response.agent) &&
+      response.choice === dropped &&
+      response.supersededAt === undefined
+        ? {
+            ...response,
+            supersededAt: now,
+            supersededReason: `choice became ineligible when ${dropped} was dropped`
+          }
+        : response
+    ),
+    ballotBatches: (next.ballotBatches ?? []).map((batch) => {
+      const rosterChanged =
+        batch.activeRoster.length !== next.activeRoster.length ||
+        batch.activeRoster.some((agent, index) => agent !== next.activeRoster[index]);
+      if (rosterChanged && (batch.status === "pending" || batch.status === "failed")) {
+        appendJournal(
+          paths,
+          { type: "ballot-batch-invalidated", details: { commitSha: batch.commitSha, kind: batch.kind, reason: "active roster changed" } },
+          now
+        );
+        return { ...batch, status: "invalidated" as const, error: "active roster changed" };
+      }
+      return batch;
+    }),
     ownerQuestion: null,
     updatedAt: now
   });
@@ -350,6 +376,12 @@ const rederiveAfterDrop = (
     remove: (submission: CursorsState["accepted"][number]) => boolean
   ): CursorsState => {
     const accepted = state.accepted.filter((submission) => !remove(submission));
+    const ballotOrder: readonly WorkflowStepId[] = ["R3.plan-ballot", "R5.compare-ballot", "R6.ballot"];
+    const targetRank = ballotOrder.indexOf(stepId);
+    const acceptedResponses = (state.acceptedResponses ?? []).filter((response) => {
+      const rank = ballotOrder.indexOf(response.stepId);
+      return targetRank < 0 || rank <= targetRank;
+    });
     const agents = { ...state.agents };
     for (const agent of state.activeRoster) {
       const cursor = agents[agent];
@@ -357,13 +389,19 @@ const rederiveAfterDrop = (
       const satisfied = accepted.find(
         (submission) => submission.stepId === stepId && submission.agent === agent && submission.round === round
       );
+      const satisfiedResponse = acceptedResponses.find(
+        (response) => response.stepId === stepId && response.agent === agent && response.round === round
+      );
       agents[agent] = {
         ...cursor,
         stepId,
         evidenceId: STEP_DEFINITIONS[stepId].evidenceId,
         actionId: null,
-        status: satisfied === undefined ? "idle" : "waiting-peer",
+        status: satisfied === undefined && satisfiedResponse === undefined ? "idle" : "waiting-peer",
         submissionSha: satisfied?.submissionSha ?? null,
+        responseSha256: satisfiedResponse?.responseSha256 ?? null,
+        submissionMode: null,
+        actionDigest: null,
         outstanding: [],
         updatedAt: now
       };
@@ -376,6 +414,7 @@ const rederiveAfterDrop = (
       issueCursor: { stepId, gateId: STEP_DEFINITIONS[stepId].gateId, round },
       agents,
       accepted,
+      acceptedResponses,
       ownerQuestion: null,
       publication: {
         status: "not-required",
@@ -481,6 +520,12 @@ const rederiveAfterDrop = (
   for (const agent of next.activeRoster) {
     const alreadySatisfied = next.accepted.some(
       (submission) => submission.stepId === currentStep && submission.agent === agent && submission.round === round
+    ) || (next.acceptedResponses ?? []).some(
+      (response) =>
+        response.stepId === currentStep &&
+        response.agent === agent &&
+        response.round === round &&
+        response.supersededAt === undefined
     );
     if (alreadySatisfied) continue;
     const runtime = agentRuntimePaths(paths, agent);
@@ -488,7 +533,15 @@ const rederiveAfterDrop = (
     next = replaceCursor(
       next,
       agent,
-      { actionId: null, status: "idle", submissionSha: null, outstanding: [] },
+      {
+        actionId: null,
+        status: "idle",
+        submissionMode: null,
+        actionDigest: null,
+        submissionSha: null,
+        responseSha256: null,
+        outstanding: []
+      },
       now
     );
   }
@@ -796,6 +849,12 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     const agents = resolvedAgents(resolution);
     const roster = profile === "solo" ? agents.slice(0, 1) : agents;
     if (roster.length === 0) throw new Error(`Profile ${profile} requires at least one configured agent.`);
+    evidenceBranchFor({
+      issue,
+      branchTemplate: config.branch,
+      baseBranch: config.baseBranch,
+      agents: roster
+    });
     for (const agent of roster) resolveAgentLauncher(agent);
     const coordRoot = resolveSafeCoordRoot({
       coordRoot: resolution.runtimeRoot,
@@ -1206,6 +1265,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           .completesRoot,
         force: flagIsSet(parsed, "force"),
         dryRun: flagIsSet(parsed, "dry-run"),
+        deleteEvidence: flagIsSet(parsed, "delete-evidence"),
         log: io.stdout
       });
       io.stdout(
@@ -1308,7 +1368,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           { type: "owner-answer", details: { questionId, kind: question.kind, round: question.round, answer } },
           now
         );
-        let next = cursorsStateSchema.parse({
+        let next: CursorsState = cursorsStateSchema.parse({
           ...current,
           ownerQuestion: null,
           lastOwnerAnswer: { questionId, answer, answeredAt: now },
@@ -1328,6 +1388,12 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
                     (submission) => !(submission.stepId === "R6.ballot" && submission.round === question.round)
                   )
                 : next.accepted,
+            acceptedResponses:
+              answer === "retry"
+                ? (next.acceptedResponses ?? []).filter(
+                    (response) => !(response.stepId === "R6.ballot" && response.round === question.round)
+                  )
+                : next.acceptedResponses,
             updatedAt: now
           });
           for (const agent of next.activeRoster) {
@@ -1337,7 +1403,16 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
             next = replaceCursor(
               next,
               agent,
-              { stepId, actionId: null, status: "idle", submissionSha: null, outstanding: [] },
+              {
+                stepId,
+                actionId: null,
+                status: "idle",
+                submissionMode: null,
+                actionDigest: null,
+                submissionSha: null,
+                responseSha256: null,
+                outstanding: []
+              },
               now
             );
           }

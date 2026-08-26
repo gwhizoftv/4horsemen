@@ -48,6 +48,11 @@ driver. The owner does not create a plan file first. Each agent authors and
 publishes `.plans/issue-N/plan.md` later on its own `issue-N/<agent>` branch as
 normal R2 evidence.
 
+Ballot judgments are private action-bound responses. Once the active denominator
+closes, the coordinator publishes one canonical ballot batch on its retained
+`coordinator-evidence` branch; ballots are not agent Git commits or product PR
+content.
+
 ## Owner-driven manual mode
 
 For independent tasks assigned directly in agent chats, launch the installed

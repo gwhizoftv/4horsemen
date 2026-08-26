@@ -102,3 +102,9 @@ so a consumer can tell the difference without re-deriving cursor state. The line
 reaches normal stdout when `gateWaiting` holds or the layers disagree; an
 unchanged code repeating on later ticks stays verbose.
 Clearing a degraded alert appends `agent-observability-recovered`.
+# Ballot readiness
+
+Git evidence remains true only when its pushed SHA is reachable and valid. A
+ballot is ready only after a matching action-bound private response is accepted
+for every active participant and its single coordinator-authored batch is
+published. Pending or failed publication never advances or re-nudges agents.

@@ -67,6 +67,15 @@ export type AnalyticsReport = {
   };
   phases: PhaseAnalytics[];
   waits: WaitAnalytics[];
+  /** Response acceptance latency, separate from terminal nudge waits. */
+  responseWaits: WaitAnalytics[];
+  evidencePublication: {
+    published: number;
+    retries: number;
+    pending: number;
+    medianMs: number | null;
+    maxMs: number | null;
+  };
   usage: {
     agents: AgentUsageAnalytics[];
     tokenTotal: TokenUsage | null;
@@ -268,6 +277,60 @@ const deriveWaits = (roster: readonly string[], journal: readonly JournalEvent[]
       maxMs: values.length === 0 ? null : Math.max(...values)
     }))
     .sort((left, right) => left.agent.localeCompare(right.agent));
+};
+
+const deriveResponseWaits = (roster: readonly string[], journal: readonly JournalEvent[]): WaitAnalytics[] => {
+  const prepared = new Map<string, number>();
+  const values = new Map<string, number[]>();
+  for (const agent of roster) values.set(agent, []);
+  for (const event of journal) {
+    if (event.type === "action-prepared" && event.actionId !== undefined && object(event.details)?.submissionMode === "response") {
+      const at = milliseconds(event.at);
+      if (at !== null) prepared.set(event.actionId, at);
+    } else if (event.type === "response-accepted" && event.actionId !== undefined && event.agent !== undefined) {
+      const from = prepared.get(event.actionId);
+      const to = milliseconds(event.at);
+      if (from !== undefined && to !== null && to >= from) {
+        values.set(event.agent, [...(values.get(event.agent) ?? []), to - from]);
+        prepared.delete(event.actionId);
+      }
+    }
+  }
+  return [...values.entries()].map(([agent, durations]) => ({
+    agent,
+    count: durations.length,
+    medianMs: median(durations),
+    maxMs: durations.length === 0 ? null : Math.max(...durations)
+  }));
+};
+
+const deriveEvidencePublication = (journal: readonly JournalEvent[]): AnalyticsReport["evidencePublication"] => {
+  const pending = new Map<string, number>();
+  const durations: number[] = [];
+  let retries = 0;
+  let published = 0;
+  for (const event of journal) {
+    const commit = string(object(event.details)?.commitSha);
+    if (commit === null) continue;
+    if (event.type === "ballot-batch-pending") {
+      const at = milliseconds(event.at);
+      if (at !== null) pending.set(commit, at);
+    } else if (event.type === "ballot-batch-failed") retries += 1;
+    else if (event.type === "ballot-batch-published") {
+      published += 1;
+      const from = pending.get(commit);
+      const to = milliseconds(event.at);
+      if (from !== undefined && to !== null && to >= from) durations.push(to - from);
+      pending.delete(commit);
+    }
+  }
+  return {
+    published,
+    retries,
+    pending: pending.size,
+    medianMs: median(durations),
+    maxMs: durations.length === 0 ? null : Math.max(...durations)
+  };
 };
 
 const usageVendorForAgent = (agent: string, journal: readonly JournalEvent[]): UsageVendor | null => {
@@ -517,6 +580,8 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
     },
     phases,
     waits: deriveWaits(roster, input.journal),
+    responseWaits: deriveResponseWaits(roster, input.journal),
+    evidencePublication: deriveEvidencePublication(input.journal),
     usage
   };
 };
@@ -556,6 +621,13 @@ export const renderAnalytics = (report: AnalyticsReport): string => {
       (wait) =>
         `- ${wait.agent}: count=${wait.count} median=${wait.medianMs === null ? "unavailable" : `${(wait.medianMs / 1000).toFixed(1)}s`} max=${wait.maxMs === null ? "unavailable" : `${(wait.maxMs / 1000).toFixed(1)}s`}`
     )
+    ,
+    "Response acceptance",
+    ...report.responseWaits.map(
+      (wait) => `- ${wait.agent}: count=${wait.count} median=${wait.medianMs === null ? "unavailable" : `${(wait.medianMs / 1000).toFixed(1)}s`} max=${wait.maxMs === null ? "unavailable" : `${(wait.maxMs / 1000).toFixed(1)}s`}`
+    ),
+    "Coordinator evidence publication",
+    `published=${report.evidencePublication.published} retries=${report.evidencePublication.retries} pending=${report.evidencePublication.pending} median=${report.evidencePublication.medianMs === null ? "unavailable" : formatDuration(report.evidencePublication.medianMs)} max=${report.evidencePublication.maxMs === null ? "unavailable" : formatDuration(report.evidencePublication.maxMs)}`
   ];
   if (report.usage !== null) {
     lines.push("", "Token count");

@@ -130,19 +130,28 @@ if [[ -f pnpm-lock.yaml ]] && command -v corepack >/dev/null; then
   command -v pnpm >/dev/null && echo "pnpm: \$(pnpm --version)"
 fi
 
-# Grant this harness exactly one extra writable directory: the current issue's
-# own drop inside the completion mailbox. Not the coordinator runtime (which
-# holds cursors.json, the journal, and peers' orders) and not the whole mailbox
-# (which holds peers' receipts). Empty outside an automated issue.
+# Grant this harness exactly two narrow writable directories for the current
+# issue: its own completion drop and its own private response directory. Never
+# grant the coordinator runtime (cursors/journal/peer orders) or a whole agent
+# root. Empty outside an automated issue.
 coord_grant=()
 coord_completes_root="\$(git config --local --get coord.completesRoot 2>/dev/null || true)"
+coord_workspace_config="\$(git config --local --get coord.workspaceConfig 2>/dev/null || true)"
 if [[ -n "\$coord_completes_root" && "\${COORD_ISSUE:-}" =~ ^[1-9][0-9]*\$ ]]; then
   coord_drop="\$coord_completes_root/issue-\$COORD_ISSUE/$agent"
   if [[ -d "\$coord_drop" ]]; then
     coord_grant=(--add-dir "\$coord_drop")
+    if [[ -n "\$coord_workspace_config" ]]; then
+      coord_issue_root="\$(dirname "\$coord_workspace_config")/issue-\$COORD_ISSUE"
+      coord_response_dir="\$coord_issue_root/agents/$agent/responses"
+      if [[ -d "\$coord_response_dir" ]]; then
+        coord_grant+=(--add-dir "\$coord_response_dir")
+      fi
+    fi
     echo "Completion mailbox: \$coord_drop"
+    [[ -n "\${coord_response_dir:-}" && -d "\$coord_response_dir" ]] && echo "Private response directory: \$coord_response_dir"
   else
-    echo "WARNING: completion mailbox \$coord_drop does not exist; this harness cannot publish its SHA." >&2
+    echo "WARNING: coordination drop or private response directory is missing; this harness cannot publish this action." >&2
     echo "  Fix: coord doctor, or restart the issue so coord start recreates it." >&2
   fi
 elif [[ -z "\$coord_completes_root" ]]; then

@@ -446,3 +446,12 @@ PR as a draft for the owner to merge. `coord-merged` marks it ready and merges
 it. Publication failures never discard accepted finalization. `coord status`
 and a completed `coord N` print the chosen agent, final pin, published branch,
 and PR URL.
+# Private ballot responses and evidence batches
+
+Git actions use the prepared issue branch and a pushed SHA. The three ballot
+actions instead use an action-specific `responses/<uuid>.json` plus the exact
+`response <uuid>` completion marker. The coordinator validates and archives the
+bytes privately, then writes one canonical, protocol-version-2 batch commit on
+the retained `coordinator-evidence` branch. A batch outbox records its parent,
+SHA, roster, response digests, and retry status; workflow decisions wait for a
+published batch. This is same-user protocol privacy, not cryptographic secrecy.
