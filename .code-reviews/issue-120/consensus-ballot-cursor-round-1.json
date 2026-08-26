@@ -1,0 +1,14 @@
+{
+  "actionId": "e8b9e211-cb11-467d-a903-dc21c4a83a64",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "7651f491a06efd5166232aca4b1613493be4d864d950dbf60f19172373f15db7",
+  "issue": 120,
+  "issueSessionId": "issue-120:a98c04b3cf48bee4f5d6855f313d718b3069b818",
+  "protocolVersion": 2,
+  "rationale": "The revision keeps per-clone completion cleanup, preflights wipe with refuse-all, refuses diverged local base before discard, and adds audited offline fallback plus tests for those safety paths.",
+  "responseSha256": "5c09941bd310b93ef465845b57fdc1c0924f03b7c58ee2f82be43492c265555d",
+  "revisionCommitSha": "4eb0bb8fd5415fdcc5d42dea8a36f08e8b6417af",
+  "round": 1
+}

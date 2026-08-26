@@ -1,0 +1,14 @@
+{
+  "actionId": "d3626a51-8a68-40f3-b150-6ccc57d2858f",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "7651f491a06efd5166232aca4b1613493be4d864d950dbf60f19172373f15db7",
+  "issue": 120,
+  "issueSessionId": "issue-120:a98c04b3cf48bee4f5d6855f313d718b3069b818",
+  "protocolVersion": 2,
+  "rationale": "The revision protects local base-only commits, preserves per-clone completion and batch-safe wipe semantics, supports audited offline fallback, and passes the full build, 506 fast tests, and two end-to-end tests.",
+  "responseSha256": "b6dbb5edbfb2e3248b2cb9c0a81f474ce7038dc7eee188fb3fe62957b2674c3f",
+  "revisionCommitSha": "4eb0bb8fd5415fdcc5d42dea8a36f08e8b6417af",
+  "round": 1
+}
