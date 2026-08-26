@@ -61,11 +61,14 @@ describe("orderScaffold", () => {
     });
     expect(rendered).toContain("## Exact File List to be changed or deleted");
     expect(rendered).toContain("## Exact file list to be created");
+    expect(rendered).toContain("## Reuse and Scope");
     expect(rendered).toContain("## Tests");
     expect(rendered).toContain("## Alternatives Rejected");
     expect(rendered).toContain("## Risks and Mitigations");
     expect(rendered).toContain("## Conclusion");
     expect(rendered).toContain("AGENTS.md");
+    expect(rendered).toContain("Paths cited only here do not expand");
+    expect(rendered).toContain("fewest focused tests");
   });
 
   it("lists required review headings for R3.review", () => {
@@ -84,6 +87,7 @@ describe("orderScaffold", () => {
     expect(rendered).toContain("## Findings");
     expect(rendered).toContain("## Conclusion");
     expect(rendered).toContain("Plan-review findings must state");
+    expect(rendered).toContain("reuses existing code and test support");
   });
 
   it("lists required comparison headings for R5.compare", () => {
@@ -103,6 +107,7 @@ describe("orderScaffold", () => {
     expect(rendered).toContain("(or Findings)");
     expect(rendered).toContain("no em dash or subtitle");
     expect(rendered).toContain("file path and line number");
+    expect(rendered).toContain("reuses existing code and tests");
     expect(rendered).not.toContain("```json");
   });
 

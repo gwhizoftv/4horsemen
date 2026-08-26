@@ -42,6 +42,8 @@ export const computeInputSetHash = (inputs: readonly BoundInput[]): string => sh
 const markdownSection = (raw: string, alternatives: readonly string[]): boolean =>
   alternatives.some((heading) => new RegExp(`^#{1,6}\\s+${heading}\\s*$`, "im").test(raw));
 
+const REUSE_SECTION_HEADINGS = ["Reuse and Scope", "Reuse", "Scope and Reuse"] as const;
+
 const checkPlan = (raw: string): string[] => {
   // Legacy "Exact File Map" (and aliases) still satisfy both of the split list headings.
   const fileListAliases = [
@@ -51,6 +53,7 @@ const checkPlan = (raw: string): string[] => {
   const required: readonly (readonly string[])[] = [
     ["Exact File List to be changed or deleted", ...fileListAliases],
     ["Exact file list to be created", ...fileListAliases],
+    [...REUSE_SECTION_HEADINGS],
     ["Tests?", "Validation"],
     ["Alternatives?(?: Rejected)?"],
     ["Risks?(?: and Mitigations)?"],
@@ -108,9 +111,36 @@ export const expandFileMapBraces = (candidate: string): string[] => {
   return alternatives.map((part) => `${prefix}${part}${suffix}`);
 };
 
+/**
+ * Remove named Markdown sections while retaining every other line. A section
+ * ends at the next ATX heading at the same or a higher level, so nested
+ * headings remain part of the removed section rather than leaking citations
+ * back into the file-map scan.
+ */
+const stripSections = (raw: string, headings: readonly string[]): string => {
+  const targets = new Set(headings.map((heading) => heading.toLowerCase()));
+  const kept: string[] = [];
+  let skippedDepth: number | null = null;
+  for (const line of raw.split("\n")) {
+    const matched = /^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
+    const depth = matched?.[1]?.length;
+    if (skippedDepth !== null) {
+      if (depth === undefined || depth > skippedDepth) continue;
+      skippedDepth = null;
+    }
+    const title = matched?.[2]?.trim().toLowerCase();
+    if (depth !== undefined && title !== undefined && targets.has(title)) {
+      skippedDepth = depth;
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join("\n");
+};
+
 export const extractApprovedPaths = (raw: string): string[] => {
   const paths = new Set<string>();
-  for (const match of raw.matchAll(/`([^`\n]+)`/g)) {
+  for (const match of stripSections(raw, REUSE_SECTION_HEADINGS).matchAll(/`([^`\n]+)`/g)) {
     const candidate = match[1];
     if (candidate === undefined) continue;
     for (const expanded of expandFileMapBraces(candidate)) {

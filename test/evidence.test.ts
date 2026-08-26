@@ -114,6 +114,9 @@ describe("evidence evaluation", () => {
 - \`src/product.ts\`
 - \`test/product.test.ts\`
 
+## Reuse and Scope
+Reuse the existing product helper at \`src/existing-helper.ts\`; no new files are needed.
+
 ## Tests
 Run tests.
 
@@ -142,6 +145,9 @@ Implement it.
 ## Exact file list to be created
 - \`test/product.test.ts\`
 
+## Reuse and Scope
+Reuse the existing product helper at \`src/existing-helper.ts\`; no new files are needed.
+
 ## Tests
 Run tests.
 
@@ -161,6 +167,31 @@ Implement it.
     });
   });
 
+  it("rejects a plan that omits the reuse and scope section", async () => {
+    const plan = `# Plan
+
+## Exact File Map
+- \`src/product.ts\`
+
+## Tests
+Run tests.
+
+## Alternatives Rejected
+None.
+
+## Risks and Mitigations
+Keep pins immutable.
+
+## Conclusion
+Implement it.
+`;
+    const result = await evaluateEvidence(order(), sha("c"), mirror(plan));
+    expect(result).toMatchObject({
+      status: "rejected",
+      outstanding: expect.arrayContaining(["plan is missing a non-empty Reuse and Scope section"])
+    });
+  });
+
   it("extracts monorepo file-map paths from a plan and ignores identifiers", async () => {
     const plan = `# Plan
 
@@ -169,6 +200,9 @@ Implement it.
 - \`apps/web/src/session/mapSessionVideo.test.ts\`
 - \`VIDEO_DOMAINS\`
 - \`toDomain\`
+
+## Scope and Reuse
+Reuse the existing helper at \`packages/core/src/domain/existing.ts\`; no new files are needed.
 
 ## Tests
 Run tests.

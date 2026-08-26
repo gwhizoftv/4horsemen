@@ -124,6 +124,8 @@ describe("coord install — two-mode footprint", () => {
     const agentsMd = readFileSync(join(clone, "AGENTS.md"), "utf8");
     expect(agentsMd).toContain("## Exact File List to be changed or deleted");
     expect(agentsMd).toContain("## Exact file list to be created");
+    expect(agentsMd).toContain("## Reuse and Scope");
+    expect(agentsMd).toContain("## Implementation discipline");
     expect(agentsMd).toContain("action.md");
     expect(agentsMd).toContain("If `actionId` in the front matter has changed");
     expect(findAgentLanguageViolations(agentsMd)).toEqual([]);

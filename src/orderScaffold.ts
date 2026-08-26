@@ -99,8 +99,15 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
         "(or Exact File Map / File Map / File Creation Order / Proposed Architecture)\n\n" +
         "## Exact file list to be created\n" +
         "(or Exact File Map / File Map / File Creation Order / Proposed Architecture)\n\n" +
+        "## Reuse and Scope\n" +
+        "(or Reuse / Scope and Reuse)\n" +
+        "Name the existing functions, types, helpers, tests, and fixtures the implementation will reuse, " +
+        "and justify every new file. Paths cited only here do not expand what the implementation may change; " +
+        "also list every path intended for change in a file-list section above.\n\n" +
         "## Tests\n" +
-        "(or Test / Validation)\n\n" +
+        "(or Test / Validation)\n" +
+        "Propose the fewest focused tests that fail before the change and pass after it, and name the existing " +
+        "test file each new case will join whenever one exists.\n\n" +
         "## Alternatives Rejected\n" +
         "(or Alternatives)\n\n" +
         "## Risks and Mitigations\n" +
@@ -117,7 +124,8 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
         "(or Verdict)\n\n" +
         "Plan-review findings must state, in order: the plan claim or section; the rule that must hold; " +
         "a concrete failure if the plan is followed as written; then optionally the smallest correction. " +
-        "The rule and the failure are the deliverable.\n"
+        "The rule and the failure are the deliverable. Also evaluate whether the plan stays within the issue, " +
+        "reuses existing code and test support, justifies every new file, and proposes only focused tests.\n"
       );
     case "R5.compare":
       return (
@@ -129,7 +137,9 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
         "Cite every bound implementation pin SHA from the inputs list below.\n\n" +
         "When a finding reviews implementation code, state in order: file path and line number; " +
         "the rule that must hold; a concrete failure that follows from breaking it; then optionally " +
-        "the smallest illustrative test — or a fix sketch if a test cannot express it. Prefer a test over a fix.\n"
+        "the smallest illustrative test — or a fix sketch if a test cannot express it. Prefer a test over a fix. " +
+        "Also compare whether each implementation stays within the issue, reuses existing code and tests, " +
+        "avoids unnecessary files or refactors, and adds only focused coverage.\n"
       );
     default:
       return "";

@@ -208,6 +208,7 @@ describe("four-agent coordinator canary", () => {
       await loop.runTick();
 
       expectStep("R2.plan");
+      expect(currentOrder("claude").task).toContain("smallest change that fully solves it");
       const plan = `# Implementation Plan
 
 ## Exact File Map
@@ -216,6 +217,9 @@ describe("four-agent coordinator canary", () => {
 - \`src/product-cursor.txt\`
 - \`src/product-antigravity.txt\`
 - \`src/revision.txt\`
+
+## Reuse and Scope
+Reuse the existing product-file submission helpers; no new modules or fixtures are required.
 
 ## Tests
 Run the integration canary.
@@ -267,6 +271,7 @@ Implement the selected product files.
       await loop.runTick();
 
       expectStep("R4.implement");
+      expect(currentOrder("codex").task).toContain("smallest change that fully solves it");
       {
         const afterBallot = readCursorsState(paths);
         expect(afterBallot.derived.planSelection?.selectedAgents).toEqual(["codex"]);
@@ -313,6 +318,7 @@ Implement the selected product files.
       await loop.runTick();
 
       expectStep("R6.revise");
+      expect(currentOrder("cursor").task).toContain("smallest change that fully solves it");
       expect(readCursorsState(paths).derived.implementationSelection).toMatchObject({
         winner: "cursor",
         reviser: "cursor"
