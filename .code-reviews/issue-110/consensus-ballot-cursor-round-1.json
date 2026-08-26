@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 110,
+  "issueSessionId": "issue-110:1e43ba38ba3a0720503d7304a20ff6bd8c9eaf48",
+  "agent": "cursor",
+  "inputSetHash": "a433e7083ceac0813ae3513023e9e9013cbb0bcc5a90bb7af574d18b582b3aba",
+  "artifact": "consensus-ballot",
+  "round": 1,
+  "revisionCommitSha": "25c3206548118613dacbee2d256c28e8a9855bdf",
+  "disposition": "approve",
+  "rationale": "The revision binds published batches to closed response digests, keeps coordinator evidence unless --delete-evidence, removes superseded ballot paths, and stops silently rewriting journal format 3."
+}
