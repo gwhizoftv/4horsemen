@@ -8,7 +8,9 @@ finalization the driver opens a pull request. Default `prPolicy` is
 `coord-open-unmerged` (draft PR; owner merges). `coord-merged` opens a ready PR
 and merges it. Legacy `owner-only` is the same as `coord-open-unmerged`.
 
-The coordinator never writes agent clones. Agents publish work to their own
+The coordinator mutates agent clones for readiness only (checkout, reset,
+clean, and the AGENTS.md protocol overlay) and never authors, stages, stashes,
+or pushes agent commits. Agents publish work to their own
 `issue-<n>/<agent>` origin branches. The coordinator fetches those branches
 into an owner-side bare mirror and evaluates blobs at the exact submission SHA.
 
@@ -239,7 +241,15 @@ ungrouped `coord-N/<agent>`. Re-open those views
 later with `coord attach N` while the coordinator is already running. `coord detach N` closes matching Terminal windows
 (by unique title / window name) then kills the issue tmux sessions, without
 wiping runtime, clones, or branches. When `coord N` / `coord run` finishes with
-a completed workflow, it runs the same teardown automatically.
+a completed workflow, it runs the same teardown automatically, then makes each
+participating agent clone base-ready: lift the AGENTS.md protocol, discard WIP
+with `git reset --hard` + `git clean -fd` only when HEAD is exactly that issue's
+`issue-N/<agent>` branch, check out the configured base at `origin/<base>` (or
+local `<base>` if origin is unavailable), and restore the overlay plus
+skip-worktree bit. Dirt on another branch is refused for that clone (logged;
+the completed run still exits 0) and left unchanged. Bare reset/clean/checkout
+without lifting AGENTS.md is not sufficient — skip-worktree overlay bytes can
+block checkout of `main` even when `git status` looks clean.
 `coord uninstall` tears down owner tmux/Terminal for discovered issues and the
 exact workspace-grouped manual identity. It never closes bare agent-named tabs
 or another product's sessions.
@@ -254,8 +264,11 @@ kept when it has uncommitted work or commits that are not just a checkout of the
 clone (arbitrary owner branches are not treated as coordinator-owned). Removes
 `coord-runtime/issue-N`, and runs the same UI teardown as `detach`. It does
 **not** close the GitHub issue or uninstall the product. Dirty clones refuse
-unless `--force`. Clone-local skip-worktree on `AGENTS.md` is lifted so checkout
-onto the base branch can proceed.
+unless `--force`, except leftover uncommitted work only on this wipe's
+`issue-N/<agent>` branches, which is discarded via the same readiness helper so
+`--force` is not required for that common case. Ambiguous dirt (another branch
+or another issue) still refuses with nothing changed. Clone-local skip-worktree
+on `AGENTS.md` is lifted so checkout onto the base branch can proceed.
 
 On `coord N` start (and resume), coordination lifts that skip-worktree bit,
 checks each agent clone out on `issue-N/<agent>` at the issue baseline (or the

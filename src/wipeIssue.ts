@@ -7,6 +7,7 @@ import { detachIssue } from "./detachIssue.js";
 import { git, gitOrThrow, hasUncommittedChanges } from "./gitExec.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
 import { issueRuntimePaths, removeIssueMailbox, RESERVED_EVIDENCE_AGENT } from "./paths.js";
+import { makeAgentClonesBaseReady } from "./prepareAgentBranch.js";
 import { cloneIsDirty } from "./setupWorkspace.js";
 import type { CoordinatorConfig } from "./state.js";
 import type { OwnerTerminalCloser } from "./tmux.js";
@@ -223,12 +224,35 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     branch: branchFor(options.config.branch, options.issue, agent.id)
   }));
 
-  const dirty = clones.filter(({ root }) => existsSync(root) && cloneIsDirty(root)).map(({ root }) => root);
+  let dirty = clones.filter(({ root }) => existsSync(root) && cloneIsDirty(root)).map(({ root }) => root);
   if (dirty.length > 0 && !force) {
-    throw new Error(
-      `Refusing wipe-issue: uncommitted changes in ${dirty.join(", ")}. ` +
-        "Commit/stash them, or re-run with --force to discard. Nothing has been changed."
-    );
+    // Leftover WIP only on this wipe's issue-N/<agent> branches can be discarded
+    // without --force. Any other dirt keeps today's all-or-nothing refuse.
+    // Preflight first so we never mutate some clones then claim nothing changed.
+    if (!dryRun) {
+      const dirtyRows = clones.filter(({ root }) => existsSync(root) && cloneIsDirty(root));
+      const ambiguous = dirtyRows.filter(({ root, branch }) => {
+        const head = git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+        return head !== branch;
+      });
+      if (ambiguous.length === 0) {
+        makeAgentClonesBaseReady({
+          agents: dirtyRows.map(({ agent, root }) => ({ id: agent, root })),
+          issue: options.issue,
+          branchTemplate: options.config.branch,
+          baseBranch: options.config.baseBranch,
+          installRoot: options.config.coordination?.installRoot ?? null,
+          log
+        });
+        dirty = clones.filter(({ root }) => existsSync(root) && cloneIsDirty(root)).map(({ root }) => root);
+      }
+    }
+    if (dirty.length > 0) {
+      throw new Error(
+        `Refusing wipe-issue: uncommitted changes in ${dirty.join(", ")}. ` +
+          "Commit/stash them, or re-run with --force to discard. Nothing has been changed."
+      );
+    }
   }
 
   const paths = issueRuntimePaths(options.coordRoot, options.issue, options.completesRoot);

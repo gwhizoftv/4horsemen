@@ -243,3 +243,140 @@ export const prepareAgentIssueBranches = (input: {
   assertClonesReady(results);
   return results;
 };
+
+export type CloneBaseReadyAction = "checked-out" | "already-base" | "refused" | "skipped-missing";
+
+export type CloneBaseReadyResult = {
+  agent: string;
+  clone: string;
+  branch: string;
+  action: CloneBaseReadyAction;
+  discardedPaths: readonly string[];
+  protocol: ProtocolRestoreOutcome | "skipped";
+  reason?: string;
+};
+
+/**
+ * Discard-only readiness: leave each agent clone clean on `origin/<base>` (or
+ * local `<base>` when origin is unavailable) with the AGENTS.md protocol restored.
+ *
+ * Reset/clean run only when HEAD is exactly this issue's `issue-N/<agent>`
+ * branch and the tree has blocking dirt. Wrong-branch dirt refuses that clone
+ * without mutating it; other clones continue independently. Never commits,
+ * stashes, or pushes.
+ */
+export const makeAgentClonesBaseReady = (input: {
+  agents: readonly { id: string; root: string }[];
+  issue: number;
+  branchTemplate: string;
+  baseBranch: string;
+  installRoot?: string | null;
+  log?: (message: string) => void;
+}): CloneBaseReadyResult[] => {
+  const log = input.log ?? (() => undefined);
+  const installRoot = input.installRoot ?? null;
+  const results: CloneBaseReadyResult[] = [];
+
+  for (const agent of input.agents) {
+    const expected = issueBranchFor(input.branchTemplate, input.issue, agent.id);
+    if (!existsSync(agent.root) || !isGitWorktree(agent.root)) {
+      log(`skip missing clone for ${agent.id}: ${agent.root}\n`);
+      results.push({
+        agent: agent.id,
+        clone: agent.root,
+        branch: expected,
+        action: "skipped-missing",
+        discardedPaths: [],
+        protocol: "skipped"
+      });
+      continue;
+    }
+
+    const head = git(agent.root, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+    const dirtyLines = blockingDirtyPaths(agent.root);
+    const discardedPaths = dirtyLines.map(statusPath);
+
+    if (dirtyLines.length > 0 && head !== expected) {
+      const reason =
+        `Refusing clone readiness for ${agent.id}: uncommitted changes on ${head || "detached"}, ` +
+        `expected ${expected}. Commit/stash them, or wipe-issue --force. Nothing has been changed in this clone.`;
+      log(`${reason}\n`);
+      results.push({
+        agent: agent.id,
+        clone: agent.root,
+        branch: expected,
+        action: "refused",
+        discardedPaths: [],
+        protocol: "skipped",
+        reason
+      });
+      continue;
+    }
+
+    if (head === input.baseBranch && dirtyLines.length === 0) {
+      const captured = captureCloneAgentsProtocol(agent.root);
+      const protocol = restoreProtocol(agent.root, installRoot, captured, log);
+      log(`${agent.id} already on ${input.baseBranch}\n`);
+      results.push({
+        agent: agent.id,
+        clone: agent.root,
+        branch: expected,
+        action: "already-base",
+        discardedPaths: [],
+        protocol
+      });
+      continue;
+    }
+
+    const captured = captureCloneAgentsProtocol(agent.root);
+    let protocol: ProtocolRestoreOutcome = "bit-only";
+    let action: CloneBaseReadyAction = "checked-out";
+    let reason: string | undefined;
+    let discarded: string[] = [];
+    try {
+      liftCloneAgentsProtocol(agent.root, { dryRun: false, log, changes: [] });
+      if (dirtyLines.length > 0) {
+        gitOrThrow(agent.root, "reset", "--hard", "HEAD");
+        git(agent.root, "clean", "-fd");
+        discarded = [...discardedPaths];
+        log(
+          `discarded ${discarded.length} path(s) on ${expected} in ${agent.root}: ${discarded.join(", ")}\n`
+        );
+      }
+      git(agent.root, "fetch", "--quiet", "origin", input.baseBranch);
+      const originBase = git(agent.root, "rev-parse", "--verify", `origin/${input.baseBranch}^{commit}`);
+      const localBase = git(agent.root, "rev-parse", "--verify", `${input.baseBranch}^{commit}`);
+      const tip =
+        originBase.exitCode === 0
+          ? originBase.stdout.trim()
+          : localBase.exitCode === 0
+            ? localBase.stdout.trim()
+            : null;
+      if (tip === null) {
+        reason =
+          `Cannot resolve base branch ${input.baseBranch} (origin/${input.baseBranch} and local ` +
+          `${input.baseBranch} missing) in ${agent.root}. Nothing further changed in this clone.`;
+        log(`${reason}\n`);
+        action = "refused";
+      } else {
+        gitOrThrow(agent.root, "checkout", "-B", input.baseBranch, tip);
+        const source = originBase.exitCode === 0 ? `origin/${input.baseBranch}` : input.baseBranch;
+        log(`checked out ${input.baseBranch} at ${tip.slice(0, 12)} (${source}) in ${agent.root}\n`);
+      }
+    } finally {
+      protocol = restoreProtocol(agent.root, installRoot, captured, log);
+    }
+
+    results.push({
+      agent: agent.id,
+      clone: agent.root,
+      branch: expected,
+      action,
+      discardedPaths: discarded,
+      protocol,
+      ...(reason === undefined ? {} : { reason })
+    });
+  }
+
+  return results;
+};

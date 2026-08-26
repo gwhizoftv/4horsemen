@@ -14,7 +14,7 @@ import { renderHookScope, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONF
 import { install, onboard, packageVersion, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
-import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
+import { prepareAgentIssueBranches, makeAgentClonesBaseReady } from "./prepareAgentBranch.js";
 import {
   agentResponsePath,
   agentRuntimePaths,
@@ -768,6 +768,38 @@ const detachCompletedIssue = async (paths: IssueRuntimePaths, io: CliIo): Promis
         : "") +
       ".\n"
   );
+
+  let installRoot: string | null = null;
+  if (existsSync(start.configPath)) {
+    try {
+      installRoot = readConfig(start.configPath).coordination?.installRoot ?? null;
+    } catch (error) {
+      io.stdout(
+        `could not read ${start.configPath} for the install root ` +
+          `(${error instanceof Error ? error.message : String(error)}); ` +
+          "restoring the AGENTS.md overlay from each clone's own copy\n"
+      );
+    }
+  }
+  const readiness = makeAgentClonesBaseReady({
+    agents: start.agents.map((agent) => ({ id: agent.id, root: agent.root })),
+    issue: start.issue,
+    branchTemplate: start.branchTemplate,
+    baseBranch: start.baseBranch,
+    installRoot,
+    log: io.stdout
+  });
+  const cleaned = readiness.filter((row) => row.action === "checked-out").length;
+  const alreadyBase = readiness.filter((row) => row.action === "already-base").length;
+  const refused = readiness.filter((row) => row.action === "refused");
+  const skipped = readiness.filter((row) => row.action === "skipped-missing").length;
+  io.stdout(
+    `Issue ${start.issue} clone readiness: ${cleaned} cleaned, ${alreadyBase} already-base, ` +
+      `${refused.length} refused, ${skipped} skipped.\n`
+  );
+  for (const row of refused) {
+    if (row.reason !== undefined) io.stdout(`${row.reason}\n`);
+  }
 };
 
 export const runCli = async (argv: readonly string[], dependencies: CliDependencies = {}): Promise<number> => {

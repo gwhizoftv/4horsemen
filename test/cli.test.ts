@@ -761,6 +761,7 @@ describe("CLI", () => {
       })
     ).toBe(0);
     expect(output.join("")).toContain("Issue 1 complete: killed");
+    expect(output.join("")).toContain("clone readiness:");
     expect(output.join("")).not.toContain("Tip: coord attach");
   });
 

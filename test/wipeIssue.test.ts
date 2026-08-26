@@ -478,4 +478,59 @@ describe("wipeIssue", () => {
     ).rejects.toThrow(/uncommitted changes/);
     expect(existsSync(join(claude, "dirty.txt"))).toBe(true);
   });
+
+  it("discards leftover WIP on the matching issue branch without --force", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "coord-wipe-issue-wip-"));
+    roots.push(workspace);
+    const origin = join(workspace, "origin.git");
+    const product = join(workspace, "app");
+    const claude = join(workspace, "app-claude");
+    const coordRoot = join(workspace, "runtime");
+    mkdirSync(coordRoot, { recursive: true });
+    mkdirSync(product, { recursive: true });
+    git(product, "init", "-q", "--initial-branch=main");
+    git(product, "config", "user.name", "Fixture");
+    git(product, "config", "user.email", "fixture@example.com");
+    writeFileSync(join(product, "README.md"), "# app\n");
+    git(product, "add", "README.md");
+    git(product, "commit", "-qm", "init");
+    git(product, "clone", "--bare", "-q", product, origin);
+    git(product, "remote", "add", "origin", origin);
+    git(product, "push", "-q", "-u", "origin", "main");
+    initClone(claude, origin);
+    git(claude, "checkout", "-qb", "issue-3/claude");
+    writeFileSync(join(claude, "dirty.txt"), "nope\n");
+
+    const configPath = join(coordRoot, "config.json");
+    const config = coordinatorConfigSchema.parse({
+      project: "app",
+      origin,
+      agents: [{ id: "claude", root: claude, launcher: "start-claude.sh", delivery: "both" }],
+      branch: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      profile: "solo",
+      maxRevisionRounds: 3,
+      prPolicy: "owner-only",
+      digestPaths: [],
+      pollIntervalMs: 1000,
+      checks: [{ name: "true", argv: ["true"] }],
+      coordination: stamp(workspace, product)
+    });
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    mkdirSync(join(coordRoot, "issue-3", "agents"), { recursive: true });
+
+    const outcome = await wipeIssue({
+      issue: 3,
+      config,
+      configPath,
+      coordRoot,
+      terminalCloser: null,
+      log: () => undefined
+    });
+
+    expect(outcome.resetClones).toEqual([claude]);
+    expect(existsSync(join(claude, "dirty.txt"))).toBe(false);
+    expect(git(claude, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(git(claude, "status", "--porcelain").trim()).toBe("");
+  });
 });
