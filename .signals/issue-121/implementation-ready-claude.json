@@ -1,0 +1,19 @@
+{
+  "protocolVersion": 1,
+  "issue": 121,
+  "issueSessionId": "issue-121:6ef8f6eb22af1558723ddd885e0364ebbc92d76b",
+  "agent": "claude",
+  "inputSetHash": "0495fac0fb9bb2b4e833fb6b82c16e17842d789a86d578ad283c2ad5dd669b0f",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "225c476b732e40ca8c0681afdc2d091fb8b1e956",
+  "approvedPaths": [
+    "src/evidence.ts",
+    "src/orderScaffold.ts",
+    "src/steps.ts",
+    "templates/product/AGENTS.protocol.md",
+    "test/evidence.test.ts",
+    "test/install.test.ts",
+    "test/integration.test.ts",
+    "test/orderScaffold.test.ts"
+  ]
+}
