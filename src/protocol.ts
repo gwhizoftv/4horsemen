@@ -57,16 +57,6 @@ export const implementationReadyArtifactSchema = z
   })
   .strict();
 
-export const selectionArtifactSchema = z
-  .object({
-    ...commonArtifactFields,
-    artifact: z.literal("selection"),
-    inputSetHash: digestSchema,
-    selectedAgents: z.array(agentIdSchema).min(1),
-    ballots: z.array(artifactCitationSchema).min(1)
-  })
-  .strict();
-
 export const comparisonBallotArtifactSchema = z
   .object({
     ...commonArtifactFields,
@@ -75,16 +65,6 @@ export const comparisonBallotArtifactSchema = z
     implementations: z.array(artifactCitationSchema).min(1),
     choice: agentIdSchema,
     rationale: z.string().min(1)
-  })
-  .strict();
-
-export const reviserAuthorizationArtifactSchema = z
-  .object({
-    ...commonArtifactFields,
-    artifact: z.literal("reviser-authorization"),
-    inputSetHash: digestSchema,
-    reviser: agentIdSchema,
-    implementationCommitSha: gitShaSchema
   })
   .strict();
 
@@ -111,17 +91,6 @@ export const consensusBallotArtifactSchema = z
   })
   .strict();
 
-export const consensusDeclarationArtifactSchema = z
-  .object({
-    ...commonArtifactFields,
-    artifact: z.literal("consensus-declaration"),
-    inputSetHash: digestSchema,
-    round: z.number().int().min(1),
-    consensusCommitSha: gitShaSchema,
-    ballots: z.array(artifactCitationSchema).min(1)
-  })
-  .strict();
-
 export const finalizationArtifactSchema = z
   .object({
     ...commonArtifactFields,
@@ -142,25 +111,19 @@ export const finalizationArtifactSchema = z
 export const publishedArtifactSchema = z.discriminatedUnion("artifact", [
   participationReadyArtifactSchema,
   planBallotArtifactSchema,
-  selectionArtifactSchema,
   implementationReadyArtifactSchema,
   comparisonBallotArtifactSchema,
-  reviserAuthorizationArtifactSchema,
   revisionReadyArtifactSchema,
   consensusBallotArtifactSchema,
-  consensusDeclarationArtifactSchema,
   finalizationArtifactSchema
 ]);
 
 export type ParticipationReadyArtifact = z.infer<typeof participationReadyArtifactSchema>;
 export type PlanBallotArtifact = z.infer<typeof planBallotArtifactSchema>;
-export type SelectionArtifact = z.infer<typeof selectionArtifactSchema>;
 export type ImplementationReadyArtifact = z.infer<typeof implementationReadyArtifactSchema>;
 export type ComparisonBallotArtifact = z.infer<typeof comparisonBallotArtifactSchema>;
-export type ReviserAuthorizationArtifact = z.infer<typeof reviserAuthorizationArtifactSchema>;
 export type RevisionReadyArtifact = z.infer<typeof revisionReadyArtifactSchema>;
 export type ConsensusBallotArtifact = z.infer<typeof consensusBallotArtifactSchema>;
-export type ConsensusDeclarationArtifact = z.infer<typeof consensusDeclarationArtifactSchema>;
 export type FinalizationArtifact = z.infer<typeof finalizationArtifactSchema>;
 export type PublishedArtifact = z.infer<typeof publishedArtifactSchema>;
 

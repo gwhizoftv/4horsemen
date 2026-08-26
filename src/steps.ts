@@ -12,14 +12,11 @@ export type EvidenceId =
   | "plan-published"
   | "review-published"
   | "plan-ballot-published"
-  | "selection-published"
   | "implementation-pinned"
   | "comparison-published"
   | "comparison-ballot-published"
-  | "reviser-authorized"
   | "revision-pinned"
   | "consensus-ballot-published"
-  | "consensus-declared"
   | "finalization-verified";
 
 export type WorkflowStepId =
@@ -27,14 +24,11 @@ export type WorkflowStepId =
   | "R2.plan"
   | "R3.review"
   | "R3.plan-ballot"
-  | "R3.publish-selection"
   | "R4.implement"
   | "R5.compare"
   | "R5.compare-ballot"
-  | "R5.reviser-auth"
   | "R6.revise"
   | "R6.ballot"
-  | "R6.declare"
   | "R7.finalize";
 
 export type GateId =
@@ -103,14 +97,6 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     requiredPath: (issue, agent) => `.plans/issue-${issue}/ballot-${agent}.json`,
     task: "Publish a plan ballot citing the exact bound plan and review commits."
   },
-  "R3.publish-selection": {
-    id: "R3.publish-selection",
-    gateId: "gate-3-selection",
-    evidenceId: "selection-published",
-    participants: "reviser",
-    requiredPath: (issue) => `.plans/issue-${issue}/selection.json`,
-    task: "Publish the mechanically selected plan from the bound ballots."
-  },
   "R4.implement": {
     id: "R4.implement",
     gateId: "gate-4-implementations",
@@ -135,14 +121,6 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     requiredPath: (issue, agent) => `.code-reviews/issue-${issue}/ballot-${agent}.json`,
     task: "Publish a comparison ballot citing every bound implementation pin."
   },
-  "R5.reviser-auth": {
-    id: "R5.reviser-auth",
-    gateId: "gate-5-comparison",
-    evidenceId: "reviser-authorized",
-    participants: "reviser",
-    requiredPath: (issue) => `.signals/issue-${issue}/reviser-authorization.json`,
-    task: "Publish the automated reviser authorization from the bound comparison ballots."
-  },
   "R6.revise": {
     id: "R6.revise",
     gateId: "gate-6-consensus",
@@ -160,14 +138,6 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     requiredPath: (issue, agent, round) =>
       `.code-reviews/issue-${issue}/consensus-ballot-${agent}-round-${round ?? 1}.json`,
     task: "Review the exact revision pin and publish a consensus disposition."
-  },
-  "R6.declare": {
-    id: "R6.declare",
-    gateId: "gate-6-consensus",
-    evidenceId: "consensus-declared",
-    participants: "reviser",
-    requiredPath: (issue) => `.signals/issue-${issue}/consensus.json`,
-    task: "Publish the consensus declaration from the bound unanimous approval ballots."
   },
   "R7.finalize": {
     id: "R7.finalize",
@@ -189,14 +159,11 @@ const consensusSteps: readonly WorkflowStepId[] = [
   "R2.plan",
   "R3.review",
   "R3.plan-ballot",
-  "R3.publish-selection",
   "R4.implement",
   "R5.compare",
   "R5.compare-ballot",
-  "R5.reviser-auth",
   "R6.revise",
   "R6.ballot",
-  "R6.declare",
   "R7.finalize"
 ];
 
@@ -205,7 +172,6 @@ const reviewedSteps: readonly WorkflowStepId[] = [
   "R2.plan",
   "R3.review",
   "R3.plan-ballot",
-  "R3.publish-selection",
   "R4.implement",
   "R7.finalize"
 ];
@@ -278,10 +244,6 @@ export type InternalOrder = {
   changeScope?: readonly ChangeScopeEntry[];
   activeRoster: readonly string[];
   eligibleChoices: readonly string[];
-  expectedSelectedAgents: readonly string[];
-  expectedImplementationAgent?: string;
-  expectedImplementationPin?: string;
-  expectedReviser?: string;
 };
 
 export type CheckResult = { name: string; argv: readonly string[]; exitCode: number };
@@ -295,9 +257,7 @@ export type EvidenceObservation = {
   productPin?: string;
   disposition?: "approve" | "revise" | "escalate";
   approvedPaths?: readonly string[];
-  selectedAgents?: readonly string[];
   choice?: string;
-  reviser?: string;
   checkResults?: readonly CheckResult[];
 };
 
@@ -310,14 +270,15 @@ export type MachineDecision =
       productPin?: string;
       disposition?: "approve" | "revise" | "escalate";
       approvedPaths?: readonly string[];
-      selectedAgents?: readonly string[];
       choice?: string;
-      reviser?: string;
       checkResults?: readonly CheckResult[];
     }
   | { type: "reissue-action"; agent: string; outstanding: readonly string[] }
   | { type: "retry-verification"; agent: string; outstanding: readonly string[] }
   | { type: "advance-step"; from: WorkflowStepId; to: WorkflowStepId | null; round: number | null }
+  | { type: "derive-plan-selection" }
+  | { type: "derive-implementation-selection" }
+  | { type: "derive-consensus"; round: number }
   | { type: "wait"; reason: string }
   | {
       type: "owner-action-required";

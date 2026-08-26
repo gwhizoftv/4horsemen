@@ -4,15 +4,12 @@ import type { FetchResult } from "./mirror.js";
 import {
   comparisonBallotArtifactSchema,
   consensusBallotArtifactSchema,
-  consensusDeclarationArtifactSchema,
   finalizationArtifactSchema,
   implementationReadyArtifactSchema,
   participationReadyArtifactSchema,
   parseJsonWithSchema,
   planBallotArtifactSchema,
-  reviserAuthorizationArtifactSchema,
   revisionReadyArtifactSchema,
-  selectionArtifactSchema,
   validateCommonArtifactFields
 } from "./protocol.js";
 import type { BoundInput, EvidenceObservation, InternalOrder } from "./steps.js";
@@ -174,7 +171,7 @@ const satisfied = (
   sha: string,
   extra: Pick<
     EvidenceObservation,
-    "productPin" | "disposition" | "approvedPaths" | "selectedAgents" | "choice" | "reviser" | "checkResults"
+    "productPin" | "disposition" | "approvedPaths" | "choice" | "checkResults"
   > = {}
 ): EvidenceObservation => ({
   agent: order.agent,
@@ -215,9 +212,6 @@ const pinErrors = async (
   if (!phase.ok) outstanding.push(phase.details);
   return outstanding;
 };
-
-const sameStrings = (actual: readonly string[], expected: readonly string[]): boolean =>
-  JSON.stringify([...actual].sort()) === JSON.stringify([...expected].sort());
 
 export const evaluateEvidence = async (
   order: InternalOrder,
@@ -300,22 +294,6 @@ export const evaluateEvidence = async (
       : rejected(order, submissionSha, errors);
   }
 
-  if (order.evidenceId === "selection-published") {
-    const parsed = parseJsonWithSchema(blob, selectionArtifactSchema);
-    if (!parsed.ok) return rejected(order, submissionSha, [`invalid selection artifact: ${parsed.error}`]);
-    const errors = [...commonErrors(parsed.value, order), ...inputHashErrors(parsed.value.inputSetHash, order)];
-    if (!citationsEqualInputs(parsed.value.ballots, order.inputs)) errors.push("selection ballot citations do not equal bound inputs");
-    if (!sameStrings(parsed.value.selectedAgents, order.expectedSelectedAgents)) {
-      errors.push("selection result does not equal the coordinator's deterministic ballot tally");
-    }
-    if (parsed.value.selectedAgents.some((agent) => !order.activeRoster.includes(agent))) {
-      errors.push("selection names an inactive or dropped agent");
-    }
-    return errors.length === 0
-      ? { ...satisfied(order, submissionSha), selectedAgents: parsed.value.selectedAgents }
-      : rejected(order, submissionSha, errors);
-  }
-
   if (order.evidenceId === "implementation-pinned") {
     const parsed = parseJsonWithSchema(blob, implementationReadyArtifactSchema);
     if (!parsed.ok) return rejected(order, submissionSha, [`invalid implementation-ready artifact: ${parsed.error}`]);
@@ -350,24 +328,6 @@ export const evaluateEvidence = async (
     }
     return errors.length === 0
       ? satisfied(order, submissionSha, { choice: parsed.value.choice })
-      : rejected(order, submissionSha, errors);
-  }
-
-  if (order.evidenceId === "reviser-authorized") {
-    const parsed = parseJsonWithSchema(blob, reviserAuthorizationArtifactSchema);
-    if (!parsed.ok) return rejected(order, submissionSha, [`invalid reviser authorization: ${parsed.error}`]);
-    const errors = [...commonErrors(parsed.value, order), ...inputHashErrors(parsed.value.inputSetHash, order)];
-    if (parsed.value.implementationCommitSha !== order.expectedImplementationPin) {
-      errors.push("authorized implementation pin does not equal the deterministic comparison winner");
-    }
-    if (parsed.value.reviser !== order.expectedReviser || !order.activeRoster.includes(parsed.value.reviser)) {
-      errors.push("authorized reviser does not equal the active deterministic comparison winner");
-    }
-    return errors.length === 0
-      ? satisfied(order, submissionSha, {
-          productPin: parsed.value.implementationCommitSha,
-          reviser: parsed.value.reviser
-        })
       : rejected(order, submissionSha, errors);
   }
 
@@ -409,21 +369,6 @@ export const evaluateEvidence = async (
     }
     return errors.length === 0
       ? satisfied(order, submissionSha, { disposition: parsed.value.disposition })
-      : rejected(order, submissionSha, errors);
-  }
-
-  if (order.evidenceId === "consensus-declared") {
-    const parsed = parseJsonWithSchema(blob, consensusDeclarationArtifactSchema);
-    if (!parsed.ok) return rejected(order, submissionSha, [`invalid consensus declaration: ${parsed.error}`]);
-    const errors = [...commonErrors(parsed.value, order), ...inputHashErrors(parsed.value.inputSetHash, order)];
-    if (parsed.value.round !== order.round) errors.push(`consensus declaration round must be ${order.round ?? 1}`);
-    const ballotInputs = order.inputs.filter((input) => input.kind === "consensus-ballot");
-    if (!citationsEqualInputs(parsed.value.ballots, ballotInputs)) errors.push("consensus declaration ballots do not equal bound inputs");
-    if (!order.inputs.some((input) => input.kind === "revision" && input.commitSha === parsed.value.consensusCommitSha)) {
-      errors.push("consensus declaration does not pin the bound revision commit");
-    }
-    return errors.length === 0
-      ? satisfied(order, submissionSha, { productPin: parsed.value.consensusCommitSha })
       : rejected(order, submissionSha, errors);
   }
 

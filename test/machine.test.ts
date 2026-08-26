@@ -6,7 +6,7 @@ const now = "2026-08-11T12:00:00.000Z";
 const roster = ["claude", "codex", "cursor", "antigravity"];
 
 const start = startStateSchema.parse({
-  formatVersion: 2,
+  formatVersion: 3,
   issue: 1,
   issueSessionId: `issue-1:${"a".repeat(40)}`,
   baselineSha: "a".repeat(40),
@@ -43,6 +43,28 @@ const accepted = (
   acceptedAt: now,
   ...(disposition === undefined ? {} : { disposition })
 });
+
+const implementationDerived = {
+  kind: "implementation-selection" as const,
+  algorithm: "plurality-active-roster-v1" as const,
+  inputSetHash: "d".repeat(64),
+  activeRoster: roster,
+  inputs: [
+    {
+      kind: "implementation" as const,
+      agent: "codex",
+      submissionSha: "e".repeat(40),
+      path: ".signals/issue-1/implementation-ready-codex.json",
+      productPin: "d".repeat(40)
+    }
+  ],
+  decisionId: `implementation-selection:${"d".repeat(64)}`,
+  supersedes: null,
+  decidedAt: now,
+  winner: "codex",
+  implementationPin: "d".repeat(40),
+  reviser: "codex"
+};
 
 describe("pure workflow machine", () => {
   it("orders all four consensus participants at the join gate", () => {
@@ -86,6 +108,7 @@ describe("pure workflow machine", () => {
     const cursors = cursorsStateSchema.parse({
       ...base,
       issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 3 },
+      derived: { ...base.derived, implementationSelection: implementationDerived },
       accepted: roster.map((agent) => accepted("R6.ballot", agent, 3, agent === "codex" ? "revise" : "approve"))
     });
     expect(decide({ start, cursors })).toEqual([
@@ -104,12 +127,30 @@ describe("pure workflow machine", () => {
     const cursors = cursorsStateSchema.parse({
       ...base,
       issueCursor: { stepId: "R6.revise", gateId: "gate-6-consensus", round: 1 },
-      reviser: "cursor",
-      selection: {
-        planAgents: ["claude"],
-        implementationAgent: "cursor",
-        implementationPin: "d".repeat(40),
-        reviser: "cursor"
+      derived: {
+        planSelection: null,
+        implementationSelection: {
+          kind: "implementation-selection",
+          algorithm: "plurality-active-roster-v1",
+          inputSetHash: "d".repeat(64),
+          activeRoster: roster,
+          inputs: [
+            {
+              kind: "implementation",
+              agent: "cursor",
+              submissionSha: "e".repeat(40),
+              path: ".signals/issue-1/implementation-ready-cursor.json",
+              productPin: "d".repeat(40)
+            }
+          ],
+          decisionId: `implementation-selection:${"d".repeat(64)}`,
+          supersedes: null,
+          decidedAt: now,
+          winner: "cursor",
+          implementationPin: "d".repeat(40),
+          reviser: "cursor"
+        },
+        consensus: null
       }
     });
     expect(decide({ start, cursors })).toEqual([
@@ -123,7 +164,28 @@ describe("pure workflow machine", () => {
     const cursors = cursorsStateSchema.parse({
       ...base,
       issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
-      selection: { ...base.selection, planAgents: ["cursor"] }
+      derived: {
+        planSelection: {
+          kind: "plan-selection",
+          algorithm: "plurality-active-roster-v1",
+          inputSetHash: "d".repeat(64),
+          activeRoster: reviewed.originalRoster,
+          inputs: [
+            {
+              kind: "plan",
+              agent: "cursor",
+              submissionSha: "e".repeat(40),
+              path: ".plans/issue-1/plan-cursor.md"
+            }
+          ],
+          decisionId: `plan-selection:${"d".repeat(64)}`,
+          supersedes: null,
+          decidedAt: now,
+          selectedAgents: ["cursor"]
+        },
+        implementationSelection: null,
+        consensus: null
+      }
     });
     expect(decide({ start: reviewed, cursors })).toEqual([
       { type: "prepare-action", agent: "cursor", stepId: "R4.implement", round: null }
@@ -135,6 +197,7 @@ describe("pure workflow machine", () => {
     const revision = cursorsStateSchema.parse({
       ...base,
       issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
+      derived: { ...base.derived, implementationSelection: implementationDerived },
       accepted: roster.map((agent) => accepted("R6.ballot", agent, 1, agent === "codex" ? "revise" : "approve"))
     });
     expect(decide({ start, cursors: revision })).toEqual([

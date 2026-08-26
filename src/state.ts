@@ -26,7 +26,12 @@ import {
   type WorkflowStepId
 } from "./steps.js";
 
-export const RUNTIME_FORMAT_VERSION = 2;
+export const RUNTIME_FORMAT_VERSION = 3;
+
+const LEGACY_RUNTIME_FORMAT_VERSION = 2;
+
+const RUNTIME_FORMAT_WIPE_MESSAGE =
+  "Runtime format version 2 is no longer supported. Wipe this issue with `coord wipe <issue>` and start it again.";
 
 const workflowProfileSchema = z.enum(["solo", "reviewed", "consensus"]);
 const prPolicySchema = z.enum(["owner-only", "coord-open-unmerged", "coord-merged"]);
@@ -36,14 +41,11 @@ const stepIdSchema = z.enum([
   "R2.plan",
   "R3.review",
   "R3.plan-ballot",
-  "R3.publish-selection",
   "R4.implement",
   "R5.compare",
   "R5.compare-ballot",
-  "R5.reviser-auth",
   "R6.revise",
   "R6.ballot",
-  "R6.declare",
   "R7.finalize"
 ]);
 const gateIdSchema = z.enum([
@@ -60,14 +62,11 @@ const evidenceIdSchema = z.enum([
   "plan-published",
   "review-published",
   "plan-ballot-published",
-  "selection-published",
   "implementation-pinned",
   "comparison-published",
   "comparison-ballot-published",
-  "reviser-authorized",
   "revision-pinned",
   "consensus-ballot-published",
-  "consensus-declared",
   "finalization-verified"
 ]);
 const timestampSchema = z.string().datetime({ offset: true });
@@ -328,6 +327,99 @@ export const agentCursorSchema = z
   })
   .strict();
 
+const derivedInputKindSchema = z.enum([
+  "plan",
+  "plan-ballot",
+  "implementation",
+  "comparison-ballot",
+  "revision",
+  "consensus-ballot"
+]);
+
+const derivedInputCitationSchema = z
+  .object({
+    kind: derivedInputKindSchema,
+    agent: agentIdSchema,
+    submissionSha: gitShaSchema,
+    path: z.string().min(1),
+    productPin: gitShaSchema.optional()
+  })
+  .strict();
+
+const derivedDecisionBaseSchema = z
+  .object({
+    inputSetHash: digestSchema,
+    activeRoster: z.array(agentIdSchema).min(1),
+    inputs: z.array(derivedInputCitationSchema).min(1),
+    decidedAt: timestampSchema
+  })
+  .strict();
+
+const planSelectionDecisionIdSchema = z
+  .string()
+  .regex(/^plan-selection:[a-f0-9]{64}$/, "expected a plan-selection decision identity");
+
+const implementationSelectionDecisionIdSchema = z
+  .string()
+  .regex(/^implementation-selection:[a-f0-9]{64}$/, "expected an implementation-selection decision identity");
+
+const consensusDecisionIdSchema = z
+  .string()
+  .regex(/^consensus:[a-f0-9]{64}:r[1-9][0-9]*$/, "expected a round-bound consensus decision identity");
+
+export const planSelectionDerivedSchema = derivedDecisionBaseSchema
+  .extend({
+    kind: z.literal("plan-selection"),
+    algorithm: z.literal("plurality-active-roster-v1"),
+    decisionId: planSelectionDecisionIdSchema,
+    supersedes: planSelectionDecisionIdSchema.nullable(),
+    selectedAgents: z.array(agentIdSchema).min(1)
+  })
+  .strict()
+  .refine((record) => record.decisionId === `plan-selection:${record.inputSetHash}`, {
+    path: ["decisionId"],
+    message: "decision identity must match the plan-selection input hash"
+  });
+
+export const implementationSelectionDerivedSchema = derivedDecisionBaseSchema
+  .extend({
+    kind: z.literal("implementation-selection"),
+    algorithm: z.literal("plurality-active-roster-v1"),
+    decisionId: implementationSelectionDecisionIdSchema,
+    supersedes: implementationSelectionDecisionIdSchema.nullable(),
+    winner: agentIdSchema,
+    implementationPin: gitShaSchema,
+    reviser: agentIdSchema
+  })
+  .strict()
+  .refine((record) => record.decisionId === `implementation-selection:${record.inputSetHash}`, {
+    path: ["decisionId"],
+    message: "decision identity must match the implementation-selection input hash"
+  });
+
+export const consensusDerivedSchema = derivedDecisionBaseSchema
+  .extend({
+    kind: z.literal("consensus"),
+    algorithm: z.literal("unanimous-active-roster-v1"),
+    decisionId: consensusDecisionIdSchema,
+    supersedes: consensusDecisionIdSchema.nullable(),
+    round: z.number().int().min(1),
+    consensusPin: gitShaSchema
+  })
+  .strict()
+  .refine((record) => record.decisionId === `consensus:${record.inputSetHash}:r${record.round}`, {
+    path: ["decisionId"],
+    message: "decision identity must match the consensus input hash and round"
+  });
+
+export const derivedStateSchema = z
+  .object({
+    planSelection: planSelectionDerivedSchema.nullable(),
+    implementationSelection: implementationSelectionDerivedSchema.nullable(),
+    consensus: consensusDerivedSchema.nullable()
+  })
+  .strict();
+
 export const acceptedSubmissionSchema = z
   .object({
     stepId: stepIdSchema,
@@ -337,9 +429,7 @@ export const acceptedSubmissionSchema = z
     productPin: gitShaSchema.optional(),
     disposition: z.enum(["approve", "revise", "escalate"]).optional(),
     approvedPaths: z.array(z.string().min(1)).optional(),
-    selectedAgents: z.array(agentIdSchema).optional(),
     choice: agentIdSchema.optional(),
-    reviser: agentIdSchema.optional(),
     checkResults: z
       .array(
         z
@@ -369,15 +459,7 @@ export const cursorsStateSchema = z
       .strict(),
     activeRoster: z.array(agentIdSchema).min(1),
     droppedAgents: z.array(agentIdSchema),
-    reviser: agentIdSchema.nullable(),
-    selection: z
-      .object({
-        planAgents: z.array(agentIdSchema),
-        implementationAgent: agentIdSchema.nullable(),
-        implementationPin: gitShaSchema.nullable(),
-        reviser: agentIdSchema.nullable()
-      })
-      .strict(),
+    derived: derivedStateSchema,
     ownerQuestion: z
       .object({
         id: z.string().uuid(),
@@ -443,7 +525,8 @@ export const journalEventSchema = z
       "publication-pending",
       "publication-failed",
       "pr-created",
-      "pr-merged"
+      "pr-merged",
+      "decision-derived"
     ]),
     agent: agentIdSchema.optional(),
     actionId: z.string().uuid().optional(),
@@ -462,6 +545,12 @@ export type WorkspaceDeclaration = z.infer<typeof workspaceDeclarationSchema>;
 export type StartState = z.infer<typeof startStateSchema>;
 export type AgentCursor = z.infer<typeof agentCursorSchema>;
 export type AcceptedSubmission = z.infer<typeof acceptedSubmissionSchema>;
+export type DerivedInputKind = z.infer<typeof derivedInputKindSchema>;
+export type DerivedInputCitation = z.infer<typeof derivedInputCitationSchema>;
+export type PlanSelectionDerived = z.infer<typeof planSelectionDerivedSchema>;
+export type ImplementationSelectionDerived = z.infer<typeof implementationSelectionDerivedSchema>;
+export type ConsensusDerived = z.infer<typeof consensusDerivedSchema>;
+export type DerivedState = z.infer<typeof derivedStateSchema>;
 export type CursorsState = z.infer<typeof cursorsStateSchema>;
 export type JournalEvent = z.infer<typeof journalEventSchema>;
 
@@ -485,6 +574,14 @@ export type StartStateInput = Omit<
   completesRoot?: string;
 };
 
+const assertRuntimeFormat = (path: string, value: unknown): void => {
+  if (typeof value !== "object" || value === null || !("formatVersion" in value)) return;
+  const formatVersion = (value as { formatVersion: unknown }).formatVersion;
+  if (formatVersion === LEGACY_RUNTIME_FORMAT_VERSION) {
+    throw new Error(`Invalid ${path}: ${RUNTIME_FORMAT_WIPE_MESSAGE}`);
+  }
+};
+
 const parseFile = <T>(path: string, schema: z.ZodType<T>): T => {
   let value: unknown;
   try {
@@ -492,6 +589,7 @@ const parseFile = <T>(path: string, schema: z.ZodType<T>): T => {
   } catch (error) {
     throw new Error(`Cannot parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
+  assertRuntimeFormat(path, value);
   const result = schema.safeParse(value);
   if (!result.success) {
     throw new Error(`Invalid ${path}: ${z.prettifyError(result.error)}`);
@@ -544,8 +642,7 @@ export const initialCursors = (start: StartState, now = new Date().toISOString()
     issueCursor: { stepId: "R1.join", gateId: "gate-1-join", round: null },
     activeRoster: start.originalRoster,
     droppedAgents: [],
-    reviser: null,
-    selection: { planAgents: [], implementationAgent: null, implementationPin: null, reviser: null },
+    derived: { planSelection: null, implementationSelection: null, consensus: null },
     ownerQuestion: null,
     lastOwnerAnswer: null,
     publication: {
@@ -598,6 +695,7 @@ export const readJournal = (paths: IssueRuntimePaths): JournalEvent[] => {
     } catch (error) {
       throw new Error(`Invalid journal line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
     }
+    assertRuntimeFormat(`journal line ${index + 1}`, value);
     return journalEventSchema.parse(value);
   });
 };
@@ -644,6 +742,18 @@ export const appendJournal = (
   const lockPath = `${paths.journal}.lock`;
   const lock = acquireExclusiveLock(lockPath);
   try {
+    // A derived decision is content-addressed.  The journal is written before
+    // cursor replacement, so a process can die after the durable append but
+    // before the state file is renamed.  Reusing the event by identity makes
+    // that retry exact-once and also preserves its original decidedAt value.
+    if (input.type === "decision-derived" && typeof input.details.decisionId === "string") {
+      const existing = readJournal(paths).find(
+        (event) =>
+          event.type === "decision-derived" &&
+          event.details.decisionId === input.details.decisionId
+      );
+      if (existing !== undefined) return existing;
+    }
     const event = journalEventSchema.parse({
       ...input,
       formatVersion: RUNTIME_FORMAT_VERSION,
@@ -767,6 +877,19 @@ export const replaceCursor = (
 export const setPaused = (cursors: CursorsState, paused: boolean, now = new Date().toISOString()): CursorsState =>
   cursorsStateSchema.parse({ ...cursors, paused, updatedAt: now });
 
+/**
+ * Every decision identity includes the ordered active roster, so any drop
+ * invalidates all decisions that have already been derived.  The owner drop
+ * path immediately recomputes the slots whose prerequisites are still
+ * complete and journals their supersession; this lower-level helper fails
+ * closed for callers that cannot do that recomputation themselves.
+ */
+export const invalidateDerivedForDrop = (derived: DerivedState, agent: string): DerivedState => {
+  void derived;
+  void agent;
+  return { planSelection: null, implementationSelection: null, consensus: null };
+};
+
 export const dropAgent = (cursors: CursorsState, agent: string, now = new Date().toISOString()): CursorsState => {
   if (!cursors.activeRoster.includes(agent)) throw new Error(`${agent} is not active.`);
   if (cursors.activeRoster.length === 1) throw new Error("Cannot drop the final active agent.");
@@ -777,13 +900,7 @@ export const dropAgent = (cursors: CursorsState, agent: string, now = new Date()
     ...cursors,
     activeRoster,
     droppedAgents: [...cursors.droppedAgents, agent],
-    reviser: cursors.reviser === agent ? null : cursors.reviser,
-    selection: {
-      planAgents: cursors.selection.planAgents.filter((candidate) => candidate !== agent),
-      implementationAgent: cursors.selection.implementationAgent === agent ? null : cursors.selection.implementationAgent,
-      implementationPin: cursors.selection.implementationAgent === agent ? null : cursors.selection.implementationPin,
-      reviser: cursors.selection.reviser === agent ? null : cursors.selection.reviser
-    },
+    derived: invalidateDerivedForDrop(cursors.derived, agent),
     agents: {
       ...cursors.agents,
       [agent]: { ...current, status: "dropped", actionId: null, submissionSha: null, outstanding: [], updatedAt: now }

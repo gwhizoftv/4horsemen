@@ -7,7 +7,14 @@ import { writeAction } from "../src/action.js";
 import { automationDigestMaterial, runCli, type CliRunLoop } from "../src/cli.js";
 import { agentRuntimePaths, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
-import { cursorsStateSchema, readConfig, readCursorsState, readStartState, writeCursorsState } from "../src/state.js";
+import {
+  cursorsStateSchema,
+  readConfig,
+  readCursorsState,
+  readJournal,
+  readStartState,
+  writeCursorsState
+} from "../src/state.js";
 import { DOCTOR_CODES } from "../src/doctor.js";
 import { renderGitHubIssueSnapshot } from "../src/githubIssue.js";
 import { ensureBuilt, makeProduct, repoRoot, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
@@ -697,25 +704,32 @@ describe("CLI", () => {
       cursorsStateSchema.parse({
         ...current,
         issueCursor: { stepId: "R6.revise", gateId: "gate-6-consensus", round: 1 },
-        reviser: "cursor",
-        selection: {
-          planAgents: ["codex"],
-          implementationAgent: "cursor",
-          implementationPin: "e".repeat(40),
-          reviser: "cursor"
+        derived: {
+          planSelection: null,
+          implementationSelection: {
+            kind: "implementation-selection",
+            algorithm: "plurality-active-roster-v1",
+            inputSetHash: "b".repeat(64),
+            activeRoster: current.activeRoster,
+            inputs: [
+              {
+                kind: "implementation",
+                agent: "cursor",
+                submissionSha: "d".repeat(40),
+                path: ".signals/issue-1/implementation-ready-cursor.json",
+                productPin: "e".repeat(40)
+              }
+            ],
+            decisionId: `implementation-selection:${"b".repeat(64)}`,
+            supersedes: null,
+            decidedAt: now,
+            winner: "cursor",
+            implementationPin: "e".repeat(40),
+            reviser: "cursor"
+          },
+          consensus: null
         },
-        accepted: [
-          {
-            stepId: "R5.reviser-auth",
-            agent: "codex",
-            round: null,
-            submissionSha: "f".repeat(40),
-            productPin: "e".repeat(40),
-            reviser: "cursor",
-            path: ".signals/issue-1/reviser-authorization.json",
-            acceptedAt: now
-          }
-        ],
+        accepted: [],
         updatedAt: now
       })
     );
@@ -728,8 +742,86 @@ describe("CLI", () => {
     ).toBe(2);
     const after = readCursorsState(paths);
     expect(after.activeRoster).toContain("cursor");
-    expect(after.selection.reviser).toBe("cursor");
+    expect(after.derived.implementationSelection?.reviser).toBe("cursor");
     expect(errors.join("")).toContain("Cannot drop authorized reviser cursor");
+  });
+
+  it("recomputes and journals a roster-bound plan decision after a permitted drop", async () => {
+    const fixture = setup();
+    await runCli(["start", "1", "--profile", "consensus", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      processRunner: successfulStartGit,
+      makeRunLoop: fakeLoop
+    });
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const current = readCursorsState(paths);
+    const now = "2026-08-11T17:00:00.000Z";
+    const priorDecisionId = `plan-selection:${"f".repeat(64)}`;
+    writeCursorsState(
+      paths,
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
+        derived: {
+          ...current.derived,
+          planSelection: {
+            kind: "plan-selection",
+            algorithm: "plurality-active-roster-v1",
+            inputSetHash: "f".repeat(64),
+            activeRoster: current.activeRoster,
+            inputs: [
+              {
+                kind: "plan",
+                agent: "codex",
+                submissionSha: "1".repeat(40),
+                path: ".plans/issue-1/plan-codex.md"
+              }
+            ],
+            decisionId: priorDecisionId,
+            supersedes: null,
+            decidedAt: now,
+            selectedAgents: ["codex"]
+          }
+        },
+        accepted: [
+          ...current.activeRoster.map((agent, index) => ({
+            stepId: "R2.plan" as const,
+            agent,
+            round: null,
+            submissionSha: String(index + 1).repeat(40),
+            path: `.plans/issue-1/plan-${agent}.md`,
+            acceptedAt: now
+          })),
+          ...current.activeRoster.map((agent, index) => ({
+            stepId: "R3.plan-ballot" as const,
+            agent,
+            round: null,
+            submissionSha: String(index + 4).repeat(40),
+            choice: agent === "claude" ? "claude" : "codex",
+            path: `.plans/issue-1/ballot-${agent}.json`,
+            acceptedAt: now
+          }))
+        ],
+        updatedAt: now
+      })
+    );
+
+    expect(
+      await runCli(["drop", "cursor", "--issue", "1", "--coord-root", fixture.runtime], {
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    const after = readCursorsState(paths);
+    expect(after.derived.planSelection).toMatchObject({
+      activeRoster: ["codex", "claude"],
+      selectedAgents: ["codex"],
+      supersedes: priorDecisionId
+    });
+    expect(after.derived.planSelection?.decisionId).not.toBe(priorDecisionId);
+    expect(
+      readJournal(paths).filter(
+        (event) => event.type === "decision-derived" && event.details.kind === "plan-selection"
+      )
+    ).toHaveLength(1);
   });
 
   it("preserves peer acceptance and pending intent when another agent is dropped", async () => {

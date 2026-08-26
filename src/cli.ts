@@ -27,7 +27,15 @@ import {
   type IssueRuntimePaths
 } from "./paths.js";
 import { gitShaSchema } from "./protocol.js";
-import { CoordinatorRunLoop, deterministicWinner, runArgv, type ProcessRunner } from "./runLoop.js";
+import {
+  CoordinatorRunLoop,
+  computeConsensusDerived,
+  computeImplementationSelectionDerived,
+  computePlanSelectionDerived,
+  derivedDecisionJournalDetails,
+  runArgv,
+  type ProcessRunner
+} from "./runLoop.js";
 import {
   appendJournal,
   atomicWriteJson,
@@ -45,7 +53,7 @@ import {
   type CoordinatorConfig,
   type CursorsState
 } from "./state.js";
-import type { WorkflowProfile } from "./steps.js";
+import { STEP_DEFINITIONS, type WorkflowProfile, type WorkflowStepId } from "./steps.js";
 import {
   resolveAgentLauncher,
   TmuxController,
@@ -303,79 +311,173 @@ const rederiveAfterDrop = (
   dropped: string,
   now: string
 ): CursorsState => {
+  const priorPlan = cursors.derived.planSelection;
+  const priorImplementation = cursors.derived.implementationSelection;
+  const priorConsensus = cursors.derived.consensus;
   let next = dropAgent(cursors, dropped, now);
-  const currentStep = next.issueCursor.stepId;
-  const round = currentStep.startsWith("R6.") ? (next.issueCursor.round ?? 1) : null;
-  const invalidatedAgents = new Set(
-    next.accepted
-      .filter(
-        (submission) =>
-          submission.stepId === currentStep &&
-          submission.round === round &&
-          (submission.choice === dropped ||
-            submission.reviser === dropped ||
-            submission.selectedAgents?.includes(dropped) === true)
-      )
-      .map((submission) => submission.agent)
-  );
+  // A ballot cast for an agent who is no longer eligible must be replaced by
+  // its active author.  Other evidence from the dropped agent remains as
+  // historical provenance but is excluded by every active-only derivation.
   next = cursorsStateSchema.parse({
     ...next,
     accepted: next.accepted.filter(
       (submission) =>
         !(
-          submission.stepId === currentStep &&
-          submission.round === round &&
-          invalidatedAgents.has(submission.agent)
+          next.activeRoster.includes(submission.agent) &&
+          (submission.stepId === "R3.plan-ballot" || submission.stepId === "R5.compare-ballot") &&
+          submission.choice === dropped
         )
     ),
     ownerQuestion: null,
-    publication:
-      next.publication.finalSha !== null &&
-      !next.accepted.some(
-        (submission) => submission.stepId === "R7.finalize" && submission.productPin === next.publication.finalSha
-      )
-        ? {
-            status: "not-required",
-            finalSha: null,
-            branch: null,
-            url: null,
-            error: null,
-            attempts: next.publication.attempts
-          }
-        : next.publication,
     updatedAt: now
   });
 
-  const planEligible = next.accepted
-    .filter((submission) => submission.stepId === "R2.plan" && next.activeRoster.includes(submission.agent))
-    .map((submission) => submission.agent);
-  const implementationEligible = next.accepted
-    .filter((submission) => submission.stepId === "R4.implement" && next.activeRoster.includes(submission.agent))
-    .map((submission) => submission.agent);
-  const planWinner = deterministicWinner(next, "R3.plan-ballot", planEligible);
-  const implementationWinner = deterministicWinner(next, "R5.compare-ballot", implementationEligible);
-  const implementation = next.accepted.find(
-    (submission) => submission.stepId === "R4.implement" && submission.agent === implementationWinner
-  );
-  const reselectPlan = cursors.selection.planAgents.length > 0 && next.selection.planAgents.length === 0;
-  const reselectImplementation =
-    cursors.selection.implementationAgent !== null && next.selection.implementationAgent === null;
-  const reselectReviser = cursors.selection.reviser !== null && next.selection.reviser === null;
-  next = cursorsStateSchema.parse({
-    ...next,
-    reviser: reselectReviser ? implementationWinner : next.reviser,
-    selection: {
-      planAgents: reselectPlan && planWinner !== null ? [planWinner] : next.selection.planAgents,
-      implementationAgent: reselectImplementation ? implementationWinner : next.selection.implementationAgent,
-      implementationPin: reselectImplementation ? (implementation?.productPin ?? null) : next.selection.implementationPin,
-      reviser: reselectReviser ? implementationWinner : next.selection.reviser
-    },
-    updatedAt: now
-  });
+  const persistDecision = <T extends NonNullable<CursorsState["derived"][keyof CursorsState["derived"]]>>(
+    record: T
+  ): T => {
+    const event = appendJournal(
+      paths,
+      { type: "decision-derived", details: derivedDecisionJournalDetails(record) },
+      record.decidedAt
+    );
+    return { ...record, decidedAt: event.at };
+  };
+
+  const resetTo = (
+    state: CursorsState,
+    stepId: WorkflowStepId,
+    round: number | null,
+    remove: (submission: CursorsState["accepted"][number]) => boolean
+  ): CursorsState => {
+    const accepted = state.accepted.filter((submission) => !remove(submission));
+    const agents = { ...state.agents };
+    for (const agent of state.activeRoster) {
+      const cursor = agents[agent];
+      if (cursor === undefined) continue;
+      const satisfied = accepted.find(
+        (submission) => submission.stepId === stepId && submission.agent === agent && submission.round === round
+      );
+      agents[agent] = {
+        ...cursor,
+        stepId,
+        evidenceId: STEP_DEFINITIONS[stepId].evidenceId,
+        actionId: null,
+        status: satisfied === undefined ? "idle" : "waiting-peer",
+        submissionSha: satisfied?.submissionSha ?? null,
+        outstanding: [],
+        updatedAt: now
+      };
+      const runtime = agentRuntimePaths(paths, agent);
+      clearCompletion(runtime.complete);
+      if (existsSync(runtime.action)) unlinkSync(runtime.action);
+    }
+    return cursorsStateSchema.parse({
+      ...state,
+      issueCursor: { stepId, gateId: STEP_DEFINITIONS[stepId].gateId, round },
+      agents,
+      accepted,
+      ownerQuestion: null,
+      publication: {
+        status: "not-required",
+        finalSha: null,
+        branch: null,
+        url: null,
+        error: null,
+        attempts: state.publication.attempts
+      },
+      completed: false,
+      updatedAt: now
+    });
+  };
+
+  let reset = false;
+  if (priorPlan !== null) {
+    if (next.activeRoster.length === 1) {
+      if (priorPlan.selectedAgents[0] !== next.activeRoster[0]) {
+        next = resetTo(next, "R4.implement", null, (submission) =>
+          ["R4.implement", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(
+            submission.stepId
+          )
+        );
+        reset = true;
+      }
+    } else {
+      const plan = computePlanSelectionDerived(next, now, priorPlan.decisionId);
+      if (plan === null) {
+        next = resetTo(next, "R3.plan-ballot", null, (submission) =>
+          ["R4.implement", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(
+            submission.stepId
+          )
+        );
+        reset = true;
+      } else {
+        next = cursorsStateSchema.parse({
+          ...next,
+          derived: { ...next.derived, planSelection: persistDecision(plan) },
+          updatedAt: now
+        });
+        if (plan.selectedAgents[0] !== priorPlan.selectedAgents[0]) {
+          next = resetTo(next, "R4.implement", null, (submission) =>
+            ["R4.implement", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(
+              submission.stepId
+            )
+          );
+          reset = true;
+        }
+      }
+    }
+  }
+
+  if (!reset && priorImplementation !== null && next.activeRoster.length > 1) {
+    const implementation = computeImplementationSelectionDerived(next, now, priorImplementation.decisionId);
+    if (implementation === null) {
+      next = resetTo(next, "R5.compare-ballot", null, (submission) =>
+        ["R6.revise", "R6.ballot", "R7.finalize"].includes(submission.stepId)
+      );
+      reset = true;
+    } else {
+      next = cursorsStateSchema.parse({
+        ...next,
+        derived: { ...next.derived, implementationSelection: persistDecision(implementation) },
+        updatedAt: now
+      });
+      if (
+        implementation.winner !== priorImplementation.winner ||
+        implementation.implementationPin !== priorImplementation.implementationPin
+      ) {
+        next = resetTo(next, "R6.revise", 1, (submission) =>
+          ["R6.revise", "R6.ballot", "R7.finalize"].includes(submission.stepId)
+        );
+        reset = true;
+      }
+    }
+  }
+
+  if (!reset && priorConsensus !== null && next.activeRoster.length > 1) {
+    const consensus = computeConsensusDerived(next, priorConsensus.round, now, priorConsensus.decisionId);
+    if (consensus === null) {
+      next = resetTo(next, "R6.ballot", priorConsensus.round, (submission) => submission.stepId === "R7.finalize");
+      reset = true;
+    } else {
+      next = cursorsStateSchema.parse({
+        ...next,
+        derived: { ...next.derived, consensus: persistDecision(consensus) },
+        updatedAt: now
+      });
+      if (consensus.consensusPin !== priorConsensus.consensusPin) {
+        next = resetTo(next, "R7.finalize", null, (submission) => submission.stepId === "R7.finalize");
+        reset = true;
+      }
+    }
+  }
 
   const droppedRuntime = agentRuntimePaths(paths, dropped);
   clearCompletion(droppedRuntime.complete);
   if (existsSync(droppedRuntime.action)) unlinkSync(droppedRuntime.action);
+  if (reset) return next;
+
+  const currentStep = next.issueCursor.stepId;
+  const round = currentStep.startsWith("R6.") ? (next.issueCursor.round ?? 1) : null;
   for (const agent of next.activeRoster) {
     const alreadySatisfied = next.accepted.some(
       (submission) => submission.stepId === currentStep && submission.agent === agent && submission.round === round
@@ -1259,9 +1361,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         }
         if (!current.activeRoster.includes(agent)) throw new Error(`${agent} is not active.`);
         if (current.activeRoster.length === 1) throw new Error("Cannot drop the final active agent.");
-        if (current.selection.reviser === agent || current.reviser === agent) {
+        if (current.derived.implementationSelection?.reviser === agent) {
           throw new Error(
-            `Cannot drop authorized reviser ${agent}; revision and finalization must not be rebound without a new authorization.`
+            `Cannot drop authorized reviser ${agent}; revision and finalization must not be rebound after the canonical implementation decision.`
           );
         }
         appendJournal(paths, { type: "agent-dropped", agent, details: {} }, now);
