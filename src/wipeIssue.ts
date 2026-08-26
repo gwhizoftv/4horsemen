@@ -22,6 +22,8 @@ export type WipeIssueOptions = {
   completesRoot?: string;
   force?: boolean;
   dryRun?: boolean;
+  /** When true, also delete `issue-N/coordinator-evidence`. Default keeps it. */
+  deleteEvidence?: boolean;
   log?: WipeIssueLogger;
   terminalCloser?: OwnerTerminalCloser | null;
 };
@@ -193,6 +195,7 @@ const pruneIssueRefs = (input: {
 export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueResult> => {
   const force = options.force === true;
   const dryRun = options.dryRun === true;
+  const deleteEvidence = options.deleteEvidence === true;
   const log = options.log ?? (() => undefined);
   const base = options.config.baseBranch;
   const prefix = issuePrefix(options.issue);
@@ -297,9 +300,15 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
         const cloneSha = agent === undefined ? undefined : cloneTips.get(agent);
         const dirtyHere = productDirty && productHead === branch;
         const ownerCommits = localSha !== null && !isCloneCheckout(productRoot, localSha, cloneSha);
-        // Evidence is coordinator-owned and deleted with wipe. Other unknown
-        // issue heads are treated as owner branches and retained.
-        if (isEvidence) continue;
+        // Evidence is coordinator-owned; keep it unless the owner opts into deletion.
+        if (isEvidence) {
+          if (!deleteEvidence) {
+            keepProductHeads.add(branch);
+            recordUnique(result.keptProductBranches, branch);
+            log(`keeping product ${branch} (ballot evidence; delete it with --delete-evidence)\n`);
+          }
+          continue;
+        }
         if (dirtyHere || ownerCommits || agent === undefined) {
           keepProductHeads.add(branch);
           recordUnique(result.keptProductBranches, branch);
@@ -324,17 +333,27 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
         const agent = rosterByBranch.get(branch);
         const isFinal = finalBranches.has(branch);
         const isEvidence = branch === evidenceBranch;
+        if (isEvidence) {
+          if (!deleteEvidence) {
+            keepRemoteBranches.add(branch);
+            log(`keeping origin/${branch} (ballot evidence; delete it with --delete-evidence)\n`);
+            continue;
+          }
+          log(`${dryRun ? "would delete" : "deleting"} origin/${branch} (ballot evidence, owner requested)\n`);
+          if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch);
+          result.deletedRemoteBranches.push(branch);
+          continue;
+        }
         const cloneSha = agent === undefined ? undefined : cloneTips.get(agent);
         const ownerRemote =
           !isFinal &&
-          !isEvidence &&
           agent !== undefined &&
           cloneSha !== undefined &&
           compareCwd !== undefined &&
           !isCloneCheckout(compareCwd, sha, cloneSha);
-        if (agent === undefined && !isFinal && !isEvidence) {
+        if (agent === undefined && !isFinal) {
           keepRemoteBranches.add(branch);
-          log(`keeping origin/${branch} (not a clone, publication, or evidence branch)\n`);
+          log(`keeping origin/${branch} (not a clone or publication branch)\n`);
           continue;
         }
         if (ownerRemote) {
@@ -342,10 +361,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
           log(`keeping origin/${branch} (commits not in the clone)\n`);
           continue;
         }
-        log(
-          `${dryRun ? "would delete" : "deleting"} origin/${branch}` +
-            (isEvidence ? " (coordinator evidence)\n" : "\n")
-        );
+        log(`${dryRun ? "would delete" : "deleting"} origin/${branch}\n`);
         if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch);
         result.deletedRemoteBranches.push(branch);
       }

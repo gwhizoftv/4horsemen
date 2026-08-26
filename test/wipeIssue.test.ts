@@ -151,7 +151,7 @@ describe("wipeIssue", () => {
     expect(tryGit(claude, "checkout", "issue-9/claude").exitCode).not.toBe(0);
   });
 
-  it("deletes the reserved coordinator-evidence branch on wipe-issue", async () => {
+  it("keeps the reserved coordinator-evidence branch unless --delete-evidence", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "coord-wipe-evidence-"));
     roots.push(workspace);
     const origin = join(workspace, "origin.git");
@@ -197,7 +197,7 @@ describe("wipeIssue", () => {
     });
     writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 
-    const outcome = await wipeIssue({
+    const kept = await wipeIssue({
       issue: 11,
       config,
       configPath,
@@ -206,15 +206,25 @@ describe("wipeIssue", () => {
       log: () => undefined
     });
 
-    expect(outcome.deletedRemoteBranches.sort()).toEqual([
-      "issue-11/claude",
-      "issue-11/coordinator-evidence"
-    ]);
-    expect(outcome.deletedRemoteBranches).not.toContain("issue-11/owner-scratch");
+    expect(kept.deletedRemoteBranches).toEqual(["issue-11/claude"]);
+    expect(kept.deletedRemoteBranches).not.toContain("issue-11/coordinator-evidence");
+    expect(kept.deletedRemoteBranches).not.toContain("issue-11/owner-scratch");
+    expect(tryGit(product, "ls-remote", "--exit-code", "--heads", "origin", "issue-11/coordinator-evidence").exitCode).toBe(0);
+    expect(tryGit(product, "ls-remote", "--exit-code", "--heads", "origin", "issue-11/owner-scratch").exitCode).toBe(0);
+
+    const removed = await wipeIssue({
+      issue: 11,
+      config,
+      configPath,
+      coordRoot,
+      deleteEvidence: true,
+      terminalCloser: null,
+      log: () => undefined
+    });
+    expect(removed.deletedRemoteBranches).toContain("issue-11/coordinator-evidence");
     expect(tryGit(product, "ls-remote", "--exit-code", "--heads", "origin", "issue-11/coordinator-evidence").exitCode).not.toBe(
       0
     );
-    expect(tryGit(product, "ls-remote", "--exit-code", "--heads", "origin", "issue-11/owner-scratch").exitCode).toBe(0);
   });
 
   it("keeps product-local issue branches that have owner commits or uncommitted work", async () => {

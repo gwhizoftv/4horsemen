@@ -245,10 +245,11 @@ exact workspace-grouped manual identity. It never closes bare agent-named tabs
 or another product's sessions.
 
 `coord wipe-issue N` is the owner reset for reusing a GitHub issue number: it
-checks out each agent clone on the base branch, deletes origin `issue-N/<agent>`,
-`*-final`, and `issue-N/coordinator-evidence` branches, and drops leftover
-`refs/remotes/origin/issue-N/*` tracking refs in clones, the product worktree,
-and `coord-runtime/mirror.git`. A local `issue-N/*` branch in the product is
+checks out each agent clone on the base branch, deletes origin `issue-N/<agent>`
+and `*-final` branches, and drops leftover `refs/remotes/origin/issue-N/*`
+tracking refs in clones, the product worktree, and `coord-runtime/mirror.git`.
+`issue-N/coordinator-evidence` is retained by default (ballot audit trail); pass
+`--delete-evidence` to remove it. A local `issue-N/*` branch in the product is
 kept when it has uncommitted work or commits that are not just a checkout of the
 clone (arbitrary owner branches are not treated as coordinator-owned). Removes
 `coord-runtime/issue-N`, and runs the same UI teardown as `detach`. It does

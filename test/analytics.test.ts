@@ -44,7 +44,13 @@ const readJournalFixture = (): JournalEvent[] =>
   readFileSync(join(fixtures, "analytics-journal.jsonl"), "utf8")
     .trim()
     .split("\n")
-    .map((line) => journalEventSchema.parse(JSON.parse(line) as unknown));
+    .map((line) => {
+      const value = JSON.parse(line) as { formatVersion?: number };
+      return journalEventSchema.parse({
+        ...value,
+        formatVersion: value.formatVersion === 3 ? 4 : value.formatVersion
+      });
+    });
 
 const transcriptRoots = (): { claude: string; codex: string } => {
   const root = mkdtempSync(join(tmpdir(), "coord-analytics-transcripts-"));

@@ -330,6 +330,32 @@ describe("pure workflow machine", () => {
     ]);
   });
 
+  it("ignores a published batch whose response digests no longer match the closed set", () => {
+    const base = initialCursors(start, now);
+    const responses = consensusResponses(1, null);
+    const stale = publishedBallotBatchFixture({
+      kind: "consensus-ballot-batch",
+      activeRoster: base.activeRoster,
+      round: 1,
+      commitSha: "9".repeat(40)
+    });
+    stale.responses = stale.responses.map((entry) => ({
+      ...entry,
+      responseSha256: "f".repeat(64)
+    }));
+    const cursors = cursorsStateSchema.parse({
+      ...base,
+      issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
+      derived: { ...base.derived, implementationSelection: implementationDerived },
+      acceptedResponses: responses,
+      ballotBatches: [stale],
+      evidence: { branch: "issue-1/coordinator-evidence", tip: "9".repeat(40) }
+    });
+    expect(decide({ start, cursors })).toEqual([
+      { type: "publish-ballot-batch", stepId: "R6.ballot", round: 1 }
+    ]);
+  });
+
   it("keeps retry and rejection separate from acceptance", () => {
     const base = initialCursors(start, now);
     const actionId = "ce80f31a-6884-42cf-b0ff-b0fb27fc6cc8";

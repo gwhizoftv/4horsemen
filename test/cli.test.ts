@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -94,6 +95,24 @@ const publishedBallotBatchFixture = (input: {
     createdAt: now,
     updatedAt: now
   };
+};
+
+const installFormat4JournalFixture = (journalPath: string): void => {
+  const raw = readFileSync(join(process.cwd(), "test", "support", "fixtures", "analytics-journal.jsonl"), "utf8");
+  writeFileSync(
+    journalPath,
+    raw
+      .split("\n")
+      .map((line) => {
+        if (line.trim() === "") return line;
+        const value = JSON.parse(line) as { formatVersion?: number };
+        return JSON.stringify({
+          ...value,
+          formatVersion: value.formatVersion === 3 ? 4 : value.formatVersion
+        });
+      })
+      .join("\n")
+  );
 };
 
 const setup = () => {
@@ -445,7 +464,7 @@ describe("CLI", () => {
       )
     ).toBe(0);
     const paths = issueRuntimePaths(fixture.runtime, 1);
-    copyFileSync(join(process.cwd(), "test", "support", "fixtures", "analytics-journal.jsonl"), paths.journal);
+    installFormat4JournalFixture(paths.journal);
     const home = join(fixture.root, "home");
     const transcript = join(
       home,
@@ -1093,7 +1112,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
       })
     ).toBe(0);
     const paths = issueRuntimePaths(product.coordRoot, 89);
-    copyFileSync(join(process.cwd(), "test", "support", "fixtures", "analytics-journal.jsonl"), paths.journal);
+    installFormat4JournalFixture(paths.journal);
     const home = join(product.workspaceRoot, "analytics-home");
     const transcript = join(home, ".claude", "projects", "fixture", "session-claude.jsonl");
     mkdirSync(join(transcript, ".."), { recursive: true });

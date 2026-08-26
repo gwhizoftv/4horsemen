@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -165,27 +165,45 @@ describe("ballotPublication", () => {
     const mirror = new BareMirror(mirrorPath, origin);
     await mirror.fetchBranch("main");
 
-    const worktree = join(root, "evidence-wt");
-    const commitSha = await createEvidenceCommit({
-      mirror,
-      worktreePath: worktree,
-      parentSha: baseline,
-      files: [
-        {
-          path: ".plans/issue-1/ballot-codex.json",
-          content: serializeCanonicalJson({
-            protocolVersion: 2,
-            artifact: "plan-ballot",
-            choice: "codex"
-          })
-        }
-      ],
-      message: evidenceCommitMessage("plan-ballot-batch", 1, null)
-    });
-    expect(commitSha).toMatch(/^[a-f0-9]{40}$/);
-    const author = git(mirrorPath, "log", "-1", "--format=%an <%ae>", commitSha);
-    expect(author).toBe(`${COORDINATOR_EVIDENCE_AUTHOR.name} <${COORDINATOR_EVIDENCE_AUTHOR.email}>`);
-    const parent = git(mirrorPath, "rev-parse", `${commitSha}^`);
-    expect(parent).toBe(baseline);
+    const priorAuthor = process.env.GIT_AUTHOR_NAME;
+    const priorEmail = process.env.GIT_AUTHOR_EMAIL;
+    process.env.GIT_AUTHOR_NAME = "Somebody Else";
+    process.env.GIT_AUTHOR_EMAIL = "somebody@example.com";
+    try {
+      const worktree = join(root, "evidence-wt");
+      const ballotPath = ".plans/issue-1/ballot-codex.json";
+      const ballotBytes = serializeCanonicalJson({
+        protocolVersion: 2,
+        artifact: "plan-ballot",
+        choice: "codex"
+      });
+      const commitSha = await createEvidenceCommit({
+        mirror,
+        worktreePath: worktree,
+        parentSha: baseline,
+        files: [{ path: ballotPath, content: ballotBytes }],
+        message: evidenceCommitMessage("plan-ballot-batch", 1, null)
+      });
+      expect(commitSha).toMatch(/^[a-f0-9]{40}$/);
+      const author = git(mirrorPath, "log", "-1", "--format=%an <%ae>", commitSha);
+      expect(author).toBe(`${COORDINATOR_EVIDENCE_AUTHOR.name} <${COORDINATOR_EVIDENCE_AUTHOR.email}>`);
+      const parent = git(mirrorPath, "rev-parse", `${commitSha}^`);
+      expect(parent).toBe(baseline);
+      const tree = git(mirrorPath, "ls-tree", "-r", "--name-only", commitSha);
+      expect(tree.split("\n")).toContain(ballotPath);
+      expect(existsSync(worktree)).toBe(false);
+
+      const conflict = reconcileEvidencePublication({
+        commitSha,
+        parentSha: baseline,
+        remoteTip: "c".repeat(40)
+      });
+      expect(conflict).toEqual({ outcome: "conflict", remoteTip: "c".repeat(40) });
+    } finally {
+      if (priorAuthor === undefined) delete process.env.GIT_AUTHOR_NAME;
+      else process.env.GIT_AUTHOR_NAME = priorAuthor;
+      if (priorEmail === undefined) delete process.env.GIT_AUTHOR_EMAIL;
+      else process.env.GIT_AUTHOR_EMAIL = priorEmail;
+    }
   }, 30_000);
 });

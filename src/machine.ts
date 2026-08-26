@@ -74,14 +74,28 @@ const hasPublishedBatch = (cursors: CursorsState, stepId: WorkflowStepId, round:
           ? "consensus-ballot-batch"
           : null;
   if (kind === null) return true;
-  return cursors.ballotBatches.some(
-    (batch) =>
-      batch.kind === kind &&
-      batch.round === round &&
-      batch.status === "published" &&
-      batch.activeRoster.length === cursors.activeRoster.length &&
-      batch.activeRoster.every((agent, index) => agent === cursors.activeRoster[index])
+  if (stepId !== "R3.plan-ballot" && stepId !== "R5.compare-ballot" && stepId !== "R6.ballot") return true;
+  const closed = cursors.activeRoster.map((agent) =>
+    cursors.acceptedResponses.find(
+      (response) => response.stepId === stepId && response.agent === agent && response.round === round
+    )
   );
+  if (closed.some((response) => response === undefined)) return false;
+  return cursors.ballotBatches.some((batch) => {
+    if (batch.kind !== kind || batch.round !== round || batch.status !== "published") return false;
+    if (!sameRoster(batch.activeRoster, cursors.activeRoster)) return false;
+    if (batch.responses.length !== closed.length) return false;
+    return closed.every((response, index) => {
+      const entry = batch.responses[index];
+      return (
+        response !== undefined &&
+        entry !== undefined &&
+        entry.agent === response.agent &&
+        entry.actionId === response.actionId &&
+        entry.responseSha256 === response.responseSha256
+      );
+    });
+  });
 };
 
 const sameRoster = (left: readonly string[], right: readonly string[]): boolean =>

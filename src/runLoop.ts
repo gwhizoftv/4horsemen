@@ -218,15 +218,32 @@ const publishedBallotBatch = (
   round: number | null
 ): BallotBatch | null => {
   const kind = ballotBatchKindForStep(stepId);
+  const closed = acceptedResponsesAt(cursors, stepId, true, round);
+  if (!hasCompleteActiveDenominator(cursors, closed)) return null;
   return (
-    cursors.ballotBatches.find(
-      (batch) =>
-        batch.kind === kind &&
-        batch.round === round &&
-        batch.status === "published" &&
-        batch.activeRoster.length === cursors.activeRoster.length &&
-        batch.activeRoster.every((agent, index) => agent === cursors.activeRoster[index])
-    ) ?? null
+    cursors.ballotBatches.find((batch) => {
+      if (
+        batch.kind !== kind ||
+        batch.round !== round ||
+        batch.status !== "published" ||
+        batch.activeRoster.length !== cursors.activeRoster.length ||
+        !batch.activeRoster.every((agent, index) => agent === cursors.activeRoster[index])
+      ) {
+        return false;
+      }
+      if (batch.responses.length !== closed.length) return false;
+      return cursors.activeRoster.every((agent, index) => {
+        const response = closed.find((candidate) => candidate.agent === agent);
+        const entry = batch.responses[index];
+        return (
+          response !== undefined &&
+          entry !== undefined &&
+          entry.agent === agent &&
+          entry.actionId === response.actionId &&
+          entry.responseSha256 === response.responseSha256
+        );
+      });
+    }) ?? null
   );
 };
 
@@ -1552,6 +1569,10 @@ export class CoordinatorRunLoop {
             candidate.round === round &&
             candidate.status === "invalidated"
         );
+      const removePaths =
+        superseded === undefined
+          ? []
+          : superseded.paths.filter((path) => !prepared.paths.includes(path));
       const worktree = evidenceWorktreePath(this.paths, `ballot-${kind.replace(/[^a-z0-9-]/g, "-")}`);
       this.authority(cursors);
       const commitSha = await createEvidenceCommit({
@@ -1559,6 +1580,7 @@ export class CoordinatorRunLoop {
         worktreePath: worktree,
         parentSha,
         files: prepared.files,
+        ...(removePaths.length > 0 ? { removePaths } : {}),
         message: prepared.message
       });
       this.authority(cursors);

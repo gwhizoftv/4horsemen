@@ -160,7 +160,7 @@ const parseArgs = (args: readonly string[], booleans: readonly string[] = []): P
 const booleanFlags: Record<string, readonly string[]> = {
   install: ["write-product", "vendor", "bootstrap-coordination", "dry-run"],
   uninstall: ["delete-clones", "wipe-runtime", "delete-coordination", "force", "dry-run"],
-  "wipe-issue": ["force", "dry-run"],
+  "wipe-issue": ["force", "dry-run", "delete-evidence"],
   detach: ["dry-run"]
 };
 
@@ -232,7 +232,7 @@ Usage:
   coord attach <issue> [--product <path> | --coord-root <path>]
   coord detach <issue> [--product <path> | --coord-root <path>] [--dry-run]
   coord detach manual [--product <path> | --config <path> --coord-root <path>] [--dry-run]
-  coord wipe-issue <issue> [--product <path> | --config <path> --coord-root <path>] [--force] [--dry-run]
+  coord wipe-issue <issue> [--product <path> | --config <path> --coord-root <path>] [--force] [--dry-run] [--delete-evidence]
 
 Called by the agent-clone hooks, not by operators:
   coord hook-verify --clone <path> --phase <precommit|prepush>
@@ -258,11 +258,11 @@ already running. \`coord detach N\` closes those Terminal windows and kills the
 issue tmux sessions without wiping runtime or branches. A completed \`coord N\` / \`coord run\` does the
 same teardown automatically. \`coord uninstall\` also tears down owner
 tmux/Terminals for the workspace agents. \`coord wipe-issue N\` resets agent clones,
-deletes origin issue-N agent/*-final/coordinator-evidence branches plus leftover
-tracking refs (keeping product-local issue branches that have owner commits or
-uncommitted work), removes the issue runtime and completion mailbox, tears down
-UI, and leaves the GitHub issue open. Runtime format 2 and 3 states must be wiped
-and restarted (format 4).
+deletes origin issue-N agent/*-final branches plus leftover tracking refs (keeping
+product-local issue branches that have owner commits or uncommitted work, and
+keeping \`issue-N/coordinator-evidence\` unless \`--delete-evidence\`), removes the
+issue runtime and completion mailbox, tears down UI, and leaves the GitHub issue
+open. Runtime format 2 and 3 states must be wiped and restarted (format 4).
 
 \`coord manual\` opens or repairs one workspace-scoped harness per configured
 agent, opens only missing Terminal windows, and returns without an issue,
@@ -1254,9 +1254,14 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           .completesRoot,
         force: flagIsSet(parsed, "force"),
         dryRun: flagIsSet(parsed, "dry-run"),
+        deleteEvidence: flagIsSet(parsed, "delete-evidence"),
         log: io.stdout
       });
-      io.stdout(
+      if (!flagIsSet(parsed, "delete-evidence")) {
+        io.stdout(
+          "Kept issue coordinator-evidence branch (ballot audit trail); re-run with --delete-evidence to remove it.\n"
+        );
+      }      io.stdout(
         `Wiped issue ${issue}: reset ${outcome.resetClones.length} clone(s), ` +
           `deleted ${outcome.deletedRemoteBranches.length} remote branch(es), ` +
           `GitHub issue left open.\n`

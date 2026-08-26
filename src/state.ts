@@ -564,12 +564,10 @@ export const cursorsStateSchema = z
 
 export const journalEventSchema = z
   .object({
-    // Unit fixtures and pre-upgrade journal lines may still say 3; coerce on read.
-    // Start/cursors still reject legacy formats via assertRuntimeFormat (wipe/restart).
-    formatVersion: z.preprocess(
-      (value) => (value === 3 ? RUNTIME_FORMAT_VERSION : value),
-      z.literal(RUNTIME_FORMAT_VERSION)
-    ),
+    // Durable journal *files* still reject formats 2/3 via assertRuntimeFormat in
+    // readJournal (wipe/restart). The schema allows 3 only so in-memory fixtures
+    // outside the approved path map can parse without silently rewriting bytes.
+    formatVersion: z.union([z.literal(RUNTIME_FORMAT_VERSION), z.literal(3)]),
     sequence: z.number().int().nonnegative(),
     at: timestampSchema,
     type: z.enum([
@@ -777,6 +775,7 @@ export const readJournal = (paths: IssueRuntimePaths): JournalEvent[] => {
     } catch (error) {
       throw new Error(`Invalid journal line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
     }
+    assertRuntimeFormat(`journal line ${index + 1}`, value);
     return journalEventSchema.parse(value);
   });
 };
