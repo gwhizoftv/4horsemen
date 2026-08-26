@@ -5,7 +5,7 @@
   "agent": "claude",
   "inputSetHash": "1312f1aaa6150506fb3458616ea63f39c91b72411504cbd087e02b2f7bd17afe",
   "artifact": "implementation-ready",
-  "implementationCommitSha": "9122c3590714c435c320883e6ade3e604f460418",
+  "implementationCommitSha": "ca1b8d0e87237099b903e7d2bcf8e60ab4ab124f",
   "approvedPaths": [
     "0.0.N",
     "AGENTS.md",
