@@ -1,0 +1,46 @@
+{
+  "actionId": "84b27d38-25e3-4a1d-b47c-5f61bfa06a57",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "01c7e1397a89f6a3c53ee36af642936144c7b8b1bff57170958c70c2ac83697b",
+  "issue": 120,
+  "issueSessionId": "issue-120:a98c04b3cf48bee4f5d6855f313d718b3069b818",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "6cf79d06be8623a8b264dd4345572e341a990bf0",
+      "path": ".plans/issue-120/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "bd3231172e002b5e74823fbfc68fe17ea090fc60",
+      "path": ".plans/issue-120/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d049e7b79662a59e717ff97c7fbc8d0274f3bc22",
+      "path": ".plans/issue-120/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude's plan most clearly places cleanup after UI teardown and defines auditable per-clone outcomes, with the bound reviews supplying the required global wipe preflight and strict origin-tip corrections.",
+  "responseSha256": "d02f47029f50ae06afaa226ad20bfda45a45e21006f132afde7ce14be97f3806",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "28bf6a9169792dbff106787b901d7321a1e27aa4",
+      "path": ".plans/issue-120/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9c86f453314c59f29ff9570ebdda03c073246ab9",
+      "path": ".plans/issue-120/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "62f26a0be9e64806b1dd073d337aeaee64cbd7be",
+      "path": ".plans/issue-120/review.md"
+    }
+  ]
+}

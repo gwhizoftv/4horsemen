@@ -1,0 +1,46 @@
+{
+  "actionId": "788315a6-ffcd-49b5-892f-8648ca3a0d46",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "01c7e1397a89f6a3c53ee36af642936144c7b8b1bff57170958c70c2ac83697b",
+  "issue": 120,
+  "issueSessionId": "issue-120:a98c04b3cf48bee4f5d6855f313d718b3069b818",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "6cf79d06be8623a8b264dd4345572e341a990bf0",
+      "path": ".plans/issue-120/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "bd3231172e002b5e74823fbfc68fe17ea090fc60",
+      "path": ".plans/issue-120/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d049e7b79662a59e717ff97c7fbc8d0274f3bc22",
+      "path": ".plans/issue-120/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Cursor's review and mine independently name Claude's plan the implementation base because it alone runs cleanup after detachIssue and reports refusals as logged results rather than a throw that would exit 2 and strand a completed issue's tmux and Terminal windows, and Codex's own review concedes its plan's pre-detach ordering must be revised; the peers' three agreed corrections — an all-clones read-only preflight before the first destructive command, binding the checkout to the fetched origin/<base> tip instead of a best-effort local fallback, and dropping the diverged-local-base refusal from wipe's normal path — fold into that plan without changing its shape.",
+  "responseSha256": "9f02e7496d7fd886e2e2b2583e4489fd607c327513feb68c49a5b65086a3803a",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "28bf6a9169792dbff106787b901d7321a1e27aa4",
+      "path": ".plans/issue-120/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9c86f453314c59f29ff9570ebdda03c073246ab9",
+      "path": ".plans/issue-120/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "62f26a0be9e64806b1dd073d337aeaee64cbd7be",
+      "path": ".plans/issue-120/review.md"
+    }
+  ]
+}
