@@ -1,0 +1,27 @@
+{
+  "protocolVersion": 1,
+  "issue": 120,
+  "issueSessionId": "issue-120:a98c04b3cf48bee4f5d6855f313d718b3069b818",
+  "agent": "cursor",
+  "inputSetHash": "84509b92af7b7304e9d94abeeb7a111bc904b28a4ed12c6520d40936052426bc",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "982a446d84d37506ce3eeb5fa22a404e42a92b28",
+  "approvedPaths": [
+    "0.0.N",
+    "AGENTS.md",
+    "CoordinatorRunLoop.initializeEffects",
+    "CoordinatorRunLoop.runTick",
+    "docs/coord-driver.md",
+    "issue-8/claude",
+    "issue-9/claude",
+    "origin/main",
+    "src/cli.ts",
+    "src/cloneReadiness.ts",
+    "src/prepareAgentBranch.ts",
+    "src/wipeIssue.ts",
+    "test/cli.test.ts",
+    "test/prepareAgentBranch.test.ts",
+    "test/wipeIssue.test.ts",
+    "verify.precommit"
+  ]
+}
