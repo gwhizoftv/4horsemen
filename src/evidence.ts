@@ -42,6 +42,18 @@ export const computeInputSetHash = (inputs: readonly BoundInput[]): string => sh
 const markdownSection = (raw: string, alternatives: readonly string[]): boolean =>
   alternatives.some((heading) => new RegExp(`^#{1,6}\\s+${heading}\\s*$`, "im").test(raw));
 
+const REUSE_SECTION_HEADINGS = ["Reuse and Scope", "Reuse", "Scope and Reuse"] as const;
+
+/** Drop named ATX heading sections so reuse citations do not widen approved paths. */
+const stripSections = (raw: string, headings: readonly string[]): string => {
+  if (headings.length === 0) return raw;
+  const alternation = headings
+    .map((heading) => heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  const pattern = new RegExp(`^#{1,6}\\s+(?:${alternation})\\s*$[\\s\\S]*?(?=^#{1,6}\\s+|\\z)`, "im");
+  return raw.replace(pattern, "").trimEnd();
+};
+
 const checkPlan = (raw: string): string[] => {
   // Legacy "Exact File Map" (and aliases) still satisfy both of the split list headings.
   const fileListAliases = [
@@ -51,6 +63,7 @@ const checkPlan = (raw: string): string[] => {
   const required: readonly (readonly string[])[] = [
     ["Exact File List to be changed or deleted", ...fileListAliases],
     ["Exact file list to be created", ...fileListAliases],
+    [...REUSE_SECTION_HEADINGS],
     ["Tests?", "Validation"],
     ["Alternatives?(?: Rejected)?"],
     ["Risks?(?: and Mitigations)?"],
@@ -110,7 +123,8 @@ export const expandFileMapBraces = (candidate: string): string[] => {
 
 export const extractApprovedPaths = (raw: string): string[] => {
   const paths = new Set<string>();
-  for (const match of raw.matchAll(/`([^`\n]+)`/g)) {
+  const scan = stripSections(raw, REUSE_SECTION_HEADINGS);
+  for (const match of scan.matchAll(/`([^`\n]+)`/g)) {
     const candidate = match[1];
     if (candidate === undefined) continue;
     for (const expanded of expandFileMapBraces(candidate)) {

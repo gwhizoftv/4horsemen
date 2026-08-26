@@ -61,6 +61,7 @@ describe("orderScaffold", () => {
     });
     expect(rendered).toContain("## Exact File List to be changed or deleted");
     expect(rendered).toContain("## Exact file list to be created");
+    expect(rendered).toContain("## Reuse and Scope");
     expect(rendered).toContain("## Tests");
     expect(rendered).toContain("## Alternatives Rejected");
     expect(rendered).toContain("## Risks and Mitigations");

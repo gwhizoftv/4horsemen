@@ -99,8 +99,13 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
         "(or Exact File Map / File Map / File Creation Order / Proposed Architecture)\n\n" +
         "## Exact file list to be created\n" +
         "(or Exact File Map / File Map / File Creation Order / Proposed Architecture)\n\n" +
+        "## Reuse and Scope\n" +
+        "(or Reuse / Scope and Reuse)\n\n" +
+        "Name reused functions, types, and test helpers; justify each new file. " +
+        "Paths cited here do not widen what the implementation may change — only the file lists do.\n\n" +
         "## Tests\n" +
         "(or Test / Validation)\n\n" +
+        "Name the fewest tests that fail before the change and pass after it, and the existing test file each joins.\n\n" +
         "## Alternatives Rejected\n" +
         "(or Alternatives)\n\n" +
         "## Risks and Mitigations\n" +
@@ -117,7 +122,9 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
         "(or Verdict)\n\n" +
         "Plan-review findings must state, in order: the plan claim or section; the rule that must hold; " +
         "a concrete failure if the plan is followed as written; then optionally the smallest correction. " +
-        "The rule and the failure are the deliverable.\n"
+        "The rule and the failure are the deliverable.\n\n" +
+        "Include at least one finding on whether the plan stays in issue scope, reuses existing code, " +
+        "and avoids unnecessary new test files.\n"
       );
     case "R5.compare":
       return (
@@ -129,7 +136,8 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
         "Cite every bound implementation pin SHA from the inputs list below.\n\n" +
         "When a finding reviews implementation code, state in order: file path and line number; " +
         "the rule that must hold; a concrete failure that follows from breaking it; then optionally " +
-        "the smallest illustrative test — or a fix sketch if a test cannot express it. Prefer a test over a fix.\n"
+        "the smallest illustrative test — or a fix sketch if a test cannot express it. Prefer a test over a fix.\n\n" +
+        "Note diff size, new files versus edits, and test additions relative to the bound implementation pins.\n"
       );
     default:
       return "";

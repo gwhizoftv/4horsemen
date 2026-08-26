@@ -217,6 +217,9 @@ describe("four-agent coordinator canary", () => {
 - \`src/product-antigravity.txt\`
 - \`src/revision.txt\`
 
+## Reuse and Scope
+Extend existing product file helpers; no new modules.
+
 ## Tests
 Run the integration canary.
 

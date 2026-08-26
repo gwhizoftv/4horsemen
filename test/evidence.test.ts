@@ -10,6 +10,10 @@ import type { EvidenceId, InternalOrder, WorkflowStepId } from "../src/steps.js"
 
 const sha = (character: string): string => character.repeat(40);
 
+const planReuseSection = `## Reuse and Scope
+Reuse existing helpers in the listed paths.
+`;
+
 const order = (overrides: Partial<InternalOrder> = {}): InternalOrder => ({
   actionId: "179da8c7-ae22-47eb-b6eb-211ceea6b732",
   issue: 1,
@@ -114,6 +118,7 @@ describe("evidence evaluation", () => {
 - \`src/product.ts\`
 - \`test/product.test.ts\`
 
+${planReuseSection}
 ## Tests
 Run tests.
 
@@ -142,6 +147,9 @@ Implement it.
 ## Exact file list to be created
 - \`test/product.test.ts\`
 
+## Reuse and Scope
+Reuse \`src/existing-helper.ts\`; no new modules.
+
 ## Tests
 Run tests.
 
@@ -161,6 +169,32 @@ Implement it.
     });
   });
 
+  it("rejects a plan that omits the reuse and scope section", async () => {
+    const plan = `# Plan
+
+## Exact File List to be changed or deleted
+- \`src/product.ts\`
+
+## Exact file list to be created
+- \`test/product.test.ts\`
+
+## Tests
+Run tests.
+
+## Alternatives Rejected
+None.
+
+## Risks and Mitigations
+Keep pins immutable.
+
+## Conclusion
+Implement it.
+`;
+    const result = await evaluateEvidence(order(), sha("c"), mirror(plan));
+    expect(result).toMatchObject({ status: "rejected" });
+    expect(result.outstanding).toContain("plan is missing a non-empty Reuse and Scope section");
+  });
+
   it("extracts monorepo file-map paths from a plan and ignores identifiers", async () => {
     const plan = `# Plan
 
@@ -170,6 +204,7 @@ Implement it.
 - \`VIDEO_DOMAINS\`
 - \`toDomain\`
 
+${planReuseSection}
 ## Tests
 Run tests.
 
