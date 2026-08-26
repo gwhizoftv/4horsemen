@@ -1,0 +1,29 @@
+{
+  "actionId": "65bcb873-6c22-4c06-83bc-3ce01f63c6a7",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "225c476b732e40ca8c0681afdc2d091fb8b1e956",
+      "path": ".signals/issue-121/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a82456a50a7e586752c7e36cc57c55ae44c1eea9",
+      "path": ".signals/issue-121/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "a56990ab9da86c59d8f96b6610eed00ad39ad841",
+      "path": ".signals/issue-121/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "f6d25e1cffe23824c8ec7b016d035a5fe8c349e2955175777cf914e530fa4e46",
+  "issue": 121,
+  "issueSessionId": "issue-121:6ef8f6eb22af1558723ddd885e0364ebbc92d76b",
+  "protocolVersion": 2,
+  "rationale": "The Codex implementation preserves the selected scope while correctly excluding every accepted reuse section across case, repetition, nesting, and end-of-input shapes, unlike the authorization bugs in the Cursor and Claude pins.",
+  "responseSha256": "363781797538b89170883010d346ac2266f6a0d42a66a8b851bdca4f8bf55597"
+}

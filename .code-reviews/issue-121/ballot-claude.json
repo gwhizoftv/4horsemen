@@ -1,0 +1,29 @@
+{
+  "actionId": "13ffb3db-b550-4f4d-ba79-36917697892c",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "225c476b732e40ca8c0681afdc2d091fb8b1e956",
+      "path": ".signals/issue-121/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a82456a50a7e586752c7e36cc57c55ae44c1eea9",
+      "path": ".signals/issue-121/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "a56990ab9da86c59d8f96b6610eed00ad39ad841",
+      "path": ".signals/issue-121/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "f6d25e1cffe23824c8ec7b016d035a5fe8c349e2955175777cf914e530fa4e46",
+  "issue": 121,
+  "issueSessionId": "issue-121:6ef8f6eb22af1558723ddd885e0364ebbc92d76b",
+  "protocolVersion": 2,
+  "rationale": "Building each pin in isolation and calling its own compiled extractApprovedPaths, codex a82456a5 was the only implementation that kept reuse citations out of approvedPaths in every shape tested — reuse section last, a literal z in the body, a nested ### subheading, two alias sections, and a lowercase heading — where cursor a56990ab leaks in the first four (its \\z is an identity escape, not an anchor) and my own pin 225c476b leaks in the nested-subheading and lowercase cases; codex's only defect is that a depth-1 '# Reuse and Scope' swallows the sections after it, which fails closed and is a one-comparison fix.",
+  "responseSha256": "826428b36f3d6a0a5c2c806a750ebe26d04d1d88093aa5221987967605fa51f9"
+}

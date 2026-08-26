@@ -1,0 +1,29 @@
+{
+  "actionId": "d24a478c-9d30-4ef8-b34d-e4c967d06364",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "225c476b732e40ca8c0681afdc2d091fb8b1e956",
+      "path": ".signals/issue-121/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a82456a50a7e586752c7e36cc57c55ae44c1eea9",
+      "path": ".signals/issue-121/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "a56990ab9da86c59d8f96b6610eed00ad39ad841",
+      "path": ".signals/issue-121/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "f6d25e1cffe23824c8ec7b016d035a5fe8c349e2955175777cf914e530fa4e46",
+  "issue": 121,
+  "issueSessionId": "issue-121:6ef8f6eb22af1558723ddd885e0364ebbc92d76b",
+  "protocolVersion": 2,
+  "rationale": "Codex's depth-aware stripSections is the only pin that keeps reuse citations out of approvedPaths under nested and repeated reuse sections while staying within existing files and adding no new modules.",
+  "responseSha256": "90ef36c43d74dc06ae53eb245b7faf2f8058c8c81c1c18782f08297f2a901fd2"
+}
