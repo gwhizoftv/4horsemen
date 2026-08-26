@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -67,6 +67,10 @@ describe("wipeIssue", () => {
       git(clone, "add", "signal.txt");
       git(clone, "commit", "-qm", `${agent}: signal`);
       git(clone, "push", "-q", "-u", "origin", branch);
+      writeFileSync(join(clone, "signal.txt"), `${agent} unfinished\n`);
+      git(clone, "add", "signal.txt");
+      mkdirSync(join(clone, ".plans", "issue-9"), { recursive: true });
+      writeFileSync(join(clone, ".plans", "issue-9", "plan.md"), "unfinished\n");
     }
     git(claude, "push", "-q", origin, "issue-9/claude:refs/heads/issue-9/claude-final");
     git(product, "fetch", "-q", "origin");
@@ -130,6 +134,8 @@ describe("wipeIssue", () => {
     expect(existsSync(join(keptDrop, "complete"))).toBe(true);
     expect(git(claude, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
     expect(git(codex, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(existsSync(join(claude, ".plans"))).toBe(false);
+    expect(existsSync(join(codex, ".plans"))).toBe(false);
     expect(tryGit(claude, "show-ref", "--verify", "--quiet", "refs/heads/issue-9/claude").exitCode).not.toBe(0);
     expect(tryGit(claude, "show-ref", "--verify", "--quiet", "refs/remotes/origin/issue-9/claude").exitCode).not.toBe(
       0
@@ -472,10 +478,18 @@ describe("wipeIssue", () => {
       coordination: stamp(workspace, product)
     });
     writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const runtimeSentinel = join(coordRoot, "issue-3", "keep.txt");
+    mkdirSync(join(coordRoot, "issue-3"), { recursive: true });
+    writeFileSync(runtimeSentinel, "keep\n");
+    const beforeHead = git(claude, "rev-parse", "HEAD");
+    const beforeStatus = git(claude, "status", "--porcelain");
 
     await expect(
       wipeIssue({ issue: 3, config, configPath, coordRoot, terminalCloser: null, log: () => undefined })
     ).rejects.toThrow(/uncommitted changes/);
     expect(existsSync(join(claude, "dirty.txt"))).toBe(true);
+    expect(git(claude, "rev-parse", "HEAD")).toBe(beforeHead);
+    expect(git(claude, "status", "--porcelain")).toBe(beforeStatus);
+    expect(readFileSync(runtimeSentinel, "utf8")).toBe("keep\n");
   });
 });

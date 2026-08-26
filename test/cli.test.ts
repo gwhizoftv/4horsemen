@@ -746,11 +746,45 @@ describe("CLI", () => {
 
   it("detaches tmux/Terminal UI after a completed coord N run", async () => {
     const fixture = setup();
+    const product = join(fixture.root, "product");
+    const origin = join(fixture.root, "origin.git");
+    const clone = join(fixture.root, "clone-codex");
+    rmSync(clone, { recursive: true, force: true });
+    mkdirSync(product);
+    execFileSync("git", ["init", "-q", "--initial-branch=main"], { cwd: product });
+    execFileSync("git", ["config", "user.name", "Fixture"], { cwd: product });
+    execFileSync("git", ["config", "user.email", "fixture@example.com"], { cwd: product });
+    writeFileSync(join(product, ".gitignore"), "/start-*.sh\n");
+    writeFileSync(join(product, "AGENTS.md"), "# product\n");
+    writeFileSync(join(product, "base.txt"), "base\n");
+    execFileSync("git", ["add", "."], { cwd: product });
+    execFileSync("git", ["commit", "-qm", "initial"], { cwd: product });
+    execFileSync("git", ["init", "-q", "--bare", origin]);
+    execFileSync("git", ["remote", "add", "origin", origin], { cwd: product });
+    execFileSync("git", ["push", "-q", "origin", "main"], { cwd: product });
+    execFileSync("git", ["clone", "-q", origin, clone]);
+    execFileSync("git", ["config", "user.name", "Fixture"], { cwd: clone });
+    execFileSync("git", ["config", "user.email", "fixture@example.com"], { cwd: clone });
+    writeFileSync(join(clone, "start-codex.sh"), "#!/usr/bin/env bash\n", { mode: 0o700 });
+
     await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
       processRunner: successfulStartGit,
       makeRunLoop: fakeLoop
     });
     const paths = issueRuntimePaths(fixture.runtime, 1);
+    writeFileSync(join(clone, "published.txt"), "published\n");
+    execFileSync("git", ["add", "published.txt"], { cwd: clone });
+    execFileSync("git", ["commit", "-qm", "Codex: published"], { cwd: clone });
+    execFileSync("git", ["push", "-q", "-u", "origin", "issue-1/codex"], { cwd: clone });
+    const issueTip = execFileSync("git", ["rev-parse", "HEAD"], { cwd: clone, encoding: "utf8" }).trim();
+    const commitCount = execFileSync("git", ["rev-list", "--all", "--count"], {
+      cwd: clone,
+      encoding: "utf8"
+    }).trim();
+    writeFileSync(join(clone, "published.txt"), "unfinished\n");
+    execFileSync("git", ["add", "published.txt"], { cwd: clone });
+    mkdirSync(join(clone, ".plans", "issue-1"), { recursive: true });
+    writeFileSync(join(clone, ".plans", "issue-1", "plan.md"), "unfinished\n");
     const current = readCursorsState(paths);
     writeCursorsState(paths, cursorsStateSchema.parse({ ...current, completed: true }));
     const output: string[] = [];
@@ -761,7 +795,42 @@ describe("CLI", () => {
       })
     ).toBe(0);
     expect(output.join("")).toContain("Issue 1 complete: killed");
+    expect(output.join("")).toContain("Clone readiness: cleaned 1");
     expect(output.join("")).not.toContain("Tip: coord attach");
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: clone, encoding: "utf8" }).trim()).toBe("");
+    expect(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: clone, encoding: "utf8" }).trim()).toBe(
+      "main"
+    );
+    expect(execFileSync("git", ["rev-parse", "issue-1/codex"], { cwd: clone, encoding: "utf8" }).trim()).toBe(
+      issueTip
+    );
+    expect(execFileSync("git", ["rev-list", "--all", "--count"], { cwd: clone, encoding: "utf8" }).trim()).toBe(
+      commitCount
+    );
+    expect(existsSync(join(clone, ".plans"))).toBe(false);
+    expect(
+      execFileSync("git", ["ls-remote", "origin", "refs/heads/issue-1/codex"], { cwd: clone, encoding: "utf8" })
+    ).toContain(issueTip);
+
+    const runOutput: string[] = [];
+    expect(
+      await runCli(["run", "--issue", "1", "--coord-root", fixture.runtime], {
+        io: { stdout: (message) => runOutput.push(message) },
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    expect(runOutput.join("")).toContain("already base 1");
+
+    writeFileSync(join(clone, "owner.txt"), "keep\n");
+    const refusedOutput: string[] = [];
+    expect(
+      await runCli(["run", "--issue", "1", "--coord-root", fixture.runtime], {
+        io: { stdout: (message) => refusedOutput.push(message) },
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    expect(refusedOutput.join("")).toContain("refused 1");
+    expect(readFileSync(join(clone, "owner.txt"), "utf8")).toBe("keep\n");
   });
 
   it("refuses to drop the final active agent", async () => {

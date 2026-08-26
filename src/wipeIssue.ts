@@ -1,13 +1,16 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { liftCloneAgentsProtocol } from "./agentsProtocol.js";
 import { deriveEvidenceBranch } from "./ballotPublication.js";
 import { detachIssue } from "./detachIssue.js";
 import { git, gitOrThrow, hasUncommittedChanges } from "./gitExec.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
 import { issueRuntimePaths, removeIssueMailbox, RESERVED_EVIDENCE_AGENT } from "./paths.js";
-import { cloneIsDirty } from "./setupWorkspace.js";
+import {
+  AgentCloneReadinessRefusal,
+  makeAgentClonesBaseReady,
+  type CloneBaseReadyResult
+} from "./prepareAgentBranch.js";
 import type { CoordinatorConfig } from "./state.js";
 import type { OwnerTerminalCloser } from "./tmux.js";
 
@@ -223,14 +226,6 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     branch: branchFor(options.config.branch, options.issue, agent.id)
   }));
 
-  const dirty = clones.filter(({ root }) => existsSync(root) && cloneIsDirty(root)).map(({ root }) => root);
-  if (dirty.length > 0 && !force) {
-    throw new Error(
-      `Refusing wipe-issue: uncommitted changes in ${dirty.join(", ")}. ` +
-        "Commit/stash them, or re-run with --force to discard. Nothing has been changed."
-    );
-  }
-
   const paths = issueRuntimePaths(options.coordRoot, options.issue, options.completesRoot);
   const productRoot = options.config.coordination?.productRoot;
   const evidenceBranch = deriveEvidenceBranch(options.config.branch, options.issue);
@@ -247,30 +242,47 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     if (sha !== null) cloneTips.set(agent, sha);
   }
 
+  let readiness: CloneBaseReadyResult[];
   try {
-    for (const { agent, root } of clones) {
-      if (!existsSync(root)) {
-        log(`skip missing clone for ${agent}: ${root}\n`);
-        continue;
-      }
-      log(`${dryRun ? "would reset" : "resetting"} ${agent} clone ${root}\n`);
+    readiness = makeAgentClonesBaseReady({
+      agents: clones.map(({ agent, root }) => ({ id: agent, root })),
+      issue: options.issue,
+      branchTemplate: options.config.branch,
+      baseBranch: base,
+      installRoot: options.config.coordination?.installRoot ?? null,
+      discardPolicy: force ? "force-wipe" : "finished-issue-only",
+      batchPolicy: force ? "continue" : "refuse-all",
+      dryRun,
+      log
+    });
+  } catch (error) {
+    if (error instanceof AgentCloneReadinessRefusal) {
+      throw new Error(
+        `Refusing wipe-issue: uncommitted changes in ${error.clones.join(", ")}. ` +
+          "Commit/stash them, or re-run with --force to discard. Nothing has been changed."
+      );
+    }
+    throw error;
+  }
+  const readinessRefusals = readiness.filter((item) => item.action === "refused");
+  if (readinessRefusals.length > 0) {
+    throw new Error(
+      `Cannot make agent clones base-ready for wipe-issue: ${readinessRefusals
+        .map((item) => `${item.clone}: ${item.reason ?? "readiness refused"}`)
+        .join("; ")}`
+    );
+  }
+
+  try {
+    for (const item of readiness) {
+      if (item.action === "skipped-missing" || item.action === "refused") continue;
+      const root = item.clone;
+      log(`${dryRun ? "would prune" : "pruning"} issue refs in ${item.agent} clone ${root}\n`);
       if (!dryRun) {
-        liftCloneAgentsProtocol(root, { dryRun: false, log, changes: [] });
-        git(root, "fetch", "origin", base);
-        const onBranch = git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
-        if (onBranch.startsWith(prefix)) {
-          gitOrThrow(root, "checkout", "--detach", "HEAD");
-        }
         for (const ref of listRefs(root, issueHeadGlob(options.issue))) {
           gitOrThrow(root, "update-ref", "-d", ref);
           recordUnique(result.deletedLocalBranches, shortHead(ref));
           log(`deleted local ${shortHead(ref)}\n`);
-        }
-        if (force) {
-          gitOrThrow(root, "checkout", "-f", "-B", base, `origin/${base}`);
-          git(root, "clean", "-fd");
-        } else {
-          gitOrThrow(root, "checkout", "-B", base, `origin/${base}`);
         }
       } else {
         for (const ref of listRefs(root, issueHeadGlob(options.issue))) {

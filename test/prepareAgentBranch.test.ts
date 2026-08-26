@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { liftCloneAgentsProtocol, writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
-import { prepareAgentIssueBranches } from "../src/prepareAgentBranch.js";
+import {
+  AgentCloneReadinessRefusal,
+  makeAgentClonesBaseReady,
+  prepareAgentIssueBranches
+} from "../src/prepareAgentBranch.js";
 import { git, repoRoot, tryGit } from "./support/workspaceFixture.js";
 
 const roots: string[] = [];
@@ -279,5 +283,181 @@ describe("prepareAgentIssueBranches", () => {
     ).toThrow(/uncommitted changes/);
     expect(existsSync(join(clone, "dirty.txt"))).toBe(true);
     expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+  });
+});
+
+describe("makeAgentClonesBaseReady", () => {
+  it("discards tracked and untracked WIP only on the completed issue branch", () => {
+    const { clone, baseline } = seedClone();
+    prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+    writeFileSync(join(clone, "tracked.txt"), "published\n");
+    git(clone, "add", "tracked.txt");
+    git(clone, "commit", "-qm", "Claude: published work");
+    const issueTip = git(clone, "rev-parse", "HEAD");
+    const issueCount = git(clone, "rev-list", "--count", "issue-9/claude");
+    writeFileSync(join(clone, "tracked.txt"), "unfinished\n");
+    git(clone, "add", "tracked.txt");
+    mkdirSync(join(clone, ".plans", "issue-9"), { recursive: true });
+    writeFileSync(join(clone, ".plans", "issue-9", "plan.md"), "unfinished plan\n");
+
+    const outcome = makeAgentClonesBaseReady({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(outcome[0]?.action).toBe("checked-out");
+    expect(outcome[0]?.discardedPaths).toEqual(expect.arrayContaining(["tracked.txt", ".plans/"]));
+    expect(git(clone, "status", "--porcelain")).toBe("");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(git(clone, "rev-parse", "HEAD")).toBe(baseline);
+    expect(existsSync(join(clone, ".plans"))).toBe(false);
+    expect(git(clone, "rev-parse", "issue-9/claude")).toBe(issueTip);
+    expect(git(clone, "rev-list", "--count", "issue-9/claude")).toBe(issueCount);
+    expect(git(clone, "show", "issue-9/claude:tracked.txt")).toBe("published");
+    expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toContain("coordination protocol");
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("checks out a clean issue clone without deleting its issue branch", () => {
+    const { clone, baseline } = seedClone();
+    prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+    const issueTip = git(clone, "rev-parse", "HEAD");
+
+    const outcome = makeAgentClonesBaseReady({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(outcome[0]?.action).toBe("checked-out");
+    expect(outcome[0]?.discardedPaths).toEqual([]);
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(git(clone, "rev-parse", "issue-9/claude")).toBe(issueTip);
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("refuses dirty work on another issue branch without changing it", () => {
+    const { clone, baseline } = seedClone();
+    liftCloneAgentsProtocol(clone, { dryRun: false, log: () => undefined, changes: [] });
+    git(clone, "checkout", "-qb", "issue-8/claude", baseline);
+    writeCloneAgentsProtocol({
+      clone,
+      installRoot: repoRoot,
+      options: { dryRun: false, log: () => undefined, changes: [] }
+    });
+    writeFileSync(join(clone, "dirty.txt"), "keep me\n");
+    const before = git(clone, "status", "--porcelain");
+
+    const outcome = makeAgentClonesBaseReady({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(outcome[0]?.action).toBe("refused");
+    expect(outcome[0]?.reason).toContain("issue-8/claude");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-8/claude");
+    expect(git(clone, "status", "--porcelain")).toBe(before);
+    expect(readFileSync(join(clone, "dirty.txt"), "utf8")).toBe("keep me\n");
+  });
+
+  it("supports an all-clone preflight for wipe without partial cleanup", () => {
+    const first = seedClone();
+    const second = seedClone();
+    prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: first.clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: first.baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+    writeFileSync(join(first.clone, "eligible.txt"), "unfinished\n");
+    writeFileSync(join(second.clone, "ambiguous.txt"), "keep\n");
+
+    expect(() =>
+      makeAgentClonesBaseReady({
+        agents: [
+          { id: "claude", root: first.clone },
+          { id: "codex", root: second.clone }
+        ],
+        issue: 9,
+        branchTemplate: "issue-{issue}/{agent}",
+        baseBranch: "main",
+        installRoot: repoRoot,
+        batchPolicy: "refuse-all"
+      })
+    ).toThrow(AgentCloneReadinessRefusal);
+    expect(git(first.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
+    expect(readFileSync(join(first.clone, "eligible.txt"), "utf8")).toBe("unfinished\n");
+    expect(git(second.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(readFileSync(join(second.clone, "ambiguous.txt"), "utf8")).toBe("keep\n");
+  });
+
+  it("skips missing and non-worktree clone roots", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "coord-base-ready-missing-"));
+    roots.push(workspace);
+    const notGit = join(workspace, "not-git");
+    mkdirSync(notGit);
+
+    const outcome = makeAgentClonesBaseReady({
+      agents: [
+        { id: "claude", root: join(workspace, "missing") },
+        { id: "codex", root: notGit }
+      ],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(outcome.map(({ action }) => action)).toEqual(["skipped-missing", "skipped-missing"]);
+  });
+
+  it("refuses an unresolved origin base without clearing the protocol bit", () => {
+    const { clone, baseline } = seedClone();
+    prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+    git(clone, "remote", "remove", "origin");
+
+    const outcome = makeAgentClonesBaseReady({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(outcome[0]?.action).toBe("refused");
+    expect(outcome[0]?.reason).toContain("cannot fetch origin");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
+    expect(skipWorktree(clone)).toBe(true);
   });
 });
