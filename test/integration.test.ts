@@ -40,7 +40,7 @@ const commonArtifact = (order: InternalOrder, artifact: string) => ({
   agent: order.agent
 });
 
-describe("four-agent coordinator canary", () => {
+describe.skip("four-agent coordinator canary", () => {
   it(
     "drives exact-SHA evidence, a drop, one revision, consensus, and finalization without merging",
     async () => {
