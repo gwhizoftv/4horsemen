@@ -1,0 +1,46 @@
+{
+  "actionId": "354a283c-c1af-4af1-b7f0-99f2b11c48e4",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "a3520a1e03fd4522eb6edf582d07287ec89f21eb3204adf2c04f4ee88da331df",
+  "issue": 121,
+  "issueSessionId": "issue-121:6ef8f6eb22af1558723ddd885e0364ebbc92d76b",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "87fb50874e90cdf3f8ddac6f23da9d35430aa5a4",
+      "path": ".plans/issue-121/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "002095e039ed483b729701abaf569a6929bb15e1",
+      "path": ".plans/issue-121/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d744ba08125eaed6d7ad138c79c563c465e3bc59",
+      "path": ".plans/issue-121/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "It is the only plan pairing the guidance with a condition that fails when ignored and the only one closing the path-widening that reuse citations open, which codex's plan actively creates by telling agents to cite reused code with no extractor change; cursor's plan lists an AGENTS.md edit that exits 1 under skip-worktree, and codex's two hits on this plan — under-enumerated evidence fixtures and an overstated sole-authority claim — are fixture-level corrections that pnpm check:fast surfaces at implementation time.",
+  "responseSha256": "7b1b849e5497e2de57b1d5fd9b1663a73b46c959712527db37e734638dfc4f4f",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "33c4397dde1f274042a95f3d84491fe8b963a64d",
+      "path": ".plans/issue-121/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9e4b7a5836016d7cb80b42c2d5c2c208833e09d1",
+      "path": ".plans/issue-121/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "816d310ac4dbc1afd12014c1c7d0f789d8bafe8e",
+      "path": ".plans/issue-121/review.md"
+    }
+  ]
+}
