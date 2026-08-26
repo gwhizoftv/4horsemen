@@ -14,7 +14,7 @@ import { renderHookScope, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONF
 import { install, onboard, packageVersion, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
-import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
+import { makeAgentClonesBaseReady, prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import {
   agentResponsePath,
   agentRuntimePaths,
@@ -256,7 +256,8 @@ when those windows are not already open, each attached to that agent's tmux
 window (no Ctrl-b n). \`coord attach N\` re-opens them while the coordinator is
 already running. \`coord detach N\` closes those Terminal windows and kills the
 issue tmux sessions without wiping runtime or branches. A completed \`coord N\` / \`coord run\` does the
-same teardown automatically. \`coord uninstall\` also tears down owner
+same teardown automatically, then discards leftover WIP only from matching
+issue-N agent branches and checks eligible clones out at origin/base. \`coord uninstall\` also tears down owner
 tmux/Terminals for the workspace agents. \`coord wipe-issue N\` resets agent clones,
 deletes origin issue-N agent/*-final branches plus leftover tracking refs (keeping
 product-local issue branches that have owner commits or uncommitted work, and
@@ -761,12 +762,42 @@ const detachCompletedIssue = async (paths: IssueRuntimePaths, io: CliIo): Promis
     terminalGroup: paths.terminalGroup,
     log: io.stdout
   });
+  let installRoot: string | null = null;
+  if (existsSync(start.configPath)) {
+    try {
+      installRoot = readConfig(start.configPath).coordination?.installRoot ?? null;
+    } catch (error) {
+      io.stdout(
+        `Could not read ${start.configPath} for clone readiness ` +
+          `(${error instanceof Error ? error.message : String(error)}); using each clone's captured protocol.\n`
+      );
+    }
+  }
+  const readiness = makeAgentClonesBaseReady({
+    agents: start.agents,
+    issue: start.issue,
+    branchTemplate: start.branchTemplate,
+    baseBranch: start.baseBranch,
+    installRoot,
+    log: io.stdout
+  });
+  // A later checkout can fail after reset/clean succeeded. Count the completed
+  // discard from the structured result even when final readiness was refused.
+  const cleaned = readiness.filter((result) => result.discardedPaths.length > 0).length;
+  const checkedOut = readiness.filter((result) => result.action === "checked-out").length;
+  const alreadyBase = readiness.filter((result) => result.action === "already-base").length;
+  const refused = readiness.filter((result) => result.action === "refused").length;
+  const skipped = readiness.filter((result) => result.action === "skipped-missing").length;
   io.stdout(
     `Issue ${start.issue} complete: killed ${outcome.killedSessions.length} tmux session(s)` +
       (outcome.terminalClose === "closed"
         ? `, closed ${outcome.closedTerminalTitles.length} Terminal window(s)`
         : "") +
       ".\n"
+  );
+  io.stdout(
+    `Clone readiness: cleaned ${cleaned}, checked out ${checkedOut}, already base ${alreadyBase}, ` +
+      `refused ${refused}, skipped ${skipped}.\n`
   );
 };
 

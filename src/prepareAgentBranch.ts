@@ -28,6 +28,33 @@ export type PrepareAgentIssueBranchResult = {
   hadOverlay: boolean;
 };
 
+export type CloneBaseReadyResult = {
+  agent: string;
+  clone: string;
+  branch: string;
+  action: "checked-out" | "already-base" | "refused" | "skipped-missing";
+  discardedPaths: string[];
+  protocol: ProtocolRestoreOutcome | "skipped";
+  /** The verified base commit on success, or null for a skip/refusal. */
+  baseTip: string | null;
+  /** True only when baseTip was resolved by this pass's successful origin fetch. */
+  baseSynced: boolean;
+  reason?: string;
+};
+
+export type CloneReadinessDiscardPolicy = "finished-issue-only" | "force-wipe";
+
+/** Expected all-or-nothing refusal used by wipe before it mutates any clone. */
+export class AgentCloneReadinessRefusal extends Error {
+  readonly clones: string[];
+
+  constructor(clones: readonly string[]) {
+    super(`uncommitted changes in ${clones.join(", ")}`);
+    this.name = "AgentCloneReadinessRefusal";
+    this.clones = [...clones];
+  }
+}
+
 export const issueBranchFor = (template: string, issue: number, agent: string): string =>
   template.replaceAll("{issue}", String(issue)).replaceAll("{agent}", agent);
 
@@ -105,7 +132,7 @@ const statusPath = (line: string): string => line.slice(3);
  * protocol forbids the agent from clearing the flag or reverting the file by
  * hand, so neither `coord start` nor a resume could get past it.
  */
-const blockingDirtyPaths = (clone: string): readonly string[] => {
+export const blockingDirtyPaths = (clone: string): readonly string[] => {
   const lines = git(clone, "status", "--porcelain")
     .stdout.split("\n")
     .filter((line) => line.trim() !== "");
@@ -241,5 +268,338 @@ export const prepareAgentIssueBranches = (input: {
   }
 
   assertClonesReady(results);
+  return results;
+};
+
+type CloneReadinessSnapshot = {
+  agent: string;
+  clone: string;
+  branch: string;
+  available: boolean;
+  head: string;
+  dirtyLines: readonly string[];
+};
+
+const snapshotCloneReadiness = (input: {
+  agents: readonly { id: string; root: string }[];
+  issue: number;
+  branchTemplate: string;
+}): CloneReadinessSnapshot[] =>
+  input.agents.map((agent) => {
+    const branch = issueBranchFor(input.branchTemplate, input.issue, agent.id);
+    if (!existsSync(agent.root) || !isGitWorktree(agent.root)) {
+      return { agent: agent.id, clone: agent.root, branch, available: false, head: "", dirtyLines: [] };
+    }
+    return {
+      agent: agent.id,
+      clone: agent.root,
+      branch,
+      available: true,
+      head: git(agent.root, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim(),
+      dirtyLines: blockingDirtyPaths(agent.root)
+    };
+  });
+
+const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+const refusedResult = (
+  snapshot: CloneReadinessSnapshot,
+  reason: string,
+  discardedPaths: string[] = [],
+  protocol: ProtocolRestoreOutcome | "skipped" = "skipped"
+): CloneBaseReadyResult => ({
+  agent: snapshot.agent,
+  clone: snapshot.clone,
+  branch: snapshot.branch,
+  action: "refused",
+  discardedPaths,
+  protocol,
+  baseTip: null,
+  baseSynced: false,
+  reason
+});
+
+type CloneBaseTarget =
+  | { kind: "target"; sha: string; ref: string; synced: boolean; fallbackReason?: string }
+  | { kind: "refuse"; reason: string };
+
+const isAncestor = (clone: string, ancestor: string, descendant: string): boolean =>
+  git(clone, "merge-base", "--is-ancestor", ancestor, descendant).exitCode === 0;
+
+/**
+ * Resolve where one clone can safely land before any worktree discard begins.
+ *
+ * A fresh origin tip is preferred. A local base carrying commits outside that
+ * tip is owner/unknown history, so normal completion and non-force wipe refuse
+ * rather than orphaning it; explicit force-wipe retains the old override. When
+ * origin cannot be fetched, the local base is an auditable offline fallback so
+ * a transient network failure does not recreate the leftover-WIP dead end this
+ * cleanup exists to remove.
+ */
+const resolveCloneBaseTarget = (
+  snapshot: CloneReadinessSnapshot,
+  baseBranch: string,
+  discardPolicy: CloneReadinessDiscardPolicy
+): CloneBaseTarget => {
+  const fetched = git(
+    snapshot.clone,
+    "fetch",
+    "--quiet",
+    "origin",
+    `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`
+  );
+  const originBase = git(snapshot.clone, "rev-parse", "--verify", `origin/${baseBranch}^{commit}`);
+  const localBase = git(snapshot.clone, "rev-parse", "--verify", `refs/heads/${baseBranch}^{commit}`);
+
+  if (fetched.exitCode === 0 && originBase.exitCode === 0) {
+    const originSha = originBase.stdout.trim();
+    if (
+      discardPolicy !== "force-wipe" &&
+      localBase.exitCode === 0 &&
+      !isAncestor(snapshot.clone, localBase.stdout.trim(), originSha)
+    ) {
+      return {
+        kind: "refuse",
+        reason:
+          `local ${baseBranch} at ${localBase.stdout.trim().slice(0, 12)} contains commits not in ` +
+          `origin/${baseBranch} at ${originSha.slice(0, 12)}; publish or move that local base, ` +
+          "or use wipe-issue --force. Nothing has been changed."
+      };
+    }
+    return { kind: "target", sha: originSha, ref: `origin/${baseBranch}`, synced: true };
+  }
+
+  const fetchFailure =
+    fetched.exitCode === 0
+      ? `origin/${baseBranch} was unavailable after fetch`
+      : `fetch failed: ${fetched.stderr.trim() || fetched.stdout.trim() || "git fetch failed"}`;
+  if (localBase.exitCode === 0) {
+    return {
+      kind: "target",
+      sha: localBase.stdout.trim(),
+      ref: baseBranch,
+      synced: false,
+      fallbackReason: fetchFailure
+    };
+  }
+  // A pre-existing tracking ref is still useful when the clone has no local
+  // base yet, but it is explicitly not called synchronized after a failed fetch.
+  if (originBase.exitCode === 0) {
+    return {
+      kind: "target",
+      sha: originBase.stdout.trim(),
+      ref: `origin/${baseBranch}`,
+      synced: false,
+      fallbackReason: fetchFailure
+    };
+  }
+  return {
+    kind: "refuse",
+    reason: `cannot resolve a local or fetched ${baseBranch} in ${snapshot.clone} (${fetchFailure})`
+  };
+};
+
+/**
+ * End an issue with agent clones ready for the next one.
+ *
+ * Completion uses the default per-clone refusal: eligible clones are cleaned
+ * even when an unrelated dirty branch makes another clone ineligible. Wipe
+ * selects `refuse-all` so its historical "Nothing has been changed" dirty gate
+ * remains a batch preflight. Neither mode authors commits, stashes, or pushes.
+ */
+export const makeAgentClonesBaseReady = (input: {
+  agents: readonly { id: string; root: string }[];
+  issue: number;
+  branchTemplate: string;
+  baseBranch: string;
+  installRoot?: string | null;
+  discardPolicy?: CloneReadinessDiscardPolicy;
+  batchPolicy?: "continue" | "refuse-all";
+  dryRun?: boolean;
+  log?: (message: string) => void;
+}): CloneBaseReadyResult[] => {
+  const log = input.log ?? (() => undefined);
+  const installRoot = input.installRoot ?? null;
+  const discardPolicy = input.discardPolicy ?? "finished-issue-only";
+  const dryRun = input.dryRun === true;
+  const snapshots = snapshotCloneReadiness(input);
+  const ineligible = snapshots.filter(
+    (snapshot) =>
+      snapshot.available &&
+      snapshot.dirtyLines.length > 0 &&
+      snapshot.head !== snapshot.branch &&
+      discardPolicy !== "force-wipe"
+  );
+  if (input.batchPolicy === "refuse-all" && ineligible.length > 0) {
+    throw new AgentCloneReadinessRefusal(ineligible.map(({ clone }) => clone));
+  }
+
+  const baseTargets = new Map<string, CloneBaseTarget>();
+  if (!dryRun) {
+    for (const snapshot of snapshots) {
+      if (!snapshot.available || ineligible.includes(snapshot)) continue;
+      baseTargets.set(snapshot.clone, resolveCloneBaseTarget(snapshot, input.baseBranch, discardPolicy));
+    }
+    if (input.batchPolicy === "refuse-all") {
+      const baseRefusals = snapshots.filter(
+        (snapshot) => baseTargets.get(snapshot.clone)?.kind === "refuse"
+      );
+      if (baseRefusals.length > 0) {
+        const blocked = baseRefusals.map(({ clone }) => clone).join(", ");
+        return snapshots.map((snapshot) => {
+          if (!snapshot.available) {
+            log(`skip missing clone for ${snapshot.agent}: ${snapshot.clone}\n`);
+            return {
+              agent: snapshot.agent,
+              clone: snapshot.clone,
+              branch: snapshot.branch,
+              action: "skipped-missing",
+              discardedPaths: [],
+              protocol: "skipped",
+              baseTip: null,
+              baseSynced: false
+            };
+          }
+          const target = baseTargets.get(snapshot.clone);
+          const reason =
+            target?.kind === "refuse"
+              ? target.reason
+              : `another agent clone cannot be made base-ready (${blocked}); no worktrees were changed.`;
+          log(`refused clone readiness for ${snapshot.agent}: ${reason}\n`);
+          return refusedResult(snapshot, reason);
+        });
+      }
+    }
+  }
+
+  const results: CloneBaseReadyResult[] = [];
+  for (const snapshot of snapshots) {
+    if (!snapshot.available) {
+      log(`skip missing clone for ${snapshot.agent}: ${snapshot.clone}\n`);
+      results.push({
+        agent: snapshot.agent,
+        clone: snapshot.clone,
+        branch: snapshot.branch,
+        action: "skipped-missing",
+        discardedPaths: [],
+        protocol: "skipped",
+        baseTip: null,
+        baseSynced: false
+      });
+      continue;
+    }
+
+    const discardedPaths = snapshot.dirtyLines.map(statusPath);
+    if (
+      discardedPaths.length > 0 &&
+      snapshot.head !== snapshot.branch &&
+      discardPolicy !== "force-wipe"
+    ) {
+      const reason =
+        `HEAD is ${snapshot.head || "detached"}, not ${snapshot.branch}; ` +
+        "commit/stash the unrelated work or use wipe-issue --force. Nothing has been changed.";
+      log(`refused clone readiness for ${snapshot.agent}: ${reason}\n`);
+      results.push(refusedResult(snapshot, reason));
+      continue;
+    }
+
+    const action = snapshot.head === input.baseBranch ? "already-base" : "checked-out";
+    if (dryRun) {
+      log(
+        `${discardedPaths.length > 0 ? `would discard ${discardedPaths.join(", ")} and ` : ""}` +
+          `would check out ${input.baseBranch} at origin/${input.baseBranch} in ${snapshot.clone}\n`
+      );
+      results.push({
+        agent: snapshot.agent,
+        clone: snapshot.clone,
+        branch: snapshot.branch,
+        action,
+        discardedPaths,
+        protocol: "skipped",
+        baseTip: null,
+        baseSynced: false
+      });
+      continue;
+    }
+
+    const baseTarget = baseTargets.get(snapshot.clone);
+    if (baseTarget === undefined || baseTarget.kind === "refuse") {
+      const reason = baseTarget?.reason ?? `cannot resolve ${input.baseBranch} in ${snapshot.clone}`;
+      log(`refused clone readiness for ${snapshot.agent}: ${reason}\n`);
+      results.push(refusedResult(snapshot, reason));
+      continue;
+    }
+    if (!baseTarget.synced) {
+      log(
+        `${snapshot.agent} using fallback ${baseTarget.ref} at ${baseTarget.sha.slice(0, 12)} ` +
+          `because ${baseTarget.fallbackReason ?? `origin/${input.baseBranch} is unavailable`}\n`
+      );
+    }
+    const captured = captureCloneAgentsProtocol(snapshot.clone);
+    let protocol: ProtocolRestoreOutcome = "bit-only";
+    let failure: string | null = null;
+    let discarded: string[] = [];
+    try {
+      liftCloneAgentsProtocol(snapshot.clone, { dryRun: false, log, changes: [] });
+      if (discardedPaths.length > 0) {
+        log(
+          `${snapshot.agent} discarding ${discardedPaths.length} path(s) in ${snapshot.clone}: ` +
+            `${discardedPaths.join(", ")}\n`
+        );
+        gitOrThrow(snapshot.clone, "reset", "--hard", "HEAD");
+        gitOrThrow(snapshot.clone, "clean", "-fd");
+        discarded = [...discardedPaths];
+        log(`${snapshot.agent} discarded ${discarded.length} path(s) in ${snapshot.clone}\n`);
+      }
+      if (baseTarget.ref === input.baseBranch) {
+        gitOrThrow(snapshot.clone, "checkout", "--quiet", input.baseBranch);
+      } else {
+        gitOrThrow(snapshot.clone, "checkout", "--quiet", "-B", input.baseBranch, baseTarget.ref);
+      }
+    } catch (error) {
+      failure = errorMessage(error);
+    } finally {
+      protocol = restoreProtocol(snapshot.clone, installRoot, captured, log);
+    }
+
+    if (failure !== null) {
+      log(`refused clone readiness for ${snapshot.agent}: ${failure}\n`);
+      results.push(refusedResult(snapshot, failure, discarded, protocol));
+      continue;
+    }
+
+    const head = git(snapshot.clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+    const headSha = git(snapshot.clone, "rev-parse", "HEAD").stdout.trim();
+    const state = cloneAgentsProtocolState(snapshot.clone);
+    const problems: string[] = [];
+    if (head !== input.baseBranch) problems.push(`HEAD is ${head || "detached"}, not ${input.baseBranch}`);
+    if (headSha !== baseTarget.sha) {
+      problems.push(`HEAD ${headSha || "is missing"} is not expected base ${baseTarget.sha}`);
+    }
+    if (state.tracked && !state.skipWorktree) problems.push("AGENTS.md is tracked but skip-worktree is not set");
+    if (captured !== null && protocol !== "overlay") problems.push("the captured AGENTS.md protocol was not restored");
+    if (protocol === "overlay" && !state.overlayPresent) problems.push("the restored AGENTS.md protocol is missing");
+    if (problems.length > 0) {
+      const reason = problems.join("; ");
+      log(`refused clone readiness for ${snapshot.agent}: ${reason}\n`);
+      results.push(refusedResult(snapshot, reason, discarded, protocol));
+      continue;
+    }
+
+    log(
+      `${snapshot.agent} checked out ${input.baseBranch} at ${baseTarget.sha.slice(0, 12)}` +
+        `${baseTarget.synced ? "" : " (offline fallback)"}\n`
+    );
+    results.push({
+      agent: snapshot.agent,
+      clone: snapshot.clone,
+      branch: snapshot.branch,
+      action,
+      discardedPaths: discarded,
+      protocol,
+      baseTip: baseTarget.sha,
+      baseSynced: baseTarget.synced
+    });
+  }
   return results;
 };

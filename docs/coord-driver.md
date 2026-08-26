@@ -8,8 +8,11 @@ finalization the driver opens a pull request. Default `prPolicy` is
 `coord-open-unmerged` (draft PR; owner merges). `coord-merged` opens a ready PR
 and merges it. Legacy `owner-only` is the same as `coord-open-unmerged`.
 
-The coordinator never writes agent clones. Agents publish work to their own
-`issue-<n>/<agent>` origin branches. The coordinator fetches those branches
+The coordinator never authors, stages, stashes, or pushes agent work. It may
+mutate configured agent clones only for lifecycle readiness: issue/base branch
+checkout, discard-only reset/clean, and the managed `AGENTS.md` protocol
+overlay/skip-worktree bit. Agents publish work to their own
+`issue-<n>/<agent>` origin branches; the coordinator fetches those branches
 into an owner-side bare mirror and evaluates blobs at the exact submission SHA.
 
 ## Runtime topology
@@ -239,7 +242,20 @@ ungrouped `coord-N/<agent>`. Re-open those views
 later with `coord attach N` while the coordinator is already running. `coord detach N` closes matching Terminal windows
 (by unique title / window name) then kills the issue tmux sessions, without
 wiping runtime, clones, or branches. When `coord N` / `coord run` finishes with
-a completed workflow, it runs the same teardown automatically.
+a completed workflow, it runs the same UI teardown automatically and then makes
+each participating clone base-ready. A missing/non-worktree clone is skipped. A
+dirty clone is eligible for `git reset --hard HEAD` plus `git clean -fd` only
+when `HEAD` is exactly that agent's configured `issue-N/<agent>` branch for the
+completed issue; dirt on any other branch is left unchanged and logged with a
+manual-stash/forced-wipe remediation. Eligible and already-clean clones fetch
+origin, check out the configured base at `origin/<base>`, and restore the
+managed protocol overlay and skip-worktree bit. If origin is temporarily
+unavailable, cleanup uses and identifies the existing local base instead; if a
+fresh fetch shows that local base contains commits absent from origin, normal
+completion refuses before discarding anything rather than orphaning them
+(`wipe-issue --force` is the explicit override). The summary distinguishes
+discarded, checked-out, refused, and skipped clones, and the coordinator never
+creates a cleanup commit or pushes from this path.
 `coord uninstall` tears down owner tmux/Terminal for discovered issues and the
 exact workspace-grouped manual identity. It never closes bare agent-named tabs
 or another product's sessions.
@@ -253,9 +269,12 @@ tracking refs in clones, the product worktree, and `coord-runtime/mirror.git`.
 kept when it has uncommitted work or commits that are not just a checkout of the
 clone (arbitrary owner branches are not treated as coordinator-owned). Removes
 `coord-runtime/issue-N`, and runs the same UI teardown as `detach`. It does
-**not** close the GitHub issue or uninstall the product. Dirty clones refuse
-unless `--force`. Clone-local skip-worktree on `AGENTS.md` is lifted so checkout
-onto the base branch can proceed.
+**not** close the GitHub issue or uninstall the product. Without `--force`,
+leftover dirt is discarded only when every dirty clone is on its exact branch
+for the issue being wiped; ambiguous dirt refuses before any clone is changed.
+`--force` remains the explicit override for other clone dirt. Clone-local
+skip-worktree on `AGENTS.md` is lifted around reset/clean/base checkout and the
+protocol overlay plus bit are restored afterward.
 
 On `coord N` start (and resume), coordination lifts that skip-worktree bit,
 checks each agent clone out on `issue-N/<agent>` at the issue baseline (or the
