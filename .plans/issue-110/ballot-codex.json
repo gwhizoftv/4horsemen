@@ -1,0 +1,44 @@
+{
+  "protocolVersion": 1,
+  "issue": 110,
+  "issueSessionId": "issue-110:1e43ba38ba3a0720503d7304a20ff6bd8c9eaf48",
+  "agent": "codex",
+  "inputSetHash": "280a5fbe64535d2ba15c4c042d600d26127dd4ffea34d5dc844b171593c8c1ab",
+  "artifact": "plan-ballot",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "493590055e2a1d670328f7bfdf8e0b7a587b42ac",
+      "path": ".plans/issue-110/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d7b899ec300f0337cb0aa51b9cb769b7f2a1c6b7",
+      "path": ".plans/issue-110/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "da91466d268ecc83745f04ef303b6d8c27bceb35",
+      "path": ".plans/issue-110/plan.md"
+    }
+  ],
+  "reviews": [
+    {
+      "agent": "cursor",
+      "commitSha": "92dc24fca9d8ae0d8d8357ec6ba9c75ee658543a",
+      "path": ".plans/issue-110/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ff89256c398b1b2296f8c32017b468ecd1e842d1",
+      "path": ".plans/issue-110/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "bec19abb5bc041e3cd5c44caba2a7179ff7ce19f",
+      "path": ".plans/issue-110/review.md"
+    }
+  ],
+  "choice": "codex",
+  "rationale": "Codex provides the most complete response-acceptance, durable publication, provenance, launcher-grant, roster-supersession, reporting, and test contract, with only a small explicit-retention refinement needed."
+}
