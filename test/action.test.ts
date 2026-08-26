@@ -16,7 +16,9 @@ const order = (root: string): InternalOrder => ({
   agent: "codex",
   stepId: "R3.review",
   evidenceId: "review-published",
+  submissionMode: "git",
   requiredPath: ".plans/issue-1/review.md",
+  responsePath: null,
   completePath: join(root, "completes", "issue-1", "codex", "complete"),
   branch: "issue-1/codex",
   round: null,
@@ -37,8 +39,11 @@ describe("agent actions", () => {
     expect(parsed).toMatchObject({
       actionId: "b2337d85-6617-4e9f-8ace-901453764aa4",
       agent: "codex",
+      submissionMode: "git",
       requiredPath: ".plans/issue-1/review.md"
     });
+    expect(raw).toContain("submissionMode: git");
+    expect(raw).not.toContain("responsePath:");
     expect(raw).toContain("3".repeat(40));
     expect(raw).toContain("Before waiting for more input, re-read");
     expect(raw).toContain("If `actionId` in the front matter has changed");
@@ -65,13 +70,14 @@ describe("agent actions", () => {
     const [, frontMatter = "", body = ""] = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(raw) ?? [];
 
     // The absolute receipt path is what an agent acts on, so it belongs in the
-    // body the agent reads. Front matter stays the restricted three fields: a
+    // body the agent reads. Front matter stays the restricted public fields: a
     // completePath key there would become a parsed field agents could rely on.
     expect(body).toContain(join(root, "completes", "issue-1", "codex", "complete"));
     expect(frontMatter).not.toContain("complete");
     expect(frontMatter.split("\n").map((line) => line.split(":")[0])).toEqual([
       "actionId",
       "agent",
+      "submissionMode",
       "requiredPath"
     ]);
   });
@@ -96,10 +102,75 @@ describe("agent actions", () => {
 
   it("accepts exactly one lowercase SHA with an optional final newline", () => {
     const sha = "a".repeat(40);
-    expect(parseCompletion(sha)).toEqual({ status: "valid", sha });
-    expect(parseCompletion(`${sha}\n`)).toEqual({ status: "valid", sha });
-    expect(parseCompletion(`commit ${sha}`)).toEqual({ status: "valid", sha });
-    expect(parseCompletion(`commit ${sha}\n`)).toEqual({ status: "valid", sha });
+    expect(parseCompletion(sha)).toEqual({ status: "valid", kind: "sha", sha });
+    expect(parseCompletion(`${sha}\n`)).toEqual({ status: "valid", kind: "sha", sha });
+    expect(parseCompletion(`commit ${sha}`)).toEqual({ status: "valid", kind: "sha", sha });
+    expect(parseCompletion(`commit ${sha}\n`)).toEqual({ status: "valid", kind: "sha", sha });
+  });
+
+  it("renders and parses a response-mode ballot action", () => {
+    const responsePath =
+      "/external/coord/issue-1/agents/codex/responses/b2337d85-6617-4e9f-8ace-901453764aa4.json";
+    const raw = renderAction({
+      ...order("/external/coord"),
+      stepId: "R3.plan-ballot",
+      evidenceId: "plan-response-accepted",
+      submissionMode: "response",
+      requiredPath: "",
+      responsePath,
+      eligibleChoices: ["claude", "codex"],
+      task: "Cast the plan ballot."
+    });
+    const parsed = parseAction(raw);
+    expect(parsed).toEqual({
+      submissionMode: "response",
+      actionId: "b2337d85-6617-4e9f-8ace-901453764aa4",
+      agent: "codex",
+      responsePath,
+      body: expect.any(String)
+    });
+    expect(raw).toContain("submissionMode: response");
+    expect(raw).toContain(`responsePath: ${responsePath}`);
+    expect(raw).toContain("response b2337d85-6617-4e9f-8ace-901453764aa4");
+    expect(raw).not.toContain("requiredPath:");
+  });
+
+  it("rejects mixed git/response front matter and accepts response markers", () => {
+    expect(() =>
+      parseAction(`---
+actionId: b2337d85-6617-4e9f-8ace-901453764aa4
+agent: codex
+submissionMode: response
+responsePath: /runtime/responses/x.json
+requiredPath: .plans/issue-1/ballot.json
+---
+
+body
+`)
+    ).toThrow(/requiredPath/);
+    expect(() =>
+      parseAction(`---
+actionId: b2337d85-6617-4e9f-8ace-901453764aa4
+agent: codex
+requiredPath: .plans/issue-1/review.md
+responsePath: /runtime/responses/x.json
+---
+
+body
+`)
+    ).toThrow(/responsePath/);
+    const actionId = "b2337d85-6617-4e9f-8ace-901453764aa4";
+    expect(parseCompletion(`response ${actionId}`)).toEqual({
+      status: "valid",
+      kind: "response",
+      actionId
+    });
+    expect(parseCompletion(`response ${actionId}\n`)).toEqual({
+      status: "valid",
+      kind: "response",
+      actionId
+    });
+    expect(parseCompletion("response not-a-uuid").status).toBe("malformed");
   });
 });
 
@@ -131,7 +202,11 @@ describe("advisory action sections", () => {
     expect(raw).toContain('"src/a.ts"');
     expect(raw).toContain(`codex ${"5".repeat(40)}:`);
     expect(raw).toContain("(truncated: more paths changed than are listed here)");
-    expect(parseAction(raw).requiredPath).toBe(".plans/issue-1/review.md");
+    const parsed = parseAction(raw);
+    expect(parsed.submissionMode).not.toBe("response");
+    if (parsed.submissionMode !== "response") {
+      expect(parsed.requiredPath).toBe(".plans/issue-1/review.md");
+    }
   });
 
   it("reports a pin whose diff is empty rather than rendering a bare header", () => {

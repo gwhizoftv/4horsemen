@@ -105,4 +105,46 @@ describe("orderScaffold", () => {
     expect(rendered).toContain("file path and line number");
     expect(rendered).not.toContain("```json");
   });
+
+  it("renders only the minimal private response JSON for ballot steps", () => {
+    const plan = artifactScaffoldValue({
+      stepId: "R3.plan-ballot",
+      issue: 1,
+      issueSessionId: "s",
+      agent: "claude",
+      baselineSha: "a".repeat(40),
+      automationDigest: "b".repeat(64),
+      inputs: [],
+      eligibleChoices: ["claude", "codex"],
+      round: null,
+      approvedPaths: [],
+      actionId: "b2337d85-6617-4e9f-8ace-901453764aa4"
+    });
+    expect(plan).toEqual({
+      actionId: "b2337d85-6617-4e9f-8ace-901453764aa4",
+      choice: "<eligible-agent-id>",
+      rationale: "<one sentence>"
+    });
+    expect(plan).not.toHaveProperty("artifact");
+    expect(plan).not.toHaveProperty("protocolVersion");
+
+    const consensus = artifactScaffoldValue({
+      stepId: "R6.ballot",
+      issue: 1,
+      issueSessionId: "s",
+      agent: "claude",
+      baselineSha: "a".repeat(40),
+      automationDigest: "b".repeat(64),
+      inputs: [],
+      eligibleChoices: [],
+      round: 1,
+      approvedPaths: [],
+      actionId: "b2337d85-6617-4e9f-8ace-901453764aa4"
+    });
+    expect(consensus).toEqual({
+      actionId: "b2337d85-6617-4e9f-8ace-901453764aa4",
+      disposition: "approve",
+      rationale: "<one sentence>"
+    });
+  });
 });

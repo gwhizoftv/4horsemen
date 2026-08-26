@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,13 +12,14 @@ import {
   cursorsStateSchema,
   readConfig,
   readCursorsState,
-  readJournal,
   readStartState,
   writeCursorsState
 } from "../src/state.js";
 import { DOCTOR_CODES } from "../src/doctor.js";
 import { renderGitHubIssueSnapshot } from "../src/githubIssue.js";
 import { ensureBuilt, makeProduct, repoRoot, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
+import { createHash } from "node:crypto";
+import type { AcceptedResponse, BallotBatch } from "../src/state.js";
 
 const roots: string[] = [];
 const productFixtures: ProductFixture[] = [];
@@ -25,6 +27,93 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   for (const fixture of productFixtures.splice(0)) fixture.cleanup();
 });
+
+const responseDigest = (seed: string): string => createHash("sha256").update(seed, "utf8").digest("hex");
+const gitSha = (seed: string): string =>
+  createHash("sha256").update(`git:${seed}`, "utf8").digest("hex").slice(0, 40);
+const actionIdFor = (agent: string): string => {
+  const nibble = (agent.charCodeAt(0) % 10).toString();
+  return `10000000-0000-4000-8000-${`${nibble}0`.padStart(12, "0")}`;
+};
+const acceptedResponseFixture = (input: {
+  stepId: AcceptedResponse["stepId"];
+  agent: string;
+  choice?: string;
+  disposition?: AcceptedResponse["disposition"];
+  acceptedAt?: string;
+  round?: number | null;
+}): AcceptedResponse => {
+  const actionId = actionIdFor(input.agent);
+  return {
+    stepId: input.stepId,
+    agent: input.agent,
+    actionId,
+    round: input.round === undefined ? null : input.round,
+    responseSha256: responseDigest(input.agent),
+    rationale: "fixture rationale",
+    path: `/runtime/accepted-responses/${input.agent}/${actionId}.json`,
+    acceptedAt: input.acceptedAt ?? "2026-08-11T12:00:00.000Z",
+    ...(input.choice === undefined ? {} : { choice: input.choice }),
+    ...(input.disposition === undefined ? {} : { disposition: input.disposition })
+  };
+};
+const publishedBallotBatchFixture = (input: {
+  kind: BallotBatch["kind"];
+  activeRoster: readonly string[];
+  round?: number | null;
+  commitSha?: string;
+  status?: BallotBatch["status"];
+  createdAt?: string;
+}): BallotBatch => {
+  const now = input.createdAt ?? "2026-08-11T12:00:00.000Z";
+  const round = input.round === undefined ? null : input.round;
+  return {
+    batchId: "20000000-0000-4000-8000-000000000001",
+    kind: input.kind,
+    round,
+    inputSetHash: responseDigest("batch"),
+    activeRoster: [...input.activeRoster],
+    responses: input.activeRoster.map((agent) => ({
+      agent,
+      actionId: actionIdFor(agent),
+      responseSha256: responseDigest(agent)
+    })),
+    paths: input.activeRoster.map((agent) =>
+      input.kind === "plan-ballot-batch"
+        ? `.plans/issue-1/ballot-${agent}.json`
+        : input.kind === "comparison-ballot-batch"
+          ? `.code-reviews/issue-1/ballot-${agent}.json`
+          : `.code-reviews/issue-1/consensus-ballot-${agent}-round-${round ?? 1}.json`
+    ),
+    branch: "issue-1/coordinator-evidence",
+    parentSha: gitSha("a"),
+    commitSha: input.commitSha ?? gitSha("b"),
+    status: input.status ?? "published",
+    attempts: 1,
+    error: null,
+    supersedes: null,
+    createdAt: now,
+    updatedAt: now
+  };
+};
+
+const installFormat4JournalFixture = (journalPath: string): void => {
+  const raw = readFileSync(join(process.cwd(), "test", "support", "fixtures", "analytics-journal.jsonl"), "utf8");
+  writeFileSync(
+    journalPath,
+    raw
+      .split("\n")
+      .map((line) => {
+        if (line.trim() === "") return line;
+        const value = JSON.parse(line) as { formatVersion?: number };
+        return JSON.stringify({
+          ...value,
+          formatVersion: value.formatVersion === 3 ? 4 : value.formatVersion
+        });
+      })
+      .join("\n")
+  );
+};
 
 const setup = () => {
   const root = mkdtempSync(join(tmpdir(), "coord-cli-"));
@@ -375,7 +464,7 @@ describe("CLI", () => {
       )
     ).toBe(0);
     const paths = issueRuntimePaths(fixture.runtime, 1);
-    copyFileSync(join(process.cwd(), "test", "support", "fixtures", "analytics-journal.jsonl"), paths.journal);
+    installFormat4JournalFixture(paths.journal);
     const home = join(fixture.root, "home");
     const transcript = join(
       home,
@@ -746,7 +835,7 @@ describe("CLI", () => {
     expect(errors.join("")).toContain("Cannot drop authorized reviser cursor");
   });
 
-  it("recomputes and journals a roster-bound plan decision after a permitted drop", async () => {
+  it("resets to plan-ballot after a drop when the published evidence roster no longer matches", async () => {
     const fixture = setup();
     await runCli(["start", "1", "--profile", "consensus", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
       processRunner: successfulStartGit,
@@ -756,6 +845,12 @@ describe("CLI", () => {
     const current = readCursorsState(paths);
     const now = "2026-08-11T17:00:00.000Z";
     const priorDecisionId = `plan-selection:${"f".repeat(64)}`;
+    const priorBatch = publishedBallotBatchFixture({
+      kind: "plan-ballot-batch",
+      activeRoster: current.activeRoster,
+      createdAt: now,
+      commitSha: "9".repeat(40)
+    });
     writeCursorsState(
       paths,
       cursorsStateSchema.parse({
@@ -782,25 +877,24 @@ describe("CLI", () => {
             selectedAgents: ["codex"]
           }
         },
-        accepted: [
-          ...current.activeRoster.map((agent, index) => ({
-            stepId: "R2.plan" as const,
+        accepted: current.activeRoster.map((agent, index) => ({
+          stepId: "R2.plan" as const,
+          agent,
+          round: null,
+          submissionSha: String(index + 1).repeat(40),
+          path: `.plans/issue-1/plan-${agent}.md`,
+          acceptedAt: now
+        })),
+        acceptedResponses: current.activeRoster.map((agent) =>
+          acceptedResponseFixture({
+            stepId: "R3.plan-ballot",
             agent,
-            round: null,
-            submissionSha: String(index + 1).repeat(40),
-            path: `.plans/issue-1/plan-${agent}.md`,
-            acceptedAt: now
-          })),
-          ...current.activeRoster.map((agent, index) => ({
-            stepId: "R3.plan-ballot" as const,
-            agent,
-            round: null,
-            submissionSha: String(index + 4).repeat(40),
             choice: agent === "claude" ? "claude" : "codex",
-            path: `.plans/issue-1/ballot-${agent}.json`,
             acceptedAt: now
-          }))
-        ],
+          })
+        ),
+        ballotBatches: [priorBatch],
+        evidence: { branch: "issue-1/coordinator-evidence", tip: "9".repeat(40) },
         updatedAt: now
       })
     );
@@ -811,17 +905,16 @@ describe("CLI", () => {
       })
     ).toBe(0);
     const after = readCursorsState(paths);
-    expect(after.derived.planSelection).toMatchObject({
-      activeRoster: ["codex", "claude"],
-      selectedAgents: ["codex"],
-      supersedes: priorDecisionId
-    });
-    expect(after.derived.planSelection?.decisionId).not.toBe(priorDecisionId);
-    expect(
-      readJournal(paths).filter(
-        (event) => event.type === "decision-derived" && event.details.kind === "plan-selection"
-      )
-    ).toHaveLength(1);
+    expect(after.activeRoster).toEqual(["codex", "claude"]);
+    expect(after.issueCursor.stepId).toBe("R3.plan-ballot");
+    expect(after.derived.planSelection).toBeNull();
+    expect(after.ballotBatches).toContainEqual(
+      expect.objectContaining({
+        batchId: priorBatch.batchId,
+        status: "published",
+        commitSha: "9".repeat(40)
+      })
+    );
   });
 
   it("preserves peer acceptance and pending intent when another agent is dropped", async () => {
@@ -1019,7 +1112,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
       })
     ).toBe(0);
     const paths = issueRuntimePaths(product.coordRoot, 89);
-    copyFileSync(join(process.cwd(), "test", "support", "fixtures", "analytics-journal.jsonl"), paths.journal);
+    installFormat4JournalFixture(paths.journal);
     const home = join(product.workspaceRoot, "analytics-home");
     const transcript = join(home, ".claude", "projects", "fixture", "session-claude.jsonl");
     mkdirSync(join(transcript, ".."), { recursive: true });

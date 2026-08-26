@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 const start = startStateSchema.parse({
-  formatVersion: 3,
+  formatVersion: 4,
   issue: 89,
   issueSessionId: `issue-89:${"a".repeat(40)}`,
   baselineSha: "a".repeat(40),
@@ -44,7 +44,13 @@ const readJournalFixture = (): JournalEvent[] =>
   readFileSync(join(fixtures, "analytics-journal.jsonl"), "utf8")
     .trim()
     .split("\n")
-    .map((line) => journalEventSchema.parse(JSON.parse(line) as unknown));
+    .map((line) => {
+      const value = JSON.parse(line) as { formatVersion?: number };
+      return journalEventSchema.parse({
+        ...value,
+        formatVersion: value.formatVersion === 3 ? 4 : value.formatVersion
+      });
+    });
 
 const transcriptRoots = (): { claude: string; codex: string } => {
   const root = mkdtempSync(join(tmpdir(), "coord-analytics-transcripts-"));
@@ -148,7 +154,7 @@ describe("analytics aggregation", () => {
       -1,
       0,
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 12,
         at: "2026-08-21T00:02:10.000Z",
         type: "action-prepared",
@@ -157,7 +163,7 @@ describe("analytics aggregation", () => {
         details: { requiredPath: ".plans/issue-89/review.md" }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 13,
         at: "2026-08-21T00:02:11.000Z",
         type: "nudged",
@@ -200,14 +206,14 @@ describe("analytics aggregation", () => {
     const actionId = "44444444-4444-4444-8444-444444444444";
     const journal = [
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 0,
         at: "2026-08-21T00:00:00.000Z",
         type: "started",
         details: { issue: 89, profile: "consensus" }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 1,
         at: "2026-08-21T00:00:00.000Z",
         type: "nudged",
@@ -216,7 +222,7 @@ describe("analytics aggregation", () => {
         details: {}
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 2,
         at: "2026-08-21T00:00:10.000Z",
         type: "intent-seen",
@@ -226,7 +232,7 @@ describe("analytics aggregation", () => {
         details: {}
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 3,
         at: "2026-08-21T00:00:20.000Z",
         type: "nudged",
@@ -235,7 +241,7 @@ describe("analytics aggregation", () => {
         details: {}
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 4,
         at: "2026-08-21T00:00:25.000Z",
         type: "intent-seen",
@@ -265,7 +271,7 @@ describe("analytics aggregation", () => {
       { sequence: 10, at: "2026-08-21T00:00:08.000Z", type: "gate-advanced", details: { from: "R6.ballot", to: "R7.finalize", round: null } },
       { sequence: 11, at: "2026-08-21T00:00:09.000Z", type: "gate-advanced", details: { from: "R7.finalize", to: null, round: null } }
     ];
-    const journal = raw.map((event) => journalEventSchema.parse({ formatVersion: 3, ...event }));
+    const journal = raw.map((event) => journalEventSchema.parse({ formatVersion: 4, ...event }));
     const report = buildAnalytics({ start, journal, activeRoster: ["claude"], transcriptRoots: transcriptRoots() });
 
     expect(report.phases.filter((phase) => phase.name.startsWith("R6.")).map((phase) => [phase.name, phase.round])).toEqual([
@@ -323,14 +329,14 @@ describe("analytics aggregation", () => {
     });
     const journal = [
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 0,
         at: "2026-08-21T00:00:00.000Z",
         type: "started",
         details: { issue: 94, profile: "solo" }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 1,
         at: "2026-08-21T00:00:01.000Z",
         type: "action-prepared",
@@ -339,7 +345,7 @@ describe("analytics aggregation", () => {
         details: { requiredPath: ".plans/issue-94/plan.md" }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 2,
         at: "2026-08-21T00:00:02.000Z",
         type: "agent-lifecycle",
@@ -354,7 +360,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 3,
         at: "2026-08-21T00:00:03.000Z",
         type: "agent-usage",
@@ -369,7 +375,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 4,
         at: "2026-08-21T00:00:04.000Z",
         type: "agent-usage",
@@ -384,7 +390,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 5,
         at: "2026-08-21T00:00:05.000Z",
         type: "agent-lifecycle",
@@ -398,7 +404,7 @@ describe("analytics aggregation", () => {
         }
       }),
       journalEventSchema.parse({
-        formatVersion: 3,
+        formatVersion: 4,
         sequence: 6,
         at: "2026-08-21T00:01:00.000Z",
         type: "gate-advanced",
@@ -414,5 +420,84 @@ describe("analytics aggregation", () => {
       phases: [{ phase: "R1.join", tokens: { input: 40, output: 8, cacheRead: 12, cacheWrite: 0 }, toolCalls: 1 }]
     });
     expect(renderAnalytics(report)).toContain("cursor: coverage=complete");
+  });
+
+  it("separates agent response latency from evidence-publication latency", () => {
+    const actionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const batchId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const journal = [
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 0,
+        at: "2026-08-21T00:00:00.000Z",
+        type: "started",
+        details: { issue: 89, profile: "consensus" }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 1,
+        at: "2026-08-21T00:00:01.000Z",
+        type: "action-prepared",
+        agent: "claude",
+        actionId,
+        details: {}
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 2,
+        at: "2026-08-21T00:00:02.000Z",
+        type: "nudged",
+        agent: "claude",
+        actionId,
+        details: {}
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 3,
+        at: "2026-08-21T00:00:12.000Z",
+        type: "response-accepted",
+        agent: "claude",
+        actionId,
+        details: { responseSha256: "a".repeat(64) }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 4,
+        at: "2026-08-21T00:00:13.000Z",
+        type: "ballot-batch-pending",
+        details: { batchId, kind: "plan-ballot-batch", commitSha: "b".repeat(40) }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 5,
+        at: "2026-08-21T00:00:14.000Z",
+        type: "ballot-batch-failed",
+        details: { batchId, error: "transient" }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 6,
+        at: "2026-08-21T00:00:23.000Z",
+        type: "ballot-batch-published",
+        details: { batchId, kind: "plan-ballot-batch", commitSha: "b".repeat(40) }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 7,
+        at: "2026-08-21T00:00:24.000Z",
+        type: "gate-advanced",
+        details: { from: "R3.plan-ballot", to: "R4.implement", round: null }
+      })
+    ];
+    const report = buildAnalytics({ start, journal, now: "2026-08-21T00:00:24.000Z" });
+    expect(report.responseLatency).toEqual([
+      { agent: "claude", count: 1, medianMs: 10_000, maxMs: 10_000 },
+      { agent: "codex", count: 0, medianMs: null, maxMs: null }
+    ]);
+    // Failure retry does not start a new interval or add an agent turn.
+    expect(report.evidencePublicationLatency).toEqual({ count: 1, medianMs: 10_000, maxMs: 10_000 });
+    expect(report.phases[0]?.actions).toBe(1);
+    expect(renderAnalytics(report)).toContain("Agent response latency");
+    expect(renderAnalytics(report)).toContain("Evidence publication latency");
   });
 });

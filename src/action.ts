@@ -2,15 +2,26 @@ import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, relative } from "node:path";
 import { assertNoSymlink, containedPath } from "./paths.js";
-import { gitShaSchema, repositoryPathSchema } from "./protocol.js";
+import { actionIdSchema, gitShaSchema, repositoryPathSchema } from "./protocol.js";
 import type { ChangeScopeEntry, InternalOrder } from "./steps.js";
 
-export type PublicAction = {
+export type PublicGitAction = {
   actionId: string;
   agent: string;
   requiredPath: string;
   body: string;
+  submissionMode: "git";
 };
+
+export type PublicResponseAction = {
+  actionId: string;
+  agent: string;
+  submissionMode: "response";
+  responsePath: string;
+  body: string;
+};
+
+export type PublicAction = PublicGitAction | PublicResponseAction;
 
 const actionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const agentPattern = /^[a-z][a-z0-9-]{0,63}$/;
@@ -70,22 +81,21 @@ const changeScopeSection = (changeScope: readonly ChangeScopeEntry[] = []): stri
   );
 };
 
-export const renderAction = (order: InternalOrder): string => {
-  if (!actionIdPattern.test(order.actionId)) throw new Error("actionId must be an opaque UUID.");
-  if (!agentPattern.test(order.agent)) throw new Error(`Invalid action agent ${order.agent}.`);
+const inputText = (order: InternalOrder): string =>
+  order.inputs.length === 0
+    ? "- No peer commits are required for this action."
+    : order.inputs
+        .map((input) => `- ${input.kind} from ${input.agent}: \`${input.commitSha}\` at \`${input.path}\``)
+        .join("\n");
+
+const renderGitAction = (order: InternalOrder): string => {
+  if (order.requiredPath === "") throw new Error("Git action requires requiredPath.");
   repositoryPathSchema.parse(order.requiredPath);
   validatePublicField("completePath", order.completePath);
-
-  const inputText =
-    order.inputs.length === 0
-      ? "- No peer commits are required for this action."
-      : order.inputs
-          .map((input) => `- ${input.kind} from ${input.agent}: \`${input.commitSha}\` at \`${input.path}\``)
-          .join("\n");
-
   return `---
 actionId: ${order.actionId}
 agent: ${order.agent}
+submissionMode: git
 requiredPath: ${order.requiredPath}
 ---
 
@@ -97,7 +107,7 @@ Publish the required artifact at:
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
 
 Push the commit containing the artifact to \`${order.branch}\`. Then write that
 exact 40-character lowercase commit SHA as the sole contents of:
@@ -110,6 +120,55 @@ immediately; do not wait for another coordinator message.
 `;
 };
 
+const renderResponseAction = (order: InternalOrder): string => {
+  if (order.responsePath === null) throw new Error("Response action requires responsePath.");
+  validatePublicField("responsePath", order.responsePath);
+  validatePublicField("completePath", order.completePath);
+  const eligible =
+    order.eligibleChoices.length === 0
+      ? ""
+      : `\n\nEligible choices (active roster order): ${order.eligibleChoices.map((agent) => `\`${agent}\``).join(", ")}.`;
+  return `---
+actionId: ${order.actionId}
+agent: ${order.agent}
+submissionMode: response
+responsePath: ${order.responsePath}
+---
+
+${order.task}
+
+Write the complete JSON response to:
+
+\`${order.responsePath}\`
+
+Then write this exact one-line marker as the sole contents of:
+
+\`${order.completePath}\`
+
+\`\`\`text
+response ${order.actionId}
+\`\`\`
+
+Do not \`git add\`, \`git commit\`, or \`git push\` for this action. Inspect the
+bound inputs with read-only Git commands only.
+
+Use these exact inputs (dropped agents are intentionally omitted):
+
+${inputText(order)}${eligible}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+
+After writing the marker, keep this file. Before waiting for more input, re-read
+it. If \`actionId\` in the front matter has changed, execute the new instructions
+immediately; do not wait for another coordinator message.
+`;
+};
+
+export const renderAction = (order: InternalOrder): string => {
+  if (!actionIdPattern.test(order.actionId)) throw new Error("actionId must be an opaque UUID.");
+  if (!agentPattern.test(order.agent)) throw new Error(`Invalid action agent ${order.agent}.`);
+  if (order.submissionMode === "response") return renderResponseAction(order);
+  return renderGitAction(order);
+};
+
 export const parseAction = (raw: string): PublicAction => {
   const match = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(raw);
   if (match === null) throw new Error("action.md must contain restricted front matter.");
@@ -119,7 +178,11 @@ export const parseAction = (raw: string): PublicAction => {
     if (separator < 1) throw new Error(`Malformed action front-matter line: ${line}`);
     const key = line.slice(0, separator).trim();
     const value = line.slice(separator + 1).trim();
-    if (!(["actionId", "agent", "requiredPath"] as const).includes(key as "actionId" | "agent" | "requiredPath")) {
+    if (
+      !(
+        ["actionId", "agent", "requiredPath", "submissionMode", "responsePath"] as const
+      ).includes(key as "actionId" | "agent" | "requiredPath" | "submissionMode" | "responsePath")
+    ) {
       throw new Error(`Forbidden action front-matter field: ${key}`);
     }
     if (fields[key] !== undefined) throw new Error(`Duplicate action front-matter field: ${key}`);
@@ -127,31 +190,55 @@ export const parseAction = (raw: string): PublicAction => {
   }
   const actionId = fields.actionId;
   const agent = fields.agent;
-  const requiredPath = fields.requiredPath;
   if (actionId === undefined || !actionIdPattern.test(actionId)) throw new Error("Invalid or missing actionId.");
   if (agent === undefined || !agentPattern.test(agent)) throw new Error("Invalid or missing agent.");
+  const mode = fields.submissionMode ?? "git";
+  if (mode === "response") {
+    if (fields.requiredPath !== undefined) throw new Error("Response action cannot include requiredPath.");
+    const responsePath = fields.responsePath;
+    if (responsePath === undefined || responsePath === "") throw new Error("Missing responsePath.");
+    if (!responsePath.startsWith("/")) throw new Error("responsePath must be an absolute path.");
+    return { submissionMode: "response", actionId, agent, responsePath, body: match[2] as string };
+  }
+  if (mode !== "git") throw new Error(`Unknown submissionMode: ${mode}`);
+  if (fields.responsePath !== undefined) throw new Error("Git action cannot include responsePath.");
+  const requiredPath = fields.requiredPath;
   if (requiredPath === undefined) throw new Error("Missing requiredPath.");
   repositoryPathSchema.parse(requiredPath);
-  return { actionId, agent, requiredPath, body: match[2] as string };
+  return { submissionMode: "git", actionId, agent, requiredPath, body: match[2] as string };
 };
 
 export type CompletionParseResult =
   | { status: "missing" }
-  | { status: "valid"; sha: string }
+  | { status: "valid"; kind: "sha"; sha: string }
+  | { status: "valid"; kind: "response"; actionId: string }
   | { status: "malformed"; message: string };
 
 export const parseCompletion = (raw: string): CompletionParseResult => {
   const normalized = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
-  if (normalized === "") return { status: "malformed", message: "complete must contain one commit SHA" };
+  if (normalized === "") return { status: "malformed", message: "complete must contain one commit SHA or response marker" };
   if (normalized.includes("\n") || normalized.includes("\r") || normalized !== normalized.trim()) {
     return { status: "malformed", message: "complete must contain exactly one unpadded line" };
+  }
+  const responseMatch = /^response ([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(
+    normalized
+  );
+  if (responseMatch?.[1] !== undefined) {
+    const parsed = actionIdSchema.safeParse(responseMatch[1]);
+    if (!parsed.success) {
+      return { status: "malformed", message: "response marker must use a valid action UUID" };
+    }
+    return { status: "valid", kind: "response", actionId: parsed.data };
   }
   const match = /^(?:commit )?([a-f0-9]{40})$/.exec(normalized);
   const parsed = gitShaSchema.safeParse(match?.[1]);
   if (!parsed.success) {
-    return { status: "malformed", message: "complete must contain a 40-character lowercase Git SHA" };
+    return {
+      status: "malformed",
+      message: "complete must contain a 40-character lowercase Git SHA or `response <actionId>`"
+    };
   }
-  return { status: "valid", sha: parsed.data };
+  return { status: "valid", kind: "sha", sha: parsed.data };
 };
 
 export const readCompletion = (path: string): CompletionParseResult => {

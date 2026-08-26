@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { clearCompletion } from "../src/action.js";
 import { observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
+import { writeAgentResponse } from "../src/ballotResponse.js";
 import { computeInputSetHash } from "../src/evidence.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
@@ -162,6 +163,7 @@ describe("four-agent coordinator canary", () => {
 
       const submit = (agent: string, content: string): string => {
         const order = currentOrder(agent);
+        expect(order.submissionMode).toBe("git");
         const submission = commitAndPush(agent, order.requiredPath, content, `${order.stepId} ${agent}`);
         const receipt = agentRuntimePaths(paths, agent).complete;
         // End to end, through the mailbox: every agent publishes its SHA to its
@@ -169,6 +171,22 @@ describe("four-agent coordinator canary", () => {
         expect(receipt).toBe(join(paths.completesRoot, "issue-1", agent, "complete"));
         writeFileSync(receipt, `${submission}\n`);
         return submission;
+      };
+
+      const respond = (
+        agent: string,
+        body: { choice: string; rationale: string } | { disposition: "approve" | "revise" | "escalate"; rationale: string }
+      ): void => {
+        const order = currentOrder(agent);
+        expect(order.submissionMode).toBe("response");
+        expect(order.responsePath).toBeTruthy();
+        writeAgentResponse(order.responsePath as string, paths.issueRoot, {
+          actionId: order.actionId,
+          ...body
+        });
+        const receipt = agentRuntimePaths(paths, agent).complete;
+        expect(receipt).toBe(join(paths.completesRoot, "issue-1", agent, "complete"));
+        writeFileSync(receipt, `response ${order.actionId}\n`);
       };
 
       const expectStep = (stepId: WorkflowStepId): void => {
@@ -241,24 +259,27 @@ Implement the selected product files.
 
       expectStep("R3.plan-ballot");
       for (const agent of activeAfterDrop) {
-        const order = currentOrder(agent);
-        submit(
-          agent,
-          JSON.stringify({
-            ...commonArtifact(order, "plan-ballot"),
-            inputSetHash: computeInputSetHash(order.inputs),
-            plans: order.inputs.filter((input) => input.kind === "plan").map(({ agent: citedAgent, commitSha, path }) => ({ agent: citedAgent, commitSha, path })),
-            reviews: order.inputs.filter((input) => input.kind === "review").map(({ agent: citedAgent, commitSha, path }) => ({ agent: citedAgent, commitSha, path })),
-            choice: "codex",
-            rationale: "The plans are mechanically complete."
-          })
-        );
+        respond(agent, {
+          choice: "codex",
+          rationale: "The plans are mechanically complete."
+        });
       }
       await loop.runTick();
 
       expectStep("R4.implement");
-      expect(readCursorsState(paths).derived.planSelection?.selectedAgents).toEqual(["codex"]);
+      {
+        const afterBallot = readCursorsState(paths);
+        expect(afterBallot.derived.planSelection?.selectedAgents).toEqual(["codex"]);
+        expect(afterBallot.evidence.branch).toBe("issue-1/coordinator-evidence");
+        expect(afterBallot.evidence.tip).toMatch(/^[a-f0-9]{40}$/);
+        expect(
+          afterBallot.ballotBatches.some(
+            (batch) => batch.kind === "plan-ballot-batch" && batch.status === "published"
+          )
+        ).toBe(true);
+      }
       expect(readJournal(paths).some((event) => event.type === "decision-derived")).toBe(true);
+      expect(readJournal(paths).some((event) => event.type === "ballot-batch-published")).toBe(true);
       for (const agent of activeAfterDrop) {
         const order = currentOrder(agent);
         expect(order.inputs.map((input) => input.agent)).toEqual(["codex"]);
@@ -284,17 +305,10 @@ Implement the selected product files.
 
       expectStep("R5.compare-ballot");
       for (const agent of activeAfterDrop) {
-        const order = currentOrder(agent);
-        submit(
-          agent,
-          JSON.stringify({
-            ...commonArtifact(order, "comparison-ballot"),
-            inputSetHash: computeInputSetHash(order.inputs),
-            implementations: order.inputs.map(({ agent: citedAgent, commitSha, path }) => ({ agent: citedAgent, commitSha, path })),
-            choice: "cursor",
-            rationale: "Select the Cursor implementation."
-          })
-        );
+        respond(agent, {
+          choice: "cursor",
+          rationale: "Select the Cursor implementation."
+        });
       }
       await loop.runTick();
 
@@ -303,6 +317,11 @@ Implement the selected product files.
         winner: "cursor",
         reviser: "cursor"
       });
+      expect(
+        readCursorsState(paths).ballotBatches.some(
+          (batch) => batch.kind === "comparison-ballot-batch" && batch.status === "published"
+        )
+      ).toBe(true);
       expect(existsSync(agentRuntimePaths(paths, "claude").action)).toBe(false);
       expect(existsSync(agentRuntimePaths(paths, "codex").action)).toBe(false);
       let revisionPin = "";
@@ -324,18 +343,10 @@ Implement the selected product files.
 
       expectStep("R6.ballot");
       for (const agent of activeAfterDrop) {
-        const order = currentOrder(agent);
-        submit(
-          agent,
-          JSON.stringify({
-            ...commonArtifact(order, "consensus-ballot"),
-            inputSetHash: computeInputSetHash(order.inputs),
-            round: 1,
-            revisionCommitSha: revisionPin,
-            disposition: "approve",
-            rationale: "The revision satisfies the plan."
-          })
-        );
+        respond(agent, {
+          disposition: "approve",
+          rationale: "The revision satisfies the plan."
+        });
       }
       await loop.runTick();
 
@@ -344,7 +355,20 @@ Implement the selected product files.
         round: 1,
         consensusPin: revisionPin
       });
+      expect(
+        readCursorsState(paths).ballotBatches.some(
+          (batch) => batch.kind === "consensus-ballot-batch" && batch.status === "published" && batch.round === 1
+        )
+      ).toBe(true);
       const cursorClone = clones.get("cursor") as string;
+      // Ballot evidence lives on the coordinator evidence branch, not agent clones.
+      for (const agent of activeAfterDrop) {
+        expect(existsSync(join(cursorClone, `.plans/issue-1/ballot-${agent}.json`))).toBe(false);
+        expect(existsSync(join(cursorClone, `.code-reviews/issue-1/ballot-${agent}.json`))).toBe(false);
+        expect(existsSync(join(cursorClone, `.code-reviews/issue-1/consensus-ballot-${agent}-round-1.json`))).toBe(
+          false
+        );
+      }
       for (const directory of [".plans/issue-1", ".signals/issue-1", ".code-reviews/issue-1"]) {
         rmSync(join(cursorClone, directory), { recursive: true, force: true });
       }

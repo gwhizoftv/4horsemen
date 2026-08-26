@@ -130,24 +130,45 @@ if [[ -f pnpm-lock.yaml ]] && command -v corepack >/dev/null; then
   command -v pnpm >/dev/null && echo "pnpm: \$(pnpm --version)"
 fi
 
-# Grant this harness exactly one extra writable directory: the current issue's
-# own drop inside the completion mailbox. Not the coordinator runtime (which
-# holds cursors.json, the journal, and peers' orders) and not the whole mailbox
-# (which holds peers' receipts). Empty outside an automated issue.
+# Grant this harness two narrow writable directories for an automated issue:
+# 1) the completion mailbox drop (Git SHA / response markers)
+# 2) this agent's ballot response directory under the issue runtime
+# Never grant the issue root, peer directories, or the accepted-response archive.
 coord_grant=()
 coord_completes_root="\$(git config --local --get coord.completesRoot 2>/dev/null || true)"
+coord_workspace_config="\$(git config --local --get coord.workspaceConfig 2>/dev/null || true)"
 if [[ -n "\$coord_completes_root" && "\${COORD_ISSUE:-}" =~ ^[1-9][0-9]*\$ ]]; then
   coord_drop="\$coord_completes_root/issue-\$COORD_ISSUE/$agent"
   if [[ -d "\$coord_drop" ]]; then
-    coord_grant=(--add-dir "\$coord_drop")
+    coord_grant+=(--add-dir "\$coord_drop")
     echo "Completion mailbox: \$coord_drop"
   else
-    echo "WARNING: completion mailbox \$coord_drop does not exist; this harness cannot publish its SHA." >&2
+    echo "WARNING: completion mailbox \$coord_drop does not exist; this harness cannot publish its receipt." >&2
     echo "  Fix: coord doctor, or restart the issue so coord start recreates it." >&2
   fi
 elif [[ -z "\$coord_completes_root" ]]; then
   echo "WARNING: coord.completesRoot is unset in this clone; no completion mailbox will be granted." >&2
   echo "  Fix: re-run coord install for this workspace." >&2
+fi
+# Response dir: derive coord root from coord.workspaceConfig path topology
+# (nested: …/workspaces/<project>/config.json → outer coord root; flat: config
+# dir is the coord root). Never read a coordRoot field from the JSON.
+if [[ -n "\$coord_workspace_config" && -f "\$coord_workspace_config" && "\${COORD_ISSUE:-}" =~ ^[1-9][0-9]*\$ ]]; then
+  coord_config_dir="\$(dirname "\$coord_workspace_config")"
+  coord_config_parent="\$(dirname "\$coord_config_dir")"
+  if [[ "\$(basename "\$coord_config_parent")" == "workspaces" ]]; then
+    coord_root="\$(dirname "\$coord_config_parent")"
+  else
+    coord_root="\$coord_config_dir"
+  fi
+  coord_responses="\$coord_root/issue-\$COORD_ISSUE/agents/$agent/responses"
+  if [[ -d "\$coord_responses" ]]; then
+    coord_grant+=(--add-dir "\$coord_responses")
+    echo "Ballot responses: \$coord_responses"
+  else
+    echo "WARNING: response directory \$coord_responses does not exist; ballot response actions cannot write." >&2
+    echo "  Fix: coord doctor, or restart the issue so coord start recreates it." >&2
+  fi
 fi
 
 echo "=== $label agent | branches issue-<n>/$agent or $agent/<name> | shared: $shared ==="

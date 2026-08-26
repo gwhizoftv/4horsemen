@@ -46,7 +46,9 @@ product origin, snapshots its title and body, binds that snapshot and the
 workspace config into the automation digest, launches the agents, and runs the
 driver. The owner does not create a plan file first. Each agent authors and
 publishes `.plans/issue-N/plan.md` later on its own `issue-N/<agent>` branch as
-normal R2 evidence.
+normal R2 evidence. Ballot steps use private response files; the coordinator
+batches accepted responses onto `issue-N/coordinator-evidence` before deriving
+the next decision. The product `-final` PR stays ballot-free.
 
 ## Owner-driven manual mode
 

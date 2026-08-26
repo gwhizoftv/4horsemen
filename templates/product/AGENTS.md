@@ -39,10 +39,14 @@ Toolchain: `{{TOOLCHAIN}}`.
 
 ## Transient evidence
 
-When the coordinator publishes an automated `action.md`, issue branches carry `.plans/issue-<n>/`,
-`.signals/issue-<n>/`, and `.code-reviews/issue-<n>/`. They are the protocol's
-evidence. Final cleanup deletes exactly those paths, so a merge-ready
-pull request contains none of them and `{{BASE_BRANCH}}` never does.
+When the coordinator publishes an automated `action.md`, Git-mode actions use
+the prepared `issue-<n>/<agent>` branch and publish artifacts under
+`.plans/issue-<n>/`, `.signals/issue-<n>/`, and `.code-reviews/issue-<n>/`.
+Response-mode ballot actions write only a private response file plus a
+completion marker (`response <actionId>`); they do not commit or push. The
+coordinator later publishes accepted ballots onto a dedicated evidence branch.
+Final product cleanup deletes coordination paths from the `-final` branch so a
+merge-ready pull request contains none of them and `{{BASE_BRANCH}}` never does.
 
 In owner-driven manual mode there is no coordinator action or evidence. Follow
 the owner's chat request on your own `<agent>/<name>` scratch branch unless the

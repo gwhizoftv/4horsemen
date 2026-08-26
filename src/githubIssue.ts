@@ -54,23 +54,38 @@ export const readGitHubIssueSnapshot = (path: string): GitHubIssueSnapshot => {
 /**
  * Title and body for the coordinator-opened finalization PR.
  * `Closes #N` must appear in the body so GitHub auto-closes the issue on merge.
+ * Optional evidence fields name the coordinator-authored ballot publication
+ * branch; they are not a cryptographic agent signature.
  */
 export const formatFinalizationPullRequest = (input: {
   issue: number;
   title: string;
   finalSha: string;
   draft: boolean;
+  evidenceBranch?: string | null;
+  evidenceTip?: string | null;
 }): { title: string; body: string } => {
   const issueTitle = input.title.trim() === "" ? "coordinated implementation" : input.title.trim();
+  const lines = [
+    `Closes #${input.issue}`,
+    "",
+    input.draft
+      ? `Draft PR for issue ${input.issue}. Owner merges. Final pin: ${input.finalSha}.`
+      : `PR for issue ${input.issue}. Coordinator merges. Final pin: ${input.finalSha}.`
+  ];
+  if (input.evidenceBranch !== undefined && input.evidenceBranch !== null && input.evidenceBranch !== "") {
+    lines.push(
+      "",
+      `Ballot evidence branch: ${input.evidenceBranch}` +
+        (input.evidenceTip !== undefined && input.evidenceTip !== null && input.evidenceTip !== ""
+          ? ` (tip ${input.evidenceTip}).`
+          : "."),
+      "That branch is coordinator-authored publication of action-bound ballot responses, not a cryptographic agent signature."
+    );
+  }
   return {
     title: `Issue ${input.issue}: ${issueTitle}`,
-    body: [
-      `Closes #${input.issue}`,
-      "",
-      input.draft
-        ? `Draft PR for issue ${input.issue}. Owner merges. Final pin: ${input.finalSha}.`
-        : `PR for issue ${input.issue}. Coordinator merges. Final pin: ${input.finalSha}.`
-    ].join("\n")
+    body: lines.join("\n")
   };
 };
 

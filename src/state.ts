@@ -14,7 +14,15 @@ import {
 } from "node:fs";
 import { dirname, relative } from "node:path";
 import { z } from "zod";
-import { agentIdSchema, digestSchema, gitShaSchema, issueSchema, issueSessionIdSchema } from "./protocol.js";
+import {
+  actionIdSchema,
+  agentIdSchema,
+  citationDigestSchema,
+  digestSchema,
+  gitShaSchema,
+  issueSchema,
+  issueSessionIdSchema
+} from "./protocol.js";
 import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.js";
 import {
   DEFAULT_MAX_REVISION_ROUNDS,
@@ -26,12 +34,12 @@ import {
   type WorkflowStepId
 } from "./steps.js";
 
-export const RUNTIME_FORMAT_VERSION = 3;
+export const RUNTIME_FORMAT_VERSION = 4;
 
-const LEGACY_RUNTIME_FORMAT_VERSION = 2;
+const LEGACY_RUNTIME_FORMAT_VERSIONS = new Set([2, 3]);
 
 const RUNTIME_FORMAT_WIPE_MESSAGE =
-  "Runtime format version 2 is no longer supported. Wipe this issue with `coord wipe <issue>` and start it again.";
+  "Runtime format versions 2 and 3 are no longer supported. Wipe this issue with `coord wipe-issue <issue>` and start it again.";
 
 const workflowProfileSchema = z.enum(["solo", "reviewed", "consensus"]);
 const prPolicySchema = z.enum(["owner-only", "coord-open-unmerged", "coord-merged"]);
@@ -61,14 +69,15 @@ const evidenceIdSchema = z.enum([
   "join-published",
   "plan-published",
   "review-published",
-  "plan-ballot-published",
+  "plan-response-accepted",
   "implementation-pinned",
   "comparison-published",
-  "comparison-ballot-published",
+  "comparison-response-accepted",
   "revision-pinned",
-  "consensus-ballot-published",
+  "consensus-response-accepted",
   "finalization-verified"
 ]);
+const ballotStepIdSchema = z.enum(["R3.plan-ballot", "R5.compare-ballot", "R6.ballot"]);
 const timestampSchema = z.string().datetime({ offset: true });
 
 export const checkCommandSchema = z
@@ -308,6 +317,8 @@ export const agentCursorSchema = z
     stepId: stepIdSchema.nullable(),
     evidenceId: evidenceIdSchema.nullable(),
     actionId: z.string().uuid().nullable(),
+    submissionMode: z.enum(["git", "response"]).nullable(),
+    actionDigest: digestSchema.nullable(),
     status: z.enum([
       "idle",
       "ordered",
@@ -340,9 +351,11 @@ const derivedInputCitationSchema = z
   .object({
     kind: derivedInputKindSchema,
     agent: agentIdSchema,
-    submissionSha: gitShaSchema,
+    submissionSha: citationDigestSchema,
     path: z.string().min(1),
-    productPin: gitShaSchema.optional()
+    productPin: gitShaSchema.optional(),
+    evidenceCommitSha: gitShaSchema.optional(),
+    actionId: actionIdSchema.optional()
   })
   .strict();
 
@@ -446,6 +459,50 @@ export const acceptedSubmissionSchema = z
   })
   .strict();
 
+export const acceptedResponseSchema = z
+  .object({
+    stepId: ballotStepIdSchema,
+    agent: agentIdSchema,
+    actionId: actionIdSchema,
+    round: z.number().int().min(1).nullable(),
+    responseSha256: digestSchema,
+    choice: agentIdSchema.optional(),
+    disposition: z.enum(["approve", "revise", "escalate"]).optional(),
+    rationale: z.string().min(1),
+    path: z.string().min(1),
+    acceptedAt: timestampSchema
+  })
+  .strict();
+
+export const ballotBatchSchema = z
+  .object({
+    batchId: z.string().uuid(),
+    kind: z.enum(["plan-ballot-batch", "comparison-ballot-batch", "consensus-ballot-batch"]),
+    round: z.number().int().min(1).nullable(),
+    inputSetHash: digestSchema,
+    activeRoster: z.array(agentIdSchema),
+    responses: z.array(
+      z
+        .object({
+          agent: agentIdSchema,
+          actionId: actionIdSchema,
+          responseSha256: digestSchema
+        })
+        .strict()
+    ),
+    paths: z.array(z.string().min(1)),
+    branch: z.string().min(1),
+    parentSha: gitShaSchema,
+    commitSha: gitShaSchema,
+    status: z.enum(["pending", "published", "failed", "invalidated"]),
+    attempts: z.number().int().nonnegative(),
+    error: z.string().nullable(),
+    supersedes: z.string().uuid().nullable(),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema
+  })
+  .strict();
+
 export const cursorsStateSchema = z
   .object({
     formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
@@ -488,18 +545,29 @@ export const cursorsStateSchema = z
         attempts: z.number().int().nonnegative()
       })
       .strict(),
+    evidence: z
+      .object({
+        branch: z.string().min(1).nullable(),
+        tip: gitShaSchema.nullable()
+      })
+      .strict(),
     paused: z.boolean(),
     abandoned: z.boolean(),
     completed: z.boolean(),
     agents: z.record(agentIdSchema, agentCursorSchema),
     accepted: z.array(acceptedSubmissionSchema),
+    acceptedResponses: z.array(acceptedResponseSchema),
+    ballotBatches: z.array(ballotBatchSchema),
     updatedAt: timestampSchema
   })
   .strict();
 
 export const journalEventSchema = z
   .object({
-    formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
+    // Durable journal *files* still reject formats 2/3 via assertRuntimeFormat in
+    // readJournal (wipe/restart). The schema allows 3 only so in-memory fixtures
+    // outside the approved path map can parse without silently rewriting bytes.
+    formatVersion: z.union([z.literal(RUNTIME_FORMAT_VERSION), z.literal(3)]),
     sequence: z.number().int().nonnegative(),
     at: timestampSchema,
     type: z.enum([
@@ -526,7 +594,12 @@ export const journalEventSchema = z
       "publication-failed",
       "pr-created",
       "pr-merged",
-      "decision-derived"
+      "decision-derived",
+      "response-accepted",
+      "ballot-batch-pending",
+      "ballot-batch-published",
+      "ballot-batch-failed",
+      "ballot-batch-invalidated"
     ]),
     agent: agentIdSchema.optional(),
     actionId: z.string().uuid().optional(),
@@ -545,6 +618,8 @@ export type WorkspaceDeclaration = z.infer<typeof workspaceDeclarationSchema>;
 export type StartState = z.infer<typeof startStateSchema>;
 export type AgentCursor = z.infer<typeof agentCursorSchema>;
 export type AcceptedSubmission = z.infer<typeof acceptedSubmissionSchema>;
+export type AcceptedResponse = z.infer<typeof acceptedResponseSchema>;
+export type BallotBatch = z.infer<typeof ballotBatchSchema>;
 export type DerivedInputKind = z.infer<typeof derivedInputKindSchema>;
 export type DerivedInputCitation = z.infer<typeof derivedInputCitationSchema>;
 export type PlanSelectionDerived = z.infer<typeof planSelectionDerivedSchema>;
@@ -577,7 +652,7 @@ export type StartStateInput = Omit<
 const assertRuntimeFormat = (path: string, value: unknown): void => {
   if (typeof value !== "object" || value === null || !("formatVersion" in value)) return;
   const formatVersion = (value as { formatVersion: unknown }).formatVersion;
-  if (formatVersion === LEGACY_RUNTIME_FORMAT_VERSION) {
+  if (typeof formatVersion === "number" && LEGACY_RUNTIME_FORMAT_VERSIONS.has(formatVersion)) {
     throw new Error(`Invalid ${path}: ${RUNTIME_FORMAT_WIPE_MESSAGE}`);
   }
 };
@@ -629,6 +704,8 @@ export const initialCursors = (start: StartState, now = new Date().toISOString()
       stepId: null,
       evidenceId: null,
       actionId: null,
+      actionDigest: null,
+      submissionMode: null,
       status: "idle",
       attempt: 0,
       submissionSha: null,
@@ -653,11 +730,14 @@ export const initialCursors = (start: StartState, now = new Date().toISOString()
       error: null,
       attempts: 0
     },
+    evidence: { branch: null, tip: null },
     paused: false,
     abandoned: false,
     completed: false,
     agents,
     accepted: [],
+    acceptedResponses: [],
+    ballotBatches: [],
     updatedAt: now
   });
 };
@@ -903,10 +983,32 @@ export const dropAgent = (cursors: CursorsState, agent: string, now = new Date()
     derived: invalidateDerivedForDrop(cursors.derived, agent),
     agents: {
       ...cursors.agents,
-      [agent]: { ...current, status: "dropped", actionId: null, submissionSha: null, outstanding: [], updatedAt: now }
+      [agent]: {
+        ...current,
+        status: "dropped",
+        actionId: null,
+        submissionMode: null,
+        actionDigest: null,
+        submissionSha: null,
+        outstanding: [],
+        updatedAt: now
+      }
     },
     accepted: cursors.accepted.filter(
       (submission) => submission.agent !== agent || submission.stepId !== cursors.issueCursor.stepId
+    ),
+    acceptedResponses: cursors.acceptedResponses.filter(
+      (response) => response.agent !== agent || response.stepId !== cursors.issueCursor.stepId
+    ),
+    ballotBatches: cursors.ballotBatches.map((batch) =>
+      batch.status === "published" || batch.status === "invalidated"
+        ? batch
+        : {
+            ...batch,
+            status: "invalidated" as const,
+            error: batch.error ?? `invalidated by drop of ${agent}`,
+            updatedAt: now
+          }
     ),
     updatedAt: now
   });

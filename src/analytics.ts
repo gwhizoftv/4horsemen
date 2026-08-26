@@ -29,6 +29,12 @@ export type WaitAnalytics = {
   maxMs: number | null;
 };
 
+export type IntervalAnalytics = {
+  count: number;
+  medianMs: number | null;
+  maxMs: number | null;
+};
+
 export type PhaseUsageAnalytics = {
   phaseIndex: number;
   phase: string;
@@ -67,6 +73,10 @@ export type AnalyticsReport = {
   };
   phases: PhaseAnalytics[];
   waits: WaitAnalytics[];
+  /** Agent ballot/response wait: nudged → response-accepted (excludes publication). */
+  responseLatency: WaitAnalytics[];
+  /** Coordinator evidence publication: ballot-batch-pending → published (retries do not add agent turns). */
+  evidencePublicationLatency: IntervalAnalytics;
   usage: {
     agents: AgentUsageAnalytics[];
     tokenTotal: TokenUsage | null;
@@ -268,6 +278,78 @@ const deriveWaits = (roster: readonly string[], journal: readonly JournalEvent[]
       maxMs: values.length === 0 ? null : Math.max(...values)
     }))
     .sort((left, right) => left.agent.localeCompare(right.agent));
+};
+
+/**
+ * Agent response latency for ballot actions: nudged → response-accepted.
+ * Publication retries and ballot-batch events are excluded; they are not agent turns.
+ */
+const deriveResponseLatency = (
+  roster: readonly string[],
+  journal: readonly JournalEvent[]
+): WaitAnalytics[] => {
+  const waits = new Map<string, number[]>();
+  for (const agent of roster) waits.set(agent, []);
+  const pendingNudge = new Map<string, number>();
+  for (const event of journal) {
+    if (event.actionId === undefined || event.agent === undefined) continue;
+    const key = `${event.agent}\u0000${event.actionId}`;
+    if (event.type === "nudged") {
+      const at = milliseconds(event.at);
+      if (at !== null) pendingNudge.set(key, at);
+    } else if (event.type === "response-accepted") {
+      const from = pendingNudge.get(key);
+      const to = milliseconds(event.at);
+      if (from !== undefined && to !== null && to >= from) {
+        const values = waits.get(event.agent) ?? [];
+        values.push(to - from);
+        waits.set(event.agent, values);
+        pendingNudge.delete(key);
+      }
+    }
+  }
+  return [...waits.entries()]
+    .map(([agent, values]) => ({
+      agent,
+      count: values.length,
+      medianMs: median(values),
+      maxMs: values.length === 0 ? null : Math.max(...values)
+    }))
+    .sort((left, right) => left.agent.localeCompare(right.agent));
+};
+
+/**
+ * Coordinator evidence-publication latency: first ballot-batch-pending for a
+ * batchId → ballot-batch-published. Failed retries do not start a new interval
+ * and are not counted as agent turns.
+ */
+const deriveEvidencePublicationLatency = (journal: readonly JournalEvent[]): IntervalAnalytics => {
+  const pendingAt = new Map<string, number>();
+  const durations: number[] = [];
+  for (const event of journal) {
+    const details = object(event.details);
+    const batchId = string(details?.batchId);
+    if (batchId === null) continue;
+    if (event.type === "ballot-batch-pending") {
+      const at = milliseconds(event.at);
+      if (at !== null && !pendingAt.has(batchId)) pendingAt.set(batchId, at);
+    } else if (event.type === "ballot-batch-published") {
+      const from = pendingAt.get(batchId);
+      const to = milliseconds(event.at);
+      if (from !== undefined && to !== null && to >= from) {
+        durations.push(to - from);
+        pendingAt.delete(batchId);
+      }
+    } else if (event.type === "ballot-batch-failed" || event.type === "ballot-batch-invalidated") {
+      // Keep the original pending timestamp so a later publish still measures
+      // wall time from first enqueue; do not treat the failure as a new turn.
+    }
+  }
+  return {
+    count: durations.length,
+    medianMs: median(durations),
+    maxMs: durations.length === 0 ? null : Math.max(...durations)
+  };
 };
 
 const usageVendorForAgent = (agent: string, journal: readonly JournalEvent[]): UsageVendor | null => {
@@ -517,6 +599,8 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
     },
     phases,
     waits: deriveWaits(roster, input.journal),
+    responseLatency: deriveResponseLatency(roster, input.journal),
+    evidencePublicationLatency: deriveEvidencePublicationLatency(input.journal),
     usage
   };
 };
@@ -555,7 +639,24 @@ export const renderAnalytics = (report: AnalyticsReport): string => {
     ...report.waits.map(
       (wait) =>
         `- ${wait.agent}: count=${wait.count} median=${wait.medianMs === null ? "unavailable" : `${(wait.medianMs / 1000).toFixed(1)}s`} max=${wait.maxMs === null ? "unavailable" : `${(wait.maxMs / 1000).toFixed(1)}s`}`
-    )
+    ),
+    "",
+    "Agent response latency (nudged -> response-accepted)",
+    ...report.responseLatency.map(
+      (wait) =>
+        `- ${wait.agent}: count=${wait.count} median=${wait.medianMs === null ? "unavailable" : `${(wait.medianMs / 1000).toFixed(1)}s`} max=${wait.maxMs === null ? "unavailable" : `${(wait.maxMs / 1000).toFixed(1)}s`}`
+    ),
+    "",
+    "Evidence publication latency (ballot-batch-pending -> published)",
+    `- count=${report.evidencePublicationLatency.count} median=${
+      report.evidencePublicationLatency.medianMs === null
+        ? "unavailable"
+        : `${(report.evidencePublicationLatency.medianMs / 1000).toFixed(1)}s`
+    } max=${
+      report.evidencePublicationLatency.maxMs === null
+        ? "unavailable"
+        : `${(report.evidencePublicationLatency.maxMs / 1000).toFixed(1)}s`
+    }`
   ];
   if (report.usage !== null) {
     lines.push("", "Token count");

@@ -2,9 +2,19 @@ import { z } from "zod";
 
 export const gitShaSchema = z.string().regex(/^[a-f0-9]{40}$/, "expected a lowercase 40-character Git SHA");
 export const digestSchema = z.string().regex(/^[a-f0-9]{64}$/, "expected a lowercase SHA-256 digest");
+/** Git commit SHA (40) or private-response digest (64). */
+export const citationDigestSchema = z
+  .string()
+  .regex(/^[a-f0-9]{40}$|^[a-f0-9]{64}$/, "expected a 40-character Git SHA or 64-character SHA-256 digest");
 export const agentIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/);
 export const issueSchema = z.number().int().positive();
 export const issueSessionIdSchema = z.string().min(1).max(256);
+export const actionIdSchema = z
+  .string()
+  .regex(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    "expected an opaque UUID action id"
+  );
 export const repositoryPathSchema = z
   .string()
   .min(1)
@@ -19,11 +29,36 @@ export const artifactCitationSchema = z
   })
   .strict();
 
+/** Non-whitespace rationale length in UTF-16 code units (JS string length after stripping whitespace). */
+export const rationaleNonWhitespaceUtf16Length = (rationale: string): number =>
+  rationale.replace(/\s/gu, "").length;
+
+export const RATIONALE_MAX_NON_WHITESPACE_UTF16 = 1000;
+
+const rationaleSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (value) => rationaleNonWhitespaceUtf16Length(value) <= RATIONALE_MAX_NON_WHITESPACE_UTF16,
+    `rationale non-whitespace content must be at most ${RATIONALE_MAX_NON_WHITESPACE_UTF16} UTF-16 code units`
+  );
+
 const commonArtifactFields = {
   protocolVersion: z.literal(1),
   issue: issueSchema,
   issueSessionId: issueSessionIdSchema,
   agent: agentIdSchema
+} as const;
+
+const commonPublishedBallotFields = {
+  protocolVersion: z.literal(2),
+  issue: issueSchema,
+  issueSessionId: issueSessionIdSchema,
+  agent: agentIdSchema,
+  inputSetHash: digestSchema,
+  actionId: actionIdSchema,
+  responseSha256: digestSchema,
+  rationale: rationaleSchema
 } as const;
 
 export const participationReadyArtifactSchema = z
@@ -35,15 +70,32 @@ export const participationReadyArtifactSchema = z
   })
   .strict();
 
+/** Private agent response for plan and comparison ballots. */
+export const planComparisonBallotResponseSchema = z
+  .object({
+    actionId: actionIdSchema,
+    choice: agentIdSchema,
+    rationale: rationaleSchema
+  })
+  .strict();
+
+/** Private agent response for consensus ballots. */
+export const consensusBallotResponseSchema = z
+  .object({
+    actionId: actionIdSchema,
+    disposition: z.enum(["approve", "revise", "escalate"]),
+    rationale: rationaleSchema
+  })
+  .strict();
+
+/** Coordinator-published canonical plan ballot (protocol version 2). */
 export const planBallotArtifactSchema = z
   .object({
-    ...commonArtifactFields,
+    ...commonPublishedBallotFields,
     artifact: z.literal("plan-ballot"),
-    inputSetHash: digestSchema,
     plans: z.array(artifactCitationSchema).min(1),
     reviews: z.array(artifactCitationSchema),
-    choice: agentIdSchema,
-    rationale: z.string().min(1)
+    choice: agentIdSchema
   })
   .strict();
 
@@ -57,14 +109,13 @@ export const implementationReadyArtifactSchema = z
   })
   .strict();
 
+/** Coordinator-published canonical comparison ballot (protocol version 2). */
 export const comparisonBallotArtifactSchema = z
   .object({
-    ...commonArtifactFields,
+    ...commonPublishedBallotFields,
     artifact: z.literal("comparison-ballot"),
-    inputSetHash: digestSchema,
     implementations: z.array(artifactCitationSchema).min(1),
-    choice: agentIdSchema,
-    rationale: z.string().min(1)
+    choice: agentIdSchema
   })
   .strict();
 
@@ -79,15 +130,14 @@ export const revisionReadyArtifactSchema = z
   })
   .strict();
 
+/** Coordinator-published canonical consensus ballot (protocol version 2). */
 export const consensusBallotArtifactSchema = z
   .object({
-    ...commonArtifactFields,
+    ...commonPublishedBallotFields,
     artifact: z.literal("consensus-ballot"),
-    inputSetHash: digestSchema,
     round: z.number().int().min(1),
     revisionCommitSha: gitShaSchema,
-    disposition: z.enum(["approve", "revise", "escalate"]),
-    rationale: z.string().min(1)
+    disposition: z.enum(["approve", "revise", "escalate"])
   })
   .strict();
 
@@ -119,6 +169,8 @@ export const publishedArtifactSchema = z.discriminatedUnion("artifact", [
 ]);
 
 export type ParticipationReadyArtifact = z.infer<typeof participationReadyArtifactSchema>;
+export type PlanComparisonBallotResponse = z.infer<typeof planComparisonBallotResponseSchema>;
+export type ConsensusBallotResponse = z.infer<typeof consensusBallotResponseSchema>;
 export type PlanBallotArtifact = z.infer<typeof planBallotArtifactSchema>;
 export type ImplementationReadyArtifact = z.infer<typeof implementationReadyArtifactSchema>;
 export type ComparisonBallotArtifact = z.infer<typeof comparisonBallotArtifactSchema>;

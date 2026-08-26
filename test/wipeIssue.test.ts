@@ -151,6 +151,82 @@ describe("wipeIssue", () => {
     expect(tryGit(claude, "checkout", "issue-9/claude").exitCode).not.toBe(0);
   });
 
+  it("keeps the reserved coordinator-evidence branch unless --delete-evidence", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "coord-wipe-evidence-"));
+    roots.push(workspace);
+    const origin = join(workspace, "origin.git");
+    const product = join(workspace, "app");
+    const claude = join(workspace, "app-claude");
+    const coordRoot = join(workspace, "coord-runtime");
+    mkdirSync(coordRoot, { recursive: true });
+
+    mkdirSync(product, { recursive: true });
+    git(product, "init", "-q", "--initial-branch=main");
+    git(product, "config", "user.name", "Fixture");
+    git(product, "config", "user.email", "fixture@example.com");
+    writeFileSync(join(product, "README.md"), "# app\n");
+    git(product, "add", "README.md");
+    git(product, "commit", "-qm", "init");
+    git(product, "clone", "--bare", "-q", product, origin);
+    git(product, "remote", "add", "origin", origin);
+    git(product, "push", "-q", "-u", "origin", "main");
+
+    initClone(claude, origin);
+    git(claude, "checkout", "-qb", "issue-11/claude");
+    writeFileSync(join(claude, "signal.txt"), "claude\n");
+    git(claude, "add", "signal.txt");
+    git(claude, "commit", "-qm", "claude: signal");
+    git(claude, "push", "-q", "-u", "origin", "issue-11/claude");
+    git(claude, "push", "-q", "origin", "HEAD:refs/heads/issue-11/coordinator-evidence");
+    git(claude, "push", "-q", "origin", "HEAD:refs/heads/issue-11/owner-scratch");
+
+    const configPath = join(coordRoot, "config.json");
+    const config = coordinatorConfigSchema.parse({
+      project: "app",
+      origin,
+      agents: [{ id: "claude", root: claude, launcher: "start-claude.sh", delivery: "both" }],
+      branch: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      profile: "solo",
+      maxRevisionRounds: 3,
+      prPolicy: "owner-only",
+      digestPaths: [],
+      pollIntervalMs: 1000,
+      checks: [{ name: "true", argv: ["true"] }],
+      coordination: stamp(workspace, product)
+    });
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const kept = await wipeIssue({
+      issue: 11,
+      config,
+      configPath,
+      coordRoot,
+      terminalCloser: null,
+      log: () => undefined
+    });
+
+    expect(kept.deletedRemoteBranches).toEqual(["issue-11/claude"]);
+    expect(kept.deletedRemoteBranches).not.toContain("issue-11/coordinator-evidence");
+    expect(kept.deletedRemoteBranches).not.toContain("issue-11/owner-scratch");
+    expect(tryGit(product, "ls-remote", "--exit-code", "--heads", "origin", "issue-11/coordinator-evidence").exitCode).toBe(0);
+    expect(tryGit(product, "ls-remote", "--exit-code", "--heads", "origin", "issue-11/owner-scratch").exitCode).toBe(0);
+
+    const removed = await wipeIssue({
+      issue: 11,
+      config,
+      configPath,
+      coordRoot,
+      deleteEvidence: true,
+      terminalCloser: null,
+      log: () => undefined
+    });
+    expect(removed.deletedRemoteBranches).toContain("issue-11/coordinator-evidence");
+    expect(tryGit(product, "ls-remote", "--exit-code", "--heads", "origin", "issue-11/coordinator-evidence").exitCode).not.toBe(
+      0
+    );
+  });
+
   it("keeps product-local issue branches that have owner commits or uncommitted work", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "coord-wipe-owner-"));
     roots.push(workspace);
