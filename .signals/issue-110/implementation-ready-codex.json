@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 110,
+  "issueSessionId": "issue-110:1e43ba38ba3a0720503d7304a20ff6bd8c9eaf48",
+  "agent": "codex",
+  "inputSetHash": "1312f1aaa6150506fb3458616ea63f39c91b72411504cbd087e02b2f7bd17afe",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "6580fa0b7a85282a9a338b93700f7737574f3d4c",
+  "approvedPaths": [
+    "0.0.N", "AGENTS.md", "R3.plan-ballot", "R5.compare-ballot", "R6.ballot", "README.md", "action.md", "coord.workspaceConfig", "docs/analytics.md", "docs/coord-driver.md", "docs/readiness-policy.md", "docs/repo-map.md", "docs/setup-workspace.md", "package.json", "responses/", "scripts/lib/launcher.sh", "src/action.ts", "src/agentLanguage.ts", "src/analytics.ts", "src/ballotPublication.ts", "src/ballotResponse.ts", "src/cli.ts", "src/evidence.ts", "src/githubIssue.ts", "src/issueReport.ts", "src/machine.ts", "src/mirror.ts", "src/orderScaffold.ts", "src/paths.ts", "src/protocol.ts", "src/runLoop.ts", "src/state.ts", "src/steps.ts", "src/wipeIssue.ts", "templates/product/AGENTS.md", "templates/product/AGENTS.protocol.md", "test/action.test.ts", "test/agentLanguage.test.ts", "test/analytics.test.ts", "test/ballotPublication.test.ts", "test/ballotResponse.test.ts", "test/cli.test.ts", "test/evidence.test.ts", "test/githubIssue.test.ts", "test/install.test.ts", "test/integration.test.ts", "test/issueReport.test.ts", "test/machine.test.ts", "test/mirror.test.ts", "test/orderScaffold.test.ts", "test/paths.test.ts", "test/protocol.test.ts", "test/runLoop.test.ts", "test/state.test.ts", "test/wipeIssue.test.ts"
+  ]
+}
