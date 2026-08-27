@@ -53,6 +53,24 @@ describe("agent actions", () => {
     expect(raw).not.toContain("gate-");
   });
 
+  it("renders bound input files when materialized read paths are present", () => {
+    const coordRoot = "/external/coord";
+    const localPath = join(coordRoot, "issue-1/inputs/abc/manifest.json");
+    const raw = renderAction({
+      ...order(coordRoot),
+      materialized: {
+        inputSetHash: "a".repeat(64),
+        manifestPath: localPath,
+        entries: [],
+        worktrees: [],
+        readPaths: [localPath]
+      }
+    });
+    expect(raw).toContain("## Bound input files");
+    expect(raw).toContain(localPath);
+    expect(raw).toContain("3".repeat(40));
+  });
+
   it("round trips an atomically written action", () => {
     const root = mkdtempSync(join(tmpdir(), "coord-action-"));
     roots.push(root);

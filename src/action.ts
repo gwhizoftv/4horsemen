@@ -3,7 +3,7 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, u
 import { dirname, relative } from "node:path";
 import { assertNoSymlink, containedPath } from "./paths.js";
 import { actionIdSchema, gitShaSchema, repositoryPathSchema } from "./protocol.js";
-import type { ChangeScopeEntry, InternalOrder } from "./steps.js";
+import type { ChangeScopeEntry, InternalOrder, MaterializedInputs } from "./steps.js";
 
 export type PublicGitAction = {
   actionId: string;
@@ -57,6 +57,17 @@ const repoContextSection = (contextPaths: readonly string[] = []): string => {
   );
 };
 
+const boundInputFilesSection = (materialized: MaterializedInputs | undefined): string => {
+  if (materialized === undefined || materialized.readPaths.length === 0) return "";
+  return (
+    `\n\n## Bound input files\n\n` +
+    `Read these filesystem paths directly; do not use \`git status\`, \`git diff\`, or ` +
+    `\`git show\` to re-fetch peer coordination artifacts when this section is present. ` +
+    `Pin SHAs in the inputs list above remain authoritative.\n\n` +
+    materialized.readPaths.map(encodePath).join("\n")
+  );
+};
+
 const changeScopeSection = (changeScope: readonly ChangeScopeEntry[] = []): string => {
   const entries = changeScope.filter(
     (entry) => agentPattern.test(entry.agent) && shaPattern.test(entry.commitSha)
@@ -107,7 +118,7 @@ Publish the required artifact at:
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}${boundInputFilesSection(order.materialized)}
 
 Push the commit containing the artifact to \`${order.branch}\`. Then write that
 exact 40-character lowercase commit SHA as the sole contents of:
@@ -149,12 +160,12 @@ Then write this exact one-line marker as the sole contents of:
 response ${order.actionId}
 \`\`\`
 
-Do not \`git add\`, \`git commit\`, or \`git push\` for this action. Inspect the
-bound inputs with read-only Git commands only.
+Do not \`git add\`, \`git commit\`, or \`git push\` for this action. Read bound peer
+artifacts from the paths listed under \`## Bound input files\` when present.
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${eligible}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${eligible}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}${boundInputFilesSection(order.materialized)}
 
 After writing the marker, keep this file. Before waiting for more input, re-read
 it. If \`actionId\` in the front matter has changed, execute the new instructions

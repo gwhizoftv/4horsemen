@@ -45,6 +45,13 @@ That line is how it can tell an idle window from one that is still rendering.
 Print it only when you are genuinely finished and waiting; never print it while
 work is still in progress.
 
+During automated issues (`COORD_ISSUE` set), your launcher prepends
+`.coord/bin` to `PATH`. That wrapper blocks indiscriminate `git status`,
+`git diff`, and most undisciplined `git show` reads of peer coordination
+artifacts. Read bound plans, reviews, ballots, and pinned implementation
+trees from the absolute paths under `## Bound input files` in your `action.md`.
+Pin SHAs in the action inputs list remain authoritative for evidence.
+
 A **plan** (`.plans/issue-<n>/plan.md`) must include every heading below,
 each with a non-empty body:
 

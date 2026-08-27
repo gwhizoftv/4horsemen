@@ -34,6 +34,7 @@ export const AGENTS_PROTOCOL_MARKERS: BlockMarkers = { begin: AGENTS_PROTOCOL_BE
  */
 export const DEFAULT_CLONE_IGNORES: readonly string[] = [
   "/start-*.sh",
+  "/.coord/",
   "tags",
   "directory_tree.md",
   "/AGENTS.md",

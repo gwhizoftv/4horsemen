@@ -548,6 +548,19 @@ describe("completion mailbox wiring", () => {
     expect(launcher).not.toContain(resolve(fixture.coordRoot));
   });
 
+  it("installs the git wrapper and prepends it in the launcher PATH", () => {
+    const fixture = product();
+    const result = installOnce(fixture, { agents: ["claude"] });
+    const clone = result.clones[0] as string;
+    const wrapper = join(clone, ".coord", "bin", "git");
+    expect(existsSync(wrapper)).toBe(true);
+    const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
+    expect(launcher).toContain(".coord/bin");
+    const content = readFileSync(wrapper, "utf8");
+    expect(content).toContain("REAL_GIT=");
+    expect(content).not.toMatch(/REAL_GIT=.*\.coord\/bin\/git/);
+  });
+
   it("stops launching Codex with blanket filesystem access", () => {
     const fixture = product();
     const result = installOnce(fixture, { agents: ["codex"] });

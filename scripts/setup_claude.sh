@@ -80,6 +80,9 @@ fi
 if grep -qE 'hooksPath' <<<"$input"; then
   block "modifying git hook configuration is forbidden."
 fi
+if grep -qE 'git[^;|&]*(status|diff)' <<<"$input"; then
+  block "git status/diff are blocked during automated issues; read bound input files from action.md."
+fi
 if grep -qE 'git[^;|&]*push[^;|&]*(--force|--force-with-lease|-f([[:space:]]|\\\\|$))' <<<"$input"; then
   block "force-push is forbidden."
 fi
@@ -97,10 +100,9 @@ cat > "$CLONE_DIR/.claude/settings.json" <<EOF
 {
   "permissions": {
     "allow": [
-      "Bash(git status:*)", "Bash(git log:*)", "Bash(git diff:*)",
-      "Bash(git fetch:*)", "Bash(git pull:*)", "Bash(git checkout:*)",
+      "Bash(git log:*)", "Bash(git fetch:*)", "Bash(git pull:*)", "Bash(git checkout:*)",
       "Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)",
-      "Bash(git branch:*)", "Bash(git merge-base:*)",
+      "Bash(git branch:*)", "Bash(git merge-base:*)", "Bash(git rev-parse:*)",
       "Bash(npm install:*)", "Bash(npm run lint:*)", "Bash(npm test:*)",
       "Bash(npx tsc:*)", "Bash(ctags:*)", "Bash(mkdir:*)", "Bash(ls:*)",
       "Bash(corepack enable pnpm:*)",
@@ -113,6 +115,8 @@ cat > "$CLONE_DIR/.claude/settings.json" <<EOF
       "Bash(pnpm build:*)"
     ],
     "deny": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
       "Bash(git push --force:*)",
       "Bash(git push -f:*)",
       "Bash(git config core.hooksPath:*)",

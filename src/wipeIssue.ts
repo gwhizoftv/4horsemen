@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { deriveEvidenceBranch } from "./ballotPublication.js";
+import { removeIssueMaterialization } from "./materializedInputs.js";
+import { BareMirror } from "./mirror.js";
 import { detachIssue } from "./detachIssue.js";
 import { git, gitOrThrow, hasUncommittedChanges } from "./gitExec.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
@@ -430,7 +432,11 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     }
     if (existsSync(paths.issueRoot)) {
       log(`${dryRun ? "would wipe" : "wiping"} runtime ${paths.issueRoot}\n`);
-      if (!dryRun) rmSync(paths.issueRoot, { recursive: true, force: true });
+      if (!dryRun) {
+        const mirror = new BareMirror(paths.mirror, "file://local");
+        await removeIssueMaterialization({ mirror, paths });
+        rmSync(paths.issueRoot, { recursive: true, force: true });
+      }
       result.wipedRuntime = paths.issueRoot;
     }
   } finally {

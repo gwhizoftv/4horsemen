@@ -257,6 +257,10 @@ export type IssueRuntimePaths = {
   journal: string;
   issueSnapshot: string;
   agents: string;
+  /** Coordinator-owned root for bound markdown/json input packets. */
+  inputsRoot: string;
+  /** Coordinator-owned root for detached product-pin worktrees. */
+  worktreesRoot: string;
   /** Issue number, retained because the mailbox path is derived from it. */
   issue: number;
   /** Root of the completion mailbox tree; never inside `coordRoot`. */
@@ -301,6 +305,8 @@ export const issueRuntimePaths = (
     journal: containedPath(issueRoot, "journal.jsonl"),
     issueSnapshot: containedPath(issueRoot, "github-issue.json"),
     agents: containedPath(issueRoot, "agents"),
+    inputsRoot: containedPath(issueRoot, "inputs"),
+    worktreesRoot: containedPath(issueRoot, "worktrees"),
     issue,
     completesRoot: mailbox,
     completesIssueRoot: containedPath(mailbox, `issue-${issue}`)
@@ -365,6 +371,25 @@ export const acceptedResponseArchivePath = (
   return containedPath(paths.issueRoot, "accepted-responses", agent, `${actionId}.json`);
 };
 
+const packetHashPattern = /^[0-9a-f]{64}$/;
+
+export const inputPacketPath = (paths: IssueRuntimePaths, inputSetHash: string): string => {
+  if (!packetHashPattern.test(inputSetHash)) {
+    throw new PathSafetyError(`Invalid input set hash: ${inputSetHash}`);
+  }
+  return containedPath(paths.inputsRoot, inputSetHash);
+};
+
+export const inputWorktreePath = (paths: IssueRuntimePaths, agent: string, commitSha: string): string => {
+  if (!agentPattern.test(agent)) {
+    throw new PathSafetyError(`Invalid agent id: ${agent}`);
+  }
+  if (!/^[0-9a-f]{40}$/.test(commitSha)) {
+    throw new PathSafetyError(`Invalid commit sha for worktree: ${commitSha}`);
+  }
+  return containedPath(paths.worktreesRoot, `${agent}-${commitSha.slice(0, 8)}`);
+};
+
 export const evidenceWorktreePath = (paths: IssueRuntimePaths, label: string): string => {
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(label)) {
     throw new PathSafetyError(`Invalid evidence worktree label: ${label}`);
@@ -386,6 +411,10 @@ export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly st
   assertNoSymlink(paths.completesRoot, paths.completesIssueRoot);
   mkdirSync(paths.completesIssueRoot, { recursive: true, mode: 0o700 });
   assertNoSymlink(paths.completesRoot, paths.completesIssueRoot);
+  assertNoSymlink(paths.coordRoot, paths.inputsRoot);
+  mkdirSync(paths.inputsRoot, { recursive: true, mode: 0o700 });
+  assertNoSymlink(paths.coordRoot, paths.worktreesRoot);
+  mkdirSync(paths.worktreesRoot, { recursive: true, mode: 0o700 });
   for (const agent of agents) {
     if (agent === RESERVED_EVIDENCE_AGENT) {
       throw new PathSafetyError(`Agent id ${RESERVED_EVIDENCE_AGENT} is reserved for the evidence branch.`);

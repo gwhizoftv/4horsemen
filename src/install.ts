@@ -42,6 +42,8 @@ import {
   productName,
   proposeProjectPolicy,
   writeAgentLauncher,
+  resolveRealGit,
+  writeGitWrapper,
   writeCloneExclude,
   writeWorkspaceConfig,
   type EffectOptions,
@@ -376,6 +378,7 @@ export const install = (options: InstallOptions): InstallResult => {
 
   // ---- steps 2-5: per-agent clone wiring ----------------------------------
   const clones: string[] = [];
+  let installRealGit: string | undefined;
   for (const agent of agents) {
     const clone = agentCloneDirectory(cloneRoot, project, agent);
     clones.push(clone);
@@ -387,6 +390,7 @@ export const install = (options: InstallOptions): InstallResult => {
       effects.log(`would then wire launcher, exclude, identity, and hooks in ${clone}\n`);
       continue;
     }
+    if (installRealGit === undefined) installRealGit = resolveRealGit(clone);
     writeAgentLauncher({
       installRoot,
       clone,
@@ -395,6 +399,7 @@ export const install = (options: InstallOptions): InstallResult => {
       baseBranch,
       options: effects
     });
+    writeGitWrapper({ installRoot, clone, options: effects, realGit: installRealGit });
     writeCloneExclude(clone, effects);
     writeCloneAgentsProtocol({ clone, installRoot, options: effects });
     writeClaudeAgentsShim(clone, agent, effects);

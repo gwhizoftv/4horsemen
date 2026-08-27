@@ -45,7 +45,15 @@ it, which is why neither has its own copy.
   protocol overlay. Editing it from a clone stages nothing, and clearing the bit
   is forbidden. See `src/agentsProtocol.ts`.
 - **The launcher is generated per clone and never tracked.** A tracked copy
-  guarantees a dirty worktree.
+  guarantees a dirty worktree. It prepends `.coord/bin` to `PATH` so an
+  untracked git wrapper can block wasteful status/diff/show reads during
+  automated issues.
+- **Bound inputs are materialized under the coord root.** During preparation
+  the run loop writes read-only markdown packets to
+  `issue-<n>/inputs/<inputSetHash>/` and full implementation pins to
+  `issue-<n>/worktrees/<agent>-<sha8>/`. `action.md` lists absolute read
+  paths under `## Bound input files`; the launcher grants sandboxed harnesses
+  parent `--add-dir` access to those directories when they exist.
 - **`githooks/` is product code, not a way to satisfy checks.** Do not edit it
   to make a gate pass.
 - **Approved paths are the authority.** An implementation may change only the

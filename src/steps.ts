@@ -241,6 +241,29 @@ export type ChangeScopeEntry = {
   truncated: boolean;
 };
 
+export type MaterializedInputEntry = {
+  kind: string;
+  agent: string;
+  commitSha: string;
+  path: string;
+  sha256: string;
+  localPath: string;
+};
+
+export type MaterializedWorktree = {
+  agent: string;
+  commitSha: string;
+  localPath: string;
+};
+
+export type MaterializedInputs = {
+  inputSetHash: string | null;
+  manifestPath: string | null;
+  entries: readonly MaterializedInputEntry[];
+  worktrees: readonly MaterializedWorktree[];
+  readPaths: readonly string[];
+};
+
 export type InternalOrder = {
   actionId: string;
   issue: number;
@@ -270,6 +293,7 @@ export type InternalOrder = {
    */
   contextPaths?: readonly string[];
   changeScope?: readonly ChangeScopeEntry[];
+  materialized?: MaterializedInputs;
   activeRoster: readonly string[];
   eligibleChoices: readonly string[];
 };

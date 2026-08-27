@@ -31,22 +31,32 @@ else
   launcher_lib="$lib_dir/launcher.sh"
 fi
 
-if [[ ! -e "$launcher" ]]; then
-  if [[ ! -r "$launcher_lib" ]]; then
-    echo "Cannot regenerate $launcher: the launcher template $launcher_lib is unreadable." >&2
-    echo "  Fix: coord doctor --coord-root <runtime> --product <product>" >&2
-    exit 0
+  if [[ ! -e "$launcher" ]]; then
+    if [[ ! -r "$launcher_lib" ]]; then
+      echo "Cannot regenerate $launcher: the launcher template $launcher_lib is unreadable." >&2
+      echo "  Fix: coord doctor --coord-root <runtime> --product <product>" >&2
+      exit 0
+    fi
+
+    # shellcheck source=../scripts/lib/launcher.sh
+    . "$launcher_lib"
+
+    if write_launcher "$launcher" "$AGENT_NAME" "$AGENT_LABEL" "$SHARED_BRANCH"; then
+      echo "Regenerated $launcher (generated per clone, never tracked)."
+    else
+      echo "No launch command is defined for agent '$AGENT_NAME'; $launcher was not regenerated." >&2
+      echo "  Add one to launcher_command() in $launcher_lib." >&2
+    fi
   fi
 
-  # shellcheck source=../scripts/lib/launcher.sh
-  . "$launcher_lib"
-
-  if write_launcher "$launcher" "$AGENT_NAME" "$AGENT_LABEL" "$SHARED_BRANCH"; then
-    echo "Regenerated $launcher (generated per clone, never tracked)."
-  else
-    echo "No launch command is defined for agent '$AGENT_NAME'; $launcher was not regenerated." >&2
-    echo "  Add one to launcher_command() in $launcher_lib." >&2
+  git_wrapper=".coord/bin/git"
+  if [[ ! -e "$git_wrapper" && -r "$launcher_lib" ]]; then
+    # shellcheck source=../scripts/lib/launcher.sh
+    . "$launcher_lib"
+    real_git="$(resolve_real_git "$(pwd)")"
+    if write_git_wrapper "$git_wrapper" "$real_git" "$(pwd)"; then
+      echo "Regenerated $git_wrapper (generated per clone, never tracked)."
+    fi
   fi
-fi
 
 exit 0

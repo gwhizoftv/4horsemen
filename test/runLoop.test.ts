@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { unlockDirectoryTree } from "../src/materializedInputs.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -40,7 +41,10 @@ import { createHash } from "node:crypto";
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) {
+    unlockDirectoryTree(root);
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 const responseDigestFixture = (seed: string): string =>
@@ -353,7 +357,38 @@ describe("effectful run loop", () => {
     expect(record).not.toBeNull();
     appendJournal(paths, { type: "decision-derived", details: derivedDecisionJournalDetails(record!) }, now);
 
-    const after = await new CoordinatorRunLoop(paths, { tmux: null, now: () => now }).runTick();
+    const after = await new CoordinatorRunLoop(paths, {
+      tmux: null,
+      now: () => now,
+      mirror: {
+        path: paths.mirror,
+        async initialize() {},
+        async fetchBranch() {
+          return { ok: true as const, ref: "refs/remotes/origin/main", tip: "a".repeat(40) };
+        },
+        async commitExists() {
+          return true;
+        },
+        async isReachable() {
+          return true;
+        },
+        async isAncestor() {
+          return true;
+        },
+        async readBlob() {
+          return "# Plan\n";
+        },
+        async changedPaths() {
+          return [];
+        },
+        async materializeWorktree() {},
+        async removeWorktree() {},
+        async publishBranch() {},
+        async validatePhasePin() {
+          return { ok: true as const, pin: "a".repeat(40), tip: "a".repeat(40), subject: "x", ref: "refs/remotes/origin/x" };
+        }
+      } as never
+    }).runTick();
     expect(after.issueCursor.stepId).toBe("R4.implement");
     expect(after.derived.planSelection?.decidedAt).toBe(now);
     expect(readJournal(paths).filter((event) => event.type === "decision-derived")).toHaveLength(1);
