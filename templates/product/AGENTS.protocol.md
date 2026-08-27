@@ -53,6 +53,8 @@ each with a non-empty body:
 
 ## Exact file list to be created
 
+## Reuse and Scope
+
 ## Tests
 
 ## Alternatives Rejected
@@ -64,7 +66,13 @@ each with a non-empty body:
 
 Accepted aliases for the file lists: Exact File Map / File Map / File Creation
 Order / Proposed Architecture (a single legacy file-map heading still satisfies
-both list sections). Also accepted: Test / Validation; Alternatives; Risks.
+both list sections). Accepted aliases for Reuse and Scope: Reuse / Scope and
+Reuse. Also accepted: Test / Validation; Alternatives; Risks.
+
+In Reuse and Scope, name the existing functions, types, helpers, tests, and
+fixtures the implementation will reuse, and justify every new file. A path
+cited only in that section does not expand what the implementation may change;
+also list every path intended for change in a file-list section.
 
 A **plan review** (`.plans/issue-<n>/review.md`) must include:
 
@@ -111,6 +119,15 @@ or
 
 No subtitle on that same line (e.g. `# Comparison — issue 12` fails). Cite every
 bound implementation pin SHA from the current `action.md`.
+
+## Implementation discipline
+
+Keep the work within the issue and make the smallest change that fully solves
+it. Inspect and reuse existing functions, types, helpers, tests, and fixtures
+before creating new ones. Justify every new file, abstraction, and dependency;
+avoid unrelated cleanup and speculative flexibility. Add the fewest focused
+tests needed, prefer extending an existing test file, and still run every
+required check.
 
 ## Checks that actually run
 

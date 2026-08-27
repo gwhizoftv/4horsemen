@@ -55,6 +55,12 @@ export const BRANCH_PREPARED_NOTE =
   "switch to it, or clear skip-worktree to make a checkout work. If the clone " +
   "looks wrong, report that instead of repairing it by hand.";
 
+export const BUILD_DISCIPLINE_NOTE =
+  "\n\nKeep the work within the issue and make the smallest change that fully solves it. " +
+  "Inspect and reuse existing functions, types, helpers, tests, and fixtures before creating new ones. " +
+  "Justify every new file, abstraction, and dependency; avoid unrelated cleanup and speculative flexibility. " +
+  "Add the fewest focused tests needed, prefer extending an existing test file, and still run every required check.";
+
 export type StepDefinition = {
   id: WorkflowStepId;
   gateId: GateId;
@@ -87,7 +93,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     participants: "all",
     submissionMode: "git",
     requiredPath: (issue) => `.plans/issue-${issue}/plan.md`,
-    task: "Write and publish a mechanically complete implementation plan."
+    task: `Write and publish a mechanically complete implementation plan.${BUILD_DISCIPLINE_NOTE}`
   },
   "R3.review": {
     id: "R3.review",
@@ -114,7 +120,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     participants: "implementer",
     submissionMode: "git",
     requiredPath: (issue, agent) => `.signals/issue-${issue}/implementation-ready-${agent}.json`,
-    task: "Implement the selected plan and publish an implementation-ready signal that pins the product commit."
+    task: `Implement the selected plan and publish an implementation-ready signal that pins the product commit.${BUILD_DISCIPLINE_NOTE}`
   },
   "R5.compare": {
     id: "R5.compare",
@@ -142,7 +148,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     submissionMode: "git",
     requiredPath: (issue, agent, round) =>
       `.signals/issue-${issue}/revision-ready-${agent}-round-${round ?? 1}.json`,
-    task: "Prepare the requested revision and publish a signal pinning the revised product commit."
+    task: `Prepare the requested revision and publish a signal pinning the revised product commit.${BUILD_DISCIPLINE_NOTE}`
   },
   "R6.ballot": {
     id: "R6.ballot",
