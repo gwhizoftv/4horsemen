@@ -5,7 +5,7 @@
   "agent": "codex",
   "inputSetHash": "5aeb6736e5db8b22090c20aa83d0053a86a801fd7963ce5ed477049154c5ee1c",
   "artifact": "implementation-ready",
-  "implementationCommitSha": "430258cda6a420e5ba718cd0a28145e547434c65",
+  "implementationCommitSha": "17c3cf4f21786faed2eb0f30bb5e8a1ada7a6923",
   "approvedPaths": [
     "AnalyticsReport.run",
     "AnalyticsReport.source.skippedJournalRecords",
