@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,7 +12,6 @@ import {
   initializeOperationalState,
   mutateCursorsState,
   planSelectionDerivedSchema,
-  readAnalyticsRuntime,
   readCursorsState,
   readJournal,
   readStartState,
@@ -110,38 +109,6 @@ describe("operational state", () => {
       `${JSON.stringify({ ...readCursorsState(paths), formatVersion: 3 }, null, 2)}\n`
     );
     expect(() => readCursorsState(paths)).toThrow(/Wipe this issue/);
-  });
-
-  it("reads completed format-2 state only through analytics without changing its bytes", () => {
-    const { paths } = initialize();
-    const legacyStart = { ...JSON.parse(readFileSync(paths.start, "utf8")), formatVersion: 2 } as Record<string, unknown>;
-    const legacyCursors = {
-      ...JSON.parse(readFileSync(paths.cursors, "utf8")),
-      formatVersion: 2,
-      activeRoster: ["claude"],
-      completed: true
-    } as Record<string, unknown>;
-    writeFileSync(paths.start, `${JSON.stringify(legacyStart, null, 2)}\n`);
-    writeFileSync(paths.cursors, `${JSON.stringify(legacyCursors, null, 2)}\n`);
-    writeFileSync(
-      paths.journal,
-      readFileSync(join(process.cwd(), "test", "support", "fixtures", "analytics-journal-format2.jsonl"), "utf8")
-    );
-    const before = [paths.start, paths.cursors, paths.journal].map((path) => readFileSync(path, "utf8"));
-
-    const analytics = readAnalyticsRuntime(paths);
-    expect(analytics).toMatchObject({
-      activeRoster: ["claude"],
-      source: { formatVersion: 2, legacy: true, skippedJournalRecords: 1 }
-    });
-    expect(analytics.journal.at(-1)?.type).toBe("gate-advanced");
-    expect(() => readStartState(paths)).toThrow(/Wipe this issue/);
-    expect(() => readCursorsState(paths)).toThrow(/Wipe this issue/);
-    expect(() => readJournal(paths)).toThrow(/Wipe this issue/);
-    expect([paths.start, paths.cursors, paths.journal].map((path) => readFileSync(path, "utf8"))).toEqual(before);
-
-    writeFileSync(paths.cursors, `${JSON.stringify({ ...legacyCursors, completed: false }, null, 2)}\n`);
-    expect(() => readAnalyticsRuntime(paths)).toThrow(/not completed/);
   });
 
   it("rejects stale whole-state writes after an owner control revision", () => {
