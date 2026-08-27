@@ -1,0 +1,56 @@
+{
+  "actionId": "bfff3189-b846-414a-94b6-f048ef684f4a",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "d70cdbef021ac589cac05365522a666b99cc206241ee9a78457c8888c0e8e215",
+  "issue": 124,
+  "issueSessionId": "issue-124:5bfc025122672b78a4990a97e7992e8fc53e1871",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "ae1b42852d773191ea721e56a684ff9a63262b07",
+      "path": ".plans/issue-124/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "3ac5aad5d214caea6298696a855d71a1b03d05bb",
+      "path": ".plans/issue-124/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "e2de333f19160e93fa0ce9d9972eaf0cfdde64bb",
+      "path": ".plans/issue-124/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "b173b8e4ed9946dcccf92dbc1cf50d053dba899a",
+      "path": ".plans/issue-124/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude's plan has the correct persistent-harness grant model, repository-scoped wrapper passthrough, markdown-only packet hashing, and the broadest focused tests, making it the strongest base to implement with Codex doctor/wipe items merged in.",
+  "responseSha256": "61479308941a90dd5cde9b365402857465e0d1d38e2534a94b804547f7b6e4dd",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "11f41f2b49a7f9b6bbbf537be5967d10bf76822f",
+      "path": ".plans/issue-124/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "9aa94c13182e3c087e2ce1cd5e9960154f7ae2d1",
+      "path": ".plans/issue-124/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "bb9c20b782b822c0cdc8edb11d5ca668aed56a29",
+      "path": ".plans/issue-124/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "1cf07919b7822663ff7c60361f37d99760e1be33",
+      "path": ".plans/issue-124/review.md"
+    }
+  ]
+}
