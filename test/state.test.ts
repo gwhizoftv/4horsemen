@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,9 +14,7 @@ import {
   planSelectionDerivedSchema,
   readCursorsState,
   readJournal,
-  readJournalForAnalytics,
   readStartState,
-  readStartStateHeader,
   setPaused,
   StateConflictError,
   startStateSchema,
@@ -122,25 +120,6 @@ describe("operational state", () => {
     expect(staleWrite.applied).toBe(false);
     expect(staleWrite.state.paused).toBe(true);
     expect(new StateConflictError("conflict").name).toBe("StateConflictError");
-  });
-
-  it("reads legacy analytics inputs while strict journal parsing stays fail-closed", () => {
-    const { paths, start } = initialize();
-    writeFileSync(
-      paths.start,
-      `${JSON.stringify({ ...start, formatVersion: 2 }, null, 2)}\n`
-    );
-    writeFileSync(
-      paths.journal,
-      readFileSync(join(process.cwd(), "test/support/fixtures/analytics-journal-format2.jsonl"), "utf8")
-    );
-    expect(() => readJournal(paths)).toThrow(/Wipe this issue/);
-    const header = readStartStateHeader(paths);
-    expect(header.formatVersion).toBe(2);
-    const analyticsJournal = readJournalForAnalytics(paths);
-    expect(analyticsJournal.formatVersion).toBe(2);
-    expect(analyticsJournal.skipped).toBe(1);
-    expect(analyticsJournal.events.some((event) => event.type === "paused")).toBe(true);
   });
 });
 

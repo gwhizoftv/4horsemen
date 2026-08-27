@@ -12,7 +12,10 @@ import {
   cursorsStateSchema,
   readConfig,
   readCursorsState,
+  readJournal,
+  readJournalForAnalytics,
   readStartState,
+  readStartStateHeader,
   writeCursorsState
 } from "../src/state.js";
 import { DOCTOR_CODES } from "../src/doctor.js";
@@ -546,6 +549,13 @@ describe("CLI", () => {
       join(process.cwd(), "test", "support", "fixtures", "analytics-journal-format2.jsonl"),
       paths.journal
     );
+
+    expect(() => readJournal(paths)).toThrow(/Wipe this issue/);
+    expect(readStartStateHeader(paths).formatVersion).toBe(2);
+    const analyticsJournal = readJournalForAnalytics(paths);
+    expect(analyticsJournal.formatVersion).toBe(2);
+    expect(analyticsJournal.skipped).toBe(1);
+    expect(analyticsJournal.events.some((event) => event.type === "paused")).toBe(true);
 
     const output: string[] = [];
     expect(
