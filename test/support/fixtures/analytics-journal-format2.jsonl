@@ -1,0 +1,11 @@
+{"formatVersion":2,"sequence":0,"at":"2026-08-21T00:00:00.000Z","type":"started","details":{"issue":1,"profile":"consensus"}}
+{"formatVersion":2,"sequence":1,"at":"2026-08-21T00:00:00.500Z","type":"action-prepared","agent":"claude","actionId":"11111111-1111-4111-8111-111111111111","details":{"requiredPath":".plans/issue-1/plan.md"}}
+{"formatVersion":2,"sequence":2,"at":"2026-08-21T00:00:01.000Z","type":"nudged","agent":"claude","actionId":"11111111-1111-4111-8111-111111111111","details":{}}
+{"formatVersion":2,"sequence":3,"at":"2026-08-21T00:00:02.000Z","type":"nudged","agent":"claude","actionId":"11111111-1111-4111-8111-111111111111","details":{}}
+{"formatVersion":2,"sequence":4,"at":"2026-08-21T00:00:03.000Z","type":"paused","details":{}}
+{"formatVersion":2,"sequence":5,"at":"2026-08-21T00:00:04.000Z","type":"resumed","details":{}}
+{"formatVersion":2,"sequence":6,"at":"2026-08-21T00:00:05.000Z","type":"intent-seen","agent":"claude","actionId":"11111111-1111-4111-8111-111111111111","submissionSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","details":{}}
+{"formatVersion":2,"sequence":7,"at":"2026-08-21T00:00:05.500Z","type":"final-check","agent":"claude","actionId":"11111111-1111-4111-8111-111111111111","details":{"tier":"checks","name":"check","argv":["pnpm","check"],"exitCode":0}}
+{"formatVersion":2,"sequence":8,"at":"2026-08-21T00:00:06.000Z","type":"gate-advanced","details":{"from":"R1.join","to":"R2.plan","round":null}}
+{"formatVersion":2,"sequence":9,"at":"2026-08-21T00:00:07.000Z","type":"legacy-selection-published","details":{"note":"visible skipped legacy record"}}
+{"formatVersion":2,"sequence":10,"at":"2026-08-21T00:00:08.000Z","type":"gate-advanced","details":{"from":"R2.plan","to":null,"round":null}}

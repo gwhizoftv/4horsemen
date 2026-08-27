@@ -1617,9 +1617,15 @@ describe("effectful run loop", () => {
       pushes += 1;
     };
     let opens = 0;
+    let checkNowMs = Date.parse("2026-08-21T00:00:00.000Z");
     const loop = new CoordinatorRunLoop(paths, {
       tmux: null,
       mirror,
+      now: () => {
+        const value = new Date(checkNowMs).toISOString();
+        checkNowMs += 2500;
+        return value;
+      },
       processRunner: async () => ({ exitCode: 1, stdout: "", stderr: "test failed" }),
       pullRequestOpener: async () => {
         opens += 1;
@@ -1659,7 +1665,7 @@ describe("effectful run loop", () => {
     // runs the declared `verify` before a commit exists, and only the hermetic
     // `checks` at the approved commit reach here.
     const finalCheck = readJournal(paths).find((event) => event.type === "final-check");
-    expect(finalCheck?.details).toMatchObject({ tier: "checks", name: "check", exitCode: 1 });
+    expect(finalCheck?.details).toMatchObject({ tier: "checks", name: "check", exitCode: 1, durationMs: 2500 });
     expect(pushes).toBe(0);
     expect(opens).toBe(0);
     expect(readCursorsState(paths).publication.status).toBe("not-required");

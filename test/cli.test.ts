@@ -508,6 +508,48 @@ describe("CLI", () => {
     expect(errors.join("")).toContain("No journal exists for issue 1");
   });
 
+  it("reports completed format-2 analytics read-only while run remains fail-closed", async () => {
+    const fixture = setup();
+    expect(
+      await runCli(
+        ["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+        { processRunner: resolvableStartGit, makeRunLoop: fakeLoop }
+      )
+    ).toBe(0);
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify({ ...JSON.parse(readFileSync(paths.start, "utf8")), formatVersion: 2 }, null, 2)}\n`
+    );
+    writeFileSync(
+      paths.cursors,
+      `${JSON.stringify({ ...JSON.parse(readFileSync(paths.cursors, "utf8")), formatVersion: 2, completed: true }, null, 2)}\n`
+    );
+    copyFileSync(
+      join(process.cwd(), "test", "support", "fixtures", "analytics-journal-format2.jsonl"),
+      paths.journal
+    );
+
+    const output: string[] = [];
+    expect(
+      await runCli(["analytics", "--issue", "1", "--coord-root", fixture.runtime], {
+        io: { stdout: (message) => output.push(message) }
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Source: runtime format 2 (legacy read-only); skipped journal records=1");
+    expect(output.join("")).toContain("elapsed=0.13 min paused=0.02 min unpaused=0.12 min");
+    expect(output.join("")).toContain("duration=unavailable");
+    expect(output.join("")).not.toContain("Token count");
+
+    const errors: string[] = [];
+    expect(
+      await runCli(["run", "--issue", "1", "--coord-root", fixture.runtime], {
+        io: { stderr: (message) => errors.push(message) }
+      })
+    ).toBe(2);
+    expect(errors.join("")).toContain("Runtime format versions 2 and 3 are no longer supported");
+  });
+
   it("binds the digest to the mandatory GitHub issue independently of optional paths", async () => {
     const fixture = setup();
     const config = readConfig(fixture.configPath);

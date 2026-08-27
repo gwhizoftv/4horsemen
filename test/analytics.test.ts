@@ -500,4 +500,90 @@ describe("analytics aggregation", () => {
     expect(renderAnalytics(report)).toContain("Agent response latency");
     expect(renderAnalytics(report)).toContain("Evidence publication latency");
   });
+
+  it("subtracts paused time, anchors retries at the first nudge, and keeps missing check duration nullable", () => {
+    const actionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const at = (minutes: number): string => new Date(Date.parse("2026-08-21T00:00:00.000Z") + minutes * 60_000).toISOString();
+    const raw = [
+      { at: at(0), type: "started", details: { issue: 89, profile: "solo" } },
+      { at: at(1), type: "nudged", agent: "codex", actionId, details: {} },
+      { at: at(10), type: "paused", details: {} },
+      { at: at(11), type: "paused", details: {} },
+      { at: at(20), type: "resumed", details: {} },
+      { at: at(21), type: "resumed", details: {} },
+      { at: at(60), type: "paused", details: {} },
+      { at: at(61), type: "nudged", agent: "codex", actionId, details: {} },
+      { at: at(66), type: "intent-seen", agent: "codex", actionId, details: {} },
+      { at: at(66), type: "response-accepted", agent: "codex", actionId, details: {} },
+      { at: at(67), type: "final-check", agent: "codex", details: { tier: "checks", name: "fast", exitCode: 0, durationMs: 1200 } },
+      { at: at(68), type: "final-check", agent: "codex", details: { tier: "checks", name: "legacy", exitCode: 0 } },
+      { at: at(70), type: "gate-advanced", details: { from: "R1.join", to: null, round: null } }
+    ];
+    const journal = raw.map((event, sequence) => journalEventSchema.parse({ formatVersion: 4, sequence, ...event }));
+    const report = buildAnalytics({ start, journal, activeRoster: ["codex"] });
+
+    expect(report.run).toMatchObject({ durationMs: 70 * 60_000, pausedMs: 20 * 60_000, unpausedMs: 50 * 60_000 });
+    expect(report.waits).toEqual([{ agent: "codex", count: 1, medianMs: 65 * 60_000, maxMs: 65 * 60_000 }]);
+    expect(report.responseLatency).toEqual([{ agent: "codex", count: 1, medianMs: 65 * 60_000, maxMs: 65 * 60_000 }]);
+    expect(report.finalChecks.map((check) => check.durationMs)).toEqual([1200, null]);
+    expect(renderAnalytics(report)).toContain("elapsed=70.00 min paused=20.00 min unpaused=50.00 min");
+    expect(renderAnalytics(report)).toContain("duration=unavailable");
+  });
+
+  it("assigns overlapping windows from one shared Codex turn as a named partial fallback", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-codex-shared-turn-"));
+    roots.push(root);
+    const codex = join(root, ".codex");
+    const transcript = join(codex, "sessions", "2026", "08", "21", "rollout-fixture-session-shared.jsonl");
+    mkdirSync(dirname(transcript), { recursive: true });
+    copyFileSync(join(fixtures, "transcript-codex-shared-turn.jsonl"), transcript);
+    const firstAction = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const secondAction = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    const raw = [
+      { at: "2026-08-21T00:00:00.000Z", type: "started", details: { issue: 89, profile: "solo" } },
+      { at: "2026-08-21T00:00:01.000Z", type: "action-prepared", agent: "codex", actionId: firstAction, details: {} },
+      { at: "2026-08-21T00:00:02.000Z", type: "agent-lifecycle", agent: "codex", actionId: firstAction, details: { vendor: "codex", kind: "prompt-submitted", sessionId: "session-shared", turnId: "turn-shared" } },
+      { at: "2026-08-21T00:00:10.000Z", type: "gate-advanced", details: { from: "R1.join", to: "R2.plan", round: null } },
+      { at: "2026-08-21T00:00:11.000Z", type: "action-prepared", agent: "codex", actionId: secondAction, details: {} },
+      { at: "2026-08-21T00:00:12.000Z", type: "agent-lifecycle", agent: "codex", actionId: secondAction, details: { vendor: "codex", kind: "prompt-submitted", sessionId: "session-shared", turnId: "turn-shared" } },
+      { at: "2026-08-21T00:00:22.000Z", type: "agent-lifecycle", agent: "codex", details: { vendor: "codex", kind: "stopped", sessionId: "session-shared", turnId: "turn-shared" } },
+      { at: "2026-08-21T00:00:30.000Z", type: "gate-advanced", details: { from: "R2.plan", to: null, round: null } }
+    ];
+    const journal = raw.map((event, sequence) => journalEventSchema.parse({ formatVersion: 4, sequence, ...event }));
+    const report = buildAnalytics({ start, journal, activeRoster: ["codex"], transcriptRoots: { codex } });
+    const codexUsage = report.usage?.agents[0];
+
+    expect(codexUsage).toMatchObject({
+      tokenCoverage: "partial",
+      phases: [
+        { phase: "R1.join", tokens: { input: 10, output: 2, cacheRead: 10 } },
+        { phase: "R2.plan", tokens: { input: 10, output: 4, cacheRead: 30 } }
+      ],
+      unassigned: { tokenRecords: 0 }
+    });
+    expect(codexUsage?.tokenReason).toContain("shared by one vendor turn across several actions");
+  });
+
+  it("unlocks a Cursor/Codex total only when normalized Cursor tokens are complete", () => {
+    const journal = readJournalFixture();
+    const cursorAction = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    const additions = [
+      { at: "2026-08-21T00:00:10.000Z", type: "action-prepared", agent: "cursor", actionId: cursorAction, details: {} },
+      { at: "2026-08-21T00:00:11.000Z", type: "nudged", agent: "cursor", actionId: cursorAction, details: {} },
+      { at: "2026-08-21T00:00:12.000Z", type: "agent-lifecycle", agent: "cursor", actionId: cursorAction, details: { vendor: "cursor", kind: "prompt-submitted", sessionId: "conversation-total", turnId: "generation-total" } },
+      { at: "2026-08-21T00:00:13.000Z", type: "agent-usage", agent: "cursor", details: { vendor: "cursor", event: "afterAgentResponse", kind: "turn-usage", sessionId: "conversation-total", turnId: "generation-total", tokens: { input: 40, output: 8, cacheRead: 12, cacheWrite: 0, reasoning: null } } },
+      { at: "2026-08-21T00:00:14.000Z", type: "agent-lifecycle", agent: "cursor", details: { vendor: "cursor", kind: "stopped", sessionId: "conversation-total", turnId: "generation-total" } }
+    ].map((event, index) => journalEventSchema.parse({ formatVersion: 4, sequence: 20 + index, ...event }));
+    journal.push(...additions);
+    const roots = transcriptRoots();
+    removeBrokenClaudeRecord(roots);
+    const report = buildAnalytics({ start, journal, activeRoster: ["codex", "cursor"], transcriptRoots: roots });
+    expect(report.usage?.tokenTotal).toEqual({ input: 70, output: 36, cacheRead: 112, cacheWrite: 10, reasoning: 8 });
+    expect(report.usage?.tokenTotalReason).toBeNull();
+
+    const withoutCursorTokens = journal.filter((event) => event.type !== "agent-usage");
+    const incomplete = buildAnalytics({ start, journal: withoutCursorTokens, activeRoster: ["codex", "cursor"], transcriptRoots: roots });
+    expect(incomplete.usage?.tokenTotal).toBeNull();
+    expect(incomplete.usage?.tokenTotalReason).toContain("cursor: coverage=unavailable");
+  });
 });
