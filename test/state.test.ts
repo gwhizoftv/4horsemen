@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
@@ -10,11 +11,14 @@ import {
   dropAgent,
   implementationSelectionDerivedSchema,
   initializeOperationalState,
+  isLegacyRuntimeFormat,
   mutateCursorsState,
   planSelectionDerivedSchema,
   readCursorsState,
   readJournal,
+  readJournalForAnalytics,
   readStartState,
+  readStartStateHeader,
   setPaused,
   StateConflictError,
   startStateSchema,
@@ -109,6 +113,61 @@ describe("operational state", () => {
       `${JSON.stringify({ ...readCursorsState(paths), formatVersion: 3 }, null, 2)}\n`
     );
     expect(() => readCursorsState(paths)).toThrow(/Wipe this issue/);
+  });
+
+  it("reads a legacy journal for reporting while the strict reader still refuses it", () => {
+    const { paths } = initialize();
+    const fixture = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "support",
+      "fixtures",
+      "analytics-journal-format2.jsonl"
+    );
+    copyFileSync(fixture, paths.journal);
+    const before = readFileSync(paths.journal, "utf8");
+
+    // Read-only history is reportable...
+    const legacy = readJournalForAnalytics(paths);
+    expect(legacy.formatVersion).toBe(2);
+    expect(isLegacyRuntimeFormat(legacy.formatVersion)).toBe(true);
+    expect(legacy.events.some((event) => event.type === "started")).toBe(true);
+    // ...with the one event type this build no longer knows counted, not hidden.
+    expect(legacy.skipped).toBe(1);
+    expect(legacy.events.some((event) => event.type === "final-check")).toBe(true);
+
+    // ...and the control plane still fails closed on the same bytes.
+    expect(() => readJournal(paths)).toThrow(/Wipe this issue/);
+    // Reporting must not rewrite a single byte of history.
+    expect(readFileSync(paths.journal, "utf8")).toBe(before);
+  });
+
+  it("fails on a malformed known event rather than reporting plausible timing", () => {
+    const { paths } = initialize();
+    writeFileSync(
+      paths.journal,
+      [
+        JSON.stringify({ formatVersion: 2, sequence: 0, at: "2026-08-19T00:00:00.000Z", type: "started", details: {} }),
+        // A terminal boundary with an unusable timestamp: skipping it would
+        // render a finished run as still in progress, with its final phase
+        // stretched to now.
+        JSON.stringify({ formatVersion: 2, sequence: 1, at: "not-a-timestamp", type: "gate-advanced", details: { from: "R1.join", to: null } })
+      ].join("\n") + "\n"
+    );
+    expect(() => readJournalForAnalytics(paths)).toThrow(/journal line 2/);
+  });
+
+  it("reads start identity through the header without validating the control plane", () => {
+    const { paths, start } = initialize();
+    const header = readStartStateHeader(paths);
+    expect(header).toMatchObject({ formatVersion: 4, issue: 1, originalRoster: ["claude", "codex"] });
+    expect(header.configPath).toBe(start.configPath);
+
+    writeFileSync(paths.start, `${JSON.stringify({ ...start, formatVersion: 2 }, null, 2)}\n`);
+    // The header still resolves a legacy run's identity, so path resolution
+    // can reach a read-only report...
+    expect(readStartStateHeader(paths).formatVersion).toBe(2);
+    // ...while every operational read of the same file stays fail-closed.
+    expect(() => readStartState(paths)).toThrow(/Wipe this issue/);
   });
 
   it("rejects stale whole-state writes after an owner control revision", () => {

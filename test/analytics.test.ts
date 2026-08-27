@@ -66,6 +66,76 @@ const transcriptRoots = (): { claude: string; codex: string } => {
   return { claude, codex };
 };
 
+/** A Codex root whose only transcript holds two token records and no turn ids. */
+const sharedTurnCodexRoot = (): { codex: string } => {
+  const root = mkdtempSync(join(tmpdir(), "coord-analytics-shared-turn-"));
+  roots.push(root);
+  const codex = join(root, ".codex");
+  const path = join(codex, "sessions", "2026", "08", "21", "rollout-fixture-session-shared.jsonl");
+  mkdirSync(dirname(path), { recursive: true });
+  copyFileSync(join(fixtures, "transcript-codex-shared-turn.jsonl"), path);
+  return { codex };
+};
+
+/**
+ * Two coordinator actions inside one vendor turn window.
+ *
+ * `turnIds` supplies the vendor turn id each prompt reported: one shared id is
+ * the Codex mid-turn-prompt case, two ids are genuinely different turns.
+ */
+const nestedWindowJournal = (turnIds: readonly [string, string]): JournalEvent[] =>
+  [
+    { sequence: 0, at: "2026-08-21T00:00:00.000Z", type: "started", details: { issue: 89, profile: "consensus" } },
+    {
+      sequence: 1,
+      at: "2026-08-21T00:00:00.100Z",
+      type: "action-prepared",
+      agent: "codex",
+      actionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      details: { requiredPath: ".plans/issue-89/plan.md" }
+    },
+    {
+      sequence: 2,
+      at: "2026-08-21T00:00:01.000Z",
+      type: "agent-lifecycle",
+      agent: "codex",
+      actionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      details: { vendor: "codex", event: "UserPromptSubmit", kind: "prompt-submitted", sessionId: "session-shared", turnId: turnIds[0] }
+    },
+    { sequence: 3, at: "2026-08-21T00:00:04.000Z", type: "gate-advanced", details: { from: "R1.join", to: "R2.plan", round: null } },
+    {
+      sequence: 4,
+      at: "2026-08-21T00:00:04.100Z",
+      type: "action-prepared",
+      agent: "codex",
+      actionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      details: { requiredPath: ".plans/issue-89/review.md" }
+    },
+    {
+      sequence: 5,
+      at: "2026-08-21T00:00:05.000Z",
+      type: "agent-lifecycle",
+      agent: "codex",
+      actionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      details: { vendor: "codex", event: "UserPromptSubmit", kind: "prompt-submitted", sessionId: "session-shared", turnId: turnIds[1] }
+    },
+    {
+      sequence: 6,
+      at: "2026-08-21T00:00:08.000Z",
+      type: "agent-lifecycle",
+      agent: "codex",
+      details: { vendor: "codex", event: "Stop", kind: "stopped", sessionId: "session-shared", turnId: turnIds[0] }
+    },
+    {
+      sequence: 7,
+      at: "2026-08-21T00:00:09.000Z",
+      type: "agent-lifecycle",
+      agent: "codex",
+      details: { vendor: "codex", event: "Stop", kind: "stopped", sessionId: "session-shared", turnId: turnIds[1] }
+    },
+    { sequence: 8, at: "2026-08-21T00:00:10.000Z", type: "gate-advanced", details: { from: "R2.plan", to: null, round: null } }
+  ].map((event) => journalEventSchema.parse({ formatVersion: 4, ...event }));
+
 const removeBrokenClaudeRecord = (roots: { claude: string }): void => {
   const path = join(roots.claude, "projects", "fixture", "session-claude.jsonl");
   const records = readFileSync(path, "utf8").trim().split("\n");
@@ -420,6 +490,152 @@ describe("analytics aggregation", () => {
       phases: [{ phase: "R1.join", tokens: { input: 40, output: 8, cacheRead: 12, cacheWrite: 0 }, toolCalls: 1 }]
     });
     expect(renderAnalytics(report)).toContain("cursor: coverage=complete");
+  });
+
+  it("assigns records shared by one vendor turn to the latest action, labelled partial", () => {
+    const codexStart = startStateSchema.parse({
+      ...start,
+      originalRoster: ["codex"],
+      agents: [{ id: "codex", root: "/clone-codex", launcher: "start-codex.sh", delivery: "pull" }]
+    });
+    const report = buildAnalytics({
+      start: codexStart,
+      journal: nestedWindowJournal(["turn-shared", "turn-shared"]),
+      activeRoster: ["codex"],
+      transcriptRoots: sharedTurnCodexRoot()
+    });
+    const codex = report.usage?.agents.find((agent) => agent.agent === "codex");
+
+    // The record inside only the first window is exact; the record inside both
+    // belongs to one vendor turn, so it lands in the later action's phase
+    // rather than being discarded.
+    expect(codex?.phases.map((phase) => [phase.phase, phase.tokens?.output])).toEqual([
+      ["R1.join", 10],
+      ["R2.plan", 30]
+    ]);
+    expect(codex?.unassigned.tokenRecords).toBe(0);
+    expect(codex?.tokenCoverage).toBe("partial");
+    expect(codex?.tokenReason).toContain("shared by one vendor turn across several actions");
+    expect(report.usage?.tokenTotal).toBeNull();
+  });
+
+  it("leaves records unassigned when overlapping windows are different vendor turns", () => {
+    const codexStart = startStateSchema.parse({
+      ...start,
+      originalRoster: ["codex"],
+      agents: [{ id: "codex", root: "/clone-codex", launcher: "start-codex.sh", delivery: "pull" }]
+    });
+    const report = buildAnalytics({
+      start: codexStart,
+      journal: nestedWindowJournal(["turn-one", "turn-two"]),
+      activeRoster: ["codex"],
+      transcriptRoots: sharedTurnCodexRoot()
+    });
+    const codex = report.usage?.agents.find((agent) => agent.agent === "codex");
+
+    expect(codex?.phases.map((phase) => [phase.phase, phase.tokens?.output])).toEqual([
+      ["R1.join", 10],
+      ["R2.plan", 0]
+    ]);
+    expect(codex?.unassigned.tokenRecords).toBe(1);
+    expect(codex?.tokenReason).toContain("unassigned");
+    expect(codex?.tokenReason).not.toContain("shared by one vendor turn");
+  });
+
+  it("splits the headline run into elapsed, paused, and unpaused time", () => {
+    const journal = [
+      { sequence: 0, at: "2026-08-21T00:00:00.000Z", type: "started", details: { issue: 89, profile: "consensus" } },
+      { sequence: 1, at: "2026-08-21T00:01:00.000Z", type: "paused", details: {} },
+      // A duplicate pause must not open a second interval.
+      { sequence: 2, at: "2026-08-21T00:02:00.000Z", type: "paused", details: {} },
+      { sequence: 3, at: "2026-08-21T00:03:00.000Z", type: "resumed", details: {} },
+      // A resume with nothing paused is a no-op, not negative time.
+      { sequence: 4, at: "2026-08-21T00:04:00.000Z", type: "resumed", details: {} },
+      { sequence: 5, at: "2026-08-21T00:08:00.000Z", type: "paused", details: {} },
+      { sequence: 6, at: "2026-08-21T00:10:00.000Z", type: "gate-advanced", details: { from: "R1.join", to: null, round: null } }
+    ].map((event) => journalEventSchema.parse({ formatVersion: 4, ...event }));
+    const report = buildAnalytics({ start, journal, activeRoster: ["claude"], now: "2026-08-21T00:20:00.000Z" });
+
+    // 2 min of the closed pause, plus the pause still open at the run's end.
+    expect(report.run).toMatchObject({ durationMs: 600_000, pausedMs: 240_000, unpausedMs: 360_000 });
+    expect(renderAnalytics(report)).toContain("Run: elapsed 10.00 min; paused 4.00 min; unpaused 6.00 min");
+  });
+
+  it("reports zero paused time, and never null, for a run that was never paused", () => {
+    const report = buildAnalytics({ start, journal: readJournalFixture(), transcriptRoots: transcriptRoots() });
+    expect(report.run.pausedMs).toBe(0);
+    expect(report.run.unpausedMs).toBe(report.run.durationMs);
+  });
+
+  it("measures a wait from the first outstanding nudge, so a late retry cannot hide the stall", () => {
+    const actionId = "66666666-6666-4666-8666-666666666666";
+    const journal = [
+      { sequence: 0, at: "2026-08-21T00:00:00.000Z", type: "started", details: { issue: 89, profile: "consensus" } },
+      { sequence: 1, at: "2026-08-21T00:00:00.000Z", type: "nudged", agent: "claude", actionId, details: {} },
+      { sequence: 2, at: "2026-08-21T01:00:00.000Z", type: "nudged", agent: "claude", actionId, details: {} },
+      {
+        sequence: 3,
+        at: "2026-08-21T01:05:00.000Z",
+        type: "intent-seen",
+        agent: "claude",
+        actionId,
+        submissionSha: "a".repeat(40),
+        details: {}
+      },
+      { sequence: 4, at: "2026-08-21T01:05:00.000Z", type: "response-accepted", agent: "claude", actionId, details: {} }
+    ].map((event) => journalEventSchema.parse({ formatVersion: 4, ...event }));
+    const report = buildAnalytics({ start, journal, activeRoster: ["claude"], now: "2026-08-21T01:10:00.000Z" });
+
+    expect(report.waits).toEqual([{ agent: "claude", count: 1, medianMs: 3_900_000, maxMs: 3_900_000 }]);
+    // The two tables sit side by side under matching labels, so the ballot
+    // table must anchor on the same nudge.
+    expect(report.responseLatency).toEqual([{ agent: "claude", count: 1, medianMs: 3_900_000, maxMs: 3_900_000 }]);
+  });
+
+  it("reports final-check durations and leaves an unmeasured check unavailable", () => {
+    const actionId = "77777777-7777-4777-8777-777777777777";
+    const journal = [
+      { sequence: 0, at: "2026-08-21T00:00:00.000Z", type: "started", details: { issue: 89, profile: "consensus" } },
+      {
+        sequence: 1,
+        at: "2026-08-21T00:01:00.000Z",
+        type: "final-check",
+        agent: "claude",
+        actionId,
+        details: { tier: "checks", name: "check", argv: ["pnpm", "run", "check"], exitCode: 1, durationMs: 42_000 }
+      },
+      {
+        sequence: 2,
+        at: "2026-08-21T00:02:00.000Z",
+        type: "final-check",
+        agent: "claude",
+        actionId,
+        details: { tier: "checks", name: "legacy-check", argv: ["pnpm", "run", "check"], exitCode: 0 }
+      },
+      { sequence: 3, at: "2026-08-21T00:03:00.000Z", type: "gate-advanced", details: { from: "R1.join", to: null, round: null } }
+    ].map((event) => journalEventSchema.parse({ formatVersion: 4, ...event }));
+    const report = buildAnalytics({ start, journal, activeRoster: ["claude"] });
+
+    expect(report.finalChecks).toEqual([
+      { at: "2026-08-21T00:01:00.000Z", agent: "claude", name: "check", tier: "checks", exitCode: 1, durationMs: 42_000 },
+      { at: "2026-08-21T00:02:00.000Z", agent: "claude", name: "legacy-check", tier: "checks", exitCode: 0, durationMs: null }
+    ]);
+    const rendered = renderAnalytics(report);
+    expect(rendered).toContain("- check (tier: checks): exit=1 duration=42.0s");
+    // Absent is unavailable, never a zero-cost check.
+    expect(rendered).toContain("- legacy-check (tier: checks): exit=0 duration=unavailable");
+  });
+
+  it("names the agents that block a cross-roster token total", () => {
+    const report = buildAnalytics({
+      start,
+      journal: readJournalFixture(),
+      activeRoster: ["claude", "codex"],
+      transcriptRoots: transcriptRoots()
+    });
+    expect(report.usage?.tokenTotal).toBeNull();
+    expect(report.usage?.tokenTotalReason).toContain("claude (coverage=partial)");
+    expect(renderAnalytics(report)).toContain("Cross-roster token total: unavailable (not every active agent");
   });
 
   it("separates agent response latency from evidence-publication latency", () => {

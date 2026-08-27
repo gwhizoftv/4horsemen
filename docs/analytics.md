@@ -96,7 +96,7 @@ cost comes from vendor-private stores:
 | --- | --- | --- |
 | claude | `~/.claude/projects/<slug>/<sessionId>.jsonl` | **Yes** — per assistant message: `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, plus `timestamp` |
 | codex | `~/.codex/sessions/YYYY/MM/DD/*.jsonl` | **Yes** — `event_msg` / `token_count` with `total_token_usage` and `last_token_usage` (cumulative + delta), `cached_input_tokens`, `reasoning_output_tokens`, `model_context_window` |
-| cursor | journaled `agent-usage` from managed `.cursor/hooks.json` (`postToolUse`, `afterAgentResponse`, optional token fields on `stop`) | **Yes when hooks fire** — `conversation_id` / `generation_id` correlate to lifecycle turns; no `store.db` scrape |
+| cursor | journaled `agent-usage` from managed `.cursor/hooks.json` (`postToolUse`, `afterAgentResponse`, optional token fields on `stop`) | **Yes when hooks fire** — `conversation_id` / `generation_id` correlate to lifecycle turns; no `store.db` scrape. Rows are journaled in the coordinator's *normalized* shape (`input`/`output`/`cacheRead`/`cacheWrite`/`reasoning`) and read back in that shape; the vendor aliases remain accepted for rows written raw |
 | antigravity | — | **No local store found** |
 
 So token analytics is currently possible for two of four agents, by reading
@@ -201,9 +201,14 @@ good enough for ranking phases and wrong for billing.
 
 ### 2.3 Delivery and agent latency — exact, from `nudged` → `intent-seen`
 
-Pair each `intent-seen` with the immediately preceding unmatched `nudged` for
-the same `(agent, actionId)`, so a retry is a new delivery attempt rather than
-an overlapping wait from the action's first nudge:
+Pair each `intent-seen` with the **first outstanding** `nudged` for the same
+`(agent, actionId)`. A retry sent into an unanswered action does not restart the
+clock — that is what keeps an hours-long stall visible instead of reporting only
+the minutes after the last nudge — and the pending anchor is cleared on pairing,
+so a nudge issued after an answered action still opens a new interval. The same
+rule anchors ballot response latency, because the two tables are printed
+together under matching `nudged ->` labels. The issue-76 table below predates
+this rule and pairs on the immediately preceding nudge:
 
 | agent | actions | median | max | total waited |
 | --- | ---: | ---: | ---: | ---: |
@@ -227,8 +232,10 @@ is trading against a component that currently costs ~1 s per action.
 
 Two `final-check` records, `pnpm run check`: exit 1 at `19:14:23`, exit 0 at
 `19:17:18`. The gap between them (2.9 min) includes a rejection, a re-push, and a
-re-run — the record itself has no duration field, so a single check's cost cannot
-be isolated. See §3.3.
+re-run. Records written before durations were measured have no duration field,
+and analytics reports those as `unavailable`; every `final-check` journaled
+since carries `durationMs` measured around the check command itself (worktree
+setup and teardown are coordinator overhead, not check cost). See §3.3.
 
 ---
 
@@ -270,10 +277,11 @@ verification (pair with `intent-seen`) and for phases (pair consecutive gates),
 but **not** for individual final checks, which are the most expensive
 coordinator-side operation in the run.
 
-**Fix:** add `durationMs` to `final-check.details` (measured around
-`this.processRunner` at `src/runLoop.ts:911`), and to `verify-result.details`.
-`durationMs` on `gate-advanced` is redundant but makes the journal readable
-without a join.
+**Fixed for `final-check`:** `durationMs` is journaled in
+`final-check.details`, measured around `this.processRunner` in
+`verifyFinalizationChecks`. An unparsable or backwards clock journals `null`,
+never `0`. `verify-result` and `gate-advanced` durations remain deferred — both
+are recoverable by pairing events, and neither is needed for a metric here.
 
 ### 3.4 The delivery chain is never journaled
 
@@ -410,9 +418,19 @@ It reports four metrics:
 - **Time** — the run begins at `started.at`; completed phase intervals end at
   their `gate-advanced.at`. An unfinished final interval is labelled
   `in-progress`. An end before its start reports `invalid`, never a negative
-  duration. Per-agent waits pair each `intent-seen` with the immediately
-  preceding unmatched `nudged` for the same `(agent, actionId)`; the displayed
-  median uses the upper middle value, matching the issue-76 acceptance table.
+  duration. The run headline is split into **elapsed**, **paused**, and
+  **unpaused**: pause spans come from the `paused` / `resumed` events already in
+  the journal, merged so a duplicate `paused` opens no second interval and a
+  `resumed` with nothing paused is a no-op, clipped to the run window, and a
+  pause still open at the report endpoint runs to that endpoint. Phase rows
+  remain elapsed wall time. Per-agent waits pair each `intent-seen` with the
+  **first outstanding** `nudged` for the same `(agent, actionId)`, so a late
+  retry cannot hide the stall it was sent to recover from; ballot response
+  latency uses the same anchor. The displayed median uses the upper middle
+  value, matching the issue-76 acceptance table.
+- **Final checks** — each hermetic `checks` run at the approved commit, with its
+  exit code and `durationMs`. A record journaled before durations were measured
+  reports `unavailable`, never `0`.
 - **Token count** — `input`, `output`, `cacheRead`, `cacheWrite`, and
   `reasoning` when the vendor reports it. Claude uses de-duplicated per-message
   `usage`. Codex uses `last_token_usage` deltas and never sums cumulative
@@ -449,10 +467,16 @@ length and reads no appended bytes.
 
 The complete coordinator window is the supported Codex token route. Other
 records without an exact turn key may use the same window only as a labelled
-`partial` fallback. Records matching neither an exact turn nor exactly one
-complete window are reported as `unassigned`; they are never silently folded
-into a phase. Missing identity on any attempted action and any measured
-unassigned record lower coverage.
+`partial` fallback. One record can fall inside several windows, because a vendor
+reuses a single turn id when a second prompt is submitted while a turn is still
+running: two coordinator actions then nest inside one vendor turn. When every
+matching window carries the **same** `sessionId` and `turnId`, that is not
+ambiguity about which turn produced the record, and it is assigned to the most
+recently submitted prompt — never as `exact`, always with a reason naming the
+shared turn. Windows spanning different turn ids stay `unassigned`. Records
+matching neither an exact turn nor a resolvable window are reported as
+`unassigned`; they are never silently folded into a phase. Missing identity on
+any attempted action and any measured unassigned record lower coverage.
 
 ### Coverage
 
@@ -469,19 +493,47 @@ one of:
 Absent data is `null`/`unavailable`, never zero. Valid rows remain visible under
 `partial` coverage when a sibling record is malformed. A readable supported
 transcript with usage records but no tool records has a real tool count of zero.
-A cross-roster token total appears only when every active agent has complete
-token coverage and no measured token record is unassigned. There is never a
-cross-roster tool total because vendor invocation semantics differ.
+A Cursor session that journaled no token fields is `unavailable`, not
+`unsupported`: Cursor can report tokens, so this is missing data rather than an
+unsupported vendor. A cross-roster token total appears only when every active
+agent has complete token coverage and no measured token record is unassigned;
+when it is withheld, the report names the agents that blocked it rather than
+leaving the reader to guess. There is never a cross-roster tool total because
+vendor invocation semantics differ.
 
 Historical journals without `sessionId` remain useful: the command reports
 phase count, time, and agent wait, and omits token/tool sections rather than
 failing.
 
+### Legacy runs are readable, never runnable
+
+`coord analytics` reads runtime formats 2 and 3 as read-only history. It takes
+identity from a loose start-state *header* (`issue`, `originalRoster`,
+`createdAt`, plus `configPath` / `completesRoot` for path resolution), reads the
+journal through a reader that normalizes `formatVersion` in memory, and does not
+open `cursors.json` at all — that schema moved on between formats, so the roster
+comes from the header the run was created with. Path resolution
+(`matchesConfig`, `withStoredMailbox`) uses the same header, because otherwise
+the format barrier fires during lookup and the read-only branch is never
+reached.
+
+Nothing is migrated and no byte is rewritten. `readStartState`,
+`readCursorsState`, `readJournal` and every mutating path keep the strict
+schemas, so `start`, `run` and `resume` still refuse the same files with the
+wipe-and-restart message. A legacy line whose event `type` this build no longer
+knows is skipped and **counted** in the report's provenance line; a line of a
+*known* type that fails validation is an error, because skipping a malformed
+terminal `gate-advanced` would render a finished run as still in progress.
+
 ## 6. Deferred from Phase 1
 
-The following may be evaluated in Phase 2 only when the four metrics justify
-them: `preparedAt`, explicit `durationMs` fields, delivery-chain events,
-antigravity status debouncing, a `render.log` writer/removal, JSON or aggregate
-dashboards, context indexes, protocol trimming, and any workflow-step or
-message consolidation. None is required to measure phase count, time, tokens,
-or tools accurately, so none belongs in this instrumentation change.
+Issue 118 delivered the `final-check` duration, the paused/unpaused split, the
+stall-aware wait anchor, Cursor token capture end to end, the shared-vendor-turn
+Codex join, the explained cross-roster total, and read-only legacy analytics.
+
+Still deferred: `preparedAt`, `durationMs` on `verify-result` and
+`gate-advanced`, delivery-chain (`action-timing`) events, antigravity status
+debouncing, a `render.log` writer/removal, an `analytics-summary.json` snapshot,
+`actionId` back-fill on usage rows, JSON or aggregate dashboards, context
+indexes, protocol trimming, and any workflow-step or message consolidation.
+None is required to measure phase count, time, tokens, or tools accurately.

@@ -695,6 +695,89 @@ export const atomicWriteJson = (root: string, path: string, value: unknown): voi
 
 export const readConfig = (path: string): CoordinatorConfig => parseFile(path, coordinatorConfigSchema);
 export const readStartState = (paths: IssueRuntimePaths): StartState => parseFile(paths.start, startStateSchema);
+
+export const isLegacyRuntimeFormat = (formatVersion: number): boolean =>
+  LEGACY_RUNTIME_FORMAT_VERSIONS.has(formatVersion);
+
+/**
+ * The identity fields a reader needs before it knows which format it is holding.
+ *
+ * Deliberately loose: it validates nothing about the control plane, so it must
+ * never stand in for `readStartState` in a command that mutates state. Path
+ * resolution and `coord analytics` use it because both need `configPath` /
+ * `completesRoot` (and, for analytics, the three fields the report consumes)
+ * *before* the format barrier can be applied.
+ */
+const startStateHeaderSchema = z.looseObject({
+  formatVersion: z.number().int().positive(),
+  issue: issueSchema,
+  originalRoster: z.array(agentIdSchema).min(1),
+  configPath: z.string().min(1),
+  completesRoot: z.string().min(1).optional(),
+  createdAt: timestampSchema
+});
+
+export type StartStateHeader = z.infer<typeof startStateHeaderSchema>;
+
+export const readStartStateHeader = (paths: IssueRuntimePaths): StartStateHeader => {
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(paths.start, "utf8")) as unknown;
+  } catch (error) {
+    throw new Error(`Cannot parse ${paths.start}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const result = startStateHeaderSchema.safeParse(value);
+  if (!result.success) {
+    throw new Error(`Invalid ${paths.start}: ${z.prettifyError(result.error)}`);
+  }
+  return result.data;
+};
+
+export type AnalyticsJournalRead = {
+  events: JournalEvent[];
+  formatVersion: number;
+  /** Legacy lines whose `type` this build no longer knows; reported, never hidden. */
+  skipped: number;
+};
+
+/**
+ * Read a journal for read-only reporting, including formats this build refuses
+ * to run.
+ *
+ * `formatVersion` is normalized in memory so the report can be built; no byte
+ * on disk is rewritten, and the strict `readJournal` still rejects the same
+ * file, which is what keeps a legacy run reportable but not resumable. A line
+ * of a *known* event type that fails validation throws: skipping one would let
+ * a missing terminal `gate-advanced` render as a still-running issue.
+ */
+export const readJournalForAnalytics = (paths: IssueRuntimePaths): AnalyticsJournalRead => {
+  if (!existsSync(paths.journal)) return { events: [], formatVersion: RUNTIME_FORMAT_VERSION, skipped: 0 };
+  const knownTypes = new Set(journalEventSchema.shape.type.options);
+  const lines = readFileSync(paths.journal, "utf8").split("\n").filter((line) => line !== "");
+  const events: JournalEvent[] = [];
+  let formatVersion = RUNTIME_FORMAT_VERSION;
+  let skipped = 0;
+  for (const [index, line] of lines.entries()) {
+    let value: unknown;
+    try {
+      value = JSON.parse(line) as unknown;
+    } catch (error) {
+      throw new Error(`Invalid journal line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const record = value as { formatVersion?: unknown; type?: unknown };
+    if (typeof record.formatVersion === "number" && index === 0) formatVersion = record.formatVersion;
+    if (typeof record.type !== "string" || !knownTypes.has(record.type as JournalEvent["type"])) {
+      skipped += 1;
+      continue;
+    }
+    const parsed = journalEventSchema.safeParse({ ...record, formatVersion: RUNTIME_FORMAT_VERSION });
+    if (!parsed.success) {
+      throw new Error(`Invalid journal line ${index + 1}: ${z.prettifyError(parsed.error)}`);
+    }
+    events.push(parsed.data);
+  }
+  return { events, formatVersion, skipped };
+};
 export const readCursorsState = (paths: IssueRuntimePaths): CursorsState => parseFile(paths.cursors, cursorsStateSchema);
 
 export const initialCursors = (start: StartState, now = new Date().toISOString()): CursorsState => {

@@ -1617,9 +1617,14 @@ describe("effectful run loop", () => {
       pushes += 1;
     };
     let opens = 0;
+    // An advancing clock so the journaled duration is an exact measurement
+    // rather than an artifact of a frozen fixture time.
+    const clock = ["2026-08-21T00:00:00.000Z", "2026-08-21T00:00:07.500Z"];
+    let tick = 0;
     const loop = new CoordinatorRunLoop(paths, {
       tmux: null,
       mirror,
+      now: () => clock[tick++] ?? "2026-08-21T00:00:07.500Z",
       processRunner: async () => ({ exitCode: 1, stdout: "", stderr: "test failed" }),
       pullRequestOpener: async () => {
         opens += 1;
@@ -1660,6 +1665,9 @@ describe("effectful run loop", () => {
     // `checks` at the approved commit reach here.
     const finalCheck = readJournal(paths).find((event) => event.type === "final-check");
     expect(finalCheck?.details).toMatchObject({ tier: "checks", name: "check", exitCode: 1 });
+    // The most expensive coordinator-side operation in a run is otherwise
+    // recorded as an instant with no cost at all.
+    expect(finalCheck?.details.durationMs).toBe(7500);
     expect(pushes).toBe(0);
     expect(opens).toBe(0);
     expect(readCursorsState(paths).publication.status).toBe("not-required");

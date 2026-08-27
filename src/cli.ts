@@ -44,11 +44,14 @@ import {
   cursorsStateSchema,
   dropAgent,
   initializeOperationalState,
+  isLegacyRuntimeFormat,
   mutateCursorsState,
   readConfig,
   readCursorsState,
   readJournal,
+  readJournalForAnalytics,
   readStartState,
+  readStartStateHeader,
   replaceCursor,
   setPaused,
   verifyPhaseSchema,
@@ -189,7 +192,7 @@ const parseIssue = (value: string): number => {
  */
 const withStoredMailbox = (paths: IssueRuntimePaths): IssueRuntimePaths => {
   if (!existsSync(paths.start)) return paths;
-  const start = readStartState(paths);
+  const start = readStartStateHeader(paths);
   if (start.completesRoot === undefined || resolve(start.completesRoot) === paths.completesRoot) return paths;
   return issueRuntimePaths(paths.coordRoot, paths.issue, start.completesRoot);
 };
@@ -225,6 +228,7 @@ Usage:
   coord run --issue <issue> [--product <path> | --coord-root <path>] [-v|--verbose]
   coord status --issue <issue> [--product <path> | --coord-root <path>]
   coord analytics --issue <issue> [--product <path> | --coord-root <path>]
+                 (also reads completed legacy format 2/3 runs, read-only)
   coord next --issue <issue> [--product <path> | --coord-root <path>] [--agent <agent>]
   coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
   coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
@@ -604,7 +608,11 @@ const resolveStart = (parsed: ParsedArgs, io: CliIo): StartResolution => {
 
 const matchesConfig = (paths: IssueRuntimePaths, configPath: string): boolean => {
   if (!existsSync(paths.start)) return false;
-  const start = readStartState(paths);
+  // Header read, not `readStartState`: locating runtime state must not depend
+  // on the format barrier, or a completed legacy issue becomes unreachable to
+  // read-only `analytics` before its branch ever runs. Every command that
+  // mutates state still parses the full schema and still fails closed.
+  const start = readStartStateHeader(paths);
   return resolve(start.configPath) === resolve(configPath);
 };
 
@@ -1328,19 +1336,44 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       allowedFlags(parsed, ["issue", "coord-root", "product"]);
       if (parsed.positionals.length !== 0) throw new Error("analytics takes no positional arguments.");
       const paths = existingContext(parsed, io);
+      const header = readStartStateHeader(paths);
+      const legacy = isLegacyRuntimeFormat(header.formatVersion);
+      const home = dependencies.home === undefined ? homedir() : dependencies.home;
+      const transcriptRoots = {
+        claude: home === null ? null : resolve(home, ".claude"),
+        codex: home === null ? null : resolve(home, ".codex")
+      };
+      if (legacy) {
+        // Read-only history: report it, never make it runnable. `cursors.json`
+        // is not read at all — its schema moved on between formats — so the
+        // roster comes from the start header the run was created with.
+        const legacyJournal = readJournalForAnalytics(paths);
+        io.stdout(
+          renderAnalytics(
+            buildAnalytics({
+              start: header,
+              journal: legacyJournal.events,
+              activeRoster: header.originalRoster,
+              transcriptRoots,
+              source: {
+                formatVersion: legacyJournal.formatVersion,
+                legacy: true,
+                skippedJournalRecords: legacyJournal.skipped
+              }
+            })
+          )
+        );
+        return 0;
+      }
       const start = readStartState(paths);
       const cursors = readCursorsState(paths);
-      const home = dependencies.home === undefined ? homedir() : dependencies.home;
       io.stdout(
         renderAnalytics(
           buildAnalytics({
             start,
             journal: readJournal(paths),
             activeRoster: cursors.activeRoster,
-            transcriptRoots: {
-              claude: home === null ? null : resolve(home, ".claude"),
-              codex: home === null ? null : resolve(home, ".codex")
-            }
+            transcriptRoots
           })
         )
       );

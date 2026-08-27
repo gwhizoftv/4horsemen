@@ -84,6 +84,32 @@ export const extractCursorTokenUsage = (raw: JsonObject): TokenUsage | null => {
   return null;
 };
 
+/**
+ * Read a `TokenUsage` that this coordinator already normalized.
+ *
+ * `normalizeCursorUsageEvent` journals the canonical shape, not the vendor's:
+ * re-reading a journaled row through `extractCursorTokenUsage` finds none of
+ * its vendor aliases and silently drops every count. Journaled rows are read
+ * through this first, and the vendor aliases stay as the fallback for rows that
+ * were written in the raw hook shape.
+ */
+const normalizedTokenUsage = (value: JsonObject): TokenUsage | null => {
+  const input = intField(value, "input");
+  const output = intField(value, "output");
+  const cacheRead = intField(value, "cacheRead");
+  const cacheWrite = intField(value, "cacheWrite");
+  if (input === undefined && output === undefined && cacheRead === undefined && cacheWrite === undefined) {
+    return null;
+  }
+  return {
+    input: input ?? 0,
+    output: output ?? 0,
+    cacheRead: cacheRead ?? 0,
+    cacheWrite: cacheWrite ?? 0,
+    reasoning: intField(value, "reasoning") ?? null
+  };
+};
+
 export type CursorUsageJournalDetails = {
   vendor: "cursor";
   event: string;
@@ -110,7 +136,9 @@ export const cursorUsageFromJournalDetails = (details: unknown): CursorUsageJour
     kind,
     sessionId,
     turnId,
-    ...(tokens === null ? {} : { tokens: extractCursorTokenUsage(tokens) ?? undefined }),
+    ...(tokens === null
+      ? {}
+      : { tokens: normalizedTokenUsage(tokens) ?? extractCursorTokenUsage(tokens) ?? undefined }),
     ...(typeof record.toolCalls === "number" && Number.isInteger(record.toolCalls) && record.toolCalls >= 0
       ? { toolCalls: record.toolCalls }
       : {})
@@ -194,14 +222,17 @@ export const readCursorHookUsage = (
   }
 
   const turns = [...turnMap.values()].sort((left, right) => left.turnId.localeCompare(right.turnId));
+  // Cursor *can* report tokens, so a session with none is missing data, not an
+  // unsupported vendor: `unavailable` is the honest label and keeps per-phase
+  // tokens null rather than zero.
   const tokenCoverage: AnalyticsCoverage =
-    tokenRecords === 0 ? "unsupported" : turns.every((turn) => turn.tokenRecords > 0) ? "complete" : "partial";
-  const toolCoverage: AnalyticsCoverage = toolRecords === 0 ? "complete" : "complete";
+    tokenRecords === 0 ? "unavailable" : turns.every((turn) => turn.tokenRecords > 0) ? "complete" : "partial";
+  const toolCoverage: AnalyticsCoverage = "complete";
   const coverage: AnalyticsCoverage =
-    tokenCoverage === "unsupported"
+    tokenCoverage === "unavailable"
       ? toolRecords > 0
         ? "partial"
-        : "unsupported"
+        : "unavailable"
       : tokenCoverage === "partial"
         ? "partial"
         : "complete";

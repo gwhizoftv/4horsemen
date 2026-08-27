@@ -1,0 +1,12 @@
+{"formatVersion":2,"sequence":0,"at":"2026-08-19T00:00:00.000Z","type":"started","details":{"issue":76,"profile":"consensus"}}
+{"formatVersion":2,"sequence":1,"at":"2026-08-19T00:00:10.000Z","type":"action-prepared","agent":"claude","actionId":"11111111-1111-4111-8111-111111111111","details":{"requiredPath":".plans/issue-76/plan.md"}}
+{"formatVersion":2,"sequence":2,"at":"2026-08-19T00:00:20.000Z","type":"nudged","agent":"claude","actionId":"11111111-1111-4111-8111-111111111111","details":{}}
+{"formatVersion":2,"sequence":3,"at":"2026-08-19T00:10:20.000Z","type":"nudged","agent":"claude","actionId":"11111111-1111-4111-8111-111111111111","details":{}}
+{"formatVersion":2,"sequence":4,"at":"2026-08-19T00:12:20.000Z","type":"intent-seen","agent":"claude","actionId":"11111111-1111-4111-8111-111111111111","submissionSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","details":{}}
+{"formatVersion":2,"sequence":5,"at":"2026-08-19T00:12:30.000Z","type":"verify-result","agent":"claude","actionId":"11111111-1111-4111-8111-111111111111","details":{"status":"ok"}}
+{"formatVersion":2,"sequence":6,"at":"2026-08-19T00:15:00.000Z","type":"gate-advanced","details":{"from":"R1.join","to":"R2.plan","round":null}}
+{"formatVersion":2,"sequence":7,"at":"2026-08-19T00:20:00.000Z","type":"paused","details":{}}
+{"formatVersion":2,"sequence":8,"at":"2026-08-19T00:30:00.000Z","type":"resumed","details":{}}
+{"formatVersion":2,"sequence":9,"at":"2026-08-19T00:35:00.000Z","type":"deterministic-publication","details":{"note":"a format-2 event type this build no longer knows"}}
+{"formatVersion":2,"sequence":10,"at":"2026-08-19T00:40:00.000Z","type":"final-check","agent":"claude","actionId":"11111111-1111-4111-8111-111111111111","details":{"tier":"checks","name":"check","argv":["pnpm","run","check"],"exitCode":0}}
+{"formatVersion":2,"sequence":11,"at":"2026-08-19T00:45:00.000Z","type":"gate-advanced","details":{"from":"R2.plan","to":null,"round":null}}

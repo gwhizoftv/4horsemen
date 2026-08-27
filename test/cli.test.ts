@@ -455,6 +455,56 @@ describe("CLI", () => {
     expect(output.join("")).toContain("Policy: owner-only");
   });
 
+  it("reports a completed legacy run read-only while run stays fail-closed", async () => {
+    const fixture = setup();
+    expect(
+      await runCli(
+        ["start", "2", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+        { processRunner: resolvableStartGit, makeRunLoop: fakeLoop }
+      )
+    ).toBe(0);
+    const paths = issueRuntimePaths(fixture.runtime, 2);
+
+    // Age the runtime the way a pre-format-3 issue is aged on disk: the bytes
+    // of a run that completed before this build's format barrier existed.
+    const start = JSON.parse(readFileSync(paths.start, "utf8")) as Record<string, unknown>;
+    writeFileSync(paths.start, `${JSON.stringify({ ...start, formatVersion: 2 }, null, 2)}\n`);
+    copyFileSync(
+      join(process.cwd(), "test", "support", "fixtures", "analytics-journal-format2.jsonl"),
+      paths.journal
+    );
+
+    const output: string[] = [];
+    expect(
+      await runCli(["analytics", "--issue", "2", "--coord-root", fixture.runtime], {
+        io: { stdout: (message) => output.push(message) }
+      })
+    ).toBe(0);
+    const rendered = output.join("");
+    expect(rendered).toContain("Runtime format 2 (legacy, read-only; this run cannot be resumed)");
+    expect(rendered).toContain("journal records skipped as unknown: 1");
+    expect(rendered).toContain("Time\n");
+    expect(rendered).toContain("Phase count\n");
+    // A paused span in the legacy journal still splits the headline.
+    expect(rendered).toContain("Run: elapsed 45.00 min; paused 10.00 min; unpaused 35.00 min");
+    // The legacy final-check row has no duration field; that is unavailable.
+    expect(rendered).toContain("duration=unavailable");
+    // Wait timing anchors on the first of the two nudges, not the retry.
+    expect(rendered).toContain("claude: count=1 median=720.0s");
+    // No session identity was recorded in format 2, so no invented usage.
+    expect(rendered).not.toContain("Token count");
+
+    // The same bytes must remain unrunnable.
+    const errors: string[] = [];
+    expect(
+      await runCli(["run", "--issue", "2", "--coord-root", fixture.runtime], {
+        io: { stderr: (message) => errors.push(message) },
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(2);
+    expect(errors.join("")).toContain("Runtime format versions 2 and 3 are no longer supported");
+  });
+
   it("prints all four analytics sections, rejects unknown flags, and fails clearly without a journal", async () => {
     const fixture = setup();
     expect(

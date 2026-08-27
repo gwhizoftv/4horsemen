@@ -1807,7 +1807,17 @@ export class CoordinatorRunLoop {
       for (const check of start.checks) {
         this.authority(cursors);
         const argv = check.argv.map((argument) => argument.replaceAll("{worktree}", target));
+        // Scoped to the check command itself: worktree materialization and
+        // removal are coordinator overhead, not the cost of the check.
+        const startedMs = Date.parse(this.now());
         const result = await this.processRunner(argv, target);
+        const endedMs = Date.parse(this.now());
+        // A clock that failed to parse or went backwards yields no measurement.
+        // `null` says "not measured"; 0 would claim a free check.
+        const durationMs =
+          Number.isFinite(startedMs) && Number.isFinite(endedMs) && endedMs >= startedMs
+            ? endedMs - startedMs
+            : null;
         this.authority(cursors);
         checkResults.push({ name: check.name, argv, exitCode: result.exitCode });
         appendJournal(
@@ -1821,7 +1831,7 @@ export class CoordinatorRunLoop {
             // before a commit exists, and this runs the declared `checks`
             // hermetically at the approved commit. Only the second one reaches
             // the journal, and saying so is what makes the distinction legible.
-            details: { tier: "checks", name: check.name, argv, exitCode: result.exitCode }
+            details: { tier: "checks", name: check.name, argv, exitCode: result.exitCode, durationMs }
           },
           this.now()
         );

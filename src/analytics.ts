@@ -1,4 +1,4 @@
-import type { JournalEvent, StartState } from "./state.js";
+import { RUNTIME_FORMAT_VERSION, type JournalEvent, type StartState } from "./state.js";
 import { readCursorHookUsage } from "./cursorHookUsage.js";
 import {
   readTranscript,
@@ -35,6 +35,23 @@ export type IntervalAnalytics = {
   maxMs: number | null;
 };
 
+export type FinalCheckAnalytics = {
+  at: string;
+  agent: string | null;
+  name: string;
+  tier: string | null;
+  exitCode: number | null;
+  /** `null` for records journaled before durations were measured — never 0. */
+  durationMs: number | null;
+};
+
+/** Where this report's inputs came from, so a legacy read-only run says so. */
+export type AnalyticsSource = {
+  formatVersion: number;
+  legacy: boolean;
+  skippedJournalRecords: number;
+};
+
 export type PhaseUsageAnalytics = {
   phaseIndex: number;
   phase: string;
@@ -65,13 +82,19 @@ export type AgentUsageAnalytics = {
 export type AnalyticsReport = {
   issue: number;
   phaseCount: number;
+  source: AnalyticsSource;
   run: {
     startedAt: string;
     endedAt: string;
+    /** Elapsed wall time; keeps its original meaning, pauses included. */
     durationMs: number | null;
+    pausedMs: number | null;
+    unpausedMs: number | null;
     state: MetricState;
   };
   phases: PhaseAnalytics[];
+  /** Hermetic `checks` runs at the approved commit, in journal order. */
+  finalChecks: FinalCheckAnalytics[];
   waits: WaitAnalytics[];
   /** Agent ballot/response wait: nudged → response-accepted (excludes publication). */
   responseLatency: WaitAnalytics[];
@@ -80,6 +103,8 @@ export type AnalyticsReport = {
   usage: {
     agents: AgentUsageAnalytics[];
     tokenTotal: TokenUsage | null;
+    /** Why no cross-roster total was emitted; `null` when one was. */
+    tokenTotalReason: string | null;
   } | null;
 };
 
@@ -154,7 +179,7 @@ const phaseIndexAt = (phases: readonly PhaseAnalytics[], at: string): number | n
   return null;
 };
 
-const derivePhases = (start: StartState, journal: readonly JournalEvent[], now: string): PhaseAnalytics[] => {
+const derivePhases = (start: AnalyticsStart, journal: readonly JournalEvent[], now: string): PhaseAnalytics[] => {
   const started = journal.find((event) => event.type === "started")?.at ?? start.createdAt;
   const gates = journal.filter((event) => event.type === "gate-advanced");
   const phases: PhaseAnalytics[] = [];
@@ -258,7 +283,11 @@ const deriveWaits = (roster: readonly string[], journal: readonly JournalEvent[]
     const key = `${event.agent}\u0000${event.actionId}`;
     if (event.type === "nudged") {
       const at = milliseconds(event.at);
-      if (at !== null) pendingNudge.set(key, at);
+      // First *outstanding* nudge, not the latest: a retry that lands hours
+      // into a stall must not reset the clock and hide the stall it recovers
+      // from. The key is deleted on pairing, so a nudge after an answered
+      // action still opens a new interval.
+      if (at !== null && !pendingNudge.has(key)) pendingNudge.set(key, at);
     } else if (event.type === "intent-seen") {
       const from = pendingNudge.get(key);
       const to = milliseconds(event.at);
@@ -296,7 +325,10 @@ const deriveResponseLatency = (
     const key = `${event.agent}\u0000${event.actionId}`;
     if (event.type === "nudged") {
       const at = milliseconds(event.at);
-      if (at !== null) pendingNudge.set(key, at);
+      // Same first-outstanding rule as `deriveWaits`: the two tables are
+      // printed next to each other under matching `nudged ->` labels, so they
+      // must anchor on the same nudge or the comparison lies.
+      if (at !== null && !pendingNudge.has(key)) pendingNudge.set(key, at);
     } else if (event.type === "response-accepted") {
       const from = pendingNudge.get(key);
       const to = milliseconds(event.at);
@@ -352,6 +384,53 @@ const deriveEvidencePublicationLatency = (journal: readonly JournalEvent[]): Int
   };
 };
 
+/**
+ * Owner pause spans, merged and clipped to the run window.
+ *
+ * A second `paused` while paused is a no-op and a `resumed` while running is
+ * ignored, so a duplicated command cannot double-count; a pause still open at
+ * the report endpoint runs to that endpoint.
+ */
+const derivePausedMs = (journal: readonly JournalEvent[], startMs: number, endMs: number): number => {
+  let openedAt: number | null = null;
+  let paused = 0;
+  const clip = (from: number, to: number): number => Math.max(0, Math.min(to, endMs) - Math.max(from, startMs));
+  for (const event of journal) {
+    if (event.type === "paused") {
+      if (openedAt !== null) continue;
+      const at = milliseconds(event.at);
+      if (at !== null) openedAt = at;
+    } else if (event.type === "resumed") {
+      if (openedAt === null) continue;
+      const at = milliseconds(event.at);
+      if (at !== null && at >= openedAt) paused += clip(openedAt, at);
+      openedAt = null;
+    }
+  }
+  if (openedAt !== null) paused += clip(openedAt, endMs);
+  return Math.min(paused, Math.max(0, endMs - startMs));
+};
+
+const deriveFinalChecks = (journal: readonly JournalEvent[]): FinalCheckAnalytics[] => {
+  const checks: FinalCheckAnalytics[] = [];
+  for (const event of journal) {
+    if (event.type !== "final-check") continue;
+    const details = object(event.details);
+    const durationMs = integer(details?.durationMs);
+    checks.push({
+      at: event.at,
+      agent: event.agent ?? null,
+      name: string(details?.name) ?? "check",
+      tier: string(details?.tier),
+      exitCode: integer(details?.exitCode),
+      // A record written before durations were measured has no field at all;
+      // that is `null`, never a zero-cost check.
+      durationMs: durationMs === null || durationMs < 0 ? null : durationMs
+    });
+  }
+  return checks;
+};
+
 const usageVendorForAgent = (agent: string, journal: readonly JournalEvent[]): UsageVendor | null => {
   if (agent === "cursor") return "cursor";
   for (const event of [...journal].reverse()) {
@@ -386,12 +465,22 @@ const unavailableUsage = (
   unassigned: { tokens: emptyTokens(), toolCalls: 0, records: 0, tokenRecords: 0, toolRecords: 0 }
 });
 
+/**
+ * The only start-state fields a report consumes.
+ *
+ * Narrower than `StartState` on purpose: it is what lets a completed legacy
+ * run be reported from a loose header without parsing — or weakening — the
+ * control-plane schema. `StartState` remains assignable to it.
+ */
+export type AnalyticsStart = Pick<StartState, "issue" | "originalRoster" | "createdAt">;
+
 export type BuildAnalyticsInput = {
-  start: StartState;
+  start: AnalyticsStart;
   journal: readonly JournalEvent[];
   activeRoster?: readonly string[];
   now?: string;
   transcriptRoots?: Partial<Record<TranscriptVendor, string | null>>;
+  source?: AnalyticsSource;
 };
 
 export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
@@ -474,6 +563,7 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
       let unassignedToolRecords = 0;
       let tokenFallbackUsed = false;
       let toolFallbackUsed = false;
+      let sharedTurnRecords = 0;
 
       const assign = (
         phaseIndex: number | null,
@@ -534,13 +624,35 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
                     at >= turn.startedMs &&
                     at <= turn.endedMs
                 );
-          const phaseIndex = matching.length === 1 ? (matching[0]?.phaseIndex ?? null) : null;
-          const exact = matching.length === 1 && phaseIndex !== null && record.windowAttribution === "exact";
+          // Several windows can contain one record because a vendor reuses a
+          // single turn id when a second prompt is submitted mid-turn: the two
+          // coordinator actions then nest inside one vendor turn. That is not
+          // genuine ambiguity about *which turn* produced the record, so it is
+          // resolved to the most recently submitted prompt — the work the
+          // agent had most recently been asked for — and never claimed as
+          // exact. Windows spanning different turn ids stay unassigned.
+          const sharedVendorTurn =
+            matching.length > 1 && new Set(matching.map((turn) => turn.turnId)).size === 1;
+          if (sharedVendorTurn) sharedTurnRecords += record.tokenRecords + record.toolRecords;
+          const selected =
+            matching.length === 1
+              ? matching[0]
+              : sharedVendorTurn
+                ? [...matching].sort((left, right) => right.startedMs - left.startedMs)[0]
+                : undefined;
+          const phaseIndex = selected?.phaseIndex ?? null;
+          const exact =
+            matching.length === 1 && phaseIndex !== null && record.windowAttribution === "exact";
           assign(phaseIndex, record, exact);
         }
       }
       if (unassignedTokenRecords > 0) tokenReasons.push("one or more measured token records are unassigned");
       if (unassignedToolRecords > 0) toolReasons.push("one or more measured tool records are unassigned");
+      if (sharedTurnRecords > 0) {
+        const sharedReason = `${sharedTurnRecords} record(s) were shared by one vendor turn across several actions`;
+        tokenReasons.push(sharedReason);
+        toolReasons.push(sharedReason);
+      }
       if (tokenFallbackUsed) {
         tokenReasons.push("one or more token records used a non-exact attribution fallback");
       }
@@ -573,9 +685,19 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
       });
     }
 
+    // Unchanged policy: every active agent complete, no measured token record
+    // unassigned. Only the *explanation* is new — an unavailable total should
+    // name what blocks it rather than leaving the reader to guess.
+    const blocking = agents
+      .filter((agent) => agent.tokenCoverage !== "complete" || agent.unassigned.tokenRecords > 0)
+      .map((agent) =>
+        agent.tokenCoverage !== "complete"
+          ? `${agent.agent} (coverage=${agent.tokenCoverage})`
+          : `${agent.agent} (${agent.unassigned.tokenRecords} unassigned token record(s))`
+      );
+    const noPhases = phases.length === 0;
     const tokenTotal =
-      phases.length > 0 &&
-      agents.every((agent) => agent.tokenCoverage === "complete" && agent.unassigned.tokenRecords === 0)
+      !noPhases && blocking.length === 0
         ? agents.reduce(
             (total, agent) =>
               agent.phases.reduce(
@@ -585,19 +707,39 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
             emptyTokens()
           )
         : null;
-    usage = { agents: agents.sort((left, right) => left.agent.localeCompare(right.agent)), tokenTotal };
+    const tokenTotalReason =
+      tokenTotal !== null
+        ? null
+        : noPhases
+          ? "no phase intervals were derived"
+          : `not every active agent has complete coverage: ${blocking.join(", ")}`;
+    usage = {
+      agents: agents.sort((left, right) => left.agent.localeCompare(right.agent)),
+      tokenTotal,
+      tokenTotalReason
+    };
   }
 
+  const durationMs = runValid ? endMs - startMs : null;
+  const pausedMs = runValid ? derivePausedMs(input.journal, startMs, endMs) : null;
   return {
     issue: input.start.issue,
     phaseCount: phases.length,
+    source: input.source ?? {
+      formatVersion: RUNTIME_FORMAT_VERSION,
+      legacy: false,
+      skippedJournalRecords: 0
+    },
     run: {
       startedAt,
       endedAt,
-      durationMs: runValid ? endMs - startMs : null,
+      durationMs,
+      pausedMs,
+      unpausedMs: durationMs === null || pausedMs === null ? null : durationMs - pausedMs,
       state: runState
     },
     phases,
+    finalChecks: deriveFinalChecks(input.journal),
     waits: deriveWaits(roster, input.journal),
     responseLatency: deriveResponseLatency(roster, input.journal),
     evidencePublicationLatency: deriveEvidencePublicationLatency(input.journal),
@@ -621,12 +763,28 @@ const formatTokens = (tokens: TokenUsage | null): string => {
 const formatPhase = (phase: Pick<PhaseUsageAnalytics, "phase" | "round">): string =>
   `${phase.phase}${phase.round === null ? "" : ` round ${phase.round}`}`;
 
+const formatSeconds = (durationMs: number | null): string =>
+  durationMs === null ? "unavailable" : `${(durationMs / 1000).toFixed(1)}s`;
+
 export const renderAnalytics = (report: AnalyticsReport): string => {
   const lines = [
     `Issue ${report.issue} analytics`,
+    ...(report.source.legacy || report.source.skippedJournalRecords > 0
+      ? [
+          "",
+          "Source",
+          `Runtime format ${report.source.formatVersion}${
+            report.source.legacy ? " (legacy, read-only; this run cannot be resumed)" : ""
+          }; journal records skipped as unknown: ${report.source.skippedJournalRecords}`
+        ]
+      : []),
     "",
     "Time",
-    `Run: ${formatDuration(report.run.durationMs)} (${report.run.state})`,
+    // Phase rows below remain elapsed wall time; only the run headline is
+    // pause-adjusted, which is where "was this time productive" is asked.
+    `Run: elapsed ${formatDuration(report.run.durationMs)}; paused ${formatDuration(
+      report.run.pausedMs
+    )}; unpaused ${formatDuration(report.run.unpausedMs)} (${report.run.state})`,
     ...report.phases.map(
       (phase) =>
         `- ${phase.name}${phase.round === null ? "" : ` round ${phase.round}`}: ${formatDuration(phase.durationMs)}; actions=${phase.actions}; ${phase.state}`
@@ -635,13 +793,23 @@ export const renderAnalytics = (report: AnalyticsReport): string => {
     "Phase count",
     `${report.phaseCount}`,
     "",
-    "Agent wait (nudged -> intent-seen)",
+    "Final checks",
+    ...(report.finalChecks.length === 0
+      ? ["- none recorded"]
+      : report.finalChecks.map(
+          (check) =>
+            `- ${check.name}${check.tier === null ? "" : ` (tier: ${check.tier})`}: exit=${
+              check.exitCode === null ? "unavailable" : check.exitCode
+            } duration=${formatSeconds(check.durationMs)}`
+        )),
+    "",
+    "Agent wait (first outstanding nudge -> intent-seen)",
     ...report.waits.map(
       (wait) =>
         `- ${wait.agent}: count=${wait.count} median=${wait.medianMs === null ? "unavailable" : `${(wait.medianMs / 1000).toFixed(1)}s`} max=${wait.maxMs === null ? "unavailable" : `${(wait.maxMs / 1000).toFixed(1)}s`}`
     ),
     "",
-    "Agent response latency (nudged -> response-accepted)",
+    "Agent response latency (first outstanding nudge -> response-accepted)",
     ...report.responseLatency.map(
       (wait) =>
         `- ${wait.agent}: count=${wait.count} median=${wait.medianMs === null ? "unavailable" : `${(wait.medianMs / 1000).toFixed(1)}s`} max=${wait.maxMs === null ? "unavailable" : `${(wait.maxMs / 1000).toFixed(1)}s`}`
@@ -675,7 +843,7 @@ export const renderAnalytics = (report: AnalyticsReport): string => {
     }
     lines.push(
       report.usage.tokenTotal === null
-        ? "Cross-roster token total: unavailable (not every active agent has complete coverage)"
+        ? `Cross-roster token total: unavailable (${report.usage.tokenTotalReason ?? "not every active agent has complete coverage"})`
         : `Cross-roster token total: ${formatTokens(report.usage.tokenTotal)}`,
       "",
       "Tool count"

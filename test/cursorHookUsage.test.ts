@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { normalizeCursorUsageEvent } from "../src/agentEvent.js";
 import { extractCursorTokenUsage, readCursorHookUsage } from "../src/cursorHookUsage.js";
 import { journalEventSchema } from "../src/state.js";
 
@@ -35,6 +36,83 @@ describe("cursor hook usage", () => {
       cacheWrite: 2,
       reasoning: null
     });
+  });
+
+  it("reads back the tokens the hook path actually journals", () => {
+    // The write side normalizes before journaling, so a reader that only knows
+    // the vendor aliases silently drops every count. Going through
+    // `normalizeCursorUsageEvent` — rather than hand-writing the journal row —
+    // is what makes that round trip a test at all.
+    const usage = normalizeCursorUsageEvent(
+      "cursor",
+      {
+        conversation_id: "conversation-round-trip",
+        generation_id: "generation-1",
+        inputTokens: 40,
+        outputTokens: 8,
+        cacheReadTokens: 12,
+        cacheWriteTokens: 0
+      },
+      "afterAgentResponse"
+    );
+    expect(usage).not.toBeNull();
+
+    const journal = [
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 0,
+        at: "2026-08-21T00:00:00.000Z",
+        type: "agent-usage",
+        agent: "cursor",
+        details: usage as Record<string, unknown>
+      })
+    ];
+    const result = readCursorHookUsage(journal, "conversation-round-trip");
+    expect(result.tokenCoverage).toBe("complete");
+    expect(result.turns).toEqual([
+      {
+        turnId: "generation-1",
+        tokens: { input: 40, output: 8, cacheRead: 12, cacheWrite: 0, reasoning: null },
+        toolCalls: 0,
+        tokenRecords: 1,
+        toolRecords: 0
+      }
+    ]);
+  });
+
+  it("reports unavailable, not zero, when hooks journal tools but no tokens", () => {
+    const journal = [
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 0,
+        at: "2026-08-21T00:00:00.000Z",
+        type: "agent-usage",
+        agent: "cursor",
+        details: {
+          vendor: "cursor",
+          event: "postToolUse",
+          kind: "tool-used",
+          sessionId: "conversation-tools-only",
+          turnId: "generation-1",
+          toolCalls: 1
+        }
+      })
+    ];
+    const result = readCursorHookUsage(journal, "conversation-tools-only");
+    // Cursor can report tokens, so absence is missing data — not an
+    // unsupported vendor, and never a measured zero.
+    expect(result.tokenCoverage).toBe("unavailable");
+    expect(result.tokenReason).toContain("did not journal token fields");
+    expect(result.toolCoverage).toBe("complete");
+    expect(result.turns).toEqual([
+      {
+        turnId: "generation-1",
+        tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: null },
+        toolCalls: 1,
+        tokenRecords: 0,
+        toolRecords: 1
+      }
+    ]);
   });
 
   it("aggregates journaled tool and token records by generation id", () => {
