@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { extractCursorTokenUsage, readCursorHookUsage } from "../src/cursorHookUsage.js";
+import { normalizeCursorUsageEvent } from "../src/agentEvent.js";
+import {
+  cursorUsageFromJournalDetails,
+  extractCursorTokenUsage,
+  readCursorHookUsage
+} from "../src/cursorHookUsage.js";
 import { journalEventSchema } from "../src/state.js";
 
 describe("cursor hook usage", () => {
@@ -118,5 +123,43 @@ describe("cursor hook usage", () => {
         toolRecords: 1
       }
     ]);
+  });
+
+  it("round-trips normalized hook tokens and reports missing Cursor counters as unavailable", () => {
+    const normalized = normalizeCursorUsageEvent("cursor", {
+      hook_event_name: "afterAgentResponse",
+      conversation_id: "conversation-1",
+      generation_id: "generation-1",
+      inputTokens: 40,
+      outputTokens: 8,
+      cacheReadTokens: 12,
+      cacheWriteTokens: 0
+    });
+    expect(cursorUsageFromJournalDetails(normalized)).toMatchObject({
+      tokens: { input: 40, output: 8, cacheRead: 12, cacheWrite: 0, reasoning: null }
+    });
+
+    const toolsOnly = [
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 0,
+        at: "2026-08-21T00:00:01.000Z",
+        type: "agent-usage",
+        agent: "cursor",
+        details: {
+          vendor: "cursor",
+          event: "postToolUse",
+          kind: "tool-used",
+          sessionId: "conversation-1",
+          turnId: "generation-1",
+          toolCalls: 1
+        }
+      })
+    ];
+    expect(readCursorHookUsage(toolsOnly, "conversation-1")).toMatchObject({
+      tokenCoverage: "unavailable",
+      tokenReason: "Cursor hooks did not journal token fields for this session",
+      turns: [{ tokenRecords: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }]
+    });
   });
 });

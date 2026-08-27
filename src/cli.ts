@@ -45,10 +45,11 @@ import {
   dropAgent,
   initializeOperationalState,
   mutateCursorsState,
+  readAnalyticsRuntime,
   readConfig,
   readCursorsState,
-  readJournal,
   readStartState,
+  readStartStateHeader,
   replaceCursor,
   setPaused,
   verifyPhaseSchema,
@@ -189,7 +190,7 @@ const parseIssue = (value: string): number => {
  */
 const withStoredMailbox = (paths: IssueRuntimePaths): IssueRuntimePaths => {
   if (!existsSync(paths.start)) return paths;
-  const start = readStartState(paths);
+  const start = readStartStateHeader(paths);
   if (start.completesRoot === undefined || resolve(start.completesRoot) === paths.completesRoot) return paths;
   return issueRuntimePaths(paths.coordRoot, paths.issue, start.completesRoot);
 };
@@ -263,7 +264,8 @@ deletes origin issue-N agent/*-final branches plus leftover tracking refs (keepi
 product-local issue branches that have owner commits or uncommitted work, and
 keeping \`issue-N/coordinator-evidence\` unless \`--delete-evidence\`), removes the
 issue runtime and completion mailbox, tears down UI, and leaves the GitHub issue
-open. Runtime format 2 and 3 states must be wiped and restarted (format 4).
+open. The analytics command can report completed runtime format 2 and 3 state read-only;
+all control-plane uses of those formats must be wiped and restarted (format 4).
 
 \`coord manual\` opens or repairs one workspace-scoped harness per configured
 agent, opens only missing Terminal windows, and returns without an issue,
@@ -604,7 +606,7 @@ const resolveStart = (parsed: ParsedArgs, io: CliIo): StartResolution => {
 
 const matchesConfig = (paths: IssueRuntimePaths, configPath: string): boolean => {
   if (!existsSync(paths.start)) return false;
-  const start = readStartState(paths);
+  const start = readStartStateHeader(paths);
   return resolve(start.configPath) === resolve(configPath);
 };
 
@@ -1328,15 +1330,15 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       allowedFlags(parsed, ["issue", "coord-root", "product"]);
       if (parsed.positionals.length !== 0) throw new Error("analytics takes no positional arguments.");
       const paths = existingContext(parsed, io);
-      const start = readStartState(paths);
-      const cursors = readCursorsState(paths);
+      const runtime = readAnalyticsRuntime(paths);
       const home = dependencies.home === undefined ? homedir() : dependencies.home;
       io.stdout(
         renderAnalytics(
           buildAnalytics({
-            start,
-            journal: readJournal(paths),
-            activeRoster: cursors.activeRoster,
+            start: runtime.start,
+            journal: runtime.journal,
+            activeRoster: runtime.activeRoster,
+            source: runtime.source,
             transcriptRoots: {
               claude: home === null ? null : resolve(home, ".claude"),
               codex: home === null ? null : resolve(home, ".codex")

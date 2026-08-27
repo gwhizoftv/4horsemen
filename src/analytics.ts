@@ -35,6 +35,15 @@ export type IntervalAnalytics = {
   maxMs: number | null;
 };
 
+export type FinalCheckAnalytics = {
+  at: string;
+  agent: string | null;
+  name: string | null;
+  tier: string | null;
+  exitCode: number | null;
+  durationMs: number | null;
+};
+
 export type PhaseUsageAnalytics = {
   phaseIndex: number;
   phase: string;
@@ -64,11 +73,18 @@ export type AgentUsageAnalytics = {
 
 export type AnalyticsReport = {
   issue: number;
+  source: {
+    formatVersion: number;
+    legacy: boolean;
+    skippedJournalRecords: number;
+  };
   phaseCount: number;
   run: {
     startedAt: string;
     endedAt: string;
     durationMs: number | null;
+    pausedMs: number | null;
+    unpausedMs: number | null;
     state: MetricState;
   };
   phases: PhaseAnalytics[];
@@ -77,11 +93,15 @@ export type AnalyticsReport = {
   responseLatency: WaitAnalytics[];
   /** Coordinator evidence publication: ballot-batch-pending → published (retries do not add agent turns). */
   evidencePublicationLatency: IntervalAnalytics;
+  finalChecks: FinalCheckAnalytics[];
   usage: {
     agents: AgentUsageAnalytics[];
     tokenTotal: TokenUsage | null;
+    tokenTotalReason: string | null;
   } | null;
 };
+
+export type AnalyticsStart = Pick<StartState, "issue" | "originalRoster" | "createdAt">;
 
 type JsonObject = Record<string, unknown>;
 type ActionTurn = {
@@ -94,10 +114,42 @@ type ActionTurn = {
   phaseIndex: number | null;
 };
 
+type TurnPhaseResolution = {
+  phaseIndex: number | null;
+  exact: boolean;
+  sharedVendorTurn: boolean;
+};
+
+const resolveTurnPhase = (
+  matching: readonly ActionTurn[],
+  singleMatchExact: boolean
+): TurnPhaseResolution => {
+  if (matching.length === 0) return { phaseIndex: null, exact: false, sharedVendorTurn: false };
+  if (matching.length === 1) {
+    const phaseIndex = matching[0]?.phaseIndex ?? null;
+    return { phaseIndex, exact: phaseIndex !== null && singleMatchExact, sharedVendorTurn: false };
+  }
+  const first = matching[0];
+  if (
+    first === undefined ||
+    matching.some((turn) => turn.sessionId !== first.sessionId || turn.turnId !== first.turnId)
+  ) {
+    return { phaseIndex: null, exact: false, sharedVendorTurn: false };
+  }
+  const selected = matching.reduce((latest, turn) =>
+    turn.startedMs > latest.startedMs ? turn : latest
+  );
+  return { phaseIndex: selected.phaseIndex, exact: false, sharedVendorTurn: true };
+};
+
 const object = (value: unknown): JsonObject | null =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : null;
 const string = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
 const integer = (value: unknown): number | null => (typeof value === "number" && Number.isInteger(value) ? value : null);
+const nonnegativeInteger = (value: unknown): number | null => {
+  const parsed = integer(value);
+  return parsed !== null && parsed >= 0 ? parsed : null;
+};
 const milliseconds = (value: string): number | null => {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -154,7 +206,7 @@ const phaseIndexAt = (phases: readonly PhaseAnalytics[], at: string): number | n
   return null;
 };
 
-const derivePhases = (start: StartState, journal: readonly JournalEvent[], now: string): PhaseAnalytics[] => {
+const derivePhases = (start: AnalyticsStart, journal: readonly JournalEvent[], now: string): PhaseAnalytics[] => {
   const started = journal.find((event) => event.type === "started")?.at ?? start.createdAt;
   const gates = journal.filter((event) => event.type === "gate-advanced");
   const phases: PhaseAnalytics[] = [];
@@ -258,7 +310,7 @@ const deriveWaits = (roster: readonly string[], journal: readonly JournalEvent[]
     const key = `${event.agent}\u0000${event.actionId}`;
     if (event.type === "nudged") {
       const at = milliseconds(event.at);
-      if (at !== null) pendingNudge.set(key, at);
+      if (at !== null && !pendingNudge.has(key)) pendingNudge.set(key, at);
     } else if (event.type === "intent-seen") {
       const from = pendingNudge.get(key);
       const to = milliseconds(event.at);
@@ -296,7 +348,7 @@ const deriveResponseLatency = (
     const key = `${event.agent}\u0000${event.actionId}`;
     if (event.type === "nudged") {
       const at = milliseconds(event.at);
-      if (at !== null) pendingNudge.set(key, at);
+      if (at !== null && !pendingNudge.has(key)) pendingNudge.set(key, at);
     } else if (event.type === "response-accepted") {
       const from = pendingNudge.get(key);
       const to = milliseconds(event.at);
@@ -352,6 +404,48 @@ const deriveEvidencePublicationLatency = (journal: readonly JournalEvent[]): Int
   };
 };
 
+const derivePausedMs = (
+  journal: readonly JournalEvent[],
+  startedAt: string,
+  endedAt: string
+): number | null => {
+  const startMs = milliseconds(startedAt);
+  const endMs = milliseconds(endedAt);
+  if (startMs === null || endMs === null || endMs < startMs) return null;
+  let pausedAt: number | null = null;
+  let pausedMs = 0;
+  for (const event of journal) {
+    if (event.type !== "paused" && event.type !== "resumed") continue;
+    const at = milliseconds(event.at);
+    if (at === null) return null;
+    if (event.type === "paused") {
+      if (pausedAt === null && at <= endMs) pausedAt = Math.max(at, startMs);
+      continue;
+    }
+    if (pausedAt === null || at < startMs) continue;
+    if (at < pausedAt) return null;
+    pausedMs += Math.max(0, Math.min(at, endMs) - pausedAt);
+    pausedAt = null;
+  }
+  if (pausedAt !== null) pausedMs += Math.max(0, endMs - pausedAt);
+  return Math.min(pausedMs, endMs - startMs);
+};
+
+const deriveFinalChecks = (journal: readonly JournalEvent[]): FinalCheckAnalytics[] =>
+  journal
+    .filter((event) => event.type === "final-check")
+    .map((event) => {
+      const details = object(event.details);
+      return {
+        at: event.at,
+        agent: event.agent ?? null,
+        name: string(details?.name),
+        tier: string(details?.tier),
+        exitCode: integer(details?.exitCode),
+        durationMs: nonnegativeInteger(details?.durationMs)
+      };
+    });
+
 const usageVendorForAgent = (agent: string, journal: readonly JournalEvent[]): UsageVendor | null => {
   if (agent === "cursor") return "cursor";
   for (const event of [...journal].reverse()) {
@@ -387,11 +481,12 @@ const unavailableUsage = (
 });
 
 export type BuildAnalyticsInput = {
-  start: StartState;
+  start: AnalyticsStart;
   journal: readonly JournalEvent[];
   activeRoster?: readonly string[];
   now?: string;
   transcriptRoots?: Partial<Record<TranscriptVendor, string | null>>;
+  source?: AnalyticsReport["source"];
 };
 
 export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
@@ -474,6 +569,8 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
       let unassignedToolRecords = 0;
       let tokenFallbackUsed = false;
       let toolFallbackUsed = false;
+      let sharedTurnTokenFallbackUsed = false;
+      let sharedTurnToolFallbackUsed = false;
 
       const assign = (
         phaseIndex: number | null,
@@ -516,11 +613,15 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
 
       for (const result of results) {
         for (const turnUsage of result.turns) {
-          const action = agentTurns.find(
+          const matching = agentTurns.filter(
             (turn) => turn.sessionId === result.sessionId && turn.turnId === turnUsage.turnId
           );
-          const phaseIndex = action?.phaseIndex ?? null;
-          assign(phaseIndex, turnUsage, phaseIndex !== null);
+          const resolved = resolveTurnPhase(matching, true);
+          if (resolved.sharedVendorTurn && resolved.phaseIndex !== null) {
+            if (turnUsage.tokenRecords > 0) sharedTurnTokenFallbackUsed = true;
+            if (turnUsage.toolRecords > 0) sharedTurnToolFallbackUsed = true;
+          }
+          assign(resolved.phaseIndex, turnUsage, resolved.exact);
         }
         for (const record of result.unattributed) {
           const at = record.at === null ? null : milliseconds(record.at);
@@ -534,9 +635,12 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
                     at >= turn.startedMs &&
                     at <= turn.endedMs
                 );
-          const phaseIndex = matching.length === 1 ? (matching[0]?.phaseIndex ?? null) : null;
-          const exact = matching.length === 1 && phaseIndex !== null && record.windowAttribution === "exact";
-          assign(phaseIndex, record, exact);
+          const resolved = resolveTurnPhase(matching, record.windowAttribution === "exact");
+          if (resolved.sharedVendorTurn && resolved.phaseIndex !== null) {
+            if (record.tokenRecords > 0) sharedTurnTokenFallbackUsed = true;
+            if (record.toolRecords > 0) sharedTurnToolFallbackUsed = true;
+          }
+          assign(resolved.phaseIndex, record, resolved.exact);
         }
       }
       if (unassignedTokenRecords > 0) tokenReasons.push("one or more measured token records are unassigned");
@@ -546,6 +650,12 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
       }
       if (toolFallbackUsed) {
         toolReasons.push("one or more tool records used a non-exact attribution fallback");
+      }
+      if (sharedTurnTokenFallbackUsed) {
+        tokenReasons.push("one or more token records were shared by one vendor turn across several actions");
+      }
+      if (sharedTurnToolFallbackUsed) {
+        toolReasons.push("one or more tool records were shared by one vendor turn across several actions");
       }
       for (const phase of phaseUsage) {
         phase.tokenCoverage = worseCoverage(phase.tokenCoverage, tokenCoverage);
@@ -585,22 +695,52 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
             emptyTokens()
           )
         : null;
-    usage = { agents: agents.sort((left, right) => left.agent.localeCompare(right.agent)), tokenTotal };
+    const tokenTotalBlockers = agents
+      .filter((agent) => agent.tokenCoverage !== "complete" || agent.unassigned.tokenRecords > 0)
+      .map((agent) =>
+        `${agent.agent}: ${
+          agent.tokenCoverage !== "complete"
+            ? `coverage=${agent.tokenCoverage}`
+            : `${agent.unassigned.tokenRecords} unassigned token record(s)`
+        }`
+      );
+    const tokenTotalReason =
+      phases.length === 0
+        ? "no workflow phases were available"
+        : tokenTotalBlockers.length === 0
+          ? null
+          : tokenTotalBlockers.join("; ");
+    usage = {
+      agents: agents.sort((left, right) => left.agent.localeCompare(right.agent)),
+      tokenTotal,
+      tokenTotalReason
+    };
   }
+
+  const durationMs = runValid ? endMs - startMs : null;
+  const pausedMs = derivePausedMs(input.journal, startedAt, endedAt);
 
   return {
     issue: input.start.issue,
+    source: input.source ?? {
+      formatVersion: input.journal[0]?.formatVersion ?? 4,
+      legacy: false,
+      skippedJournalRecords: 0
+    },
     phaseCount: phases.length,
     run: {
       startedAt,
       endedAt,
-      durationMs: runValid ? endMs - startMs : null,
+      durationMs,
+      pausedMs,
+      unpausedMs: durationMs === null || pausedMs === null ? null : durationMs - pausedMs,
       state: runState
     },
     phases,
     waits: deriveWaits(roster, input.journal),
     responseLatency: deriveResponseLatency(roster, input.journal),
     evidencePublicationLatency: deriveEvidencePublicationLatency(input.journal),
+    finalChecks: deriveFinalChecks(input.journal),
     usage
   };
 };
@@ -609,6 +749,9 @@ const formatDuration = (durationMs: number | null): string => {
   if (durationMs === null) return "invalid";
   return `${(durationMs / 60_000).toFixed(2)} min`;
 };
+
+const formatOptionalDuration = (durationMs: number | null): string =>
+  durationMs === null ? "unavailable" : `${(durationMs / 1000).toFixed(1)}s`;
 
 const formatTokens = (tokens: TokenUsage | null): string => {
   if (tokens === null) return "unavailable";
@@ -624,13 +767,26 @@ const formatPhase = (phase: Pick<PhaseUsageAnalytics, "phase" | "round">): strin
 export const renderAnalytics = (report: AnalyticsReport): string => {
   const lines = [
     `Issue ${report.issue} analytics`,
+    ...(report.source.legacy || report.source.skippedJournalRecords > 0
+      ? [
+          `Source: runtime format ${report.source.formatVersion}${report.source.legacy ? " (legacy read-only)" : ""}; skipped journal records=${report.source.skippedJournalRecords}`
+        ]
+      : []),
     "",
     "Time",
-    `Run: ${formatDuration(report.run.durationMs)} (${report.run.state})`,
+    `Run: elapsed=${formatDuration(report.run.durationMs)} paused=${formatDuration(report.run.pausedMs)} unpaused=${formatDuration(report.run.unpausedMs)} (${report.run.state})`,
     ...report.phases.map(
       (phase) =>
         `- ${phase.name}${phase.round === null ? "" : ` round ${phase.round}`}: ${formatDuration(phase.durationMs)}; actions=${phase.actions}; ${phase.state}`
     ),
+    "",
+    "Final checks",
+    ...(report.finalChecks.length === 0
+      ? ["- none recorded"]
+      : report.finalChecks.map(
+          (check) =>
+            `- ${check.name ?? "unknown"}${check.tier === null ? "" : ` (${check.tier})`}: exit=${check.exitCode ?? "unavailable"} duration=${formatOptionalDuration(check.durationMs)}`
+        )),
     "",
     "Phase count",
     `${report.phaseCount}`,
@@ -675,7 +831,7 @@ export const renderAnalytics = (report: AnalyticsReport): string => {
     }
     lines.push(
       report.usage.tokenTotal === null
-        ? "Cross-roster token total: unavailable (not every active agent has complete coverage)"
+        ? `Cross-roster token total: unavailable (${report.usage.tokenTotalReason ?? "not every active agent has complete coverage and zero unassigned token records"})`
         : `Cross-roster token total: ${formatTokens(report.usage.tokenTotal)}`,
       "",
       "Tool count"

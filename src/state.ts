@@ -38,6 +38,9 @@ export const RUNTIME_FORMAT_VERSION = 4;
 
 const LEGACY_RUNTIME_FORMAT_VERSIONS = new Set([2, 3]);
 
+export const isLegacyRuntimeFormat = (value: unknown): value is 2 | 3 =>
+  typeof value === "number" && LEGACY_RUNTIME_FORMAT_VERSIONS.has(value);
+
 const RUNTIME_FORMAT_WIPE_MESSAGE =
   "Runtime format versions 2 and 3 are no longer supported. Wipe this issue with `coord wipe-issue <issue>` and start it again.";
 
@@ -312,6 +315,21 @@ export const startStateSchema = z
   })
   .strict();
 
+export const startStateHeaderSchema = z.object({
+  formatVersion: z.union([z.literal(2), z.literal(3), z.literal(RUNTIME_FORMAT_VERSION)]),
+  issue: issueSchema,
+  originalRoster: z.array(agentIdSchema).min(1),
+  createdAt: timestampSchema,
+  configPath: z.string().min(1),
+  completesRoot: z.string().min(1).optional()
+});
+
+const analyticsCursorsHeaderSchema = z.object({
+  formatVersion: z.union([z.literal(2), z.literal(3), z.literal(RUNTIME_FORMAT_VERSION)]),
+  activeRoster: z.array(agentIdSchema).min(1),
+  completed: z.boolean()
+});
+
 export const agentCursorSchema = z
   .object({
     stepId: stepIdSchema.nullable(),
@@ -562,6 +580,38 @@ export const cursorsStateSchema = z
   })
   .strict();
 
+const journalEventTypeSchema = z.enum([
+  "started",
+  "action-prepared",
+  "nudged",
+  "agent-lifecycle",
+  "agent-usage",
+  "agent-observability-degraded",
+  "agent-observability-recovered",
+  "nudge-deferred",
+  "intent-seen",
+  "verify-result",
+  "gate-advanced",
+  "owner-question",
+  "owner-answer",
+  "agent-dropped",
+  "paused",
+  "resumed",
+  "action-restarted",
+  "abandoned",
+  "final-check",
+  "publication-pending",
+  "publication-failed",
+  "pr-created",
+  "pr-merged",
+  "decision-derived",
+  "response-accepted",
+  "ballot-batch-pending",
+  "ballot-batch-published",
+  "ballot-batch-failed",
+  "ballot-batch-invalidated"
+]);
+
 export const journalEventSchema = z
   .object({
     // Durable journal *files* still reject formats 2/3 via assertRuntimeFormat in
@@ -570,37 +620,7 @@ export const journalEventSchema = z
     formatVersion: z.union([z.literal(RUNTIME_FORMAT_VERSION), z.literal(3)]),
     sequence: z.number().int().nonnegative(),
     at: timestampSchema,
-    type: z.enum([
-      "started",
-      "action-prepared",
-      "nudged",
-      "agent-lifecycle",
-      "agent-usage",
-      "agent-observability-degraded",
-      "agent-observability-recovered",
-      "nudge-deferred",
-      "intent-seen",
-      "verify-result",
-      "gate-advanced",
-      "owner-question",
-      "owner-answer",
-      "agent-dropped",
-      "paused",
-      "resumed",
-      "action-restarted",
-      "abandoned",
-      "final-check",
-      "publication-pending",
-      "publication-failed",
-      "pr-created",
-      "pr-merged",
-      "decision-derived",
-      "response-accepted",
-      "ballot-batch-pending",
-      "ballot-batch-published",
-      "ballot-batch-failed",
-      "ballot-batch-invalidated"
-    ]),
+    type: journalEventTypeSchema,
     agent: agentIdSchema.optional(),
     actionId: z.string().uuid().optional(),
     submissionSha: gitShaSchema.optional(),
@@ -616,6 +636,7 @@ export type VerifyPhase = z.infer<typeof verifyPhaseSchema>;
 export type InstallStamp = z.infer<typeof installStampSchema>;
 export type WorkspaceDeclaration = z.infer<typeof workspaceDeclarationSchema>;
 export type StartState = z.infer<typeof startStateSchema>;
+export type StartStateHeader = z.infer<typeof startStateHeaderSchema>;
 export type AgentCursor = z.infer<typeof agentCursorSchema>;
 export type AcceptedSubmission = z.infer<typeof acceptedSubmissionSchema>;
 export type AcceptedResponse = z.infer<typeof acceptedResponseSchema>;
@@ -657,13 +678,26 @@ const assertRuntimeFormat = (path: string, value: unknown): void => {
   }
 };
 
-const parseFile = <T>(path: string, schema: z.ZodType<T>): T => {
+const readJsonFile = (path: string): unknown => {
   let value: unknown;
   try {
     value = JSON.parse(readFileSync(path, "utf8")) as unknown;
   } catch (error) {
     throw new Error(`Cannot parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
+  return value;
+};
+
+const parseUncheckedFile = <T>(path: string, schema: z.ZodType<T>): T => {
+  const result = schema.safeParse(readJsonFile(path));
+  if (!result.success) {
+    throw new Error(`Invalid ${path}: ${z.prettifyError(result.error)}`);
+  }
+  return result.data;
+};
+
+const parseFile = <T>(path: string, schema: z.ZodType<T>): T => {
+  const value = readJsonFile(path);
   assertRuntimeFormat(path, value);
   const result = schema.safeParse(value);
   if (!result.success) {
@@ -695,6 +729,8 @@ export const atomicWriteJson = (root: string, path: string, value: unknown): voi
 
 export const readConfig = (path: string): CoordinatorConfig => parseFile(path, coordinatorConfigSchema);
 export const readStartState = (paths: IssueRuntimePaths): StartState => parseFile(paths.start, startStateSchema);
+export const readStartStateHeader = (paths: IssueRuntimePaths): StartStateHeader =>
+  parseUncheckedFile(paths.start, startStateHeaderSchema);
 export const readCursorsState = (paths: IssueRuntimePaths): CursorsState => parseFile(paths.cursors, cursorsStateSchema);
 
 export const initialCursors = (start: StartState, now = new Date().toISOString()): CursorsState => {
@@ -778,6 +814,97 @@ export const readJournal = (paths: IssueRuntimePaths): JournalEvent[] => {
     assertRuntimeFormat(`journal line ${index + 1}`, value);
     return journalEventSchema.parse(value);
   });
+};
+
+export type AnalyticsRuntimeState = {
+  start: Pick<StartState, "issue" | "originalRoster" | "createdAt">;
+  activeRoster: string[];
+  journal: JournalEvent[];
+  source: {
+    formatVersion: number;
+    legacy: boolean;
+    skippedJournalRecords: number;
+  };
+};
+
+export const readJournalForAnalytics = (
+  paths: IssueRuntimePaths
+): { events: JournalEvent[]; formatVersion: number; skipped: number } => {
+  if (!existsSync(paths.journal)) {
+    throw new Error(`No journal exists for issue ${paths.issue}.`);
+  }
+  const lines = readFileSync(paths.journal, "utf8").split("\n").filter((line) => line !== "");
+  const events: JournalEvent[] = [];
+  let formatVersion: number | null = null;
+  let skipped = 0;
+  for (const [index, line] of lines.entries()) {
+    let value: unknown;
+    try {
+      value = JSON.parse(line) as unknown;
+    } catch (error) {
+      throw new Error(`Invalid journal line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (typeof value !== "object" || value === null) {
+      throw new Error(`Invalid journal line ${index + 1}: expected an object.`);
+    }
+    const raw = value as Record<string, unknown>;
+    const rowFormat = raw.formatVersion;
+    if (rowFormat !== RUNTIME_FORMAT_VERSION && !isLegacyRuntimeFormat(rowFormat)) {
+      throw new Error(`Invalid journal line ${index + 1}: unsupported runtime format ${String(rowFormat)}.`);
+    }
+    if (formatVersion === null) formatVersion = rowFormat;
+    else if (formatVersion !== rowFormat) {
+      throw new Error(`Invalid journal line ${index + 1}: mixed runtime format versions.`);
+    }
+    if (!journalEventTypeSchema.safeParse(raw.type).success) {
+      skipped += 1;
+      continue;
+    }
+    const parsed = journalEventSchema.safeParse({ ...raw, formatVersion: RUNTIME_FORMAT_VERSION });
+    if (!parsed.success) {
+      throw new Error(`Invalid journal line ${index + 1}: ${z.prettifyError(parsed.error)}`);
+    }
+    events.push(parsed.data);
+  }
+  if (formatVersion === null) throw new Error(`No journal exists for issue ${paths.issue}.`);
+  return { events, formatVersion, skipped };
+};
+
+/** Read legacy state for analytics without weakening any operational parser. */
+export const readAnalyticsRuntime = (paths: IssueRuntimePaths): AnalyticsRuntimeState => {
+  const header = readStartStateHeader(paths);
+  if (!isLegacyRuntimeFormat(header.formatVersion)) {
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    return {
+      start,
+      activeRoster: cursors.activeRoster,
+      journal: readJournal(paths),
+      source: { formatVersion: RUNTIME_FORMAT_VERSION, legacy: false, skippedJournalRecords: 0 }
+    };
+  }
+
+  const cursors = parseUncheckedFile(paths.cursors, analyticsCursorsHeaderSchema);
+  if (cursors.formatVersion !== header.formatVersion) {
+    throw new Error("Legacy start.json and cursors.json use different runtime formats.");
+  }
+  if (!cursors.completed) {
+    throw new Error(`Legacy runtime for issue ${header.issue} is not completed; analytics will not make it resumable.`);
+  }
+  const journal = readJournalForAnalytics(paths);
+  if (journal.formatVersion !== header.formatVersion) {
+    throw new Error("Legacy start.json and journal.jsonl use different runtime formats.");
+  }
+  return {
+    start: header,
+    activeRoster: cursors.activeRoster,
+    journal: journal.events,
+    source: {
+      formatVersion: header.formatVersion,
+      legacy: true,
+      skippedJournalRecords: journal.skipped
+    }
+  };
 };
 
 /** Read only the final journal record; append cost must not grow with issue age. */
