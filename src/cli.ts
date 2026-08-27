@@ -48,8 +48,11 @@ import {
   readConfig,
   readCursorsState,
   readJournal,
+  readJournalForAnalytics,
   readStartState,
+  readStartStateHeader,
   replaceCursor,
+  RUNTIME_FORMAT_VERSION,
   setPaused,
   verifyPhaseSchema,
   type BallotBatch,
@@ -189,7 +192,7 @@ const parseIssue = (value: string): number => {
  */
 const withStoredMailbox = (paths: IssueRuntimePaths): IssueRuntimePaths => {
   if (!existsSync(paths.start)) return paths;
-  const start = readStartState(paths);
+  const start = readStartStateHeader(paths);
   if (start.completesRoot === undefined || resolve(start.completesRoot) === paths.completesRoot) return paths;
   return issueRuntimePaths(paths.coordRoot, paths.issue, start.completesRoot);
 };
@@ -225,6 +228,7 @@ Usage:
   coord run --issue <issue> [--product <path> | --coord-root <path>] [-v|--verbose]
   coord status --issue <issue> [--product <path> | --coord-root <path>]
   coord analytics --issue <issue> [--product <path> | --coord-root <path>]
+    Read-only phase/time/token report; also reads completed legacy (format 2/3) runs.
   coord next --issue <issue> [--product <path> | --coord-root <path>] [--agent <agent>]
   coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
   coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
@@ -604,7 +608,7 @@ const resolveStart = (parsed: ParsedArgs, io: CliIo): StartResolution => {
 
 const matchesConfig = (paths: IssueRuntimePaths, configPath: string): boolean => {
   if (!existsSync(paths.start)) return false;
-  const start = readStartState(paths);
+  const start = readStartStateHeader(paths);
   return resolve(start.configPath) === resolve(configPath);
 };
 
@@ -1328,22 +1332,48 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       allowedFlags(parsed, ["issue", "coord-root", "product"]);
       if (parsed.positionals.length !== 0) throw new Error("analytics takes no positional arguments.");
       const paths = existingContext(parsed, io);
-      const start = readStartState(paths);
-      const cursors = readCursorsState(paths);
+      const header = readStartStateHeader(paths);
       const home = dependencies.home === undefined ? homedir() : dependencies.home;
-      io.stdout(
-        renderAnalytics(
-          buildAnalytics({
-            start,
-            journal: readJournal(paths),
-            activeRoster: cursors.activeRoster,
-            transcriptRoots: {
-              claude: home === null ? null : resolve(home, ".claude"),
-              codex: home === null ? null : resolve(home, ".codex")
-            }
-          })
-        )
-      );
+      const transcriptRoots = {
+        claude: home === null ? null : resolve(home, ".claude"),
+        codex: home === null ? null : resolve(home, ".codex")
+      };
+      if (header.formatVersion === RUNTIME_FORMAT_VERSION) {
+        const start = readStartState(paths);
+        const cursors = readCursorsState(paths);
+        io.stdout(
+          renderAnalytics(
+            buildAnalytics({
+              start,
+              journal: readJournal(paths),
+              activeRoster: cursors.activeRoster,
+              transcriptRoots,
+              source: { formatVersion: RUNTIME_FORMAT_VERSION, legacy: false, skippedJournalRecords: 0 }
+            })
+          )
+        );
+      } else {
+        const journalRead = readJournalForAnalytics(paths);
+        io.stdout(
+          renderAnalytics(
+            buildAnalytics({
+              start: {
+                issue: header.issue,
+                originalRoster: header.originalRoster,
+                createdAt: header.createdAt
+              },
+              journal: journalRead.events,
+              activeRoster: header.originalRoster,
+              transcriptRoots,
+              source: {
+                formatVersion: journalRead.formatVersion,
+                legacy: true,
+                skippedJournalRecords: journalRead.skipped
+              }
+            })
+          )
+        );
+      }
       return 0;
     }
 

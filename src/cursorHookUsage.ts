@@ -42,6 +42,26 @@ const reasoningFromObject = (value: JsonObject): number | null => {
   return intField(details, "thinking_tokens", "reasoning_tokens") ?? null;
 };
 
+/** Read token counters persisted in the coordinator's normalized journal shape. */
+export const normalizedTokenUsage = (raw: JsonObject): TokenUsage | null => {
+  const input = intField(raw, "input");
+  const output = intField(raw, "output");
+  const cacheRead = intField(raw, "cacheRead");
+  const cacheWrite = intField(raw, "cacheWrite");
+  if (input === undefined && output === undefined && cacheRead === undefined && cacheWrite === undefined) {
+    return null;
+  }
+  const reasoning = raw.reasoning;
+  return {
+    input: input ?? 0,
+    output: output ?? 0,
+    cacheRead: cacheRead ?? 0,
+    cacheWrite: cacheWrite ?? 0,
+    reasoning:
+      typeof reasoning === "number" && Number.isInteger(reasoning) && reasoning >= 0 ? reasoning : null
+  };
+};
+
 /** Parse Cursor hook stdin for per-turn token fields (aliases across CLI versions). */
 export const extractCursorTokenUsage = (raw: JsonObject): TokenUsage | null => {
   const read = (value: JsonObject): TokenUsage | null => {
@@ -110,7 +130,9 @@ export const cursorUsageFromJournalDetails = (details: unknown): CursorUsageJour
     kind,
     sessionId,
     turnId,
-    ...(tokens === null ? {} : { tokens: extractCursorTokenUsage(tokens) ?? undefined }),
+    ...(tokens === null
+      ? {}
+      : { tokens: normalizedTokenUsage(tokens) ?? extractCursorTokenUsage(tokens) ?? undefined }),
     ...(typeof record.toolCalls === "number" && Number.isInteger(record.toolCalls) && record.toolCalls >= 0
       ? { toolCalls: record.toolCalls }
       : {})
@@ -195,13 +217,13 @@ export const readCursorHookUsage = (
 
   const turns = [...turnMap.values()].sort((left, right) => left.turnId.localeCompare(right.turnId));
   const tokenCoverage: AnalyticsCoverage =
-    tokenRecords === 0 ? "unsupported" : turns.every((turn) => turn.tokenRecords > 0) ? "complete" : "partial";
-  const toolCoverage: AnalyticsCoverage = toolRecords === 0 ? "complete" : "complete";
+    tokenRecords === 0 ? "unavailable" : turns.every((turn) => turn.tokenRecords > 0) ? "complete" : "partial";
+  const toolCoverage: AnalyticsCoverage = "complete";
   const coverage: AnalyticsCoverage =
-    tokenCoverage === "unsupported"
+    tokenCoverage === "unavailable"
       ? toolRecords > 0
         ? "partial"
-        : "unsupported"
+        : "unavailable"
       : tokenCoverage === "partial"
         ? "partial"
         : "complete";

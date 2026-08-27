@@ -1664,6 +1664,62 @@ describe("effectful run loop", () => {
     expect(opens).toBe(0);
     expect(readCursorsState(paths).publication.status).toBe("not-required");
   });
+
+  it("records final-check durationMs around the hermetic check runner", async () => {
+    const { root, paths } = fixture({ origin: "https://github.com/example/project.git" });
+    const seed = join(root, "duration-seed");
+    execFileSync("git", ["init", "-q", seed]);
+    mkdirSync(join(seed, ".signals/issue-1"), { recursive: true });
+    writeFileSync(join(seed, ".signals/issue-1/revision-ready-codex.json"), "{}\n");
+    execFileSync("git", ["-C", seed, "add", "."]);
+    execFileSync("git", ["-C", seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "revision"]);
+    const revisionSha = execFileSync("git", ["-C", seed, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    rmSync(join(seed, ".signals/issue-1"), { recursive: true });
+    execFileSync("git", ["-C", seed, "add", "-A"]);
+    execFileSync("git", ["-C", seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "cleanup"]);
+    const finalSha = execFileSync("git", ["-C", seed, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    execFileSync("git", ["clone", "--bare", "-q", seed, paths.mirror]);
+    const mirror = new BareMirror(paths.mirror, "https://github.com/example/project.git");
+    let tick = 0;
+    const loop = new CoordinatorRunLoop(paths, {
+      tmux: null,
+      mirror,
+      now: () => {
+        tick += 1;
+        return tick === 1 ? "2026-08-21T00:00:00.000Z" : "2026-08-21T00:00:02.500Z";
+      },
+      processRunner: async () => ({ exitCode: 1, stdout: "", stderr: "test failed" })
+    });
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    const baseOrder = buildOrder(paths, start, cursors, "codex", "R7.finalize", null);
+    const order = {
+      ...baseOrder,
+      inputs: [
+        {
+          agent: "codex",
+          commitSha: revisionSha,
+          path: ".signals/issue-1/revision-ready-codex.json",
+          kind: "consensus"
+        }
+      ]
+    };
+    await loop.verifyFinalizationChecks(
+      start,
+      order,
+      {
+        agent: "codex",
+        actionId: order.actionId,
+        submissionSha: "e".repeat(40),
+        status: "satisfied",
+        outstanding: [],
+        productPin: finalSha
+      },
+      cursors
+    );
+    const finalCheck = readJournal(paths).find((event) => event.type === "final-check");
+    expect(finalCheck?.details).toMatchObject({ durationMs: 2500 });
+  });
 });
 
 describe("coordinator-resolved change scope", () => {

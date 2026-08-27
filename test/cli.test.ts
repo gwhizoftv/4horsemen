@@ -508,6 +508,66 @@ describe("CLI", () => {
     expect(errors.join("")).toContain("No journal exists for issue 1");
   });
 
+  it("reads completed legacy format-2 analytics read-only while run stays fail-closed", async () => {
+    const fixture = setup();
+    const paths = issueRuntimePaths(fixture.runtime, 118);
+    mkdirSync(paths.issueRoot, { recursive: true });
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          formatVersion: 2,
+          issue: 118,
+          issueSessionId: `issue-118:${"c".repeat(40)}`,
+          baselineSha: "c".repeat(40),
+          profile: "solo",
+          originalRoster: ["cursor"],
+          branchTemplate: "issue-{issue}/{agent}",
+          baseBranch: "main",
+          maxRevisionRounds: 3,
+          prPolicy: "owner-only",
+          automationDigest: "d".repeat(64),
+          automationDigestScheme: "sha256-length-prefixed-v1",
+          automationDigestSources: [{ id: "config", sha256: "d".repeat(64) }],
+          trustedSourceCommit: "e".repeat(40),
+          origin: "https://github.com/example/fixture.git",
+          coordRoot: fixture.runtime,
+          configPath: fixture.configPath,
+          agents: [{ id: "cursor", root: "/clone-cursor", launcher: "start-cursor.sh", delivery: "pull" }],
+          checks: [{ name: "true", argv: ["true"] }],
+          pollIntervalMs: 1000,
+          createdAt: "2026-08-20T10:00:00.000Z"
+        },
+        null,
+        2
+      )}\n`
+    );
+    copyFileSync(
+      join(process.cwd(), "test", "support", "fixtures", "analytics-journal-format2.jsonl"),
+      paths.journal
+    );
+
+    const output: string[] = [];
+    expect(
+      await runCli(["analytics", "--issue", "118", "--coord-root", fixture.runtime], {
+        io: { stdout: (message) => output.push(message) }
+      })
+    ).toBe(0);
+    const rendered = output.join("");
+    expect(rendered).toContain("Issue 118 analytics");
+    expect(rendered).toContain("Provenance");
+    expect(rendered).toContain("legacy=true");
+    expect(rendered).not.toContain("Token count");
+
+    const errors: string[] = [];
+    expect(
+      await runCli(["status", "--issue", "118", "--coord-root", fixture.runtime], {
+        io: { stderr: (message) => errors.push(message) }
+      })
+    ).not.toBe(0);
+    expect(errors.join("")).toMatch(/Wipe this issue/);
+  });
+
   it("binds the digest to the mandatory GitHub issue independently of optional paths", async () => {
     const fixture = setup();
     const config = readConfig(fixture.configPath);

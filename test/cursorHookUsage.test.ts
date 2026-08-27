@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractCursorTokenUsage, readCursorHookUsage } from "../src/cursorHookUsage.js";
+import { extractCursorTokenUsage, cursorUsageFromJournalDetails, readCursorHookUsage } from "../src/cursorHookUsage.js";
 import { journalEventSchema } from "../src/state.js";
 
 describe("cursor hook usage", () => {
@@ -118,5 +118,60 @@ describe("cursor hook usage", () => {
         toolRecords: 1
       }
     ]);
+  });
+
+  it("reads normalized journaled token counters through the round trip", () => {
+    const usage = {
+      vendor: "cursor" as const,
+      event: "afterAgentResponse",
+      kind: "turn-usage" as const,
+      sessionId: "conversation-1",
+      turnId: "generation-1",
+      tokens: { input: 40, output: 8, cacheRead: 12, cacheWrite: 0, reasoning: null }
+    };
+    const parsed = cursorUsageFromJournalDetails(usage);
+    expect(parsed?.tokens).toEqual({
+      input: 40,
+      output: 8,
+      cacheRead: 12,
+      cacheWrite: 0,
+      reasoning: null
+    });
+    const journal = [
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 0,
+        at: "2026-08-21T00:00:00.000Z",
+        type: "agent-usage",
+        agent: "cursor",
+        details: usage
+      })
+    ];
+    const result = readCursorHookUsage(journal, "conversation-1");
+    expect(result.tokenCoverage).toBe("complete");
+    expect(result.turns[0]?.tokens.input).toBe(40);
+  });
+
+  it("reports unavailable token coverage when only tool records exist", () => {
+    const journal = [
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 0,
+        at: "2026-08-21T00:00:00.000Z",
+        type: "agent-usage",
+        agent: "cursor",
+        details: {
+          vendor: "cursor",
+          event: "postToolUse",
+          kind: "tool-used",
+          sessionId: "conversation-1",
+          turnId: "generation-1",
+          toolCalls: 1
+        }
+      })
+    ];
+    const result = readCursorHookUsage(journal, "conversation-1");
+    expect(result.tokenCoverage).toBe("unavailable");
+    expect(result.tokenReason).toContain("did not journal token fields");
   });
 });

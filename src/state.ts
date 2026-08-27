@@ -38,6 +38,12 @@ export const RUNTIME_FORMAT_VERSION = 4;
 
 const LEGACY_RUNTIME_FORMAT_VERSIONS = new Set([2, 3]);
 
+export const isLegacyRuntimeFormat = (value: unknown): boolean => {
+  if (typeof value !== "object" || value === null || !("formatVersion" in value)) return false;
+  const formatVersion = (value as { formatVersion: unknown }).formatVersion;
+  return typeof formatVersion === "number" && LEGACY_RUNTIME_FORMAT_VERSIONS.has(formatVersion);
+};
+
 const RUNTIME_FORMAT_WIPE_MESSAGE =
   "Runtime format versions 2 and 3 are no longer supported. Wipe this issue with `coord wipe-issue <issue>` and start it again.";
 
@@ -567,7 +573,7 @@ export const journalEventSchema = z
     // Durable journal *files* still reject formats 2/3 via assertRuntimeFormat in
     // readJournal (wipe/restart). The schema allows 3 only so in-memory fixtures
     // outside the approved path map can parse without silently rewriting bytes.
-    formatVersion: z.union([z.literal(RUNTIME_FORMAT_VERSION), z.literal(3)]),
+    formatVersion: z.union([z.literal(RUNTIME_FORMAT_VERSION), z.literal(3), z.literal(2)]),
     sequence: z.number().int().nonnegative(),
     at: timestampSchema,
     type: z.enum([
@@ -764,6 +770,74 @@ export const initializeOperationalState = (
 };
 
 export type JournalEventInput = Omit<JournalEvent, "formatVersion" | "sequence" | "at">;
+
+export const startStateHeaderSchema = z
+  .object({
+    formatVersion: z.union([z.literal(2), z.literal(3), z.literal(RUNTIME_FORMAT_VERSION)]),
+    issue: issueSchema,
+    originalRoster: z.array(agentIdSchema),
+    createdAt: timestampSchema,
+    configPath: z.string().min(1),
+    completesRoot: z.string().min(1).optional()
+  })
+  .passthrough();
+
+export type StartStateHeader = z.infer<typeof startStateHeaderSchema>;
+
+export type AnalyticsJournalRead = {
+  events: JournalEvent[];
+  formatVersion: number;
+  skipped: number;
+};
+
+export const readStartStateHeader = (paths: IssueRuntimePaths): StartStateHeader => {
+  if (!existsSync(paths.start)) throw new Error(`Missing ${paths.start}`);
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(paths.start, "utf8")) as unknown;
+  } catch (error) {
+    throw new Error(`Cannot parse ${paths.start}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const result = startStateHeaderSchema.safeParse(value);
+  if (!result.success) {
+    throw new Error(`Invalid ${paths.start}: ${z.prettifyError(result.error)}`);
+  }
+  return result.data;
+};
+
+export const readJournalForAnalytics = (paths: IssueRuntimePaths): AnalyticsJournalRead => {
+  if (!existsSync(paths.journal)) {
+    return { events: [], formatVersion: RUNTIME_FORMAT_VERSION, skipped: 0 };
+  }
+  const lines = readFileSync(paths.journal, "utf8").split("\n").filter((line) => line !== "");
+  let formatVersion = RUNTIME_FORMAT_VERSION;
+  const events: JournalEvent[] = [];
+  let skipped = 0;
+  for (const line of lines) {
+    let value: unknown;
+    try {
+      value = JSON.parse(line) as unknown;
+    } catch {
+      skipped += 1;
+      continue;
+    }
+    if (typeof value === "object" && value !== null && "formatVersion" in value) {
+      const candidate = (value as { formatVersion: unknown }).formatVersion;
+      if (typeof candidate === "number") formatVersion = candidate;
+    }
+    const normalized =
+      typeof value === "object" && value !== null && isLegacyRuntimeFormat(value)
+        ? { ...(value as Record<string, unknown>), formatVersion: RUNTIME_FORMAT_VERSION }
+        : value;
+    const parsed = journalEventSchema.safeParse(normalized);
+    if (!parsed.success) {
+      skipped += 1;
+      continue;
+    }
+    events.push(parsed.data);
+  }
+  return { events, formatVersion, skipped };
+};
 
 export const readJournal = (paths: IssueRuntimePaths): JournalEvent[] => {
   if (!existsSync(paths.journal)) return [];

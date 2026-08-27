@@ -96,7 +96,7 @@ cost comes from vendor-private stores:
 | --- | --- | --- |
 | claude | `~/.claude/projects/<slug>/<sessionId>.jsonl` | **Yes** — per assistant message: `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, plus `timestamp` |
 | codex | `~/.codex/sessions/YYYY/MM/DD/*.jsonl` | **Yes** — `event_msg` / `token_count` with `total_token_usage` and `last_token_usage` (cumulative + delta), `cached_input_tokens`, `reasoning_output_tokens`, `model_context_window` |
-| cursor | journaled `agent-usage` from managed `.cursor/hooks.json` (`postToolUse`, `afterAgentResponse`, optional token fields on `stop`) | **Yes when hooks fire** — `conversation_id` / `generation_id` correlate to lifecycle turns; no `store.db` scrape |
+| cursor | journaled `agent-usage` from managed `.cursor/hooks.json` (`postToolUse`, `afterAgentResponse`, optional token fields on `stop`) | **Yes when hooks fire** — normalized `{input, output, cacheRead, cacheWrite, reasoning}` counters are journaled and read back in that shape; `unavailable` when hooks omit token fields; no `store.db` scrape |
 | antigravity | — | **No local store found** |
 
 So token analytics is currently possible for two of four agents, by reading
@@ -201,9 +201,9 @@ good enough for ranking phases and wrong for billing.
 
 ### 2.3 Delivery and agent latency — exact, from `nudged` → `intent-seen`
 
-Pair each `intent-seen` with the immediately preceding unmatched `nudged` for
-the same `(agent, actionId)`, so a retry is a new delivery attempt rather than
-an overlapping wait from the action's first nudge:
+Pair each `intent-seen` (and ballot `response-accepted`) with the **first
+outstanding** `nudged` for the same `(agent, actionId)`. Retries do not reset the
+wait clock; a nudge after the matching endpoint opens a new interval.
 
 | agent | actions | median | max | total waited |
 | --- | ---: | ---: | ---: | ---: |
@@ -223,12 +223,11 @@ of 37 `ok`. Coordinator verification is not a bottleneck; the entire budget is
 agent turnaround. Any issue-89 proposal that moves work *into* the coordinator
 is trading against a component that currently costs ~1 s per action.
 
-### 2.5 Final checks — only endpoints, no durations
+### 2.5 Final checks — endpoints plus measured duration
 
-Two `final-check` records, `pnpm run check`: exit 1 at `19:14:23`, exit 0 at
-`19:17:18`. The gap between them (2.9 min) includes a rejection, a re-push, and a
-re-run — the record itself has no duration field, so a single check's cost cannot
-be isolated. See §3.3.
+Each `final-check` record now carries optional `durationMs` measured around the
+hermetic `checks` runner. Older records without the field report `unavailable`
+in analytics output, never zero.
 
 ---
 
@@ -409,10 +408,10 @@ It reports four metrics:
   distinct intervals. Actions prepared in each interval are shown separately.
 - **Time** — the run begins at `started.at`; completed phase intervals end at
   their `gate-advanced.at`. An unfinished final interval is labelled
-  `in-progress`. An end before its start reports `invalid`, never a negative
-  duration. Per-agent waits pair each `intent-seen` with the immediately
-  preceding unmatched `nudged` for the same `(agent, actionId)`; the displayed
-  median uses the upper middle value, matching the issue-76 acceptance table.
+  `in-progress`. The headline run line reports elapsed, paused, and unpaused
+  wall time; pause intervals come from journal `paused` / `resumed` events.
+  Per-agent waits pair each `intent-seen` (and ballot `response-accepted`) with
+  the first outstanding `nudged` for the same `(agent, actionId)`.
 - **Token count** — `input`, `output`, `cacheRead`, `cacheWrite`, and
   `reasoning` when the vendor reports it. Claude uses de-duplicated per-message
   `usage`. Codex uses `last_token_usage` deltas and never sums cumulative
@@ -447,12 +446,12 @@ The coordinator resolves these paths beneath configured vendor roots; it never
 opens a path supplied by a hook. The parser snapshots the file's initial byte
 length and reads no appended bytes.
 
-The complete coordinator window is the supported Codex token route. Other
-records without an exact turn key may use the same window only as a labelled
-`partial` fallback. Records matching neither an exact turn nor exactly one
-complete window are reported as `unassigned`; they are never silently folded
-into a phase. Missing identity on any attempted action and any measured
-unassigned record lower coverage.
+The complete coordinator window is the supported Codex token route. Records
+without an exact turn key may use the same window only as a labelled `partial`
+fallback. When multiple coordinator windows share one vendor `sessionId`/`turnId`,
+the latest-started action receives the record as `partial`; different `turnId`
+overlaps stay `unassigned`. Missing identity on any attempted action and any
+measured unassigned record lower coverage.
 
 ### Coverage
 
@@ -470,18 +469,21 @@ Absent data is `null`/`unavailable`, never zero. Valid rows remain visible under
 `partial` coverage when a sibling record is malformed. A readable supported
 transcript with usage records but no tool records has a real tool count of zero.
 A cross-roster token total appears only when every active agent has complete
-token coverage and no measured token record is unassigned. There is never a
-cross-roster tool total because vendor invocation semantics differ.
+token coverage and no measured token record is unassigned; when the total is
+withheld, the report names blocking agents. There is never a cross-roster tool
+total because vendor invocation semantics differ.
 
 Historical journals without `sessionId` remain useful: the command reports
 phase count, time, and agent wait, and omits token/tool sections rather than
-failing.
+failing. Completed legacy runtime (format 2/3) is readable read-only through
+`coord analytics`; start/resume/control-plane paths remain fail-closed.
 
 ## 6. Deferred from Phase 1
 
-The following may be evaluated in Phase 2 only when the four metrics justify
-them: `preparedAt`, explicit `durationMs` fields, delivery-chain events,
-antigravity status debouncing, a `render.log` writer/removal, JSON or aggregate
-dashboards, context indexes, protocol trimming, and any workflow-step or
-message consolidation. None is required to measure phase count, time, tokens,
-or tools accurately, so none belongs in this instrumentation change.
+The following remain deferred: `preparedAt`, delivery-chain `action-timing`
+events, antigravity status debouncing, a `render.log` writer/removal, JSON or
+aggregate dashboards, context indexes, protocol trimming, and any workflow-step
+or message consolidation. Issue **#118** closed `final-check.durationMs`,
+paused/unpaused run timing, stall-aware first-nudge waits, Cursor token read-back,
+Codex shared-turn attribution, read-only legacy analytics, and
+`tokenTotalReason` explanations.

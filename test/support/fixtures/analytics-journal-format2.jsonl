@@ -1,0 +1,11 @@
+{"formatVersion":2,"sequence":0,"at":"2026-08-20T10:00:00.000Z","type":"started","details":{"issue":118,"profile":"solo"}}
+{"formatVersion":2,"sequence":1,"at":"2026-08-20T10:00:01.000Z","type":"action-prepared","agent":"cursor","actionId":"11111111-1111-4111-8111-111111111111","details":{"requiredPath":".plans/issue-118/plan.md"}}
+{"formatVersion":2,"sequence":2,"at":"2026-08-20T10:00:02.000Z","type":"nudged","agent":"cursor","actionId":"11111111-1111-4111-8111-111111111111","details":{}}
+{"formatVersion":2,"sequence":3,"at":"2026-08-20T10:00:05.000Z","type":"nudged","agent":"cursor","actionId":"11111111-1111-4111-8111-111111111111","details":{}}
+{"formatVersion":2,"sequence":4,"at":"2026-08-20T10:01:05.000Z","type":"intent-seen","agent":"cursor","actionId":"11111111-1111-4111-8111-111111111111","submissionSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","details":{}}
+{"formatVersion":2,"sequence":5,"at":"2026-08-20T10:05:00.000Z","type":"paused","details":{}}
+{"formatVersion":2,"sequence":6,"at":"2026-08-20T10:10:00.000Z","type":"resumed","details":{}}
+{"formatVersion":2,"sequence":7,"at":"2026-08-20T10:20:00.000Z","type":"gate-advanced","details":{"from":"R1.join","to":"R7.finalize","round":null}}
+{"formatVersion":2,"sequence":8,"at":"2026-08-20T10:30:00.000Z","type":"final-check","agent":"cursor","actionId":"11111111-1111-4111-8111-111111111111","details":{"tier":"checks","name":"check","argv":["true"],"exitCode":0}}
+{"formatVersion":2,"sequence":9,"at":"2026-08-20T10:31:00.000Z","type":"gate-advanced","details":{"from":"R7.finalize","to":null,"round":null}}
+{"formatVersion":2,"sequence":10,"at":"2026-08-20T10:31:01.000Z","type":"legacy-unknown-event","details":{}}

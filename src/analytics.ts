@@ -1,4 +1,5 @@
-import type { JournalEvent, StartState } from "./state.js";
+import type { JournalEvent } from "./state.js";
+import { RUNTIME_FORMAT_VERSION } from "./state.js";
 import { readCursorHookUsage } from "./cursorHookUsage.js";
 import {
   readTranscript,
@@ -10,6 +11,27 @@ import {
 } from "./transcriptRead.js";
 
 export type MetricState = "complete" | "in-progress" | "invalid";
+
+export type AnalyticsStart = {
+  issue: number;
+  originalRoster: readonly string[];
+  createdAt: string;
+};
+
+export type FinalCheckAnalytics = {
+  at: string;
+  agent: string | null;
+  name: string;
+  tier: string;
+  exitCode: number | null;
+  durationMs: number | null;
+};
+
+export type AnalyticsSource = {
+  formatVersion: number;
+  legacy: boolean;
+  skippedJournalRecords: number;
+};
 
 export type PhaseAnalytics = {
   index: number;
@@ -69,6 +91,8 @@ export type AnalyticsReport = {
     startedAt: string;
     endedAt: string;
     durationMs: number | null;
+    pausedMs: number | null;
+    unpausedMs: number | null;
     state: MetricState;
   };
   phases: PhaseAnalytics[];
@@ -77,9 +101,12 @@ export type AnalyticsReport = {
   responseLatency: WaitAnalytics[];
   /** Coordinator evidence publication: ballot-batch-pending → published (retries do not add agent turns). */
   evidencePublicationLatency: IntervalAnalytics;
+  finalChecks: FinalCheckAnalytics[];
+  source: AnalyticsSource;
   usage: {
     agents: AgentUsageAnalytics[];
     tokenTotal: TokenUsage | null;
+    tokenTotalReason: string | null;
   } | null;
 };
 
@@ -154,7 +181,7 @@ const phaseIndexAt = (phases: readonly PhaseAnalytics[], at: string): number | n
   return null;
 };
 
-const derivePhases = (start: StartState, journal: readonly JournalEvent[], now: string): PhaseAnalytics[] => {
+const derivePhases = (start: AnalyticsStart, journal: readonly JournalEvent[], now: string): PhaseAnalytics[] => {
   const started = journal.find((event) => event.type === "started")?.at ?? start.createdAt;
   const gates = journal.filter((event) => event.type === "gate-advanced");
   const phases: PhaseAnalytics[] = [];
@@ -249,6 +276,71 @@ const deriveActionTurns = (journal: readonly JournalEvent[], phases: readonly Ph
   return turns;
 };
 
+const resolveSharedTurnPhase = (
+  matching: readonly ActionTurn[],
+  sessionId: string,
+  singleWindowExact: boolean
+): { phaseIndex: number | null; exact: boolean; sharedTurn: boolean } => {
+  if (matching.length === 0) return { phaseIndex: null, exact: false, sharedTurn: false };
+  if (matching.length === 1) {
+    const phaseIndex = matching[0]?.phaseIndex ?? null;
+    return { phaseIndex, exact: phaseIndex !== null && singleWindowExact, sharedTurn: false };
+  }
+  const turnIds = new Set(matching.map((turn) => turn.turnId));
+  if (turnIds.size !== 1 || matching.some((turn) => turn.sessionId !== sessionId)) {
+    return { phaseIndex: null, exact: false, sharedTurn: false };
+  }
+  const latest = matching.reduce((best, turn) => (turn.startedMs > best.startedMs ? turn : best));
+  return { phaseIndex: latest.phaseIndex ?? null, exact: false, sharedTurn: true };
+};
+
+const derivePauseIntervals = (
+  journal: readonly JournalEvent[],
+  runStartMs: number | null,
+  runEndMs: number | null
+): number | null => {
+  if (runStartMs === null || runEndMs === null || runEndMs < runStartMs) return null;
+  let paused = false;
+  let pauseStart: number | null = null;
+  let totalPaused = 0;
+  for (const event of journal) {
+    const at = milliseconds(event.at);
+    if (at === null) continue;
+    if (event.type === "paused") {
+      if (!paused) {
+        paused = true;
+        pauseStart = Math.max(at, runStartMs);
+      }
+    } else if (event.type === "resumed") {
+      if (paused && pauseStart !== null) {
+        totalPaused += Math.max(0, Math.min(at, runEndMs) - pauseStart);
+        paused = false;
+        pauseStart = null;
+      }
+    }
+  }
+  if (paused && pauseStart !== null) {
+    totalPaused += Math.max(0, runEndMs - pauseStart);
+  }
+  return totalPaused;
+};
+
+const deriveFinalChecks = (journal: readonly JournalEvent[]): FinalCheckAnalytics[] =>
+  journal
+    .filter((event) => event.type === "final-check")
+    .map((event) => {
+      const details = object(event.details);
+      const duration = integer(details?.durationMs);
+      return {
+        at: event.at,
+        agent: event.agent ?? null,
+        name: string(details?.name) ?? "unknown",
+        tier: string(details?.tier) ?? "unknown",
+        exitCode: integer(details?.exitCode),
+        durationMs: duration !== null && duration >= 0 ? duration : null
+      };
+    });
+
 const deriveWaits = (roster: readonly string[], journal: readonly JournalEvent[]): WaitAnalytics[] => {
   const waits = new Map<string, number[]>();
   for (const agent of roster) waits.set(agent, []);
@@ -258,7 +350,7 @@ const deriveWaits = (roster: readonly string[], journal: readonly JournalEvent[]
     const key = `${event.agent}\u0000${event.actionId}`;
     if (event.type === "nudged") {
       const at = milliseconds(event.at);
-      if (at !== null) pendingNudge.set(key, at);
+      if (at !== null && !pendingNudge.has(key)) pendingNudge.set(key, at);
     } else if (event.type === "intent-seen") {
       const from = pendingNudge.get(key);
       const to = milliseconds(event.at);
@@ -296,7 +388,7 @@ const deriveResponseLatency = (
     const key = `${event.agent}\u0000${event.actionId}`;
     if (event.type === "nudged") {
       const at = milliseconds(event.at);
-      if (at !== null) pendingNudge.set(key, at);
+      if (at !== null && !pendingNudge.has(key)) pendingNudge.set(key, at);
     } else if (event.type === "response-accepted") {
       const from = pendingNudge.get(key);
       const to = milliseconds(event.at);
@@ -387,11 +479,12 @@ const unavailableUsage = (
 });
 
 export type BuildAnalyticsInput = {
-  start: StartState;
+  start: AnalyticsStart;
   journal: readonly JournalEvent[];
   activeRoster?: readonly string[];
   now?: string;
   transcriptRoots?: Partial<Record<TranscriptVendor, string | null>>;
+  source?: AnalyticsSource;
 };
 
 export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
@@ -409,6 +502,14 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
   const endMs = milliseconds(endedAt);
   const runValid = startMs !== null && endMs !== null && endMs >= startMs;
   const runState: MetricState = !runValid ? "invalid" : terminalGate === undefined ? "in-progress" : "complete";
+  const elapsedMs = runValid ? endMs - startMs : null;
+  const pausedMs = elapsedMs === null ? null : derivePauseIntervals(input.journal, startMs, endMs);
+  const unpausedMs = elapsedMs === null || pausedMs === null ? null : elapsedMs - pausedMs;
+  const source: AnalyticsSource = input.source ?? {
+    formatVersion: RUNTIME_FORMAT_VERSION,
+    legacy: false,
+    skippedJournalRecords: 0
+  };
   const turns = deriveActionTurns(input.journal, phases);
   const hasSessionIdentity = input.journal.some((event) => {
     if (event.type !== "agent-lifecycle") return false;
@@ -474,6 +575,7 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
       let unassignedToolRecords = 0;
       let tokenFallbackUsed = false;
       let toolFallbackUsed = false;
+      let sharedTurnFallbackUsed = false;
 
       const assign = (
         phaseIndex: number | null,
@@ -516,11 +618,12 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
 
       for (const result of results) {
         for (const turnUsage of result.turns) {
-          const action = agentTurns.find(
+          const matchingTurns = agentTurns.filter(
             (turn) => turn.sessionId === result.sessionId && turn.turnId === turnUsage.turnId
           );
-          const phaseIndex = action?.phaseIndex ?? null;
-          assign(phaseIndex, turnUsage, phaseIndex !== null);
+          const resolved = resolveSharedTurnPhase(matchingTurns, result.sessionId, true);
+          if (resolved.sharedTurn) sharedTurnFallbackUsed = true;
+          assign(resolved.phaseIndex, turnUsage, resolved.exact);
         }
         for (const record of result.unattributed) {
           const at = record.at === null ? null : milliseconds(record.at);
@@ -534,9 +637,13 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
                     at >= turn.startedMs &&
                     at <= turn.endedMs
                 );
-          const phaseIndex = matching.length === 1 ? (matching[0]?.phaseIndex ?? null) : null;
-          const exact = matching.length === 1 && phaseIndex !== null && record.windowAttribution === "exact";
-          assign(phaseIndex, record, exact);
+          const resolved = resolveSharedTurnPhase(
+            matching,
+            result.sessionId,
+            matching.length === 1 && record.windowAttribution === "exact"
+          );
+          if (resolved.sharedTurn) sharedTurnFallbackUsed = true;
+          assign(resolved.phaseIndex, record, resolved.exact);
         }
       }
       if (unassignedTokenRecords > 0) tokenReasons.push("one or more measured token records are unassigned");
@@ -546,6 +653,10 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
       }
       if (toolFallbackUsed) {
         toolReasons.push("one or more tool records used a non-exact attribution fallback");
+      }
+      if (sharedTurnFallbackUsed) {
+        tokenReasons.push("one or more token records were shared by one vendor turn across several actions");
+        toolReasons.push("one or more tool records were shared by one vendor turn across several actions");
       }
       for (const phase of phaseUsage) {
         phase.tokenCoverage = worseCoverage(phase.tokenCoverage, tokenCoverage);
@@ -585,7 +696,16 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
             emptyTokens()
           )
         : null;
-    usage = { agents: agents.sort((left, right) => left.agent.localeCompare(right.agent)), tokenTotal };
+    const blockingAgents = agents
+      .filter((agent) => agent.tokenCoverage !== "complete" || agent.unassigned.tokenRecords > 0)
+      .map((agent) => agent.agent);
+    const tokenTotalReason =
+      tokenTotal === null && blockingAgents.length > 0 ? `blocked by: ${blockingAgents.join(", ")}` : null;
+    usage = {
+      agents: agents.sort((left, right) => left.agent.localeCompare(right.agent)),
+      tokenTotal,
+      tokenTotalReason
+    };
   }
 
   return {
@@ -594,13 +714,17 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
     run: {
       startedAt,
       endedAt,
-      durationMs: runValid ? endMs - startMs : null,
+      durationMs: elapsedMs,
+      pausedMs,
+      unpausedMs,
       state: runState
     },
     phases,
     waits: deriveWaits(roster, input.journal),
     responseLatency: deriveResponseLatency(roster, input.journal),
     evidencePublicationLatency: deriveEvidencePublicationLatency(input.journal),
+    finalChecks: deriveFinalChecks(input.journal),
+    source,
     usage
   };
 };
@@ -622,11 +746,15 @@ const formatPhase = (phase: Pick<PhaseUsageAnalytics, "phase" | "round">): strin
   `${phase.phase}${phase.round === null ? "" : ` round ${phase.round}`}`;
 
 export const renderAnalytics = (report: AnalyticsReport): string => {
+  const runLine =
+    report.run.durationMs === null
+      ? `Run: ${formatDuration(null)} (${report.run.state})`
+      : `Run: ${formatDuration(report.run.durationMs)} elapsed / ${formatDuration(report.run.pausedMs ?? 0)} paused / ${formatDuration(report.run.unpausedMs)} unpaused (${report.run.state})`;
   const lines = [
     `Issue ${report.issue} analytics`,
     "",
     "Time",
-    `Run: ${formatDuration(report.run.durationMs)} (${report.run.state})`,
+    runLine,
     ...report.phases.map(
       (phase) =>
         `- ${phase.name}${phase.round === null ? "" : ` round ${phase.round}`}: ${formatDuration(phase.durationMs)}; actions=${phase.actions}; ${phase.state}`
@@ -656,8 +784,24 @@ export const renderAnalytics = (report: AnalyticsReport): string => {
       report.evidencePublicationLatency.maxMs === null
         ? "unavailable"
         : `${(report.evidencePublicationLatency.maxMs / 1000).toFixed(1)}s`
-    }`
+    }`,
+    "",
+    "Final checks",
+    ...(report.finalChecks.length === 0
+      ? ["- none recorded"]
+      : report.finalChecks.map((check) => {
+          const duration =
+            check.durationMs === null ? "unavailable" : `${(check.durationMs / 1000).toFixed(1)}s`;
+          return `- ${check.name} (${check.tier}): exit=${check.exitCode ?? "unavailable"} duration=${duration}`;
+        }))
   ];
+  if (report.source.legacy || report.source.skippedJournalRecords > 0) {
+    lines.push(
+      "",
+      "Provenance",
+      `- formatVersion=${report.source.formatVersion}; legacy=${report.source.legacy}; skippedJournalRecords=${report.source.skippedJournalRecords}`
+    );
+  }
   if (report.usage !== null) {
     lines.push("", "Token count");
     for (const agent of report.usage.agents) {
@@ -675,7 +819,7 @@ export const renderAnalytics = (report: AnalyticsReport): string => {
     }
     lines.push(
       report.usage.tokenTotal === null
-        ? "Cross-roster token total: unavailable (not every active agent has complete coverage)"
+        ? `Cross-roster token total: unavailable${report.usage.tokenTotalReason === null ? " (not every active agent has complete coverage)" : ` (${report.usage.tokenTotalReason})`}`
         : `Cross-roster token total: ${formatTokens(report.usage.tokenTotal)}`,
       "",
       "Tool count"

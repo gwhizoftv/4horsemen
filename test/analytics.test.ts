@@ -500,4 +500,212 @@ describe("analytics aggregation", () => {
     expect(renderAnalytics(report)).toContain("Agent response latency");
     expect(renderAnalytics(report)).toContain("Evidence publication latency");
   });
+
+  it("measures waits from the first outstanding nudge across retries", () => {
+    const actionId = "66666666-6666-4666-8666-666666666666";
+    const journal = [
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 0,
+        at: "2026-08-21T00:00:00.000Z",
+        type: "started",
+        details: { issue: 89, profile: "consensus" }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 1,
+        at: "2026-08-21T00:00:00.000Z",
+        type: "nudged",
+        agent: "codex",
+        actionId,
+        details: {}
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 2,
+        at: "2026-08-21T01:00:00.000Z",
+        type: "nudged",
+        agent: "codex",
+        actionId,
+        details: {}
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 3,
+        at: "2026-08-21T01:05:00.000Z",
+        type: "intent-seen",
+        agent: "codex",
+        actionId,
+        submissionSha: "a".repeat(40),
+        details: {}
+      })
+    ];
+    const report = buildAnalytics({ start, journal, activeRoster: ["codex"], now: "2026-08-21T01:05:00.000Z" });
+    expect(report.waits).toEqual([{ agent: "codex", count: 1, medianMs: 3_900_000, maxMs: 3_900_000 }]);
+  });
+
+  it("splits elapsed time into paused and unpaused intervals", () => {
+    const journal = [
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 0,
+        at: "2026-08-21T00:00:00.000Z",
+        type: "started",
+        details: { issue: 89, profile: "consensus" }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 1,
+        at: "2026-08-21T00:10:00.000Z",
+        type: "paused",
+        details: {}
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 2,
+        at: "2026-08-21T00:20:00.000Z",
+        type: "resumed",
+        details: {}
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 3,
+        at: "2026-08-21T01:00:00.000Z",
+        type: "gate-advanced",
+        details: { from: "R1.join", to: null, round: null }
+      })
+    ];
+    const report = buildAnalytics({ start, journal, now: "2026-08-21T01:00:00.000Z" });
+    expect(report.run).toMatchObject({ durationMs: 3_600_000, pausedMs: 600_000, unpausedMs: 3_000_000 });
+    expect(renderAnalytics(report)).toContain("10.00 min paused / 50.00 min unpaused");
+  });
+
+  it("assigns shared vendor turns to the latest action as partial coverage", () => {
+    const sharedTurn = "shared-turn-1";
+    const sessionId = "session-codex";
+    const actionA = "77777777-7777-4777-8777-777777777777";
+    const actionB = "88888888-8888-4888-8888-888888888888";
+    const journal = [
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 0,
+        at: "2026-08-21T00:00:00.000Z",
+        type: "started",
+        details: { issue: 89, profile: "consensus" }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 1,
+        at: "2026-08-21T00:00:00.000Z",
+        type: "action-prepared",
+        agent: "codex",
+        actionId: actionA,
+        details: {}
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 2,
+        at: "2026-08-21T00:00:01.000Z",
+        type: "agent-lifecycle",
+        agent: "codex",
+        actionId: actionA,
+        details: {
+          vendor: "codex",
+          kind: "prompt-submitted",
+          sessionId,
+          turnId: sharedTurn
+        }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 3,
+        at: "2026-08-21T00:00:02.000Z",
+        type: "action-prepared",
+        agent: "codex",
+        actionId: actionB,
+        details: {}
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 4,
+        at: "2026-08-21T00:00:03.000Z",
+        type: "agent-lifecycle",
+        agent: "codex",
+        actionId: actionB,
+        details: {
+          vendor: "codex",
+          kind: "prompt-submitted",
+          sessionId,
+          turnId: sharedTurn
+        }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 5,
+        at: "2026-08-21T00:00:10.000Z",
+        type: "agent-lifecycle",
+        agent: "codex",
+        details: { vendor: "codex", kind: "stopped", sessionId, turnId: sharedTurn }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 6,
+        at: "2026-08-21T00:01:00.000Z",
+        type: "gate-advanced",
+        details: { from: "R1.join", to: null, round: null }
+      })
+    ];
+    const roots = transcriptRoots();
+    const codexPath = join(roots.codex, "sessions", "2026", "08", "21", `rollout-fixture-${sessionId}.jsonl`);
+    copyFileSync(join(fixtures, "transcript-codex-shared-turn.jsonl"), codexPath);
+    const report = buildAnalytics({
+      start,
+      journal,
+      activeRoster: ["codex"],
+      transcriptRoots: roots
+    });
+    const codex = report.usage?.agents.find((agent) => agent.agent === "codex");
+    expect(codex).toMatchObject({ tokenCoverage: "partial", unassigned: { tokenRecords: 0 } });
+    expect(codex?.tokenReason).toContain("shared by one vendor turn across several actions");
+  });
+
+  it("explains blocked cross-roster totals with tokenTotalReason", () => {
+    const report = buildAnalytics({
+      start,
+      journal: readJournalFixture(),
+      activeRoster: ["claude", "codex", "cursor"],
+      transcriptRoots: transcriptRoots()
+    });
+    expect(report.usage?.tokenTotal).toBeNull();
+    expect(report.usage?.tokenTotalReason).toContain("cursor");
+  });
+
+  it("renders final-check durations and unavailable legacy rows", () => {
+    const journal = [
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 0,
+        at: "2026-08-21T00:00:00.000Z",
+        type: "started",
+        details: { issue: 89, profile: "consensus" }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 1,
+        at: "2026-08-21T00:00:01.000Z",
+        type: "final-check",
+        details: { tier: "checks", name: "check", argv: ["true"], exitCode: 0, durationMs: 2500 }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4,
+        sequence: 2,
+        at: "2026-08-21T00:00:02.000Z",
+        type: "gate-advanced",
+        details: { from: "R1.join", to: null, round: null }
+      })
+    ];
+    const rendered = renderAnalytics(buildAnalytics({ start, journal, now: "2026-08-21T00:00:02.000Z" }));
+    expect(rendered).toContain("Final checks");
+    expect(rendered).toContain("duration=2.5s");
+  });
 });
