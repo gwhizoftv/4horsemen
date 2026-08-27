@@ -10,6 +10,7 @@ import { computeInputSetHash } from "../src/evidence.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder, CoordinatorRunLoop } from "../src/runLoop.js";
+import { unlockDirectoryTree } from "../src/materializedInputs.js";
 import {
   appendJournal,
   dropAgent,
@@ -27,7 +28,10 @@ const activeAfterDrop = ["claude", "codex", "cursor"] as const;
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) {
+    unlockDirectoryTree(root);
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 const git = (root: string, ...args: string[]): string =>
