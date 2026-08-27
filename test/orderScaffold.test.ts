@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { artifactScaffoldValue, renderArtifactScaffold } from "../src/orderScaffold.js";
+import { BUILD_DISCIPLINE_NOTE, STEP_DEFINITIONS } from "../src/steps.js";
 
 describe("orderScaffold", () => {
   it("renders a filled join JSON scaffold", () => {
@@ -151,5 +152,13 @@ describe("orderScaffold", () => {
       disposition: "approve",
       rationale: "<one sentence>"
     });
+  });
+
+  it("limits build discipline to planning, implementation, and revision tasks", () => {
+    expect(
+      Object.values(STEP_DEFINITIONS)
+        .filter((definition) => definition.task.includes(BUILD_DISCIPLINE_NOTE))
+        .map((definition) => definition.id)
+    ).toEqual(["R2.plan", "R4.implement", "R6.revise"]);
   });
 });

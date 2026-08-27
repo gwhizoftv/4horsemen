@@ -67,7 +67,10 @@ describe("plan file-map path extraction", () => {
   });
 
   it("keeps monorepo file-map paths and drops bare identifiers from a plan", () => {
-    const plan = `# Plan
+    const plan = `# Reuse and Scope
+- \`packages/core/src/domain/read-only.ts\`
+
+## Exact File Map
 - \`packages/core/src/domain/model.ts\`
 - \`apps/web/src/session/mapSessionVideo.test.ts\`
 - \`VIDEO_DOMAINS\`

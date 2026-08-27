@@ -126,6 +126,9 @@ describe("coord install — two-mode footprint", () => {
     expect(agentsMd).toContain("## Exact file list to be created");
     expect(agentsMd).toContain("## Reuse and Scope");
     expect(agentsMd).toContain("## Implementation discipline");
+    for (const contract of ["A **plan review**", "A **code review**", "A **comparison**"]) {
+      expect(agentsMd.indexOf(contract)).toBeLessThan(agentsMd.indexOf("## Implementation discipline"));
+    }
     expect(agentsMd).toContain("action.md");
     expect(agentsMd).toContain("If `actionId` in the front matter has changed");
     expect(findAgentLanguageViolations(agentsMd)).toEqual([]);

@@ -74,15 +74,6 @@ fixtures the implementation will reuse, and justify every new file. A path
 cited only in that section does not expand what the implementation may change;
 also list every path intended for change in a file-list section.
 
-## Implementation discipline
-
-Keep the work within the issue and make the smallest change that fully solves
-it. Inspect and reuse existing functions, types, helpers, tests, and fixtures
-before creating new ones. Justify every new file, abstraction, and dependency;
-avoid unrelated cleanup and speculative flexibility. Add the fewest focused
-tests needed, prefer extending an existing test file, and still run every
-required check.
-
 A **plan review** (`.plans/issue-<n>/review.md`) must include:
 
 ```markdown
@@ -128,6 +119,15 @@ or
 
 No subtitle on that same line (e.g. `# Comparison — issue 12` fails). Cite every
 bound implementation pin SHA from the current `action.md`.
+
+## Implementation discipline
+
+Keep the work within the issue and make the smallest change that fully solves
+it. Inspect and reuse existing functions, types, helpers, tests, and fixtures
+before creating new ones. Justify every new file, abstraction, and dependency;
+avoid unrelated cleanup and speculative flexibility. Add the fewest focused
+tests needed, prefer extending an existing test file, and still run every
+required check.
 
 ## Checks that actually run
 

@@ -113,24 +113,22 @@ export const expandFileMapBraces = (candidate: string): string[] => {
 
 /**
  * Remove named Markdown sections while retaining every other line. A section
- * ends at the next ATX heading at the same or a higher level, so nested
- * headings remain part of the removed section rather than leaking citations
- * back into the file-map scan.
+ * ends at the next ATX heading, matching the plan-heading contract regardless
+ * of which accepted heading depth an agent uses.
  */
 const stripSections = (raw: string, headings: readonly string[]): string => {
   const targets = new Set(headings.map((heading) => heading.toLowerCase()));
   const kept: string[] = [];
-  let skippedDepth: number | null = null;
+  let skipping = false;
   for (const line of raw.split("\n")) {
     const matched = /^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
-    const depth = matched?.[1]?.length;
-    if (skippedDepth !== null) {
-      if (depth === undefined || depth > skippedDepth) continue;
-      skippedDepth = null;
+    if (skipping) {
+      if (matched === null) continue;
+      skipping = false;
     }
     const title = matched?.[2]?.trim().toLowerCase();
-    if (depth !== undefined && title !== undefined && targets.has(title)) {
-      skippedDepth = depth;
+    if (title !== undefined && targets.has(title)) {
+      skipping = true;
       continue;
     }
     kept.push(line);
