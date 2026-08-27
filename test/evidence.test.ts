@@ -118,6 +118,7 @@ describe("evidence evaluation", () => {
 - \`test/product.test.ts\`
 
 ## Reuse and Scope
+### Existing helper
 Reuse the existing product helper at \`src/existing-helper.ts\`; no new files are needed.
 
 ## Tests
