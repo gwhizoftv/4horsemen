@@ -1,0 +1,14 @@
+{
+  "actionId": "21bba94b-c1df-4831-b579-4d9ebe678dc0",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "3db10a1b9f87ab19d2902575454f288665204043c210a413f7a331995259b8c8",
+  "issue": 121,
+  "issueSessionId": "issue-121:6ef8f6eb22af1558723ddd885e0364ebbc92d76b",
+  "protocolVersion": 2,
+  "rationale": "Round-3 restores depth-aware stripSections so nested headings under Reuse and Scope no longer leak citations into approvedPaths, while still ending an H1 reuse section at the next plan heading.",
+  "responseSha256": "d4990da108fd3faaa61dbec93778dd1b3d0754939e9193f332ffcca9f81732a9",
+  "revisionCommitSha": "59e0b2039fc5169a07ee8a1f2a55030d830275a0",
+  "round": 3
+}

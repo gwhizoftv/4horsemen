@@ -1,0 +1,14 @@
+{
+  "actionId": "28153464-4fd5-48e7-a564-02fbb5c84a0d",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "3db10a1b9f87ab19d2902575454f288665204043c210a413f7a331995259b8c8",
+  "issue": 121,
+  "issueSessionId": "issue-121:6ef8f6eb22af1558723ddd885e0364ebbc92d76b",
+  "protocolVersion": 2,
+  "rationale": "Round 3 lands the sibling-or-parent depth guard and covers it by nesting a '### Existing helper' subheading into an existing fixture rather than adding a case, and building 59e0b203 in isolation and calling its own compiled extractApprovedPaths returns exactly the declared file-list paths on all seven shapes I have used against these pins — reuse section last, a literal z in the body, two alias sections, a lowercase heading, a depth-1 heading, a nested '###', and a '####' whose sibling section still contributes — with lint, typecheck, and the harness-independent suites green.",
+  "responseSha256": "31e89bffe406a7f1384b03416e4f210be678f447d3f7ecb4d3d94701eb56480d",
+  "revisionCommitSha": "59e0b2039fc5169a07ee8a1f2a55030d830275a0",
+  "round": 3
+}

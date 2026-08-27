@@ -1,0 +1,14 @@
+{
+  "actionId": "61e125fc-375a-41bf-9365-32810db0b12e",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "3db10a1b9f87ab19d2902575454f288665204043c210a413f7a331995259b8c8",
+  "issue": 121,
+  "issueSessionId": "issue-121:6ef8f6eb22af1558723ddd885e0364ebbc92d76b",
+  "protocolVersion": 2,
+  "rationale": "The round-three revision preserves nested Reuse and Scope content while still allowing depth-one section transitions, with a focused regression that exercises the fail-open path leak.",
+  "responseSha256": "36c4088fce7929a80340842723e9383372ba38add76e00b22fb1588e7f66dda5",
+  "revisionCommitSha": "59e0b2039fc5169a07ee8a1f2a55030d830275a0",
+  "round": 3
+}
