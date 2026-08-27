@@ -1,0 +1,29 @@
+{
+  "actionId": "53fb6b5c-f0fa-40ab-a330-e6a302277b28",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "7d850e3549cddd9d50924c742781ac470543989e",
+      "path": ".signals/issue-118/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "17c3cf4f21786faed2eb0f30bb5e8a1ada7a6923",
+      "path": ".signals/issue-118/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "270c9f035040dbac3f38ef79cda2dfa8ac080106",
+      "path": ".signals/issue-118/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "ccfc1175aae5f4bf2cb8d5a8ed464c8604e6a4627817bdc3146611f6ddbfd755",
+  "issue": 118,
+  "issueSessionId": "issue-118:c8e5fadd97df09bfc611d8e82f7a51189276bbfe",
+  "protocolVersion": 2,
+  "rationale": "Codex most safely enforces completed legacy reads with the recorded active roster, rejects malformed known events and mixed formats, and avoids fabricating missing Cursor counters, despite needing Cursor's broader shared-turn resolver in revision.",
+  "responseSha256": "f02c0e6b176f05494ad2fe6e961ea485539fbc00ff3f692526127136e1ec9f1f"
+}

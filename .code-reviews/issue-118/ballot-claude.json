@@ -1,0 +1,29 @@
+{
+  "actionId": "8acf3b80-2cc7-49c7-88d6-5ee65402b8d1",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "7d850e3549cddd9d50924c742781ac470543989e",
+      "path": ".signals/issue-118/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "17c3cf4f21786faed2eb0f30bb5e8a1ada7a6923",
+      "path": ".signals/issue-118/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "270c9f035040dbac3f38ef79cda2dfa8ac080106",
+      "path": ".signals/issue-118/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "ccfc1175aae5f4bf2cb8d5a8ed464c8604e6a4627817bdc3146611f6ddbfd755",
+  "issue": 118,
+  "issueSessionId": "issue-118:c8e5fadd97df09bfc611d8e82f7a51189276bbfe",
+  "protocolVersion": 2,
+  "rationale": "All three pins produce numerically identical output on the real issue-121 runtime, so the choice turns entirely on malformed and dropped-roster history, and codex is the only pin with no wrong-output defect that also reports a legacy run against the roster that actually ran: cursor's journal reader skips a malformed known event and reported 12527.62 min elapsed and 'in-progress' for a fixture run that completed in 45.00 min, while my own pin and cursor's both print a wait row for a dropped agent and would permanently block the cross-roster total on any legacy issue that dropped one; codex's remaining gaps (its cursors.json completion gate and its bundled tests) are smaller and additive to fix than either.",
+  "responseSha256": "bc8e8304e3419d59b405d054d33dfe18a82c287a445d1bad4e55a5f146c0571f"
+}

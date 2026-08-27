@@ -1,0 +1,29 @@
+{
+  "actionId": "901a4738-9cf5-46ef-ab2b-8b90e1a94ada",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "7d850e3549cddd9d50924c742781ac470543989e",
+      "path": ".signals/issue-118/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "17c3cf4f21786faed2eb0f30bb5e8a1ada7a6923",
+      "path": ".signals/issue-118/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "270c9f035040dbac3f38ef79cda2dfa8ac080106",
+      "path": ".signals/issue-118/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "ccfc1175aae5f4bf2cb8d5a8ed464c8604e6a4627817bdc3146611f6ddbfd755",
+  "issue": 118,
+  "issueSessionId": "issue-118:c8e5fadd97df09bfc611d8e82f7a51189276bbfe",
+  "protocolVersion": 2,
+  "rationale": "Claude 7d850e35 best matches the selected plan with fail-closed analytics journal parsing and the densest gap coverage; adopt Codex’s completed-legacy activeRoster gating on revise rather than Cursor’s skip-all-failures reader.",
+  "responseSha256": "c74a187348f676c03dc9c5a00f11e779a33d0bedbd2969023e7a1858a87235a2"
+}
