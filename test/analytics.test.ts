@@ -72,6 +72,44 @@ const removeBrokenClaudeRecord = (roots: { claude: string }): void => {
   writeFileSync(path, `${records.slice(0, -1).join("\n")}\n`);
 };
 
+const sharedCodexTranscriptRoot = (explicitTurnId = false): string => {
+  const root = mkdtempSync(join(tmpdir(), "coord-codex-shared-turn-"));
+  roots.push(root);
+  const codex = join(root, ".codex");
+  const transcript = join(codex, "sessions", "2026", "08", "21", "rollout-fixture-session-shared.jsonl");
+  mkdirSync(dirname(transcript), { recursive: true });
+  const fixture = join(fixtures, "transcript-codex-shared-turn.jsonl");
+  if (!explicitTurnId) {
+    copyFileSync(fixture, transcript);
+  } else {
+    const records = readFileSync(fixture, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const record = JSON.parse(line) as { payload: Record<string, unknown> };
+        return JSON.stringify({ ...record, payload: { ...record.payload, turn_id: "turn-shared" } });
+      });
+    writeFileSync(transcript, `${records.join("\n")}\n`);
+  }
+  return codex;
+};
+
+const sharedCodexJournal = (): JournalEvent[] => {
+  const firstAction = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const secondAction = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const raw = [
+    { at: "2026-08-21T00:00:00.000Z", type: "started", details: { issue: 89, profile: "solo" } },
+    { at: "2026-08-21T00:00:01.000Z", type: "action-prepared", agent: "codex", actionId: firstAction, details: {} },
+    { at: "2026-08-21T00:00:02.000Z", type: "agent-lifecycle", agent: "codex", actionId: firstAction, details: { vendor: "codex", kind: "prompt-submitted", sessionId: "session-shared", turnId: "turn-shared" } },
+    { at: "2026-08-21T00:00:10.000Z", type: "gate-advanced", details: { from: "R1.join", to: "R2.plan", round: null } },
+    { at: "2026-08-21T00:00:11.000Z", type: "action-prepared", agent: "codex", actionId: secondAction, details: {} },
+    { at: "2026-08-21T00:00:12.000Z", type: "agent-lifecycle", agent: "codex", actionId: secondAction, details: { vendor: "codex", kind: "prompt-submitted", sessionId: "session-shared", turnId: "turn-shared" } },
+    { at: "2026-08-21T00:00:22.000Z", type: "agent-lifecycle", agent: "codex", details: { vendor: "codex", kind: "stopped", sessionId: "session-shared", turnId: "turn-shared" } },
+    { at: "2026-08-21T00:00:30.000Z", type: "gate-advanced", details: { from: "R2.plan", to: null, round: null } }
+  ];
+  return raw.map((event, sequence) => journalEventSchema.parse({ formatVersion: 4, sequence, ...event }));
+};
+
 describe("analytics aggregation", () => {
   it("reconstructs phase/time metrics and joins per-turn tokens and tools to actions", () => {
     const report = buildAnalytics({ start, journal: readJournalFixture(), transcriptRoots: transcriptRoots() });
@@ -531,26 +569,13 @@ describe("analytics aggregation", () => {
   });
 
   it("assigns overlapping windows from one shared Codex turn as a named partial fallback", () => {
-    const root = mkdtempSync(join(tmpdir(), "coord-codex-shared-turn-"));
-    roots.push(root);
-    const codex = join(root, ".codex");
-    const transcript = join(codex, "sessions", "2026", "08", "21", "rollout-fixture-session-shared.jsonl");
-    mkdirSync(dirname(transcript), { recursive: true });
-    copyFileSync(join(fixtures, "transcript-codex-shared-turn.jsonl"), transcript);
-    const firstAction = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
-    const secondAction = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
-    const raw = [
-      { at: "2026-08-21T00:00:00.000Z", type: "started", details: { issue: 89, profile: "solo" } },
-      { at: "2026-08-21T00:00:01.000Z", type: "action-prepared", agent: "codex", actionId: firstAction, details: {} },
-      { at: "2026-08-21T00:00:02.000Z", type: "agent-lifecycle", agent: "codex", actionId: firstAction, details: { vendor: "codex", kind: "prompt-submitted", sessionId: "session-shared", turnId: "turn-shared" } },
-      { at: "2026-08-21T00:00:10.000Z", type: "gate-advanced", details: { from: "R1.join", to: "R2.plan", round: null } },
-      { at: "2026-08-21T00:00:11.000Z", type: "action-prepared", agent: "codex", actionId: secondAction, details: {} },
-      { at: "2026-08-21T00:00:12.000Z", type: "agent-lifecycle", agent: "codex", actionId: secondAction, details: { vendor: "codex", kind: "prompt-submitted", sessionId: "session-shared", turnId: "turn-shared" } },
-      { at: "2026-08-21T00:00:22.000Z", type: "agent-lifecycle", agent: "codex", details: { vendor: "codex", kind: "stopped", sessionId: "session-shared", turnId: "turn-shared" } },
-      { at: "2026-08-21T00:00:30.000Z", type: "gate-advanced", details: { from: "R2.plan", to: null, round: null } }
-    ];
-    const journal = raw.map((event, sequence) => journalEventSchema.parse({ formatVersion: 4, sequence, ...event }));
-    const report = buildAnalytics({ start, journal, activeRoster: ["codex"], transcriptRoots: { codex } });
+    const codex = sharedCodexTranscriptRoot();
+    const report = buildAnalytics({
+      start,
+      journal: sharedCodexJournal(),
+      activeRoster: ["codex"],
+      transcriptRoots: { codex }
+    });
     const codexUsage = report.usage?.agents[0];
 
     expect(codexUsage).toMatchObject({
@@ -562,6 +587,28 @@ describe("analytics aggregation", () => {
       unassigned: { tokenRecords: 0 }
     });
     expect(codexUsage?.tokenReason).toContain("shared by one vendor turn across several actions");
+  });
+
+  it("labels a turn-keyed aggregate partial when one vendor turn maps to multiple actions", () => {
+    const codex = sharedCodexTranscriptRoot(true);
+    const report = buildAnalytics({
+      start,
+      journal: sharedCodexJournal(),
+      activeRoster: ["codex"],
+      transcriptRoots: { codex }
+    });
+    const codexUsage = report.usage?.agents[0];
+
+    expect(codexUsage).toMatchObject({
+      tokenCoverage: "partial",
+      phases: [
+        { phase: "R1.join", tokens: { input: 0, output: 0, cacheRead: 0 } },
+        { phase: "R2.plan", tokens: { input: 20, output: 6, cacheRead: 40 } }
+      ],
+      unassigned: { tokenRecords: 0 }
+    });
+    expect(codexUsage?.tokenReason).toContain("shared by one vendor turn across several actions");
+    expect(report.usage?.tokenTotal).toBeNull();
   });
 
   it("unlocks a Cursor/Codex total only when normalized Cursor tokens are complete", () => {

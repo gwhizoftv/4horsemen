@@ -114,6 +114,34 @@ type ActionTurn = {
   phaseIndex: number | null;
 };
 
+type TurnPhaseResolution = {
+  phaseIndex: number | null;
+  exact: boolean;
+  sharedVendorTurn: boolean;
+};
+
+const resolveTurnPhase = (
+  matching: readonly ActionTurn[],
+  singleMatchExact: boolean
+): TurnPhaseResolution => {
+  if (matching.length === 0) return { phaseIndex: null, exact: false, sharedVendorTurn: false };
+  if (matching.length === 1) {
+    const phaseIndex = matching[0]?.phaseIndex ?? null;
+    return { phaseIndex, exact: phaseIndex !== null && singleMatchExact, sharedVendorTurn: false };
+  }
+  const first = matching[0];
+  if (
+    first === undefined ||
+    matching.some((turn) => turn.sessionId !== first.sessionId || turn.turnId !== first.turnId)
+  ) {
+    return { phaseIndex: null, exact: false, sharedVendorTurn: false };
+  }
+  const selected = matching.reduce((latest, turn) =>
+    turn.startedMs > latest.startedMs ? turn : latest
+  );
+  return { phaseIndex: selected.phaseIndex, exact: false, sharedVendorTurn: true };
+};
+
 const object = (value: unknown): JsonObject | null =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : null;
 const string = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
@@ -585,11 +613,15 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
 
       for (const result of results) {
         for (const turnUsage of result.turns) {
-          const action = agentTurns.find(
+          const matching = agentTurns.filter(
             (turn) => turn.sessionId === result.sessionId && turn.turnId === turnUsage.turnId
           );
-          const phaseIndex = action?.phaseIndex ?? null;
-          assign(phaseIndex, turnUsage, phaseIndex !== null);
+          const resolved = resolveTurnPhase(matching, true);
+          if (resolved.sharedVendorTurn && resolved.phaseIndex !== null) {
+            if (turnUsage.tokenRecords > 0) sharedTurnTokenFallbackUsed = true;
+            if (turnUsage.toolRecords > 0) sharedTurnToolFallbackUsed = true;
+          }
+          assign(resolved.phaseIndex, turnUsage, resolved.exact);
         }
         for (const record of result.unattributed) {
           const at = record.at === null ? null : milliseconds(record.at);
@@ -603,26 +635,12 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
                     at >= turn.startedMs &&
                     at <= turn.endedMs
                 );
-          const sharedVendorTurn =
-            matching.length > 1 &&
-            matching.every(
-              (turn) =>
-                turn.sessionId === matching[0]?.sessionId &&
-                turn.turnId === matching[0]?.turnId
-            );
-          const selected =
-            matching.length === 1
-              ? matching[0]
-              : sharedVendorTurn
-                ? matching.reduce((latest, turn) => (turn.startedMs > latest.startedMs ? turn : latest))
-                : undefined;
-          const phaseIndex = selected?.phaseIndex ?? null;
-          const exact = matching.length === 1 && phaseIndex !== null && record.windowAttribution === "exact";
-          if (sharedVendorTurn && phaseIndex !== null) {
+          const resolved = resolveTurnPhase(matching, record.windowAttribution === "exact");
+          if (resolved.sharedVendorTurn && resolved.phaseIndex !== null) {
             if (record.tokenRecords > 0) sharedTurnTokenFallbackUsed = true;
             if (record.toolRecords > 0) sharedTurnToolFallbackUsed = true;
           }
-          assign(phaseIndex, record, exact);
+          assign(resolved.phaseIndex, record, resolved.exact);
         }
       }
       if (unassignedTokenRecords > 0) tokenReasons.push("one or more measured token records are unassigned");

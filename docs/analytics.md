@@ -446,7 +446,10 @@ containing its `action-prepared` record.
   same-session coordinator `prompt-submitted` → `stopped` window. If overlapping
   windows all share one vendor `sessionId`/`turnId`, the most recently started
   action receives the record as an explicitly `partial` shared-turn fallback;
-  overlaps across different turn ids remain unassigned.
+  overlaps across different turn ids remain unassigned. Transcript records that
+  already carry a turn id use the same rule when that turn maps to multiple
+  coordinator actions: they are never silently assigned to the first action as
+  exact coverage.
   Tool counts use `item_completed.turn_id`; `Extension` is a tool item, while
   `EnteredReviewMode` and `ExitedReviewMode` are controls. `custom_tool_call`
   alone is not treated as exact because it has no supported top-level turn key.
