@@ -4,7 +4,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildAnalytics, renderAnalytics } from "../src/analytics.js";
-import { journalEventSchema, startStateSchema, type JournalEvent } from "../src/state.js";
+import { issueRuntimePaths } from "../src/paths.js";
+import {
+  isLegacyRuntimeFormat,
+  journalEventSchema,
+  readJournal,
+  readJournalForAnalytics,
+  readStartState,
+  readStartStateHeader,
+  startStateSchema,
+  type JournalEvent
+} from "../src/state.js";
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "support", "fixtures");
 const roots: string[] = [];
@@ -715,5 +725,95 @@ describe("analytics aggregation", () => {
     expect(report.phases[0]?.actions).toBe(1);
     expect(renderAnalytics(report)).toContain("Agent response latency");
     expect(renderAnalytics(report)).toContain("Evidence publication latency");
+  });
+});
+
+/**
+ * The read-only readers that feed a legacy report.
+ *
+ * They exist only to build this report, so they are exercised beside it: the
+ * contract worth pinning is that history stays reportable while the same bytes
+ * stay unrunnable.
+ */
+describe("analytics read-only inputs", () => {
+  const legacyRuntime = (journalFixture?: string) => {
+    const root = mkdtempSync(join(tmpdir(), "coord-analytics-legacy-"));
+    roots.push(root);
+    const paths = issueRuntimePaths(root, 89);
+    mkdirSync(dirname(paths.start), { recursive: true });
+    writeFileSync(paths.start, `${JSON.stringify({ ...start, formatVersion: 2 }, null, 2)}\n`);
+    if (journalFixture !== undefined) copyFileSync(join(fixtures, journalFixture), paths.journal);
+    return paths;
+  };
+
+  it("reads a legacy journal for reporting while the strict reader still refuses it", () => {
+    const paths = legacyRuntime("analytics-journal-format2.jsonl");
+    const before = readFileSync(paths.journal, "utf8");
+
+    const legacy = readJournalForAnalytics(paths);
+    expect(legacy.formatVersion).toBe(2);
+    expect(isLegacyRuntimeFormat(legacy.formatVersion)).toBe(true);
+    expect(legacy.events.some((event) => event.type === "started")).toBe(true);
+    expect(legacy.events.some((event) => event.type === "final-check")).toBe(true);
+    // The one event type this build no longer knows is counted, not hidden.
+    expect(legacy.skipped).toBe(1);
+
+    // The control plane still fails closed on the very same bytes...
+    expect(() => readJournal(paths)).toThrow(/Wipe this issue/);
+    // ...and reporting rewrote none of them.
+    expect(readFileSync(paths.journal, "utf8")).toBe(before);
+  });
+
+  it("builds a complete legacy report from those inputs, with no invented usage", () => {
+    const paths = legacyRuntime("analytics-journal-format2.jsonl");
+    const header = readStartStateHeader(paths);
+    const legacy = readJournalForAnalytics(paths);
+    const report = buildAnalytics({
+      start: header,
+      journal: legacy.events,
+      activeRoster: header.originalRoster,
+      source: { formatVersion: legacy.formatVersion, legacy: true, skippedJournalRecords: legacy.skipped }
+    });
+
+    expect(report.run).toMatchObject({ state: "complete", pausedMs: 600_000 });
+    // Format 2 recorded no session identity, so there is nothing to attribute.
+    expect(report.usage).toBeNull();
+    expect(report.finalChecks).toHaveLength(1);
+    expect(report.finalChecks[0]?.durationMs).toBeNull();
+    const rendered = renderAnalytics(report);
+    expect(rendered).toContain("Runtime format 2 (legacy, read-only; this run cannot be resumed)");
+    expect(rendered).not.toContain("Token count");
+  });
+
+  it("fails on a malformed known event rather than reporting plausible timing", () => {
+    const paths = legacyRuntime();
+    writeFileSync(
+      paths.journal,
+      `${[
+        JSON.stringify({ formatVersion: 2, sequence: 0, at: "2026-08-19T00:00:00.000Z", type: "started", details: {} }),
+        // A terminal boundary with an unusable timestamp: skipping this would
+        // render a finished run as still in progress, with its final phase
+        // stretched to now.
+        JSON.stringify({
+          formatVersion: 2,
+          sequence: 1,
+          at: "not-a-timestamp",
+          type: "gate-advanced",
+          details: { from: "R1.join", to: null }
+        })
+      ].join("\n")}\n`
+    );
+    expect(() => readJournalForAnalytics(paths)).toThrow(/journal line 2/);
+  });
+
+  it("resolves legacy start identity through the header, but never for an operational read", () => {
+    const paths = legacyRuntime();
+    const header = readStartStateHeader(paths);
+    expect(header).toMatchObject({ formatVersion: 2, issue: 89, originalRoster: ["claude", "codex"] });
+    expect(header.configPath).toBe(start.configPath);
+    // Path resolution can reach a read-only report...
+    expect(isLegacyRuntimeFormat(header.formatVersion)).toBe(true);
+    // ...while every operational read of the same file stays fail-closed.
+    expect(() => readStartState(paths)).toThrow(/Wipe this issue/);
   });
 });
