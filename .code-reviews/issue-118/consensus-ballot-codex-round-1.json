@@ -1,0 +1,14 @@
+{
+  "actionId": "9d5f0703-9e78-40cd-b108-830d1890de99",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "024a8d8fbae08a7cb7b6620c6f1a342d3e19a8a19d59561e774366ca228519e8",
+  "issue": 118,
+  "issueSessionId": "issue-118:c8e5fadd97df09bfc611d8e82f7a51189276bbfe",
+  "protocolVersion": 2,
+  "rationale": "The revision applies the shared-turn tie-break to both timestamp and turn-keyed usage, labels reused turns partial, adds focused regression coverage, and passes pnpm check.",
+  "responseSha256": "34d1692c85e1844672ef5271c3a0584854c9cd7417e411e168f937cde67ac948",
+  "revisionCommitSha": "e09a894d280c05dffdc609f74670223f0c1a5c2b",
+  "round": 1
+}

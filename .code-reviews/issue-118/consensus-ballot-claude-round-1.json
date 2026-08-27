@@ -1,0 +1,14 @@
+{
+  "actionId": "ea3ff51c-6068-483d-ab7c-3be8d87f54e6",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "024a8d8fbae08a7cb7b6620c6f1a342d3e19a8a19d59561e774366ca228519e8",
+  "issue": 118,
+  "issueSessionId": "issue-118:c8e5fadd97df09bfc611d8e82f7a51189276bbfe",
+  "protocolVersion": 2,
+  "rationale": "The revision adopts the one change my comparison said had to be carried forward regardless of which pin won — the exact-turn collision, now resolved by a single shared resolveTurnPhase helper on both attribution paths, with a focused test and a doc update — and I verified it by execution: lint and typecheck clean, 76 tests green across the five suites it touches, token figures on the real issue-121 runtime byte-identical to the compared pin, 187 Codex tool calls that were previously folded into the first action with exact coverage now labelled as an explicit shared-turn fallback, legacy runs still fail closed for run and status with the wipe message, and a malformed terminal gate-advanced still errors instead of reporting a stretched elapsed time; the two items it left open (the cursors.json completion gate with its raw ENOENT, and the bundled rather than per-gap tests) produce no wrong number and are additive follow-ups, not blockers.",
+  "responseSha256": "e8067add0aa1a9f84126464ee4ea06d377008bf3467db918f941764f1967fa47",
+  "revisionCommitSha": "e09a894d280c05dffdc609f74670223f0c1a5c2b",
+  "round": 1
+}

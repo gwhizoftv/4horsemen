@@ -1,0 +1,14 @@
+{
+  "actionId": "991d359c-ce13-43c7-942a-667c42f43db8",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "024a8d8fbae08a7cb7b6620c6f1a342d3e19a8a19d59561e774366ca228519e8",
+  "issue": 118,
+  "issueSessionId": "issue-118:c8e5fadd97df09bfc611d8e82f7a51189276bbfe",
+  "protocolVersion": 2,
+  "rationale": "Codex e09a894 applies the shared-turn partial tie-break to turn-keyed transcript aggregates as well as window matches, keeps per-channel reasons and completed-legacy activeRoster gating, and adds a focused regression test.",
+  "responseSha256": "f93f23cba5dfe1275b4424bfd4aa5b36b07c36aba52a4fd8c4afa738a87c567f",
+  "revisionCommitSha": "e09a894d280c05dffdc609f74670223f0c1a5c2b",
+  "round": 1
+}
