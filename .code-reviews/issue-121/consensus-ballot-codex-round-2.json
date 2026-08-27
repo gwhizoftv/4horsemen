@@ -1,0 +1,14 @@
+{
+  "actionId": "2977d466-8a7e-4062-a94b-16d3f28abef4",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "543836262e57789449dd3283388ff2c29153cc44a4e68ff1789b7fd25e0cd0a2",
+  "issue": 121,
+  "issueSessionId": "issue-121:6ef8f6eb22af1558723ddd885e0364ebbc92d76b",
+  "protocolVersion": 2,
+  "rationale": "The round-two revision resolves the heading-depth extraction bug, restores protocol section boundaries, and adds focused regression coverage that confines build discipline to planning, implementation, and revision tasks.",
+  "responseSha256": "c485c7d6bed55244d538c6421f6333bcb7750cc25f5a003d0e0b0bb210b4ac9c",
+  "revisionCommitSha": "0c0ee7ee832c2fe167659fe69cf2277d06df60ca",
+  "round": 2
+}

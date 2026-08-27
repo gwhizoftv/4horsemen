@@ -1,0 +1,14 @@
+{
+  "actionId": "2d6f9e5f-5f24-464e-9f88-926f2ecb264d",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "543836262e57789449dd3283388ff2c29153cc44a4e68ff1789b7fd25e0cd0a2",
+  "issue": 121,
+  "issueSessionId": "issue-121:6ef8f6eb22af1558723ddd885e0364ebbc92d76b",
+  "protocolVersion": 2,
+  "rationale": "Round-2 stripSections ends skip on any nested ATX heading, so a ### under ## Reuse and Scope leaks reuse backticks into approvedPaths; restore depth-aware stripping while keeping the new discipline tests.",
+  "responseSha256": "e4ed450fce1911513f075d7405bb7c935c8c07b76b6b6c67b2b9bcffcbd81809",
+  "revisionCommitSha": "0c0ee7ee832c2fe167659fe69cf2277d06df60ca",
+  "round": 2
+}

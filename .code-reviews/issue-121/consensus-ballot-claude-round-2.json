@@ -1,0 +1,14 @@
+{
+  "actionId": "23ea1d08-d730-4241-a185-6858cb0507f6",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "543836262e57789449dd3283388ff2c29153cc44a4e68ff1789b7fd25e0cd0a2",
+  "issue": 121,
+  "issueSessionId": "issue-121:6ef8f6eb22af1558723ddd885e0364ebbc92d76b",
+  "protocolVersion": 2,
+  "rationale": "All three items from round 1 are genuinely fixed in 0c0ee7ee (depth-1 heading, template heading moved below the artifact contracts with an ordering assertion, and the placement test added), but replacing the depth rule with a flat one re-opens a fail-open leak I verified against the compiled pin: a '### ' subheading inside Reuse and Scope ends the skip, so a backticked path under it enters approvedPaths (round 1 returned ['src/a.ts'], round 2 returns ['src/a.ts','src/b.ts']) — a two-line guard closes it while keeping the depth-1 fix, namely record the reuse heading's depth and continue skipping while 'depth > recorded && recorded > 1', which I prototyped green on all four shapes (reuse last, two aliases, depth-1 heading, nested subheading).",
+  "responseSha256": "e7772689c82738bc44a239e0ea3f7c47e14ca9bb15d1b6eb671df9d841e88976",
+  "revisionCommitSha": "0c0ee7ee832c2fe167659fe69cf2277d06df60ca",
+  "round": 2
+}
