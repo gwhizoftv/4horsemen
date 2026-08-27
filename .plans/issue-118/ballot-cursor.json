@@ -1,0 +1,46 @@
+{
+  "actionId": "66969c9e-2aa8-4b14-bc70-ce6dbf65532c",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "95b56da693651bb9688b910f8a5afac2d17f451d029c8198349faef322f7dccb",
+  "issue": 118,
+  "issueSessionId": "issue-118:c8e5fadd97df09bfc611d8e82f7a51189276bbfe",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "2dcc50606a58b412c4b6f527e39f578defb39456",
+      "path": ".plans/issue-118/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "492f35f7e088821f91ba27893ce702c35bb7339f",
+      "path": ".plans/issue-118/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "25a7ff8bc81c90389f203c95579dddcf3a2b5387",
+      "path": ".plans/issue-118/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "It names the measured Cursor token round-trip defect and CLI path-resolution blocker both peer reviews confirm, supplies one focused test per gap, and is the strongest base to merge codex's task-span disambiguation during implementation.",
+  "responseSha256": "b2b2ef9318dadec023eb1f0db437d2ad529597a57f80a4ebb5a3cea311c67b80",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "a81c3a820d580186ecfa14cd3d4851fdefdd361c",
+      "path": ".plans/issue-118/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "07752f3920e541b7492fb8e73df9a959ce477e12",
+      "path": ".plans/issue-118/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "313c09d2b7cb703a5e5f9cc8f6766ad21a5fd313",
+      "path": ".plans/issue-118/review.md"
+    }
+  ]
+}

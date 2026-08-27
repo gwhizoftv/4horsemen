@@ -1,0 +1,46 @@
+{
+  "actionId": "18a0414c-9614-4fd9-97df-ed603e0024b6",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "95b56da693651bb9688b910f8a5afac2d17f451d029c8198349faef322f7dccb",
+  "issue": 118,
+  "issueSessionId": "issue-118:c8e5fadd97df09bfc611d8e82f7a51189276bbfe",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "2dcc50606a58b412c4b6f527e39f578defb39456",
+      "path": ".plans/issue-118/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "492f35f7e088821f91ba27893ce702c35bb7339f",
+      "path": ".plans/issue-118/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "25a7ff8bc81c90389f203c95579dddcf3a2b5387",
+      "path": ".plans/issue-118/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude's plan best identifies and tests the production Cursor round-trip loss and Codex shared-turn overlap, provided implementation also adopts the reviewed legacy active-roster safeguards and Codex task-span disambiguation.",
+  "responseSha256": "d9c036b51b3983081541b304f3dc9b5dc01ed5fb8fd451084f5bd3766c23a334",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "a81c3a820d580186ecfa14cd3d4851fdefdd361c",
+      "path": ".plans/issue-118/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "07752f3920e541b7492fb8e73df9a959ce477e12",
+      "path": ".plans/issue-118/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "313c09d2b7cb703a5e5f9cc8f6766ad21a5fd313",
+      "path": ".plans/issue-118/review.md"
+    }
+  ]
+}
