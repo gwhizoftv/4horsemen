@@ -3,7 +3,7 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, u
 import { dirname, relative } from "node:path";
 import { assertNoSymlink, containedPath } from "./paths.js";
 import { actionIdSchema, gitShaSchema, repositoryPathSchema } from "./protocol.js";
-import type { ChangeScopeEntry, InternalOrder } from "./steps.js";
+import type { ChangeScopeEntry, InternalOrder, MaterializedInputs } from "./steps.js";
 
 export type PublicGitAction = {
   actionId: string;
@@ -81,6 +81,37 @@ const changeScopeSection = (changeScope: readonly ChangeScopeEntry[] = []): stri
   );
 };
 
+/**
+ * Where the coordinator put the artifacts this action binds.
+ *
+ * These are exact copies, taken from the same mirror that verifies the pins, so
+ * an agent can read a peer's plan or browse a peer's implementation as ordinary
+ * files. The pins above remain the authority: this section says where the bytes
+ * are, not what is binding.
+ */
+const boundInputFilesSection = (materialized: MaterializedInputs | undefined): string => {
+  if (materialized === undefined) return "";
+  const lines: string[] = [];
+  for (const entry of materialized.entries) {
+    lines.push(`- ${entry.kind} from ${entry.agent} (\`${entry.commitSha}\`): ${encodePath(entry.localPath)}`);
+  }
+  for (const worktree of materialized.worktrees) {
+    lines.push(
+      `- ${worktree.kind} worktree from ${worktree.agent} (\`${worktree.commitSha}\`): ${encodePath(worktree.localPath)}`
+    );
+  }
+  if (lines.length === 0) return "";
+  const manifest =
+    materialized.manifestPath === null ? "" : `\n\nManifest: ${encodePath(materialized.manifestPath)}`;
+  return (
+    `\n\n## Bound input files\n\n` +
+    `Read these paths directly instead of fetching peer commits. Each file is an ` +
+    `exact copy of the cited pin, and each worktree is a complete checkout at it. ` +
+    `${PATH_ENCODING_NOTE.replace("relative to the repository root", "absolute")}${manifest}\n\n` +
+    lines.join("\n")
+  );
+};
+
 const inputText = (order: InternalOrder): string =>
   order.inputs.length === 0
     ? "- No peer commits are required for this action."
@@ -107,7 +138,7 @@ Publish the required artifact at:
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
 
 Push the commit containing the artifact to \`${order.branch}\`. Then write that
 exact 40-character lowercase commit SHA as the sole contents of:
@@ -149,12 +180,12 @@ Then write this exact one-line marker as the sole contents of:
 response ${order.actionId}
 \`\`\`
 
-Do not \`git add\`, \`git commit\`, or \`git push\` for this action. Inspect the
-bound inputs with read-only Git commands only.
+Do not \`git add\`, \`git commit\`, or \`git push\` for this action. Read the bound
+inputs from the files listed below.
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${eligible}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${eligible}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
 
 After writing the marker, keep this file. Before waiting for more input, re-read
 it. If \`actionId\` in the front matter has changed, execute the new instructions

@@ -87,6 +87,15 @@ fi
 if grep -qE "git[^;|&]*push[^;|&]*[[:space:]]($SHARED_BRANCH|issue-[0-9]+/final)([[:space:]\"\\\\:]|$)" <<<"$input"; then
   block "pushing '$SHARED_BRANCH' or an issue-*/final branch is forbidden; only the human merges those."
 fi
+# Automated issues only. settings.json cannot express this because it is static
+# per clone, and a blanket deny would also cover owner-driven manual sessions,
+# which stay unrestricted by design. .coord/bin/git is the hard enforcement; this
+# refuses earlier, with a message that says where to read instead.
+if [[ "${COORD_ISSUE:-}" =~ ^[1-9][0-9]*$ ]]; then
+  if grep -qE '"command"[^"]*"[^"]*\bgit([[:space:]]+-[^[:space:]]+)*[[:space:]]+(status|diff)\b' <<<"$input"; then
+    block "git status and git diff are blocked during an automated issue. Coordination owns this checkout; read bound peer artifacts from the paths under '## Bound input files' in your action.md."
+  fi
+fi
 exit 0
 GUARD
 chmod +x "$CLONE_DIR/.claude/hooks/git-guard.sh"
@@ -97,7 +106,7 @@ cat > "$CLONE_DIR/.claude/settings.json" <<EOF
 {
   "permissions": {
     "allow": [
-      "Bash(git status:*)", "Bash(git log:*)", "Bash(git diff:*)",
+      "Bash(git log:*)",
       "Bash(git fetch:*)", "Bash(git pull:*)", "Bash(git checkout:*)",
       "Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)",
       "Bash(git branch:*)", "Bash(git merge-base:*)",

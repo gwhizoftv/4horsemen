@@ -43,7 +43,10 @@ export const DEFAULT_CLONE_IGNORES: readonly string[] = [
   ".cursor/",
   ".antigravity/",
   ".gemini/",
-  ".agents/"
+  ".agents/",
+  // The generated git shim. Untracked like start-<agent>.sh, and for the same
+  // reason: it is per-clone machine state, not product source.
+  ".coord/"
 ];
 
 export class ManagedBlockError extends Error {

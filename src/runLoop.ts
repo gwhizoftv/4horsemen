@@ -32,6 +32,11 @@ import {
 import { evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
 import { BareMirror, GitCommandError, hermeticGitEnv, isTransientGitFailure } from "./mirror.js";
+import {
+  materializeBoundInputs,
+  pruneSupersededWorktrees,
+  worktreeLabelsFor
+} from "./materializedInputs.js";
 import { renderArtifactScaffold } from "./orderScaffold.js";
 import {
   agentResponsePath,
@@ -69,6 +74,7 @@ import {
   describeWorkflowStep,
   type BoundInput,
   type ChangeScopeEntry,
+  type MaterializedInputs,
   type EvidenceObservation,
   type InternalOrder,
   type MachineDecision,
@@ -656,7 +662,8 @@ export const buildOrder = (
   actionId = createActionId(),
   outstanding: readonly string[] = [],
   approvedPathOverride?: readonly string[],
-  changeScope: readonly ChangeScopeEntry[] = []
+  changeScope: readonly ChangeScopeEntry[] = [],
+  materialized?: MaterializedInputs
 ): InternalOrder => {
   const definition = STEP_DEFINITIONS[stepId];
   const runtime = agentRuntimePaths(paths, agent);
@@ -715,6 +722,7 @@ export const buildOrder = (
     approvedPaths,
     contextPaths: [...start.contextPaths],
     changeScope,
+    ...(materialized === undefined ? {} : { materialized }),
     activeRoster: [...cursors.activeRoster],
     eligibleChoices
   };
@@ -862,6 +870,30 @@ export class CoordinatorRunLoop {
     this.log(from === undefined ? `Issue ${issue}: ${to}` : `Issue ${issue}: ${from} → ${to}`);
   }
 
+  /**
+   * Drop worktrees the current bound set no longer needs.
+   *
+   * Kept non-fatal: a worktree that cannot be unregistered is wasted disk, and
+   * failing action preparation over it would stall an issue for a reason no
+   * agent can act on. Wipe re-runs the same cleanup.
+   */
+  private async pruneMaterializedWorktrees(
+    cursors: CursorsState,
+    boundInputs: readonly BoundInput[]
+  ): Promise<void> {
+    try {
+      const removed = await pruneSupersededWorktrees({
+        mirror: this.mirror,
+        paths: this.paths,
+        keep: worktreeLabelsFor(this.paths, boundInputs)
+      });
+      for (const target of removed) this.verbose(`pruned superseded worktree ${target}`);
+    } catch (error) {
+      this.verbose(`could not prune superseded worktrees: ${(error as Error).message}`);
+    }
+    this.authority(cursors);
+  }
+
   private async prepareAction(
     start: StartState,
     cursors: CursorsState,
@@ -872,7 +904,20 @@ export class CoordinatorRunLoop {
     const cursor = cursors.agents[agent];
     if (cursor === undefined) throw new Error(`Unknown agent ${agent}.`);
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
-    const changeScope = await resolveChangeScope(this.mirror, start, deriveBoundInputs(start, cursors, stepId, round));
+    const boundInputs = deriveBoundInputs(start, cursors, stepId, round);
+    const changeScope = await resolveChangeScope(this.mirror, start, boundInputs);
+    // Export the bound artifacts before the action naming them is published, so
+    // an agent that reads the action the instant it lands finds every listed
+    // path already there.
+    const materialized = await materializeBoundInputs({
+      mirror: this.mirror,
+      paths: this.paths,
+      inputs: boundInputs
+    });
+    for (const omission of materialized.omitted) {
+      this.log(`Issue ${start.issue}: could not materialize ${omission}; the action still cites the pin`);
+    }
+    await this.pruneMaterializedWorktrees(cursors, boundInputs);
     this.authority(cursors);
     const order = buildOrder(
       this.paths,
@@ -884,7 +929,8 @@ export class CoordinatorRunLoop {
       this.actionId(),
       [],
       approvedPaths,
-      changeScope
+      changeScope,
+      materialized
     );
     const runtime = agentRuntimePaths(this.paths, agent);
     let next = this.mutate(cursors, (current) => {
@@ -995,11 +1041,13 @@ export class CoordinatorRunLoop {
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
     this.authority(cursors);
     const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
-    const changeScope = await resolveChangeScope(
-      this.mirror,
-      start,
-      deriveBoundInputs(start, cursors, cursor.stepId, round)
-    );
+    const boundInputs = deriveBoundInputs(start, cursors, cursor.stepId, round);
+    const changeScope = await resolveChangeScope(this.mirror, start, boundInputs);
+    const materialized = await materializeBoundInputs({
+      mirror: this.mirror,
+      paths: this.paths,
+      inputs: boundInputs
+    });
     const order = buildOrder(
       this.paths,
       start,
@@ -1010,7 +1058,8 @@ export class CoordinatorRunLoop {
       actionId,
       cursor.outstanding,
       approvedPaths,
-      changeScope
+      changeScope,
+      materialized
     );
     writeAction(this.paths.coordRoot, runtime.action, order);
     if (readAction(runtime.action).body !== previous) {

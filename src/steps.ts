@@ -241,6 +241,48 @@ export type ChangeScopeEntry = {
   truncated: boolean;
 };
 
+/**
+ * One bound coordination artifact exported from the mirror to a file an agent
+ * can read. The `commitSha`/`path` pair remains the citation authority; this is
+ * a convenience copy, and `sha256` is what proves the copy is faithful.
+ */
+export type MaterializedInputEntry = {
+  kind: string;
+  agent: string;
+  commitSha: string;
+  path: string;
+  sha256: string;
+  localPath: string;
+};
+
+/** One detached worktree at a bound product pin. */
+export type MaterializedWorktree = {
+  kind: string;
+  agent: string;
+  commitSha: string;
+  localPath: string;
+};
+
+/**
+ * What the coordinator exported for one action. Advisory in exactly the way
+ * `changeScope` is: the pins in the action remain the sole authority, and a
+ * consumer that ignores this field still has everything it needs.
+ */
+export type MaterializedInputs = {
+  /** Null when the action binds no coordination markdown. */
+  inputSetHash: string | null;
+  packetDir: string | null;
+  manifestPath: string | null;
+  entries: readonly MaterializedInputEntry[];
+  worktrees: readonly MaterializedWorktree[];
+  /**
+   * Bound inputs that could not be exported, described for the operator log.
+   * Never rendered into an action: an agent is told where files *are*, and the
+   * pins it already has cover everything else.
+   */
+  omitted: readonly string[];
+};
+
 export type InternalOrder = {
   actionId: string;
   issue: number;
@@ -270,6 +312,8 @@ export type InternalOrder = {
    */
   contextPaths?: readonly string[];
   changeScope?: readonly ChangeScopeEntry[];
+  /** Optional for the same reason as `changeScope`: rendering copes without it. */
+  materialized?: MaterializedInputs;
   activeRoster: readonly string[];
   eligibleChoices: readonly string[];
 };

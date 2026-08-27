@@ -18,6 +18,19 @@ exists and is already current: do not create it, do not switch to it, and do not
 check out or pull the shared branch first. Every automated action names the
 branch you are already on.
 
+When an action lists a `## Bound input files` section, read those paths directly.
+They are exact copies the coordinator took from the same mirror that verifies the
+pins, so fetching a peer branch to read a plan, a review, or an implementation is
+redundant work. The cited SHAs remain the authority; the files are where the
+bytes are. Use `git show <sha>:<path>` only when a listed file is missing.
+
+During an automated issue, `git status` and `git diff` against this clone are
+refused by `.coord/bin/git`, which coordination installs and puts on your PATH.
+Coordination checked this clone out and already resolved what changed, and both
+readings are in your action. The refusal applies to this clone only: git against
+any other repository, and every command in owner-driven manual mode, is
+untouched. Do not try to work around it — report it if it blocks real work.
+
 Commit and push only when the current action's `submissionMode` is `git` (or the
 action text requires a pushed commit SHA). Response-mode ballot actions must not
 commit or push: write only the private response JSON and the completion marker

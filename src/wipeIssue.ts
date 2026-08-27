@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readdirSync, rmSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { deriveEvidenceBranch } from "./ballotPublication.js";
 import { detachIssue } from "./detachIssue.js";
 import { git, gitOrThrow, hasUncommittedChanges } from "./gitExec.js";
@@ -430,6 +430,18 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     }
     if (existsSync(paths.issueRoot)) {
       log(`${dryRun ? "would wipe" : "wiping"} runtime ${paths.issueRoot}\n`);
+      // Unregister materialized worktrees before the tree they point at is gone.
+      // `git worktree prune` only collects registrations whose directory has
+      // already been removed, so pruning first collects nothing and pruning
+      // after the recursive delete has lost the paths to remove; the mirror is
+      // then left with dangling entries that break a later `worktree add`.
+      if (!dryRun && existsSync(paths.issueWorktreesRoot) && isGitRepo(paths.mirror)) {
+        for (const name of readdirSync(paths.issueWorktreesRoot)) {
+          const target = join(paths.issueWorktreesRoot, name);
+          git(paths.mirror, "worktree", "remove", "--force", target);
+        }
+        git(paths.mirror, "worktree", "prune");
+      }
       if (!dryRun) rmSync(paths.issueRoot, { recursive: true, force: true });
       result.wipedRuntime = paths.issueRoot;
     }

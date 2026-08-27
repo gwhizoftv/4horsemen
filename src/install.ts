@@ -42,6 +42,7 @@ import {
   productName,
   proposeProjectPolicy,
   writeAgentLauncher,
+  writeGitWrapper,
   writeCloneExclude,
   writeWorkspaceConfig,
   type EffectOptions,
@@ -395,6 +396,7 @@ export const install = (options: InstallOptions): InstallResult => {
       baseBranch,
       options: effects
     });
+    writeGitWrapper({ installRoot, clone, options: effects });
     writeCloneExclude(clone, effects);
     writeCloneAgentsProtocol({ clone, installRoot, options: effects });
     writeClaudeAgentsShim(clone, agent, effects);

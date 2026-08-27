@@ -593,6 +593,12 @@ describe("completion mailbox wiring", () => {
       mkdirSync(drop, { recursive: true });
       const responses = join(fixture.coordRoot, "issue-17", "agents", agent, "responses");
       mkdirSync(responses, { recursive: true });
+      // Created before any harness starts, because the launcher resolves grants
+      // once at exec and a directory appearing later can never reach it.
+      const inputs = join(fixture.coordRoot, "issue-17", "inputs");
+      const worktrees = join(fixture.coordRoot, "issue-17", "worktrees");
+      mkdirSync(inputs, { recursive: true });
+      mkdirSync(worktrees, { recursive: true });
       const capture = join(fixture.workspaceRoot, `${agent}.args`);
       // /bin/bash, not `bash`: macOS ships 3.2, where expanding an empty array
       // as "${a[@]}" under `set -u` aborts. A test that resolves a newer bash
@@ -604,7 +610,17 @@ describe("completion mailbox wiring", () => {
         stdio: "ignore"
       });
       const argv = readFileSync(capture, "utf8").trimEnd().split("\n");
-      expect(argv).toEqual([...expected[agent], "--add-dir", drop, "--add-dir", responses]);
+      expect(argv).toEqual([
+        ...expected[agent],
+        "--add-dir",
+        drop,
+        "--add-dir",
+        responses,
+        "--add-dir",
+        inputs,
+        "--add-dir",
+        worktrees
+      ]);
       // Never the runtime root as a grant, never the whole mailbox, never a peer's drop.
       expect(argv).not.toContain(fixture.coordRoot);
       expect(argv).not.toContain(completesRoot);
@@ -693,6 +709,114 @@ describe("completion mailbox wiring", () => {
     expect(tryGit(installed.clones[0] as string, "config", "--local", "--get", "coord.completesRoot").exitCode).not.toBe(
       0
     );
+  });
+});
+
+/**
+ * The shim is what stops an agent re-deriving checkout state coordination
+ * already owns. Asserting the rendered text is not enough: what matters is the
+ * exit code real git invocations get, so these run the generated file.
+ */
+describe("generated git shim", () => {
+  const runGit = (
+    clone: string,
+    cwd: string,
+    args: readonly string[],
+    env: NodeJS.ProcessEnv = {}
+  ): { status: number; stderr: string } => {
+    const result = execFileSync("/bin/bash", ["-c", 'PATH="$1:$PATH"; shift; git "$@"; echo "exit=$?"', "_",
+      join(clone, ".coord", "bin"), ...args], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, COORD_ISSUE: "42", ...env },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const match = /exit=(\d+)\s*$/.exec(result);
+    return { status: Number(match?.[1] ?? -1), stderr: "" };
+  };
+
+  it("installs an untracked shim the launcher puts on PATH", () => {
+    const fixture = product();
+    const result = installOnce(fixture, { agents: ["claude"] });
+    const clone = result.clones[0] as string;
+    const shim = join(clone, ".coord", "bin", "git");
+
+    expect(existsSync(shim)).toBe(true);
+    const body = readFileSync(shim, "utf8");
+    const realGit = /^REAL_GIT="(.+)"$/m.exec(body)?.[1] as string;
+    expect(isAbsolute(realGit)).toBe(true);
+    // Resolved from a PATH without .coord/bin, or the shim would invoke itself.
+    expect(realGit).not.toContain("/.coord/bin/");
+    expect(/^COORD_CLONE="(.+)"$/m.exec(body)?.[1]).toBeDefined();
+
+    // Untracked and excluded, so the clone stays clean.
+    expect(readFileSync(join(clone, ".git", "info", "exclude"), "utf8")).toContain(".coord/");
+    expect(git(clone, "status", "--porcelain")).toBe("");
+
+    const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
+    expect(launcher).toContain('.coord/bin:$PATH');
+    // The startup read is exactly what the shim now refuses.
+    expect(launcher).not.toContain("git status -sb");
+  });
+
+  it("refuses the reads coordination owns and delegates everything else", () => {
+    const fixture = product();
+    const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
+    const head = git(clone, "rev-parse", "HEAD");
+    const tracked = git(clone, "ls-tree", "--name-only", "HEAD").split("\n")[0] as string;
+
+    for (const args of [["status"], ["status", "--porcelain"], ["diff"], ["--no-pager", "diff"], ["-C", ".", "status"]]) {
+      expect(runGit(clone, clone, args).status, args.join(" ")).toBe(2);
+    }
+    // Open-ended reconnaissance is refused; the exact pinned peer read stays as
+    // the documented fallback for a file the coordinator could not export.
+    expect(runGit(clone, clone, ["show", "HEAD"]).status).toBe(2);
+    expect(runGit(clone, clone, ["show", `${head}:${tracked}`]).status).toBe(0);
+
+    // Publishing must never be blocked, and the installed hooks run under the
+    // delegate guard, so a commit that triggers them still completes.
+    for (const args of [["rev-parse", "HEAD"], ["log", "--oneline", "-1"], ["config", "--get", "consensus.agentId"]]) {
+      expect(runGit(clone, clone, args).status, args.join(" ")).toBe(0);
+    }
+  });
+
+  /**
+   * The reason the shim resolves the target repository instead of refusing on
+   * the subcommand alone. A product's own tooling shells out to git against
+   * other repositories, and this repository's fast suite does exactly that; a
+   * blanket block breaks `pnpm check:fast`, which is the check an agent has to
+   * pass before it can commit anything.
+   */
+  it("stays out of the way of manual mode and of other repositories", () => {
+    const fixture = product();
+    const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
+    const elsewhere = fixture.productRoot;
+
+    expect(runGit(clone, clone, ["status"], { COORD_ISSUE: "" }).status).toBe(0);
+    expect(runGit(clone, clone, ["status"], { COORD_GIT_DELEGATE: "1" }).status).toBe(0);
+    expect(runGit(clone, elsewhere, ["status", "--porcelain"]).status).toBe(0);
+    expect(runGit(clone, clone, ["-C", elsewhere, "status", "--porcelain"]).status).toBe(0);
+    expect(runGit(clone, elsewhere, ["--git-dir", join(elsewhere, ".git"), "status", "--porcelain"]).status).toBe(0);
+  });
+
+  /**
+   * Unlike the launcher, which may carry owner customisation, the shim is
+   * coordinator-owned policy: a clone left holding an older copy keeps
+   * enforcing rules this install has already withdrawn.
+   */
+  it("replaces its own stale copy but never a file it did not write", () => {
+    const fixture = product();
+    const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
+    const shim = join(clone, ".coord", "bin", "git");
+    const canonical = readFileSync(shim, "utf8");
+
+    writeFileSync(shim, canonical.replace("# coord-managed-git-wrapper", "# coord-managed-git-wrapper\n# stale"));
+    installOnce(fixture, { agents: ["claude"] });
+    expect(readFileSync(shim, "utf8")).toBe(canonical);
+
+    writeFileSync(shim, "#!/bin/sh\necho someone else wrote this\n");
+    installOnce(fixture, { agents: ["claude"] });
+    expect(readFileSync(shim, "utf8")).toContain("someone else wrote this");
   });
 });
 
