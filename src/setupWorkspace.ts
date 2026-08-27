@@ -489,6 +489,59 @@ export const writeAgentLauncher = (input: {
   });
 };
 
+/**
+ * Write `.coord/bin/git` through the shell template in the coordination install,
+ * which `githooks/post-merge` also sources.
+ */
+export const writeGitWrapper = (input: {
+  installRoot: string;
+  clone: string;
+  options: EffectOptions;
+}): void => {
+  const library = join(input.installRoot, "scripts", "lib", "launcher.sh");
+  if (!existsSync(library)) {
+    throw new Error(`Launcher template ${library} is missing from the coordination install.`);
+  }
+  const cleanPath = (process.env.PATH ?? "")
+    .split(":")
+    .filter((segment) => !segment.includes(".coord/bin"))
+    .join(":");
+  const realGitResult = spawnSync("bash", ["-c", "command -v git"], {
+    env: { ...process.env, PATH: cleanPath },
+    encoding: "utf8"
+  });
+  const realGit = (realGitResult.stdout ?? "").trim();
+  if (realGitResult.status !== 0 || realGit === "") {
+    throw new Error(`Cannot resolve real git executable: ${realGitResult.stderr ?? ""}`.trim());
+  }
+
+  const targetDir = join(input.clone, ".coord", "bin");
+  const target = join(targetDir, "git");
+  const stagingDir = mkdtempSync(join(tmpdir(), "coord-git-wrapper-"));
+  const staging = join(stagingDir, "git");
+  const render = spawnSync(
+    "bash",
+    ["-c", '. "$1"; write_git_wrapper "$2" "$3" "$4"', "_", library, staging, realGit, input.clone],
+    { encoding: "utf8" }
+  );
+  if ((render.status ?? 1) !== 0) {
+    rmSync(stagingDir, { recursive: true, force: true });
+    throw new Error(`Failed to render git wrapper: ${render.stderr ?? ""}`.trim());
+  }
+  const rendered = readFileSync(staging, "utf8");
+  rmSync(stagingDir, { recursive: true, force: true });
+
+  if (existsSync(target) && readFileSync(target, "utf8") === rendered) {
+    input.options.log(`git wrapper already current at ${target}\n`);
+    return;
+  }
+  act(input.options, `write git wrapper ${target}`, () => {
+    mkdirSync(targetDir, { recursive: true });
+    writeFileSync(target, rendered, "utf8");
+    chmodSync(target, 0o755);
+  });
+};
+
 export const writeCloneExclude = (clone: string, options: EffectOptions): void => {
   const excludePath = join(clone, ".git", "info", "exclude");
   const outcome = writeManagedIgnoreFile(excludePath, DEFAULT_CLONE_IGNORES, { dryRun: options.dryRun });

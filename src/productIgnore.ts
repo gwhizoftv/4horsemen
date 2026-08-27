@@ -33,6 +33,7 @@ export const AGENTS_PROTOCOL_MARKERS: BlockMarkers = { begin: AGENTS_PROTOCOL_BE
  * clone must not offer them for commit.
  */
 export const DEFAULT_CLONE_IGNORES: readonly string[] = [
+  ".coord/",
   "/start-*.sh",
   "tags",
   "directory_tree.md",

@@ -593,6 +593,10 @@ describe("completion mailbox wiring", () => {
       mkdirSync(drop, { recursive: true });
       const responses = join(fixture.coordRoot, "issue-17", "agents", agent, "responses");
       mkdirSync(responses, { recursive: true });
+      const inputs = join(fixture.coordRoot, "issue-17", "inputs");
+      mkdirSync(inputs, { recursive: true });
+      const worktrees = join(fixture.coordRoot, "issue-17", "worktrees");
+      mkdirSync(worktrees, { recursive: true });
       const capture = join(fixture.workspaceRoot, `${agent}.args`);
       // /bin/bash, not `bash`: macOS ships 3.2, where expanding an empty array
       // as "${a[@]}" under `set -u` aborts. A test that resolves a newer bash
@@ -604,7 +608,7 @@ describe("completion mailbox wiring", () => {
         stdio: "ignore"
       });
       const argv = readFileSync(capture, "utf8").trimEnd().split("\n");
-      expect(argv).toEqual([...expected[agent], "--add-dir", drop, "--add-dir", responses]);
+      expect(argv).toEqual([...expected[agent], "--add-dir", drop, "--add-dir", responses, "--add-dir", inputs, "--add-dir", worktrees]);
       // Never the runtime root as a grant, never the whole mailbox, never a peer's drop.
       expect(argv).not.toContain(fixture.coordRoot);
       expect(argv).not.toContain(completesRoot);
@@ -711,5 +715,82 @@ describe("generated agent launchers", () => {
     const launcher = readFileSync(join(clone, "start-antigravity.sh"), "utf8");
     expect(launcher).toContain("exec agy --mode accept-edits --dangerously-skip-permissions");
     expect(launcher).toContain('export PATH="$HOME/.local/bin:$PATH"');
+  });
+
+  it("installs an untracked git wrapper and puts it on the launcher's PATH", () => {
+    const fixture = product();
+    const result = installOnce(fixture, { agents: ["claude"] });
+    const clone = result.clones[0] as string;
+    const wrapper = join(clone, ".coord", "bin", "git");
+    expect(existsSync(wrapper)).toBe(true);
+    const wrapperContent = readFileSync(wrapper, "utf8");
+    expect(wrapperContent).toContain("REAL_GIT=");
+    expect(wrapperContent).toContain("COORD_CLONE=");
+    const exclude = readFileSync(join(clone, ".git", "info", "exclude"), "utf8");
+    expect(exclude).toContain(".coord/");
+    const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
+    expect(launcher).toContain('export PATH="$(pwd)/.coord/bin:$PATH"');
+    expect(launcher).not.toContain("git status -sb");
+  });
+
+  it("refuses status and diff during an automated issue and nothing else", () => {
+    const fixture = product();
+    const result = installOnce(fixture, { agents: ["claude"] });
+    const clone = result.clones[0] as string;
+    const wrapper = join(clone, ".coord", "bin", "git");
+
+    const runWrapper = (args: string[]) => {
+      try {
+        const stdout = execFileSync("/bin/bash", [wrapper, ...args], {
+          cwd: clone,
+          env: { ...process.env, COORD_ISSUE: "42" },
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"]
+        });
+        return { status: 0, stdout, stderr: "" };
+      } catch (err: unknown) {
+        const error = err as { status?: number; stdout?: string; stderr?: string };
+        return { status: error.status ?? 1, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
+      }
+    };
+
+    const statusRes = runWrapper(["status"]);
+    expect(statusRes.status).toBe(2);
+    expect(statusRes.stderr).toContain("coord: git status is blocked during automated issue 42.");
+    expect(statusRes.stderr).toContain("## Bound input files");
+
+    const diffRes = runWrapper(["diff"]);
+    expect(diffRes.status).toBe(2);
+    expect(diffRes.stderr).toContain("coord: git diff is blocked during automated issue 42.");
+
+    const revParseRes = runWrapper(["rev-parse", "HEAD"]);
+    expect(revParseRes.status).toBe(0);
+
+    const bareShowRes = runWrapper(["show"]);
+    expect(bareShowRes.status).toBe(2);
+    expect(bareShowRes.stderr).toContain("coord: git show is blocked during automated issue 42.");
+  });
+
+  it("stays transparent for manual mode and for repositories it does not own", () => {
+    const fixture = product();
+    const result = installOnce(fixture, { agents: ["claude"] });
+    const clone = result.clones[0] as string;
+    const wrapper = join(clone, ".coord", "bin", "git");
+
+    // COORD_ISSUE unset: manual mode passes through
+    const manualStatus = execFileSync("/bin/bash", [wrapper, "status"], {
+      cwd: clone,
+      env: { ...process.env, COORD_ISSUE: "" },
+      encoding: "utf8"
+    });
+    expect(manualStatus).toBeDefined();
+
+    // COORD_ISSUE set, but running outside the clone: passes through
+    const outsideStatus = execFileSync("/bin/bash", [wrapper, "status"], {
+      cwd: fixture.productRoot,
+      env: { ...process.env, COORD_ISSUE: "42" },
+      encoding: "utf8"
+    });
+    expect(outsideStatus).toBeDefined();
   });
 });

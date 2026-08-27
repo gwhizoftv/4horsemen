@@ -430,7 +430,10 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     }
     if (existsSync(paths.issueRoot)) {
       log(`${dryRun ? "would wipe" : "wiping"} runtime ${paths.issueRoot}\n`);
-      if (!dryRun) rmSync(paths.issueRoot, { recursive: true, force: true });
+      if (!dryRun) {
+        rmSync(paths.issueRoot, { recursive: true, force: true });
+        if (isGitRepo(paths.mirror)) git(paths.mirror, "worktree", "prune");
+      }
       result.wipedRuntime = paths.issueRoot;
     }
   } finally {

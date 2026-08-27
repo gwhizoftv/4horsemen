@@ -87,6 +87,11 @@ fi
 if grep -qE "git[^;|&]*push[^;|&]*[[:space:]]($SHARED_BRANCH|issue-[0-9]+/final)([[:space:]\"\\\\:]|$)" <<<"$input"; then
   block "pushing '$SHARED_BRANCH' or an issue-*/final branch is forbidden; only the human merges those."
 fi
+if [[ "${COORD_ISSUE:-}" =~ ^[1-9][0-9]*$ ]]; then
+  if grep -qE '(git|^)[[:space:]]*(status|diff)([[:space:]]|$)' <<<"$input"; then
+    block "git status and git diff are blocked during automated issue $COORD_ISSUE. Read bound inputs from action.md."
+  fi
+fi
 exit 0
 GUARD
 chmod +x "$CLONE_DIR/.claude/hooks/git-guard.sh"
@@ -97,7 +102,7 @@ cat > "$CLONE_DIR/.claude/settings.json" <<EOF
 {
   "permissions": {
     "allow": [
-      "Bash(git status:*)", "Bash(git log:*)", "Bash(git diff:*)",
+      "Bash(git log:*)",
       "Bash(git fetch:*)", "Bash(git pull:*)", "Bash(git checkout:*)",
       "Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)",
       "Bash(git branch:*)", "Bash(git merge-base:*)",

@@ -43,6 +43,7 @@ import {
   proposeProjectPolicy,
   writeAgentLauncher,
   writeCloneExclude,
+  writeGitWrapper,
   writeWorkspaceConfig,
   type EffectOptions,
   type Logger
@@ -395,6 +396,11 @@ export const install = (options: InstallOptions): InstallResult => {
       baseBranch,
       options: effects
     });
+    writeGitWrapper({
+      installRoot,
+      clone,
+      options: effects
+    });
     writeCloneExclude(clone, effects);
     writeCloneAgentsProtocol({ clone, installRoot, options: effects });
     writeClaudeAgentsShim(clone, agent, effects);
@@ -629,6 +635,18 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
       effects.changes.push(`remove ${launcher}`);
       if (!options.dryRun) rmSync(launcher);
       effects.log(`${options.dryRun ? "would remove" : "removed"} ${launcher}\n`);
+    }
+    const gitWrapper = join(clone, ".coord", "bin", "git");
+    if (existsSync(gitWrapper)) {
+      effects.changes.push(`remove ${gitWrapper}`);
+      if (!options.dryRun) {
+        rmSync(gitWrapper, { force: true });
+        const binDir = join(clone, ".coord", "bin");
+        if (existsSync(binDir) && readdirSync(binDir).length === 0) rmSync(binDir, { recursive: true, force: true });
+        const coordDir = join(clone, ".coord");
+        if (existsSync(coordDir) && readdirSync(coordDir).length === 0) rmSync(coordDir, { recursive: true, force: true });
+      }
+      effects.log(`${options.dryRun ? "would remove" : "removed"} ${gitWrapper}\n`);
     }
   }
 

@@ -49,4 +49,25 @@ if [[ ! -e "$launcher" ]]; then
   fi
 fi
 
+wrapper=".coord/bin/git"
+if [[ ! -e "$wrapper" ]]; then
+  if [[ ! -r "$launcher_lib" ]]; then
+    echo "Cannot regenerate $wrapper: the launcher template $launcher_lib is unreadable." >&2
+    echo "  Fix: coord doctor --coord-root <runtime> --product <product>" >&2
+    exit 0
+  fi
+
+  # shellcheck source=../scripts/lib/launcher.sh
+  . "$launcher_lib"
+
+  clean_path="$(echo "$PATH" | sed -E 's|:?[^:]*/\.coord/bin:?|:|g; s|^:\|:$||g')"
+  real_git="$(PATH="$clean_path" command -v git || true)"
+  if [[ -n "$real_git" ]]; then
+    mkdir -p "$(dirname "$wrapper")"
+    if write_git_wrapper "$wrapper" "$real_git" "$(pwd)"; then
+      echo "Regenerated $wrapper (generated per clone, never tracked)."
+    fi
+  fi
+fi
+
 exit 0

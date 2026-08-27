@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { wipeIssue } from "../src/wipeIssue.js";
 import { coordinatorConfigSchema } from "../src/state.js";
+import { BareMirror } from "../src/mirror.js";
 import { git, tryGit } from "./support/workspaceFixture.js";
 
 const roots: string[] = [];
@@ -549,5 +550,56 @@ describe("wipeIssue", () => {
     expect(git(claude, "rev-parse", "HEAD")).toBe(beforeHead);
     expect(git(claude, "status", "--porcelain")).toBe(beforeStatus);
     expect(readFileSync(runtimeSentinel, "utf8")).toBe("keep\n");
+  });
+
+  it("prunes mirror worktrees during wipe", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "coord-wipe-wt-"));
+    roots.push(workspace);
+    const origin = join(workspace, "origin.git");
+    const product = join(workspace, "app");
+    const claude = join(workspace, "app-claude");
+    const coordRoot = join(workspace, "runtime");
+    const mirror = join(coordRoot, "mirror.git");
+    mkdirSync(coordRoot, { recursive: true });
+    mkdirSync(product, { recursive: true });
+    git(product, "init", "-q", "--initial-branch=main");
+    git(product, "config", "user.name", "Fixture");
+    git(product, "config", "user.email", "fixture@example.com");
+    writeFileSync(join(product, "README.md"), "# app\n");
+    git(product, "add", "README.md");
+    git(product, "commit", "-qm", "init");
+    git(product, "clone", "--bare", "-q", product, origin);
+    git(product, "remote", "add", "origin", origin);
+    git(product, "push", "-q", "-u", "origin", "main");
+    initClone(claude, origin);
+
+    git(coordRoot, "clone", "--bare", "-q", origin, mirror);
+    const bareMirror = new BareMirror(mirror, origin);
+    const headSha = git(mirror, "rev-parse", "HEAD");
+    const wtDir = join(coordRoot, "issue-5", "worktrees", "claude-12345678");
+    mkdirSync(join(coordRoot, "issue-5", "worktrees"), { recursive: true });
+    await bareMirror.materializeWorktree(wtDir, headSha);
+
+    const configPath = join(coordRoot, "config.json");
+    const config = coordinatorConfigSchema.parse({
+      project: "app",
+      origin,
+      agents: [{ id: "claude", root: claude, launcher: "start-claude.sh", delivery: "both" }],
+      branch: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      profile: "solo",
+      maxRevisionRounds: 3,
+      prPolicy: "owner-only",
+      digestPaths: [],
+      pollIntervalMs: 1000,
+      checks: [{ name: "true", argv: ["true"] }],
+      coordination: stamp(workspace, product)
+    });
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    await wipeIssue({ issue: 5, config, configPath, coordRoot, terminalCloser: null, log: () => undefined });
+    expect(existsSync(join(coordRoot, "issue-5"))).toBe(false);
+    const wtList = git(mirror, "worktree", "list");
+    expect(wtList).not.toContain("claude-12345678");
   });
 });

@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { readAction, writeAction } from "../src/action.js";
 import { decideLifecycleNudge, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { BareMirror } from "../src/mirror.js";
-import { agentResponsePath, agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import { agentResponsePath, agentRuntimePaths, createIssueRuntime, inputPacketPath, inputWorktreePath, issueRuntimePaths, PathSafetyError } from "../src/paths.js";
+import { computeInputSetHash, materializeBoundInputs, pruneSupersededWorktrees } from "../src/materializedInputs.js";
 import {
   buildOrder,
   computeDerivedInputSetHash,
@@ -1816,5 +1817,102 @@ describe("coordinator-resolved change scope", () => {
     const order = buildOrder(paths, start, readCursorsState(paths), "claude", "R2.plan", null);
     expect(order.contextPaths).toEqual(["docs/repo-map.md"]);
     expect(order.changeScope).toEqual([]);
+  });
+});
+
+describe("materialized bound inputs", () => {
+  it("computes deterministic inputSetHash over sorted markdown inputs only", () => {
+    const inputs1 = [
+      { kind: "plan", agent: "codex", commitSha: "1".repeat(40), path: ".plans/issue-1/plan.md" },
+      { kind: "review", agent: "claude", commitSha: "2".repeat(40), path: ".plans/issue-1/review.md" },
+      { kind: "implementation", agent: "cursor", commitSha: "3".repeat(40), path: "" }
+    ];
+    const inputs2 = [
+      { kind: "implementation", agent: "cursor", commitSha: "3".repeat(40), path: "" },
+      { kind: "review", agent: "claude", commitSha: "2".repeat(40), path: ".plans/issue-1/review.md" },
+      { kind: "plan", agent: "codex", commitSha: "1".repeat(40), path: ".plans/issue-1/plan.md" }
+    ];
+    expect(computeInputSetHash(inputs1)).toBe(computeInputSetHash(inputs2));
+  });
+
+  it("materializes markdown blobs into read-only files and records manifest", async () => {
+    const { paths } = fixture();
+    createIssueRuntime(paths, ["claude", "codex"]);
+
+    const blobs = new Map<string, string>([
+      [`${"1".repeat(40)}:.plans/issue-1/plan.md`, "# Plan from codex\n"],
+      [`${"2".repeat(40)}:.plans/issue-1/review.md`, "# Review from claude\n"]
+    ]);
+
+    const mirror = {
+      readBlob: async (sha: string, path: string) => blobs.get(`${sha}:${path}`) ?? null,
+      materializeWorktree: async () => undefined,
+      removeWorktree: async () => undefined
+    };
+
+    const inputs = [
+      { kind: "plan", agent: "codex", commitSha: "1".repeat(40), path: ".plans/issue-1/plan.md" },
+      { kind: "review", agent: "claude", commitSha: "2".repeat(40), path: ".plans/issue-1/review.md" }
+    ];
+
+    const result = await materializeBoundInputs({ mirror, paths, inputs });
+    expect(result.inputSetHash).toBeDefined();
+    expect(result.entries).toHaveLength(2);
+
+    for (const entry of result.entries) {
+      expect(existsSync(entry.localPath)).toBe(true);
+      expect(readFileSync(entry.localPath, "utf8")).toBe(blobs.get(`${entry.commitSha}:${entry.path}`));
+    }
+
+    const secondResult = await materializeBoundInputs({ mirror, paths, inputs });
+    expect(secondResult.inputSetHash).toBe(result.inputSetHash);
+    expect(secondResult.entries).toHaveLength(2);
+  });
+
+  it("materializes product worktrees and prunes superseded worktrees", async () => {
+    const { paths } = fixture();
+    createIssueRuntime(paths, ["claude", "codex"]);
+
+    const materializedWorktrees: string[] = [];
+    const removedWorktrees: string[] = [];
+
+    const mirror = {
+      readBlob: async () => null,
+      materializeWorktree: async (target: string) => {
+        mkdirSync(target, { recursive: true });
+        writeFileSync(join(target, "file.txt"), "hello");
+        materializedWorktrees.push(target);
+      },
+      removeWorktree: async (target: string) => {
+        rmSync(target, { recursive: true, force: true });
+        removedWorktrees.push(target);
+      }
+    };
+
+    const inputsRound1 = [
+      { kind: "implementation", agent: "claude", commitSha: "1".repeat(40), path: "" },
+      { kind: "implementation", agent: "codex", commitSha: "2".repeat(40), path: "" }
+    ];
+
+    const res1 = await materializeBoundInputs({ mirror, paths, inputs: inputsRound1 });
+    expect(res1.worktrees).toHaveLength(2);
+    expect(materializedWorktrees).toHaveLength(2);
+
+    const inputsRound2 = [
+      { kind: "revision", agent: "claude", commitSha: "3".repeat(40), path: "" }
+    ];
+
+    const res2 = await materializeBoundInputs({ mirror, paths, inputs: inputsRound2 });
+    expect(res2.worktrees).toHaveLength(1);
+
+    const pruned = await pruneSupersededWorktrees({ mirror, paths, keep: inputsRound2 });
+    expect(pruned).toHaveLength(2);
+    expect(removedWorktrees).toHaveLength(2);
+  });
+
+  it("validates inputPacketPath and inputWorktreePath safety", () => {
+    const { paths } = fixture();
+    expect(() => inputPacketPath(paths, "invalid-hash")).toThrow(PathSafetyError);
+    expect(() => inputWorktreePath(paths, "bad agent", "1".repeat(40))).toThrow(PathSafetyError);
   });
 });

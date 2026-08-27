@@ -102,11 +102,8 @@ cat > "$CLONE_DIR/.codex/rules/git.rules" <<'EOF'
 prefix_rule(pattern=["git", "add"], decision="allow")
 prefix_rule(pattern=["git", "fetch"], decision="allow")
 prefix_rule(pattern=["git", "checkout"], decision="allow")
-prefix_rule(pattern=["git", "status", "--short"], decision="allow")
 prefix_rule(pattern=["git", "branch", "--show-current"], decision="allow")
-prefix_rule(pattern=["git", "diff"], decision="allow")
 prefix_rule(pattern=["git", "log"], decision="allow")
-prefix_rule(pattern=["git", "show"], decision="allow")
 prefix_rule(pattern=["mkdir -p .plans/", "show"], decision="allow")
 EOF
 echo "Wrote Git command rules: .codex/rules/git.rules"
@@ -118,7 +115,8 @@ cat > "$CLONE_DIR/.codex/codex-instructions.md" <<'EOF'
 
 - Read this clone's own `.plans/**`, `.signals/**`, and
   `.code-reviews/**` files normally without requesting elevated access.
-  Read peer coordination files from fetched origin refs using `git show`.
+  Read bound peer coordination files and implementation worktrees directly from
+  the filesystem paths listed under `## Bound input files` in `action.md`.
 
 - Put temporary files in `.codex/tmp/`. Prefer `apply_patch` for writing
   them, and do not request elevated access merely for shell redirection

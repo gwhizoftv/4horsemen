@@ -244,4 +244,34 @@ describe("advisory action sections", () => {
     });
     expect(raw).not.toContain("## Changed paths for the bound pins");
   });
+
+  it("renders bound input files section for materialized markdown inputs and worktrees", () => {
+    const raw = renderAction({
+      ...order("/external/coord"),
+      materialized: {
+        inputSetHash: "a".repeat(64),
+        entries: [
+          {
+            kind: "plan",
+            agent: "claude",
+            commitSha: "3".repeat(40),
+            path: ".plans/issue-1/plan.md",
+            sha256: "b".repeat(64),
+            localPath: "/runtime/issue-1/inputs/packet/plan-claude-33333333/.plans/issue-1/plan.md"
+          }
+        ],
+        worktrees: [
+          {
+            agent: "codex",
+            commitSha: "4".repeat(40),
+            localPath: "/runtime/issue-1/worktrees/codex-44444444"
+          }
+        ]
+      }
+    });
+    expect(raw).toContain("## Bound input files");
+    expect(raw).toContain("Read these files directly from the filesystem; do not run `git show` or `git diff` on peer pins.");
+    expect(raw).toContain("- plan from claude (`33333333`):");
+    expect(raw).toContain("- product worktree for codex (`44444444`):");
+  });
 });

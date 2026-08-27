@@ -88,6 +88,24 @@ const inputText = (order: InternalOrder): string =>
         .map((input) => `- ${input.kind} from ${input.agent}: \`${input.commitSha}\` at \`${input.path}\``)
         .join("\n");
 
+const boundInputFilesSection = (materialized?: InternalOrder["materialized"]): string => {
+  if (materialized === undefined) return "";
+  const lines: string[] = [];
+  for (const entry of materialized.entries) {
+    lines.push(`- ${entry.kind} from ${entry.agent} (\`${entry.commitSha.slice(0, 8)}\`): ${encodePath(entry.localPath)}`);
+  }
+  for (const wt of materialized.worktrees) {
+    lines.push(`- product worktree for ${wt.agent} (\`${wt.commitSha.slice(0, 8)}\`): ${encodePath(wt.localPath)}`);
+  }
+  if (lines.length === 0) return "";
+  return (
+    `\n\n## Bound input files\n\n` +
+    `Read these files directly from the filesystem; do not run \`git show\` or \`git diff\` on peer pins. ` +
+    `${PATH_ENCODING_NOTE}\n\n` +
+    lines.join("\n")
+  );
+};
+
 const renderGitAction = (order: InternalOrder): string => {
   if (order.requiredPath === "") throw new Error("Git action requires requiredPath.");
   repositoryPathSchema.parse(order.requiredPath);
@@ -107,7 +125,7 @@ Publish the required artifact at:
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
 
 Push the commit containing the artifact to \`${order.branch}\`. Then write that
 exact 40-character lowercase commit SHA as the sole contents of:
@@ -150,11 +168,11 @@ response ${order.actionId}
 \`\`\`
 
 Do not \`git add\`, \`git commit\`, or \`git push\` for this action. Inspect the
-bound inputs with read-only Git commands only.
+bound inputs using the filesystem paths listed under '## Bound input files'.
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${eligible}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${eligible}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
 
 After writing the marker, keep this file. Before waiting for more input, re-read
 it. If \`actionId\` in the front matter has changed, execute the new instructions

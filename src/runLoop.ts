@@ -72,8 +72,10 @@ import {
   type EvidenceObservation,
   type InternalOrder,
   type MachineDecision,
+  type MaterializedInputs,
   type WorkflowStepId
 } from "./steps.js";
+import { materializeBoundInputs, pruneSupersededWorktrees } from "./materializedInputs.js";
 import { renderIssueReport } from "./issueReport.js";
 import { formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
@@ -656,7 +658,8 @@ export const buildOrder = (
   actionId = createActionId(),
   outstanding: readonly string[] = [],
   approvedPathOverride?: readonly string[],
-  changeScope: readonly ChangeScopeEntry[] = []
+  changeScope: readonly ChangeScopeEntry[] = [],
+  materialized?: MaterializedInputs
 ): InternalOrder => {
   const definition = STEP_DEFINITIONS[stepId];
   const runtime = agentRuntimePaths(paths, agent);
@@ -715,6 +718,7 @@ export const buildOrder = (
     approvedPaths,
     contextPaths: [...start.contextPaths],
     changeScope,
+    materialized,
     activeRoster: [...cursors.activeRoster],
     eligibleChoices
   };
@@ -871,8 +875,10 @@ export class CoordinatorRunLoop {
   ): Promise<CursorsState> {
     const cursor = cursors.agents[agent];
     if (cursor === undefined) throw new Error(`Unknown agent ${agent}.`);
+    const boundInputs = deriveBoundInputs(start, cursors, stepId, round);
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
-    const changeScope = await resolveChangeScope(this.mirror, start, deriveBoundInputs(start, cursors, stepId, round));
+    const changeScope = await resolveChangeScope(this.mirror, start, boundInputs);
+    const materialized = await materializeBoundInputs({ mirror: this.mirror, paths: this.paths, inputs: boundInputs });
     this.authority(cursors);
     const order = buildOrder(
       this.paths,
@@ -884,7 +890,8 @@ export class CoordinatorRunLoop {
       this.actionId(),
       [],
       approvedPaths,
-      changeScope
+      changeScope,
+      materialized
     );
     const runtime = agentRuntimePaths(this.paths, agent);
     let next = this.mutate(cursors, (current) => {
@@ -995,11 +1002,9 @@ export class CoordinatorRunLoop {
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
     this.authority(cursors);
     const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
-    const changeScope = await resolveChangeScope(
-      this.mirror,
-      start,
-      deriveBoundInputs(start, cursors, cursor.stepId, round)
-    );
+    const boundInputs = deriveBoundInputs(start, cursors, cursor.stepId, round);
+    const changeScope = await resolveChangeScope(this.mirror, start, boundInputs);
+    const materialized = await materializeBoundInputs({ mirror: this.mirror, paths: this.paths, inputs: boundInputs });
     const order = buildOrder(
       this.paths,
       start,
@@ -1010,7 +1015,8 @@ export class CoordinatorRunLoop {
       actionId,
       cursor.outstanding,
       approvedPaths,
-      changeScope
+      changeScope,
+      materialized
     );
     writeAction(this.paths.coordRoot, runtime.action, order);
     if (readAction(runtime.action).body !== previous) {
@@ -2059,6 +2065,10 @@ export class CoordinatorRunLoop {
         next = this.applyDerivedConsensus(start, next, decision.round);
       } else if (decision.type === "advance-step") {
         this.logPhase(start.issue, decision.to, decision.round, decision.from);
+        if (decision.to !== null) {
+          const keep = deriveBoundInputs(start, next, decision.to, decision.round);
+          await pruneSupersededWorktrees({ mirror: this.mirror, paths: this.paths, keep });
+        }
         next = this.advance(next, decision);
       } else if (decision.type === "owner-action-required") {
         if (next.ownerQuestion === null) {
