@@ -1,0 +1,14 @@
+{
+  "actionId": "3a73333f-b1fd-47a4-b88f-3ef82374683f",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "8265c3c629db811b5ab1bf12d756b847edb77ae096a8c9135e366abb4c9bf542",
+  "issue": 121,
+  "issueSessionId": "issue-121:6ef8f6eb22af1558723ddd885e0364ebbc92d76b",
+  "protocolVersion": 2,
+  "rationale": "Codex revision a82456a5 correctly requires Reuse and Scope, uses depth-aware stripSections so reuse citations cannot widen approvedPaths, and lands build discipline in existing files with no new modules.",
+  "responseSha256": "51bc87eeb12d78e6def9dd3ac5ae7b266d02c9925706a389cf885f979d94ec2b",
+  "revisionCommitSha": "a82456a50a7e586752c7e36cc57c55ae44c1eea9",
+  "round": 1
+}

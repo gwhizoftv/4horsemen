@@ -1,0 +1,14 @@
+{
+  "actionId": "4f2d759c-d402-4959-ba90-f04cda4d1584",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "8265c3c629db811b5ab1bf12d756b847edb77ae096a8c9135e366abb4c9bf542",
+  "issue": 121,
+  "issueSessionId": "issue-121:6ef8f6eb22af1558723ddd885e0364ebbc92d76b",
+  "protocolVersion": 2,
+  "rationale": "The revision pins the identical tree (revisedBranchHead equals basedOn, and no product file differs from a82456a5), so three concrete corrections raised in comparison still stand, each one or two lines: src/evidence.ts:128 lets a depth-1 '# Reuse and Scope' swallow every deeper section so approvedPaths comes back empty (verified against the compiled pin), templates/product/AGENTS.protocol.md:77 puts the plan-review, code-review, and comparison contracts under the '## Implementation discipline' heading, and the negative assertion codex's own plan promised — nothing fails if the discipline note is later appended to review or ballot instructions — is still missing.",
+  "responseSha256": "8d81b8ed41c64a2255366d8ade8659ca269eb851577ecf7f17c3efe0d5f4ec99",
+  "revisionCommitSha": "a82456a50a7e586752c7e36cc57c55ae44c1eea9",
+  "round": 1
+}

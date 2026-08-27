@@ -1,0 +1,14 @@
+{
+  "actionId": "08475f8b-4ced-4a31-92c9-b8be4a783902",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "8265c3c629db811b5ab1bf12d756b847edb77ae096a8c9135e366abb4c9bf542",
+  "issue": 121,
+  "issueSessionId": "issue-121:6ef8f6eb22af1558723ddd885e0364ebbc92d76b",
+  "protocolVersion": 2,
+  "rationale": "The bound Codex revision preserves the selected implementation and approved scope, correctly handles reuse-section aliases and document boundaries, and has passed the full configured validation.",
+  "responseSha256": "470926db902589cfd7a533cc90e883d7d27530622a932e5aa3f744b6798e0bdc",
+  "revisionCommitSha": "a82456a50a7e586752c7e36cc57c55ae44c1eea9",
+  "round": 1
+}
