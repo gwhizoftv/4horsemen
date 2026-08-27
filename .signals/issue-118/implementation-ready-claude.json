@@ -5,7 +5,7 @@
   "agent": "claude",
   "inputSetHash": "5aeb6736e5db8b22090c20aa83d0053a86a801fd7963ce5ed477049154c5ee1c",
   "artifact": "implementation-ready",
-  "implementationCommitSha": "f2455ba043ffb11b4c2660d3be901b1984770438",
+  "implementationCommitSha": "7d850e3549cddd9d50924c742781ac470543989e",
   "approvedPaths": [
     "AnalyticsReport.run",
     "AnalyticsReport.source.skippedJournalRecords",
