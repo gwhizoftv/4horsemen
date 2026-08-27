@@ -1,8 +1,15 @@
 # Issue 124 plan review — Claude
 
-Bound plans reviewed: cursor `b173b8e4ed9946dcccf92dbc1cf50d053dba899a`,
-antigravity `ae1b42852d773191ea721e56a684ff9a63262b07`, codex
-`e2de333f19160e93fa0ce9d9972eaf0cfdde64bb`, all at `.plans/issue-124/plan.md`.
+Bound plans reviewed, all at `.plans/issue-124/plan.md`: cursor
+`b173b8e4ed9946dcccf92dbc1cf50d053dba899a`, antigravity
+`ae1b42852d773191ea721e56a684ff9a63262b07`, claude
+`3ac5aad5d214caea6298696a855d71a1b03d05bb`, codex
+`e2de333f19160e93fa0ce9d9972eaf0cfdde64bb`.
+
+Findings 10 and 11 are against my own bound plan
+`3ac5aad5d214caea6298696a855d71a1b03d05bb`; they are held to the same standard
+as the rest and are, on the evidence below, among the more consequential
+defects here.
 
 All four plans converge on the same architecture — an untracked, `COORD_ISSUE`-gated
 `.coord/bin/git` on the launcher's `PATH`, plus coordinator-side materialization
@@ -10,7 +17,7 @@ into `issue-<n>/inputs/<hash>/` and `issue-<n>/worktrees/<agent>-<sha8>/`. The
 findings below are about places where a plan, followed as written, produces a
 failing or unimplementable result.
 
-Findings 1, 2, and 3 were confirmed by running the affected suites, not by
+Findings 1, 2, 3, and 10 were confirmed by running the affected code, not by
 inspection. Reproduction details are given with each.
 
 ## Findings
@@ -280,9 +287,97 @@ also conditional.
 **Smallest correction.** Delete the row. A file the plan expects not to change
 does not belong in the list of files it may change.
 
+### 10. Enforcing read-only with `0o500` directories breaks the cleanup both plans depend on (claude, codex)
+
+**Claim.** Claude `3ac5aad5d214caea6298696a855d71a1b03d05bb`, "Materialized
+layout": "Files are written `0o400` and packet directories `0o500` after the last
+write, so the grant below cannot mutate them," and Risks: "Files are `0o400` and
+packet/worktree directories `0o500` after write, so the filesystem refuses
+mutation regardless of the sandbox grant. `removeWorktree` runs before any prune
+so the coordinator can still clean up." Codex reaches the same design: "completed
+packet files/directories become read-only and are never rewritten" and
+"make their coordinator-produced children read-only".
+
+**Rule that must hold.** On POSIX, unlinking an entry requires write *and*
+execute permission on the containing directory, not on the entry. Both plans
+also require that the coordinator can later delete what it wrote:
+`BareMirror.removeWorktree` (`src/mirror.ts:184`) shells out to `git worktree
+remove --force`, and `src/wipeIssue.ts:433` removes the whole issue runtime with
+`rmSync(paths.issueRoot, { recursive: true, force: true })`.
+
+**Concrete failure.** Both operations fail against a `0o500` directory. I
+materialized a detached worktree from a bare mirror, applied the mode the claude
+plan specifies, and ran the removal that plan's own mitigation relies on:
+
+```
+$ chmod 500 wt-500
+$ git --git-dir=mirror.git worktree remove --force wt-500
+error: failed to delete '.../wt-500': Permission denied
+worktree remove exit=255
+```
+
+`BareMirror.removeWorktree` passes `allowFailure = true` (`src/mirror.ts:185`),
+so this failure is swallowed: `pruneSupersededWorktrees` reports success while
+the tree and its registration both survive, and the wipe-time `git worktree
+prune` the claude plan adds does not collect it either, because the directory
+still exists and the registration therefore still looks live. Both the
+stale-registration mitigation and the disk-growth mitigation fail silently.
+
+The packet case is worse, and it hits codex as well as claude. `rmSync` with
+`force: true` does not override directory permissions:
+
+```
+$ chmod 400 packet/a.md; chmod 500 packet
+$ node -e 'rmSync(dir,{recursive:true,force:true})'
+rmSync FAILED: ENOTEMPTY, Directory not empty: .../packet
+```
+
+So `src/wipeIssue.ts:433` throws, and `coord wipe` aborts partway with the
+entire issue runtime — `cursors.json`, the journal, every agent directory —
+still on disk, for an issue the operator asked to remove.
+
+**Smallest correction.** Keep directories at `0o700` and make only the files
+`0o400`; the directory mode is what blocks deletion, and file modes alone stop
+an agent rewriting materialized content in place. The real containment argument
+in both plans is not the mode bits anyway — it is that the two granted roots
+hold nothing but copies of artifacts already bound into that agent's action, and
+no coordinator authority file is ever placed under them.
+
+### 11. New path helpers ship with no test file listed, and one delegation assertion tests the wrong thing (claude)
+
+**Claim.** Claude `3ac5aad5d214caea6298696a855d71a1b03d05bb` changes
+`src/paths.ts` to add `issueInputsRoot` and `issueWorktreesRoot`,
+`inputPacketPath(paths, hash)` "validates `^[0-9a-f]{64}$`",
+`inputWorktreePath(paths, agent, sha)`, and two new `createIssueRuntime` roots.
+Neither `test/paths.test.ts` nor any paths case appears in its file lists or its
+Tests section. Separately, its test 2 asserts that `git fetch --help` "exit `0`"
+as evidence that the wrapper delegates.
+
+**Rule that must hold.** The plan's file list becomes `order.approvedPaths`, and
+`src/evidence.ts:316-319` rejects an implementation whose changed paths fall
+outside it. A test file the plan does not list cannot be added at R4.
+`test/paths.test.ts` already exists and is where this module's containment and
+validation invariants live.
+
+**Concrete failure.** The two new helpers are the only new code in the plan that
+can construct an out-of-root write target, and they are the plan's sole defence
+against a malformed hash or agent id reaching `containedPath`. They ship with no
+direct coverage, and the implementer cannot add any: writing
+`test/paths.test.ts` is an out-of-map change that the R4 evidence check refuses,
+so the gap survives to R5 with nothing in the plan authorising its repair. The
+second half is smaller but real: `git fetch --help` does not exercise git's
+fetch plumbing at all — it renders a man page through `man` and a pager. It
+returns 0 here, but on a machine without `man`, or with a pager that wants a
+TTY, the assertion fails or blocks for a reason that has nothing to do with
+whether the wrapper delegated.
+
+**Smallest correction.** Add `test/paths.test.ts` to the changed list with one
+containment case per helper. Assert delegation with a command that actually runs
+git plumbing and needs no network, such as `git rev-list --count HEAD`.
+
 ## Scope, reuse, new files, and test focus
 
-Checked against this action's requirements, across the three peer plans:
+Checked against this action's requirements, across all four bound plans:
 
 - **Reuse claims hold up.** I verified the named helpers exist:
   `computeInputSetHash` at `src/evidence.ts:40` (already used by
@@ -313,6 +408,15 @@ Checked against this action's requirements, across the three peer plans:
   reaches furthest outside: the version bump (finding 8), `src/agentLanguage.ts`
   (finding 7), and four setup scripts plus two docs files where the issue names
   two setup scripts and no docs requirement.
+- **Claude's own plan on these axes.** It stays inside the issue and plans no
+  version bump. It adds one source module and no new test file, extending
+  `test/install.test.ts`, `test/runLoop.test.ts`, `test/action.test.ts`, and
+  `test/wipeIssue.test.ts` — the same discipline as codex. Its one weak reuse
+  claim is in Alternatives Rejected, where it rejects `computeDerivedInputSetHash`
+  (`src/runLoop.ts:326`) without noticing that `computeInputSetHash`
+  (`src/evidence.ts:40`) is the function cursor and codex correctly cite and is
+  the better fit for a packet directory name; the rejection is sound but argued
+  against the wrong function. Its gap is coverage, not scope — see finding 11.
 - **Mechanical completeness.** Antigravity's changed list is bare paths with no
   per-path statement of the change, which is what let findings 4 and 5 through —
   a missing file and an unexplained one are both invisible in a list of
@@ -320,29 +424,42 @@ Checked against this action's requirements, across the three peer plans:
 
 ## Conclusion
 
-Every peer plan has the right architecture, and all three share finding 1: as
-specified, the wrapper blocks `git status` for the product's own test suite, and
-the implementer cannot run the `pnpm check:fast` the same plan requires before
-committing. Twelve fast-suite tests fail today under a wrapper built to that
-specification; adding a repository-scope guard takes the same three files to 31
-passed while still refusing the agent's own `git status` in the clone. That
-guard is the one change all three plans need, and codex needs it most because
-its otherwise-correct global-option parsing extends the breakage to
-`test/pinValidation.test.ts`.
+Every bound plan has the right architecture, and three of the four share finding
+1: as specified, the wrapper blocks `git status` for the product's own test
+suite, and the implementer cannot run the `pnpm check:fast` the same plan
+requires before committing. Twelve fast-suite tests fail today under a wrapper
+built to that specification; adding a repository-scope guard takes the same
+three files to 31 passed while still refusing the agent's own `git status` in
+the clone. That guard is the single change cursor, antigravity, and codex all
+need, and codex needs it most because its otherwise-correct global-option
+parsing extends the breakage to `test/pinValidation.test.ts`.
 
-Ranked as they stand: **codex** is the strongest — it is alone in reasoning
-correctly about grant timing against a persistent harness (finding 3), it adds
-one justified module and no new test file, and its remaining gap (finding 6) is
-a condition to drop rather than a mechanism to invent. **Antigravity** is sound
-in approach but under-specified as a file map; findings 4 and 5 are both
-artifacts of listing paths without saying what happens to them, and the missing
-`src/wipeIssue.ts` makes one of its own mitigations unimplementable at R4.
-**Cursor** is the most thorough on Part A's shell details and is the only plan
-whose `## Bound input files` handling keeps the `git show` fallback
-unconditional and implementable, but findings 3, 7, 8, and 9 mean four of its
-listed changes either cannot work as described or should not be made.
+Finding 10 cuts the other way and is the reason no plan here is ready as
+written. Claude's plan and codex's plan both propose `0o500` directories as the
+read-only mechanism, and that mode silently defeats
+`BareMirror.removeWorktree` and hard-fails `wipeIssue`'s `rmSync` with
+`ENOTEMPTY` — so `coord wipe` aborts leaving the whole issue runtime on disk.
+The claude plan is the one that avoids finding 1 and then walks into finding 10;
+that is not a better trade, it is a different one, and both defects have to be
+fixed before either plan is safe to implement.
+
+Ranked as they stand: **codex** is strongest overall — alone in reasoning
+correctly about grant timing against a persistent harness (finding 3), one
+justified module, no new test file, and its show-condition gap (finding 6) is a
+condition to drop rather than a mechanism to invent; it needs findings 1, 2, and
+10 fixed. **Claude** is next: it is the only plan that identifies and verifies
+the suite-breakage in finding 1 and proposes the guard that resolves it, but it
+carries finding 10 in full and leaves its new path helpers untested (finding
+11). **Antigravity** is sound in approach but under-specified as a file map;
+findings 4 and 5 are both artifacts of listing paths without saying what happens
+to them, and the missing `src/wipeIssue.ts` makes one of its own mitigations
+unimplementable at R4. **Cursor** is the most thorough on Part A's shell details
+and is the only plan whose `git show` fallback stays unconditional and
+implementable, but findings 3, 7, 8, and 9 mean four of its listed changes
+either cannot work as described or should not be made.
 
 The merge worth making: codex's grant model and single-template discipline,
-cursor's unconditional pinned-show fallback, antigravity's doctor check for a
-missing or non-executable wrapper, and a repository-scope guard in the wrapper
-for all of them.
+claude's repository-scope guard in the wrapper and its verification of what the
+block actually costs, cursor's unconditional pinned-show fallback, antigravity's
+doctor check for a missing or non-executable wrapper — and file-mode enforcement
+dropped from all of them in favour of `0o400` files under `0o700` directories.
