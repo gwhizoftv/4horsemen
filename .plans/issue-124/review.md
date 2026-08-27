@@ -1,10 +1,15 @@
 # Plan review — issue 124 (cursor)
 
-Reviewed bound plans at pins `b173b8e`, `ae1b4285`, `3ac5aad5`, and `e2de333f`.
+Reviewed bound plans at the commits named in this action:
+
+- cursor plan: `b173b8e4ed9946dcccf92dbc1cf50d053dba899a` at `.plans/issue-124/plan.md`
+- antigravity plan: `ae1b42852d773191ea721e56a684ff9a63262b07` at `.plans/issue-124/plan.md`
+- claude plan: `3ac5aad5d214caea6298696a855d71a1b03d05bb` at `.plans/issue-124/plan.md`
+- codex plan: `e2de333f19160e93fa0ce9d9972eaf0cfdde64bb` at `.plans/issue-124/plan.md`
 
 ## Findings
 
-### Cursor plan (`b173b8e`) — launcher grants via `read-grants.json`
+### Cursor plan (`b173b8e4ed9946dcccf92dbc1cf50d053dba899a`) — launcher grants via `read-grants.json`
 
 **Claim:** `scripts/lib/launcher.sh` resolves read grants from coordinator-written `read-grants.json` and appends `--add-dir` entries; `prepareAction` writes that file per action.
 
@@ -12,11 +17,11 @@ Reviewed bound plans at pins `b173b8e`, `ae1b4285`, `3ac5aad5`, and `e2de333f`.
 
 **Failure:** The launcher runs before the first `prepareAction` for that session, so `read-grants.json` does not exist at startup and later updates are invisible until the agent process exits. Compare/review agents on a long-lived tmux pane never receive `--add-dir` for the packet or worktrees, cannot read sandboxed paths, and fall back to blocked `git show`.
 
-**Correction:** Follow the Claude/Codex pattern: create `issue-<n>/inputs/` and `issue-<n>/worktrees/` at issue start (`createIssueRuntime`), grant those two parent directories in the launcher when they exist, and list exact child paths in `## Bound input files`.
+**Correction:** Follow the Claude plan (`3ac5aad5d214caea6298696a855d71a1b03d05bb`) / Codex plan (`e2de333f19160e93fa0ce9d9972eaf0cfdde64bb`) pattern: create `issue-<n>/inputs/` and `issue-<n>/worktrees/` at issue start (`createIssueRuntime`), grant those two parent directories in the launcher when they exist, and list exact child paths in `## Bound input files`.
 
 ---
 
-### Cursor plan (`b173b8e`) — Git wrapper scope
+### Cursor plan (`b173b8e4ed9946dcccf92dbc1cf50d053dba899a`) — Git wrapper scope
 
 **Claim:** Part A wrapper blocks `status`/`diff` and tightens `show` when materialized inputs exist; Tests section does not require passthrough for `-C`/`--git-dir`, cwd outside the clone, or `GIT_DIR`.
 
@@ -24,11 +29,11 @@ Reviewed bound plans at pins `b173b8e`, `ae1b4285`, `3ac5aad5`, and `e2de333f`.
 
 **Failure:** A minimal wrapper that only checks the subcommand name blocks `git -C <mirror> …` and `git diff` invoked from Node/hooks while cwd stays in the agent clone, breaking `pnpm check:fast`, hook verification, and any `coord next` path that shells to git without setting `COORD_GIT_DELEGATE`.
 
-**Correction:** Adopt Claude's wrapper sketch: delegate on `COORD_GIT_DELEGATE=1`, global `-C`/`--git-dir`/`--work-tree`, `GIT_DIR`/`GIT_WORK_TREE`, and cwd outside `COORD_CLONE` before applying blocks.
+**Correction:** Adopt the wrapper sketch in the Claude plan (`3ac5aad5d214caea6298696a855d71a1b03d05bb`): delegate on `COORD_GIT_DELEGATE=1`, global `-C`/`--git-dir`/`--work-tree`, `GIT_DIR`/`GIT_WORK_TREE`, and cwd outside `COORD_CLONE` before applying blocks.
 
 ---
 
-### Cursor plan (`b173b8e`) — `computeInputSetHash` for Phase 1 packet
+### Cursor plan (`b173b8e4ed9946dcccf92dbc1cf50d053dba899a`) — `computeInputSetHash` for Phase 1 packet
 
 **Claim (Reuse):** Reuse `computeInputSetHash` from `src/evidence.ts` for the manifest directory name.
 
@@ -36,11 +41,11 @@ Reviewed bound plans at pins `b173b8e`, `ae1b4285`, `3ac5aad5`, and `e2de333f`.
 
 **Failure:** `computeInputSetHash` hashes every `BoundInput`. On `R5.compare`/`R6.revise` steps the bound set is all product-pin kinds with no markdown blobs; materialization keyed that way either creates an empty `inputs/<hash>/` tree or mixes worktree identity into the packet hash.
 
-**Correction:** Hash only markdown/json kinds (`plan`, `review`, `selected-plan`, ballot paths) for `inputs/<inputSetHash>/`, as Claude specifies; keep worktrees at `worktrees/<agent>-<sha8>/` independent of that hash.
+**Correction:** Hash only markdown/json kinds (`plan`, `review`, `selected-plan`, ballot paths) for `inputs/<inputSetHash>/`, as the Claude plan (`3ac5aad5d214caea6298696a855d71a1b03d05bb`) specifies; keep worktrees at `worktrees/<agent>-<sha8>/` independent of that hash.
 
 ---
 
-### Cursor plan (`b173b8e`) — file list hygiene
+### Cursor plan (`b173b8e4ed9946dcccf92dbc1cf50d053dba899a`) — file list hygiene
 
 **Claim:** `src/materializedInputs.ts` appears under both **Exact File List to be changed or deleted** and **Exact file list to be created**; `test/mirror.test.ts` is listed as changed with body "no change".
 
@@ -52,7 +57,7 @@ Reviewed bound plans at pins `b173b8e`, `ae1b4285`, `3ac5aad5`, and `e2de333f`.
 
 ---
 
-### Antigravity plan (`ae1b4285`) — `src/hookSync.ts`
+### Antigravity plan (`ae1b42852d773191ea721e56a684ff9a63262b07`) — `src/hookSync.ts`
 
 **Claim:** `src/hookSync.ts` is in the changed file list with no section explaining why.
 
@@ -64,7 +69,7 @@ Reviewed bound plans at pins `b173b8e`, `ae1b4285`, `3ac5aad5`, and `e2de333f`.
 
 ---
 
-### Antigravity plan (`ae1b4285`) — acceptance and vendor coverage gaps
+### Antigravity plan (`ae1b42852d773191ea721e56a684ff9a63262b07`) — acceptance and vendor coverage gaps
 
 **Claim:** Changed files cover core coordinator paths and four test files; setup scripts list only Claude and Codex.
 
@@ -76,9 +81,9 @@ Reviewed bound plans at pins `b173b8e`, `ae1b4285`, `3ac5aad5`, and `e2de333f`.
 
 ---
 
-### Claude plan (`3ac5aad5`) — created-file list includes the plan artifact
+### Claude plan (`3ac5aad5d214caea6298696a855d71a1b03d05bb`) — created-file list includes the plan artifact
 
-**Claim:** **Exact file list to be created** includes `.plans/issue-124/plan.md — this plan`.
+**Claim:** **Exact file list to be created** includes `.plans/issue-124/plan.md` — this plan.
 
 **Rule:** Created lists name source/test files the implementation adds; the plan itself is evidence, not part of the product diff.
 
@@ -88,7 +93,7 @@ Reviewed bound plans at pins `b173b8e`, `ae1b4285`, `3ac5aad5`, and `e2de333f`.
 
 ---
 
-### Claude plan (`3ac5aad5`) — missing operator docs and doctor
+### Claude plan (`3ac5aad5d214caea6298696a855d71a1b03d05bb`) — missing operator docs and doctor
 
 **Claim:** Docs changes are limited to `docs/repo-map.md`; no `docs/coord-driver.md` / `docs/setup-workspace.md`; no `src/doctor.ts` entry.
 
@@ -96,11 +101,11 @@ Reviewed bound plans at pins `b173b8e`, `ae1b4285`, `3ac5aad5`, and `e2de333f`.
 
 **Failure:** Owners with stale or missing `.coord/bin/git` get no doctor finding; setup docs still describe launchers without PATH wrapping or materialization roots.
 
-**Correction:** Add `src/doctor.ts` and the two setup/coord-driver doc files Codex lists, reusing existing doctor clone-inspection patterns.
+**Correction:** Add `src/doctor.ts` and the two setup/coord-driver doc files from the Codex plan (`e2de333f19160e93fa0ce9d9972eaf0cfdde64bb`), reusing existing doctor clone-inspection patterns.
 
 ---
 
-### Codex plan (`e2de333f`) — block all `git show` once bound files exist
+### Codex plan (`e2de333f19160e93fa0ce9d9972eaf0cfdde64bb`) — block all `git show` once bound files exist
 
 **Claim (Reuse and Scope):** Wrapper rejects all show reconnaissance once `## Bound input files` exists; only `<sha>:<path>` is allowed before that section.
 
@@ -112,7 +117,7 @@ Reviewed bound plans at pins `b173b8e`, `ae1b4285`, `3ac5aad5`, and `e2de333f`.
 
 ---
 
-### Codex plan (`e2de333f`) — `coord.realGit` config key
+### Codex plan (`e2de333f19160e93fa0ce9d9972eaf0cfdde64bb`) — `coord.realGit` config key
 
 **Claim:** `setupWorkspace.ts` records/clears clone-local `coord.realGit`; doctor validates it.
 
@@ -126,11 +131,11 @@ Reviewed bound plans at pins `b173b8e`, `ae1b4285`, `3ac5aad5`, and `e2de333f`.
 
 ### Cross-plan — `coord` CLI and Node-spawned git
 
-**Claim:** Claude lists `coord` exporting `COORD_GIT_DELEGATE=1`; Cursor, Antigravity, and Codex omit any Node/CLI delegate story.
+**Claim:** The Claude plan (`3ac5aad5d214caea6298696a855d71a1b03d05bb`) lists `coord` exporting `COORD_GIT_DELEGATE=1`; the Cursor plan (`b173b8e4ed9946dcccf92dbc1cf50d053dba899a`), Antigravity plan (`ae1b42852d773191ea721e56a684ff9a63262b07`), and Codex plan (`e2de333f19160e93fa0ce9d9972eaf0cfdde64bb`) omit any Node/CLI delegate story.
 
 **Rule:** Wrapper must never block commit, push, fetch, checkout, or hook `rev-parse`; internal coordination git must keep working when agents invoke `coord next` from a clone whose `PATH` prefers `.coord/bin`.
 
-**Failure:** `spawnSync("git", …)` in `src/gitExec.ts` and `spawn("git", …)` in `src/mirror.ts` inherit the agent's PATH; without `COORD_GIT_DELEGATE` on the `coord` entrypoint (or hermetic absolute git in Node), owner/agent CLI subprocesses hit the same blocks as the harness.
+**Failure:** `spawnSync("git", …)` in `src/gitExec.ts` and `spawn("git", …)` in `src/mirror.ts` inherit the agent's PATH; without `COORD_GIT_DELEGATE=1` on the `coord` entrypoint (or hermetic absolute git in Node), owner/agent CLI subprocesses hit the same blocks as the harness.
 
 **Correction:** Export `COORD_GIT_DELEGATE=1` in the repo-root `coord` wrapper before `exec node`, and document that hooks already rely on the wrapper's delegate guard.
 
@@ -138,10 +143,10 @@ Reviewed bound plans at pins `b173b8e`, `ae1b4285`, `3ac5aad5`, and `e2de333f`.
 
 ### Cross-plan — scope and reuse (positive)
 
-All four plans stay within issue 124, reject sparse path export, reuse `BareMirror.readBlob` / `materializeWorktree`, extend existing test files rather than inventing broad new suites (Codex most aggressively), and name `pnpm check:fast` as the pre-commit gate. Claude and Codex best match launcher/grant timing and wrapper passthrough; Claude is the most test-complete; Codex best covers doctor/wipe/run-loop integration and idempotent install/uninstall.
+All four bound plans stay within issue 124, reject sparse path export, reuse `BareMirror.readBlob` / `materializeWorktree`, extend existing test files rather than inventing broad new suites (Codex plan `e2de333f19160e93fa0ce9d9972eaf0cfdde64bb` most aggressively), and name `pnpm check:fast` as the pre-commit gate. The Claude plan (`3ac5aad5d214caea6298696a855d71a1b03d05bb`) and Codex plan (`e2de333f19160e93fa0ce9d9972eaf0cfdde64bb`) best match launcher/grant timing and wrapper passthrough; the Claude plan is the most test-complete; the Codex plan best covers doctor/wipe/run-loop integration and idempotent install/uninstall.
 
 ## Conclusion
 
-No bound plan is ready to implement verbatim. **Claude's plan** is the strongest base: correct grant model (persistent `inputs/` and `worktrees/` roots), detailed wrapper passthrough rules, markdown-only packet hashing, and the broadest focused tests—but it should drop the plan path from created files, add doctor/docs/version bumps, and keep `<sha>:<path>` show fallback after materialization failures. **Codex's plan** should be merged for doctor, wipe-time `removeWorktree`, install idempotence, and run-loop failure modes, while relaxing show blocking and dropping `coord.realGit`. **Cursor's plan** must replace `read-grants.json` with parent-dir grants and add wrapper passthrough tests. **Antigravity's plan** should drop unexplained files (`hookSync.ts`), add missing vendors and version bumps, and adopt the same grant and wrapper details.
+No bound plan is ready to implement verbatim. The **Claude plan** (`3ac5aad5d214caea6298696a855d71a1b03d05bb`) is the strongest base: correct grant model (persistent `inputs/` and `worktrees/` roots), detailed wrapper passthrough rules, markdown-only packet hashing, and the broadest focused tests—but it should drop the plan path from created files, add doctor/docs/version bumps, and keep `<sha>:<path>` show fallback after materialization failures. The **Codex plan** (`e2de333f19160e93fa0ce9d9972eaf0cfdde64bb`) should be merged for doctor, wipe-time `removeWorktree`, install idempotence, and run-loop failure modes, while relaxing show blocking and dropping `coord.realGit`. The **Cursor plan** (`b173b8e4ed9946dcccf92dbc1cf50d053dba899a`) must replace `read-grants.json` with parent-dir grants and add wrapper passthrough tests. The **Antigravity plan** (`ae1b42852d773191ea721e56a684ff9a63262b07`) should drop unexplained files (`hookSync.ts`), add missing vendors and version bumps, and adopt the same grant and wrapper details.
 
 Implement from a merged file map satisfying the issue acceptance criteria; run `pnpm check:fast` before commit and bump coordination to `0.0.28`.
