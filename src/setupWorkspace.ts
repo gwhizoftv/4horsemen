@@ -386,10 +386,40 @@ export const ensureAgentClone = (input: {
     input.options.log(`clone already present at ${input.clone} (worktree left untouched)\n`);
     return { clone: input.clone, created: false, synced: syncAgentClone(input) };
   }
-  act(input.options, `clone ${input.productRoot} into ${input.clone}`, () => {
+  act(input.options, `clone origin/${input.baseBranch} into ${input.clone}`, () => {
     mkdirSync(dirname(input.clone), { recursive: true });
-    gitOrThrow(dirname(input.clone), "clone", "--branch", input.baseBranch, input.productRoot, input.clone);
-    gitOrThrow(input.clone, "remote", "set-url", "origin", input.origin);
+    // Never seed from diverged product HEAD. Prefer the product's remembered
+    // origin/<base> tip (last fetched shared history). When that tip is missing,
+    // clone from a reachable origin URL instead.
+    const originTip = git(
+      input.productRoot,
+      "rev-parse",
+      "--verify",
+      `refs/remotes/origin/${input.baseBranch}^{commit}`
+    );
+    if (originTip.exitCode === 0) {
+      const tip = originTip.stdout.trim();
+      gitOrThrow(dirname(input.clone), "clone", "--no-checkout", input.productRoot, input.clone);
+      gitOrThrow(input.clone, "remote", "set-url", "origin", input.origin);
+      gitOrThrow(input.clone, "checkout", "--quiet", "-B", input.baseBranch, tip);
+      return;
+    }
+    const reachable = git(
+      dirname(input.clone),
+      "-c",
+      "gc.auto=0",
+      "ls-remote",
+      "--heads",
+      input.origin,
+      `refs/heads/${input.baseBranch}`
+    );
+    if (reachable.exitCode !== 0 || reachable.stdout.trim() === "") {
+      throw new Error(
+        `Cannot create agent clone ${input.clone}: ${input.productRoot} has no origin/${input.baseBranch} tip ` +
+          `and origin '${input.origin}' is unreachable.`
+      );
+    }
+    gitOrThrow(dirname(input.clone), "clone", "--branch", input.baseBranch, input.origin, input.clone);
   });
   return { clone: input.clone, created: true, synced: false };
 };

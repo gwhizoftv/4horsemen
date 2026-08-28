@@ -609,7 +609,8 @@ const journalEventTypeSchema = z.enum([
   "ballot-batch-pending",
   "ballot-batch-published",
   "ballot-batch-failed",
-  "ballot-batch-invalidated"
+  "ballot-batch-invalidated",
+  "clone-readiness-refused"
 ]);
 
 export const journalEventSchema = z

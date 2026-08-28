@@ -250,12 +250,18 @@ completed issue; dirt on any other branch is left unchanged and logged with a
 manual-stash/forced-wipe remediation. Eligible and already-clean clones fetch
 origin, check out the configured base at `origin/<base>`, and restore the
 managed protocol overlay and skip-worktree bit. If origin is temporarily
-unavailable, cleanup uses and identifies the existing local base instead; if a
-fresh fetch shows that local base contains commits absent from origin, normal
-completion refuses before discarding anything rather than orphaning them
-(`wipe-issue --force` is the explicit override). The summary distinguishes
+unavailable, cleanup uses and identifies the existing local base instead. When
+a fresh fetch shows that local base contains commits absent from origin, cleanup
+resets the clone's local base to `origin/<base>` (agent clones must not keep
+unpushed owner-only history). If any clone cannot be made base-ready, `coord N`
+/ `coord run` exit non-zero, print per-clone reasons, append a
+`clone-readiness-refused` journal event, and tell the owner to run
+`coord reset-clones N` — not raw `git checkout`. The summary distinguishes
 discarded, checked-out, refused, and skipped clones, and the coordinator never
 creates a cleanup commit or pushes from this path.
+`coord reset-clones N` exposes the same base-ready cleanup without deleting
+`coord-runtime/issue-N` (analytics stay). `--force` matches wipe's discard
+override for unrelated dirt.
 `coord uninstall` tears down owner tmux/Terminal for discovered issues and the
 exact workspace-grouped manual identity. It never closes bare agent-named tabs
 or another product's sessions.

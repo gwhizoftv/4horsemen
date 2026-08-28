@@ -415,6 +415,7 @@ describe("makeAgentClonesBaseReady", () => {
 
     expect(outcome[0]?.action).toBe("refused");
     expect(outcome[0]?.reason).toContain("issue-8/claude");
+    expect(outcome[0]?.reason).toContain("coord reset-clones --force");
     expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-8/claude");
     expect(git(clone, "status", "--porcelain")).toBe(before);
     expect(readFileSync(join(clone, "dirty.txt"), "utf8")).toBe("keep me\n");
@@ -453,7 +454,53 @@ describe("makeAgentClonesBaseReady", () => {
     expect(readFileSync(join(second.clone, "ambiguous.txt"), "utf8")).toBe("keep\n");
   });
 
-  it("preflights local base history for every wipe clone before any discard", () => {
+  it("resets local base to origin when it contains commits absent from origin", () => {
+    const { clone, baseline } = seedClone();
+    liftCloneAgentsProtocol(clone, { dryRun: false, log: () => undefined, changes: [] });
+    git(clone, "checkout", "-q", "-B", "main", baseline);
+    writeCloneAgentsProtocol({
+      clone,
+      installRoot: repoRoot,
+      options: { dryRun: false, log: () => undefined, changes: [] }
+    });
+    writeFileSync(join(clone, "owner.txt"), "local base commit\n");
+    git(clone, "add", "owner.txt");
+    git(clone, "commit", "-qm", "owner local base work");
+    const originMain = git(clone, "rev-parse", "origin/main");
+    prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+    writeFileSync(join(clone, "unfinished.txt"), "discard after base is reset\n");
+    const logs: string[] = [];
+
+    const outcome = makeAgentClonesBaseReady({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      installRoot: repoRoot,
+      log: (message) => logs.push(message)
+    });
+
+    expect(outcome[0]?.action).toBe("checked-out");
+    expect(outcome[0]?.baseTip).toBe(originMain);
+    expect(outcome[0]?.baseSynced).toBe(true);
+    expect(outcome[0]?.discardedPaths).toEqual(["unfinished.txt"]);
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(git(clone, "rev-parse", "HEAD")).toBe(originMain);
+    expect(git(clone, "rev-parse", "main")).toBe(originMain);
+    expect(existsSync(join(clone, "unfinished.txt"))).toBe(false);
+    expect(existsSync(join(clone, "owner.txt"))).toBe(false);
+    expect(logs.join("")).toContain("resetting diverged local main");
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("resets every wipe clone's diverged local base before discard", () => {
     const first = seedClone();
     const second = seedClone();
     prepareAgentIssueBranches({
@@ -464,7 +511,7 @@ describe("makeAgentClonesBaseReady", () => {
       baseBranch: "main",
       installRoot: repoRoot
     });
-    writeFileSync(join(first.clone, "eligible.txt"), "do not partially discard\n");
+    writeFileSync(join(first.clone, "eligible.txt"), "discard after base reset\n");
 
     liftCloneAgentsProtocol(second.clone, { dryRun: false, log: () => undefined, changes: [] });
     git(second.clone, "checkout", "-q", "-B", "main", second.baseline);
@@ -476,7 +523,7 @@ describe("makeAgentClonesBaseReady", () => {
     writeFileSync(join(second.clone, "owner.txt"), "local base commit\n");
     git(second.clone, "add", "owner.txt");
     git(second.clone, "commit", "-qm", "owner local base work");
-    const localBase = git(second.clone, "rev-parse", "main");
+    const originMain = git(second.clone, "rev-parse", "origin/main");
     prepareAgentIssueBranches({
       agents: [{ id: "codex", root: second.clone }],
       issue: 9,
@@ -498,11 +545,12 @@ describe("makeAgentClonesBaseReady", () => {
       batchPolicy: "refuse-all"
     });
 
-    expect(outcome.map(({ action }) => action)).toEqual(["refused", "refused"]);
-    expect(existsSync(join(first.clone, "eligible.txt"))).toBe(true);
-    expect(git(first.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
-    expect(git(second.clone, "rev-parse", "main")).toBe(localBase);
-    expect(git(second.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/codex");
+    expect(outcome.map(({ action }) => action)).toEqual(["checked-out", "checked-out"]);
+    expect(existsSync(join(first.clone, "eligible.txt"))).toBe(false);
+    expect(git(first.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(git(second.clone, "rev-parse", "main")).toBe(originMain);
+    expect(git(second.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(existsSync(join(second.clone, "owner.txt"))).toBe(false);
   });
 
   it("skips missing and non-worktree clone roots", () => {
@@ -523,46 +571,6 @@ describe("makeAgentClonesBaseReady", () => {
     });
 
     expect(outcome.map(({ action }) => action)).toEqual(["skipped-missing", "skipped-missing"]);
-  });
-
-  it("refuses before discarding when local base contains commits absent from origin", () => {
-    const { clone, baseline } = seedClone();
-    liftCloneAgentsProtocol(clone, { dryRun: false, log: () => undefined, changes: [] });
-    git(clone, "checkout", "-q", "-B", "main", baseline);
-    writeCloneAgentsProtocol({
-      clone,
-      installRoot: repoRoot,
-      options: { dryRun: false, log: () => undefined, changes: [] }
-    });
-    writeFileSync(join(clone, "owner.txt"), "local base commit\n");
-    git(clone, "add", "owner.txt");
-    git(clone, "commit", "-qm", "owner local base work");
-    const localBase = git(clone, "rev-parse", "main");
-    prepareAgentIssueBranches({
-      agents: [{ id: "claude", root: clone }],
-      issue: 9,
-      branchTemplate: "issue-{issue}/{agent}",
-      baselineSha: baseline,
-      baseBranch: "main",
-      installRoot: repoRoot
-    });
-    writeFileSync(join(clone, "unfinished.txt"), "keep until base is resolved\n");
-
-    const outcome = makeAgentClonesBaseReady({
-      agents: [{ id: "claude", root: clone }],
-      issue: 9,
-      branchTemplate: "issue-{issue}/{agent}",
-      baseBranch: "main",
-      installRoot: repoRoot
-    });
-
-    expect(outcome[0]?.action).toBe("refused");
-    expect(outcome[0]?.reason).toMatch(/local main .* contains commits not in origin\/main/);
-    expect(outcome[0]?.discardedPaths).toEqual([]);
-    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
-    expect(git(clone, "rev-parse", "main")).toBe(localBase);
-    expect(existsSync(join(clone, "unfinished.txt"))).toBe(true);
-    expect(git(clone, "show", "main:owner.txt")).toBe("local base commit");
   });
 
   it("audits a completed discard when a later base checkout fails", () => {

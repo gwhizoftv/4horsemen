@@ -202,6 +202,26 @@ const checkClone = (input: {
       )
     );
   }
+  const headBranch = git(clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+  if (
+    /^issue-\d+\//.test(headBranch) &&
+    protocolState.tracked &&
+    protocolState.overlayPresent &&
+    protocolState.skipWorktree
+  ) {
+    const issueMatch = /^issue-(\d+)\//.exec(headBranch);
+    const issueHint = issueMatch?.[1] ?? "<issue>";
+    findings.push(
+      finding(
+        "agentsProtocol",
+        clone,
+        `Agent clone is on ${headBranch} with a managed AGENTS.md protocol overlay (skip-worktree). ` +
+          `Raw git checkout ${input.config.baseBranch} will fail because Git treats the overlay as local changes.`,
+        `Do not run git checkout ${input.config.baseBranch}. Run: coord reset-clones ${issueHint} --product <path> ` +
+          "(or --config <path> --coord-root <path>)."
+      )
+    );
+  }
   const requiredKeys = vendored ? [CLI_ENTRY_KEY, WORKSPACE_CONFIG_KEY] : [INSTALL_ROOT_KEY, CLI_ENTRY_KEY, WORKSPACE_CONFIG_KEY];
   for (const key of requiredKeys) {
     if (localConfigGet(clone, key) === null) {
