@@ -22,7 +22,9 @@ When an action lists a `## Bound input files` section, read those paths directly
 They are exact copies the coordinator took from the same mirror that verifies the
 pins, so fetching a peer branch to read a plan, a review, or an implementation is
 redundant work. The cited SHAs remain the authority; the files are where the
-bytes are. Use `git show <sha>:<path>` only when a listed file is missing.
+bytes are, and `git show <sha>:<path>` for that same content is refused once the
+section is present. If the action says not every bound input could be exported,
+the pinned read stays available for the ones that are missing.
 
 During an automated issue, `git status` and `git diff` against this clone are
 refused by `.coord/bin/git`, which coordination installs and puts on your PATH.

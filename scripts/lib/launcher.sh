@@ -184,17 +184,59 @@ coord_refuse() {
   exit 2
 }
 
+# Whether the action in front of this agent already lists the files a `git show`
+# would be duplicating. Resolved from the clone's own identity keys and the
+# nested-vs-flat topology, exactly as the launcher resolves its grants, and
+# through $REAL_GIT so this never re-enters the shim.
+#
+# Fails open on purpose: every unreadable config, missing action, or absent
+# section leaves the pinned read allowed. The documented fallback for a packet
+# the coordinator could not produce must survive anything going wrong here.
+coord_action_lists_files() {
+  local config agent dir parent root action
+  config="$("$REAL_GIT" config --local --get coord.workspaceConfig 2>/dev/null)" || return 1
+  agent="$("$REAL_GIT" config --local --get consensus.agentId 2>/dev/null)" || return 1
+  [[ -n "$config" && -n "$agent" && -f "$config" ]] || return 1
+  dir="$(dirname "$config")"
+  parent="$(dirname "$dir")"
+  if [[ "$(basename "$parent")" == "workspaces" ]]; then root="$(dirname "$parent")"; else root="$dir"; fi
+  action="$root/issue-$COORD_ISSUE/agents/$agent/action.md"
+  [[ -f "$action" ]] || return 1
+  grep -q '^## Bound input files$' "$action" 2>/dev/null || return 1
+  # A partly exported action keeps the fallback: the input that is missing from
+  # disk is reachable only through its pin. See INCOMPLETE_MATERIALIZATION_NOTE
+  # in src/action.ts, which is the line this matches.
+  ! grep -q '^Not every bound input could be exported' "$action" 2>/dev/null
+}
+
 case "$coord_sub" in
   status|diff)
     coord_refuse "$coord_sub"
     ;;
   show)
-    # The pinned peer read stays available as the documented fallback for when a
-    # materialized file is missing. Open-ended `git show` reconnaissance is not.
+    # Two different things wear this name. `git show <rev>` prints a commit and
+    # its full diff, which is the reconnaissance `diff` is blocked for. But
+    # `git show <rev>:<path>` is an ordinary file read, and a product's own
+    # tooling does it against its own history — this repository's language test
+    # reads `HEAD:AGENTS.md` that way. Refusing every `show` breaks the suite an
+    # agent has to pass; refusing only the peer-pin read does not.
     coord_operand="${coord_argv[coord_i+1]:-}"
-    if [[ ! "$coord_operand" =~ ^[0-9a-f]{40}: ]]; then
-      coord_refuse "show"
-    fi
+    case "$coord_operand" in
+      *:*)
+        if [[ "$coord_operand" =~ ^[0-9a-f]{40}: ]] && coord_action_lists_files; then
+          # A pinned peer read the coordinator has already exported: the same
+          # bytes by the expensive route, which is the repetition this change
+          # exists to stop. Without the packet it stays allowed as the fallback.
+          echo "coord: 'git show' is blocked in this clone during automated issue $COORD_ISSUE." >&2
+          echo "  The coordinator already exported this content. Read the paths listed" >&2
+          echo "  under '## Bound input files' in your action.md instead." >&2
+          exit 2
+        fi
+        ;;
+      *)
+        coord_refuse "show"
+        ;;
+    esac
     ;;
 esac
 

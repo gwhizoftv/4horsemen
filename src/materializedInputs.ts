@@ -1,6 +1,17 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
+import { git } from "./gitExec.js";
 import { sha256 } from "./hash.js";
 import type { BareMirror } from "./mirror.js";
 import {
@@ -96,23 +107,81 @@ type PacketManifest = { entries: MaterializedInputEntry[]; omitted: string[] };
  * Returns null for anything unreadable or shaped wrong, so a damaged packet is
  * simply rebuilt rather than trusted.
  */
-const readPacketManifest = (manifestPath: string): PacketManifest | null => {
+const readPacketManifest = (
+  manifestPath: string,
+  inputSetHash: string,
+  expected: readonly BoundInput[]
+): PacketManifest | null => {
   if (!existsSync(manifestPath)) return null;
   try {
     const parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      inputSetHash?: unknown;
       entries?: unknown;
       omitted?: unknown;
     };
+    // Identity first: a packet that does not claim to be this input set is not
+    // this input set, whatever its directory is called.
+    if (parsed.inputSetHash !== inputSetHash) return null;
     if (!Array.isArray(parsed.entries)) return null;
     const entries = parsed.entries as MaterializedInputEntry[];
-    if (entries.some((entry) => typeof entry?.localPath !== "string" || !existsSync(entry.localPath))) {
-      return null;
+    const wanted = new Set(expected.map((bound) => `${bound.kind}\0${bound.agent}\0${bound.commitSha}\0${bound.path}`));
+    if (entries.length !== wanted.size) return null;
+    for (const entry of entries) {
+      if (typeof entry?.localPath !== "string" || typeof entry.sha256 !== "string") return null;
+      if (!wanted.has(`${entry.kind}\0${entry.agent}\0${entry.commitSha}\0${entry.path}`)) return null;
+      if (!existsSync(entry.localPath)) return null;
+      // The digest, not merely the path. Checking only that a file is present
+      // lets a packet whose bytes were replaced be handed to every agent on the
+      // step as verified peer input, under a pin that still looks correct.
+      if (sha256(readFileSync(entry.localPath, "utf8")) !== entry.sha256) return null;
     }
     const omitted = Array.isArray(parsed.omitted) ? (parsed.omitted as string[]) : [];
     return { entries, omitted };
   } catch {
     return null;
   }
+};
+
+/**
+ * The commit a materialized worktree actually holds, or null if it cannot be
+ * read. Uses the scrubbed synchronous runner, so an ambient `GIT_DIR` cannot
+ * redirect the answer at the one place it would matter most.
+ */
+const worktreeHead = (localPath: string): string | null => {
+  const result = git(localPath, "rev-parse", "HEAD");
+  if (result.exitCode !== 0) return null;
+  const head = result.stdout.trim();
+  return /^[0-9a-f]{40}$/.test(head) ? head : null;
+};
+
+/**
+ * Make every file under a materialized tree read-only, leaving directories
+ * writable.
+ *
+ * Directory modes are deliberately untouched: a read-only directory stops the
+ * coordinator unlinking its own children, which turns `git worktree remove` and
+ * issue teardown into hard failures. File modes stop an agent editing a peer's
+ * materialized copy in place, which is the realistic accident. It is a speed
+ * bump rather than a guarantee — the granted parent stays writable — so it is
+ * not relied on for anything.
+ */
+const makeFilesReadOnly = (root: string): void => {
+  let stat;
+  try {
+    stat = lstatSync(root);
+  } catch {
+    return;
+  }
+  if (stat.isSymbolicLink()) return;
+  if (!stat.isDirectory()) {
+    try {
+      chmodSync(root, stat.mode & 0o111 ? 0o500 : 0o400);
+    } catch {
+      // A file we cannot chmod is not worth failing preparation over.
+    }
+    return;
+  }
+  for (const entry of readdirSync(root)) makeFilesReadOnly(join(root, entry));
 };
 
 export const materializeBoundInputs = async (input: {
@@ -136,7 +205,14 @@ export const materializeBoundInputs = async (input: {
     packetDir = inputPacketPath(input.paths, inputSetHash);
     manifestPath = containedPath(packetDir, "manifest.json");
 
-    const reused = readPacketManifest(manifestPath);
+    const reused = readPacketManifest(manifestPath, inputSetHash, documents);
+    if (reused === null && existsSync(packetDir)) {
+      // Present but not trustworthy: identity, coverage, or a digest did not
+      // hold. Rebuild rather than serve it, and say so — a packet that changed
+      // under a content address is worth an operator seeing.
+      omitted.push(`packet ${packetDir} failed validation and was rebuilt`);
+      rmSync(packetDir, { recursive: true, force: true });
+    }
     if (reused !== null) {
       // The packet is immutable and content-addressed, so its manifest is a
       // complete record of it. Re-reading each blob to rebuild the same entries
@@ -179,6 +255,14 @@ export const materializeBoundInputs = async (input: {
     if (seen.has(bound.commitSha)) continue;
     seen.add(bound.commitSha);
     const localPath = inputWorktreePath(input.paths, bound.agent, bound.commitSha);
+    if (existsSync(localPath) && worktreeHead(localPath) !== bound.commitSha) {
+      // `<agent>-<sha8>` is not a unique function of the pin: two pins for one
+      // agent sharing eight hex characters resolve here. Reusing on the path
+      // alone would let an action cite one commit while pointing every reader
+      // at another's tree — wrong code, correct-looking SHA, no symptom.
+      await input.mirror.removeWorktree(localPath);
+      rmSync(localPath, { recursive: true, force: true });
+    }
     if (!existsSync(localPath)) {
       assertNoSymlink(input.paths.coordRoot, localPath);
       mkdirSync(dirname(localPath), { recursive: true, mode: 0o700 });
@@ -191,6 +275,7 @@ export const materializeBoundInputs = async (input: {
         );
         continue;
       }
+      makeFilesReadOnly(localPath);
     }
     worktrees.push({ kind: bound.kind, agent: bound.agent, commitSha: bound.commitSha, localPath });
   }

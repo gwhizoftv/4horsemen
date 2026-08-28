@@ -1422,7 +1422,19 @@ export class CoordinatorRunLoop {
     const stepId = cursor.stepId;
     const round = stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
-    const changeScope = await resolveChangeScope(this.mirror, start, deriveBoundInputs(start, cursors, stepId, round));
+    const boundInputs = deriveBoundInputs(start, cursors, stepId, round);
+    const changeScope = await resolveChangeScope(this.mirror, start, boundInputs);
+    // A reissue is a rewrite of the same action, and it must carry the same
+    // materialized paths. Omitting them here was the worst possible place to
+    // lose them: the agent is being asked to correct something, and the retry
+    // would arrive with `## Bound input files` gone while the shim still
+    // refuses the reads it replaced. The packet is content-addressed, so this
+    // resolves to the directory already on disk rather than writing anything.
+    const materialized = await materializeBoundInputs({
+      mirror: this.mirror,
+      paths: this.paths,
+      inputs: boundInputs
+    });
     this.authority(cursors);
     const order = buildOrder(
       this.paths,
@@ -1434,7 +1446,8 @@ export class CoordinatorRunLoop {
       actionId,
       outstanding,
       approvedPaths,
-      changeScope
+      changeScope,
+      materialized
     );
     this.verbose(`reissued ${agent} action ${actionId}: ${outstanding.join("; ")}`);
     const next = this.mutate(cursors, (current) => {

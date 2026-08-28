@@ -800,6 +800,49 @@ describe("generated git shim", () => {
   });
 
   /**
+   * The pinned peer read is the fallback for a file the coordinator could not
+   * export. Once the action lists the files, the same read is the expensive
+   * route to bytes already on disk — the repetition this change exists to stop.
+   */
+  it("blocks the pinned peer read only once the action lists the files", () => {
+    const fixture = product();
+    const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
+    const head = git(clone, "rev-parse", "HEAD");
+    const tracked = git(clone, "ls-tree", "--name-only", "HEAD").split("\n")[0] as string;
+    const pinned = ["show", `${head}:${tracked}`];
+
+    const configPath = git(clone, "config", "--local", "--get", "coord.workspaceConfig");
+    const actionDir = join(dirname(configPath), "issue-42", "agents", "claude");
+    mkdirSync(actionDir, { recursive: true });
+    const action = join(actionDir, "action.md");
+
+    // No action yet, and an action without the section: the fallback stands.
+    expect(runGit(clone, clone, pinned).status).toBe(0);
+    writeFileSync(action, "body\n\n## Repo context\n\n\"docs/repo-map.md\"\n");
+    expect(runGit(clone, clone, pinned).status).toBe(0);
+
+    // The coordinator exported the files; the expensive route closes.
+    writeFileSync(action, "body\n\n## Bound input files\n\n- plan from codex: \"/tmp/x\"\n");
+    expect(runGit(clone, clone, pinned).status).toBe(2);
+
+    // But `<rev>:<path>` against this clone's own history is an ordinary file
+    // read, not peer reconnaissance, and a product's tooling makes it — this
+    // repository's own language test reads HEAD:AGENTS.md that way.
+    expect(runGit(clone, clone, ["show", `HEAD:${tracked}`]).status).toBe(0);
+
+    // A partial export keeps the fallback open for what is missing.
+    writeFileSync(
+      action,
+      "body\n\n## Bound input files\n\nNot every bound input could be exported; `git show <sha>:<path>` remains available for the rest.\n\n- plan from codex: \"/tmp/x\"\n"
+    );
+    expect(runGit(clone, clone, pinned).status).toBe(0);
+
+    // Manual mode and the delegate guard are unaffected either way.
+    expect(runGit(clone, clone, pinned, { COORD_ISSUE: "" }).status).toBe(0);
+    expect(runGit(clone, clone, pinned, { COORD_GIT_DELEGATE: "1" }).status).toBe(0);
+  });
+
+  /**
    * Unlike the launcher, which may carry owner customisation, the shim is
    * coordinator-owned policy: a clone left holding an older copy keeps
    * enforcing rules this install has already withdrawn.

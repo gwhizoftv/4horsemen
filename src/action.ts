@@ -43,6 +43,15 @@ const shaPattern = /^[0-9a-f]{40}$/;
  */
 const encodePath = (path: string): string => JSON.stringify(path);
 
+/**
+ * Marks an action whose bound inputs were only partly exported. The generated
+ * git shim greps for this exact line and keeps `git show <sha>:<path>` allowed
+ * when it is present, so the documented fallback survives a degraded mirror.
+ * Changing the wording means changing `coord_action_lists_files` too.
+ */
+export const INCOMPLETE_MATERIALIZATION_NOTE =
+  "Not every bound input could be exported; `git show <sha>:<path>` remains available for the rest.";
+
 const PATH_ENCODING_NOTE =
   "Paths are JSON-encoded strings, one per line, relative to the repository root.";
 
@@ -103,11 +112,19 @@ const boundInputFilesSection = (materialized: MaterializedInputs | undefined): s
   if (lines.length === 0) return "";
   const manifest =
     materialized.manifestPath === null ? "" : `\n\nManifest: ${encodePath(materialized.manifestPath)}`;
+  // Said in the action because the shim reads it: once every bound input is on
+  // disk, the pinned `git show` is the expensive route to the same bytes and is
+  // refused. When something could not be exported, this line keeps that
+  // fallback open for the input that is missing.
+  const partial =
+    materialized.omitted.length === 0
+      ? ""
+      : `\n\n${INCOMPLETE_MATERIALIZATION_NOTE}`;
   return (
     `\n\n## Bound input files\n\n` +
     `Read these paths directly instead of fetching peer commits. Each file is an ` +
     `exact copy of the cited pin, and each worktree is a complete checkout at it. ` +
-    `${PATH_ENCODING_NOTE.replace("relative to the repository root", "absolute")}${manifest}\n\n` +
+    `${PATH_ENCODING_NOTE.replace("relative to the repository root", "absolute")}${manifest}${partial}\n\n` +
     lines.join("\n")
   );
 };
