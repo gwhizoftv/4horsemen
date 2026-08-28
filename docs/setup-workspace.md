@@ -102,7 +102,7 @@ coord install \
 | --- | --- |
 | 0 | Optional bootstrap/build of the coordination install |
 | 1 | Preflight and containment (product ⊄ coord-root, clone root ⊄ product, …) |
-| 2 | Create missing `<product>-<agent>` clones; adopt only a worktree of this product; fast-forward a clean one; **never reset one** |
+| 2 | Create missing `<product>-<agent>` clones from the product **origin** URL (not the local product worktree); adopt only a worktree of this product; fast-forward a clean one; **never reset one** |
 | 3 | Write `start-<agent>.sh`; add the managed block to each clone's `.git/info/exclude` |
 | 4 | Record `consensus.*`, `coord.installRoot`, `coord.cliEntry`, `coord.workspaceConfig` in each clone |
 | 5 | Install fail-closed shims into each agent clone's `.git/hooks/` |

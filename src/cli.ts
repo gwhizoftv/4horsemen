@@ -162,6 +162,7 @@ const booleanFlags: Record<string, readonly string[]> = {
   install: ["write-product", "vendor", "bootstrap-coordination", "dry-run"],
   uninstall: ["delete-clones", "wipe-runtime", "delete-coordination", "force", "dry-run"],
   "wipe-issue": ["force", "dry-run", "delete-evidence"],
+  "reset-clones": ["force", "dry-run"],
   detach: ["dry-run"]
 };
 
@@ -234,6 +235,7 @@ Usage:
   coord detach <issue> [--product <path> | --coord-root <path>] [--dry-run]
   coord detach manual [--product <path> | --config <path> --coord-root <path>] [--dry-run]
   coord wipe-issue <issue> [--product <path> | --config <path> --coord-root <path>] [--force] [--dry-run] [--delete-evidence]
+  coord reset-clones <issue> [--product <path> | --config <path> --coord-root <path>] [--force] [--dry-run]
 
 Called by the agent-clone hooks, not by operators:
   coord hook-verify --clone <path> --phase <precommit|prepush>
@@ -258,13 +260,18 @@ window (no Ctrl-b n). \`coord attach N\` re-opens them while the coordinator is
 already running. \`coord detach N\` closes those Terminal windows and kills the
 issue tmux sessions without wiping runtime or branches. A completed \`coord N\` / \`coord run\` does the
 same teardown automatically, then discards leftover WIP only from matching
-issue-N agent branches and checks eligible clones out at origin/base. \`coord uninstall\` also tears down owner
+issue-N agent branches and checks eligible clones out at origin/base. If any
+clone cannot be made base-ready, the command exits non-zero and prints
+per-clone remediation — do not run \`git checkout\` by hand; use
+\`coord reset-clones N\` (keeps analytics runtime). \`coord uninstall\` also tears down owner
 tmux/Terminals for the workspace agents. \`coord wipe-issue N\` resets agent clones,
 deletes origin issue-N agent/*-final branches plus leftover tracking refs (keeping
 product-local issue branches that have owner commits or uncommitted work, and
 keeping \`issue-N/coordinator-evidence\` unless \`--delete-evidence\`), removes the
 issue runtime and completion mailbox, tears down UI, and leaves the GitHub issue
-open. The analytics command can report completed runtime format 2 and 3 state read-only;
+open. \`coord reset-clones N\` only makes agent clones base-ready (lift overlay,
+checkout origin/base, restore overlay) without deleting \`coord-runtime/issue-N\`.
+The analytics command can report completed runtime format 2 and 3 state read-only;
 all control-plane uses of those formats must be wiped and restarted (format 4).
 
 \`coord manual\` opens or repairs one workspace-scoped harness per configured
@@ -753,9 +760,9 @@ const defaultManualUi = async (input: {
   return tmux.openOwnerAgentClients("manual", input.agents, { onlyMissing: true });
 };
 
-const detachCompletedIssue = async (paths: IssueRuntimePaths, io: CliIo): Promise<void> => {
+const detachCompletedIssue = async (paths: IssueRuntimePaths, io: CliIo): Promise<number> => {
   const cursors = readCursorsState(paths);
-  if (!cursors.completed) return;
+  if (!cursors.completed) return 0;
   const start = readStartState(paths);
   const outcome = await detachIssue({
     issue: start.issue,
@@ -788,7 +795,7 @@ const detachCompletedIssue = async (paths: IssueRuntimePaths, io: CliIo): Promis
   const cleaned = readiness.filter((result) => result.discardedPaths.length > 0).length;
   const checkedOut = readiness.filter((result) => result.action === "checked-out").length;
   const alreadyBase = readiness.filter((result) => result.action === "already-base").length;
-  const refused = readiness.filter((result) => result.action === "refused").length;
+  const refused = readiness.filter((result) => result.action === "refused");
   const skipped = readiness.filter((result) => result.action === "skipped-missing").length;
   io.stdout(
     `Issue ${start.issue} complete: killed ${outcome.killedSessions.length} tmux session(s)` +
@@ -799,8 +806,36 @@ const detachCompletedIssue = async (paths: IssueRuntimePaths, io: CliIo): Promis
   );
   io.stdout(
     `Clone readiness: cleaned ${cleaned}, checked out ${checkedOut}, already base ${alreadyBase}, ` +
-      `refused ${refused}, skipped ${skipped}.\n`
+      `refused ${refused.length}, skipped ${skipped}.\n`
   );
+  if (refused.length === 0) return 0;
+
+  for (const result of refused) {
+    io.stderr(
+      `  refused ${result.agent} (${result.clone}): ${result.reason ?? "readiness refused"}\n`
+    );
+  }
+  io.stderr(
+    `Clone readiness refused for ${refused.length} clone(s). ` +
+      `Do not run git checkout ${start.baseBranch} by hand — the AGENTS.md protocol overlay ` +
+      `(skip-worktree) blocks it. Run: coord reset-clones ${start.issue} --product <path> ` +
+      `(or --config <path> --coord-root <path>).\n`
+  );
+  appendJournal(
+    paths,
+    {
+      type: "clone-readiness-refused",
+      details: {
+        refused: refused.map((result) => ({
+          agent: result.agent,
+          clone: result.clone,
+          reason: result.reason ?? "readiness refused"
+        }))
+      }
+    },
+    new Date().toISOString()
+  );
+  return 1;
 };
 
 export const runCli = async (argv: readonly string[], dependencies: CliDependencies = {}): Promise<number> => {
@@ -1011,8 +1046,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const existing = existingIssueRuntime(resolution, issue);
       const paths = existing ?? (await startIssue(issue, resolution));
       await makeRunLoop(paths).run();
-      await detachCompletedIssue(paths, io);
-      return 0;
+      return await detachCompletedIssue(paths, io);
     }
 
     if (command === "manual") {
@@ -1302,6 +1336,70 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       return 0;
     }
 
+    if (command === "reset-clones") {
+      allowedFlags(parsed, ["product", "config", "coord-root", ...(booleanFlags["reset-clones"] ?? [])]);
+      if (parsed.positionals.length !== 1) throw new Error("reset-clones requires exactly one issue number.");
+      const issue = parseIssue(parsed.positionals[0] as string);
+      const resolution = resolveStart(parsed, io);
+      const force = flagIsSet(parsed, "force");
+      const dryRun = flagIsSet(parsed, "dry-run");
+      const agents = resolution.config.agents.map((agent) => ({
+        id: agent.id,
+        root: resolve(dirname(resolution.configPath), agent.root)
+      }));
+      const readiness = makeAgentClonesBaseReady({
+        agents,
+        issue,
+        branchTemplate: resolution.config.branch,
+        baseBranch: resolution.config.baseBranch,
+        installRoot: resolution.config.coordination?.installRoot ?? null,
+        discardPolicy: force ? "force-wipe" : "finished-issue-only",
+        dryRun,
+        log: io.stdout
+      });
+      const cleaned = readiness.filter((result) => result.discardedPaths.length > 0).length;
+      const checkedOut = readiness.filter((result) => result.action === "checked-out").length;
+      const alreadyBase = readiness.filter((result) => result.action === "already-base").length;
+      const refused = readiness.filter((result) => result.action === "refused");
+      const skipped = readiness.filter((result) => result.action === "skipped-missing").length;
+      io.stdout(
+        `Reset clones for issue ${issue}: cleaned ${cleaned}, checked out ${checkedOut}, ` +
+          `already base ${alreadyBase}, refused ${refused.length}, skipped ${skipped}. ` +
+          "Runtime left intact.\n"
+      );
+      if (refused.length === 0) return 0;
+      for (const result of refused) {
+        io.stderr(
+          `  refused ${result.agent} (${result.clone}): ${result.reason ?? "readiness refused"}\n`
+        );
+      }
+      io.stderr(
+        `Clone readiness refused for ${refused.length} clone(s). ` +
+          `Do not run git checkout ${resolution.config.baseBranch} by hand — the AGENTS.md protocol ` +
+          `overlay (skip-worktree) blocks it. Re-run with --force to discard unrelated dirt, ` +
+          "or commit/stash that work first.\n"
+      );
+      const runtime = existingIssueRuntime(resolution, issue);
+      if (runtime !== null) {
+        appendJournal(
+          runtime,
+          {
+            type: "clone-readiness-refused",
+            details: {
+              command: "reset-clones",
+              refused: refused.map((result) => ({
+                agent: result.agent,
+                clone: result.clone,
+                reason: result.reason ?? "readiness refused"
+              }))
+            }
+          },
+          new Date().toISOString()
+        );
+      }
+      return 1;
+    }
+
     if (command === "run") {
       allowedFlags(parsed, ["issue", "coord-root", "product", "verbose"]);
       if (parsed.positionals.length !== 0) throw new Error("run takes no positional arguments.");
@@ -1314,8 +1412,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           : paths.coordRoot;
       await assertNoManualSession(manualWorkspaceRoot);
       await makeRunLoop(paths).run();
-      await detachCompletedIssue(paths, io);
-      return 0;
+      return await detachCompletedIssue(paths, io);
     }
 
     if (command === "status") {

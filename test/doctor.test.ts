@@ -1,6 +1,7 @@
 import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
 import { DOCTOR_CODES, doctor, renderDoctorReport } from "../src/doctor.js";
 import { install } from "../src/install.js";
 import {
@@ -234,6 +235,23 @@ describe("coord doctor — broken clones and configs", () => {
     const findings = report(fixture).findings;
     expect(findings.map((item) => item.code)).toContain(DOCTOR_CODES.agentsProtocol);
     expect(findings.find((item) => item.class === "agentsProtocol")?.message).toContain("skip-worktree");
+  });
+
+  it("tells the owner to run coord reset-clones when overlay sits on an issue branch", () => {
+    const { fixture, clone } = installed();
+    git(clone, "checkout", "-qb", "issue-9/claude");
+    git(clone, "add", "-f", "--", "AGENTS.md");
+    git(clone, "commit", "-qm", "Claude: track agents");
+    writeCloneAgentsProtocol({
+      clone,
+      installRoot: repoRoot,
+      options: { dryRun: false, log: () => undefined, changes: [] }
+    });
+    const findings = report(fixture).findings;
+    const protocol = findings.find((item) => item.class === "agentsProtocol");
+    expect(protocol?.message).toContain("issue-9/claude");
+    expect(protocol?.remediation).toContain("coord reset-clones 9");
+    expect(protocol?.remediation).toContain("Do not run git checkout main");
   });
 
   it("reports a clone redirected at a different install root", () => {

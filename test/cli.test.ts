@@ -865,14 +865,23 @@ describe("CLI", () => {
 
     writeFileSync(join(clone, "owner.txt"), "keep\n");
     const refusedOutput: string[] = [];
+    const refusedErrors: string[] = [];
     expect(
       await runCli(["run", "--issue", "1", "--coord-root", fixture.runtime], {
-        io: { stdout: (message) => refusedOutput.push(message) },
+        io: {
+          stdout: (message) => refusedOutput.push(message),
+          stderr: (message) => refusedErrors.push(message)
+        },
         makeRunLoop: fakeLoop
       })
-    ).toBe(0);
+    ).toBe(1);
     expect(refusedOutput.join("")).toContain("refused 1");
+    expect(refusedErrors.join("")).toContain("refused codex");
+    expect(refusedErrors.join("")).toContain("coord reset-clones 1");
+    expect(refusedErrors.join("")).toContain("Do not run git checkout main by hand");
     expect(readFileSync(join(clone, "owner.txt"), "utf8")).toBe("keep\n");
+    const journal = readFileSync(paths.journal, "utf8");
+    expect(journal).toContain("clone-readiness-refused");
 
     rmSync(join(clone, "owner.txt"));
     execFileSync("git", ["checkout", "-q", "issue-1/codex"], { cwd: clone });
@@ -883,16 +892,66 @@ describe("CLI", () => {
       { mode: 0o700 }
     );
     const failedCheckoutOutput: string[] = [];
+    const failedCheckoutErrors: string[] = [];
     expect(
       await runCli(["run", "--issue", "1", "--coord-root", fixture.runtime], {
-        io: { stdout: (message) => failedCheckoutOutput.push(message) },
+        io: {
+          stdout: (message) => failedCheckoutOutput.push(message),
+          stderr: (message) => failedCheckoutErrors.push(message)
+        },
         makeRunLoop: fakeLoop
       })
-    ).toBe(0);
+    ).toBe(1);
     expect(failedCheckoutOutput.join("")).toContain("discarded 1 path(s)");
     expect(failedCheckoutOutput.join("")).toContain("Clone readiness: cleaned 1");
     expect(failedCheckoutOutput.join("")).toContain("refused 1");
+    expect(failedCheckoutErrors.join("")).toContain("coord reset-clones 1");
     expect(existsSync(join(clone, "late-wip.txt"))).toBe(false);
+    expect(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: clone, encoding: "utf8" }).trim()).toBe(
+      "main"
+    );
+  });
+
+  it("reset-clones makes agent clones base-ready without wiping runtime", async () => {
+    const fixture = setup();
+    const product = join(fixture.root, "product");
+    const origin = join(fixture.root, "origin.git");
+    const clone = join(fixture.root, "clone-codex");
+    rmSync(clone, { recursive: true, force: true });
+    mkdirSync(product);
+    execFileSync("git", ["init", "-q", "--initial-branch=main"], { cwd: product });
+    execFileSync("git", ["config", "user.name", "Fixture"], { cwd: product });
+    execFileSync("git", ["config", "user.email", "fixture@example.com"], { cwd: product });
+    writeFileSync(join(product, ".gitignore"), "/start-*.sh\n");
+    writeFileSync(join(product, "AGENTS.md"), "# product\n");
+    writeFileSync(join(product, "base.txt"), "base\n");
+    execFileSync("git", ["add", "."], { cwd: product });
+    execFileSync("git", ["commit", "-qm", "initial"], { cwd: product });
+    execFileSync("git", ["init", "-q", "--bare", origin]);
+    execFileSync("git", ["remote", "add", "origin", origin], { cwd: product });
+    execFileSync("git", ["push", "-q", "origin", "main"], { cwd: product });
+    execFileSync("git", ["clone", "-q", origin, clone]);
+    execFileSync("git", ["config", "user.name", "Fixture"], { cwd: clone });
+    execFileSync("git", ["config", "user.email", "fixture@example.com"], { cwd: clone });
+    writeFileSync(join(clone, "start-codex.sh"), "#!/usr/bin/env bash\n", { mode: 0o700 });
+
+    await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      processRunner: successfulStartGit,
+      makeRunLoop: fakeLoop
+    });
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    writeFileSync(join(clone, "wip.txt"), "leftover\n");
+    const output: string[] = [];
+    expect(
+      await runCli(["reset-clones", "1", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        io: { stdout: (message) => output.push(message) },
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Reset clones for issue 1");
+    expect(output.join("")).toContain("Runtime left intact");
+    expect(existsSync(paths.issueRoot)).toBe(true);
+    expect(existsSync(join(clone, "wip.txt"))).toBe(false);
     expect(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: clone, encoding: "utf8" }).trim()).toBe(
       "main"
     );

@@ -323,23 +323,19 @@ type CloneBaseTarget =
   | { kind: "target"; sha: string; ref: string; synced: boolean; fallbackReason?: string }
   | { kind: "refuse"; reason: string };
 
-const isAncestor = (clone: string, ancestor: string, descendant: string): boolean =>
-  git(clone, "merge-base", "--is-ancestor", ancestor, descendant).exitCode === 0;
-
 /**
  * Resolve where one clone can safely land before any worktree discard begins.
  *
- * A fresh origin tip is preferred. A local base carrying commits outside that
- * tip is owner/unknown history, so normal completion and non-force wipe refuse
- * rather than orphaning it; explicit force-wipe retains the old override. When
+ * A fresh origin tip is preferred. Agent clones must not keep unpushed local
+ * base history: when origin is reachable, checkout always targets
+ * `origin/<base>` (resetting a diverged local base via `checkout -B`). When
  * origin cannot be fetched, the local base is an auditable offline fallback so
  * a transient network failure does not recreate the leftover-WIP dead end this
  * cleanup exists to remove.
  */
 const resolveCloneBaseTarget = (
   snapshot: CloneReadinessSnapshot,
-  baseBranch: string,
-  discardPolicy: CloneReadinessDiscardPolicy
+  baseBranch: string
 ): CloneBaseTarget => {
   const fetched = git(
     snapshot.clone,
@@ -352,21 +348,12 @@ const resolveCloneBaseTarget = (
   const localBase = git(snapshot.clone, "rev-parse", "--verify", `refs/heads/${baseBranch}^{commit}`);
 
   if (fetched.exitCode === 0 && originBase.exitCode === 0) {
-    const originSha = originBase.stdout.trim();
-    if (
-      discardPolicy !== "force-wipe" &&
-      localBase.exitCode === 0 &&
-      !isAncestor(snapshot.clone, localBase.stdout.trim(), originSha)
-    ) {
-      return {
-        kind: "refuse",
-        reason:
-          `local ${baseBranch} at ${localBase.stdout.trim().slice(0, 12)} contains commits not in ` +
-          `origin/${baseBranch} at ${originSha.slice(0, 12)}; publish or move that local base, ` +
-          "or use wipe-issue --force. Nothing has been changed."
-      };
-    }
-    return { kind: "target", sha: originSha, ref: `origin/${baseBranch}`, synced: true };
+    return {
+      kind: "target",
+      sha: originBase.stdout.trim(),
+      ref: `origin/${baseBranch}`,
+      synced: true
+    };
   }
 
   const fetchFailure =
@@ -438,7 +425,7 @@ export const makeAgentClonesBaseReady = (input: {
   if (!dryRun) {
     for (const snapshot of snapshots) {
       if (!snapshot.available || ineligible.includes(snapshot)) continue;
-      baseTargets.set(snapshot.clone, resolveCloneBaseTarget(snapshot, input.baseBranch, discardPolicy));
+      baseTargets.set(snapshot.clone, resolveCloneBaseTarget(snapshot, input.baseBranch));
     }
     if (input.batchPolicy === "refuse-all") {
       const baseRefusals = snapshots.filter(
@@ -497,7 +484,9 @@ export const makeAgentClonesBaseReady = (input: {
     ) {
       const reason =
         `HEAD is ${snapshot.head || "detached"}, not ${snapshot.branch}; ` +
-        "commit/stash the unrelated work or use wipe-issue --force. Nothing has been changed.";
+        "commit/stash the unrelated work, or run coord reset-clones --force " +
+        `(or wipe-issue --force). Do not run git checkout ${input.baseBranch} by hand — ` +
+        "AGENTS.md skip-worktree blocks it. Nothing has been changed.";
       log(`refused clone readiness for ${snapshot.agent}: ${reason}\n`);
       results.push(refusedResult(snapshot, reason));
       continue;
@@ -534,6 +523,19 @@ export const makeAgentClonesBaseReady = (input: {
         `${snapshot.agent} using fallback ${baseTarget.ref} at ${baseTarget.sha.slice(0, 12)} ` +
           `because ${baseTarget.fallbackReason ?? `origin/${input.baseBranch} is unavailable`}\n`
       );
+    } else {
+      const localBase = git(snapshot.clone, "rev-parse", "--verify", `refs/heads/${input.baseBranch}^{commit}`);
+      if (
+        localBase.exitCode === 0 &&
+        localBase.stdout.trim() !== baseTarget.sha &&
+        git(snapshot.clone, "merge-base", "--is-ancestor", localBase.stdout.trim(), baseTarget.sha).exitCode !== 0
+      ) {
+        log(
+          `${snapshot.agent} resetting diverged local ${input.baseBranch} ` +
+            `(${localBase.stdout.trim().slice(0, 12)}) to ${baseTarget.ref} ` +
+            `(${baseTarget.sha.slice(0, 12)})\n`
+        );
+      }
     }
     const captured = captureCloneAgentsProtocol(snapshot.clone);
     let protocol: ProtocolRestoreOutcome = "bit-only";

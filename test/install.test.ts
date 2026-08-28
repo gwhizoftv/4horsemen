@@ -139,6 +139,18 @@ describe("coord install — two-mode footprint", () => {
     expect(existsSync(join(clone, "CLAUDE.md"))).toBe(true);
     expect(readFileSync(join(clone, "CLAUDE.md"), "utf8")).toContain("@AGENTS.md");
   });
+
+  it("seeds new agent clones from origin, not diverged local product main", () => {
+    const fixture = product();
+    writeFileSync(join(fixture.productRoot, "local-only.txt"), "should not seed clones\n");
+    git(fixture.productRoot, "add", "local-only.txt");
+    git(fixture.productRoot, "commit", "-qm", "local-only product commit");
+    const result = installOnce(fixture);
+    const clone = result.clones[0] as string;
+    expect(existsSync(join(clone, "local-only.txt"))).toBe(false);
+    expect(git(clone, "rev-parse", "HEAD")).toBe(git(fixture.originPath, "rev-parse", "refs/heads/main"));
+    expect(git(clone, "remote", "get-url", "origin")).toBe(fixture.originPath);
+  });
 });
 
 describe("coord install — idempotence", () => {
