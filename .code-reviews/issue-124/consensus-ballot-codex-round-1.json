@@ -1,0 +1,14 @@
+{
+  "actionId": "05fe001f-6e20-42fa-874b-bf0aba94bcb4",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "dec5ba6bab99dbc0aaadfd1ee294a6db441c92c444cc239340816c5e85856ec7",
+  "issue": 124,
+  "issueSessionId": "issue-124:5bfc025122672b78a4990a97e7992e8fc53e1871",
+  "protocolVersion": 2,
+  "rationale": "The revision materially closes the selected implementation's correctness gaps by gating duplicate pinned show after complete export, validating packet bytes and worktree HEADs, preserving materialized paths on reissue, and adding focused regression tests.",
+  "responseSha256": "da8d83239375c4a9744f218e1380397dbc66e0ed3e010011260e6d81340f9ffc",
+  "revisionCommitSha": "3600be3b49b28ed2b5b13b17f8aca808982819ae",
+  "round": 1
+}

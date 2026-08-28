@@ -1,0 +1,14 @@
+{
+  "actionId": "8b2697be-198b-4e65-badf-a64885db4052",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "dec5ba6bab99dbc0aaadfd1ee294a6db441c92c444cc239340816c5e85856ec7",
+  "issue": 124,
+  "issueSessionId": "issue-124:5bfc025122672b78a4990a97e7992e8fc53e1871",
+  "protocolVersion": 2,
+  "rationale": "Approve: the revision closes all four comparison findings with tests — reissue now carries the materialized paths, packet reuse validates identity and every entry digest rather than mere path existence, worktree reuse verifies HEAD against the full pin, and the pinned peer read closes once the action lists the files while staying open on a partial export — and it fixed a round-one defect of mine where the shim refused `git show HEAD:<path>`, a read this repo's own language test makes; check:fast is green at 532 tests, e2e at 2, the full suite passes with the shim on PATH, and I re-verified both teardown paths still work with the read-only worktree files this round added; the one residual, recorded rather than re-rounded, is that INCOMPLETE_MATERIALIZATION_NOTE in src/action.ts and the grep in scripts/lib/launcher.sh are asserted only as duplicated literals, so rewording it would leave tests green while silently closing that fallback.",
+  "responseSha256": "13927bcf81321808902b3cc6f1b13f51fb42f658fb7d10adf6d9e36c56f8a31b",
+  "revisionCommitSha": "3600be3b49b28ed2b5b13b17f8aca808982819ae",
+  "round": 1
+}

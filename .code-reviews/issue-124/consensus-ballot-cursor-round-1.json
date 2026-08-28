@@ -1,0 +1,14 @@
+{
+  "actionId": "68884590-f42a-48aa-9bb0-395132386dde",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "dec5ba6bab99dbc0aaadfd1ee294a6db441c92c444cc239340816c5e85856ec7",
+  "issue": 124,
+  "issueSessionId": "issue-124:5bfc025122672b78a4990a97e7992e8fc53e1871",
+  "protocolVersion": 2,
+  "rationale": "Revision 3600be3b49b28ed2b5b13b17f8aca808982819ae tightens packet reuse with content-hash validation, corrects git show gating, and adds focused runLoop/install tests while staying within the approved product paths.",
+  "responseSha256": "ce653b21c8d989f21a70b4de6af746ae271f8a4e5c250264726a740ff81eb41a",
+  "revisionCommitSha": "3600be3b49b28ed2b5b13b17f8aca808982819ae",
+  "round": 1
+}
