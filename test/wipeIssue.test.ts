@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,6 +33,23 @@ const initClone = (path: string, origin: string): void => {
   git(path, "clone", "-q", origin, path);
   git(path, "config", "user.name", "Fixture");
   git(path, "config", "user.email", "fixture@example.com");
+};
+
+/**
+ * Git for the mirror, with the ambient repository redirectors scrubbed.
+ *
+ * The suite can run inside a Git hook — the pre-commit check does exactly that —
+ * and a hook exports `GIT_DIR` and `GIT_INDEX_FILE` for the repository being
+ * committed. Inherited, they redirect `worktree add` at that index and it fails
+ * with `.git/index: index file open failed`. `src/gitExec.ts` scrubs the same
+ * variables for the same reason; this is the fixture-side equivalent.
+ */
+const mirrorGit = (cwd: string, ...args: string[]): string => {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("GIT_")) delete env[key];
+  }
+  return execFileSync("git", args, { cwd, encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] }).trim();
 };
 
 describe("wipeIssue", () => {
@@ -549,5 +567,63 @@ describe("wipeIssue", () => {
     expect(git(claude, "rev-parse", "HEAD")).toBe(beforeHead);
     expect(git(claude, "status", "--porcelain")).toBe(beforeStatus);
     expect(readFileSync(runtimeSentinel, "utf8")).toBe("keep\n");
+  });
+  /**
+   * A materialized worktree is registered in the bare mirror. Deleting the
+   * runtime tree without unregistering it first leaves a dangling entry, and a
+   * later `worktree add` on a reused path then fails against a directory that
+   * is not there. `git worktree prune` cannot fix it afterwards either: prune
+   * only collects registrations whose directory is already gone, so running it
+   * before the delete collects nothing.
+   */
+  it("unregisters materialized worktrees before deleting the runtime", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "coord-wipe-worktrees-"));
+    roots.push(workspace);
+    const origin = join(workspace, "origin.git");
+    const product = join(workspace, "app");
+    const claude = join(workspace, "app-claude");
+    const coordRoot = join(workspace, "runtime");
+    mkdirSync(coordRoot, { recursive: true });
+    mkdirSync(product, { recursive: true });
+    git(product, "init", "-q", "--initial-branch=main");
+    git(product, "config", "user.name", "Fixture");
+    git(product, "config", "user.email", "fixture@example.com");
+    writeFileSync(join(product, "README.md"), "# app\n");
+    git(product, "add", "README.md");
+    git(product, "commit", "-qm", "init");
+    git(product, "clone", "--bare", "-q", product, origin);
+    git(product, "remote", "add", "origin", origin);
+    git(product, "push", "-q", "-u", "origin", "main");
+    initClone(claude, origin);
+
+    const mirror = join(coordRoot, "mirror.git");
+    mirrorGit(workspace, "clone", "--bare", "-q", origin, mirror);
+    const pin = mirrorGit(mirror, "rev-parse", "HEAD");
+    const worktree = join(coordRoot, "issue-4", "worktrees", `claude-${pin.slice(0, 8)}`);
+    mkdirSync(join(coordRoot, "issue-4", "worktrees"), { recursive: true });
+    mirrorGit(mirror, "worktree", "add", "--detach", worktree, pin);
+    expect(mirrorGit(mirror, "worktree", "list")).toContain(worktree);
+
+    const configPath = join(coordRoot, "config.json");
+    const config = coordinatorConfigSchema.parse({
+      project: "app",
+      origin,
+      agents: [{ id: "claude", root: claude, launcher: "start-claude.sh", delivery: "both" }],
+      branch: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      profile: "solo",
+      maxRevisionRounds: 3,
+      prPolicy: "owner-only",
+      digestPaths: [],
+      pollIntervalMs: 1000,
+      checks: [{ name: "true", argv: ["true"] }],
+      coordination: stamp(workspace, product)
+    });
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    await wipeIssue({ issue: 4, config, configPath, coordRoot, terminalCloser: null, log: () => undefined });
+
+    expect(existsSync(worktree)).toBe(false);
+    expect(mirrorGit(mirror, "worktree", "list")).not.toContain(worktree);
   });
 });

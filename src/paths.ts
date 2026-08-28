@@ -257,6 +257,14 @@ export type IssueRuntimePaths = {
   journal: string;
   issueSnapshot: string;
   agents: string;
+  /**
+   * Coordination artifacts the current action binds, exported from the mirror
+   * so agents read files instead of fetching peer blobs. Content-addressed and
+   * immutable once written.
+   */
+  issueInputsRoot: string;
+  /** Detached worktrees at bound product pins, one per distinct pin. */
+  issueWorktreesRoot: string;
   /** Issue number, retained because the mailbox path is derived from it. */
   issue: number;
   /** Root of the completion mailbox tree; never inside `coordRoot`. */
@@ -301,6 +309,8 @@ export const issueRuntimePaths = (
     journal: containedPath(issueRoot, "journal.jsonl"),
     issueSnapshot: containedPath(issueRoot, "github-issue.json"),
     agents: containedPath(issueRoot, "agents"),
+    issueInputsRoot: containedPath(issueRoot, "inputs"),
+    issueWorktreesRoot: containedPath(issueRoot, "worktrees"),
     issue,
     completesRoot: mailbox,
     completesIssueRoot: containedPath(mailbox, `issue-${issue}`)
@@ -372,6 +382,29 @@ export const evidenceWorktreePath = (paths: IssueRuntimePaths, label: string): s
   return containedPath(paths.issueRoot, "evidence-worktrees", label);
 };
 
+/**
+ * One immutable packet of bound coordination artifacts, named by the hash of
+ * the input set it holds. Content addressing is what makes re-preparing the
+ * same action a no-op rather than a rewrite.
+ */
+export const inputPacketPath = (paths: IssueRuntimePaths, inputSetHash: string): string => {
+  if (!/^[0-9a-f]{64}$/.test(inputSetHash)) {
+    throw new PathSafetyError(`Invalid input set hash: ${inputSetHash}`);
+  }
+  return containedPath(paths.issueInputsRoot, inputSetHash);
+};
+
+/**
+ * One detached worktree at a bound product pin. The directory label is short
+ * for legibility, but the full SHA is what the manifest and the action cite;
+ * callers must verify the checked-out commit rather than trusting the label.
+ */
+export const inputWorktreePath = (paths: IssueRuntimePaths, agent: string, sha: string): string => {
+  if (!agentPattern.test(agent)) throw new PathSafetyError(`Invalid agent id: ${agent}`);
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new PathSafetyError(`Invalid pin for a worktree path: ${sha}`);
+  return containedPath(paths.issueWorktreesRoot, `${agent}-${sha.slice(0, 8)}`);
+};
+
 export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly string[]): void => {
   assertNoSymlink(paths.coordRoot, paths.issueRoot);
   mkdirSync(paths.issueRoot, { recursive: true, mode: 0o700 });
@@ -383,6 +416,14 @@ export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly st
   assertNoSymlink(paths.coordRoot, acceptedRoot);
   mkdirSync(acceptedRoot, { recursive: true, mode: 0o700 });
   assertNoSymlink(paths.coordRoot, acceptedRoot);
+  // Created up front, empty, because the launcher resolves its grants once when
+  // the harness starts and a directory that appears later can never reach the
+  // running process.
+  for (const materialized of [paths.issueInputsRoot, paths.issueWorktreesRoot]) {
+    assertNoSymlink(paths.coordRoot, materialized);
+    mkdirSync(materialized, { recursive: true, mode: 0o700 });
+    assertNoSymlink(paths.coordRoot, materialized);
+  }
   assertNoSymlink(paths.completesRoot, paths.completesIssueRoot);
   mkdirSync(paths.completesIssueRoot, { recursive: true, mode: 0o700 });
   assertNoSymlink(paths.completesRoot, paths.completesIssueRoot);

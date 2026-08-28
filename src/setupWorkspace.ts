@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
@@ -484,6 +484,104 @@ export const writeAgentLauncher = (input: {
     return;
   }
   act(input.options, `write launcher ${target}`, () => {
+    writeFileSync(target, rendered, "utf8");
+    chmodSync(target, 0o755);
+  });
+};
+
+/** Where the generated git shim lives inside a clone; untracked, coord-managed. */
+export const GIT_WRAPPER_RELATIVE_PATH = ".coord/bin/git";
+
+/** Marker line that identifies a shim this install owns. */
+export const GIT_WRAPPER_MARKER = "# coord-managed-git-wrapper";
+
+/**
+ * Resolve the real `git` from a PATH with every `.coord/bin` entry removed.
+ *
+ * The shim shadows `git` by name, so resolving through the live PATH is how it
+ * would come to invoke itself. Resolving once here, and embedding an absolute
+ * path, means the shim can never re-enter no matter what PATH it inherits.
+ */
+let realGitCache: string | null = null;
+
+export const resolveRealGit = (): string => {
+  // Resolved once per process: the answer cannot change under us, and an
+  // installer wiring four clones would otherwise spawn four identical probes.
+  if (realGitCache !== null) return realGitCache;
+  const path = (process.env.PATH ?? "")
+    .split(":")
+    .filter((entry) => entry !== "" && !entry.endsWith("/.coord/bin") && basename(dirname(entry)) !== ".coord")
+    .join(":");
+  const found = spawnSync("/usr/bin/env", ["sh", "-c", "command -v git"], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: path }
+  });
+  const resolved = (found.stdout ?? "").trim();
+  if ((found.status ?? 1) !== 0 || resolved === "" || !resolved.startsWith("/")) {
+    throw new Error("Cannot resolve an absolute path to git; the git shim would have nothing to delegate to.");
+  }
+  realGitCache = resolved;
+  return resolved;
+};
+
+/**
+ * Write `.coord/bin/git` through the same shell library that renders the
+ * launcher, for the same reason: `githooks/post-merge` regenerates it too, and
+ * two copies of one template drifted within a day the last time this project
+ * kept two.
+ *
+ * Unlike the launcher, this file is replaced whenever it differs from the
+ * canonical render. The launcher carries per-clone customisation an owner may
+ * have made; the shim is coordinator-owned policy, and a clone that kept an
+ * older copy would keep enforcing withdrawn rules after an upgrade. Only a file
+ * carrying the managed marker is replaced — foreign bytes are reported, never
+ * silently overwritten.
+ */
+export const writeGitWrapper = (input: {
+  installRoot: string;
+  clone: string;
+  options: EffectOptions;
+}): void => {
+  const library = join(input.installRoot, "scripts", "lib", "launcher.sh");
+  if (!existsSync(library)) {
+    throw new Error(`Launcher template ${library} is missing from the coordination install.`);
+  }
+  const target = join(input.clone, GIT_WRAPPER_RELATIVE_PATH);
+  const cloneRoot = realpathSync(input.clone);
+  const realGit = resolveRealGit();
+
+  // Staged outside the worktree, as the launcher is: rendering inside it makes
+  // `--dry-run` write a file, and a crash between render and compare leaves a
+  // dotfile behind.
+  const stagingDir = mkdtempSync(join(tmpdir(), "coord-gitwrapper-"));
+  const staging = join(stagingDir, "git");
+  const render = spawnSync(
+    "bash",
+    ["-c", '. "$1"; write_git_wrapper "$2" "$3" "$4"', "_", library, staging, realGit, cloneRoot],
+    { encoding: "utf8" }
+  );
+  if ((render.status ?? 1) !== 0) {
+    rmSync(stagingDir, { recursive: true, force: true });
+    throw new Error(`Cannot render the git shim from ${library}. ${render.stderr ?? ""}`.trim());
+  }
+  const rendered = readFileSync(staging, "utf8");
+  rmSync(stagingDir, { recursive: true, force: true });
+
+  if (existsSync(target)) {
+    const existing = readFileSync(target, "utf8");
+    if (existing === rendered) {
+      input.options.log(`git shim already current at ${target}\n`);
+      return;
+    }
+    if (!existing.includes(GIT_WRAPPER_MARKER)) {
+      input.options.log(
+        `refusing to replace ${target}: it is not a coordination-generated shim; move it aside and re-run\n`
+      );
+      return;
+    }
+  }
+  act(input.options, `write git shim ${target}`, () => {
+    mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
     writeFileSync(target, rendered, "utf8");
     chmodSync(target, 0o755);
   });

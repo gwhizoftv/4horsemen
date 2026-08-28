@@ -189,6 +189,99 @@ describe("advisory action sections", () => {
     expect(parseAction(raw).agent).toBe("codex");
   });
 
+  it("omits the bound-file section when nothing was materialized", () => {
+    const raw = renderAction(order("/external/coord"));
+    expect(raw).not.toContain("## Bound input files");
+    // An empty materialization is the same as none: the heading must not appear
+    // with no paths under it.
+    const empty = renderAction({
+      ...order("/external/coord"),
+      materialized: {
+        inputSetHash: null,
+        packetDir: null,
+        manifestPath: null,
+        entries: [],
+        worktrees: [],
+        omitted: ["plan from cursor: unreadable"]
+      }
+    });
+    expect(empty).not.toContain("## Bound input files");
+    // What could not be exported is an operator concern, not an instruction.
+    expect(empty).not.toContain("unreadable");
+  });
+
+  it("lists materialized files and worktrees as absolute encoded paths", () => {
+    const raw = renderAction({
+      ...order("/external/coord"),
+      materialized: {
+        inputSetHash: "a".repeat(64),
+        packetDir: `/external/coord/issue-1/inputs/${"a".repeat(64)}`,
+        manifestPath: `/external/coord/issue-1/inputs/${"a".repeat(64)}/manifest.json`,
+        entries: [
+          {
+            kind: "plan",
+            agent: "cursor",
+            commitSha: "6".repeat(40),
+            path: ".plans/issue-1/plan.md",
+            sha256: "b".repeat(64),
+            localPath: `/external/coord/issue-1/inputs/${"a".repeat(64)}/plan-cursor-66666666/.plans/issue-1/plan.md`
+          }
+        ],
+        worktrees: [
+          {
+            kind: "implementation",
+            agent: "claude",
+            commitSha: "7".repeat(40),
+            localPath: "/external/coord/issue-1/worktrees/claude-77777777"
+          }
+        ],
+        omitted: []
+      }
+    });
+    expect(raw).toContain("## Bound input files");
+    // A complete export says nothing about a fallback, which is what tells the
+    // shim the pinned read is now redundant.
+    expect(raw).not.toContain("Not every bound input could be exported");
+    expect(raw).toContain(`plan from cursor (\`${"6".repeat(40)}\`)`);
+    expect(raw).toContain('"/external/coord/issue-1/inputs/');
+    expect(raw).toContain(`implementation worktree from claude (\`${"7".repeat(40)}\`)`);
+    expect(raw).toContain('"/external/coord/issue-1/worktrees/claude-77777777"');
+    expect(raw).toContain('"/external/coord/issue-1/inputs/aaaaaaaa');
+    // The pins stay exactly where they were: the files say where bytes are, not
+    // what is binding.
+    expect(raw).toContain("Use these exact inputs");
+    expect(parseAction(raw).agent).toBe("codex");
+  });
+
+  it("says so when only part of the bound set could be exported", () => {
+    const raw = renderAction({
+      ...order("/external/coord"),
+      materialized: {
+        inputSetHash: "a".repeat(64),
+        packetDir: `/external/coord/issue-1/inputs/${"a".repeat(64)}`,
+        manifestPath: `/external/coord/issue-1/inputs/${"a".repeat(64)}/manifest.json`,
+        entries: [
+          {
+            kind: "plan",
+            agent: "cursor",
+            commitSha: "6".repeat(40),
+            path: ".plans/issue-1/plan.md",
+            sha256: "b".repeat(64),
+            localPath: `/external/coord/issue-1/inputs/${"a".repeat(64)}/plan-cursor-66666666/.plans/issue-1/plan.md`
+          }
+        ],
+        worktrees: [],
+        omitted: ["plan from antigravity: 7777…:.plans/issue-1/plan.md is unreadable"]
+      }
+    });
+    expect(raw).toContain("## Bound input files");
+    // The shim greps for this line and keeps the pinned read open, so the input
+    // that is missing from disk stays reachable through its pin.
+    expect(raw).toContain("Not every bound input could be exported");
+    // What failed is an operator concern; the action never names it.
+    expect(raw).not.toContain("antigravity");
+  });
+
   it("lists changed paths per bound pin and marks a truncated list", () => {
     const raw = renderAction({
       ...order("/external/coord"),

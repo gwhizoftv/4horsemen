@@ -31,7 +31,7 @@ else
   launcher_lib="$lib_dir/launcher.sh"
 fi
 
-if [[ ! -e "$launcher" ]]; then
+if [[ ! -e "$launcher" || ! -e ".coord/bin/git" ]] || grep -qF "# coord-managed-git-wrapper" ".coord/bin/git" 2>/dev/null; then
   if [[ ! -r "$launcher_lib" ]]; then
     echo "Cannot regenerate $launcher: the launcher template $launcher_lib is unreadable." >&2
     echo "  Fix: coord doctor --coord-root <runtime> --product <product>" >&2
@@ -40,12 +40,41 @@ if [[ ! -e "$launcher" ]]; then
 
   # shellcheck source=../scripts/lib/launcher.sh
   . "$launcher_lib"
+fi
 
+if [[ ! -e "$launcher" ]]; then
   if write_launcher "$launcher" "$AGENT_NAME" "$AGENT_LABEL" "$SHARED_BRANCH"; then
     echo "Regenerated $launcher (generated per clone, never tracked)."
   else
     echo "No launch command is defined for agent '$AGENT_NAME'; $launcher was not regenerated." >&2
     echo "  Add one to launcher_command() in $launcher_lib." >&2
+  fi
+fi
+
+# The git shim is refreshed whenever it differs from the template, not only when
+# it is missing. It carries the rules that decide which reads are refused during
+# an automated issue, so a clone left holding an older copy would keep enforcing
+# rules this install has already withdrawn. A file without the managed marker
+# was written by someone else and is reported rather than replaced.
+wrapper=".coord/bin/git"
+if declare -f write_git_wrapper >/dev/null; then
+  if [[ -e "$wrapper" ]] && ! grep -qF "# coord-managed-git-wrapper" "$wrapper"; then
+    echo "Left $wrapper alone: it is not a coordination-generated file." >&2
+  else
+    real_git="$(PATH="$(echo "$PATH" | tr ':' '\n' | grep -v '/\.coord/bin$' | paste -sd: -)" command -v git || true)"
+    if [[ -z "$real_git" ]]; then
+      echo "Cannot regenerate $wrapper: no git found outside .coord/bin." >&2
+    else
+      staged="$(mktemp -d)/git"
+      if write_git_wrapper "$staged" "$real_git" "$(pwd -P)" 2>/dev/null &&
+         ! cmp -s "$staged" "$wrapper" 2>/dev/null; then
+        mkdir -p "$(dirname "$wrapper")"
+        cp "$staged" "$wrapper"
+        chmod +x "$wrapper"
+        echo "Regenerated $wrapper (generated per clone, never tracked)."
+      fi
+      rm -rf "$(dirname "$staged")"
+    fi
   fi
 fi
 

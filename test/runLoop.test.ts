@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,6 +7,11 @@ import { readAction, writeAction } from "../src/action.js";
 import { decideLifecycleNudge, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentResponsePath, agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import {
+  materializeBoundInputs,
+  pruneSupersededWorktrees,
+  worktreeLabelsFor
+} from "../src/materializedInputs.js";
 import {
   buildOrder,
   computeDerivedInputSetHash,
@@ -1669,6 +1674,330 @@ describe("effectful run loop", () => {
     expect(pushes).toBe(0);
     expect(opens).toBe(0);
     expect(readCursorsState(paths).publication.status).toBe("not-required");
+  });
+});
+
+/**
+ * The coordinator already holds every bound artifact in its mirror. Exporting
+ * them once per issue is what lets an agent read a peer's plan or browse a
+ * peer's implementation as ordinary files, instead of each of N agents fetching
+ * and `git show`-ing the same blobs.
+ */
+describe("materialized bound inputs", () => {
+  const documents = (pins: readonly [string, string, string][]) =>
+    pins.map(([agent, commitSha, kind]) => ({
+      agent,
+      commitSha,
+      path: `.plans/issue-1/${kind === "review" ? "review" : "plan"}.md`,
+      kind
+    }));
+
+  const readingMirror = (contents: Record<string, string> = {}) => {
+    const calls: string[] = [];
+    return {
+      calls,
+      readBlob: async (sha: string, path: string) => {
+        calls.push(`${sha}:${path}`);
+        return contents[`${sha}:${path}`] ?? `body of ${sha}:${path}\n`;
+      },
+      materializeWorktree: async () => undefined,
+      removeWorktree: async () => undefined
+    };
+  };
+
+  it("writes one content-addressed packet with a manifest that matches the files", async () => {
+    const { paths } = fixture();
+    const mirror = readingMirror();
+    const inputs = documents([
+      ["claude", "1".repeat(40), "plan"],
+      ["codex", "2".repeat(40), "plan"],
+      ["codex", "3".repeat(40), "review"]
+    ]);
+
+    const result = await materializeBoundInputs({ mirror, paths, inputs });
+
+    expect(result.inputSetHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.packetDir).toBe(join(paths.issueInputsRoot, result.inputSetHash as string));
+    expect(result.entries).toHaveLength(3);
+    expect(result.omitted).toEqual([]);
+
+    for (const entry of result.entries) {
+      // Every path the action will list has to exist, and hold exactly the
+      // bytes the cited pin holds.
+      const onDisk = readFileSync(entry.localPath, "utf8");
+      expect(onDisk).toBe(`body of ${entry.commitSha}:${entry.path}\n`);
+      expect(entry.sha256).toBe(createHash("sha256").update(onDisk).digest("hex"));
+    }
+
+    const manifest = JSON.parse(readFileSync(result.manifestPath as string, "utf8")) as {
+      inputSetHash: string;
+      entries: { commitSha: string; localPath: string; sha256: string }[];
+    };
+    expect(manifest.inputSetHash).toBe(result.inputSetHash);
+    expect(manifest.entries.map((entry) => entry.localPath).sort()).toEqual(
+      result.entries.map((entry) => entry.localPath).sort()
+    );
+  });
+
+  /**
+   * A packet is immutable and named by what it holds, so re-preparing the same
+   * action must cost nothing. Re-reading the blobs would move the very
+   * per-read cost this change removes from the agents onto the coordinator,
+   * once per action rather than once per issue.
+   */
+  it("reuses an existing packet without reading the mirror again", async () => {
+    const { paths } = fixture();
+    const inputs = documents([["claude", "4".repeat(40), "plan"]]);
+
+    const first = readingMirror();
+    const before = await materializeBoundInputs({ mirror: first, paths, inputs });
+    expect(first.calls).toHaveLength(1);
+
+    const second = readingMirror();
+    const after = await materializeBoundInputs({ mirror: second, paths, inputs });
+    expect(second.calls).toEqual([]);
+    expect(after.packetDir).toBe(before.packetDir);
+    expect(after.entries.map((entry) => entry.localPath)).toEqual(
+      before.entries.map((entry) => entry.localPath)
+    );
+  });
+
+  /**
+   * Convenience state must never be able to stall an issue: the action still
+   * cites the pin, and the pinned `git show` fallback still reaches it.
+   */
+  it("omits an unreadable document instead of failing preparation", async () => {
+    const { paths } = fixture();
+    const mirror = {
+      readBlob: async () => null,
+      materializeWorktree: async () => undefined,
+      removeWorktree: async () => undefined
+    };
+    const result = await materializeBoundInputs({
+      mirror,
+      paths,
+      inputs: documents([["claude", "5".repeat(40), "plan"]])
+    });
+    expect(result.entries).toEqual([]);
+    expect(result.omitted).toHaveLength(1);
+    expect(result.omitted[0]).toContain("unreadable");
+  });
+
+  it("materializes one worktree per distinct pin and prunes superseded ones", async () => {
+    const { paths } = fixture();
+    const created: [string, string][] = [];
+    const removed: string[] = [];
+    const shared = "6".repeat(40);
+    const mirror = {
+      readBlob: async () => null,
+      materializeWorktree: async (target: string, sha: string) => {
+        created.push([target, sha]);
+        mkdirSync(target, { recursive: true });
+        writeFileSync(join(target, "marker"), sha);
+      },
+      removeWorktree: async (target: string) => {
+        removed.push(target);
+      }
+    };
+    const pins = [
+      { agent: "claude", commitSha: shared, path: ".signals/x.json", kind: "implementation" },
+      { agent: "codex", commitSha: shared, path: ".signals/y.json", kind: "implementation" },
+      { agent: "codex", commitSha: "7".repeat(40), path: ".signals/z.json", kind: "implementation" }
+    ];
+
+    const result = await materializeBoundInputs({ mirror, paths, inputs: pins });
+
+    // Two distinct pins, three inputs: the shared pin is checked out once.
+    expect(created).toHaveLength(2);
+    expect(created.map(([, sha]) => sha)).toEqual([shared, "7".repeat(40)]);
+    expect(result.worktrees).toHaveLength(2);
+    expect(result.worktrees[0]?.localPath).toBe(join(paths.issueWorktreesRoot, `claude-${shared.slice(0, 8)}`));
+
+    // A later action binding only the second pin retires the first.
+    const keep = worktreeLabelsFor(paths, [pins[2] as (typeof pins)[number]]);
+    const pruned = await pruneSupersededWorktrees({ mirror, paths, keep });
+    expect(pruned).toEqual([join(paths.issueWorktreesRoot, `claude-${shared.slice(0, 8)}`)]);
+    // Unregistered through the mirror before the directory goes: pruning a
+    // registration whose directory still exists collects nothing.
+    expect(removed).toEqual(pruned);
+    expect(existsSync(join(paths.issueWorktreesRoot, `claude-${shared.slice(0, 8)}`))).toBe(false);
+    expect(existsSync(join(paths.issueWorktreesRoot, `codex-${"7".repeat(8)}`))).toBe(true);
+  });
+
+  /**
+   * The wiring, not just the module: an action that names a file must not be
+   * published before that file exists, or the first agent to read it is worse
+   * off than before.
+   */
+  it("publishes an action whose listed bound-input paths already exist", async () => {
+    const { paths } = fixture();
+    const now = "2026-08-11T17:00:00.000Z";
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R3.review", gateId: "gate-3-selection", round: null },
+        accepted: current.activeRoster.map((agent, index) => ({
+          stepId: "R2.plan" as const,
+          agent,
+          round: null,
+          submissionSha: String(index + 1).repeat(40),
+          path: `.plans/issue-1/plan.md`,
+          acceptedAt: now
+        })),
+        agents: Object.fromEntries(
+          current.activeRoster.map((agent) => [
+            agent,
+            { ...current.agents[agent], stepId: "R3.review", status: "idle", actionId: null }
+          ])
+        ),
+        updatedAt: now
+      })
+    );
+
+    const mirror = new BareMirror(paths.mirror, "/origin.git", async (args) => {
+      const command = args[2] ?? "";
+      if (command === "show") {
+        return { exitCode: 0, stdout: Buffer.from(`# plan for ${args[3] ?? ""}\n`), stderr: "" };
+      }
+      if (command === "rev-parse") return { exitCode: 0, stdout: Buffer.from(`${"d".repeat(40)}\n`), stderr: "" };
+      return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+    });
+    await new CoordinatorRunLoop(paths, { mirror, tmux: null }).runTick();
+
+    const body = readFileSync(agentRuntimePaths(paths, "claude").action, "utf8");
+    expect(body).toContain("## Bound input files");
+    const listed = [...body.matchAll(/: "([^"]+)"$/gm)].map((match) => match[1] as string);
+    expect(listed.length).toBeGreaterThan(0);
+    for (const path of listed) {
+      expect(existsSync(path), path).toBe(true);
+      expect(path.startsWith(paths.issueInputsRoot) || path.startsWith(paths.issueWorktreesRoot)).toBe(true);
+    }
+  });
+
+  /**
+   * A rejected artifact is re-issued as the same action with corrections. That
+   * is the worst moment to lose the exported paths: the agent is being asked to
+   * fix something, and the shim still refuses the reads the files replaced.
+   */
+  it("keeps the bound-input paths when an action is re-issued with corrections", async () => {
+    const { paths } = fixture();
+    const now = "2026-08-11T17:00:00.000Z";
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R3.review", gateId: "gate-3-selection", round: null },
+        accepted: current.activeRoster.map((agent, index) => ({
+          stepId: "R2.plan" as const,
+          agent,
+          round: null,
+          submissionSha: String(index + 1).repeat(40),
+          path: ".plans/issue-1/plan.md",
+          acceptedAt: now
+        })),
+        agents: Object.fromEntries(
+          current.activeRoster.map((agent) => [
+            agent,
+            { ...current.agents[agent], stepId: "R3.review", status: "idle", actionId: null }
+          ])
+        ),
+        updatedAt: now
+      })
+    );
+    const mirror = new BareMirror(paths.mirror, "/origin.git", async (args) => {
+      const command = args[2] ?? "";
+      if (command === "show") return { exitCode: 0, stdout: Buffer.from("# a plan\n"), stderr: "" };
+      if (command === "rev-parse") return { exitCode: 0, stdout: Buffer.from(`${"d".repeat(40)}\n`), stderr: "" };
+      return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { mirror, tmux: null });
+    await loop.runTick();
+
+    const actionPath = agentRuntimePaths(paths, "claude").action;
+    const first = readFileSync(actionPath, "utf8");
+    expect(first).toContain("## Bound input files");
+
+    // Force the correction path with a malformed completion marker.
+    writeFileSync(agentRuntimePaths(paths, "claude").complete, "not-a-sha\n");
+    await loop.runTick();
+
+    const reissued = readFileSync(actionPath, "utf8");
+    expect(reissued).toContain("Correct these outstanding items");
+    expect(reissued).toContain("## Bound input files");
+    for (const path of [...reissued.matchAll(/: "([^"]+)"$/gm)].map((match) => match[1] as string)) {
+      expect(existsSync(path), path).toBe(true);
+    }
+  });
+
+  /**
+   * A packet is content-addressed and handed to every agent on the step as
+   * verified peer input. Checking only that a file is present would let one
+   * whose bytes were replaced be served under a pin that still looks right.
+   */
+  it("rebuilds a packet whose recorded digest no longer matches its bytes", async () => {
+    const { paths } = fixture();
+    const inputs = [
+      { agent: "claude", commitSha: "8".repeat(40), path: ".plans/issue-1/plan.md", kind: "plan" }
+    ];
+    const mirror = {
+      readBlob: async () => "the real plan\n",
+      materializeWorktree: async () => undefined,
+      removeWorktree: async () => undefined
+    };
+
+    const first = await materializeBoundInputs({ mirror, paths, inputs });
+    const entry = first.entries[0] as { localPath: string; sha256: string };
+
+    // Tamper: same path, different bytes.
+    chmodSync(entry.localPath, 0o600);
+    writeFileSync(entry.localPath, "substituted\n");
+
+    const second = await materializeBoundInputs({ mirror, paths, inputs });
+    expect(second.omitted.join(" ")).toContain("failed validation and was rebuilt");
+    expect(readFileSync(entry.localPath, "utf8")).toBe("the real plan\n");
+    expect(second.entries[0]?.sha256).toBe(entry.sha256);
+  });
+
+  /**
+   * `<agent>-<sha8>` is not a unique function of the pin. Reusing on the path
+   * alone lets an action cite one commit and point every reader at another
+   * tree, with nothing in the action looking wrong.
+   */
+  it("replaces a worktree whose checkout does not match the bound pin", async () => {
+    const { paths } = fixture();
+    const pin = "9".repeat(40);
+    const created: string[] = [];
+    const removed: string[] = [];
+    const mirror = {
+      readBlob: async () => null,
+      materializeWorktree: async (target: string, sha: string) => {
+        created.push(sha);
+        mkdirSync(target, { recursive: true });
+        execFileSync("git", ["init", "-q", target]);
+        writeFileSync(join(target, "marker"), sha);
+      },
+      removeWorktree: async (target: string) => {
+        removed.push(target);
+      }
+    };
+    const inputs = [{ agent: "claude", commitSha: pin, path: ".signals/x.json", kind: "implementation" }];
+
+    const first = await materializeBoundInputs({ mirror, paths, inputs });
+    const localPath = first.worktrees[0]?.localPath as string;
+    expect(existsSync(localPath)).toBe(true);
+    // The stub tree's HEAD is not the pin, which is exactly the collision shape:
+    // the directory exists and holds the wrong commit.
+    const second = await materializeBoundInputs({ mirror, paths, inputs });
+    expect(removed).toEqual([localPath]);
+    expect(created).toEqual([pin, pin]);
+    expect(second.worktrees[0]?.localPath).toBe(localPath);
+  });
+
+  it("leaves nothing to materialize for a step that binds no artifacts", async () => {
+    const { paths } = fixture();
+    const mirror = readingMirror();
+    const result = await materializeBoundInputs({ mirror, paths, inputs: [] });
+    expect(result).toMatchObject({ inputSetHash: null, packetDir: null, entries: [], worktrees: [] });
+    expect(mirror.calls).toEqual([]);
   });
 });
 

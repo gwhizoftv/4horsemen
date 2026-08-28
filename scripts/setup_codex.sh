@@ -102,23 +102,28 @@ cat > "$CLONE_DIR/.codex/rules/git.rules" <<'EOF'
 prefix_rule(pattern=["git", "add"], decision="allow")
 prefix_rule(pattern=["git", "fetch"], decision="allow")
 prefix_rule(pattern=["git", "checkout"], decision="allow")
-prefix_rule(pattern=["git", "status", "--short"], decision="allow")
 prefix_rule(pattern=["git", "branch", "--show-current"], decision="allow")
-prefix_rule(pattern=["git", "diff"], decision="allow")
 prefix_rule(pattern=["git", "log"], decision="allow")
-prefix_rule(pattern=["git", "show"], decision="allow")
 prefix_rule(pattern=["mkdir -p .plans/", "show"], decision="allow")
 EOF
 echo "Wrote Git command rules: .codex/rules/git.rules"
 
 cat > "$CLONE_DIR/.codex/codex-instructions.md" <<'EOF'
 - After a sandbox-denied `git fetch`, retry only `git fetch origin` with its
-  existing elevated approval. Run `git log`, `git diff`, and other reads as
-  separate commands so they use their own rules.
+  existing elevated approval. Run `git log` and other reads as separate
+  commands so they use their own rules.
 
 - Read this clone's own `.plans/**`, `.signals/**`, and
   `.code-reviews/**` files normally without requesting elevated access.
-  Read peer coordination files from fetched origin refs using `git show`.
+
+- Read peer coordination files from the paths listed under
+  `## Bound input files` in your action.md. They are exact copies of the cited
+  pins, already on disk, so there is no need to fetch a peer branch. Use
+  `git show <sha>:<path>` only when a listed file is missing.
+
+- During an automated issue, `git status` and `git diff` against this clone are
+  refused by `.coord/bin/git`. Coordination checked this clone out and both
+  readings are already in your action; do not work around the refusal.
 
 - Put temporary files in `.codex/tmp/`. Prefer `apply_patch` for writing
   them, and do not request elevated access merely for shell redirection

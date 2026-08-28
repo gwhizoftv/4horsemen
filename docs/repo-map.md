@@ -26,7 +26,7 @@ Nothing in this repository writes issue state into the working tree.
 | Action rendering | `src/action.ts`, `src/orderScaffold.ts` | `action.md` front matter and body, per-step JSON and heading scaffolds |
 | Workspace and install | `src/setupWorkspace.ts`, `src/install.ts`, `src/hookSync.ts`, `src/agentHookSync.ts`, `src/agentsProtocol.ts`, `src/productIgnore.ts` | Config generation, clone setup, git hooks, vendor lifecycle hooks, the AGENTS.md overlay |
 | Harness surface | `src/tmux.ts`, `src/agentEvent.ts`, `src/agentLifecycle.ts` | Launching and nudging agent CLIs, readiness detection, lifecycle events (precedence rules: `docs/readiness-policy.md`) |
-| Git access | `src/mirror.ts`, `src/gitExec.ts`, `src/prepareAgentBranch.ts` | The bare mirror, blob and diff reads, issue-branch preparation |
+| Git access | `src/mirror.ts`, `src/gitExec.ts`, `src/prepareAgentBranch.ts`, `src/materializedInputs.ts` | The bare mirror, blob and diff reads, issue-branch preparation, exporting bound artifacts as files and worktrees so agents do not re-fetch them |
 | Analytics | `src/analytics.ts`, `src/transcriptRead.ts` | Phase timing, agent wait, token and tool attribution with honest coverage |
 | Entry points | `src/cli.ts`, `src/main.ts` | Command parsing, `start` / `next` / `resume` / `analytics` / `install` |
 
@@ -39,13 +39,19 @@ it, which is why neither has its own copy.
 - **Runtime state is outside the clone.** `action.md` lives under the coord
   root, never in the working tree. Agents write a mailbox `complete` marker and,
   for ballots, a private response under `agents/<agent>/responses/`.
-  `src/paths.ts` owns that boundary; `scripts/lib/launcher.sh` owns the two
-  per-issue harness grants (mailbox drop + response dir).
+  `src/paths.ts` owns that boundary; `scripts/lib/launcher.sh` owns the four
+  per-issue harness grants (mailbox drop, response dir, and the two
+  materialization roots `inputs/` and `worktrees/`). Those roots are created
+  empty at issue start because the launcher resolves grants once, when the
+  harness process starts.
 - **`AGENTS.md` is skip-worktree in every agent clone.** It carries a managed
   protocol overlay. Editing it from a clone stages nothing, and clearing the bit
   is forbidden. See `src/agentsProtocol.ts`.
 - **The launcher is generated per clone and never tracked.** A tracked copy
-  guarantees a dirty worktree.
+  guarantees a dirty worktree. `.coord/bin/git` is generated the same way from
+  the same template, but it is *replaced* whenever it differs from the current
+  render: it carries the rules deciding which reads are refused during an
+  automated issue, so a stale copy keeps enforcing withdrawn policy.
 - **`githooks/` is product code, not a way to satisfy checks.** Do not edit it
   to make a gate pass.
 - **Approved paths are the authority.** An implementation may change only the
