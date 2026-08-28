@@ -5,6 +5,7 @@ import { deriveEvidenceBranch } from "./ballotPublication.js";
 import { detachIssue } from "./detachIssue.js";
 import { git, gitOrThrow, hasUncommittedChanges } from "./gitExec.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
+import { makeMaterializedRootsWritable } from "./materializedInputs.js";
 import { issueRuntimePaths, removeIssueMailbox, RESERVED_EVIDENCE_AGENT } from "./paths.js";
 import {
   AgentCloneReadinessRefusal,
@@ -430,7 +431,13 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     }
     if (existsSync(paths.issueRoot)) {
       log(`${dryRun ? "would wipe" : "wiping"} runtime ${paths.issueRoot}\n`);
-      if (!dryRun) rmSync(paths.issueRoot, { recursive: true, force: true });
+      if (!dryRun) {
+        makeMaterializedRootsWritable(paths);
+        rmSync(paths.issueRoot, { recursive: true, force: true });
+        // Prune only after the targets are gone. Before removal Git still sees
+        // them as valid worktrees and keeps their mirror registrations.
+        if (existsSync(paths.mirror)) git(paths.mirror, "worktree", "prune");
+      }
       result.wipedRuntime = paths.issueRoot;
     }
   } finally {

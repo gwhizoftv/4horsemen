@@ -49,4 +49,46 @@ if [[ ! -e "$launcher" ]]; then
   fi
 fi
 
+git_wrapper=".coord/bin/git"
+if [[ ! -e "$git_wrapper" ]] || grep -q '^# coord-managed-git-wrapper$' "$git_wrapper" 2>/dev/null; then
+  if [[ ! -r "$launcher_lib" ]]; then
+    echo "Cannot regenerate $git_wrapper: the launcher template $launcher_lib is unreadable." >&2
+    echo "  Fix: coord doctor --coord-root <runtime> --product <product>" >&2
+    exit 0
+  fi
+  if ! declare -F write_git_wrapper >/dev/null 2>&1; then
+    # shellcheck source=../scripts/lib/launcher.sh
+    . "$launcher_lib"
+  fi
+  wrapper_dir="$(pwd -P)/.coord/bin"
+  clean_path=""
+  old_ifs="$IFS"
+  IFS=:
+  for entry in $PATH; do
+    [[ -n "$entry" ]] || continue
+    entry_abs="$(cd "$entry" 2>/dev/null && pwd -P)" || entry_abs="$entry"
+    [[ "$entry_abs" == "$wrapper_dir" ]] && continue
+    clean_path="${clean_path:+$clean_path:}$entry"
+  done
+  IFS="$old_ifs"
+  real_git="$(PATH="$clean_path" command -v git)"
+  mkdir -p "$wrapper_dir"
+  staged_wrapper="$wrapper_dir/.git.$$"
+  if [[ ! -x "$real_git" ]]; then
+    echo "Could not regenerate $git_wrapper: no real Git executable remains after removing $wrapper_dir from PATH." >&2
+  elif write_git_wrapper "$staged_wrapper" "$real_git" "$(pwd -P)"; then
+    if [[ -e "$git_wrapper" ]] && cmp -s "$staged_wrapper" "$git_wrapper"; then
+      rm -f "$staged_wrapper"
+    else
+      mv "$staged_wrapper" "$git_wrapper"
+      echo "Regenerated $git_wrapper (generated per clone, never tracked)."
+    fi
+  else
+    rm -f "$staged_wrapper"
+    echo "Could not regenerate $git_wrapper from $launcher_lib." >&2
+  fi
+elif [[ -e "$git_wrapper" ]]; then
+  echo "Not overwriting foreign $git_wrapper; re-run coord install after moving it aside." >&2
+fi
+
 exit 0

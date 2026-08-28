@@ -23,6 +23,11 @@ action text requires a pushed commit SHA). Response-mode ballot actions must not
 commit or push: write only the private response JSON and the completion marker
 `response <actionId>`, then stop Git work for that action.
 
+During an automated issue, read bound peer artifacts from the paths listed
+under `## Bound input files` in the current action. The generated
+`.coord/bin/git` refuses `git status`, `git diff`, and undisciplined `git show`
+for the managed clone; do not re-derive checkout state that coordination owns.
+
 Do not clear `skip-worktree` on `AGENTS.md`, strip this protocol block, or
 replace the file to “fix” git status. Coordination sets that bit so the
 clone-local protocol section stays hidden. If `AGENTS.md` looks wrong, escalate;

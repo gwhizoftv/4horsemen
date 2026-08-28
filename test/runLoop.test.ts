@@ -1,11 +1,16 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readAction, writeAction } from "../src/action.js";
 import { decideLifecycleNudge, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { BareMirror } from "../src/mirror.js";
+import {
+  makeMaterializedRootsWritable,
+  materializeBoundInputs,
+  pruneSupersededWorktrees
+} from "../src/materializedInputs.js";
 import { agentResponsePath, agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
   buildOrder,
@@ -40,7 +45,10 @@ import { createHash } from "node:crypto";
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) {
+    makeMaterializedRootsWritable(issueRuntimePaths(join(root, "coord-runtime"), 1, join(root, "completes")));
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 const responseDigestFixture = (seed: string): string =>
@@ -353,7 +361,23 @@ describe("effectful run loop", () => {
     expect(record).not.toBeNull();
     appendJournal(paths, { type: "decision-derived", details: derivedDecisionJournalDetails(record!) }, now);
 
-    const after = await new CoordinatorRunLoop(paths, { tmux: null, now: () => now }).runTick();
+    const mirror = {
+      path: paths.mirror,
+      async initialize() {},
+      async fetchBranch() {
+        return { ok: false as const, details: "unused" };
+      },
+      async readBlob() {
+        return "# selected plan\n";
+      },
+      async changedPaths() {
+        return [];
+      },
+      async materializeWorktree() {},
+      async removeWorktree() {},
+      async publishBranch() {}
+    };
+    const after = await new CoordinatorRunLoop(paths, { tmux: null, now: () => now, mirror: mirror as never }).runTick();
     expect(after.issueCursor.stepId).toBe("R4.implement");
     expect(after.derived.planSelection?.decidedAt).toBe(now);
     expect(readJournal(paths).filter((event) => event.type === "decision-derived")).toHaveLength(1);
@@ -1669,6 +1693,79 @@ describe("effectful run loop", () => {
     expect(pushes).toBe(0);
     expect(opens).toBe(0);
     expect(readCursorsState(paths).publication.status).toBe("not-required");
+  });
+});
+
+describe("materialized bound inputs", () => {
+  it("writes coordination markdown once into a content-addressed read-only packet", async () => {
+    const { paths } = fixture();
+    let reads = 0;
+    const mirror = {
+      readBlob: async () => {
+        reads += 1;
+        return "# selected plan\n";
+      },
+      materializeWorktree: async () => {
+        throw new Error("unexpected worktree");
+      },
+      removeWorktree: async () => undefined
+    };
+    const inputs = [
+      { agent: "claude", commitSha: "3".repeat(40), path: ".plans/issue-1/plan.md", kind: "selected-plan" }
+    ];
+    try {
+      const first = await materializeBoundInputs({ mirror, paths, inputs });
+      expect(first.inputSetHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(first.manifestPath === null ? false : existsSync(first.manifestPath)).toBe(true);
+      expect(first.entries).toHaveLength(1);
+      expect(readFileSync(first.entries[0]!.localPath, "utf8")).toBe("# selected plan\n");
+      expect(statSync(first.entries[0]!.localPath).mode & 0o777).toBe(0o400);
+
+      const second = await materializeBoundInputs({ mirror, paths, inputs });
+      expect(second).toEqual(first);
+      expect(reads).toBe(1);
+    } finally {
+      makeMaterializedRootsWritable(paths);
+    }
+  });
+
+  it("materializes product pins as worktrees and unregisters superseded trees", async () => {
+    const { paths } = fixture();
+    const added: string[] = [];
+    const removed: string[] = [];
+    const mirror = {
+      readBlob: async () => null,
+      materializeWorktree: async (target: string) => {
+        added.push(target);
+        mkdirSync(target, { recursive: true });
+        writeFileSync(join(target, "README.md"), "pinned\n");
+      },
+      removeWorktree: async (target: string) => {
+        removed.push(target);
+        rmSync(target, { recursive: true, force: true });
+      }
+    };
+    const inputs = [
+      {
+        agent: "codex",
+        commitSha: "4".repeat(40),
+        path: ".signals/issue-1/implementation-ready-codex.json",
+        kind: "implementation"
+      }
+    ];
+    try {
+      const materialized = await materializeBoundInputs({ mirror, paths, inputs });
+      const target = materialized.worktrees[0]!.localPath;
+      expect(added).toEqual([target]);
+      expect(readFileSync(join(target, "README.md"), "utf8")).toBe("pinned\n");
+      expect(statSync(target).mode & 0o777).toBe(0o700);
+
+      await pruneSupersededWorktrees({ mirror, paths, keep: [] });
+      expect(removed).toEqual([target]);
+      expect(existsSync(target)).toBe(false);
+    } finally {
+      makeMaterializedRootsWritable(paths);
+    }
   });
 });
 

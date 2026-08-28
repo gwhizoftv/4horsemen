@@ -3,7 +3,7 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, u
 import { dirname, relative } from "node:path";
 import { assertNoSymlink, containedPath } from "./paths.js";
 import { actionIdSchema, gitShaSchema, repositoryPathSchema } from "./protocol.js";
-import type { ChangeScopeEntry, InternalOrder } from "./steps.js";
+import type { ChangeScopeEntry, InternalOrder, MaterializedInputs } from "./steps.js";
 
 export type PublicGitAction = {
   actionId: string;
@@ -81,6 +81,23 @@ const changeScopeSection = (changeScope: readonly ChangeScopeEntry[] = []): stri
   );
 };
 
+const boundInputFilesSection = (materialized?: MaterializedInputs): string => {
+  if (materialized === undefined) return "";
+  const paths = [
+    ...(materialized.manifestPath === null ? [] : [materialized.manifestPath]),
+    ...materialized.entries.map((entry) => entry.localPath),
+    ...materialized.worktrees.map((entry) => entry.localPath)
+  ];
+  if (paths.length === 0) return "";
+  return (
+    `\n\n## Bound input files\n\n` +
+    `Read these coordinator-materialized paths instead of re-fetching or re-reading ` +
+    `the bound commits. The Git pins above remain authoritative. Paths are ` +
+    `JSON-encoded absolute strings, one per line.\n\n` +
+    paths.map(encodePath).join("\n")
+  );
+};
+
 const inputText = (order: InternalOrder): string =>
   order.inputs.length === 0
     ? "- No peer commits are required for this action."
@@ -107,7 +124,7 @@ Publish the required artifact at:
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
 
 Push the commit containing the artifact to \`${order.branch}\`. Then write that
 exact 40-character lowercase commit SHA as the sole contents of:
@@ -149,12 +166,12 @@ Then write this exact one-line marker as the sole contents of:
 response ${order.actionId}
 \`\`\`
 
-Do not \`git add\`, \`git commit\`, or \`git push\` for this action. Inspect the
-bound inputs with read-only Git commands only.
+Do not \`git add\`, \`git commit\`, or \`git push\` for this action. Read the
+bound inputs from the coordinator-materialized paths listed below.
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${eligible}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${eligible}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
 
 After writing the marker, keep this file. Before waiting for more input, re-read
 it. If \`actionId\` in the front matter has changed, execute the new instructions

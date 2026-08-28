@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { findAgentLanguageViolations } from "../src/agentLanguage.js";
@@ -574,6 +574,10 @@ describe("completion mailbox wiring", () => {
     // the fixture or the machine's real agy would shadow the stub.
     const home = join(fixture.workspaceRoot, "home");
     const result = installOnce(fixture, { agents, completesRoot, home });
+    const inputs = join(fixture.coordRoot, "issue-17", "inputs");
+    const worktrees = join(fixture.coordRoot, "issue-17", "worktrees");
+    mkdirSync(inputs, { recursive: true });
+    mkdirSync(worktrees, { recursive: true });
     const bin = join(fixture.workspaceRoot, "stub-bin");
     mkdirSync(bin);
     for (const command of ["claude", "codex", "agent", "agy"]) {
@@ -604,7 +608,17 @@ describe("completion mailbox wiring", () => {
         stdio: "ignore"
       });
       const argv = readFileSync(capture, "utf8").trimEnd().split("\n");
-      expect(argv).toEqual([...expected[agent], "--add-dir", drop, "--add-dir", responses]);
+      expect(argv).toEqual([
+        ...expected[agent],
+        "--add-dir",
+        drop,
+        "--add-dir",
+        responses,
+        "--add-dir",
+        inputs,
+        "--add-dir",
+        worktrees
+      ]);
       // Never the runtime root as a grant, never the whole mailbox, never a peer's drop.
       expect(argv).not.toContain(fixture.coordRoot);
       expect(argv).not.toContain(completesRoot);
@@ -697,6 +711,47 @@ describe("completion mailbox wiring", () => {
 });
 
 describe("generated agent launchers", () => {
+  it("installs an ignored Git wrapper and puts it on the harness PATH", () => {
+    const fixture = product("plain");
+    const result = installOnce(fixture);
+    const clone = result.clones[0] as string;
+    const wrapper = join(clone, ".coord", "bin", "git");
+    const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
+
+    expect(existsSync(wrapper)).toBe(true);
+    expect(statSync(wrapper).mode & 0o111).not.toBe(0);
+    expect(readFileSync(wrapper, "utf8")).toContain("coord-managed-git-wrapper");
+    expect(readFileSync(join(clone, ".git", "info", "exclude"), "utf8")).toContain(".coord/");
+    expect(launcher).toContain('export PATH="$(pwd)/.coord/bin:$PATH"');
+    expect(launcher).not.toContain("git status -sb");
+    expect(git(clone, "status", "--porcelain")).toBe("");
+  });
+
+  it("refuses managed-clone status, diff, and undisciplined show only in automated mode", () => {
+    const fixture = product("plain");
+    const result = installOnce(fixture);
+    const clone = result.clones[0] as string;
+    const wrapper = join(clone, ".coord", "bin", "git");
+    const sha = git(clone, "rev-parse", "HEAD");
+    const run = (args: readonly string[], cwd = clone, issue = "42") =>
+      spawnSync(wrapper, args, {
+        cwd,
+        encoding: "utf8",
+        env: { ...process.env, COORD_ISSUE: issue, COORD_GIT_DELEGATE: "" }
+      });
+
+    for (const args of [["status"], ["diff"], ["-C", ".", "status"], ["--git-dir", ".git", "diff"], ["show", "HEAD"]]) {
+      const blocked = run(args);
+      expect(blocked.status, args.join(" ")).toBe(2);
+      expect(blocked.stderr, args.join(" ")).toContain("## Bound input files");
+    }
+    expect(run(["show", `${sha}:README.md`]).status).toBe(0);
+    expect(run(["rev-parse", "HEAD"]).status).toBe(0);
+    expect(run(["status"], clone, "").status).toBe(0);
+    expect(run(["status"], fixture.productRoot).status).toBe(0);
+    expect(run(["--git-dir", join(fixture.productRoot, ".git"), "status"]).status).toBe(0);
+  });
+
   /**
    * `--mode accept-edits` is an execution mode, not a permission grant, so on
    * its own it left every out-of-whitelist tool call waiting on an owner
@@ -706,7 +761,7 @@ describe("generated agent launchers", () => {
    */
   it("launches Antigravity unattended without losing its execution mode", () => {
     const fixture = product();
-    const result = installOnce(fixture, { agents: ["antigravity"] });
+    const result = installOnce(fixture, { agents: ["antigravity"], home: join(fixture.workspaceRoot, "home") });
     const clone = result.clones[0] as string;
     const launcher = readFileSync(join(clone, "start-antigravity.sh"), "utf8");
     expect(launcher).toContain("exec agy --mode accept-edits --dangerously-skip-permissions");

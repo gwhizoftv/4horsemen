@@ -209,6 +209,34 @@ describe("advisory action sections", () => {
     }
   });
 
+  it("lists coordinator-materialized files and worktrees as JSON-encoded absolute paths", () => {
+    const packet = "/external/coord/issue-1/inputs/abc";
+    const plan = `${packet}/plan-claude-33333333/.plans/issue-1/plan.md`;
+    const worktree = "/external/coord/issue-1/worktrees/claude-44444444";
+    const raw = renderAction({
+      ...order("/external/coord"),
+      materialized: {
+        inputSetHash: "a".repeat(64),
+        manifestPath: `${packet}/manifest.json`,
+        entries: [
+          {
+            kind: "plan",
+            agent: "claude",
+            commitSha: "3".repeat(40),
+            path: ".plans/issue-1/plan.md",
+            sha256: "5".repeat(64),
+            localPath: plan
+          }
+        ],
+        worktrees: [{ kind: "implementation", agent: "claude", commitSha: "4".repeat(40), localPath: worktree }]
+      }
+    });
+    expect(raw).toContain("## Bound input files");
+    expect(raw).toContain(JSON.stringify(`${packet}/manifest.json`));
+    expect(raw).toContain(JSON.stringify(plan));
+    expect(raw).toContain(JSON.stringify(worktree));
+  });
+
   it("reports a pin whose diff is empty rather than rendering a bare header", () => {
     const raw = renderAction({
       ...order("/external/coord"),

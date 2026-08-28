@@ -257,6 +257,10 @@ export type IssueRuntimePaths = {
   journal: string;
   issueSnapshot: string;
   agents: string;
+  /** Read-only coordination artifacts bound into the current action. */
+  issueInputsRoot: string;
+  /** Read-only full worktrees for product pins bound into the current action. */
+  issueWorktreesRoot: string;
   /** Issue number, retained because the mailbox path is derived from it. */
   issue: number;
   /** Root of the completion mailbox tree; never inside `coordRoot`. */
@@ -301,6 +305,8 @@ export const issueRuntimePaths = (
     journal: containedPath(issueRoot, "journal.jsonl"),
     issueSnapshot: containedPath(issueRoot, "github-issue.json"),
     agents: containedPath(issueRoot, "agents"),
+    issueInputsRoot: containedPath(issueRoot, "inputs"),
+    issueWorktreesRoot: containedPath(issueRoot, "worktrees"),
     issue,
     completesRoot: mailbox,
     completesIssueRoot: containedPath(mailbox, `issue-${issue}`)
@@ -372,6 +378,26 @@ export const evidenceWorktreePath = (paths: IssueRuntimePaths, label: string): s
   return containedPath(paths.issueRoot, "evidence-worktrees", label);
 };
 
+const inputSetHashPattern = /^[0-9a-f]{64}$/;
+const materializedPinPattern = /^[0-9a-f]{40}$/;
+
+export const inputPacketPath = (paths: IssueRuntimePaths, inputSetHash: string): string => {
+  if (!inputSetHashPattern.test(inputSetHash)) {
+    throw new PathSafetyError(`Invalid materialized input-set hash: ${inputSetHash}`);
+  }
+  return containedPath(paths.issueInputsRoot, inputSetHash);
+};
+
+export const inputWorktreePath = (paths: IssueRuntimePaths, agent: string, commitSha: string): string => {
+  if (!agentPattern.test(agent)) {
+    throw new PathSafetyError(`Invalid materialized input agent: ${agent}`);
+  }
+  if (!materializedPinPattern.test(commitSha)) {
+    throw new PathSafetyError(`Invalid materialized input pin: ${commitSha}`);
+  }
+  return containedPath(paths.issueWorktreesRoot, `${agent}-${commitSha.slice(0, 8)}`);
+};
+
 export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly string[]): void => {
   assertNoSymlink(paths.coordRoot, paths.issueRoot);
   mkdirSync(paths.issueRoot, { recursive: true, mode: 0o700 });
@@ -379,6 +405,11 @@ export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly st
   assertNoSymlink(paths.coordRoot, paths.agents);
   mkdirSync(paths.agents, { recursive: true, mode: 0o700 });
   assertNoSymlink(paths.coordRoot, paths.agents);
+  for (const root of [paths.issueInputsRoot, paths.issueWorktreesRoot]) {
+    assertNoSymlink(paths.coordRoot, root);
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    assertNoSymlink(paths.coordRoot, root);
+  }
   const acceptedRoot = containedPath(paths.issueRoot, "accepted-responses");
   assertNoSymlink(paths.coordRoot, acceptedRoot);
   mkdirSync(acceptedRoot, { recursive: true, mode: 0o700 });

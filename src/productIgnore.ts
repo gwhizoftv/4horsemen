@@ -43,7 +43,8 @@ export const DEFAULT_CLONE_IGNORES: readonly string[] = [
   ".cursor/",
   ".antigravity/",
   ".gemini/",
-  ".agents/"
+  ".agents/",
+  ".coord/"
 ];
 
 export class ManagedBlockError extends Error {

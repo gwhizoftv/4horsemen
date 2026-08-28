@@ -1,6 +1,7 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { wipeIssue } from "../src/wipeIssue.js";
 import { coordinatorConfigSchema } from "../src/state.js";
@@ -79,6 +80,15 @@ describe("wipeIssue", () => {
     git(codex, "fetch", "-q", "origin");
     git(coordRoot, "clone", "--bare", "-q", origin, mirror);
     git(mirror, "fetch", "-q", "origin", "+refs/heads/issue-9/*:refs/remotes/origin/issue-9/*");
+    const materializedPin = git(mirror, "rev-parse", "refs/remotes/origin/issue-9/claude");
+    const materializedWorktree = join(coordRoot, "issue-9", "worktrees", `claude-${materializedPin.slice(0, 8)}`);
+    mkdirSync(dirname(materializedWorktree), { recursive: true });
+    execFileSync("git", ["worktree", "add", "--detach", materializedWorktree, materializedPin], {
+      cwd: mirror,
+      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))),
+      stdio: "pipe"
+    });
+    expect(git(mirror, "worktree", "list", "--porcelain")).toContain(materializedWorktree);
 
     const configPath = join(coordRoot, "config.json");
     const config = coordinatorConfigSchema.parse({
@@ -128,6 +138,7 @@ describe("wipeIssue", () => {
     ]);
     expect(outcome.wipedRuntime).toBe(join(coordRoot, "issue-9"));
     expect(existsSync(join(coordRoot, "issue-9"))).toBe(false);
+    expect(git(mirror, "worktree", "list", "--porcelain")).not.toContain(materializedWorktree);
     expect(outcome.wipedCompletes).toBe(join(completesRoot, "issue-9"));
     expect(existsSync(join(completesRoot, "issue-9"))).toBe(false);
     // Only this issue: another issue's receipts are not this wipe's business.

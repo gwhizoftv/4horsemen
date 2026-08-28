@@ -26,13 +26,15 @@ Nothing in this repository writes issue state into the working tree.
 | Action rendering | `src/action.ts`, `src/orderScaffold.ts` | `action.md` front matter and body, per-step JSON and heading scaffolds |
 | Workspace and install | `src/setupWorkspace.ts`, `src/install.ts`, `src/hookSync.ts`, `src/agentHookSync.ts`, `src/agentsProtocol.ts`, `src/productIgnore.ts` | Config generation, clone setup, git hooks, vendor lifecycle hooks, the AGENTS.md overlay |
 | Harness surface | `src/tmux.ts`, `src/agentEvent.ts`, `src/agentLifecycle.ts` | Launching and nudging agent CLIs, readiness detection, lifecycle events (precedence rules: `docs/readiness-policy.md`) |
-| Git access | `src/mirror.ts`, `src/gitExec.ts`, `src/prepareAgentBranch.ts` | The bare mirror, blob and diff reads, issue-branch preparation |
+| Git access | `src/mirror.ts`, `src/gitExec.ts`, `src/materializedInputs.ts`, `src/prepareAgentBranch.ts` | The bare mirror, materialized bound inputs, blob and diff reads, issue-branch preparation |
 | Analytics | `src/analytics.ts`, `src/transcriptRead.ts` | Phase timing, agent wait, token and tool attribution with honest coverage |
 | Entry points | `src/cli.ts`, `src/main.ts` | Command parsing, `start` / `next` / `resume` / `analytics` / `install` |
 
 Vendor launch flags live in exactly one place: `launcher_command()` in
 `scripts/lib/launcher.sh`. Both `coord install` and `githooks/post-merge` read
-it, which is why neither has its own copy.
+it, which is why neither has its own copy. The same library renders the
+untracked `.coord/bin/git` wrapper that keeps automated agents off redundant
+checkout and peer-artifact reads.
 
 ## Invariants worth knowing before you plan
 

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import {
   git,
   gitOrThrow,
@@ -484,6 +484,60 @@ export const writeAgentLauncher = (input: {
     return;
   }
   act(input.options, `write launcher ${target}`, () => {
+    writeFileSync(target, rendered, "utf8");
+    chmodSync(target, 0o755);
+  });
+};
+
+/** Install the untracked, per-clone Git policy shim rendered by launcher.sh. */
+export const writeGitWrapper = (input: {
+  installRoot: string;
+  clone: string;
+  options: EffectOptions;
+}): void => {
+  const library = join(input.installRoot, "scripts", "lib", "launcher.sh");
+  if (!existsSync(library)) {
+    throw new Error(`Launcher template ${library} is missing from the coordination install.`);
+  }
+  const targetDir = join(input.clone, ".coord", "bin");
+  const target = join(targetDir, "git");
+  const filteredPath = (process.env.PATH ?? "")
+    .split(delimiter)
+    .filter((entry) => entry !== "" && resolve(entry) !== resolve(targetDir))
+    .join(delimiter);
+  const discovered = spawnSync("/bin/bash", ["-c", "command -v git"], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: filteredPath }
+  });
+  const realGit = resolve((discovered.stdout ?? "").trim());
+  if ((discovered.status ?? 1) !== 0 || !existsSync(realGit) || realGit === resolve(target)) {
+    throw new Error("Could not resolve the real Git executable while installing the agent wrapper.");
+  }
+
+  const stagingDir = mkdtempSync(join(tmpdir(), "coord-git-wrapper-"));
+  const staging = join(stagingDir, "git");
+  const render = spawnSync(
+    "/bin/bash",
+    ["-c", '. "$1"; write_git_wrapper "$2" "$3" "$4"', "_", library, staging, realGit, resolve(input.clone)],
+    { encoding: "utf8" }
+  );
+  if ((render.status ?? 1) !== 0) {
+    rmSync(stagingDir, { recursive: true, force: true });
+    throw new Error(`Could not render the Git wrapper from ${library}: ${render.stderr ?? ""}`.trim());
+  }
+  const rendered = readFileSync(staging, "utf8");
+  rmSync(stagingDir, { recursive: true, force: true });
+
+  if (
+    existsSync(target) &&
+    readFileSync(target, "utf8") === rendered &&
+    (statSync(target).mode & 0o111) !== 0
+  ) {
+    input.options.log(`git wrapper already current at ${target}\n`);
+    return;
+  }
+  act(input.options, `write git wrapper ${target}`, () => {
+    mkdirSync(targetDir, { recursive: true, mode: 0o700 });
     writeFileSync(target, rendered, "utf8");
     chmodSync(target, 0o755);
   });

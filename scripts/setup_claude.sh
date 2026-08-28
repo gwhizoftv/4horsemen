@@ -80,6 +80,9 @@ fi
 if grep -qE 'hooksPath' <<<"$input"; then
   block "modifying git hook configuration is forbidden."
 fi
+if [[ "${COORD_ISSUE:-}" =~ ^[1-9][0-9]*$ ]] && grep -qE 'git([[:space:]]+-[^[:space:]]+)*[[:space:]]+(status|diff)([[:space:]"\\]|$)' <<<"$input"; then
+  block "git status and git diff are refused during automated issues; use the bound input files in action.md."
+fi
 if grep -qE 'git[^;|&]*push[^;|&]*(--force|--force-with-lease|-f([[:space:]]|\\\\|$))' <<<"$input"; then
   block "force-push is forbidden."
 fi
@@ -97,7 +100,7 @@ cat > "$CLONE_DIR/.claude/settings.json" <<EOF
 {
   "permissions": {
     "allow": [
-      "Bash(git status:*)", "Bash(git log:*)", "Bash(git diff:*)",
+      "Bash(git log:*)",
       "Bash(git fetch:*)", "Bash(git pull:*)", "Bash(git checkout:*)",
       "Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)",
       "Bash(git branch:*)", "Bash(git merge-base:*)",

@@ -32,6 +32,7 @@ import {
 import { evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
 import { BareMirror, GitCommandError, hermeticGitEnv, isTransientGitFailure } from "./mirror.js";
+import { materializeBoundInputs, pruneSupersededWorktrees } from "./materializedInputs.js";
 import { renderArtifactScaffold } from "./orderScaffold.js";
 import {
   agentResponsePath,
@@ -71,6 +72,7 @@ import {
   type ChangeScopeEntry,
   type EvidenceObservation,
   type InternalOrder,
+  type MaterializedInputs,
   type MachineDecision,
   type WorkflowStepId
 } from "./steps.js";
@@ -656,7 +658,8 @@ export const buildOrder = (
   actionId = createActionId(),
   outstanding: readonly string[] = [],
   approvedPathOverride?: readonly string[],
-  changeScope: readonly ChangeScopeEntry[] = []
+  changeScope: readonly ChangeScopeEntry[] = [],
+  materialized?: MaterializedInputs
 ): InternalOrder => {
   const definition = STEP_DEFINITIONS[stepId];
   const runtime = agentRuntimePaths(paths, agent);
@@ -715,6 +718,7 @@ export const buildOrder = (
     approvedPaths,
     contextPaths: [...start.contextPaths],
     changeScope,
+    ...(materialized === undefined ? {} : { materialized }),
     activeRoster: [...cursors.activeRoster],
     eligibleChoices
   };
@@ -872,7 +876,10 @@ export class CoordinatorRunLoop {
     const cursor = cursors.agents[agent];
     if (cursor === undefined) throw new Error(`Unknown agent ${agent}.`);
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
-    const changeScope = await resolveChangeScope(this.mirror, start, deriveBoundInputs(start, cursors, stepId, round));
+    const boundInputs = deriveBoundInputs(start, cursors, stepId, round);
+    await pruneSupersededWorktrees({ mirror: this.mirror, paths: this.paths, keep: boundInputs });
+    const materialized = await materializeBoundInputs({ mirror: this.mirror, paths: this.paths, inputs: boundInputs });
+    const changeScope = await resolveChangeScope(this.mirror, start, boundInputs);
     this.authority(cursors);
     const order = buildOrder(
       this.paths,
@@ -884,7 +891,8 @@ export class CoordinatorRunLoop {
       this.actionId(),
       [],
       approvedPaths,
-      changeScope
+      changeScope,
+      materialized
     );
     const runtime = agentRuntimePaths(this.paths, agent);
     let next = this.mutate(cursors, (current) => {
@@ -995,11 +1003,9 @@ export class CoordinatorRunLoop {
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
     this.authority(cursors);
     const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
-    const changeScope = await resolveChangeScope(
-      this.mirror,
-      start,
-      deriveBoundInputs(start, cursors, cursor.stepId, round)
-    );
+    const boundInputs = deriveBoundInputs(start, cursors, cursor.stepId, round);
+    const materialized = await materializeBoundInputs({ mirror: this.mirror, paths: this.paths, inputs: boundInputs });
+    const changeScope = await resolveChangeScope(this.mirror, start, boundInputs);
     const order = buildOrder(
       this.paths,
       start,
@@ -1010,7 +1016,8 @@ export class CoordinatorRunLoop {
       actionId,
       cursor.outstanding,
       approvedPaths,
-      changeScope
+      changeScope,
+      materialized
     );
     writeAction(this.paths.coordRoot, runtime.action, order);
     if (readAction(runtime.action).body !== previous) {
@@ -1373,7 +1380,9 @@ export class CoordinatorRunLoop {
     const stepId = cursor.stepId;
     const round = stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
-    const changeScope = await resolveChangeScope(this.mirror, start, deriveBoundInputs(start, cursors, stepId, round));
+    const boundInputs = deriveBoundInputs(start, cursors, stepId, round);
+    const materialized = await materializeBoundInputs({ mirror: this.mirror, paths: this.paths, inputs: boundInputs });
+    const changeScope = await resolveChangeScope(this.mirror, start, boundInputs);
     this.authority(cursors);
     const order = buildOrder(
       this.paths,
@@ -1385,7 +1394,8 @@ export class CoordinatorRunLoop {
       actionId,
       outstanding,
       approvedPaths,
-      changeScope
+      changeScope,
+      materialized
     );
     this.verbose(`reissued ${agent} action ${actionId}: ${outstanding.join("; ")}`);
     const next = this.mutate(cursors, (current) => {
