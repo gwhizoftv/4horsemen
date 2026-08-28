@@ -1,0 +1,34 @@
+{
+  "actionId": "3868d468-f9d0-4b6d-a92d-cbf7e1a662a3",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "ec03d8e6a235294a16ef26cea55ee940d1ee1b73",
+      "path": ".signals/issue-124/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "c2784bf31651db084f00eefeb103a4daa373d602",
+      "path": ".signals/issue-124/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "fb608c5a8022b2ed7b78def20ad468fc37dd31b1",
+      "path": ".signals/issue-124/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d89f2d6d61c268714e5a1065098dd235d284cc3e",
+      "path": ".signals/issue-124/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "07bee12aee4595b872e70a6da5b287c0b5e0609cd6fff21cc87cf80bb8dc651b",
+  "issue": 124,
+  "issueSessionId": "issue-124:5bfc025122672b78a4990a97e7992e8fc53e1871",
+  "protocolVersion": 2,
+  "rationale": "Codex is the closest revision baseline because it correctly handles same-clone selectors, fail-loud materialization, reissues, wrapper refresh, pruning, and manifest validation, leaving fewer gaps than the alternatives.",
+  "responseSha256": "03e4f6fc85285e390372ad598b203bdf6cd3c276cab08f5383a6580762ae51cf"
+}
