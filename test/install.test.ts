@@ -60,6 +60,22 @@ describe("coord install — two-mode footprint", () => {
     expect(output.join("")).toContain("coord manual --product ");
   });
 
+  it("writes per-agent Terminal profile defaults into workspace config", () => {
+    const fixture = product();
+    const result = installOnce(fixture, {
+      agents: ["claude", "codex", "cursor", "antigravity"]
+    });
+    const profiles = Object.fromEntries(
+      readConfig(result.configPath).agents.map((agent) => [agent.id, agent.terminalProfile])
+    );
+    expect(profiles).toEqual({
+      claude: "Claude 1",
+      codex: "Codex 1",
+      cursor: "Cursor 1",
+      antigravity: "Gemini 1"
+    });
+  });
+
   it("keeps every vendor identity source manual-aware", () => {
     const branches: Record<string, string> = {
       claude: "claude/<name>",

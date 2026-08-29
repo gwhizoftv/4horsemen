@@ -52,13 +52,13 @@ export const agentOwnerUiDefaults = (
 ): { nudgePrelude: string[]; nudgeSubmit: string[]; terminalProfile: string } => {
   switch (agent) {
     case "codex":
-      return { nudgePrelude: ["i"], nudgeSubmit: ["C-j", "C-m"], terminalProfile: "Grass" };
+      return { nudgePrelude: ["i"], nudgeSubmit: ["C-j", "C-m"], terminalProfile: "Codex 1" };
     case "claude":
-      return { nudgePrelude: [], nudgeSubmit: ["Escape", "Enter"], terminalProfile: "Pro" };
+      return { nudgePrelude: [], nudgeSubmit: ["Escape", "Enter"], terminalProfile: "Claude 1" };
     case "cursor":
-      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Ocean" };
+      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Cursor 1" };
     case "antigravity":
-      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Red Sands" };
+      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Gemini 1" };
     default:
       return { nudgePrelude: [], nudgeSubmit: ["Escape", "Enter"], terminalProfile: "Basic" };
   }
