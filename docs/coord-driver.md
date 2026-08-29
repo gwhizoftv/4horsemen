@@ -300,7 +300,7 @@ Per-agent config controls owner UI:
   Stale single `Enter`/`C-m` on Claude, mistaken Escape+Enter on non-vim
   Cursor/Antigravity, and stale `C-m` on Antigravity, are upgraded)
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
-  can use a different look (defaults: Pro/Grass/Ocean/Red Sands)
+  can use a different look (defaults: Claude 1 / Codex 1 / Cursor 1 / Gemini 1)
 
 Nudge waits until the pane shows an idle prompt (not Claude's trust dialog,
 Antigravity splash, account-verification overlay, or an in-flight Antigravity
