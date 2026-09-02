@@ -19,6 +19,9 @@ export const runTmux: TmuxRunner = (args, input) =>
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
     child.once("error", reject);
     child.once("close", (code) => resolvePromise({ exitCode: code ?? 1, stdout, stderr: stderr.trim() }));
+    child.stdin.once("error", (error: NodeJS.ErrnoException) => {
+      stderr += `${stderr === "" ? "" : "\n"}${error.code ?? error.message}`;
+    });
     child.stdin.end(input ?? "");
   });
 
