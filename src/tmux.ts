@@ -18,6 +18,10 @@ export const runTmux: TmuxRunner = (args, input) =>
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
     child.once("error", reject);
+    child.stdin.once("error", (error: NodeJS.ErrnoException) => {
+      const code = error.code ?? error.message;
+      stderr = stderr === "" ? String(code) : `${stderr}\n${String(code)}`;
+    });
     child.once("close", (code) => resolvePromise({ exitCode: code ?? 1, stdout, stderr: stderr.trim() }));
     child.stdin.end(input ?? "");
   });

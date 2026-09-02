@@ -17,6 +17,7 @@ import {
   resolveAgentLauncher,
   NUDGE_BEFORE_ANTIGRAVITY_MS,
   resolveNudgeKeys,
+  runTmux,
   TmuxController,
   vimInsertPrelude,
   type TmuxResult,
@@ -1010,5 +1011,23 @@ describe("tmux boundary", () => {
     writeFileSync(notExecutable, "#!/bin/sh\n");
     chmodSync(notExecutable, 0o600);
     expect(() => resolveAgentLauncher({ ...base, launcher: "not-executable.sh" })).toThrow("non-executable");
+  });
+});
+
+describe("runTmux", () => {
+  it("resolves when tmux exits before reading stdin", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-run-tmux-epipe-"));
+    roots.push(root);
+    writeFileSync(join(root, "tmux"), "#!/bin/sh\nexit 3\n", { mode: 0o700 });
+    const priorPath = process.env.PATH;
+    process.env.PATH = `${root}:${priorPath ?? ""}`;
+    try {
+      const result = await runTmux(["-V"], "x".repeat(4 * 1024 * 1024));
+      expect(result.exitCode).toBe(3);
+      expect(result.stderr).toContain("EPIPE");
+    } finally {
+      if (priorPath === undefined) delete process.env.PATH;
+      else process.env.PATH = priorPath;
+    }
   });
 });
