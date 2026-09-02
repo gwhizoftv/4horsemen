@@ -1,0 +1,24 @@
+{
+  "protocolVersion": 1,
+  "issue": 106,
+  "issueSessionId": "issue-106:7bb6862d488c3174c82051a7dde6867c685157cc",
+  "agent": "codex",
+  "inputSetHash": "a8247e83ebcafd78e74f652fcfb67babc89c8b7e4b38d8d4aed321e4367b17d3",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "1368e80347dbcfceacbb9a865812cd126074e500",
+  "approvedPaths": [
+    ".gitignore",
+    "AGENTS.md",
+    "Socket.end",
+    "Writable.end",
+    "child.stdin",
+    "dist/",
+    "dist/tmux.js",
+    "process.env.PATH",
+    "result.stderr",
+    "src/tmux.ts",
+    "test/tmux.test.ts",
+    "vi.mock",
+    "vi.spyOn"
+  ]
+}
