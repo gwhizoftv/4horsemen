@@ -1,5 +1,9 @@
 ## Findings
 
+Reviewed bound plans: Codex (`a60e99434ea6a13f0bebd87cf0714485e7ee0635`),
+Cursor (`2c627878ca43664c46fee3a57a5c7c7af1fbb7eb`), and Claude
+(`20bde887e99d5ffb3ae67fbb392cd8a6663091d2`).
+
 1. **Claude plan — `src/tmux.ts` change, stdin error handler:** The handler
    must make only the reported `EPIPE` race non-fatal while preserving a
    distinguishable failure for unexpected stdin errors. As written, the plan
