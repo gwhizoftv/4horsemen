@@ -1,0 +1,46 @@
+{
+  "actionId": "86e6859b-9f6e-4d8f-8e8c-ac1ff139da04",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "b3fdb2b71fbcf29f0166f10865b1717b20a8d4c46a293af383a9ed027e55bdb9",
+  "issue": 106,
+  "issueSessionId": "issue-106:7bb6862d488c3174c82051a7dde6867c685157cc",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "20bde887e99d5ffb3ae67fbb392cd8a6663091d2",
+      "path": ".plans/issue-106/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a60e99434ea6a13f0bebd87cf0714485e7ee0635",
+      "path": ".plans/issue-106/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "2c627878ca43664c46fee3a57a5c7c7af1fbb7eb",
+      "path": ".plans/issue-106/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude's plan correctly fixes the unhandled stdin error (not the ChildProcess handler), keeps close as the sole settler with stderr recording for observability, and uses a PATH-stub regression test that matches repo conventions instead of the broken spawn mocks in the codex and cursor plans.",
+  "responseSha256": "3dc1960beb7ea370c233ad63d5e478d3f705fd7cbe75f02de19f3e896cd082b0",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "9ffed172e329458efb90644a59367bd356ef8a36",
+      "path": ".plans/issue-106/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "8229e27a6444c1b3074f47248940436fcef14abb",
+      "path": ".plans/issue-106/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e48368fbf4ada6e060e519824a8ec3bcedc116e7",
+      "path": ".plans/issue-106/review.md"
+    }
+  ]
+}

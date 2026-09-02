@@ -1,0 +1,46 @@
+{
+  "actionId": "ce142933-44c1-4a6d-b166-6e06b9083432",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "b3fdb2b71fbcf29f0166f10865b1717b20a8d4c46a293af383a9ed027e55bdb9",
+  "issue": 106,
+  "issueSessionId": "issue-106:7bb6862d488c3174c82051a7dde6867c685157cc",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "20bde887e99d5ffb3ae67fbb392cd8a6663091d2",
+      "path": ".plans/issue-106/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a60e99434ea6a13f0bebd87cf0714485e7ee0635",
+      "path": ".plans/issue-106/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "2c627878ca43664c46fee3a57a5c7c7af1fbb7eb",
+      "path": ".plans/issue-106/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "It is the only plan that names the actual defect (child.once(\"error\") covers the ChildProcess, not child.stdin) and keeps close as the sole settler with a code-agnostic non-fatal handler, and its PATH-stub test exercises the real spawn path, whereas codex's and cursor's EventEmitter/vi.mock cases cannot even reach child.stdin because runTmux calls child.stdout.setEncoding first and their EPIPE-only branch turns the ECONNRESET/ERR_STREAM_DESTROYED form of the same race into a rejection that discards a successful tmux result.",
+  "responseSha256": "41de66eeca30e36fd94d3e09db2643c01d7066eb53e740c867ea02666bd9d708",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "9ffed172e329458efb90644a59367bd356ef8a36",
+      "path": ".plans/issue-106/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "8229e27a6444c1b3074f47248940436fcef14abb",
+      "path": ".plans/issue-106/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e48368fbf4ada6e060e519824a8ec3bcedc116e7",
+      "path": ".plans/issue-106/review.md"
+    }
+  ]
+}
