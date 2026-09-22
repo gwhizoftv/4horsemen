@@ -59,6 +59,40 @@ const runnerWithPrompt = (
   };
 };
 
+describe("Claude usage-wait veto", () => {
+  it.each([
+    "Usage limit reached", "You've hit your Opus limit · resets 3:45pm", "You've hit your limit", "⎿ You’ve hit your limit",
+    "Continuing automatically", "Automatic continuation cancelled", "Wait stopped",
+    "Select an option for this usage limit"
+  ])("vetoes %s despite a prompt, mode and idle sentinel", (banner) => {
+    expect(harnessPromptReadiness(`${banner}\n❯ auto mode -- INSERT --\n${COORD_IDLE_SENTINEL}`, "claude"))
+      .toEqual({ ready: false, reason: "claude-usage-wait" });
+  });
+
+  it("does not confuse quoted prose with active chrome", () => {
+    expect(harnessPromptReadiness("> Usage limit reached\n- `Continuing automatically`\n❯", "claude").ready).toBe(true);
+    expect(harnessPromptReadiness(`Usage limit reached\n${"old history\n".repeat(15)}❯`, "claude").ready).toBe(true);
+  });
+
+  it.each([2, 3])("rechecks before keys and never submits if the wait appears at capture %s", async (blockedCapture) => {
+    let captures = 0;
+    let reservations = 0;
+    const keys: string[] = [];
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return ok("0\tclaude\t0\t0");
+      if (args[0] === "capture-pane") return ok(++captures >= blockedCapture ? "Usage limit reached\n❯" : "❯");
+      if (args[0] === "send-keys") keys.push(args.at(-1)!);
+      return ok();
+    }, undefined, undefined, undefined, noopSleep);
+    const result = await tmux.nudge(1, { id: "claude", root: "/clone", launcher: "claude", delivery: "both",
+      harnessProcess: "claude", nudgePrelude: [], nudgeSubmit: ["Enter"] }, "/action.md", () => undefined,
+    undefined, undefined, () => { reservations++; });
+    expect(result).toMatchObject({ status: "busy", reason: "claude-usage-wait", stage: blockedCapture === 2 ? "prompt" : "mid-send" });
+    expect(keys).not.toContain("Enter");
+    expect(reservations).toBe(blockedCapture === 2 ? 0 : 1);
+  });
+});
+
 describe("tmux boundary", () => {
   it("keeps flat session names stable and namespaces nested workspaces", () => {
     const runner: TmuxRunner = async () => ok();

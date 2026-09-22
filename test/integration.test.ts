@@ -480,6 +480,9 @@ describe("lifecycle nudge canary", () => {
       backgroundActive: false
     });
     await loop.runTick();
+    expect(submittedPrompts).toBe(1); // a Stop cannot bypass the 60-second minimum
+    nowMs += 15_000;
+    await loop.runTick();
     expect(submittedPrompts).toBe(2);
     await loop.runTick();
     expect(submittedPrompts).toBe(2);

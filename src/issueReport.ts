@@ -52,6 +52,13 @@ export const renderIssueReport = (
     `Final pin (PR head): ${pin ?? "(none)"}`,
     `Published branch: ${branch ?? "(not pushed yet)"}`
   ];
+  if (cursors.manualPaused) lines.push("Manual pause: active (plain coord resume clears only this pause).");
+  for (const hold of cursors.holds) {
+    const sends = cursors.actionSafety[hold.agent]?.sends ?? 0;
+    lines.push(`Hold ${hold.id}: ${hold.agent}, ${hold.reason}; cause unknown, reset unknown, retry owner: ${hold.retryOwner}; sends ${sends}/4.`);
+    lines.push(`Recovery: inspect the agent, then coord resume --issue ${start.issue} --hold ${hold.id}` +
+      (hold.reason === "nudge-loop" ? " --reset-nudge-budget" : ""));
+  }
   if (url !== null) lines.push(`Pull request: ${url}`);
   else if (pin !== null && cursors.publication.status === "not-required") {
     lines.push(

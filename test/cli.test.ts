@@ -12,6 +12,7 @@ import {
   cursorsStateSchema,
   readConfig,
   readCursorsState,
+  readJournal,
   readStartState,
   writeCursorsState
 } from "../src/state.js";
@@ -453,6 +454,37 @@ describe("CLI", () => {
     expect(output.join("")).toContain("Issue 1:");
     expect(output.join("")).toContain("Final pin (PR head):");
     expect(output.join("")).toContain("Policy: owner-only");
+  });
+
+  it("resumes only the selected hold, audits budget resets, and reports remaining pauses", async () => {
+    const fixture = setup();
+    expect(await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+      { processRunner: resolvableStartGit, makeRunLoop: fakeLoop })).toBe(0);
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const current = readCursorsState(paths);
+    const actionId = actionIdFor("codex");
+    const id = "20000000-0000-4000-8000-000000000001";
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...current, manualPaused: true, paused: true,
+      agents: { ...current.agents, codex: { ...current.agents.codex, actionId } },
+      actionSafety: { codex: { actionId, sends: 4, lastSendAt: current.updatedAt, activityAt: current.updatedAt } },
+      holds: [{ id, agent: "codex", actionId, sessionId: null, reason: "nudge-loop", evidenceId: "budget",
+        observedAt: current.updatedAt, resetsAt: null, confidence: "unknown", retryOwner: "owner" }] }));
+    const output: string[] = [];
+    const errors: string[] = [];
+    const io = { stdout: (s: string) => output.push(s), stderr: (s: string) => errors.push(s) };
+    const args = ["--issue", "1", "--coord-root", fixture.runtime];
+    expect(await runCli(["resume", ...args], { io })).toBe(0);
+    expect(readCursorsState(paths).paused).toBe(true);
+    expect(output.join("")).toContain("1 active hold");
+    expect(await runCli(["restart-action", ...args], { io })).toBe(2);
+    expect(await runCli(["resume", ...args, "--reset-nudge-budget"], { io })).toBe(2);
+    expect(await runCli(["resume", ...args, "--hold", id], { io })).toBe(2);
+    expect(await runCli(["resume", ...args, "--hold", id, "--reset-nudge-budget"], { io })).toBe(0);
+    expect(readCursorsState(paths)).toMatchObject({ paused: false, holds: [], actionSafety: { codex: { sends: 0 } } });
+    expect(readJournal(paths).filter((event) => event.type === "hold-released")).toEqual([
+      expect.objectContaining({ details: expect.objectContaining({ hold: id, resetNudgeBudget: true }) })
+    ]);
+    expect(readJournal(paths).filter((event) => event.type === "resumed")).toHaveLength(1);
   });
 
   it("prints all four analytics sections, rejects unknown flags, and fails clearly without a journal", async () => {

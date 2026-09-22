@@ -83,7 +83,7 @@ import {
 import { renderIssueReport } from "./issueReport.js";
 import { formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
-import { TmuxController } from "./tmux.js";
+import { harnessPromptReadiness, TmuxController } from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
@@ -740,6 +740,7 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "foreground-mismatch": "the foreground process is not this agent's harness",
   "trust-dialog": "the harness is waiting on its trust-this-folder prompt",
   "claude-no-prompt": "no idle prompt is visible in the pane",
+  "claude-usage-wait": "Claude is waiting for a usage limit; coordinator input is blocked",
   "cursor-turn-chrome": "the pane shows in-flight turn chrome",
   "antigravity-turn-chrome": "the pane shows in-flight turn chrome",
   "antigravity-verify-overlay": "the account-verify overlay is up and discards keystrokes",
@@ -757,6 +758,11 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
 const deferralRationale = (code: string): string =>
   DEFERRAL_RATIONALE[code] ?? "the terminal or lifecycle layer refused delivery";
 
+// Delivery protection is deliberately independent of the observability watchdog.
+const NUDGE_REPEAT_DELAYS_MS = [60_000, 120_000, 240_000];
+const OBSERVATION_INTERVAL_MS = 60_000;
+const STALE_ACTIVITY_MS = 300_000;
+
 export class CoordinatorRunLoop {
   private readonly mirror: BareMirror;
   private readonly tmux: TmuxController | null;
@@ -771,8 +777,6 @@ export class CoordinatorRunLoop {
   private readonly observabilityWatchdogMs: number;
   /** Last RN/round announced on `log`, so resume and first prepare do not repeat. */
   private loggedPhaseKey: string | null = null;
-  /** Last deferral code printed per `<agent>:<actionId>`, so an unchanged reason stays quiet. */
-  private readonly loggedDeferral = new Map<string, string>();
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
@@ -855,6 +859,147 @@ export class CoordinatorRunLoop {
     mutation: (current: CursorsState) => CursorsState
   ): CursorsState {
     return requireStateMutation(this.paths, cursors.stateRevision, mutation);
+  }
+
+  private ensureActionSafety(cursors: CursorsState, agent: string, actionId: string): CursorsState {
+    if (cursors.actionSafety[agent]?.actionId === actionId) return cursors;
+    return this.mutate(cursors, (current) => ({ ...current, actionSafety: {
+      ...current.actionSafety, [agent]: {
+        actionId, sends: 0, lastSendAt: null, reserved: false, deferrals: [], releasedEvidence: [],
+        observationChecks: 0, nextObservationAt: null, activityAt: this.now()
+      }
+    } }));
+  }
+
+  private hold(
+    cursors: CursorsState, agent: string, reason: CursorsState["holds"][number]["reason"], evidenceId: string
+  ): CursorsState {
+    evidenceId = `${reason}:${evidenceId}`;
+    const safety = cursors.actionSafety[agent]!;
+    if (safety.releasedEvidence.includes(evidenceId) || cursors.holds.some((hold) => hold.evidenceId === evidenceId)) return cursors;
+    const now = this.now();
+    let hold: CursorsState["holds"][number] = {
+      id: randomUUID(), agent, actionId: safety.actionId,
+      sessionId: readAgentLifecycle(this.paths).agents[agent]?.sessionId ?? null,
+      reason, evidenceId, observedAt: now, resetsAt: null, confidence: "unknown", retryOwner: reason === "vendor-wait" ? "vendor" : "owner"
+    };
+    const next = this.mutate(cursors, (current) => {
+      const event = appendJournal(this.paths, { type: "hold-created", agent, actionId: safety.actionId,
+        details: { ...hold, eventId: `hold:${evidenceId}` } }, now);
+      // Recover the same hold if the append survived but cursor replacement did not.
+      hold = { ...hold, id: String(event.details.id), observedAt: event.at };
+      if (!current.paused) appendJournal(this.paths, { type: "paused", details: { hold: hold.id, eventId: `pause:${hold.id}` } }, now);
+      return { ...current, paused: true, holds: [...current.holds, hold], updatedAt: now };
+    });
+    this.log(`Issue ${readStartState(this.paths).issue}: ${agent} held (${reason}; cause/reset unknown). ` +
+      `Inspect the agent, then coord resume --issue ${this.paths.issue} --hold ${hold.id}` +
+      (reason === "nudge-loop" ? " --reset-nudge-budget" : ""));
+    return next;
+  }
+
+  private observationEvidence(agent: string, actionId: string): string {
+    const entry = readAgentLifecycle(this.paths).agents[agent];
+    return `${actionId}:observation:${entry?.sessionId ?? "none"}:${entry?.lastEventAt ?? "none"}`;
+  }
+
+  /** One reservation path for initial, idle, reissue and lost-delivery sends. */
+  private async deliver(
+    start: StartState, cursors: CursorsState, agent: string, actionId: string, actionDigest: string,
+    reason: "initial" | "idle" | "reissue"
+  ): Promise<CursorsState> {
+    const config = start.agents.find((candidate) => candidate.id === agent);
+    if (this.tmux === null || config === undefined || !["nudge", "both"].includes(config.delivery)) return cursors;
+    cursors = this.ensureActionSafety(cursors, agent, actionId);
+    const safety = cursors.actionSafety[agent]!;
+    if (safety.reserved) return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends}`);
+    // A reissue cannot interrupt ongoing/background work either.
+    const entry = readAgentLifecycle(this.paths).agents[agent];
+    if (entry?.execution === "working" || entry?.backgroundActive === true || (entry?.pendingInputCount ?? 0) > 0) return cursors;
+    if (safety.sends >= 4) return this.hold(cursors, agent, "nudge-loop", `${actionId}:budget:${safety.lastSendAt}`);
+    const delay = NUDGE_REPEAT_DELAYS_MS[safety.sends - 1] ?? 0;
+    if (safety.lastSendAt !== null && Date.parse(this.now()) - Date.parse(safety.lastSendAt) < delay) return cursors;
+    let sentAt = this.now();
+    const reserve = (): void => {
+      this.authority(cursors);
+      sentAt = this.now();
+      cursors = this.mutate(cursors, (current) => ({ ...current, actionSafety: {
+        ...current.actionSafety, [agent]: { ...safety, sends: safety.sends + 1, lastSendAt: sentAt, reserved: true }
+      } }));
+    };
+    // An exception or lost authority after any key is ambiguous: leave the durable charge intact.
+    let result;
+    try {
+      result = await this.tmux.nudge(start.issue, config, agentRuntimePaths(this.paths, agent).action,
+        () => this.authority(cursors), actionId, actionDigest, reserve);
+    } catch (error) {
+      this.authority(cursors);
+      if (error instanceof StateConflictError) throw error;
+      return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`);
+    }
+    this.authority(cursors);
+    if (result.status !== "sent" && result.stage === "mid-send") {
+      return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`);
+    }
+    if (result.status === "sent") {
+      markActionInjected(this.paths, agent, actionId, actionDigest, sentAt);
+      return this.mutate(cursors, (current) => {
+        appendJournal(this.paths, { type: "nudged", agent, actionId,
+          details: { actionDigest, readiness: result.detail ?? "vendor-prompt", [reason]: true } }, this.now());
+        return { ...current, actionSafety: { ...current.actionSafety, [agent]: {
+          ...current.actionSafety[agent]!, reserved: false, lastSendAt: this.now()
+        } } };
+      });
+    }
+    if (result.status === "gone") return this.hold(cursors, agent, "harness-gone", this.observationEvidence(agent, actionId));
+    if (result.status === "busy") {
+      if (entry?.action?.retryableInjectionAt === null) markActionInjectionDeferred(this.paths, agent, actionId, actionDigest, this.now());
+      if (result.reason === "claude-usage-wait") return this.hold(cursors, agent, "vendor-wait", this.observationEvidence(agent, actionId));
+      return this.journalDeferral(start, cursors, agent, actionId, actionDigest, "scrape", result.reason,
+        deferralRationale(result.reason), result.detail);
+    }
+    return cursors;
+  }
+
+  /** No hooks is a primary path, even when the last cached execution was working. */
+  private async observeUnfinished(start: StartState, cursors: CursorsState, agent: string, actionId: string): Promise<CursorsState> {
+    if (this.tmux === null) return cursors;
+    let safety = cursors.actionSafety[agent]!;
+    if (safety.reserved) return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends}`);
+    const now = this.now();
+    const entry = readAgentLifecycle(this.paths).agents[agent];
+    const freshAt = entry?.action?.actionId === actionId ? entry.lastEventAt : null;
+    if (freshAt !== null && freshAt !== undefined && Date.parse(freshAt) > Date.parse(safety.activityAt)) {
+      safety = { ...safety, activityAt: freshAt, observationChecks: 0, nextObservationAt: null };
+      cursors = this.mutate(cursors, (current) => ({ ...current, actionSafety: { ...current.actionSafety, [agent]: safety } }));
+    }
+    if (safety.nextObservationAt !== null && Date.parse(now) < Date.parse(safety.nextObservationAt)) return cursors;
+    const evidence = this.observationEvidence(agent, actionId);
+    const target = this.tmux.target(start.issue, agent);
+    const pane = await this.tmux.inspectPane(target).catch(() => null);
+    this.authority(cursors);
+    if (pane === null) return this.hold(cursors, agent, "unobservable", evidence);
+    const injectedAt = entry?.action?.injectedAt;
+    const correlationMissing = injectedAt !== null && injectedAt !== undefined && entry?.action?.delivery === "injected" &&
+      Date.parse(now) - Date.parse(injectedAt) >= this.observabilityWatchdogMs;
+    const stale = Date.parse(now) - Date.parse(safety.activityAt) >= STALE_ACTIVITY_MS;
+    // Fresh lifecycle activity is the only supported activity proof here. A changing
+    // spinner/clock or a static prompt must not replenish the observation budget.
+    const observationReleased = safety.releasedEvidence.includes(`unobservable:${evidence}`);
+    const checks = !observationReleased && (correlationMissing || stale) ? Math.min(3, safety.observationChecks + 1) : 0;
+    cursors = this.mutate(cursors, (current) => ({ ...current, actionSafety: { ...current.actionSafety, [agent]: {
+      ...safety, observationChecks: checks, nextObservationAt: new Date(Date.parse(now) + OBSERVATION_INTERVAL_MS).toISOString()
+    } } }));
+    if (!pane.alive) return this.hold(cursors, agent, "harness-gone", evidence);
+    if (checks > 0) {
+      const text = await this.tmux.capturePane(target).catch(() => null);
+      this.authority(cursors);
+      if (text === null) return this.hold(cursors, agent, "unobservable", evidence);
+      const config = start.agents.find((candidate) => candidate.id === agent);
+      const readiness = harnessPromptReadiness(text, config?.id ?? agent, actionId);
+      if (!readiness.ready && readiness.reason === "claude-usage-wait") return this.hold(cursors, agent, "vendor-wait", evidence);
+      if (checks >= 3) return this.hold(cursors, agent, "unobservable", evidence);
+    }
+    return cursors;
   }
 
   private logPhase(
@@ -969,61 +1114,10 @@ export class CoordinatorRunLoop {
         this.now()
       );
     });
-    const config = start.agents.find((candidate) => candidate.id === agent);
     const actionDigest = sha256OfFile(runtime.action);
     orderAgentAction(this.paths, agent, order.actionId, actionDigest, this.now());
-    if (this.tmux !== null && config !== undefined) {
-      const injectionStartedAt = this.now();
-      const result = await this.tmux.nudge(
-        start.issue,
-        config,
-        runtime.action,
-        () => this.authority(next),
-        order.actionId,
-        actionDigest
-      );
-      this.authority(next);
-      if (result.status === "sent") {
-        markActionInjected(this.paths, agent, order.actionId, actionDigest, injectionStartedAt);
-        this.verbose(`nudged ${agent} (${stepId}) → ${runtime.action}`);
-        this.loggedDeferral.delete(`${agent}\u0000${order.actionId}`);
-        next = this.mutate(next, (current) => {
-          appendJournal(
-            this.paths,
-            {
-              type: "nudged",
-              agent,
-              actionId: order.actionId,
-              details: { actionDigest, readiness: result.detail ?? "vendor-prompt" }
-            },
-            this.now()
-          );
-          return current;
-        });
-      } else if (result.status === "gone") {
-        this.verbose(`nudge skipped for ${agent}: harness gone (${result.reason})`);
-        next = this.mutate(next, (current) => replaceCursor(current, agent, { status: "harness-gone" }, this.now()));
-      } else if (result.status === "busy") {
-        markActionInjectionDeferred(this.paths, agent, order.actionId, actionDigest, this.now());
-        next = this.mutate(next, (current) => {
-          this.journalDeferral(
-            start,
-            current,
-            agent,
-            order.actionId,
-            actionDigest,
-            "scrape",
-            result.reason,
-            deferralRationale(result.reason),
-            result.detail
-          );
-          return current;
-        });
-      }
-    } else {
-      this.verbose(`ordered ${agent} (${stepId}) → ${runtime.action}`);
-    }
-    return next;
+    next = this.ensureActionSafety(next, agent, order.actionId);
+    return this.deliver(start, next, agent, order.actionId, actionDigest, "initial");
   }
 
   /** Refresh bound paths on an in-flight implement/revise order after extractor upgrades. */
@@ -1075,8 +1169,8 @@ export class CoordinatorRunLoop {
    * refuses while hooks say the agent is idle and healthy, `splitBrain` marks
    * it so status and debug do not have to be reconciled across two axes. The
    * line reaches normal stdout when the workflow is actually waiting on this
-   * agent or when the two layers disagree; a repeat of an unchanged code stays
-   * verbose so a long stall does not flood the operator.
+   * agent or when the two layers disagree. Already-seen codes stay silent in
+   * both the journal and stdout, including across restarts.
    */
   private journalDeferral(
     start: StartState,
@@ -1088,7 +1182,11 @@ export class CoordinatorRunLoop {
     code: string,
     human: string,
     detail?: string
-  ): void {
+  ): CursorsState {
+    cursors = this.ensureActionSafety(cursors, agent, actionId);
+    code = Object.hasOwn(DEFERRAL_RATIONALE, code) ? code : "unknown";
+    const safety = cursors.actionSafety[agent]!;
+    if (safety.deferrals.includes(code)) return cursors;
     const entry = readAgentLifecycle(this.paths).agents[agent];
     const splitBrain =
       layer === "scrape" && entry?.execution === "idle" && entry.health !== "degraded";
@@ -1096,39 +1194,43 @@ export class CoordinatorRunLoop {
     // unanswered. A deferral for an agent that is verifying or waiting on a peer
     // is background detail, so it belongs in the journal but not on stdout.
     const gateWaiting = cursors.agents[agent]?.status === "ordered";
-    appendJournal(
-      this.paths,
-      {
-        type: "nudge-deferred",
-        agent,
-        actionId,
-        details: {
-          layer,
-          code,
-          human,
-          ...(detail === undefined ? {} : { detail }),
-          ...(splitBrain ? { splitBrain: true } : {}),
-          gateWaiting,
-          actionDigest,
-          hooks: {
-            execution: entry?.execution ?? "unknown",
-            health: entry?.health ?? "unknown",
-            pendingInputCount: entry?.pendingInputCount ?? null,
-            backgroundActive: entry?.backgroundActive ?? null
+    const next = this.mutate(cursors, (current) => {
+      appendJournal(
+        this.paths,
+        {
+          type: "nudge-deferred",
+          agent,
+          actionId,
+          details: {
+            eventId: `deferral:${start.issueSessionId}:${agent}:${actionId}:${code}`,
+            layer,
+            code,
+            human,
+            ...(detail === undefined ? {} : { detail }),
+            ...(splitBrain ? { splitBrain: true } : {}),
+            gateWaiting,
+            actionDigest,
+            hooks: {
+              execution: entry?.execution ?? "unknown",
+              health: entry?.health ?? "unknown",
+              pendingInputCount: entry?.pendingInputCount ?? null,
+              backgroundActive: entry?.backgroundActive ?? null
+            }
           }
-        }
-      },
-      this.now()
-    );
-    const key = `${agent}\u0000${actionId}`;
-    const repeated = this.loggedDeferral.get(key) === code;
-    this.loggedDeferral.set(key, code);
+        },
+        this.now()
+      );
+      return { ...current, actionSafety: { ...current.actionSafety, [agent]: {
+        ...safety, deferrals: [...safety.deferrals, code]
+      } } };
+    });
     const detailText = detail === undefined ? "" : ` (${detail})`;
     const message = splitBrain
       ? `Issue ${start.issue}: ${agent} looks idle to its lifecycle hooks but its terminal is not ready to accept typing (${code}${detailText}); ${human}`
       : `Issue ${start.issue}: delivery to ${agent} deferred: ${code}${detailText}; ${human}`;
-    if ((gateWaiting || splitBrain) && !repeated) this.log(message);
+    if (gateWaiting || splitBrain) this.log(message);
     else this.verbose(message);
+    return next;
   }
 
   private async maybeLifecycleNudge(
@@ -1222,7 +1324,7 @@ export class CoordinatorRunLoop {
             tmux === null ||
             !(await tmux.actionAbsentAtReadyPrompt(start.issue, config, actionId, () => this.authority(cursors)))
           ) {
-            this.journalDeferral(
+            return this.journalDeferral(
               start,
               cursors,
               agent,
@@ -1232,7 +1334,6 @@ export class CoordinatorRunLoop {
               decision.code,
               deferralRationale(decision.code)
             );
-            return cursors;
           }
           this.authority(cursors);
           markInjectedActionAbsent(this.paths, agent, actionId, actionDigest, this.now());
@@ -1251,58 +1352,7 @@ export class CoordinatorRunLoop {
       }
     }
 
-    if (this.tmux === null) return cursors;
-    const injectionStartedAt = this.now();
-    const result = await this.tmux.nudge(
-      start.issue,
-      config,
-      runtime.action,
-      () => this.authority(cursors),
-      actionId,
-      actionDigest
-    );
-    this.authority(cursors);
-    if (result.status === "sent") {
-      markActionInjected(this.paths, agent, actionId, actionDigest, injectionStartedAt);
-      this.verbose(`nudged ${agent} (${reason}) → ${runtime.action}`);
-      this.loggedDeferral.delete(`${agent}\u0000${actionId}`);
-      return this.mutate(cursors, (current) => {
-        appendJournal(
-          this.paths,
-          {
-            type: "nudged",
-            agent,
-            actionId,
-            details: {
-              actionDigest,
-              readiness: result.detail ?? "vendor-prompt",
-              ...(reason === "idle" ? { idle: true } : { reissue: true })
-            }
-          },
-          this.now()
-        );
-        return current;
-      });
-    }
-    if (result.status === "gone") {
-      this.verbose(`nudge ${reason} skipped for ${agent}: harness gone (${result.reason})`);
-      return this.mutate(cursors, (current) => replaceCursor(current, agent, { status: "harness-gone" }, this.now()));
-    }
-    if (result.status === "busy") {
-      markActionInjectionDeferred(this.paths, agent, actionId, actionDigest, this.now());
-      this.journalDeferral(
-        start,
-        cursors,
-        agent,
-        actionId,
-        actionDigest,
-        "scrape",
-        result.reason,
-        deferralRationale(result.reason),
-        result.detail
-      );
-    }
-    return cursors;
+    return this.deliver(start, cursors, agent, actionId, actionDigest, reason);
   }
 
   private accept(start: StartState, cursors: CursorsState, decision: Extract<MachineDecision, { type: "accept-submission" }>): CursorsState {
@@ -2101,6 +2151,7 @@ export class CoordinatorRunLoop {
   private async applyDecisions(start: StartState, cursors: CursorsState, decisions: readonly MachineDecision[]): Promise<CursorsState> {
     let next = cursors;
     for (const decision of decisions) {
+      if (next.paused || next.abandoned) return next;
       if (decision.type === "prepare-action") {
         this.logPhase(start.issue, decision.stepId, decision.round);
         next = await this.prepareAction(start, next, decision.agent, decision.stepId, decision.round);
@@ -2170,76 +2221,26 @@ export class CoordinatorRunLoop {
 
       for (const dropped of cursors.droppedAgents) clearCompletion(agentRuntimePaths(this.paths, dropped).complete);
       for (const agent of cursors.activeRoster) {
+      if (cursors.paused) return cursors;
       const cursor = cursors.agents[agent];
       if (cursor === undefined || cursor.actionId === null || cursor.stepId === null) continue;
       const runtime = agentRuntimePaths(this.paths, agent);
       const completion = readCompletion(runtime.complete);
+      if (this.tmux !== null && ["ordered", "intent", "verifying", "harness-gone"].includes(cursor.status)) {
+        cursors = this.ensureActionSafety(cursors, agent, cursor.actionId);
+        cursors = await this.observeUnfinished(start, cursors, agent, cursor.actionId);
+        if (cursors.paused) return cursors;
+      }
       if (completion.status === "missing") {
-        let harnessGone = cursor.status === "harness-gone";
         if (this.tmux !== null) {
-          const pane = await this.tmux.inspectPane(this.tmux.target(start.issue, agent));
-          this.authority(cursors);
-          if (!pane.alive) {
-            harnessGone = true;
-            cursors = this.mutate(cursors, (current) =>
-              replaceCursor(current, agent, { status: "harness-gone" }, this.now())
-            );
-          } else if (cursor.status === "ordered") {
+          if (cursor.status === "ordered") {
             cursors = await this.maybeLifecycleNudge(start, cursors, agent, cursor.actionId);
-          }
-        }
-        if (harnessGone) {
-          if (STEP_DEFINITIONS[cursor.stepId].submissionMode === "response") {
-            this.log(
-              `Owner action required: ${agent} harness is gone before a response marker was written.`
-            );
-            continue;
-          }
-          const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
-          this.authority(cursors);
-          const order = buildOrder(
-            this.paths,
-            start,
-            cursors,
-            agent,
-            cursor.stepId,
-            cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
-            cursor.actionId,
-            cursor.outstanding,
-            approvedPaths
-          );
-          const fetched = await this.mirror.fetchBranch(order.branch);
-          this.authority(cursors);
-          if (fetched.ok) {
-            let observation = await evaluateEvidence(order, fetched.tip, this.mirror as EvidenceMirror, () =>
-              this.authority(cursors)
-            );
-            this.authority(cursors);
-            observation = await this.verifyFinalizationChecks(start, order, observation, cursors);
-            this.authority(cursors);
-            if (observation.status === "satisfied") {
-              cursors = this.mutate(cursors, (current) => {
-                appendJournal(
-                  this.paths,
-                  {
-                    type: "intent-seen",
-                    agent,
-                    actionId: cursor.actionId as string,
-                    submissionSha: fetched.tip,
-                    details: { pushedThenDied: true }
-                  },
-                  this.now()
-                );
-                return current;
-              });
-              observations.push(observation);
-            } else if (observation.status === "rejected") {
-              this.log(`Owner action required: ${agent} harness is gone and origin tip is incomplete: ${observation.outstanding.join("; ")}`);
-            }
+            if (cursors.paused) return cursors;
           }
         }
         continue;
       }
+
       if (completion.status === "malformed") {
         cursors = await this.reissue(start, cursors, agent, [completion.message]);
         continue;
@@ -2363,6 +2364,8 @@ export class CoordinatorRunLoop {
       observations.push(observation);
       }
 
+      if (cursors.paused) return cursors;
+
       const pendingBatch = pendingOrFailedBallotBatch(
         cursors,
         cursors.issueCursor.stepId,
@@ -2377,6 +2380,7 @@ export class CoordinatorRunLoop {
       }
 
       if (observations.length > 0) cursors = await this.applyDecisions(start, cursors, decide({ start, cursors, observations }));
+      if (cursors.paused) return cursors;
       if (cursors.publication.status === "pending" || cursors.publication.status === "failed") {
         cursors = await this.publishAcceptedFinalization(start, cursors);
         if (cursors.publication.status !== "completed") return cursors;
@@ -2386,6 +2390,7 @@ export class CoordinatorRunLoop {
         const decisions = decide({ start, cursors }).filter((decision) => decision.type !== "wait");
         if (decisions.length === 0) break;
         cursors = await this.applyDecisions(start, cursors, decisions);
+        if (cursors.paused) return cursors;
         if (cursors.publication.status === "pending" || cursors.publication.status === "failed") {
           cursors = await this.publishAcceptedFinalization(start, cursors);
           if (cursors.publication.status !== "completed") return cursors;

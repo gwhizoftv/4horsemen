@@ -454,13 +454,67 @@ agent. Later stale completions from the dropped agent are ignored.
 An already-authorized reviser cannot be dropped because revision and
 finalization may not be silently rebound without a new authorization.
 
-`pause` retains actions, mirror data, journal, and tmux sessions. `resume` plus
-`run` continues from strict versioned state. State changes use a short
+`pause` retains actions, mirror data, journal, and tmux sessions. Plain `resume`
+clears only the manual pause; active safety holds still prevent advancement.
+After recovery, `run` continues from strict versioned state. State changes use a short
 exclusive lock plus a monotonic revision, so an in-flight fetch or check cannot
 overwrite a concurrent pause, drop, or abandon. `restart-action` reissues
 pending work without changing a gate. `answer` consumes one typed pending
 question, is idempotent for the same answer, and cannot create round 4.
 `abandon` stops the workflow while retaining its audit state.
+
+### Delivery safety and unknown holds
+
+All vendors (including Antigravity) share a durable delivery budget for each
+unfinished action: one initial send and at most three automatic repeats, spaced
+at least 60, 120 and 240 seconds after the previous send. These are minimum delays,
+not permission to send: lifecycle and terminal readiness must still allow it.
+The 45-second observability watchdog is independent of delivery spacing.
+Reissue, coordinator restart, changing error text and fresh idle epochs do not
+reset this budget. Partial/ambiguous sends consume a reservation and hold for
+owner inspection; a refusal before any key is sent consumes nothing.
+
+Deferral journals are transition-only: each `(agent, actionId, reason code)` is
+recorded once, including across restarts. Repeating a reason does not grow the
+journal or print another warning. Status remains available on demand.
+
+An exhausted nudge budget, ambiguous delivery, missing/dead harness, active
+Claude usage wait or insufficient observability creates a durable whole-issue
+hold. The coordinator preserves the roster, selected roles, pins, action files
+and incoming completion/response bytes; it does not hand off or pretend work
+completed. It does not stop an already-running vendor process. Claude wait UI
+vetoes typing even when a prompt is visible, including immediately before keys;
+the coordinator never disables Claude's native waiter.
+
+Silent agents need not deliver a terminal hook. Correlation failure, or five
+minutes without fresh lifecycle activity even if the last state was `working`,
+starts up to three local inspections at least 60 seconds apart. Budgets survive
+restart. A spinner, changing clock or a static prompt is not a heartbeat; a long
+quiet operation may therefore need an owner to inspect and release an unknown
+hold. No prompt is sent merely to test liveness. Normal local pane checks also
+run no more than once per minute; a dead pane observed at any delivery boundary
+holds immediately.
+
+Use `coord status --issue N` to see the hold ID and recovery instruction. After
+inspecting the agent and fixing the underlying problem:
+
+```sh
+coord resume --issue N --hold HOLD_ID
+# A nudge-loop latch requires explicit authorization for a fresh send budget:
+coord resume --issue N --hold HOLD_ID --reset-nudge-budget
+coord resume --issue N  # separately clear a manual pause, if present
+coord run --issue N
+```
+
+Include `--product PATH` or `--coord-root PATH` as usual. Releasing one hold never
+clears another hold or a manual pause, and is audited. Retired actions cannot be
+released; `restart-action` and `drop` require resolving holds first. Identical released
+observations do not immediately re-hold; new session/lifecycle evidence may.
+
+These holds mean **unknown cause and unknown reset**, not confirmed quota
+exhaustion. There is no automatic recovery, vendor API polling, statusline
+installation or local-clock deadline parsing in this change. Vendor-specific
+evidence and conservative recovery are tracked separately in issue #140.
 
 ## Recovery and finalization
 

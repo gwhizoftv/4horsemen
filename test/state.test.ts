@@ -16,6 +16,7 @@ import {
   readJournal,
   readStartState,
   setPaused,
+  releaseHold,
   StateConflictError,
   startStateSchema,
   coordinatorConfigSchema,
@@ -68,6 +69,36 @@ const initialize = () => {
 };
 
 describe("operational state", () => {
+  it("keeps manual and independent holds separate and requires an explicit breaker reset", () => {
+    const { paths } = initialize();
+    const now = "2026-09-22T12:00:00.000Z";
+    const actionId = "10000000-0000-4000-8000-000000000001";
+    const id = "20000000-0000-4000-8000-000000000001";
+    const otherId = "20000000-0000-4000-8000-000000000002";
+    const original = readCursorsState(paths);
+    const hold = { id, agent: "codex", actionId, sessionId: null, reason: "nudge-loop", evidenceId: "budget",
+      observedAt: now, resetsAt: null, confidence: "unknown", retryOwner: "owner" };
+    const held = cursorsStateSchema.parse({ ...original, paused: true, manualPaused: true,
+      agents: { ...original.agents, codex: { ...original.agents.codex, actionId } },
+      actionSafety: { codex: { actionId, sends: 4, lastSendAt: now, activityAt: now } },
+      holds: [hold, { ...hold, id: otherId, reason: "unobservable", evidenceId: "missing" }] });
+    expect(() => releaseHold(held, id, false, now)).toThrow(/reset-nudge-budget/);
+    expect(() => releaseHold(held, otherId, true, now)).toThrow(/Only a nudge-loop/);
+    expect(() => releaseHold({ ...held, abandoned: true }, id, true, now)).toThrow(/retired/);
+    expect(() => releaseHold({ ...held, agents: original.agents }, id, true, now)).toThrow(/retired/);
+    const plain = setPaused(held, false, now);
+    expect(plain.paused).toBe(true);
+    expect(plain.holds).toHaveLength(2);
+    const released = releaseHold(held, id, true, now);
+    expect(released.paused).toBe(true);
+    expect(released.manualPaused).toBe(true);
+    expect(released.holds.map((entry) => entry.id)).toEqual([otherId]);
+    expect(released.actionSafety.codex).toMatchObject({ sends: 0, reserved: false, releasedEvidence: ["budget"] });
+    expect(released.agents).toEqual(held.agents);
+    const last = releaseHold(released, otherId, false, now);
+    expect(last.paused).toBe(true); // still manually paused
+    expect(setPaused(last, false, now).paused).toBe(false);
+  });
   it("writes strict versioned start, cursor, and journal state atomically", () => {
     const { paths } = initialize();
     expect(readStartState(paths)).toMatchObject({ formatVersion: 4, maxRevisionRounds: 3 });

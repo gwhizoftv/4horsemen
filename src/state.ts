@@ -521,6 +521,31 @@ export const ballotBatchSchema = z
   })
   .strict();
 
+const actionSafetySchema = z.object({
+  actionId: z.string().uuid(),
+  sends: z.number().int().nonnegative().default(0),
+  lastSendAt: timestampSchema.nullable().default(null),
+  reserved: z.boolean().default(false),
+  deferrals: z.array(z.string()).default([]),
+  releasedEvidence: z.array(z.string()).default([]),
+  observationChecks: z.number().int().nonnegative().default(0),
+  nextObservationAt: timestampSchema.nullable().default(null),
+  activityAt: timestampSchema
+}).strict();
+
+const holdSchema = z.object({
+  id: z.string().uuid(),
+  agent: agentIdSchema,
+  actionId: z.string().uuid(),
+  sessionId: z.string().nullable(),
+  reason: z.enum(["nudge-loop", "delivery-uncertain", "harness-gone", "unobservable", "vendor-wait"]),
+  evidenceId: z.string(),
+  observedAt: timestampSchema,
+  resetsAt: z.null(),
+  confidence: z.literal("unknown"),
+  retryOwner: z.enum(["owner", "vendor"])
+}).strict();
+
 export const cursorsStateSchema = z
   .object({
     formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
@@ -570,6 +595,9 @@ export const cursorsStateSchema = z
       })
       .strict(),
     paused: z.boolean(),
+    manualPaused: z.boolean().default(false),
+    holds: z.array(holdSchema).default([]),
+    actionSafety: z.record(agentIdSchema, actionSafetySchema).default({}),
     abandoned: z.boolean(),
     completed: z.boolean(),
     agents: z.record(agentIdSchema, agentCursorSchema),
@@ -589,6 +617,8 @@ const journalEventTypeSchema = z.enum([
   "agent-observability-degraded",
   "agent-observability-recovered",
   "nudge-deferred",
+  "hold-created",
+  "hold-released",
   "intent-seen",
   "verify-result",
   "gate-advanced",
@@ -954,11 +984,12 @@ export const appendJournal = (
     // cursor replacement, so a process can die after the durable append but
     // before the state file is renamed.  Reusing the event by identity makes
     // that retry exact-once and also preserves its original decidedAt value.
-    if (input.type === "decision-derived" && typeof input.details.decisionId === "string") {
+    const identity = input.type === "decision-derived" ? "decisionId" : "eventId";
+    if (typeof input.details[identity] === "string") {
       const existing = readJournal(paths).find(
         (event) =>
-          event.type === "decision-derived" &&
-          event.details.decisionId === input.details.decisionId
+          event.type === input.type &&
+          event.details[identity] === input.details[identity]
       );
       if (existing !== undefined) return existing;
     }
@@ -1083,7 +1114,31 @@ export const replaceCursor = (
 };
 
 export const setPaused = (cursors: CursorsState, paused: boolean, now = new Date().toISOString()): CursorsState =>
-  cursorsStateSchema.parse({ ...cursors, paused, updatedAt: now });
+  cursorsStateSchema.parse({ ...cursors, manualPaused: paused, paused: paused || cursors.holds.length > 0, updatedAt: now });
+
+/** Scoped owner recovery never releases another hold or a manual pause. */
+export const releaseHold = (cursors: CursorsState, id: string, resetBudget: boolean, now: string): CursorsState => {
+  const hold = cursors.holds.find((entry) => entry.id === id);
+  if (hold === undefined) throw new Error(`Unknown hold ${id}.`);
+  if (cursors.abandoned || cursors.completed || cursors.agents[hold.agent]?.actionId !== hold.actionId) {
+    throw new Error("Cannot release a hold for retired work.");
+  }
+  if (hold.reason === "nudge-loop" && !resetBudget) throw new Error("Nudge-loop release requires --reset-nudge-budget.");
+  if (resetBudget && hold.reason !== "nudge-loop") throw new Error("Only a nudge-loop hold permits --reset-nudge-budget.");
+  const safety = cursors.actionSafety[hold.agent];
+  if (safety === undefined || safety.actionId !== hold.actionId) throw new Error("Hold action safety is missing.");
+  const holds = cursors.holds.filter((entry) => entry.id !== id);
+  return cursorsStateSchema.parse({
+    ...cursors, holds, paused: cursors.manualPaused || holds.length > 0, updatedAt: now,
+    actionSafety: { ...cursors.actionSafety, [hold.agent]: {
+      ...safety,
+      ...(resetBudget ? { sends: 0, lastSendAt: null } : {}),
+      reserved: false,
+      releasedEvidence: [...safety.releasedEvidence, hold.evidenceId],
+      observationChecks: 0, nextObservationAt: null, activityAt: now
+    } }
+  });
+};
 
 /**
  * Every decision identity includes the ordered active roster, so any drop

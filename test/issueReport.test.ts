@@ -80,6 +80,9 @@ const complete = (overrides: Partial<CursorsState["publication"]> = {}): Cursors
       tip: "d".repeat(40)
     },
     paused: false,
+    manualPaused: false,
+    holds: [],
+    actionSafety: {},
     abandoned: false,
     completed: true,
     agents: {},
@@ -100,6 +103,18 @@ const complete = (overrides: Partial<CursorsState["publication"]> = {}): Cursors
   }) as CursorsState;
 
 describe("issue report", () => {
+  it("reports unknown holds and scoped recovery without implying capacity or auto-resume", () => {
+    const cursors = complete();
+    cursors.completed = false; cursors.paused = true; cursors.manualPaused = true;
+    cursors.holds = [{ id: "hold-id", agent: "cursor", actionId: "action-id", sessionId: null,
+      reason: "nudge-loop", evidenceId: "budget", observedAt: cursors.updatedAt, resetsAt: null,
+      confidence: "unknown", retryOwner: "owner" }];
+    const text = renderIssueReport(start("owner-only"), cursors);
+    expect(text).toContain("Manual pause: active");
+    expect(text).toContain("cause unknown, reset unknown, retry owner: owner");
+    expect(text).toContain("coord resume --issue 1 --hold hold-id --reset-nudge-budget");
+    expect(text).not.toContain("quota exhausted");
+  });
   it("names the pin, published branch, and that the owner merges", () => {
     const text = renderIssueReport(start("coord-open-unmerged"), complete());
     expect(text).toContain("Issue 1: complete");
