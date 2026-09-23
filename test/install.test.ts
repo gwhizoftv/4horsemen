@@ -745,6 +745,12 @@ describe("completion mailbox wiring", () => {
  * already owns. Asserting the rendered text is not enough: what matters is the
  * exit code real git invocations get, so these run the generated file.
  */
+const shimEnv = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env };
+  delete env.COORD_GIT_DELEGATE;
+  return env;
+};
+
 describe("generated git shim", () => {
   const runGit = (
     clone: string,
@@ -756,7 +762,11 @@ describe("generated git shim", () => {
       join(clone, ".coord", "bin"), ...args], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, COORD_ISSUE: "42", ...env },
+      // `git commit` in a coord-launched session runs through this very shim,
+      // which exports COORD_GIT_DELEGATE=1 before exec'ing real git. Inherited,
+      // it makes the shim under test delegate instead of deciding, so the
+      // refusal cases silently pass through. The suite runs inside that hook.
+      env: { ...shimEnv(), COORD_ISSUE: "42", ...env },
       stdio: ["ignore", "pipe", "pipe"]
     });
     const match = /exit=(\d+)\s*$/.exec(result);
