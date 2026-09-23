@@ -93,7 +93,7 @@ describe("operational state", () => {
     expect(released.paused).toBe(true);
     expect(released.manualPaused).toBe(true);
     expect(released.holds.map((entry) => entry.id)).toEqual([otherId]);
-    expect(released.actionSafety.codex).toMatchObject({ sends: 0, reserved: false, releasedEvidence: ["budget"] });
+    expect(released.actionSafety.codex).toMatchObject({ sends: 0, reserved: false, holdGeneration: 1 });
     expect(released.agents).toEqual(held.agents);
     const last = releaseHold(released, otherId, false, now);
     expect(last.paused).toBe(true); // still manually paused

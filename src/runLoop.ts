@@ -762,6 +762,7 @@ const deferralRationale = (code: string): string =>
 const NUDGE_REPEAT_DELAYS_MS = [60_000, 120_000, 240_000];
 const OBSERVATION_INTERVAL_MS = 60_000;
 const STALE_ACTIVITY_MS = 300_000;
+const UNKNOWN_DEFERRAL_LIMIT = 8;
 
 export class CoordinatorRunLoop {
   private readonly mirror: BareMirror;
@@ -777,6 +778,8 @@ export class CoordinatorRunLoop {
   private readonly observabilityWatchdogMs: number;
   /** Last RN/round announced on `log`, so resume and first prepare do not repeat. */
   private loggedPhaseKey: string | null = null;
+  /** Healthy local probes are advisory; only unresolved episodes need durable schedules. */
+  private readonly healthyObservations = new Map<string, { identity: string; nextAt: number }>();
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
@@ -865,7 +868,7 @@ export class CoordinatorRunLoop {
     if (cursors.actionSafety[agent]?.actionId === actionId) return cursors;
     return this.mutate(cursors, (current) => ({ ...current, actionSafety: {
       ...current.actionSafety, [agent]: {
-        actionId, sends: 0, lastSendAt: null, reserved: false, deferrals: [], releasedEvidence: [],
+        actionId, sends: 0, lastSendAt: null, reserved: false, deferrals: [], holdGeneration: 0,
         observationChecks: 0, nextObservationAt: null, activityAt: this.now()
       }
     } }));
@@ -874,9 +877,9 @@ export class CoordinatorRunLoop {
   private hold(
     cursors: CursorsState, agent: string, reason: CursorsState["holds"][number]["reason"], evidenceId: string
   ): CursorsState {
-    evidenceId = `${reason}:${evidenceId}`;
     const safety = cursors.actionSafety[agent]!;
-    if (safety.releasedEvidence.includes(evidenceId) || cursors.holds.some((hold) => hold.evidenceId === evidenceId)) return cursors;
+    evidenceId = `${reason}:${safety.holdGeneration}:${evidenceId}`;
+    if (cursors.holds.some((hold) => hold.evidenceId === evidenceId)) return cursors;
     const now = this.now();
     let hold: CursorsState["holds"][number] = {
       id: randomUUID(), agent, actionId: safety.actionId,
@@ -937,6 +940,11 @@ export class CoordinatorRunLoop {
       return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`);
     }
     this.authority(cursors);
+    // Native retry ownership remains known even if earlier keys were ambiguous.
+    // Leave any reservation charged until explicit owner recovery.
+    if (result.status === "busy" && result.reason === "claude-usage-wait") {
+      return this.hold(cursors, agent, "vendor-wait", this.observationEvidence(agent, actionId));
+    }
     if (result.status !== "sent" && result.stage === "mid-send") {
       return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`);
     }
@@ -953,7 +961,6 @@ export class CoordinatorRunLoop {
     if (result.status === "gone") return this.hold(cursors, agent, "harness-gone", this.observationEvidence(agent, actionId));
     if (result.status === "busy") {
       if (entry?.action?.retryableInjectionAt === null) markActionInjectionDeferred(this.paths, agent, actionId, actionDigest, this.now());
-      if (result.reason === "claude-usage-wait") return this.hold(cursors, agent, "vendor-wait", this.observationEvidence(agent, actionId));
       return this.journalDeferral(start, cursors, agent, actionId, actionDigest, "scrape", result.reason,
         deferralRationale(result.reason), result.detail);
     }
@@ -972,25 +979,36 @@ export class CoordinatorRunLoop {
       safety = { ...safety, activityAt: freshAt, observationChecks: 0, nextObservationAt: null };
       cursors = this.mutate(cursors, (current) => ({ ...current, actionSafety: { ...current.actionSafety, [agent]: safety } }));
     }
+    if (safety.observationChecks >= 3) {
+      return this.hold(cursors, agent, "unobservable", this.observationEvidence(agent, actionId));
+    }
     if (safety.nextObservationAt !== null && Date.parse(now) < Date.parse(safety.nextObservationAt)) return cursors;
     const evidence = this.observationEvidence(agent, actionId);
-    const target = this.tmux.target(start.issue, agent);
-    const pane = await this.tmux.inspectPane(target).catch(() => null);
-    this.authority(cursors);
-    if (pane === null) return this.hold(cursors, agent, "unobservable", evidence);
     const injectedAt = entry?.action?.injectedAt;
     const correlationMissing = injectedAt !== null && injectedAt !== undefined && entry?.action?.delivery === "injected" &&
       Date.parse(now) - Date.parse(injectedAt) >= this.observabilityWatchdogMs;
     const stale = Date.parse(now) - Date.parse(safety.activityAt) >= STALE_ACTIVITY_MS;
     // Fresh lifecycle activity is the only supported activity proof here. A changing
     // spinner/clock or a static prompt must not replenish the observation budget.
-    const observationReleased = safety.releasedEvidence.includes(`unobservable:${evidence}`);
-    const checks = !observationReleased && (correlationMissing || stale) ? Math.min(3, safety.observationChecks + 1) : 0;
-    cursors = this.mutate(cursors, (current) => ({ ...current, actionSafety: { ...current.actionSafety, [agent]: {
-      ...safety, observationChecks: checks, nextObservationAt: new Date(Date.parse(now) + OBSERVATION_INTERVAL_MS).toISOString()
-    } } }));
-    if (!pane.alive) return this.hold(cursors, agent, "harness-gone", evidence);
+    const checks = correlationMissing || stale ? Math.min(3, safety.observationChecks + 1) : 0;
+    const identity = `${actionId}:${safety.holdGeneration}:${safety.activityAt}`;
+    const healthy = this.healthyObservations.get(agent);
+    if (checks === 0 && healthy?.identity === identity && Date.parse(now) < healthy.nextAt) return cursors;
+    const nextAt = Date.parse(now) + OBSERVATION_INTERVAL_MS;
     if (checks > 0) {
+      // Reserve before inspection: a crash/restart cannot replenish the episode.
+      cursors = this.mutate(cursors, (current) => ({ ...current, actionSafety: { ...current.actionSafety, [agent]: {
+        ...safety, observationChecks: checks, nextObservationAt: new Date(nextAt).toISOString()
+      } } }));
+    } else {
+      this.healthyObservations.set(agent, { identity, nextAt });
+    }
+    const target = this.tmux.target(start.issue, agent);
+    const pane = await this.tmux.inspectPane(target).catch(() => null);
+    this.authority(cursors);
+    if (pane === null) return this.hold(cursors, agent, "unobservable", evidence);
+    if (!pane.alive) return this.hold(cursors, agent, "harness-gone", evidence);
+    if (checks > 0 || agent === "claude") {
       const text = await this.tmux.capturePane(target).catch(() => null);
       this.authority(cursors);
       if (text === null) return this.hold(cursors, agent, "unobservable", evidence);
@@ -1184,9 +1202,13 @@ export class CoordinatorRunLoop {
     detail?: string
   ): CursorsState {
     cursors = this.ensureActionSafety(cursors, agent, actionId);
-    code = Object.hasOwn(DEFERRAL_RATIONALE, code) ? code : "unknown";
     const safety = cursors.actionSafety[agent]!;
     if (safety.deferrals.includes(code)) return cursors;
+    const unknown = !Object.hasOwn(DEFERRAL_RATIONALE, code);
+    const unknownCount = safety.deferrals.filter((key) => !Object.hasOwn(DEFERRAL_RATIONALE, key)).length;
+    // Keep distinct unexpected diagnostics, then emit one explicit overflow row.
+    const key = unknown && unknownCount >= UNKNOWN_DEFERRAL_LIMIT ? "unrecognized-overflow" : code;
+    if (safety.deferrals.includes(key)) return cursors;
     const entry = readAgentLifecycle(this.paths).agents[agent];
     const splitBrain =
       layer === "scrape" && entry?.execution === "idle" && entry.health !== "degraded";
@@ -1202,9 +1224,10 @@ export class CoordinatorRunLoop {
           agent,
           actionId,
           details: {
-            eventId: `deferral:${start.issueSessionId}:${agent}:${actionId}:${code}`,
+            eventId: `deferral:${start.issueSessionId}:${agent}:${actionId}:${key}`,
             layer,
             code,
+            ...(key === "unrecognized-overflow" ? { furtherUnknownCodesSuppressed: true } : {}),
             human,
             ...(detail === undefined ? {} : { detail }),
             ...(splitBrain ? { splitBrain: true } : {}),
@@ -1221,7 +1244,7 @@ export class CoordinatorRunLoop {
         this.now()
       );
       return { ...current, actionSafety: { ...current.actionSafety, [agent]: {
-        ...safety, deferrals: [...safety.deferrals, code]
+        ...safety, deferrals: [...safety.deferrals, key]
       } } };
     });
     const detailText = detail === undefined ? "" : ` (${detail})`;
@@ -2226,7 +2249,7 @@ export class CoordinatorRunLoop {
       if (cursor === undefined || cursor.actionId === null || cursor.stepId === null) continue;
       const runtime = agentRuntimePaths(this.paths, agent);
       const completion = readCompletion(runtime.complete);
-      if (this.tmux !== null && ["ordered", "intent", "verifying", "harness-gone"].includes(cursor.status)) {
+      if (this.tmux !== null && ["ordered", "intent", "verifying"].includes(cursor.status)) {
         cursors = this.ensureActionSafety(cursors, agent, cursor.actionId);
         cursors = await this.observeUnfinished(start, cursors, agent, cursor.actionId);
         if (cursors.paused) return cursors;

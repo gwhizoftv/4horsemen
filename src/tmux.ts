@@ -112,7 +112,9 @@ const sentinelAtTail = (plain: string): boolean => {
 /** Active unquoted terminal lines, not prose discussing a past limit. Fail closed. */
 const claudeUsageWait = (plain: string): boolean => {
   const tail = plain.split("\n").slice(-12).join("\n");
-  return /^\s*(?:[⏸⏳!⎿●]\s*)?(?:Usage limit reached|(?:You've|You’ve|You have) hit your(?: .+)? limit|Continuing automatically|(?:Automatic )?(?:continuation|wait)(?:ing)? (?:cancelled|canceled|stopped)|(?:Choose|Select) (?:an option|how to continue).*limit)/im.test(tail);
+  // Keep the line anchor to reject quoted prose, but admit TUI spinners/boxes.
+  const prefix = String.raw`${SPINNER_PREFIX}(?:[│┃⏸⏳!⎿●]${SPINNER_PREFIX})*`;
+  return new RegExp(String.raw`^${prefix}(?:Usage limit (?:reached|reset)|(?:You've|You’ve|You have) hit your(?: .+)? limit|continuing (?:automatically|shortly)|Your usage limit has reset|Automatic continue (?:cancelled|canceled|stopped)|Wait here, then continue automatically)`, "im").test(tail);
 };
 
 /**

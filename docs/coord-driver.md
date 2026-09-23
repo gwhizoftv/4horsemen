@@ -476,7 +476,9 @@ owner inspection; a refusal before any key is sent consumes nothing.
 
 Deferral journals are transition-only: each `(agent, actionId, reason code)` is
 recorded once, including across restarts. Repeating a reason does not grow the
-journal or print another warning. Status remains available on demand.
+journal or print another warning. Up to eight distinct unrecognized codes keep
+their original diagnostics; one overflow record then signals suppression of
+further unknown codes. Status remains available on demand.
 
 An exhausted nudge budget, ambiguous delivery, missing/dead harness, active
 Claude usage wait or insufficient observability creates a durable whole-issue
@@ -493,7 +495,9 @@ restart. A spinner, changing clock or a static prompt is not a heartbeat; a long
 quiet operation may therefore need an owner to inspect and release an unknown
 hold. No prompt is sent merely to test liveness. Normal local pane checks also
 run no more than once per minute; a dead pane observed at any delivery boundary
-holds immediately.
+holds immediately. Healthy probe cadence is in memory (restart may probe again),
+without cursor revisions or writes. Unresolved observation episodes still use
+durable check counts and deadlines across restarts.
 
 Use `coord status --issue N` to see the hold ID and recovery instruction. After
 inspecting the agent and fixing the underlying problem:
@@ -508,8 +512,21 @@ coord run --issue N
 
 Include `--product PATH` or `--coord-root PATH` as usual. Releasing one hold never
 clears another hold or a manual pause, and is audited. Retired actions cannot be
-released; `restart-action` and `drop` require resolving holds first. Identical released
-observations do not immediately re-hold; new session/lifecycle evidence may.
+released; `restart-action` and `drop` require resolving holds first. Owner release
+acknowledges a hold, not the continuing condition: a fresh local observation of
+the same dead pane or wait banner can re-hold immediately, even without new hooks.
+Each acknowledged hold generation has a distinct crash-idempotent journal identity.
+
+This intentionally replaces the earlier pushed-tip recovery on harness death:
+even a valid submission at origin without a completion receipt does not bypass
+a dead-harness hold. Inspect the published work and restore the harness/receipt
+before releasing the hold; the coordinator does not synthesize completion.
+
+**Claude native continuation does not resume the coordinator in #126.** Even if
+Claude resumes overnight and writes `complete`, the issue stays held until the
+owner releases it. A new lifecycle callback or completion bytes alone are not
+automatic hold-clearance authority. Native completion-based recovery belongs to
+#140; this PR prioritizes bounded, owner-visible stopping over unattended recovery.
 
 These holds mean **unknown cause and unknown reset**, not confirmed quota
 exhaustion. There is no automatic recovery, vendor API polling, statusline

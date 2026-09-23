@@ -346,7 +346,6 @@ export const agentCursorSchema = z
       "paused",
       "complete",
       "failed",
-      "harness-gone",
       "dropped"
     ]),
     attempt: z.number().int().nonnegative(),
@@ -527,7 +526,7 @@ const actionSafetySchema = z.object({
   lastSendAt: timestampSchema.nullable().default(null),
   reserved: z.boolean().default(false),
   deferrals: z.array(z.string()).default([]),
-  releasedEvidence: z.array(z.string()).default([]),
+  holdGeneration: z.number().int().nonnegative().default(0),
   observationChecks: z.number().int().nonnegative().default(0),
   nextObservationAt: timestampSchema.nullable().default(null),
   activityAt: timestampSchema
@@ -1134,7 +1133,9 @@ export const releaseHold = (cursors: CursorsState, id: string, resetBudget: bool
       ...safety,
       ...(resetBudget ? { sends: 0, lastSendAt: null } : {}),
       reserved: false,
-      releasedEvidence: [...safety.releasedEvidence, hold.evidenceId],
+      // An acknowledgment is not immunity to a still-active local condition.
+      // A fresh observation may create a distinct, crash-idempotent hold.
+      holdGeneration: safety.holdGeneration + 1,
       observationChecks: 0, nextObservationAt: null, activityAt: now
     } }
   });

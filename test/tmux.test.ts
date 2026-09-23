@@ -60,10 +60,19 @@ const runnerWithPrompt = (
 };
 
 describe("Claude usage-wait veto", () => {
+  // Vendor strings: https://code.claude.com/docs/en/interactive-mode#wait-for-a-usage-limit-to-reset
+  // and https://code.claude.com/docs/en/errors#youve-hit-your-session-limit.
+  // Spinner/box prefixes below are terminal-decoration variants, not vendor prose.
   it.each([
-    "Usage limit reached", "You've hit your Opus limit · resets 3:45pm", "You've hit your limit", "⎿ You’ve hit your limit",
-    "Continuing automatically", "Automatic continuation cancelled", "Wait stopped",
-    "Select an option for this usage limit"
+    "Usage limit reached · continuing automatically at 3:45pm · esc to cancel",
+    "You've hit your Opus limit · resets 3:45pm",
+    "Usage limit reset · continuing automatically",
+    "continuing shortly",
+    "Your usage limit has reset · press enter to continue",
+    "Automatic continue cancelled",
+    "Automatic continue stopped after repeated usage-limit hits · /rate-limit-options to try again",
+    "⠧ Usage limit reached · continuing automatically at 3:45pm",
+    "│ Usage limit reached · continuing automatically at 3:45pm │"
   ])("vetoes %s despite a prompt, mode and idle sentinel", (banner) => {
     expect(harnessPromptReadiness(`${banner}\n❯ auto mode -- INSERT --\n${COORD_IDLE_SENTINEL}`, "claude"))
       .toEqual({ ready: false, reason: "claude-usage-wait" });

@@ -175,18 +175,23 @@ const safetyFixture = (vendor = "codex") => {
   const current = readCursorsState(paths);
   writeCursorsState(paths, cursorsStateSchema.parse({ ...current, activeRoster: [vendor], agents: { [vendor]: current.agents.codex } }));
   writeFileSync(paths.agentLifecycle, JSON.stringify(initialAgentLifecycle([vendor], now())));
-  const ui = { foreground: "harness", busy: false, dead: false, text: "❯ Antigravity Gemini >", failSubmit: false, sends: 0, captures: 0 };
+  const ui = { foreground: "harness", busy: false, dead: false, text: "❯ Antigravity Gemini >", failSubmit: false,
+    waitAtCapture: Infinity, sends: 0, captures: 0 };
   const messages: string[] = [];
   const tmux = new TmuxController(async (args) => {
     if (args[0] === "display-message") return { exitCode: 0, stdout: `${ui.dead ? 1 : 0}\t${ui.foreground}\t${ui.busy ? 1 : 0}\t0\n`, stderr: "" };
-    if (args[0] === "capture-pane") { ui.captures++; return { exitCode: 0, stdout: ui.text, stderr: "" }; }
+    if (args[0] === "capture-pane") {
+      ui.captures++;
+      return { exitCode: 0, stdout: ui.captures >= ui.waitAtCapture ? "Usage limit reset · continuing automatically\n❯" : ui.text, stderr: "" };
+    }
     if (args[0] === "send-keys" && args.includes("-l")) ui.sends++;
     if (args[0] === "send-keys" && !args.includes("-l") && ui.sends > 0 && ui.failSubmit) throw new Error("connection lost");
     return { exitCode: 0, stdout: "", stderr: "" };
   }, undefined, undefined, undefined, async () => undefined);
   // Every tick uses a new coordinator: all protections must be durable.
-  const tick = () => new CoordinatorRunLoop(paths, { tmux, now, nudgeRetryMs: 1,
-    log: (message) => messages.push(message) }).runTick();
+  const makeLoop = () => new CoordinatorRunLoop(paths, { tmux, now, nudgeRetryMs: 1,
+    log: (message) => messages.push(message) });
+  const tick = () => makeLoop().runTick();
   let turn = 0;
   const working = () => {
     const action = readAgentLifecycle(paths).agents[vendor]!.action!;
@@ -195,10 +200,49 @@ const safetyFixture = (vendor = "codex") => {
   };
   const stop = () => observeAgentLifecycle(paths, vendor, { kind: "stopped", eventName: "stop", sessionId: "session",
     turnId: `turn-${turn}`, backgroundActive: false }, now());
-  return { paths, ui, messages, now, tick, working, stop, advance: (ms: number) => { nowMs += ms; } };
+  return { paths, ui, messages, now, tick, makeLoop, working, stop, advance: (ms: number) => { nowMs += ms; } };
 };
 
 describe("durable delivery safety", () => {
+  it("keeps healthy minute-boundary probes out of durable cursor state", async () => {
+    const f = safetyFixture();
+    await f.tick(); f.advance(1); f.working();
+    const loop = f.makeLoop();
+    await loop.runTick();
+    const before = readFileSync(f.paths.cursors, "utf8");
+    for (let minute = 0; minute < 4; minute++) {
+      f.advance(60_000);
+      await loop.runTick();
+      expect(readFileSync(f.paths.cursors, "utf8")).toBe(before);
+    }
+    await f.tick(); // even a restarted advisory probe must not rewrite authority
+    expect(readFileSync(f.paths.cursors, "utf8")).toBe(before);
+    f.advance(60_000);
+    expect((await loop.runTick()).actionSafety.codex?.observationChecks).toBe(1);
+  });
+
+  it("retains distinct unknown deferral diagnostics with a bounded overflow record", async () => {
+    const f = safetyFixture();
+    await f.tick();
+    const start = readStartState(f.paths);
+    const action = readAgentLifecycle(f.paths).agents.codex!.action!;
+    let current = readCursorsState(f.paths);
+    for (let index = 0; index < 12; index++) {
+      current = f.makeLoop()["journalDeferral"](start, current, "codex", action.actionId, action.actionDigest,
+        "scrape", `new-reason-${index}`, "unknown refusal", `diagnostic-${index}`);
+    }
+    const events = readJournal(f.paths).filter((event) => event.type === "nudge-deferred");
+    expect(events).toHaveLength(9); // eight distinct unknown codes plus one overflow
+    expect(events[0]?.details).toMatchObject({ code: "new-reason-0", detail: "diagnostic-0" });
+    expect(events[1]?.details).toMatchObject({ code: "new-reason-1", detail: "diagnostic-1" });
+    expect(events.at(-1)?.details.furtherUnknownCodesSuppressed).toBe(true);
+    expect(current.actionSafety.codex?.deferrals).toHaveLength(9);
+    const before = readFileSync(f.paths.cursors, "utf8");
+    f.makeLoop()["journalDeferral"](start, current, "codex", action.actionId, action.actionDigest,
+      "scrape", "new-reason-1", "changed wording", "changed diagnostic");
+    expect(readFileSync(f.paths.cursors, "utf8")).toBe(before);
+  });
+
   it("deduplicates A/B/A and append-before-cursor recovery without repeated writes", async () => {
     const f = safetyFixture();
     f.ui.foreground = "bash";
@@ -276,6 +320,17 @@ describe("durable delivery safety", () => {
     expect(f.ui.sends).toBe(1);
   });
 
+  it("does not repeat a third observation reserved before a crash", async () => {
+    const f = safetyFixture();
+    await f.tick();
+    mutateCursorsState(f.paths, (current) => ({ ...current, actionSafety: { codex: {
+      ...current.actionSafety.codex!, observationChecks: 3, nextObservationAt: f.now()
+    } } }));
+    const captures = f.ui.captures;
+    expect((await f.tick()).holds[0]?.reason).toBe("unobservable");
+    expect(f.ui.captures).toBe(captures);
+  });
+
   it("recovers the original hold ID after append-before-cursor failure", async () => {
     const f = safetyFixture();
     await f.tick();
@@ -307,6 +362,16 @@ describe("durable delivery safety", () => {
     expect(f.ui.sends).toBe(0);
   });
 
+  it("keeps native ownership and the charge when a Claude wait appears mid-send", async () => {
+    const f = safetyFixture("claude");
+    f.ui.waitAtCapture = 3; // the prelude has been sent; literal text has not
+    const held = await f.tick();
+    expect(held.holds[0]).toMatchObject({ reason: "vendor-wait", retryOwner: "vendor" });
+    expect(held.actionSafety.claude).toMatchObject({ sends: 1, reserved: true });
+    expect(f.ui.sends).toBe(0);
+    expect((await f.tick()).holds).toEqual(held.holds);
+  });
+
   it.each([false, true])("holds silent Cursor with stale working=%s after three bounded inspections", async (working) => {
     const f = safetyFixture("cursor");
     await f.tick();
@@ -327,16 +392,25 @@ describe("durable delivery safety", () => {
     expect(f.ui.sends).toBe(1);
   });
 
-  it("suppresses released old evidence but holds a new session failure", async () => {
-    const f = safetyFixture("cursor");
-    await f.tick(); f.ui.dead = true;
+  it.each(["cursor", "claude"])("re-holds a still-broken %s after release without needing new hooks", async (vendor) => {
+    const f = safetyFixture(vendor);
+    await f.tick();
+    if (vendor === "cursor") f.ui.dead = true;
+    else f.ui.text = "Usage limit reached · continuing automatically at 3:45pm · esc to cancel\n❯";
     const held = await f.tick();
-    expect(held.holds[0]?.reason).toBe("harness-gone");
+    const reason = vendor === "cursor" ? "harness-gone" : "vendor-wait";
+    expect(held.holds[0]?.reason).toBe(reason);
+    const lifecycle = readFileSync(f.paths.agentLifecycle, "utf8");
     mutateCursorsState(f.paths, (current) => releaseHold(current, held.holds[0]!.id, false, f.now()));
-    expect((await f.tick()).paused).toBe(false);
-    f.advance(1);
-    observeAgentLifecycle(f.paths, "cursor", { kind: "session-start", eventName: "session-start", sessionId: "new-session" }, f.now());
-    expect((await f.tick()).holds[0]?.reason).toBe("harness-gone");
+    const released = readCursorsState(f.paths);
+    const reheld = await f.tick();
+    expect(reheld.holds[0]?.reason).toBe(reason);
+    expect(reheld.holds[0]?.id).not.toBe(held.holds[0]?.id);
+    expect(reheld.actionSafety[vendor]?.sends).toBe(held.actionSafety[vendor]?.sends);
+    expect(readFileSync(f.paths.agentLifecycle, "utf8")).toBe(lifecycle);
+    writeCursorsState(f.paths, released); // a crash during the new hold still reuses that hold
+    expect((await f.tick()).holds).toEqual(reheld.holds);
+    expect(readJournal(f.paths).filter((event) => event.type === "hold-created")).toHaveLength(2);
   });
 });
 

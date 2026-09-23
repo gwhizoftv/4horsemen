@@ -40,8 +40,10 @@ migration, vendor API calls, settings/launcher changes, roster reduction or hand
 3. Latch an unknown-cause hold before a fourth repeat, not while a turn is working.
    Aggregate pause = manual pause OR active holds. Plain resume clears only manual
    pause; `resume --hold <id>` clears only one current hold. A nudge-loop hold also
-   requires `--reset-nudge-budget`. Audit owner release; suppress identical old
-   evidence, never a new failure. Preserve actions, roster, pins and incoming work.
+   requires `--reset-nudge-budget`. Audit owner release; fresh local observations
+   may re-hold a still-active condition without new hooks. Use hold generations
+   for crash-idempotent identities, not permanent evidence immunity.
+   Preserve actions, roster, pins and incoming work.
 4. Claude active limit/wait/menu/cancelled-wait UI vetoes typing, including at the
    last send boundary, regardless of a visible prompt. No settings changes.
 5. Missing/dead harness on unfinished work holds immediately. Unknown/stale
@@ -49,7 +51,9 @@ migration, vendor API calls, settings/launcher changes, roster reduction or hand
    60s apart; start after watchdog failure or five minutes without fresh activity,
    even if lifecycle is stuck working. Persist checks across restarts. No prompt
    liveness probes; uncertainty is not confirmed quota. Local observation uses
-   existing lifecycle/pane facilities, never polls vendor APIs.
+   existing lifecycle/pane facilities, never polls vendor APIs. Healthy probe
+   schedules stay in memory and do not rewrite authority; unresolved episode
+   schedules and budgets remain durable.
 6. Held ticks do not advance workflow or discard incoming bytes. Reports show
    unknown cause/deadline and owner retry ownership; no automatic resume in #126.
 
@@ -83,3 +87,29 @@ Do not derive 60/120/240 delivery minima from the 45s observability watchdog:
 diagnostic overrides must not shorten send protection. Vendor-specific feedback
 belongs to #140, not this implementation. Drop legacy paused-state migration per
 the owner's instruction that prelaunch backward compatibility is unnecessary.
+
+### PR #141 code review dispositions (2026-09-23)
+
+- Accept Cursor 1–3: replace permanent released-evidence suppression with a
+  hold generation, avoid healthy-probe cursor writes, and retain vendor-wait
+  ownership when the terminal refuses mid-send (without refunding charged keys).
+- Accept Claude 1–2: reproduce with documented output fixtures first, then cover
+  reset, pending continuation, cancellation and retry-exhaustion banners. Reuse
+  the spinner prefix and allow box decoration, but retain line anchoring so
+  quoted prose cannot accidentally become live wait evidence.
+- Accept Claude 5–6: preserve eight distinct unknown codes plus an overflow
+  diagnostic; remove the unreachable harness-gone cursor status (the hold reason
+  remains live).
+- Reject Claude 3's restoration of automatic pushed-tip advancement after
+  harness death. The agreed safe-hold boundary deliberately preserves incoming
+  work without advancing on missing/dead harnesses. This is a behavior tradeoff,
+  now explicit in docs and the PR, not a claim that the old verifier was broken.
+- Defer Claude 4's automatic release to #140; accept its documentation request.
+  A fresh lifecycle event need not mean a successful retry, and an unvalidated
+  completion marker must not clear a hold. Document that native continuation can
+  finish while coordinator advancement still awaits the owner.
+- Reject Claude 7's last-N journal search. Arbitrarily many lifecycle records
+  may follow an append before a crashed cursor update is retried; truncating the
+  identity search would break exactly-once recovery. Normal repeated deferrals
+  already bypass append and its scan entirely. A proven incremental identity
+  index is a separate optimization, not an arbitrary-tail correctness tradeoff.
