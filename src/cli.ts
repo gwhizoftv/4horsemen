@@ -52,6 +52,7 @@ import {
   readStartStateHeader,
   replaceCursor,
   setPaused,
+  releaseHold,
   verifyPhaseSchema,
   type BallotBatch,
   type CoordinatorConfig,
@@ -159,6 +160,7 @@ const parseArgs = (args: readonly string[], booleans: readonly string[] = []): P
  * absorbing the next flag.
  */
 const booleanFlags: Record<string, readonly string[]> = {
+  resume: ["reset-nudge-budget"],
   install: ["write-product", "vendor", "bootstrap-coordination", "dry-run"],
   uninstall: ["delete-clones", "wipe-runtime", "delete-coordination", "force", "dry-run"],
   "wipe-issue": ["force", "dry-run", "delete-evidence"],
@@ -231,6 +233,7 @@ Usage:
   coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
   coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
   coord pause|resume|restart-action|abandon --issue <issue> [--product <path> | --coord-root <path>]
+  coord resume --issue <issue> --hold <id> [--reset-nudge-budget] [--product <path> | --coord-root <path>]
   coord attach <issue> [--product <path> | --coord-root <path>]
   coord detach <issue> [--product <path> | --coord-root <path>] [--dry-run]
   coord detach manual [--product <path> | --config <path> --coord-root <path>] [--dry-run]
@@ -1482,6 +1485,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const now = new Date().toISOString();
       const result = mutateCursorsState(paths, (current) => {
         const question = current.ownerQuestion;
+        if (current.holds.length > 0 && answer !== "abandon") throw new Error("Release active holds explicitly before advancing an owner question.");
         if (question === null || question.id !== questionId) throw new Error(`Owner question ${questionId} is stale or unknown.`);
         if (!question.allowedAnswers.includes(answer)) {
           throw new Error(`Answer ${answer} is not allowed for owner question ${questionId}.`);
@@ -1550,6 +1554,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const agent = parsed.positionals[0] as string;
       const now = new Date().toISOString();
       mutateCursorsState(paths, (current) => {
+        if (current.holds.length > 0) throw new Error("Release active holds explicitly before dropping an agent.");
         if (current.completed || current.publication.status === "completed") {
           throw new Error("Cannot drop an agent after finalization publication or workflow completion.");
         }
@@ -1569,16 +1574,24 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "pause" || command === "resume") {
-      allowedFlags(parsed, ["issue", "coord-root", "product"]);
+      allowedFlags(parsed, ["issue", "coord-root", "product", ...(command === "resume" ? ["hold", "reset-nudge-budget"] : [])]);
       if (parsed.positionals.length !== 0) throw new Error(`${command} takes no positional arguments.`);
       const paths = existingContext(parsed, io);
       const paused = command === "pause";
       const now = new Date().toISOString();
-      mutateCursorsState(paths, (current) => {
-        appendJournal(paths, { type: paused ? "paused" : "resumed", details: {} }, now);
-        return setPaused(current, paused, now);
+      const holdId = parsed.flags.has("hold") ? requireFlag(parsed, "hold") : null;
+      const resetBudget = flagIsSet(parsed, "reset-nudge-budget");
+      if (resetBudget && holdId === null) throw new Error("--reset-nudge-budget requires --hold.");
+      const result = mutateCursorsState(paths, (current) => {
+        const next = holdId === null ? setPaused(current, paused, now) : releaseHold(current, holdId, resetBudget, now);
+        if (holdId !== null) appendJournal(paths, { type: "hold-released", details: {
+          hold: holdId, resetNudgeBudget: resetBudget, eventId: `release:${holdId}`
+        } }, now);
+        if (current.paused !== next.paused) appendJournal(paths, { type: next.paused ? "paused" : "resumed", details: {} }, now);
+        return next;
       });
-      io.stdout(`${paused ? "Paused" : "Resumed"} issue ${readStartState(paths).issue}.\n`);
+      io.stdout(`${result.state.paused ? "Paused" : "Resumed"} issue ${readStartState(paths).issue}.` +
+        (result.state.holds.length > 0 ? ` ${result.state.holds.length} active hold(s); use coord status for scoped recovery.` : "") + "\n");
       return 0;
     }
 
@@ -1589,6 +1602,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const requestedAgent = parsed.flags.has("agent") ? requireFlag(parsed, "agent") : null;
       const now = new Date().toISOString();
       mutateCursorsState(paths, (current) => {
+        if (current.holds.length > 0) throw new Error("Release active holds explicitly before restarting work.");
         const agents = requestedAgent === null ? current.activeRoster : [requestedAgent];
         if (agents.some((agent) => !current.activeRoster.includes(agent))) throw new Error("restart-action agent must be active.");
         appendJournal(paths, { type: "action-restarted", details: { agents } }, now);

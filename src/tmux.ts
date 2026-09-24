@@ -71,6 +71,7 @@ export const COORD_IDLE_SENTINEL = "COORD-IDLE: waiting for the next coordinator
 export type PromptBlockedReason =
   | "trust-dialog"
   | "claude-no-prompt"
+  | "claude-usage-wait"
   | "cursor-turn-chrome"
   | "antigravity-turn-chrome"
   | "antigravity-verify-overlay"
@@ -106,6 +107,14 @@ const inFlightStatusLine = (plain: string, words: string): boolean =>
 const sentinelAtTail = (plain: string): boolean => {
   const lines = plain.split("\n").map((line) => line.trim()).filter((line) => line !== "");
   return lines[lines.length - 1] === COORD_IDLE_SENTINEL;
+};
+
+/** Active unquoted terminal lines, not prose discussing a past limit. Fail closed. */
+const claudeUsageWait = (plain: string): boolean => {
+  const tail = plain.split("\n").slice(-12).join("\n");
+  // Keep the line anchor to reject quoted prose, but admit TUI spinners/boxes.
+  const prefix = String.raw`${SPINNER_PREFIX}(?:[│┃⏸⏳!⎿●]${SPINNER_PREFIX})*`;
+  return new RegExp(String.raw`^${prefix}(?:Usage limit (?:reached|reset)|(?:You've|You’ve|You have) hit your(?: .+)? limit|continuing (?:automatically|shortly)|Your usage limit has reset|Automatic continue (?:cancelled|canceled|stopped)|Wait here, then continue automatically)`, "im").test(tail);
 };
 
 /**
@@ -145,6 +154,7 @@ export const harnessPromptReadiness = (
   if (/trust this folder/i.test(plain)) return { ready: false, reason: "trust-dialog" };
   switch (agentId) {
     case "claude":
+      if (claudeUsageWait(plain)) return { ready: false, reason: "claude-usage-wait" };
       if (/❯|auto mode|-- INSERT --|-- NORMAL --|-- VISUAL/i.test(plain)) return ready();
       return sentinel ? { ready: true, reason: "idle-sentinel" } : { ready: false, reason: "claude-no-prompt" };
     case "cursor":
@@ -862,7 +872,8 @@ export class TmuxController {
     actionPath: string,
     assertAuthority: () => void = () => undefined,
     actionId?: string,
-    actionDigest?: string
+    actionDigest?: string,
+    reserveSend: () => void = () => undefined
   ): Promise<NudgeOutcome> {
     if (agent.delivery !== "nudge" && agent.delivery !== "both") {
       return { status: "disabled", reason: "delivery-disabled", stage: "config" };
@@ -888,11 +899,18 @@ export class TmuxController {
     // Some harnesses (notably agy) ignore tmux paste-buffer; literal send-keys
     // reaches the input widget. Prelude/submit keys come from agent config.
     const { prelude: preludeKeys, submit: submitKeys } = resolveNudgeKeys(agent, paneText);
+    let began = false;
     const send = async (args: readonly string[], fail: string): Promise<NudgeOutcome> => {
       const gate = await this.injectionGate(target, agent, assertAuthority);
       if (gate.status !== "ok") {
-        return { status: gate.status, reason: gate.reason, stage: "mid-send", ...(gate.detail === undefined ? {} : { detail: gate.detail }) };
+        return { status: gate.status, reason: gate.reason, stage: began ? "mid-send" : "gate", ...(gate.detail === undefined ? {} : { detail: gate.detail }) };
       }
+      if (agent.id === "claude") {
+        const latest = await this.capturePane(target);
+        assertAuthority();
+        if (claudeUsageWait(stripAnsi(latest))) return { status: "busy", reason: "claude-usage-wait", stage: began ? "mid-send" : "prompt" };
+      }
+      if (!began) { reserveSend(); began = true; }
       const result = await this.runner(["send-keys", ...args]);
       assertAuthority();
       if (result.exitCode !== 0) throw new Error(`${fail}${result.stderr}`);
