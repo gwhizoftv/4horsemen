@@ -139,7 +139,10 @@ export type Classification = {
 
 export const CLAUDE_TELEMETRY_FRESH_MS = 5 * 60_000;
 
-const latestDeadline = (windows: readonly ResourceWindow[], now: string): string | null => {
+/** Most windows one piece of evidence can carry; beyond this, evidence fails closed. */
+export const RESOURCE_WINDOW_LIMIT = 16;
+
+export const latestDeadline = (windows: readonly ResourceWindow[], now: string): string | null => {
   if (windows.length === 0 || windows.some((window) => window.resetsAt === null)) return null;
   const latest = Math.max(...windows.map((window) => Date.parse(window.resetsAt!)));
   return latest > Date.parse(now) ? new Date(latest).toISOString() : null;
@@ -311,7 +314,8 @@ export const assessCodexLimits = (limits: CodexLimits, now: string): CodexAssess
     classification: {
       failureClass,
       classConfidence: "confirmed",
-      windows: blocked.slice(0, 16),
+      // Deliberately unbounded here: a caller that cannot track every blocker must fail closed.
+      windows: blocked,
       detail: null,
       resetsAt: failureClass === "usage-window" ? latestDeadline(blocked, now) : null
     }
@@ -336,6 +340,26 @@ export const codexClearsBlockers = (limits: CodexLimits, prior: readonly Resourc
     return window !== undefined && window.windowDurationMins === blocked.windowDurationMins &&
       window.usedPercent !== null && window.usedPercent < 100;
   });
+};
+
+/**
+ * Blockers still unresolved after a fresh exhausted read. A prior blocker is
+ * dropped only when this snapshot shows the same window, with the same
+ * duration, below its limit; a window the snapshot omits stays blocked.
+ */
+export const mergeCodexBlockers = (
+  prior: readonly ResourceWindow[], limits: CodexLimits, blocked: readonly ResourceWindow[]
+): ResourceWindow[] => {
+  const key = (window: ResourceWindow): string => `${window.limitId}\0${window.window}`;
+  const merged = new Map(blocked.map((window) => [key(window), window]));
+  for (const old of prior) {
+    if (merged.has(key(old))) continue;
+    const fresh = limits.buckets.find((bucket) => bucket.limitId === old.limitId)?.windows.find((window) => window.window === old.window);
+    const resolved = fresh !== undefined && fresh.windowDurationMins === old.windowDurationMins &&
+      fresh.usedPercent !== null && fresh.usedPercent < 100;
+    if (!resolved) merged.set(key(old), old);
+  }
+  return [...merged.values()];
 };
 
 /** The CLI version in an App Server `userAgent` (e.g. `codex_cli_rs/0.156.1 (...)`), if it states one. */

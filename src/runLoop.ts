@@ -52,6 +52,9 @@ import {
   codexClearsBlockers,
   codexHelperVersion,
   HOLDING_CLASSES,
+  latestDeadline,
+  mergeCodexBlockers,
+  RESOURCE_WINDOW_LIMIT,
   type ResourceEvidence
 } from "./resourceEvidence.js";
 import { decide } from "./machine.js";
@@ -1232,7 +1235,8 @@ export class CoordinatorRunLoop {
     }
     if (resource.starts >= RESOURCE_MAX_STARTS) return terminate(cursors, "the quota observation budget for this action is spent");
     const reservation = randomUUID();
-    const session = readAgentLifecycle(this.paths).agents[agent]?.sessionId ?? null;
+    const lifecycle = readAgentLifecycle(this.paths);
+    const session = lifecycle.agents[agent]?.sessionId ?? null;
     let reserved: CursorsState | null = null;
     const outcome = reserveBinding(this.paths.coordRoot, bindingPaths,
       { reservation, issue: this.paths.issue, agent, startedAt: now },
@@ -1254,7 +1258,11 @@ export class CoordinatorRunLoop {
     const safety = latest.actionSafety[agent];
     if (latest.abandoned || latest.completed || safety?.actionId !== actionId ||
       latest.agents[agent]?.actionId !== actionId || safety.resource.inFlight !== reservation) return latest;
-    const stale = (readAgentLifecycle(this.paths).agents[agent]?.sessionId ?? null) !== session;
+    // So do a rebinding and any lifecycle change for the agent (session, turn, stop).
+    const lifecycleAfter = readAgentLifecycle(this.paths);
+    const stale = lifecycleAfter.stateRevision !== lifecycle.stateRevision ||
+      (lifecycleAfter.agents[agent]?.sessionId ?? null) !== session ||
+      JSON.stringify(this.codexBinding(readStartState(this.paths), agent)) !== JSON.stringify(binding);
     const later = this.now();
     return this.mutate(latest, (current) => this.applyCodexResult(start, current, agent, binding.accountId, binding.validatedVersion, result, stale, later));
   }
@@ -1291,22 +1299,31 @@ export class CoordinatorRunLoop {
       const delay = RESOURCE_RETRY_DELAYS_MS[failures - 1];
       if (delay === undefined) terminal("three quota reads failed");
       else resource = { ...resource, nextAt: new Date(Date.parse(now) + delay).toISOString() };
+    } else if (stale) {
+      // The snapshot predates the change: it can neither hold nor release. Retry under the binding spacing.
+      resource = { ...resource, nextAt: now };
     } else if (result.status === "identity" || result.limits.accountId !== accountId) {
       // Never infer identity from another field or the coordinator's own default account.
       const detail = result.status === "identity" ? "the bound CODEX_HOME has no ChatGPT account"
         : result.limits.accountId === null ? "the limits carried no account id" : "the limits belong to a different account";
       holdOn(evidence("auth-account", [], detail), null);
       terminal("the bound Codex account could not be confirmed");
-    } else if (!stale) {
+    } else {
       // Only an owner-validated CLI version, answering for the bound home, may release automatically.
       const validated = validatedVersion !== undefined && result.helper.codexHome !== null &&
         codexHelperVersion(result.helper.userAgent) === validatedVersion;
       const assessment = assessCodexLimits(result.limits, now);
       if (assessment.status === "exhausted") {
         const classification = assessment.classification;
-        holdOn(evidence(classification.failureClass, classification.windows, null), classification.resetsAt);
-        const deadline = classification.resetsAt;
-        if (deadline !== null && !base.consumedDeadlines.includes(deadline)) {
+        // Every unresolved earlier blocker stays; a partial snapshot never narrows the set.
+        const prior = existing?.evidence?.vendor === "codex" ? existing.evidence.windows : [];
+        const blockers = classification.failureClass === "usage-window"
+          ? mergeCodexBlockers(prior, result.limits, classification.windows) : classification.windows;
+        const overflow = blockers.length > RESOURCE_WINDOW_LIMIT;
+        const deadline = classification.failureClass === "usage-window" && !overflow ? latestDeadline(blockers, now) : null;
+        holdOn(evidence(classification.failureClass, blockers.slice(0, RESOURCE_WINDOW_LIMIT), null), deadline);
+        if (overflow) terminal("more blocked windows than can be tracked");
+        else if (deadline !== null && !base.consumedDeadlines.includes(deadline)) {
           // Consumed when scheduled: each epoch authorizes exactly one recheck.
           resource = { ...resource, nextAt: new Date(Date.parse(deadline) + DEADLINE_RECHECK_MS).toISOString(),
             consumedDeadlines: [...base.consumedDeadlines, deadline].slice(-16) };

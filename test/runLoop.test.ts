@@ -349,22 +349,35 @@ describe("vendor resource evidence and recovery", () => {
       return codexLimits(30, 200, { rateLimits: other }, { other });
     })(), undefined, true],
     ["keeps the hold when the deadline did not advance", codexLimits(100, 50), undefined, true],
-    ["keeps the hold when a manual pause arrives during the read", codexLimits(30, 200), "pause", true]
+    ["keeps the hold when a manual pause arrives during the read", codexLimits(30, 200), "pause", true],
+    ["keeps the hold when the agent's lifecycle changes during the read", codexLimits(30, 200), "lifecycle", true],
+    ["keeps the hold when the binding changes during the read", codexLimits(30, 200), "rebind", true]
   ])("%s", async (_label, second, during, stillHeld) => {
     let pause = false;
     const f = quotaFixture([codexLimits(100, 50), second], () => {
-      if (pause) mutateCursorsState(f.paths, (current) => setPaused(current, true, f.now()));
+      if (!pause) return;
+      if (during === "pause") mutateCursorsState(f.paths, (current) => setPaused(current, true, f.now()));
+      if (during === "lifecycle") observeAgentLifecycle(f.paths, "codex", { kind: "stopped", eventName: "Stop", sessionId: "session" }, f.now());
+      if (during === "rebind") {
+        const start = readStartState(f.paths);
+        writeFileSync(f.paths.start, JSON.stringify({ ...start, agents: [{ ...start.agents[0], codexQuota: {
+          ...start.agents[0]!.codexQuota, codexHome: "/other/.codex" } }] }));
+      }
     });
     await f.tick();
     const held = await f.tick();
     expect(held.holds).toEqual([expect.objectContaining({ reason: "vendor-failure", confidence: "exact",
       evidence: expect.objectContaining({ vendor: "codex", failureClass: "usage-window" }) })]);
     expect(f.ui.sends).toBe(1);
-    pause = during === "pause";
+    pause = during !== undefined;
     f.advance(hoursFromBase(50) * 1000 + 30_000 - Date.parse(f.now()));
     const after = await f.tick();
     expect(f.reads).toHaveLength(2);
     expect(after.holds.length === 1).toBe(stillHeld);
+    if (during === "lifecycle" || during === "rebind") {
+      // A stale snapshot neither holds nor releases; it re-queues a read under the binding spacing.
+      expect(after.actionSafety.codex?.resource).toMatchObject({ terminal: null, nextAt: f.now() });
+    }
     const released = readJournal(f.paths).filter((event) => event.type === "hold-released");
     expect(released).toHaveLength(stillHeld ? 0 : 1);
     if (!stillHeld) {
@@ -373,6 +386,48 @@ describe("vendor resource evidence and recovery", () => {
       expect(after.actionSafety.codex).toEqual(held.actionSafety.codex && { ...held.actionSafety.codex,
         resource: after.actionSafety.codex?.resource }); // the send budget was never refilled
     }
+  });
+
+  const bucketLimits = (windows: Record<string, [percent: number, resetHours: number]>) => {
+    const buckets = Object.fromEntries(Object.entries(windows).map(([limitId, [usedPercent, hours]]) => [limitId, {
+      limitId, spendControlReached: false, rateLimitReachedType: null, secondary: null,
+      primary: { usedPercent, windowDurationMins: 300, resetsAt: hoursFromBase(hours) } }]));
+    return { status: "ok" as const, reaped: true as const, helper: { userAgent: "codex_cli_rs/0.156.1", codexHome: "/owner/.codex" },
+      limits: parseCodexRateLimits({ ordinaryUsageAllowed: Object.values(windows).every(([percent]) => percent < 100),
+        rateLimits: Object.values(buckets)[0], rateLimitsByLimitId: buckets, accountId: "acct-1" }) };
+  };
+
+  it("retains an earlier blocker that a later partial snapshot omits, so it can never clear by absence", async () => {
+    const f = quotaFixture([
+      bucketLimits({ a: [100, 50], b: [100, 40] }),
+      bucketLimits({ a: [100, 70] }), // b omitted, a's deadline advanced
+      bucketLimits({ a: [10, 90] }) // a clear, b still omitted
+    ]);
+    await f.tick();
+    await f.tick();
+    for (const hours of [50, 70]) {
+      f.advance(hoursFromBase(hours) * 1000 + 30_000 - Date.parse(f.now()));
+      await f.tick();
+      if (hours === 50) {
+        const hold = readCursorsState(f.paths).holds[0]!;
+        expect(hold.evidence?.windows.map((window) => window.limitId).sort()).toEqual(["a", "b"]);
+        expect(hold.resetsAt).toBe(new Date(hoursFromBase(70) * 1000).toISOString());
+      }
+    }
+    expect(f.reads).toHaveLength(3);
+    expect(readCursorsState(f.paths).holds).toHaveLength(1);
+    expect(readJournal(f.paths).filter((event) => event.type === "hold-released")).toHaveLength(0);
+  });
+
+  it("fails closed when a read reports more blockers than evidence can carry", async () => {
+    const f = quotaFixture([bucketLimits(Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`b${index}`, [100, 50]])))]);
+    await f.tick();
+    const held = await f.tick();
+    expect(held.holds[0]).toMatchObject({ resetsAt: null, confidence: "unknown" });
+    expect(held.holds[0]?.evidence?.windows).toHaveLength(16);
+    expect(held.actionSafety.codex?.resource.terminal).toBe("more blocked windows than can be tracked");
+    for (let i = 0; i < 200; i++) { f.advance(600_000); await f.tick(); }
+    expect(f.reads).toHaveLength(1);
   });
 
   it.each([
