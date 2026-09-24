@@ -1,0 +1,29 @@
+{
+  "actionId": "f491afb1-8518-4174-a553-a6ebdaa86f4a",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "2cfbcb43bcdfafb7ee2e44bbe6fcb94053b41ae6",
+      "path": ".signals/issue-140/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "508562edaca337175e1d5c93bbb4672976f41f3d",
+      "path": ".signals/issue-140/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "49262150ce3084b564b82343e870d063f9bfaddf",
+      "path": ".signals/issue-140/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "c4bd6a8fcb85cd79e17e32033ee24d9d65451cc80f30190d179182722277d2f7",
+  "issue": 140,
+  "issueSessionId": "issue-140:5b2c3050bdb11e112fa890b7d064c4c65f5d6eb4",
+  "protocolVersion": 2,
+  "rationale": "Claude's pin is the only one that implements the whole selected plan with tests on every changed path (runTick and run() fake-clock caps, byte-exact tee, binding serialization, identity and unreaped-helper cases) and no regression of #126 behavior, needing only a validated-version gate on automatic Codex release; codex's pin crashes on legacy sibling runtimes and drops some #126 failure transitions, and cursor's never triggers Codex reads, exits before deadlines, and leaves its run-loop changes untested.",
+  "responseSha256": "9c5a47d739ec6a858e08e7eca8a11aa8845f235e1e70adfecb4ff79593b31d84"
+}

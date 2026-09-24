@@ -1,0 +1,29 @@
+{
+  "actionId": "570ac4eb-88cd-4698-93e2-d139863ff222",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "2cfbcb43bcdfafb7ee2e44bbe6fcb94053b41ae6",
+      "path": ".signals/issue-140/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "508562edaca337175e1d5c93bbb4672976f41f3d",
+      "path": ".signals/issue-140/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "49262150ce3084b564b82343e870d063f9bfaddf",
+      "path": ".signals/issue-140/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "c4bd6a8fcb85cd79e17e32033ee24d9d65451cc80f30190d179182722277d2f7",
+  "issue": 140,
+  "issueSessionId": "issue-140:5b2c3050bdb11e112fa890b7d064c4c65f5d6eb4",
+  "protocolVersion": 2,
+  "rationale": "Claude alone keeps Claude recheck owner-only, keeps run() alive for scheduled deadlines, and treats unreaped Codex helpers without a 10s age-out, with matching doctor/tee and runLoop coverage.",
+  "responseSha256": "d764cbf26c28e39f0b64d5587458e3dad254075945c2cca7e18f748ce29232a3"
+}

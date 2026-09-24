@@ -1,0 +1,29 @@
+{
+  "actionId": "d06b470e-42b7-4add-85e1-66da03d4d173",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "2cfbcb43bcdfafb7ee2e44bbe6fcb94053b41ae6",
+      "path": ".signals/issue-140/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "508562edaca337175e1d5c93bbb4672976f41f3d",
+      "path": ".signals/issue-140/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "49262150ce3084b564b82343e870d063f9bfaddf",
+      "path": ".signals/issue-140/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "c4bd6a8fcb85cd79e17e32033ee24d9d65451cc80f30190d179182722277d2f7",
+  "issue": 140,
+  "issueSessionId": "issue-140:5b2c3050bdb11e112fa890b7d064c4c65f5d6eb4",
+  "protocolVersion": 2,
+  "rationale": "Codex is the strongest revision base because it preserves the unproved-live-recovery gate, lifecycle and cursor result fences, durable binding-wide cooldowns, and bounded telemetry with broad passing coverage, while its documented owner-command drift and uninstall preservation defects require focused fixes rather than the peers' unsafe clearance, helper, and scheduling repairs.",
+  "responseSha256": "d5998ee6e3f095d09e9600cd2a5e504b0c9cdceaaf24efe7be0355c632bf5505"
+}
