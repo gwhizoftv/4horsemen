@@ -1,0 +1,14 @@
+{
+  "actionId": "281253f1-81ce-4a7a-b2cf-bfd1da60e120",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "137b278ddf279417068a7360468e91ed9a7d14a598401b131063264c0c16674e",
+  "issue": 140,
+  "issueSessionId": "issue-140:5b2c3050bdb11e112fa890b7d064c4c65f5d6eb4",
+  "protocolVersion": 2,
+  "rationale": "Revise 2a38391475273db828bfca10ff7dbd35911d1c56: src/runLoop.ts:965,1279,1307 must retain every unresolved blocker because a later exhausted A-only snapshot with an advanced deadline overwrites prior A+B, allowing subsequent A-clear/B-missing evidence to release the hold; src/resourceEvidence.ts:314 similarly drops blockers beyond 16, and an exact-pin probe confirmed clearance with the seventeenth blocker missing, so fail closed on overflow and test both sequences; src/runLoop.ts:1253-1259 must also fence the current binding and lifecycle revision/turn before applying results, since checking only action and session IDs permits an old-account result to release after rebinding or a same-session lifecycle change.",
+  "responseSha256": "f6d64d538e327a70a2aa2e3542575c6b1efaa32cdfabf6aa8fb8217c351c7fa5",
+  "revisionCommitSha": "2a38391475273db828bfca10ff7dbd35911d1c56",
+  "round": 1
+}

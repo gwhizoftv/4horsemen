@@ -1,0 +1,14 @@
+{
+  "actionId": "d979192d-2718-49aa-89f7-0211ef55ae6e",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "137b278ddf279417068a7360468e91ed9a7d14a598401b131063264c0c16674e",
+  "issue": 140,
+  "issueSessionId": "issue-140:5b2c3050bdb11e112fa890b7d064c4c65f5d6eb4",
+  "protocolVersion": 2,
+  "rationale": "Revision 2a383914 closes the peer comparison findings on the claude pin (automatic Codex release gated on an owner-validated CLI version, matching helper home and an account unchanged across the read; clearance requires explicit restriction fields and same-duration windows; tee receivers are time-bounded, reaped and single-flight), with focused tests and check:fast 614/614 plus e2e passing.",
+  "responseSha256": "d32e8d02ab6271676b16cce1d53ec69f9bfdc6783f3298d33d680c56b4ffbd8f",
+  "revisionCommitSha": "2a38391475273db828bfca10ff7dbd35911d1c56",
+  "round": 1
+}

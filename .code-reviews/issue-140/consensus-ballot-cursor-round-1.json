@@ -1,0 +1,14 @@
+{
+  "actionId": "823a70a9-98d9-4e49-b1de-50f173ac9ac2",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "137b278ddf279417068a7360468e91ed9a7d14a598401b131063264c0c16674e",
+  "issue": 140,
+  "issueSessionId": "issue-140:5b2c3050bdb11e112fa890b7d064c4c65f5d6eb4",
+  "protocolVersion": 2,
+  "rationale": "Revision gates Codex auto-release on owner-validated CLI version plus bracketing account reads, tightens clearance to affirmative restriction fields, and bounds/reaps statusline receivers without weakening Claude owner-only recheck.",
+  "responseSha256": "378166a0b500ec43cfee9a54bd4c4ab979a92433543299918cba22300a51af16",
+  "revisionCommitSha": "2a38391475273db828bfca10ff7dbd35911d1c56",
+  "round": 1
+}
