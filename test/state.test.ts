@@ -17,11 +17,14 @@ import {
   readStartState,
   setPaused,
   releaseHold,
+  releaseResourceHold,
+  agentConfigSchema,
   StateConflictError,
   startStateSchema,
   coordinatorConfigSchema,
   writeCursorsState
 } from "../src/state.js";
+import { unknownEvidence } from "../src/resourceEvidence.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -69,6 +72,30 @@ const initialize = () => {
 };
 
 describe("operational state", () => {
+  it("validates explicit Codex bindings and releases resource holds without changing safety or other holds", () => {
+    const config = { id: "codex", root: "/clone", launcher: "launcher", codexQuota: { codexHome: "/home/codex", accountId: "account" } };
+    expect(agentConfigSchema.safeParse(config).success).toBe(true);
+    expect(agentConfigSchema.safeParse({ ...config, id: "claude" }).success).toBe(false);
+    expect(agentConfigSchema.safeParse({ ...config, codexQuota: { ...config.codexQuota, codexHome: "relative" } }).success).toBe(false);
+    const { paths } = initialize(); const original = readCursorsState(paths);
+    const now = "2026-09-22T12:00:00.000Z";
+    const actionId = "10000000-0000-4000-8000-000000000001";
+    const id = "20000000-0000-4000-8000-000000000001";
+    const hold = { id, agent: "codex", actionId, sessionId: "session", reason: "vendor-failure", evidenceId: "quota",
+      observedAt: now, resetsAt: null, confidence: "unknown", retryOwner: "owner",
+      resource: { ...unknownEvidence("codex"), failureClass: "usage-window" } };
+    const held = cursorsStateSchema.parse({ ...original, paused: true,
+      agents: { ...original.agents, codex: { ...original.agents.codex, actionId } },
+      actionSafety: { codex: { actionId, sends: 4, reserved: true, activityAt: now,
+        quotaProbe: { binding: "key", starts: 6, failures: 0, inFlight: false, lastStartAt: now, nextAt: null, consumed: [], terminal: true } } },
+      holds: [hold, { ...hold, id: "20000000-0000-4000-8000-000000000002", reason: "nudge-loop" }] });
+    const released = releaseResourceHold(held, id, now);
+    expect(released.holds).toHaveLength(1); expect(released.paused).toBe(true);
+    expect(released.actionSafety).toEqual(held.actionSafety);
+    expect(() => releaseResourceHold({ ...held, manualPaused: true }, id, now)).toThrow();
+    expect(() => releaseResourceHold(held, held.holds[1]!.id, now)).toThrow();
+    expect(releaseHold(held, id, false, now).actionSafety.codex?.quotaProbe).toEqual(held.actionSafety.codex?.quotaProbe);
+  });
   it("keeps manual and independent holds separate and requires an explicit breaker reset", () => {
     const { paths } = initialize();
     const now = "2026-09-22T12:00:00.000Z";

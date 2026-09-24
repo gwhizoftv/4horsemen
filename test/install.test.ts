@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { findAgentLanguageViolations } from "../src/agentLanguage.js";
 import { assertInstallDeletionAllowed, install, uninstall } from "../src/install.js";
 import { readConfig } from "../src/state.js";
+import { inspectClaudeStatusLine } from "../src/claudeStatusLine.js";
 import { nestedConfigPath } from "../src/workspace.js";
 import {
   declaredChecks,
@@ -40,6 +41,7 @@ const installOnce = (
     installRoot: repoRoot,
     productRoot: fixture.productRoot,
     coordRoot: fixture.coordRoot,
+    home: fixture.workspaceRoot,
     agents: ["claude"],
     profile: "solo",
     writeProduct: false,
@@ -249,6 +251,7 @@ describe("coord install — opt-in product changes", () => {
 const uninstallOnce = (fixture: ProductFixture, overrides: Partial<Parameters<typeof uninstall>[0]> = {}) =>
   uninstall({
     coordRoot: fixture.coordRoot,
+    home: fixture.workspaceRoot,
     productRoot: fixture.productRoot,
     deleteClones: false,
     wipeRuntime: false,
@@ -320,6 +323,15 @@ describe("install deletion guard", () => {
 });
 
 describe("coord uninstall", () => {
+  it("wires and removes only a clone-local Claude tee", () => {
+    const fixture = product();
+    const result = installOnce(fixture, { home: fixture.workspaceRoot });
+    const clone = result.clones[0]!;
+    expect(inspectClaudeStatusLine(clone)).toBe("installed");
+    expect(git(clone, "status", "--porcelain")).toBe("");
+    uninstallOnce(fixture, { home: fixture.workspaceRoot });
+    expect(inspectClaudeStatusLine(clone)).toBe("missing");
+  });
   it("clears the wiring and the workspace entry, and keeps the clone", () => {
     const fixture = product();
     const result = installOnce(fixture);

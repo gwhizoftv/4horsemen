@@ -47,6 +47,18 @@ export const containedPath = (root: string, ...parts: readonly string[]): string
   return candidate;
 };
 
+/** Bind aliases of an existing home to one owner-runtime exclusion key. */
+export const codexBindingKey = (home: string, accountId: string): string => {
+  if (!isAbsolute(home)) throw new PathSafetyError("CODEX_HOME must be absolute.");
+  return createHash("sha256").update(`${realpathSync(home)}\0${accountId}`).digest("hex");
+};
+export const codexBindingLockPath = (root: string, binding: string): string => {
+  if (!/^[a-f0-9]{64}$/.test(binding)) throw new PathSafetyError("Invalid binding key.");
+  const path = containedPath(root, `quota-${binding}.lock`);
+  assertNoSymlink(root, path);
+  return path;
+};
+
 /** Reject an existing symlink at or below root on the way to candidate. */
 export const assertNoSymlink = (root: string, candidate: string): void => {
   const resolvedRoot = resolve(root);

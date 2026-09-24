@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderIssueReport } from "../src/issueReport.js";
 import { initialAgentLifecycle } from "../src/agentLifecycle.js";
 import type { CursorsState, StartState } from "../src/state.js";
+import { classifyFailure } from "../src/resourceEvidence.js";
 
 const pin = "f".repeat(40);
 const impl = "e".repeat(40);
@@ -103,6 +104,18 @@ const complete = (overrides: Partial<CursorsState["publication"]> = {}): Cursors
   }) as CursorsState;
 
 describe("issue report", () => {
+  it("reports bounded redacted resource context and distinguishes recheck from availability", () => {
+    const cursors = complete();
+    cursors.completed = false; cursors.paused = true;
+    const resource = classifyFailure({ vendor: "claude", error: "billing_error", error_details: "Bearer secret-token" }, [], cursors.updatedAt);
+    cursors.holds = [{ id: "hold", agent: "cursor", actionId: "action", sessionId: "session", reason: "vendor-failure",
+      evidenceId: "failure", observedAt: cursors.updatedAt, resetsAt: null, confidence: "vendor-reported", retryOwner: "owner", resource }];
+    const text = renderIssueReport(start("owner-only"), cursors);
+    expect(text).toContain("cause billing, reset unknown");
+    expect(text).toContain("deadline unknown");
+    expect(text).toContain("owner release required");
+    expect(text).not.toContain("secret-token");
+  });
   it("reports unknown holds and scoped recovery without implying capacity or auto-resume", () => {
     const cursors = complete();
     cursors.completed = false; cursors.paused = true; cursors.manualPaused = true;

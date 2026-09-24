@@ -1396,6 +1396,16 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     expect(errors.join("")).toContain("agent-event");
   });
 
+  it("bounds statusline event input and validates the internal tee route", async () => {
+    const errors: string[] = [];
+    expect(await runCli(["agent-event", "--vendor", "claude", "--event", "status-line"], { io: {
+      stdin: () => "x".repeat(262145), stdout: () => undefined, stderr: (message) => errors.push(message)
+    } })).toBe(0);
+    expect(errors.join("")).toContain("Oversized");
+    expect(await runCli(["claude-statusline"], { io: { stderr: (message) => errors.push(message) } })).toBe(2);
+    expect(errors.join("")).toContain("--clone");
+  });
+
   it("returns a non-continuing response even when an Antigravity Stop observation is rejected", async () => {
     const output: string[] = [];
     expect(

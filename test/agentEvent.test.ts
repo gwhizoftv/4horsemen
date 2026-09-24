@@ -16,6 +16,17 @@ import { initializeOperationalState, readJournal } from "../src/state.js";
 const actionId = "11111111-1111-4111-8111-111111111111";
 const digest = "a".repeat(64);
 const prompt = `Read and execute coordinator action ${actionId} digest ${digest} at /runtime/issue-86/agents/codex/action.md`;
+
+it("preserves actual Claude failure fields and distinct Cursor cancellation without invented aliases", () => {
+  expect(normalizeAgentEvent("claude", { session_id: "s", error: "rate_limit", error_details: "detail",
+    last_assistant_message: "rendered", error_type: "invented" }, "StopFailure")?.failure).toEqual({
+    vendor: "claude", error: "rate_limit", error_details: "detail", last_assistant_message: "rendered"
+  });
+  expect(normalizeAgentEvent("claude", { session_id: "s", rate_limits: { five_hour: { used_percentage: 100, resets_at: 2000000000 } } }, "status-line"))
+    .toMatchObject({ kind: "telemetry", windows: [{ window: "five_hour" }] });
+  expect(normalizeAgentEvent("cursor", { status: "aborted" }, "stop")?.failure?.error).toBe("aborted");
+  expect(normalizeAgentEvent("cursor", { reason: "user_close" }, "sessionEnd")?.failure?.error).toBe("user_close");
+});
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });

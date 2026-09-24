@@ -3,6 +3,7 @@ import { z } from "zod";
 import { digestSchema, agentIdSchema } from "./protocol.js";
 import type { IssueRuntimePaths } from "./paths.js";
 import { acquireExclusiveLock, atomicWriteJson, readStartState } from "./state.js";
+import { classifyFailure, resourceEvidenceSchema, resourceWindowSchema, type RawFailure, type ResourceWindow } from "./resourceEvidence.js";
 
 /** Independent from the workflow runtime format: hook traffic is not workflow authority. */
 export const AGENT_LIFECYCLE_FORMAT_VERSION = 1;
@@ -41,6 +42,14 @@ export const agentLifecycleEntrySchema = z
     degradedCause: z.enum(["hooks-never-seen", "correlation-lagged"]).nullable().default(null),
     lastEvent: z.string().min(1).nullable(),
     lastEventAt: timestampSchema.nullable(),
+    lastFailure: z.object({
+      actionId: z.string().uuid(), actionDigest: digestSchema, sessionId: z.string().max(256), turnId: z.string().max(256).nullable(),
+      observedAt: timestampSchema, confirmed: z.boolean().default(false), evidence: resourceEvidenceSchema
+    }).strict().refine((value) => Buffer.byteLength(JSON.stringify(value)) <= 8192, "Oversized failure observation").optional(),
+    quotaTelemetry: z.object({
+      actionId: z.string().uuid(), sessionId: z.string().max(256), observedAt: timestampSchema,
+      windows: z.array(resourceWindowSchema).max(2)
+    }).strict().optional(),
     updatedAt: timestampSchema
   })
   .strict();
@@ -59,7 +68,9 @@ export type AgentLifecycleEntry = z.infer<typeof agentLifecycleEntrySchema>;
 export type AgentLifecycleState = z.infer<typeof agentLifecycleStateSchema>;
 
 export type LifecycleObservation = {
-  kind: "session-start" | "session-end" | "prompt-submitted" | "working" | "stopped" | "failed" | "status";
+  kind: "session-start" | "session-end" | "prompt-submitted" | "working" | "stopped" | "failed" | "status" | "telemetry";
+  failure?: RawFailure;
+  windows?: ResourceWindow[];
   eventName: string;
   sessionId?: string;
   turnId?: string;
@@ -376,6 +387,42 @@ export const applyLifecycleObservation = (
   // tool, or stop event from the previous process must not become current
   // merely because it carries the action UUID.
   if (sessionChanged && !beginsSession) return entry;
+
+  const accepted = entry.action;
+  const correlated = accepted?.delivery === "accepted" && accepted.workflowCompleteAt === null &&
+    incomingSession !== null && incomingSession === entry.sessionId && incomingSession === accepted.sessionId &&
+    (observation.actionId === undefined || observation.actionId === accepted.actionId) &&
+    (observation.actionDigest === undefined || observation.actionDigest === accepted.actionDigest) &&
+    (observation.turnId === undefined || accepted.turnId === null || observation.turnId === accepted.turnId);
+  if (observation.kind === "telemetry") {
+    if (!correlated) return entry;
+    const windows = observation.windows ?? [];
+    const old = entry.quotaTelemetry;
+    // Re-rendering a cached payload never refreshes its first-seen age or the watchdog.
+    if (old?.actionId === accepted.actionId && old.sessionId === incomingSession && JSON.stringify(old.windows) === JSON.stringify(windows)) return entry;
+    return { ...entry, quotaTelemetry: { actionId: accepted.actionId, sessionId: incomingSession,
+      observedAt: now, windows } };
+  }
+  if (observation.failure !== undefined) {
+    if (!correlated) return entry;
+    const telemetry = entry.quotaTelemetry;
+    const confirmed = (observation.turnId !== undefined && accepted.turnId !== null && observation.turnId === accepted.turnId) ||
+      (observation.actionId === accepted.actionId && observation.actionDigest === accepted.actionDigest);
+    const age = telemetry === undefined ? Infinity : Date.parse(now) - Date.parse(telemetry.observedAt);
+    const fresh = telemetry?.actionId === accepted.actionId && telemetry.sessionId === incomingSession && age >= 0 && age <= 300_000 &&
+      accepted.injectedAt !== null && Date.parse(telemetry.observedAt) >= Date.parse(accepted.injectedAt);
+    const evidence = classifyFailure(observation.failure, fresh && confirmed ? telemetry.windows : [], now);
+    const old = entry.lastFailure;
+    if (!confirmed && old?.actionId === accepted.actionId && old.confirmed) return entry;
+    // Cancellation is terminal for this action, regardless of subsequent wording.
+    if (old?.actionId === accepted.actionId && old.confirmed && old.evidence.failureClass === "cancelled") return entry;
+    if (old?.actionId === accepted.actionId && old.sessionId === incomingSession &&
+        old.turnId === (observation.turnId ?? accepted.turnId) && old.confirmed === confirmed &&
+        JSON.stringify(old.evidence) === JSON.stringify(evidence)) return entry;
+    entry = { ...entry, lastFailure: { actionId: accepted.actionId, actionDigest: accepted.actionDigest,
+      sessionId: incomingSession, turnId: observation.turnId ?? accepted.turnId, observedAt: now, confirmed, evidence } };
+    if (!confirmed) return entry;
+  }
 
   let action = entry.action;
   let execution = observation.execution ?? entry.execution;

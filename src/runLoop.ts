@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, rmSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, readdirSync, realpathSync, rmSync, unlinkSync } from "node:fs";
+import { readCodexQuota, clearsCodexResource, type CodexQuotaReader } from "./codexQuota.js";
+import { unknownEvidence, type ResourceEvidence } from "./resourceEvidence.js";
+import { claudeRetryOwner } from "./claudeStatusLine.js";
 import { spawn } from "node:child_process";
 import { clearCompletion, createActionId, readAction, readCompletion, writeAction } from "./action.js";
 import {
@@ -10,6 +13,7 @@ import {
   markActionWorkflowComplete,
   markInjectedActionAbsent,
   markObservabilityDegraded,
+  mutateAgentLifecycle,
   orderAgentAction,
   readAgentLifecycle
 } from "./agentLifecycle.js";
@@ -42,18 +46,24 @@ import {
   agentResponsePath,
   agentRuntimePaths,
   containedPath,
+  codexBindingKey,
+  codexBindingLockPath,
+  assertNoSymlink,
+  issueRuntimePaths,
   evidenceWorktreePath,
   type IssueRuntimePaths
 } from "./paths.js";
 import { decide } from "./machine.js";
 import {
   appendJournal,
+  acquireExclusiveLock,
   cursorsStateSchema,
   readConfig,
   readCursorsState,
   readJournal,
   readStartState,
   replaceCursor,
+  releaseResourceHold,
   requireStateMutation,
   StateConflictError,
   type AcceptedResponse,
@@ -168,6 +178,7 @@ export const mergePullRequest: PullRequestMerger = async (input) => {
 export { githubRepositoryFromOrigin } from "./githubIssue.js";
 
 export type RunLoopDependencies = {
+  codexQuotaReader?: CodexQuotaReader;
   mirror?: BareMirror;
   tmux?: TmuxController | null;
   processRunner?: ProcessRunner;
@@ -766,6 +777,7 @@ const UNKNOWN_DEFERRAL_LIMIT = 8;
 
 export class CoordinatorRunLoop {
   private readonly mirror: BareMirror;
+  private readonly codexQuotaReader: CodexQuotaReader;
   private readonly tmux: TmuxController | null;
   private readonly processRunner: ProcessRunner;
   private readonly pullRequestOpener: PullRequestOpener;
@@ -783,6 +795,7 @@ export class CoordinatorRunLoop {
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
+    this.codexQuotaReader = dependencies.codexQuotaReader ?? readCodexQuota;
     this.mirror = dependencies.mirror ?? new BareMirror(paths.mirror, start.origin);
     this.tmux = dependencies.tmux === undefined ? new TmuxController(undefined, paths.tmuxNamespace, undefined, undefined, undefined, paths.terminalGroup) : dependencies.tmux;
     this.processRunner = dependencies.processRunner ?? runArgv;
@@ -875,7 +888,8 @@ export class CoordinatorRunLoop {
   }
 
   private hold(
-    cursors: CursorsState, agent: string, reason: CursorsState["holds"][number]["reason"], evidenceId: string
+    cursors: CursorsState, agent: string, reason: CursorsState["holds"][number]["reason"], evidenceId: string,
+    resource?: ResourceEvidence
   ): CursorsState {
     const safety = cursors.actionSafety[agent]!;
     evidenceId = `${reason}:${safety.holdGeneration}:${evidenceId}`;
@@ -884,7 +898,12 @@ export class CoordinatorRunLoop {
     let hold: CursorsState["holds"][number] = {
       id: randomUUID(), agent, actionId: safety.actionId,
       sessionId: readAgentLifecycle(this.paths).agents[agent]?.sessionId ?? null,
-      reason, evidenceId, observedAt: now, resetsAt: null, confidence: "unknown", retryOwner: reason === "vendor-wait" ? "vendor" : "owner"
+      reason, evidenceId, observedAt: now, resetsAt: resource?.resetsAt ?? null, confidence: resource?.confidence ?? "unknown",
+      ...(resource === undefined ? {} : { resource, recheckAt: resource.resetsAt === null ||
+        (safety.resourceDeadlines?.length ?? 0) >= 16 || safety.resourceDeadlines?.includes(resource.resetsAt)
+        ? null : new Date(Date.parse(resource.resetsAt) + 30_000).toISOString() }),
+      retryOwner: reason === "vendor-wait" ? "vendor" : resource?.vendor === "claude"
+        ? claudeRetryOwner(readStartState(this.paths).agents.find((item) => item.id === agent)!.root) : "owner"
     };
     const next = this.mutate(cursors, (current) => {
       const event = appendJournal(this.paths, { type: "hold-created", agent, actionId: safety.actionId,
@@ -898,6 +917,197 @@ export class CoordinatorRunLoop {
       `Inspect the agent, then coord resume --issue ${this.paths.issue} --hold ${hold.id}` +
       (reason === "nudge-loop" ? " --reset-nudge-budget" : ""));
     return next;
+  }
+
+  /** Diagnostic ingestion is permitted while held, but never advances workflow truth. */
+  private ingestResourceFailures(cursors: CursorsState): CursorsState {
+    const lifecycle = readAgentLifecycle(this.paths);
+    for (const agent of cursors.activeRoster) {
+      const cursor = cursors.agents[agent];
+      const entry = lifecycle.agents[agent];
+      const failure = entry?.lastFailure;
+      if (!failure?.confirmed || !cursor || cursor.actionId !== failure.actionId || cursor.actionDigest !== failure.actionDigest ||
+          entry.sessionId !== failure.sessionId || entry.action?.workflowCompleteAt !== null ||
+          !["ordered", "intent", "verifying"].includes(cursor.status)) continue;
+      cursors = this.ensureActionSafety(cursors, agent, failure.actionId);
+      const key = sha256(JSON.stringify(failure));
+      if (cursors.actionSafety[agent]?.handledFailure === key) continue;
+      const existing = cursors.holds.find((hold) => hold.agent === agent && hold.actionId === failure.actionId && hold.sessionId === failure.sessionId);
+      if (existing === undefined) cursors = this.hold(cursors, agent, "vendor-failure", `failure:${key}`, failure.evidence);
+      else cursors = this.updateResourceHold(cursors, existing.id, failure.evidence);
+      cursors = this.mutate(cursors, (current) => ({ ...current, actionSafety: { ...current.actionSafety,
+        [agent]: { ...current.actionSafety[agent]!, handledFailure: key } } }));
+    }
+    return cursors;
+  }
+
+  private updateResourceHold(cursors: CursorsState, id: string, resource: ResourceEvidence): CursorsState {
+    const hold = cursors.holds.find((entry) => entry.id === id);
+    if (!hold || JSON.stringify(hold.resource) === JSON.stringify(resource)) return cursors;
+    const now = this.now();
+    return this.mutate(cursors, (current) => {
+      appendJournal(this.paths, { type: "hold-updated", agent: hold.agent, actionId: hold.actionId,
+        details: { hold: id, resource, eventId: `resource:${id}:${sha256(JSON.stringify(resource))}` } }, now);
+      return { ...current, updatedAt: now, holds: current.holds.map((entry) => entry.id !== id ? entry : {
+        ...entry, resource, confidence: resource.confidence, resetsAt: resource.resetsAt,
+        recheckAt: resource.vendor === "claude" && resource.resetsAt !== null &&
+          (current.actionSafety[entry.agent]?.resourceDeadlines?.length ?? 0) < 16 &&
+          !current.actionSafety[entry.agent]?.resourceDeadlines?.includes(resource.resetsAt)
+          ? new Date(Date.parse(resource.resetsAt) + 30_000).toISOString() : null
+      }) };
+    });
+  }
+
+  private hasResourceWork(cursors: CursorsState): boolean {
+    if (cursors.manualPaused || cursors.completed || cursors.abandoned) return false;
+    const lifecycle = readAgentLifecycle(this.paths);
+    return cursors.holds.some((hold) => {
+      if (cursors.agents[hold.agent]?.actionId !== hold.actionId || hold.resource?.failureClass === "cancelled") return false;
+      if (lifecycle.agents[hold.agent]?.sessionId !== hold.sessionId) return false;
+      if (hold.resource?.vendor === "claude") return hold.recheckAt != null;
+      const probe = cursors.actionSafety[hold.agent]?.quotaProbe;
+      return probe !== undefined && !probe.terminal && !probe.inFlight && probe.nextAt !== null;
+    });
+  }
+
+  private async maintainResourceHolds(start: StartState, cursors: CursorsState): Promise<CursorsState> {
+    if (cursors.manualPaused) return cursors;
+    for (const hold of cursors.holds) {
+      if (cursors.agents[hold.agent]?.actionId !== hold.actionId || hold.resource?.failureClass === "cancelled") continue;
+      if (readAgentLifecycle(this.paths).agents[hold.agent]?.sessionId !== hold.sessionId) continue;
+      const now = this.now();
+      if (hold.resource?.vendor === "claude") {
+        if (hold.recheckAt != null && Date.parse(hold.recheckAt) <= Date.parse(now)) {
+          // A render or native Stop does not prove a fresh service read. Consume once, retain owner hold.
+          cursors = this.mutate(cursors, (current) => {
+            appendJournal(this.paths, { type: "hold-updated", agent: hold.agent, actionId: hold.actionId,
+              details: { hold: hold.id, outcome: "owner", eventId: `recheck:${hold.id}:${hold.recheckAt}` } }, now);
+            return { ...current, actionSafety: { ...current.actionSafety, [hold.agent]: { ...current.actionSafety[hold.agent]!,
+              resourceDeadlines: [...new Set([...(current.actionSafety[hold.agent]?.resourceDeadlines ?? []), hold.resetsAt!])].slice(-16)
+            } }, holds: current.holds.map((item) => item.id === hold.id ? { ...item, recheckAt: null } : item) };
+          });
+        }
+        continue;
+      }
+      const binding = start.agents.find((agent) => agent.id === hold.agent)?.codexQuota;
+      if (hold.agent !== "codex" || !binding || !["vendor-failure", "unobservable", "harness-gone", "nudge-loop", "delivery-uncertain"].includes(hold.reason)) continue;
+      let probe = cursors.actionSafety[hold.agent]?.quotaProbe;
+      let key: string;
+      let canonicalHome: string;
+      try { canonicalHome = realpathSync(binding.codexHome); key = codexBindingKey(canonicalHome, binding.accountId); } catch { continue; }
+      if (!probe) {
+        probe = { binding: key, starts: 0, failures: 0, inFlight: false, lastStartAt: null,
+          nextAt: now, consumed: [], terminal: false };
+        const initial = probe;
+        cursors = this.mutate(cursors, (current) => ({ ...current, actionSafety: { ...current.actionSafety,
+          [hold.agent]: { ...current.actionSafety[hold.agent]!, quotaProbe: initial } } }));
+      }
+      if (probe.binding !== key) {
+        if (!probe.terminal || probe.nextAt !== null) cursors = this.mutate(cursors, (current) => ({ ...current, actionSafety: { ...current.actionSafety,
+          [hold.agent]: { ...current.actionSafety[hold.agent]!, quotaProbe: { ...probe!, terminal: true, nextAt: null } } } }));
+        continue;
+      }
+      if (probe.terminal || probe.inFlight || probe.nextAt === null || Date.parse(probe.nextAt) > Date.parse(now)) continue;
+      const lockPath = codexBindingLockPath(this.paths.coordRoot, key);
+      const lock = acquireExclusiveLock(lockPath);
+      let reserved = false;
+      try {
+        // Durable reservations in all issue cursors are the binding-wide throttle, including completed issues.
+        let latest = 0;
+        let orphan = false;
+        let busy = false;
+        for (const name of readdirSync(this.paths.coordRoot)) {
+          const match = /^issue-([1-9][0-9]*)$/.exec(name);
+          if (!match) continue;
+          const otherPaths = issueRuntimePaths(this.paths.coordRoot, Number(match[1]));
+          if (!existsSync(otherPaths.cursors)) continue;
+          assertNoSymlink(this.paths.coordRoot, otherPaths.cursors);
+          const otherState = readCursorsState(otherPaths);
+          const aggregate = otherState.quotaBindings?.[key];
+          if (aggregate !== undefined) {
+            busy ||= aggregate.inFlight;
+            orphan ||= aggregate.inFlight && Date.parse(now) - Date.parse(aggregate.lastStartAt) >= 10_000;
+            latest = Math.max(latest, Date.parse(aggregate.lastStartAt));
+          }
+          for (const safety of Object.values(otherState.actionSafety)) {
+            const other = safety.quotaProbe;
+            if (other?.binding !== key) continue;
+            busy ||= other.inFlight;
+            orphan ||= other.inFlight && Date.parse(now) - Date.parse(other.lastStartAt ?? "") >= 10_000;
+            latest = Math.max(latest, Date.parse(other.lastStartAt ?? "") || 0);
+          }
+        }
+        const terminal = orphan || probe.starts >= 6;
+        const nextAt = new Date(Math.max(Date.parse(now), latest + 300_000)).toISOString();
+        reserved = !terminal && !busy && Date.parse(nextAt) <= Date.parse(now);
+        const updated = { ...probe, terminal, inFlight: reserved,
+          starts: probe.starts + (reserved ? 1 : 0), lastStartAt: reserved ? now : probe.lastStartAt,
+          nextAt: terminal || reserved ? null : nextAt,
+          consumed: reserved && hold.resetsAt !== null && Date.parse(hold.resetsAt) + 30_000 <= Date.parse(now)
+            ? [...new Set([...probe.consumed, hold.resetsAt])].slice(-6) : probe.consumed };
+        cursors = this.mutate(cursors, (current) => ({ ...current,
+          ...(reserved ? { quotaBindings: { ...current.quotaBindings, [key]: { lastStartAt: now, inFlight: true } } } : {}),
+          actionSafety: { ...current.actionSafety,
+          [hold.agent]: { ...current.actionSafety[hold.agent]!, quotaProbe: updated } } }));
+      } finally { closeSync(lock); unlinkSync(lockPath); }
+      if (!reserved) continue;
+      const revision = cursors.stateRevision;
+      const lifecycle = readAgentLifecycle(this.paths);
+      // Reservation is durable, but a concurrent owner action can still revoke launch authority.
+      const launchState = readCursorsState(this.paths);
+      if (launchState.stateRevision !== revision || launchState.manualPaused || launchState.abandoned || launchState.completed) return launchState;
+      let result;
+      try { result = await this.codexQuotaReader({ ...binding, codexHome: canonicalHome }); }
+      catch { result = { outcome: "failed" as const, evidence: unknownEvidence("codex"), windows: [], recoveryProven: false, reaped: false }; }
+      let revoked = false;
+      // Hold the lifecycle lock through the cursor CAS so cancellation/session replacement
+      // cannot land between the result fence and resource release.
+      mutateAgentLifecycle(this.paths, (lifeNow) => {
+        const latest = readCursorsState(this.paths);
+        let homeUnchanged = false;
+        try { homeUnchanged = realpathSync(binding.codexHome) === canonicalHome; } catch { /* Owner-only on removed/rebound home. */ }
+        const valid = homeUnchanged && latest.stateRevision === revision && !latest.manualPaused && !latest.abandoned && !latest.completed &&
+          lifeNow.stateRevision === lifecycle.stateRevision && lifeNow.agents[hold.agent]?.sessionId === hold.sessionId &&
+          JSON.stringify(readStartState(this.paths).agents.find((agent) => agent.id === hold.agent)?.codexQuota) === JSON.stringify(binding);
+        const currentProbe = latest.actionSafety[hold.agent]?.quotaProbe;
+        if (!currentProbe || currentProbe.binding !== key || !currentProbe.inFlight) { cursors = latest; revoked = true; return lifeNow; }
+        const failures = Math.min(3, currentProbe.failures + (result.outcome === "failed" ? 1 : 0));
+        let nextAt: string | null = null;
+        if (valid && result.reaped && currentProbe.starts < 6) {
+          if (result.outcome === "failed" && failures <= 2) nextAt = new Date(Date.parse(this.now()) + (failures === 1 ? 300_000 : 600_000)).toISOString();
+          const deadline = result.evidence.resetsAt;
+          if (result.outcome === "exhausted" && deadline !== null && Date.parse(deadline) > Date.parse(this.now()) && !currentProbe.consumed.includes(deadline)) {
+            nextAt = new Date(Math.max(Date.parse(deadline) + 30_000, Date.parse(now) + 300_000)).toISOString();
+          }
+        }
+        cursors = this.mutate(latest, (current) => {
+          if (valid && nextAt === null && result.outcome !== "clear") appendJournal(this.paths, {
+            type: "hold-updated", agent: hold.agent, actionId: hold.actionId,
+            details: { hold: hold.id, outcome: "owner", eventId: `probe-terminal:${hold.actionId}:${key}` }
+          }, this.now());
+          return { ...current,
+          quotaBindings: { ...current.quotaBindings, [key]: { lastStartAt: now, inFlight: !result.reaped } },
+          actionSafety: { ...current.actionSafety,
+          [hold.agent]: { ...current.actionSafety[hold.agent]!, quotaProbe: { ...currentProbe,
+            inFlight: !result.reaped, failures, nextAt, terminal: nextAt === null } } } };
+        });
+        if (!valid) { revoked = true; return lifeNow; }
+        if (hold.reason === "vendor-failure" && hold.resource !== undefined && clearsCodexResource(result, hold.resource)) {
+          cursors = this.mutate(cursors, (current) => {
+            const next = releaseResourceHold(current, hold.id, this.now());
+            appendJournal(this.paths, { type: "hold-released", agent: hold.agent, actionId: hold.actionId,
+              details: { hold: hold.id, eventId: `resource-release:${hold.id}` } }, this.now());
+            return next;
+          });
+        } else if (result.outcome !== "failed" && result.outcome !== "clear") {
+          cursors = this.updateResourceHold(cursors, hold.id, { ...result.evidence,
+            windows: result.evidence.windows.length === 0 ? (hold.resource?.windows ?? []) : result.evidence.windows });
+        }
+        return lifeNow;
+      });
+      if (revoked) return cursors;
+    }
+    return cursors;
   }
 
   private observationEvidence(agent: string, actionId: string): string {
@@ -2239,7 +2449,11 @@ export class CoordinatorRunLoop {
     const start = readStartState(this.paths);
     try {
       let cursors = readCursorsState(this.paths);
-      if (cursors.paused || cursors.abandoned || cursors.completed) return cursors;
+      if (cursors.abandoned || cursors.completed) return cursors;
+      const wasHeld = cursors.paused;
+      cursors = this.ingestResourceFailures(cursors);
+      cursors = await this.maintainResourceHolds(start, cursors);
+      if (cursors.paused || wasHeld) return cursors;
       const observations: EvidenceObservation[] = [];
 
       for (const dropped of cursors.droppedAgents) clearCompletion(agentRuntimePaths(this.paths, dropped).complete);
@@ -2440,19 +2654,25 @@ export class CoordinatorRunLoop {
 
   async run(signal?: AbortSignal): Promise<void> {
     const start = readStartState(this.paths);
-    const beforeEffects = readCursorsState(this.paths);
-    if (beforeEffects.completed || beforeEffects.abandoned || beforeEffects.paused) {
+    let beforeEffects = readCursorsState(this.paths);
+    if (beforeEffects.completed || beforeEffects.abandoned || beforeEffects.manualPaused) {
       this.log(renderIssueReport(start, beforeEffects).trimEnd());
       return;
     }
+    beforeEffects = this.ingestResourceFailures(beforeEffects);
     this.logPhase(start.issue, beforeEffects.issueCursor.stepId, beforeEffects.issueCursor.round);
-    await this.initializeEffects();
+    let initialized = false;
+    if (!beforeEffects.paused) { await this.initializeEffects(); initialized = true; }
     while (signal?.aborted !== true) {
-      const cursors = await this.runTick();
-      if (cursors.completed || cursors.abandoned || cursors.paused) {
+      let cursors = await this.runTick();
+      if (cursors.paused && !cursors.manualPaused && !cursors.completed && !cursors.abandoned) {
+        cursors = await this.maintainResourceHolds(start, cursors);
+      }
+      if (cursors.completed || cursors.abandoned || (cursors.paused && !this.hasResourceWork(cursors))) {
         this.log(renderIssueReport(start, cursors).trimEnd());
         return;
       }
+      if (!cursors.paused && !initialized) { await this.initializeEffects(); initialized = true; }
       await this.sleep(start.pollIntervalMs);
     }
   }

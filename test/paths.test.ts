@@ -7,6 +7,8 @@ import {
   agentRuntimePaths,
   assertMailboxClaim,
   createIssueRuntime,
+  codexBindingKey,
+  codexBindingLockPath,
   defaultCompletesRoot,
   issueRuntimePaths,
   mailboxClaimPath,
@@ -17,6 +19,14 @@ import {
 } from "../src/paths.js";
 
 const roots: string[] = [];
+it("normalizes binding home aliases and contains opaque binding locks", () => {
+  const root = mkdtempSync(join(tmpdir(), "coord-binding-")); roots.push(root);
+  mkdirSync(join(root, "home")); symlinkSync(join(root, "home"), join(root, "alias"));
+  const key = codexBindingKey(join(root, "home"), "account");
+  expect(codexBindingKey(join(root, "alias"), "account")).toBe(key);
+  expect(codexBindingLockPath(root, key)).toBe(join(root, `quota-${key}.lock`));
+  expect(() => codexBindingLockPath(root, "../escape")).toThrow();
+});
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });

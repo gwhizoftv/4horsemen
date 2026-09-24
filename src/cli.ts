@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, readSync, rmSync, unlinkSync } from "node:fs";
+import { runClaudeStatusLine } from "./claudeStatusLine.js";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -117,7 +118,18 @@ const defaultIo: CliIo = {
   stderr: (message) => process.stderr.write(message),
   env: process.env,
   cwd: process.cwd(),
-  stdin: () => readFileSync(0, "utf8")
+  stdin: () => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    while (true) {
+      const chunk = Buffer.alloc(8192);
+      const bytes = readSync(0, chunk, 0, chunk.length, null);
+      if (bytes === 0) return Buffer.concat(chunks).toString("utf8");
+      size += bytes;
+      if (size > 262_144) throw new Error("Oversized standard input.");
+      chunks.push(chunk.subarray(0, bytes));
+    }
+  }
 };
 
 type ParsedArgs = { positionals: string[]; flags: Map<string, string> };
@@ -1177,6 +1189,11 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       return report.exitCode;
     }
 
+    if (command === "claude-statusline") {
+      allowedFlags(parsed, ["clone"]);
+      if (parsed.positionals.length !== 0) throw new Error("claude-statusline takes no positional arguments.");
+      return await runClaudeStatusLine(resolve(io.cwd, requireFlag(parsed, "clone")));
+    }
     if (command === "agent-event") {
       allowedFlags(parsed, ["vendor", "clone", "agent", "issue", "event"]);
       if (parsed.positionals.length !== 0) throw new Error("agent-event takes no positional arguments.");
@@ -1191,7 +1208,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         if (vendor === "antigravity" && explicitEvent?.toLowerCase() === "stop") {
           response = JSON.stringify({ decision: "allow" });
         }
-        const raw = JSON.parse(io.stdin()) as unknown;
+        const payload = io.stdin();
+        if (Buffer.byteLength(payload) > 262_144) throw new Error("Oversized lifecycle observation.");
+        const raw = JSON.parse(payload) as unknown;
         handleAgentEvent({
           vendor,
           raw,

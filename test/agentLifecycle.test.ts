@@ -15,6 +15,7 @@ import {
   readAgentLifecycle
 } from "../src/agentLifecycle.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import { classifyFailure, claudeWindows, redactDiagnostic } from "../src/resourceEvidence.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -29,6 +30,51 @@ const digest = "a".repeat(64);
 const entry = () => initialAgentLifecycle(["codex"], now).agents.codex!;
 
 describe("agent lifecycle policy", () => {
+  it("correlates bounded failure evidence without letting telemetry renew activity or freshness", () => {
+    const accepted = { ...entry(), sessionId: "session", execution: "working" as const,
+      action: { actionId, actionDigest: digest, delivery: "accepted" as const, orderedAt: now, injectedAt: now,
+        retryableInjectionAt: null, acceptedAt: now, sessionId: "session", turnId: "turn", lastNudgedIdleEpoch: 0, workflowCompleteAt: null } };
+    const windows = claudeWindows({ five_hour: { used_percentage: 100, resets_at: Date.parse(later) / 1000 + 100 } });
+    const telemetry = { kind: "telemetry" as const, eventName: "status-line", sessionId: "session", windows };
+    const cached = applyLifecycleObservation(accepted, telemetry, now);
+    expect(cached.lastEventAt).toBe(accepted.lastEventAt);
+    expect(cached.execution).toBe("working");
+    expect(applyLifecycleObservation(cached, telemetry, later)).toBe(cached);
+    const failure = { kind: "failed" as const, eventName: "StopFailure", sessionId: "session", turnId: "turn",
+      failure: { vendor: "claude" as const, error: "rate_limit", error_details: "resets 3:45pm Bearer sensitive-token" } };
+    const advisory = applyLifecycleObservation(cached, { ...failure, turnId: undefined }, later);
+    expect(advisory.lastFailure?.confirmed).toBe(false);
+    expect(advisory.lastFailure?.evidence.resetsAt).toBeNull();
+    expect(advisory.execution).toBe("working");
+    expect(advisory.lastEventAt).toBe(cached.lastEventAt);
+    const failed = applyLifecycleObservation(cached, failure, later);
+    expect(failed.lastFailure?.evidence).toMatchObject({ failureClass: "usage-window", deadlineConfidence: "exact" });
+    expect(failed.lastFailure?.evidence.error_details).not.toContain("sensitive-token");
+    expect(applyLifecycleObservation(failed, failure, later)).toBe(failed);
+    expect(applyLifecycleObservation(cached, { ...failure, sessionId: "other" }, later)).toBe(cached);
+    expect(applyLifecycleObservation(cached, { ...failure, turnId: "old" }, later)).toBe(cached);
+    const stale = applyLifecycleObservation(cached, failure, "2026-08-18T01:00:00.000Z");
+    expect(stale.lastFailure?.evidence.resetsAt).toBeNull();
+    const cancelled = applyLifecycleObservation(cached, { ...failure, failure: { vendor: "cursor", error: "aborted" } }, later);
+    expect(cancelled.lastFailure?.evidence.failureClass).toBe("cancelled");
+    expect(applyLifecycleObservation(cancelled, failure, later)).toBe(cancelled);
+  });
+
+  it("keeps failure classes distinct and never parses rendered reset clocks or family deadlines", () => {
+    const cases = [["authentication_failed", "auth-account"], ["billing_error", "billing"], ["server_error", "transport"],
+      ["invalid_request", "context-overflow"], ["rate_limit", "unknown"], ["429", "unknown"], ["cancelled", "cancelled"]];
+    for (const [error, expected] of cases) {
+      expect(classifyFailure({ vendor: "claude", error, error_details: "prompt too long; resets 3:45pm" }, [], now))
+        .toMatchObject({ failureClass: expected, resetsAt: null });
+    }
+    const windows = claudeWindows({ five_hour: { used_percentage: 100, resets_at: 2000000000 } });
+    expect(classifyFailure({ vendor: "claude", error: "rate_limit", last_assistant_message: "Opus limit" }, windows, now).resetsAt).toBeNull();
+    const redacted = redactDiagnostic("person@example.test https://test.invalid/?secret=abc sk-secret-token\u001b[31m");
+    expect(redacted).not.toMatch(/person@|secret/);
+    expect(redacted).not.toContain(String.fromCharCode(27));
+    expect(redactDiagnostic("x ".repeat(10000))!.length).toBeLessThanOrEqual(2048);
+    expect(Buffer.byteLength(redactDiagnostic("🙂".repeat(3000))!)).toBeLessThanOrEqual(2048);
+  });
   it("correlates an exact prompt and never treats injection as acceptance", () => {
     const injected = {
       ...entry(),

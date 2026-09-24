@@ -5,6 +5,77 @@ agent one concrete action, verifies the exact pushed commit named by the agent,
 and advances only when the required origin-backed evidence passes. It never
 merges a pull request.
 
+## Vendor evidence and resource holds (#140)
+
+The #126 pause/nudge safeguards remain authoritative. Matching accepted-action
+Claude failures and Cursor diagnostics now enrich durable holds with separate
+cause and deadline confidence, redacted bounded context, and all observed blocking
+windows. Normal Stop, silence, generic 429s, token activity, or zero spend credits
+are not proof of exhausted renewable capacity. Cancellation stays owner-only.
+Hook failures without provable turn/action linkage remain advisory in the bounded
+lifecycle cache; they cannot hold or release a possibly unrelated action.
+
+Claude installation adds a clone-local statusline tee in
+`.claude/settings.local.json` with an ownership manifest. It forwards the owner's
+input bytes, output, errors and exit status without changing native auto-continue.
+User/project/local command precedence is checked; detected managed settings,
+unsupported command shapes and ownership drift disable telemetry rather than
+replace owner configuration. Custom CLI `--settings` overrides are not a supported
+telemetry configuration. Reinstall/uninstall preserves subsequent owner edits.
+`coord doctor` reports modified or disabled installed integrations. There is no
+new Antigravity classifier or change to its wrapper.
+
+Only fresh correlated `five_hour`/`seven_day` Unix reset epochs can schedule a
+Claude re-evaluation at deadline + 30 seconds. Re-rendered telemetry does not renew
+its first-seen age. Clock strings, family limits, stale/absent windows, native Stop,
+and native waiting do not prove fresh capacity: **Claude automatic release remains
+disabled**, and no speculative continuation is sent.
+
+An owner can opt into bounded Codex diagnostic queries by adding this optional
+binding to the `codex` agent in the existing workspace configuration before
+starting an issue:
+
+```json
+"codexQuota": { "codexHome": "/absolute/canonical/codex-home", "accountId": "expected-account-id" }
+```
+
+The owner confirms that this is the running agent's account/home and that it is
+used by only this owner runtime. Sharing that binding across independent runtime
+roots is unsupported: omit the binding until exclusive ownership is established.
+The binding is copied into start state; the coordinator does not discover identity
+from credentials, change the running agent's environment, or query its own default
+account. Missing/changed/unsupported returned identity requires owner recovery.
+
+Reads are one-shot initialized App Server `account/read` and
+`account/rateLimits/read` calls triggered by a safety-hold episode or a pending
+exact deadline, with at most one helper per binding, five-minute minimum spacing,
+two failure retries (5 then 10 minutes), six starts per unresolved action, a
+10-second total lifetime and 256 KiB combined output bound. Reservations and
+cooldowns survive restart and action replacement; uncertain orphan processes
+require owner intervention. Acknowledgment alone does not replenish the action's
+probe budget. There is no periodic idle polling, subscription, model turn, login,
+usage polling, or reset-credit consumption. Cross-issue exclusion uses existing
+cursor state plus a binding-keyed lock, not a monitoring database.
+
+**Live Codex automatic release also remains disabled until its version/auth/resource
+combination is independently validated.** The bounded reader enriches owner holds;
+the scoped clearance path is tested with sanitized injected results, not paid model
+probes. During implementation Codex reported `0.156.1` and Claude `2.1.281`; local
+App Server schema generation was filesystem-denied. Documentation and fake
+fixtures are not live clearance proof. Partial buckets, unknown enum values,
+missing windows, spend restrictions, or inconsistent compatibility views fail
+closed. A quota result never clears a watchdog, native-ownership, manual, uncertain
+delivery or nudge-loop hold, and never resets send counts or changes workflow pins.
+
+Use the recovery command printed by `coord status`: `coord resume --issue N --hold ID`.
+Only a nudge-loop hold permits `--reset-nudge-budget`. Deadlines promise a bounded
+recheck, not availability. The older #126-only limitations in `docs/coord-driver.md`
+describe the pre-enrichment baseline; this section describes #140 behavior.
+
+Interfaces: [official OpenAI App Server documentation](https://learn.chatgpt.com/docs/app-server),
+[Claude statusline](https://code.claude.com/docs/en/statusline),
+[Claude failure hooks](https://code.claude.com/docs/en/hooks#stopfailure).
+
 ## Happy path
 
 Install coordination once, onboard each product once, and then drive work from

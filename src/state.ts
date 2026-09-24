@@ -12,7 +12,8 @@ import {
   unlinkSync,
   writeFileSync
 } from "node:fs";
-import { dirname, relative } from "node:path";
+import { dirname, relative, isAbsolute, resolve } from "node:path";
+import { resourceEvidenceSchema } from "./resourceEvidence.js";
 import { z } from "zod";
 import {
   actionIdSchema,
@@ -158,6 +159,10 @@ export const agentConfigSchema = z
     launcher: z.string().min(1),
     delivery: deliverySchema.default("pull"),
     harnessProcess: z.string().min(1).optional(),
+    codexQuota: z.object({
+      codexHome: z.string().refine((value) => isAbsolute(value) && resolve(value) === value, "Use a canonical absolute CODEX_HOME"),
+      accountId: z.string().min(1).max(256)
+    }).strict().optional(),
     /** tmux send-keys before the nudge text (e.g. vim insert `i`). */
     nudgePrelude: z.array(z.string().min(1)).optional(),
     /** tmux send-keys after the nudge text (e.g. Enter or C-j). */
@@ -165,7 +170,7 @@ export const agentConfigSchema = z
     /** macOS Terminal.app settings-set (profile) name for owner attach windows. */
     terminalProfile: z.string().min(1).optional()
   })
-  .strict();
+  .strict().refine((agent) => agent.codexQuota === undefined || agent.id === "codex", "Only Codex supports a quota binding.");
 
 export const coordinatorConfigSchema = z
   .object({
@@ -520,6 +525,12 @@ export const ballotBatchSchema = z
   })
   .strict();
 
+export const quotaProbeSchema = z.object({
+  binding: z.string(), starts: z.number().int().min(0).max(6), failures: z.number().int().min(0).max(3),
+  inFlight: z.boolean(), lastStartAt: timestampSchema.nullable(), nextAt: timestampSchema.nullable(),
+  consumed: z.array(timestampSchema).max(6), terminal: z.boolean()
+}).strict();
+
 const actionSafetySchema = z.object({
   actionId: z.string().uuid(),
   sends: z.number().int().nonnegative().default(0),
@@ -529,7 +540,10 @@ const actionSafetySchema = z.object({
   holdGeneration: z.number().int().nonnegative().default(0),
   observationChecks: z.number().int().nonnegative().default(0),
   nextObservationAt: timestampSchema.nullable().default(null),
-  activityAt: timestampSchema
+  activityAt: timestampSchema,
+  quotaProbe: quotaProbeSchema.optional(),
+  resourceDeadlines: z.array(timestampSchema).max(16).optional(),
+  handledFailure: z.string().optional()
 }).strict();
 
 const holdSchema = z.object({
@@ -537,16 +551,21 @@ const holdSchema = z.object({
   agent: agentIdSchema,
   actionId: z.string().uuid(),
   sessionId: z.string().nullable(),
-  reason: z.enum(["nudge-loop", "delivery-uncertain", "harness-gone", "unobservable", "vendor-wait"]),
+  reason: z.enum(["nudge-loop", "delivery-uncertain", "harness-gone", "unobservable", "vendor-wait", "vendor-failure"]),
   evidenceId: z.string(),
   observedAt: timestampSchema,
-  resetsAt: z.null(),
-  confidence: z.literal("unknown"),
+  resetsAt: timestampSchema.nullable(),
+  confidence: z.enum(["unknown", "vendor-reported", "probed"]),
+  resource: resourceEvidenceSchema.optional(),
+  recheckAt: timestampSchema.nullable().optional(),
   retryOwner: z.enum(["owner", "vendor"])
 }).strict();
 
 export const cursorsStateSchema = z
   .object({
+    quotaBindings: z.record(z.string().regex(/^[a-f0-9]{64}$/), z.object({
+      lastStartAt: timestampSchema, inFlight: z.boolean()
+    }).strict()).optional(),
     formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
     stateRevision: z.number().int().nonnegative(),
     issueCursor: z
@@ -617,6 +636,7 @@ const journalEventTypeSchema = z.enum([
   "agent-observability-recovered",
   "nudge-deferred",
   "hold-created",
+  "hold-updated",
   "hold-released",
   "intent-seen",
   "verify-result",
@@ -1114,6 +1134,16 @@ export const replaceCursor = (
 
 export const setPaused = (cursors: CursorsState, paused: boolean, now = new Date().toISOString()): CursorsState =>
   cursorsStateSchema.parse({ ...cursors, manualPaused: paused, paused: paused || cursors.holds.length > 0, updatedAt: now });
+
+/** Capacity clearance never acknowledges a local harness/ownership hold or resets action safety. */
+export const releaseResourceHold = (cursors: CursorsState, id: string, now: string): CursorsState => {
+  const hold = cursors.holds.find((entry) => entry.id === id);
+  if (!hold || hold.reason !== "vendor-failure" || hold.resource?.failureClass !== "usage-window" ||
+      hold.retryOwner !== "owner" || cursors.manualPaused || cursors.abandoned || cursors.completed ||
+      cursors.agents[hold.agent]?.actionId !== hold.actionId) throw new Error("Resource hold is not releasable.");
+  const holds = cursors.holds.filter((entry) => entry.id !== id);
+  return cursorsStateSchema.parse({ ...cursors, holds, paused: cursors.manualPaused || holds.length > 0, updatedAt: now });
+};
 
 /** Scoped owner recovery never releases another hold or a manual pause. */
 export const releaseHold = (cursors: CursorsState, id: string, resetBudget: boolean, now: string): CursorsState => {

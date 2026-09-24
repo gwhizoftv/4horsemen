@@ -1,4 +1,5 @@
 import type { BallotBatch, CursorsState, StartState } from "./state.js";
+import { redactDiagnostic } from "./resourceEvidence.js";
 import { coordMergesPullRequest } from "./steps.js";
 
 const finalization = (cursors: CursorsState) =>
@@ -55,7 +56,17 @@ export const renderIssueReport = (
   if (cursors.manualPaused) lines.push("Manual pause: active (plain coord resume clears only this pause).");
   for (const hold of cursors.holds) {
     const sends = cursors.actionSafety[hold.agent]?.sends ?? 0;
-    lines.push(`Hold ${hold.id}: ${hold.agent}, ${hold.reason}; cause unknown, reset unknown, retry owner: ${hold.retryOwner}; sends ${sends}/4.`);
+    const cause = hold.resource === undefined ? "cause unknown, reset unknown" : `cause ${hold.resource.failureClass}, reset ${hold.resource.resetsAt ?? "unknown"}`;
+    lines.push(`Hold ${hold.id}: ${hold.agent}, ${hold.reason}; ${cause}, retry owner: ${hold.retryOwner}; sends ${sends}/4.`);
+    const probe = cursors.actionSafety[hold.agent]?.quotaProbe;
+    if (probe !== undefined) lines.push(`Quota observations: ${probe.starts}/6; ${probe.inFlight ? "unresolved helper reservation; owner inspection required" : probe.nextAt ?? "owner release required"}.`);
+    if (hold.resource !== undefined) {
+      const resource = hold.resource;
+      lines.push(`Resource: ${resource.failureClass}; confidence ${resource.confidence}; deadline ${resource.deadlineConfidence}; reset ${resource.resetsAt ?? "unknown"}.`);
+      for (const window of resource.windows) lines.push(`Window ${redactDiagnostic(window.bucket)}/${window.window}: ${window.usedPercent}%; reset ${window.resetsAt ?? "unknown"}.`);
+      for (const detail of [resource.error, resource.error_details, resource.last_assistant_message]) if (detail) lines.push(`Diagnostic: ${redactDiagnostic(detail)}`);
+      lines.push(`Resource recovery: ${hold.recheckAt ?? probe?.nextAt ?? "owner release required"}; probes ${probe?.starts ?? 0}/6; a recheck is not guaranteed availability.`);
+    }
     lines.push(`Recovery: inspect the agent, then coord resume --issue ${start.issue} --hold ${hold.id}` +
       (hold.reason === "nudge-loop" ? " --reset-nudge-budget" : ""));
   }

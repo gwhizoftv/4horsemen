@@ -35,6 +35,7 @@ const installed = (
     installRoot: repoRoot,
     productRoot: fixture.productRoot,
     coordRoot: fixture.coordRoot,
+    home: fixture.workspaceRoot,
     agents: ["claude"],
     profile: "solo",
     declarePath: writeDeclaration(fixture.workspaceRoot, declaration),
@@ -56,6 +57,15 @@ const editConfig = (configPath: string, mutate: (config: Record<string, unknown>
 };
 
 describe("coord doctor", () => {
+  it("reports a modified Claude telemetry command without probing or changing settings", () => {
+    const { fixture, clone } = installed();
+    const path = join(clone, ".claude/settings.local.json");
+    const local = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    local.statusLine = { type: "command", command: "owner replacement" };
+    const bytes = JSON.stringify(local); writeFileSync(path, bytes);
+    expect(renderDoctorReport(report(fixture))).toContain("quota telemetry ownership");
+    expect(readFileSync(path, "utf8")).toBe(bytes);
+  });
   it("reports nothing on a healthy install", () => {
     const { fixture } = installed();
     const result = report(fixture);

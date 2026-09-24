@@ -8,6 +8,8 @@ import { productName } from "./setupWorkspace.js";
 import { readConfig, type CoordinatorConfig } from "./state.js";
 import { resolveWorkspaceLocation } from "./workspace.js";
 import { inspectAgentLifecycleHooks } from "./agentHookSync.js";
+import { inspectClaudeStatusLine } from "./claudeStatusLine.js";
+import { codexBindingKey } from "./paths.js";
 import { cloneAgentsProtocolState } from "./agentsProtocol.js";
 
 /**
@@ -345,6 +347,18 @@ const checkClone = (input: {
       agent: input.agent.id,
       cliEntry: stamp.cliEntry
     });
+    if (input.agent.id === "claude") {
+      const statusLine = inspectClaudeStatusLine(clone);
+      if (statusLine === "modified" || statusLine === "disabled") findings.push(finding(
+        "lifecycleHooks", clone, "Claude quota telemetry ownership or settings precedence is unproved.",
+        "Inspect the owner statusline and restore its integration explicitly; quota holds remain owner-released."
+      ));
+    }
+    if (input.agent.codexQuota !== undefined) {
+      try { codexBindingKey(input.agent.codexQuota.codexHome, input.agent.codexQuota.accountId); }
+      catch { findings.push(finding("lifecycleHooks", clone, "Codex quota binding home is unavailable.",
+        "Confirm the canonical home and exclusive runtime ownership; no account probe was performed.")); }
+    }
     if (
       lifecycle.kind === "unsupported" &&
       (input.agent.delivery === "nudge" || input.agent.delivery === "both")

@@ -72,6 +72,7 @@ import {
   syncAgentLifecycleHooks,
   syncAntigravityStatusLine
 } from "./agentHookSync.js";
+import { syncClaudeStatusLine, removeClaudeStatusLine } from "./claudeStatusLine.js";
 
 /**
  * `coord install` / `coord uninstall`.
@@ -415,6 +416,7 @@ export const install = (options: InstallOptions): InstallResult => {
       effects
     );
     syncAgentLifecycleHooks({ clone, agent, cliEntry, options: effects });
+    if (agent === "claude") syncClaudeStatusLine({ clone, cliEntry, home: options.home, options: effects });
     const hooks = writeCloneHooks({
       clone,
       installRoot,
@@ -608,6 +610,7 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
   for (const { agent, clone } of clonePaths) {
     if (!existsSync(clone)) continue;
     removeAgentLifecycleHooks({ clone, agent: agent.id, options: effects });
+    if (agent.id === "claude") removeClaudeStatusLine(clone, effects);
     const removal = removeCloneHooks(clone, { dryRun: options.dryRun });
     if (removal.removed.length > 0) {
       effects.changes.push(`remove hooks ${removal.removed.join(", ")} from ${clone}`);

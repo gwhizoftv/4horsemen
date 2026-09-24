@@ -12,6 +12,8 @@ import {
   syncAntigravityStatusLine
 } from "../src/agentHookSync.js";
 import { effectOptions } from "../src/setupWorkspace.js";
+import { inspectClaudeStatusLine, removeClaudeStatusLine, runClaudeStatusLine, syncClaudeStatusLine } from "../src/claudeStatusLine.js";
+import { PassThrough } from "node:stream";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -29,6 +31,56 @@ const fixture = () => {
 const json = (path: string): Record<string, unknown> => JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
 
 describe("agent lifecycle hook synchronization", () => {
+  it("forwards byte-exact Claude input and owner exit status even when telemetry fails", async () => {
+    const { root, clone, cliEntry } = fixture();
+    mkdirSync(join(clone, ".claude"));
+    const local = join(clone, ".claude/settings.local.json");
+    const prior = { type: "command", command: "cat; printf owner-error >&2; exit 7", padding: 3 };
+    writeFileSync(local, JSON.stringify({ statusLine: prior }));
+    syncClaudeStatusLine({ clone, cliEntry, home: root, options: effectOptions(() => undefined, false) });
+    for (const payload of ["{\"session_id\":\"session\"}\n\n", "x".repeat(9000) + "\n"]) {
+      const input = new PassThrough(); const output = new PassThrough(); const error = new PassThrough();
+      let stdout = ""; let stderr = "";
+      output.on("data", (data: Buffer) => { stdout += data.toString(); });
+      error.on("data", (data: Buffer) => { stderr += data.toString(); });
+      const result = runClaudeStatusLine(clone, { input, output, error });
+      input.end(payload);
+      expect(await result).toBe(7);
+      expect(stdout).toBe(payload); expect(stderr).toBe("owner-error");
+    }
+    removeClaudeStatusLine(clone, effectOptions(() => undefined, false));
+    expect(json(local).statusLine).toEqual(prior);
+  });
+  it("owns only the Claude local override, detects inherited drift, and restores exact prior absence", () => {
+    const { root, clone, cliEntry } = fixture();
+    const home = join(root, "home"); mkdirSync(join(home, ".claude"), { recursive: true });
+    const userPath = join(home, ".claude/settings.json");
+    writeFileSync(userPath, JSON.stringify({ statusLine: { type: "command", command: "cat", padding: 2 } }));
+    const local = join(clone, ".claude/settings.local.json");
+    syncClaudeStatusLine({ clone, cliEntry, home, options: effectOptions(() => undefined, true) });
+    expect(existsSync(local)).toBe(false);
+    syncClaudeStatusLine({ clone, cliEntry, home, options: effectOptions(() => undefined, false) });
+    expect(inspectClaudeStatusLine(clone)).toBe("installed");
+    expect(json(local).statusLine).toMatchObject({ padding: 2 });
+    const second = effectOptions(() => undefined, false);
+    syncClaudeStatusLine({ clone, cliEntry, home, options: second });
+    expect(second.changes).toEqual([]);
+    writeFileSync(userPath, JSON.stringify({ statusLine: { type: "command", command: "new-command" } }));
+    expect(inspectClaudeStatusLine(clone)).toBe("modified");
+    removeClaudeStatusLine(clone, effectOptions(() => undefined, false));
+    expect(json(local).statusLine).toBeDefined();
+    writeFileSync(userPath, JSON.stringify({ statusLine: { type: "command", command: "cat", padding: 2 } }));
+    removeClaudeStatusLine(clone, effectOptions(() => undefined, false));
+    expect(json(local).statusLine).toBeUndefined();
+    expect(json(userPath).statusLine).toMatchObject({ command: "cat" });
+  });
+
+  it("does not install Claude telemetry over ambiguous managed settings", () => {
+    const { root, clone, cliEntry } = fixture();
+    mkdirSync(join(root, ".claude")); writeFileSync(join(root, ".claude/managed-settings.json"), "{}");
+    syncClaudeStatusLine({ clone, cliEntry, home: root, options: effectOptions(() => undefined, false) });
+    expect(inspectClaudeStatusLine(clone)).toBe("missing");
+  });
   for (const agent of ["codex", "claude", "cursor", "antigravity"] as const) {
     it(`installs and removes only the managed ${agent} definitions`, () => {
       const { clone, cliEntry } = fixture();

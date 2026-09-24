@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
+import { claudeWindows } from "./resourceEvidence.js";
 import {
   observeAgentLifecycleWithResult,
   type LifecycleObservation,
@@ -130,7 +131,10 @@ export const normalizeAgentEvent = (
           : { actionId: action.actionId, actionDigest: action.actionDigest, actionPath: action.actionPath })
       };
     }
-    if (normalizedName === "stopfailure") return { kind: "failed", ...common, backgroundActive: false };
+    if (normalizedName === "status-line") return { kind: "telemetry", ...common, windows: claudeWindows(raw.rate_limits) };
+    if (normalizedName === "stopfailure") return { kind: "failed", ...common, backgroundActive: false,
+      failure: { vendor: "claude", error: stringField(raw, "error"), error_details: stringField(raw, "error_details"),
+        last_assistant_message: stringField(raw, "last_assistant_message") } };
     if (normalizedName === "stop") {
       const background = [arrayHasItems(raw, "background_tasks"), arrayHasItems(raw, "session_crons")].some(
         (value) => value === true
@@ -149,7 +153,8 @@ export const normalizeAgentEvent = (
       ...(turnId === undefined ? {} : { turnId })
     };
     if (normalizedName === "sessionstart") return { kind: "session-start", ...common };
-    if (normalizedName === "sessionend") return { kind: "session-end", ...common };
+    if (normalizedName === "sessionend") return { kind: "session-end", ...common,
+      failure: { vendor: "cursor", error: stringField(raw, "reason"), error_details: stringField(raw, "error_message") } };
     if (normalizedName === "beforesubmitprompt") {
       return {
         kind: "prompt-submitted",
@@ -162,7 +167,8 @@ export const normalizeAgentEvent = (
     if (normalizedName === "stop") {
       const status = stringField(raw, "status", "reason", "final_status")?.toLowerCase();
       return status === "error" || status === "aborted"
-        ? { kind: "failed", ...common, backgroundActive: false }
+        ? { kind: "failed", ...common, backgroundActive: false,
+          failure: { vendor: "cursor", error: status, error_details: stringField(raw, "error_message") } }
         : { kind: "stopped", ...common, backgroundActive: false };
     }
     return null;
@@ -344,7 +350,7 @@ export const handleAgentEvent = (input: HandleAgentEventInput): HandleAgentEvent
     const result = observeAgentLifecycleWithResult(paths, agent, observation, now);
     state = result.state;
     const journalsTurnBoundary = observation.kind === "prompt-submitted" || observation.kind === "stopped";
-    if (result.changed || journalsTurnBoundary) {
+    if (observation.kind !== "telemetry" && (result.changed || journalsTurnBoundary)) {
       appendJournal(
         paths,
         {
@@ -357,6 +363,7 @@ export const handleAgentEvent = (input: HandleAgentEventInput): HandleAgentEvent
             kind: observation.kind,
             execution: result.state.agents[agent]?.execution ?? "unknown",
             health: result.state.agents[agent]?.health ?? "unknown",
+            ...(observation.failure === undefined ? {} : { failureClass: result.state.agents[agent]?.lastFailure?.evidence.failureClass ?? "unknown" }),
             ...(observation.sessionId === undefined ? {} : { sessionId: observation.sessionId }),
             ...(observation.turnId === undefined ? {} : { turnId: observation.turnId })
           }

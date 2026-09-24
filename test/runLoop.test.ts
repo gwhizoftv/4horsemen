@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { readAction, writeAction } from "../src/action.js";
 import { decideLifecycleNudge, initialAgentLifecycle, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { BareMirror } from "../src/mirror.js";
+import { unknownEvidence, type ResourceEvidence } from "../src/resourceEvidence.js";
+import type { CodexQuotaResult } from "../src/codexQuota.js";
 import { agentResponsePath, agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
   materializeBoundInputs,
@@ -204,6 +206,140 @@ const safetyFixture = (vendor = "codex") => {
 };
 
 describe("durable delivery safety", () => {
+  it("rechecks a held Claude run once without initialization, prompts, or native-activity clearance", async () => {
+    const f = safetyFixture("claude");
+    await f.tick(); f.advance(1); f.working();
+    const deadline = Date.parse(f.now()) + 60_000;
+    observeAgentLifecycle(f.paths, "claude", { kind: "telemetry", eventName: "status-line", sessionId: "session",
+      windows: [{ bucket: "claude", window: "five_hour", usedPercent: 100, windowDurationMins: 300, resetsAt: new Date(deadline).toISOString() }] }, f.now());
+    observeAgentLifecycle(f.paths, "claude", { kind: "failed", eventName: "StopFailure", sessionId: "session", turnId: "turn-1",
+      failure: { vendor: "claude", error: "rate_limit", error_details: "resets 3:45pm" } }, f.now());
+    const held = await f.tick();
+    expect(held.holds[0]?.resource?.failureClass).toBe("usage-window");
+    const journal = readFileSync(f.paths.journal, "utf8");
+    const cursorBytes = readFileSync(f.paths.cursors, "utf8");
+    for (let i = 0; i < 1000; i++) await f.tick();
+    expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
+    expect(readFileSync(f.paths.cursors, "utf8")).toBe(cursorBytes);
+    const loop = new CoordinatorRunLoop(f.paths, { tmux: null, now: f.now, log: () => undefined,
+      sleep: async () => { f.advance(90_000); f.stop(); } });
+    loop.initializeEffects = async () => { throw new Error("Must not initialize held workflow"); };
+    await loop.run();
+    expect(readCursorsState(f.paths).holds).toHaveLength(1);
+    expect(readCursorsState(f.paths).holds[0]?.recheckAt).toBeNull();
+    expect(f.ui.sends).toBe(1);
+    expect(readJournal(f.paths).filter((event) => event.type === "hold-updated")).toHaveLength(1);
+  });
+
+  const quotaFixture = async () => {
+    const f = safetyFixture(); await f.tick(); f.advance(1); f.working();
+    const start = readStartState(f.paths);
+    writeFileSync(f.paths.start, JSON.stringify({ ...start, agents: start.agents.map((agent) => ({ ...agent,
+      codexQuota: { codexHome: f.paths.coordRoot, accountId: "account" } })) }));
+    const resource: ResourceEvidence = { ...unknownEvidence("codex"), failureClass: "usage-window", confidence: "probed",
+      deadlineConfidence: "exact", resetsAt: new Date(Date.parse(f.now()) + 600_000).toISOString(),
+      windows: [{ bucket: "codex", window: "primary", usedPercent: 100, windowDurationMins: 300,
+        resetsAt: new Date(Date.parse(f.now()) + 600_000).toISOString() }] };
+    const state = readCursorsState(f.paths);
+    f.makeLoop()["hold"](state, "codex", "vendor-failure", "quota-fixture", resource);
+    const result: CodexQuotaResult = { outcome: "exhausted", evidence: resource, windows: resource.windows, reaped: true, recoveryProven: true };
+    return { ...f, resource, result };
+  };
+
+  it("reserves before reads, waits until the exact deadline plus grace, and releases only its resource hold", async () => {
+    const f = await quotaFixture();
+    let calls = 0;
+    const reader = async (): Promise<CodexQuotaResult> => {
+      calls++;
+      expect(readCursorsState(f.paths).actionSafety.codex?.quotaProbe?.inFlight).toBe(true);
+      return calls === 1 ? f.result : { ...f.result, outcome: "clear", windows: f.resource.windows.map((window) => ({ ...window, usedPercent: 10 })) };
+    };
+    const loop = () => new CoordinatorRunLoop(f.paths, { tmux: null, now: f.now, log: () => undefined, codexQuotaReader: reader });
+    await loop().runTick();
+    expect(calls).toBe(1);
+    const before = readCursorsState(f.paths);
+    f.advance(600_000 + 29_999);
+    for (let i = 0; i < 1000; i++) await loop().runTick();
+    expect(calls).toBe(1);
+    f.advance(1);
+    const cleared = await loop().runTick();
+    expect(calls).toBe(2); expect(cleared.holds).toEqual([]);
+    expect(cleared.actionSafety.codex?.sends).toBe(before.actionSafety.codex?.sends);
+    expect(cleared.actionSafety.codex?.holdGeneration).toBe(before.actionSafety.codex?.holdGeneration);
+    expect(cleared.agents).toEqual(before.agents);
+    expect(cleared.derived).toEqual(before.derived);
+  });
+
+  it("persists failed-query backoff and terminates after two retries across restarts", async () => {
+    const f = await quotaFixture(); let calls = 0;
+    const reader = async (): Promise<CodexQuotaResult> => { calls++; return { ...f.result, outcome: "failed" }; };
+    const tick = () => new CoordinatorRunLoop(f.paths, { tmux: null, now: f.now, log: () => undefined, codexQuotaReader: reader }).runTick();
+    await tick(); f.advance(299_999); await tick(); expect(calls).toBe(1);
+    f.advance(1); await tick(); expect(calls).toBe(2);
+    f.advance(599_999); await tick(); expect(calls).toBe(2);
+    f.advance(1); await tick(); expect(calls).toBe(3);
+    const journal = readFileSync(f.paths.journal, "utf8");
+    for (let i = 0; i < 1000; i++) { f.advance(300_000); await tick(); }
+    expect(calls).toBe(3); expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
+    expect(readCursorsState(f.paths).actionSafety.codex?.quotaProbe).toMatchObject({ terminal: true, starts: 3, failures: 3 });
+  });
+
+  it("coalesces concurrent issues sharing a binding and preserves cooldown across action replacement", async () => {
+    const f = await quotaFixture();
+    const peer = issueRuntimePaths(f.paths.coordRoot, 2);
+    createIssueRuntime(peer, ["codex"]);
+    writeFileSync(peer.start, JSON.stringify({ ...readStartState(f.paths), issue: 2 }));
+    writeCursorsState(peer, readCursorsState(f.paths));
+    writeFileSync(peer.agentLifecycle, readFileSync(f.paths.agentLifecycle));
+    let finish!: (result: CodexQuotaResult) => void;
+    let calls = 0;
+    const reader = (): Promise<CodexQuotaResult> => { calls++; return new Promise((done) => { finish = done; }); };
+    const first = new CoordinatorRunLoop(f.paths, { tmux: null, now: f.now, log: () => undefined, codexQuotaReader: reader }).runTick();
+    const peerReader = async (): Promise<CodexQuotaResult> => { calls++; return f.result; };
+    const peerLoop = () => new CoordinatorRunLoop(peer, { tmux: null, now: f.now, log: () => undefined, codexQuotaReader: peerReader });
+    const deferred = await peerLoop().runTick();
+    expect(calls).toBe(1);
+    expect(deferred.actionSafety.codex?.quotaProbe).toMatchObject({ starts: 0, terminal: false });
+    finish(f.result); await first;
+    // New action safety cannot erase the binding-level reservation/cooldown.
+    mutateCursorsState(f.paths, (state) => ({ ...state, actionSafety: {} }));
+    f.advance(299_999); await peerLoop().runTick(); expect(calls).toBe(1);
+    f.advance(1); await peerLoop().runTick(); expect(calls).toBe(2);
+  });
+
+  it("caps shifted exhausted deadlines at six starts and never replays a consumed deadline", async () => {
+    const f = await quotaFixture(); let calls = 0;
+    const reader = async (): Promise<CodexQuotaResult> => {
+      calls++;
+      const deadline = new Date(Date.parse(f.now()) + 600_000).toISOString();
+      return { ...f.result, evidence: { ...f.resource, resetsAt: deadline,
+        windows: f.resource.windows.map((window) => ({ ...window, resetsAt: deadline })) } };
+    };
+    for (let i = 0; i < 1000; i++) {
+      await new CoordinatorRunLoop(f.paths, { tmux: null, now: f.now, log: () => undefined, codexQuotaReader: reader }).runTick();
+      f.advance(630_000);
+    }
+    expect(calls).toBe(6);
+    expect(readCursorsState(f.paths).actionSafety.codex?.quotaProbe?.terminal).toBe(true);
+  });
+
+  it.each(["manual", "cancel", "orphan"])("cannot recover across %s during a read", async (mode) => {
+    const f = await quotaFixture();
+    const reader = async (): Promise<CodexQuotaResult> => {
+      if (mode === "manual") mutateCursorsState(f.paths, (state) => ({ ...state, manualPaused: true, paused: true }));
+      if (mode === "cancel") observeAgentLifecycle(f.paths, "codex", { kind: "failed", eventName: "cancel", sessionId: "session", turnId: "turn-1",
+        failure: { vendor: "cursor", error: "aborted" } }, f.now());
+      return { ...f.result, outcome: "clear", reaped: mode !== "orphan", windows: f.resource.windows.map((window) => ({ ...window, usedPercent: 0 })) };
+    };
+    const loop = new CoordinatorRunLoop(f.paths, { tmux: null, now: f.now, log: () => undefined, codexQuotaReader: reader });
+    await loop.runTick();
+    expect(readCursorsState(f.paths).holds).toHaveLength(1);
+    expect(readCursorsState(f.paths).paused).toBe(true);
+    f.advance(86400_000);
+    const never = async (): Promise<CodexQuotaResult> => { throw new Error("Must not probe again"); };
+    await new CoordinatorRunLoop(f.paths, { tmux: null, now: f.now, log: () => undefined, codexQuotaReader: never }).runTick();
+    expect(readCursorsState(f.paths).actionSafety.codex?.quotaProbe?.starts).toBe(1);
+  });
   it("keeps healthy minute-boundary probes out of durable cursor state", async () => {
     const f = safetyFixture();
     await f.tick(); f.advance(1); f.working();
