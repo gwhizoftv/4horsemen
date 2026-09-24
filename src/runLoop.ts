@@ -10,6 +10,7 @@ import {
   markActionWorkflowComplete,
   markInjectedActionAbsent,
   markObservabilityDegraded,
+  mutateAgentLifecycle,
   orderAgentAction,
   readAgentLifecycle
 } from "./agentLifecycle.js";
@@ -1258,13 +1259,19 @@ export class CoordinatorRunLoop {
     const safety = latest.actionSafety[agent];
     if (latest.abandoned || latest.completed || safety?.actionId !== actionId ||
       latest.agents[agent]?.actionId !== actionId || safety.resource.inFlight !== reservation) return latest;
-    // So do a rebinding and any lifecycle change for the agent (session, turn, stop).
-    const lifecycleAfter = readAgentLifecycle(this.paths);
-    const stale = lifecycleAfter.stateRevision !== lifecycle.stateRevision ||
-      (lifecycleAfter.agents[agent]?.sessionId ?? null) !== session ||
-      JSON.stringify(this.codexBinding(readStartState(this.paths), agent)) !== JSON.stringify(binding);
-    const later = this.now();
-    return this.mutate(latest, (current) => this.applyCodexResult(start, current, agent, binding.accountId, binding.validatedVersion, result, stale, later));
+    // So do a rebinding and any lifecycle change for the agent (session, turn, stop). The lifecycle
+    // lock is held from that check through the cursor mutation, so no hook event can land in between.
+    let applied = latest;
+    mutateAgentLifecycle(this.paths, (lifecycleAfter) => {
+      const stale = lifecycleAfter.stateRevision !== lifecycle.stateRevision ||
+        (lifecycleAfter.agents[agent]?.sessionId ?? null) !== session ||
+        JSON.stringify(this.codexBinding(readStartState(this.paths), agent)) !== JSON.stringify(binding);
+      const later = this.now();
+      applied = this.mutate(latest, (current) =>
+        this.applyCodexResult(start, current, agent, binding.accountId, binding.validatedVersion, result, stale, later));
+      return lifecycleAfter;
+    });
+    return applied;
   }
 
   private applyCodexResult(

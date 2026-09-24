@@ -337,26 +337,30 @@ export const codexClearsBlockers = (limits: CodexLimits, prior: readonly Resourc
   return prior.every((blocked) => {
     const bucket = limits.buckets.find((candidate) => candidate.limitId === blocked.limitId);
     const window = bucket?.windows.find((candidate) => candidate.window === blocked.window);
-    return window !== undefined && window.windowDurationMins === blocked.windowDurationMins &&
+    return window !== undefined && blocked.windowDurationMins !== null && window.windowDurationMins === blocked.windowDurationMins &&
       window.usedPercent !== null && window.usedPercent < 100;
   });
 };
 
 /**
- * Blockers still unresolved after a fresh exhausted read. A prior blocker is
- * dropped only when this snapshot shows the same window, with the same
- * duration, below its limit; a window the snapshot omits stays blocked.
+ * Blockers still unresolved after a fresh exhausted read. A blocker's identity
+ * includes its window duration, so a new blocker never overwrites an earlier
+ * one of a different length. A prior blocker is dropped only when this
+ * snapshot shows that same window, with the same duration, below its limit in
+ * a bucket that explicitly reports no restriction; anything less keeps it.
  */
 export const mergeCodexBlockers = (
   prior: readonly ResourceWindow[], limits: CodexLimits, blocked: readonly ResourceWindow[]
 ): ResourceWindow[] => {
-  const key = (window: ResourceWindow): string => `${window.limitId}\0${window.window}`;
+  const key = (window: ResourceWindow): string => `${window.limitId}\0${window.window}\0${window.windowDurationMins ?? "?"}`;
   const merged = new Map(blocked.map((window) => [key(window), window]));
   for (const old of prior) {
     if (merged.has(key(old))) continue;
-    const fresh = limits.buckets.find((bucket) => bucket.limitId === old.limitId)?.windows.find((window) => window.window === old.window);
-    const resolved = fresh !== undefined && fresh.windowDurationMins === old.windowDurationMins &&
-      fresh.usedPercent !== null && fresh.usedPercent < 100;
+    const bucket = limits.buckets.find((candidate) => candidate.limitId === old.limitId);
+    const fresh = bucket?.windows.find((window) => window.window === old.window);
+    const resolved = bucket !== undefined && bucket.restrictionsReported && bucket.spendControlReached === false &&
+      bucket.reachedType === null && fresh !== undefined && old.windowDurationMins !== null &&
+      fresh.windowDurationMins === old.windowDurationMins && fresh.usedPercent !== null && fresh.usedPercent < 100;
     if (!resolved) merged.set(key(old), old);
   }
   return [...merged.values()];

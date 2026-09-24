@@ -223,7 +223,7 @@ const codexLimits = (weeklyPercent: number, resetHours: number, extra: Record<st
 };
 
 /** A codex safety fixture bound to one owner-confirmed home/account, with a scripted reader. */
-const quotaFixture = (results: CodexQuotaResult[], during?: () => void, validatedVersion: string | null = "0.156.1") => {
+const quotaFixture = (results: CodexQuotaResult[], during?: () => void, validatedVersion: string | null = "0.156.1", onClock?: () => void) => {
   const reads: string[] = [];
   let clock: () => string = () => "";
   const reader: CodexQuotaReader = async () => {
@@ -231,7 +231,7 @@ const quotaFixture = (results: CodexQuotaResult[], during?: () => void, validate
     during?.();
     return results.shift() ?? { status: "failed", error: "unscripted", reaped: true };
   };
-  const f = safetyFixture("codex", { codexQuota: reader });
+  const f = safetyFixture("codex", { codexQuota: reader, ...(onClock === undefined ? {} : { now: () => { onClock(); return clock(); } }) });
   clock = f.now;
   const start = readStartState(f.paths);
   writeFileSync(f.paths.start, JSON.stringify({ ...start, agents: [{ ...start.agents[0], codexQuota: {
@@ -388,10 +388,11 @@ describe("vendor resource evidence and recovery", () => {
     }
   });
 
-  const bucketLimits = (windows: Record<string, [percent: number, resetHours: number]>) => {
-    const buckets = Object.fromEntries(Object.entries(windows).map(([limitId, [usedPercent, hours]]) => [limitId, {
-      limitId, spendControlReached: false, rateLimitReachedType: null, secondary: null,
-      primary: { usedPercent, windowDurationMins: 300, resetsAt: hoursFromBase(hours) } }]));
+  const bucketLimits = (windows: Record<string, [percent: number, resetHours: number, duration?: number]>, unreported: string[] = []) => {
+    const buckets = Object.fromEntries(Object.entries(windows).map(([limitId, [usedPercent, hours, duration]]) => [limitId, {
+      limitId, rateLimitReachedType: null, secondary: null,
+      ...(unreported.includes(limitId) ? {} : { spendControlReached: false }),
+      primary: { usedPercent, windowDurationMins: duration ?? 300, resetsAt: hoursFromBase(hours) } }]));
     return { status: "ok" as const, reaped: true as const, helper: { userAgent: "codex_cli_rs/0.156.1", codexHome: "/owner/.codex" },
       limits: parseCodexRateLimits({ ordinaryUsageAllowed: Object.values(windows).every(([percent]) => percent < 100),
         rateLimits: Object.values(buckets)[0], rateLimitsByLimitId: buckets, accountId: "acct-1" }) };
@@ -417,6 +418,49 @@ describe("vendor resource evidence and recovery", () => {
     expect(f.reads).toHaveLength(3);
     expect(readCursorsState(f.paths).holds).toHaveLength(1);
     expect(readJournal(f.paths).filter((event) => event.type === "hold-released")).toHaveLength(0);
+  });
+
+  it.each([
+    // Each third read would clear the hold if the earlier blocker had been dropped or overwritten.
+    ["a below-limit window whose bucket omits its restriction fields",
+      bucketLimits({ a: [100, 70], b: [20, 40] }, ["b"]), bucketLimits({ a: [10, 90] }), "b"],
+    ["a new blocker with a different window length",
+      bucketLimits({ a: [100, 70, 60] }), bucketLimits({ a: [10, 90, 60], b: [10, 90] }), "a"]
+  ])("keeps an earlier blocker past %s", async (_label, second, third, kept) => {
+    const f = quotaFixture([bucketLimits({ a: [100, 50], b: [100, 40] }), second, third]);
+    await f.tick();
+    await f.tick();
+    for (const hours of [50, 70]) {
+      f.advance(hoursFromBase(hours) * 1000 + 30_000 - Date.parse(f.now()));
+      await f.tick();
+      if (hours === 50) {
+        // The original 300-minute window survives beside anything newer.
+        expect(readCursorsState(f.paths).holds[0]?.evidence?.windows
+          .some((window) => window.limitId === kept && window.windowDurationMins === 300)).toBe(true);
+      }
+    }
+    expect(f.reads).toHaveLength(3);
+    expect(readCursorsState(f.paths).holds).toHaveLength(1);
+    expect(readJournal(f.paths).filter((event) => event.type === "hold-released")).toHaveLength(0);
+  });
+
+  it("holds lifecycle exclusion from the staleness check through the cursor update", async () => {
+    let afterRead = false;
+    let lockHeld: boolean | null = null;
+    let lockPath = "";
+    const f = quotaFixture([codexLimits(100, 50), codexLimits(30, 200)], () => { afterRead = true; }, "0.156.1", () => {
+      // The first clock read after the helper returns is taken inside the fenced section.
+      if (afterRead && lockHeld === null) lockHeld = existsSync(lockPath);
+    });
+    lockPath = `${f.paths.agentLifecycle}.lock`;
+    await f.tick();
+    await f.tick();
+    afterRead = false;
+    lockHeld = null;
+    f.advance(hoursFromBase(50) * 1000 + 30_000 - Date.parse(f.now()));
+    await f.tick();
+    expect(lockHeld).toBe(true);
+    expect(existsSync(lockPath)).toBe(false);
   });
 
   it("fails closed when a read reports more blockers than evidence can carry", async () => {

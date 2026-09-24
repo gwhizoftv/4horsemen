@@ -190,7 +190,13 @@ describe("Claude status-line tee", () => {
     chmodSync(owner, 0o700);
     const context = { clone: base.clone, home, cliEntry: base.cliEntry, managedSettings: [] as string[] };
     const run = (input: string) => spawnSync(claudeStatusLinePaths(base.clone).wrapper, { input, encoding: "utf8" });
-    return { ...base, home, received, owner, context, run };
+    // The receiver runs in the background; let it release its exclusion before the tree is removed.
+    const settled = async (): Promise<void> => {
+      for (let attempt = 0; attempt < 200 && existsSync(claudeStatusLinePaths(base.clone).lock); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    };
+    return { ...base, home, received, owner, context, run, settled };
   };
 
   it("runs the owner's effective command on the original bytes and restores the clone layer exactly", async () => {
@@ -209,6 +215,7 @@ describe("Claude status-line tee", () => {
     expect(result.status).toBe(7);
     for (let attempt = 0; attempt < 100 && !existsSync(f.received); attempt++) await new Promise((resolve) => setTimeout(resolve, 20));
     expect(readFileSync(f.received, "utf8")).toBe(payload);
+    await f.settled();
     const repeat = effectOptions(() => undefined, false);
     syncClaudeStatusLine({ ...f.context, options: repeat });
     expect(repeat.changes).toEqual([]);
@@ -242,7 +249,7 @@ describe("Claude status-line tee", () => {
     expect(existsSync(lock)).toBe(false);
   }, 15_000);
 
-  it("prints nothing without an owner command and disables itself when precedence is not provable", () => {
+  it("prints nothing without an owner command and disables itself when precedence is not provable", async () => {
     const f = teeFixture();
     const dry = effectOptions(() => undefined, true);
     syncClaudeStatusLine({ ...f.context, options: dry });
@@ -250,6 +257,7 @@ describe("Claude status-line tee", () => {
     expect(existsSync(claudeStatusLinePaths(f.clone).local)).toBe(false);
     syncClaudeStatusLine({ ...f.context, options: effectOptions(() => undefined, false) });
     const quiet = f.run("{}\n");
+    await f.settled();
     expect(quiet.stdout).toBe("");
     expect(quiet.status).toBe(0);
 
