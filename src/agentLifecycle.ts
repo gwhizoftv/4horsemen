@@ -41,6 +41,71 @@ export const agentLifecycleEntrySchema = z
     degradedCause: z.enum(["hooks-never-seen", "correlation-lagged"]).nullable().default(null),
     lastEvent: z.string().min(1).nullable(),
     lastEventAt: timestampSchema.nullable(),
+    /** Latest correlated vendor failure (redacted); not workflow authority. */
+    lastFailure: z
+      .object({
+        vendor: z.enum(["codex", "claude", "cursor", "antigravity"]),
+        failureClass: z.enum([
+          "usage-window",
+          "billing",
+          "throttled",
+          "context-overflow",
+          "auth-account",
+          "cancelled",
+          "transport",
+          "unknown"
+        ]),
+        error: z.string().max(2048).nullable(),
+        detail: z.string().max(2048).nullable(),
+        sessionId: z.string().min(1).nullable(),
+        turnId: z.string().min(1).nullable(),
+        actionId: z.string().uuid().nullable(),
+        observedAt: timestampSchema,
+        resetsAt: timestampSchema.nullable(),
+        confidence: z.enum(["unknown", "vendor-reported", "probed"]),
+        windows: z
+          .array(
+            z
+              .object({
+                source: z.enum(["claude-statusline", "codex-app-server"]),
+                bucket: z.string().min(1),
+                usedPercent: z.number().finite().nullable(),
+                resetsAt: timestampSchema.nullable()
+              })
+              .strict()
+          )
+          .max(8)
+          .default([]),
+        episodeKey: z.string().min(1)
+      })
+      .strict()
+      .nullable()
+      .default(null),
+    /** Cached Claude statusline rate_limits; render ≠ fresh capacity. */
+    claudeRateLimits: z
+      .object({
+        sessionId: z.string().min(1),
+        observedAt: timestampSchema,
+        firstSeenAt: timestampSchema,
+        payloadIdentity: z.string().min(1),
+        fiveHour: z
+          .object({
+            usedPercent: z.number().finite().nullable(),
+            resetsAt: z.number().finite().nullable()
+          })
+          .strict()
+          .nullable(),
+        sevenDay: z
+          .object({
+            usedPercent: z.number().finite().nullable(),
+            resetsAt: z.number().finite().nullable()
+          })
+          .strict()
+          .nullable()
+      })
+      .strict()
+      .nullable()
+      .default(null),
     updatedAt: timestampSchema
   })
   .strict();
@@ -59,7 +124,7 @@ export type AgentLifecycleEntry = z.infer<typeof agentLifecycleEntrySchema>;
 export type AgentLifecycleState = z.infer<typeof agentLifecycleStateSchema>;
 
 export type LifecycleObservation = {
-  kind: "session-start" | "session-end" | "prompt-submitted" | "working" | "stopped" | "failed" | "status";
+  kind: "session-start" | "session-end" | "prompt-submitted" | "working" | "stopped" | "failed" | "status" | "telemetry";
   eventName: string;
   sessionId?: string;
   turnId?: string;
@@ -71,6 +136,36 @@ export type LifecycleObservation = {
   backgroundActive?: boolean;
   /** Vendor proves a fully-idle stop even without a prompt-submit hook. */
   allowInjectedIdle?: boolean;
+  vendor?: "codex" | "claude" | "cursor" | "antigravity";
+  failure?: {
+    error: string | null;
+    errorDetails: string | null;
+    lastAssistantMessage: string | null;
+    failureClass?:
+      | "usage-window"
+      | "billing"
+      | "throttled"
+      | "context-overflow"
+      | "auth-account"
+      | "cancelled"
+      | "transport"
+      | "unknown";
+    detail?: string | null;
+    resetsAt?: string | null;
+    confidence?: "unknown" | "vendor-reported" | "probed";
+    windows?: Array<{
+      source: "claude-statusline" | "codex-app-server";
+      bucket: string;
+      usedPercent: number | null;
+      resetsAt: string | null;
+    }>;
+    episodeKey?: string;
+  };
+  telemetry?: {
+    fiveHour: { usedPercent: number | null; resetsAt: number | null } | null;
+    sevenDay: { usedPercent: number | null; resetsAt: number | null } | null;
+    payloadIdentity: string;
+  };
 };
 
 const emptyEntry = (now: string): AgentLifecycleEntry => ({
@@ -86,6 +181,8 @@ const emptyEntry = (now: string): AgentLifecycleEntry => ({
   degradedCause: null,
   lastEvent: null,
   lastEventAt: null,
+  lastFailure: null,
+  claudeRateLimits: null,
   updatedAt: now
 });
 
@@ -371,6 +468,45 @@ export const applyLifecycleObservation = (
 
   if (incomingSession !== null && entry.retiredSessionIds.includes(incomingSession)) return entry;
 
+  // Telemetry never replaces session identity or replenishes watchdog activity.
+  if (observation.kind === "telemetry") {
+    if (incomingSession === null) return entry;
+    if (entry.sessionId !== null && incomingSession !== entry.sessionId) return entry;
+    if (entry.retiredSessionIds.includes(incomingSession)) return entry;
+    const payloadIdentity = observation.telemetry?.payloadIdentity ?? "";
+    const prior = entry.claudeRateLimits;
+    if (
+      prior !== null &&
+      prior.sessionId === incomingSession &&
+      prior.payloadIdentity === payloadIdentity
+    ) {
+      // Identical re-render must not refresh firstSeenAt / observed age.
+      return entry;
+    }
+    const nextLimits = {
+      sessionId: incomingSession,
+      observedAt: now,
+      firstSeenAt:
+        prior !== null && prior.sessionId === incomingSession && prior.payloadIdentity === payloadIdentity
+          ? prior.firstSeenAt
+          : now,
+      payloadIdentity,
+      fiveHour: observation.telemetry?.fiveHour ?? null,
+      sevenDay: observation.telemetry?.sevenDay ?? null
+    };
+    const next = agentLifecycleEntrySchema.parse({
+      ...entry,
+      claudeRateLimits: nextLimits,
+      updatedAt: now
+    });
+    return semanticallyEqual(
+      { ...entry, updatedAt: "", lastEventAt: null },
+      { ...next, updatedAt: "", lastEventAt: null }
+    )
+      ? entry
+      : next;
+  }
+
   // Only an explicit startup callback (or Antigravity's continuously emitted
   // status payload) may replace an established session. A delayed prompt,
   // tool, or stop event from the previous process must not become current
@@ -386,6 +522,7 @@ export const applyLifecycleObservation = (
     : entry.retiredSessionIds;
   let pendingInputCount = observation.pendingInputCount ?? entry.pendingInputCount;
   let backgroundActive = observation.backgroundActive ?? entry.backgroundActive;
+  let lastFailure = entry.lastFailure;
 
   if (sessionChanged) {
     if (action !== null && action.workflowCompleteAt === null) {
@@ -406,6 +543,7 @@ export const applyLifecycleObservation = (
     execution = observation.execution ?? "idle";
     pendingInputCount = observation.pendingInputCount ?? 0;
     backgroundActive = observation.backgroundActive ?? false;
+    lastFailure = null;
   } else if (observation.kind === "session-start") {
     // A delayed startup callback may arrive after tmux already injected the
     // first prompt. Establish health/session identity without reopening that
@@ -443,6 +581,22 @@ export const applyLifecycleObservation = (
       injectedAwaitingAcceptance || (pendingInputCount ?? 0) > 0 || backgroundActive === true
         ? "queued"
         : "failed";
+    if (observation.failure !== undefined && (sessionId === null || incomingSession === null || incomingSession === sessionId)) {
+      lastFailure = {
+        vendor: observation.vendor ?? "claude",
+        failureClass: observation.failure.failureClass ?? "unknown",
+        error: observation.failure.error,
+        detail: observation.failure.detail ?? observation.failure.errorDetails,
+        sessionId: incomingSession,
+        turnId: observation.turnId ?? null,
+        actionId: observation.actionId ?? action?.actionId ?? null,
+        observedAt: now,
+        resetsAt: observation.failure.resetsAt ?? null,
+        confidence: observation.failure.confidence ?? "unknown",
+        windows: observation.failure.windows ?? [],
+        episodeKey: observation.failure.episodeKey ?? `fail:${now}`
+      };
+    }
   }
   if (observation.kind === "session-end") execution = "failed";
 
@@ -485,6 +639,7 @@ export const applyLifecycleObservation = (
     degradedCause: null,
     lastEvent: observation.eventName,
     lastEventAt: now,
+    lastFailure,
     updatedAt: now
   });
 };

@@ -151,6 +151,18 @@ export const installStampSchema = z
   })
   .strict();
 
+const absolutePathSchema = z
+  .string()
+  .min(1)
+  .refine((value) => value.startsWith("/"), "codexHome must be an absolute path");
+
+export const codexQuotaBindingSchema = z
+  .object({
+    codexHome: absolutePathSchema,
+    accountId: z.string().min(1)
+  })
+  .strict();
+
 export const agentConfigSchema = z
   .object({
     id: agentIdSchema,
@@ -163,9 +175,23 @@ export const agentConfigSchema = z
     /** tmux send-keys after the nudge text (e.g. Enter or C-j). */
     nudgeSubmit: z.array(z.string().min(1)).optional(),
     /** macOS Terminal.app settings-set (profile) name for owner attach windows. */
-    terminalProfile: z.string().min(1).optional()
+    terminalProfile: z.string().min(1).optional(),
+    /**
+     * Owner-confirmed Codex App Server binding for #140 quota observations.
+     * Only meaningful when id === "codex"; never discovered from defaults.
+     */
+    codexQuota: codexQuotaBindingSchema.optional()
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.codexQuota !== undefined && value.id !== "codex") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "codexQuota binding is only valid on the codex agent",
+        path: ["codexQuota"]
+      });
+    }
+  });
 
 export const coordinatorConfigSchema = z
   .object({
@@ -520,6 +546,50 @@ export const ballotBatchSchema = z
   })
   .strict();
 
+const resourceWindowSchema = z
+  .object({
+    source: z.enum(["claude-statusline", "codex-app-server"]),
+    bucket: z.string().min(1).max(128),
+    usedPercent: z.number().finite().nullable(),
+    resetsAt: timestampSchema.nullable()
+  })
+  .strict();
+
+const probeBudgetSchema = z
+  .object({
+    starts: z.number().int().min(0).max(6).default(0),
+    failures: z.number().int().min(0).max(2).default(0),
+    lastStartAt: timestampSchema.nullable().default(null),
+    nextAt: timestampSchema.nullable().default(null),
+    inFlightId: z.string().min(1).nullable().default(null),
+    exhausted: z.boolean().default(false),
+    consumedDeadlines: z.array(z.string().min(1)).max(32).default([]),
+    initialBindingChecked: z.boolean().default(false),
+    blockers: z
+      .array(
+        z
+          .object({
+            limitId: z.string().min(1),
+            window: z.enum(["primary", "secondary"])
+          })
+          .strict()
+      )
+      .max(32)
+      .default([])
+  })
+  .strict()
+  .default({
+    starts: 0,
+    failures: 0,
+    lastStartAt: null,
+    nextAt: null,
+    inFlightId: null,
+    exhausted: false,
+    consumedDeadlines: [],
+    initialBindingChecked: false,
+    blockers: []
+  });
+
 const actionSafetySchema = z.object({
   actionId: z.string().uuid(),
   sends: z.number().int().nonnegative().default(0),
@@ -529,20 +599,55 @@ const actionSafetySchema = z.object({
   holdGeneration: z.number().int().nonnegative().default(0),
   observationChecks: z.number().int().nonnegative().default(0),
   nextObservationAt: timestampSchema.nullable().default(null),
-  activityAt: timestampSchema
+  activityAt: timestampSchema,
+  /** Durable #140 Codex/Claude observation budget for the unresolved action episode. */
+  probe: probeBudgetSchema
 }).strict();
+
+const holdRecoverySchema = z
+  .object({
+    kind: z.enum(["claude-recheck", "codex-probe"]),
+    nextAt: timestampSchema.nullable(),
+    lastDeadline: timestampSchema.nullable(),
+    outcome: z.enum(["pending", "owner", "cleared"]).default("pending")
+  })
+  .strict()
+  .nullable()
+  .default(null);
 
 const holdSchema = z.object({
   id: z.string().uuid(),
   agent: agentIdSchema,
   actionId: z.string().uuid(),
   sessionId: z.string().nullable(),
-  reason: z.enum(["nudge-loop", "delivery-uncertain", "harness-gone", "unobservable", "vendor-wait"]),
+  reason: z.enum([
+    "nudge-loop",
+    "delivery-uncertain",
+    "harness-gone",
+    "unobservable",
+    "vendor-wait",
+    "vendor-failure"
+  ]),
   evidenceId: z.string(),
   observedAt: timestampSchema,
-  resetsAt: z.null(),
-  confidence: z.literal("unknown"),
-  retryOwner: z.enum(["owner", "vendor"])
+  resetsAt: timestampSchema.nullable().default(null),
+  confidence: z.enum(["unknown", "vendor-reported", "probed"]).default("unknown"),
+  retryOwner: z.enum(["owner", "vendor"]),
+  failureClass: z
+    .enum([
+      "usage-window",
+      "billing",
+      "throttled",
+      "context-overflow",
+      "auth-account",
+      "cancelled",
+      "transport",
+      "unknown"
+    ])
+    .default("unknown"),
+  windows: z.array(resourceWindowSchema).max(8).default([]),
+  detail: z.string().max(512).nullable().default(null),
+  recovery: holdRecoverySchema
 }).strict();
 
 export const cursorsStateSchema = z
@@ -617,6 +722,7 @@ const journalEventTypeSchema = z.enum([
   "agent-observability-recovered",
   "nudge-deferred",
   "hold-created",
+  "hold-updated",
   "hold-released",
   "intent-seen",
   "verify-result",
@@ -1137,7 +1243,33 @@ export const releaseHold = (cursors: CursorsState, id: string, resetBudget: bool
       // A fresh observation may create a distinct, crash-idempotent hold.
       holdGeneration: safety.holdGeneration + 1,
       observationChecks: 0, nextObservationAt: null, activityAt: now
+      // Probe budget survives owner acknowledgment of the same unresolved action.
     } }
+  });
+};
+
+/**
+ * Automatic resource recovery: remove only a cleared vendor resource hold.
+ * Preserves actionSafety (sends, probe, holdGeneration) verbatim.
+ */
+export const releaseResourceHold = (cursors: CursorsState, id: string, now: string): CursorsState => {
+  const hold = cursors.holds.find((entry) => entry.id === id);
+  if (hold === undefined) throw new Error(`Unknown hold ${id}.`);
+  if (cursors.abandoned || cursors.completed || cursors.agents[hold.agent]?.actionId !== hold.actionId) {
+    throw new Error("Cannot release a hold for retired work.");
+  }
+  if (hold.reason !== "vendor-failure" && hold.reason !== "vendor-wait") {
+    throw new Error(`Automatic recovery cannot release ${hold.reason}.`);
+  }
+  if (hold.failureClass !== "usage-window") {
+    throw new Error(`Automatic recovery cannot release failure class ${hold.failureClass}.`);
+  }
+  const holds = cursors.holds.filter((entry) => entry.id !== id);
+  return cursorsStateSchema.parse({
+    ...cursors,
+    holds,
+    paused: cursors.manualPaused || holds.length > 0,
+    updatedAt: now
   });
 };
 

@@ -17,6 +17,7 @@ import {
   readStartState,
   setPaused,
   releaseHold,
+  releaseResourceHold,
   StateConflictError,
   startStateSchema,
   coordinatorConfigSchema,
@@ -99,6 +100,41 @@ describe("operational state", () => {
     expect(last.paused).toBe(true); // still manually paused
     expect(setPaused(last, false, now).paused).toBe(false);
   });
+
+  it("releases only a usage-window resource hold without mutating actionSafety", () => {
+    const { paths } = initialize();
+    const now = "2026-09-22T12:00:00.000Z";
+    const actionId = "10000000-0000-4000-8000-000000000001";
+    const id = "20000000-0000-4000-8000-000000000003";
+    const otherId = "20000000-0000-4000-8000-000000000004";
+    const original = readCursorsState(paths);
+    const resource = {
+      id, agent: "codex", actionId, sessionId: null, reason: "vendor-failure" as const,
+      evidenceId: "quota", observedAt: now, resetsAt: null, confidence: "probed" as const,
+      retryOwner: "owner" as const, failureClass: "usage-window" as const, windows: [], detail: null, recovery: null
+    };
+    const held = cursorsStateSchema.parse({
+      ...original, paused: true, manualPaused: true,
+      agents: { ...original.agents, codex: { ...original.agents.codex, actionId } },
+      actionSafety: {
+        codex: {
+          actionId, sends: 3, lastSendAt: now, activityAt: now, holdGeneration: 2,
+          probe: { starts: 2, failures: 0, lastStartAt: now, nextAt: null, inFlightId: null,
+            exhausted: false, consumedDeadlines: [], initialBindingChecked: true, blockers: [] }
+        }
+      },
+      holds: [resource, { ...resource, id: otherId, reason: "unobservable", failureClass: "unknown", evidenceId: "pane" }]
+    });
+    expect(() => releaseResourceHold(held, otherId, now)).toThrow(/Automatic recovery/);
+    const next = releaseResourceHold(held, id, now);
+    expect(next.holds.map((h) => h.id)).toEqual([otherId]);
+    expect(next.manualPaused).toBe(true);
+    expect(next.paused).toBe(true);
+    expect(next.actionSafety.codex?.sends).toBe(3);
+    expect(next.actionSafety.codex?.holdGeneration).toBe(2);
+    expect(next.actionSafety.codex?.probe.starts).toBe(2);
+  });
+
   it("writes strict versioned start, cursor, and journal state atomically", () => {
     const { paths } = initialize();
     expect(readStartState(paths)).toMatchObject({ formatVersion: 4, maxRevisionRounds: 3 });

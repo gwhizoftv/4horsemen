@@ -361,6 +361,35 @@ export const agentResponsePath = (paths: IssueRuntimePaths, agent: string, actio
   return containedPath(runtime.responsesDir, `${actionId}.json`);
 };
 
+/** Normalize absolute CODEX_HOME for stable binding identity. */
+export const normalizeCodexHome = (codexHome: string): string => resolve(codexHome);
+
+/** Stable short key for a home/account binding (not a secret). */
+export const codexBindingKey = (codexHome: string, accountId: string): string =>
+  createHash("sha256")
+    .update(`${normalizeCodexHome(codexHome)}\0${accountId}`)
+    .digest("hex")
+    .slice(0, 16);
+
+/**
+ * Owner-runtime reservation file for cross-issue Codex observation exclusion.
+ * Contained under coordRoot; never expands clone permissions.
+ */
+export const codexBindingStatePath = (coordRoot: string, codexHome: string, accountId: string): string => {
+  const key = codexBindingKey(codexHome, accountId);
+  const dir = containedPath(coordRoot, "codex-probes");
+  const path = containedPath(dir, `${key}.json`);
+  assertNoSymlink(coordRoot, path);
+  return path;
+};
+
+export const codexBindingLockPath = (coordRoot: string, codexHome: string, accountId: string): string => {
+  const key = codexBindingKey(codexHome, accountId);
+  const path = containedPath(coordRoot, "codex-probes", `${key}.lock`);
+  assertNoSymlink(coordRoot, path);
+  return path;
+};
+
 export const acceptedResponseArchivePath = (
   paths: IssueRuntimePaths,
   agent: string,

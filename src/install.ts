@@ -72,6 +72,7 @@ import {
   syncAgentLifecycleHooks,
   syncAntigravityStatusLine
 } from "./agentHookSync.js";
+import { removeClaudeStatusLine, syncClaudeStatusLine } from "./claudeStatusLine.js";
 
 /**
  * `coord install` / `coord uninstall`.
@@ -415,6 +416,15 @@ export const install = (options: InstallOptions): InstallResult => {
       effects
     );
     syncAgentLifecycleHooks({ clone, agent, cliEntry, options: effects });
+    if (agent === "claude") {
+      const home = options.home === undefined || options.home === null ? undefined : options.home;
+      syncClaudeStatusLine({
+        clone,
+        cliEntry,
+        ...(home === undefined ? {} : { home }),
+        options: effects
+      });
+    }
     const hooks = writeCloneHooks({
       clone,
       installRoot,
@@ -638,6 +648,15 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
   if (config.agents.some((agent) => agent.id === "antigravity") && lifecycleHome !== null) {
     const statusLine = removeAntigravityStatusLine({ home: lifecycleHome, options: effects });
     if (statusLine.kept) kept.push("Antigravity status line was edited after installation and was left in place");
+  }
+  for (const { agent, clone } of clonePaths) {
+    if (agent.id !== "claude") continue;
+    const statusLine = removeClaudeStatusLine({
+      clone,
+      home: lifecycleHome === null ? undefined : lifecycleHome,
+      options: effects
+    });
+    if (statusLine.kept) kept.push("Claude status line was edited after installation and was left in place");
   }
 
   if (stamp?.wroteProductIgnore === true && existsSync(join(stamp.productRoot, ".gitignore"))) {

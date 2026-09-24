@@ -175,3 +175,26 @@ The action names an absolute `complete` path. After pushing the commit that
 contains the required artifact, the agent writes that exact lowercase 40-hex
 SHA—or `commit <sha>`—to `complete`. Branch-tip movement alone never completes
 an action.
+
+## Vendor quota evidence (#140)
+
+After #126’s durable holds and nudge breaker, #140 adds conservative vendor
+evidence:
+
+- **Claude:** ownership-preserving statusline tee (clone-local
+  `.claude/settings.local.json`) caches matching `five_hour` / `seven_day`
+  Unix epochs. Automatic Claude release stays **owner-only** unless a future
+  independently validated fresh-capacity signal exists; a statusline render or
+  native Stop is not clearance.
+- **Codex:** optional per-agent `codexQuota: { codexHome, accountId }` binding
+  enables one-shot `codex app-server` reads (`account/read` +
+  `account/rateLimits/read` only). Caps: one helper in flight per binding,
+  five-minute spacing, two retries, six starts per unresolved action episode.
+  Cross-issue exclusion uses a lock under the coord root. Unreaped helpers
+  stay owner-only.
+- **Cursor / Antigravity:** diagnostics enrich holds; Antigravity gets no new
+  quota classifier. Generic Cursor errors stay unknown.
+
+Automatic recovery releases only a cleared `usage-window` resource hold and
+never clears manual pause, other holds, cancellation, or the nudge breaker.
+Owner recovery remains `coord resume --issue N --hold <id>`.

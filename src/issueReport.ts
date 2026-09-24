@@ -55,9 +55,38 @@ export const renderIssueReport = (
   if (cursors.manualPaused) lines.push("Manual pause: active (plain coord resume clears only this pause).");
   for (const hold of cursors.holds) {
     const sends = cursors.actionSafety[hold.agent]?.sends ?? 0;
-    lines.push(`Hold ${hold.id}: ${hold.agent}, ${hold.reason}; cause unknown, reset unknown, retry owner: ${hold.retryOwner}; sends ${sends}/4.`);
-    lines.push(`Recovery: inspect the agent, then coord resume --issue ${start.issue} --hold ${hold.id}` +
-      (hold.reason === "nudge-loop" ? " --reset-nudge-budget" : ""));
+    const probe = cursors.actionSafety[hold.agent]?.probe;
+    const windows =
+      (hold.windows?.length ?? 0) === 0
+        ? ""
+        : `; windows ${hold.windows.map((w) => `${w.bucket}${w.usedPercent === null ? "" : `@${w.usedPercent}%`}`).join(",")}`;
+    const budget =
+      probe === undefined
+        ? ""
+        : `; observation starts ${probe.starts}/6${probe.exhausted ? " exhausted" : ""}`;
+    const detail = hold.detail === null || hold.detail === undefined || hold.detail === "" ? "" : `; detail ${hold.detail}`;
+    const failureClass = hold.failureClass ?? "unknown";
+    const confidence = hold.confidence ?? "unknown";
+    const cause =
+      failureClass === "unknown" && confidence === "unknown"
+        ? "cause unknown"
+        : `cause ${failureClass} (${confidence})`;
+    const reset =
+      hold.resetsAt === null || hold.resetsAt === undefined
+        ? "reset unknown"
+        : `exact reset ${hold.resetsAt} (recheck ≠ guaranteed availability)`;
+    lines.push(
+      `Hold ${hold.id}: ${hold.agent}, ${hold.reason}; ${cause}, ${reset}, retry owner: ${hold.retryOwner}; sends ${sends}/4${windows}${budget}${detail}.`
+    );
+    if (hold.recovery?.outcome === "pending" && hold.recovery.nextAt !== null) {
+      lines.push(`Automatic recheck at ${hold.recovery.nextAt} (does not guarantee capacity).`);
+    } else {
+      lines.push(
+        `Recovery: inspect the agent, then coord resume --issue ${start.issue} --hold ${hold.id}` +
+          (hold.reason === "nudge-loop" ? " --reset-nudge-budget" : "") +
+          (hold.recovery?.outcome === "owner" || hold.resetsAt === null ? "; owner release required" : "")
+      );
+    }
   }
   if (url !== null) lines.push(`Pull request: ${url}`);
   else if (pin !== null && cursors.publication.status === "not-required") {

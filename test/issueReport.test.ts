@@ -108,7 +108,7 @@ describe("issue report", () => {
     cursors.completed = false; cursors.paused = true; cursors.manualPaused = true;
     cursors.holds = [{ id: "hold-id", agent: "cursor", actionId: "action-id", sessionId: null,
       reason: "nudge-loop", evidenceId: "budget", observedAt: cursors.updatedAt, resetsAt: null,
-      confidence: "unknown", retryOwner: "owner" }];
+      confidence: "unknown", retryOwner: "owner", failureClass: "unknown", windows: [], detail: null, recovery: null }];
     const text = renderIssueReport(start("owner-only"), cursors);
     expect(text).toContain("Manual pause: active");
     expect(text).toContain("cause unknown, reset unknown, retry owner: owner");

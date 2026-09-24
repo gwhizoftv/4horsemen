@@ -6,6 +6,8 @@ import {
   agentResponsePath,
   agentRuntimePaths,
   assertMailboxClaim,
+  codexBindingKey,
+  codexBindingStatePath,
   createIssueRuntime,
   defaultCompletesRoot,
   issueRuntimePaths,
@@ -216,5 +218,15 @@ describe("completion mailbox paths", () => {
     expect(response.startsWith(agentRuntimePaths(paths, "claude").responsesDir)).toBe(true);
     expect(() => agentResponsePath(paths, "claude", "../escape")).toThrow(PathSafetyError);
     expect(() => createIssueRuntime(paths, [RESERVED_EVIDENCE_AGENT])).toThrow(PathSafetyError);
+  });
+
+  it("contains Codex binding reservation paths under the coord root", () => {
+    const { coordRoot } = workspace();
+    const key = codexBindingKey("/abs/home", "acct-1");
+    expect(key).toHaveLength(16);
+    const path = codexBindingStatePath(coordRoot, "/abs/home", "acct-1");
+    expect(path.startsWith(coordRoot)).toBe(true);
+    expect(path).toContain("codex-probes");
+    expect(path).toContain(`${key}.json`);
   });
 });

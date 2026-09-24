@@ -41,6 +41,7 @@ import { renderArtifactScaffold } from "./orderScaffold.js";
 import {
   agentResponsePath,
   agentRuntimePaths,
+  codexBindingLockPath,
   containedPath,
   evidenceWorktreePath,
   type IssueRuntimePaths
@@ -48,11 +49,13 @@ import {
 import { decide } from "./machine.js";
 import {
   appendJournal,
+  acquireExclusiveLock,
   cursorsStateSchema,
   readConfig,
   readCursorsState,
   readJournal,
   readStartState,
+  releaseResourceHold,
   replaceCursor,
   requireStateMutation,
   StateConflictError,
@@ -67,6 +70,18 @@ import {
   type PlanSelectionDerived,
   type StartState
 } from "./state.js";
+import {
+  CODEX_MAX_FAILURE_RETRIES,
+  CODEX_MAX_STARTS_PER_EPISODE,
+  CODEX_PROBE_SPACING_MS,
+  CODEX_RETRY_DELAYS_MS,
+  DEADLINE_RECHECK_DELAY_MS,
+  codexBlockingWindows,
+  codexClearsBlockers,
+  codexIsExhausted,
+  latestBlockingEpochIso
+} from "./resourceEvidence.js";
+import { readCodexQuota, type CodexLimitsReader } from "./codexQuota.js";
 import {
   BRANCH_PREPARED_NOTE,
   STEP_DEFINITIONS,
@@ -180,6 +195,8 @@ export type RunLoopDependencies = {
   verbose?: (message: string) => void;
   /** @deprecated The timer is now an observability watchdog, never resend authority. */
   nudgeRetryMs?: number;
+  /** Injectable Codex App Server reader for #140 resource observations. */
+  codexLimits?: CodexLimitsReader;
 };
 
 /** Kept as a public compatibility alias; elapsed time no longer authorizes a nudge. */
@@ -780,6 +797,7 @@ export class CoordinatorRunLoop {
   private loggedPhaseKey: string | null = null;
   /** Healthy local probes are advisory; only unresolved episodes need durable schedules. */
   private readonly healthyObservations = new Map<string, { identity: string; nextAt: number }>();
+  private readonly codexLimits: CodexLimitsReader;
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
@@ -794,6 +812,7 @@ export class CoordinatorRunLoop {
     this.log = dependencies.log ?? ((message) => process.stdout.write(`${message}\n`));
     this.verbose = dependencies.verbose ?? (() => undefined);
     this.observabilityWatchdogMs = dependencies.nudgeRetryMs ?? AGENT_OBSERVABILITY_WATCHDOG_MS;
+    this.codexLimits = dependencies.codexLimits ?? ((binding) => readCodexQuota(binding));
   }
 
   async initializeEffects(): Promise<void> {
@@ -869,7 +888,11 @@ export class CoordinatorRunLoop {
     return this.mutate(cursors, (current) => ({ ...current, actionSafety: {
       ...current.actionSafety, [agent]: {
         actionId, sends: 0, lastSendAt: null, reserved: false, deferrals: [], holdGeneration: 0,
-        observationChecks: 0, nextObservationAt: null, activityAt: this.now()
+        observationChecks: 0, nextObservationAt: null, activityAt: this.now(),
+        probe: {
+          starts: 0, failures: 0, lastStartAt: null, nextAt: null, inFlightId: null,
+          exhausted: false, consumedDeadlines: [], initialBindingChecked: false, blockers: []
+        }
       }
     } }));
   }
@@ -884,7 +907,9 @@ export class CoordinatorRunLoop {
     let hold: CursorsState["holds"][number] = {
       id: randomUUID(), agent, actionId: safety.actionId,
       sessionId: readAgentLifecycle(this.paths).agents[agent]?.sessionId ?? null,
-      reason, evidenceId, observedAt: now, resetsAt: null, confidence: "unknown", retryOwner: reason === "vendor-wait" ? "vendor" : "owner"
+      reason, evidenceId, observedAt: now, resetsAt: null, confidence: "unknown",
+      retryOwner: reason === "vendor-wait" ? "vendor" : "owner",
+      failureClass: "unknown", windows: [], detail: null, recovery: null
     };
     const next = this.mutate(cursors, (current) => {
       const event = appendJournal(this.paths, { type: "hold-created", agent, actionId: safety.actionId,
@@ -2235,16 +2260,445 @@ export class CoordinatorRunLoop {
     return next;
   }
 
+  /**
+   * Observation-only path while held: ingest correlated failure evidence, run due
+   * Codex probes, and re-evaluate Claude deadlines. Never delivers, nudges, or
+   * advances gates. Claude never auto-releases on native activity or renders.
+   */
+  private async maintainResourceObservations(cursors: CursorsState): Promise<CursorsState> {
+    if (cursors.abandoned || cursors.completed || cursors.manualPaused) return cursors;
+    const now = this.now();
+    const nowMs = Date.parse(now);
+    const lifecycle = readAgentLifecycle(this.paths);
+    let next = cursors;
+
+    for (const agent of next.activeRoster) {
+      const entry = lifecycle.agents[agent];
+      const safety = next.actionSafety[agent];
+      if (entry?.lastFailure === null || entry?.lastFailure === undefined || safety === undefined) continue;
+      const failure = entry.lastFailure;
+      if (failure.actionId !== null && failure.actionId !== safety.actionId) continue;
+      if (failure.sessionId !== null && entry.sessionId !== null && failure.sessionId !== entry.sessionId) continue;
+      const evidenceId = `vendor-failure:${safety.holdGeneration}:${failure.episodeKey}`;
+      if (next.holds.some((hold) => hold.evidenceId === evidenceId || hold.evidenceId.endsWith(`:${failure.episodeKey}`))) {
+        // Enrich an existing hold for the same episode with later evidence.
+        const existing = next.holds.find(
+          (hold) =>
+            hold.agent === agent &&
+            hold.actionId === safety.actionId &&
+            (hold.reason === "vendor-failure" || hold.reason === "vendor-wait")
+        );
+        if (existing !== undefined && existing.failureClass === "unknown" && failure.failureClass !== "unknown") {
+          const holdId = existing.id;
+          next = this.mutate(next, (current) => {
+            const holds = current.holds.map((hold) =>
+              hold.id !== holdId
+                ? hold
+                : {
+                    ...hold,
+                    failureClass: failure.failureClass,
+                    confidence: failure.confidence,
+                    resetsAt: failure.resetsAt,
+                    windows: failure.windows,
+                    detail: failure.detail,
+                    recovery:
+                      failure.resetsAt === null
+                        ? { kind: "claude-recheck" as const, nextAt: null, lastDeadline: null, outcome: "owner" as const }
+                        : {
+                            kind: "claude-recheck" as const,
+                            nextAt: new Date(Date.parse(failure.resetsAt) + DEADLINE_RECHECK_DELAY_MS).toISOString(),
+                            lastDeadline: failure.resetsAt,
+                            outcome: "pending" as const
+                          }
+                  }
+            );
+            appendJournal(
+              this.paths,
+              {
+                type: "hold-updated",
+                agent,
+                actionId: safety.actionId,
+                details: { holdId, eventId: `hold-update:${holdId}:${failure.episodeKey}` }
+              },
+              now
+            );
+            return { ...current, holds, updatedAt: now };
+          });
+        }
+        continue;
+      }
+      if (Date.parse(failure.observedAt) < Date.parse(entry.action?.injectedAt ?? failure.observedAt)) continue;
+      next = this.hold(next, agent, "vendor-failure", failure.episodeKey);
+      const created = next.holds.find((hold) => hold.agent === agent && hold.reason === "vendor-failure");
+      if (created !== undefined) {
+        const holdId = created.id;
+        next = this.mutate(next, (current) => ({
+          ...current,
+          holds: current.holds.map((hold) =>
+            hold.id !== holdId
+              ? hold
+              : {
+                  ...hold,
+                  failureClass: failure.failureClass,
+                  confidence: failure.confidence,
+                  resetsAt: failure.resetsAt,
+                  windows: failure.windows,
+                  detail: failure.detail,
+                  sessionId: failure.sessionId,
+                  recovery:
+                    agent === "codex"
+                      ? { kind: "codex-probe" as const, nextAt: now, lastDeadline: null, outcome: "pending" as const }
+                      : failure.resetsAt === null
+                        ? { kind: "claude-recheck" as const, nextAt: null, lastDeadline: null, outcome: "owner" as const }
+                        : {
+                            kind: "claude-recheck" as const,
+                            nextAt: new Date(Date.parse(failure.resetsAt) + DEADLINE_RECHECK_DELAY_MS).toISOString(),
+                            lastDeadline: failure.resetsAt,
+                            outcome: "pending" as const
+                          }
+                }
+          ),
+          updatedAt: now
+        }));
+      }
+    }
+
+    // Claude deadline recheck: consume once; never auto-release (owner-only).
+    for (const hold of [...next.holds]) {
+      if (hold.agent !== "claude" || hold.recovery?.kind !== "claude-recheck") continue;
+      if (hold.recovery.outcome !== "pending" || hold.recovery.nextAt === null) continue;
+      if (Date.parse(hold.recovery.nextAt) > nowMs) continue;
+      const deadlineKey = hold.recovery.lastDeadline ?? hold.resetsAt ?? hold.recovery.nextAt;
+      const safety = next.actionSafety[hold.agent];
+      if (safety?.probe.consumedDeadlines.includes(deadlineKey) === true) continue;
+      const holdId = hold.id;
+      next = this.mutate(next, (current) => {
+        const agentSafety = current.actionSafety[hold.agent];
+        if (agentSafety === undefined) return current;
+        appendJournal(
+          this.paths,
+          {
+            type: "hold-updated",
+            agent: hold.agent,
+            actionId: hold.actionId,
+            details: { holdId, eventId: `hold-recheck:${holdId}:${deadlineKey}`, outcome: "owner" }
+          },
+          now
+        );
+        return {
+          ...current,
+          holds: current.holds.map((entry) =>
+            entry.id !== holdId
+              ? entry
+              : {
+                  ...entry,
+                  recovery: { ...entry.recovery!, outcome: "owner" as const, nextAt: null }
+                }
+          ),
+          actionSafety: {
+            ...current.actionSafety,
+            [hold.agent]: {
+              ...agentSafety,
+              probe: {
+                ...agentSafety.probe,
+                consumedDeadlines: [...agentSafety.probe.consumedDeadlines, deadlineKey].slice(-32)
+              }
+            }
+          },
+          updatedAt: now
+        };
+      });
+    }
+
+    // Codex due probes.
+    for (const hold of [...next.holds]) {
+      if (hold.agent !== "codex") continue;
+      if (hold.recovery?.kind !== "codex-probe" || hold.recovery.outcome !== "pending") continue;
+      if (hold.recovery.nextAt !== null && Date.parse(hold.recovery.nextAt) > nowMs) continue;
+      next = await this.runCodexProbe(next, hold.id);
+    }
+
+    return next;
+  }
+
+  private async runCodexProbe(cursors: CursorsState, holdId: string): Promise<CursorsState> {
+    const hold = cursors.holds.find((entry) => entry.id === holdId);
+    if (hold === undefined) return cursors;
+    const start = readStartState(this.paths);
+    const agentCfg = start.agents.find((agent) => agent.id === "codex");
+    const binding = agentCfg?.codexQuota;
+    const safety = cursors.actionSafety[hold.agent];
+    if (safety === undefined) return cursors;
+    const now = this.now();
+    const nowMs = Date.parse(now);
+
+    if (binding === undefined) {
+      return this.mutate(cursors, (current) => ({
+        ...current,
+        holds: current.holds.map((entry) =>
+          entry.id !== holdId
+            ? entry
+            : {
+                ...entry,
+                failureClass: "auth-account" as const,
+                recovery: { kind: "codex-probe" as const, nextAt: null, lastDeadline: null, outcome: "owner" as const }
+              }
+        ),
+        updatedAt: now
+      }));
+    }
+
+    if (safety.probe.exhausted || safety.probe.starts >= CODEX_MAX_STARTS_PER_EPISODE) {
+      return this.mutate(cursors, (current) => ({
+        ...current,
+        holds: current.holds.map((entry) =>
+          entry.id !== holdId
+            ? entry
+            : { ...entry, recovery: { ...entry.recovery!, outcome: "owner" as const, nextAt: null } }
+        ),
+        actionSafety: {
+          ...current.actionSafety,
+          [hold.agent]: { ...safety, probe: { ...safety.probe, exhausted: true } }
+        },
+        updatedAt: now
+      }));
+    }
+
+    if (safety.probe.inFlightId !== null) {
+      // Unreaped reservation stays owner-only — never spawn a second helper.
+      return this.mutate(cursors, (current) => ({
+        ...current,
+        holds: current.holds.map((entry) =>
+          entry.id !== holdId
+            ? entry
+            : { ...entry, recovery: { ...entry.recovery!, outcome: "owner" as const, nextAt: null } }
+        ),
+        updatedAt: now
+      }));
+    }
+
+    if (
+      safety.probe.lastStartAt !== null &&
+      nowMs - Date.parse(safety.probe.lastStartAt) < CODEX_PROBE_SPACING_MS
+    ) {
+      const nextAt = new Date(Date.parse(safety.probe.lastStartAt) + CODEX_PROBE_SPACING_MS).toISOString();
+      return this.mutate(cursors, (current) => ({
+        ...current,
+        holds: current.holds.map((entry) =>
+          entry.id !== holdId ? entry : { ...entry, recovery: { ...entry.recovery!, nextAt } }
+        ),
+        updatedAt: now
+      }));
+    }
+
+    const reservationId = randomUUID();
+    let reserved = this.mutate(cursors, (current) => {
+      const agentSafety = current.actionSafety[hold.agent]!;
+      return {
+        ...current,
+        actionSafety: {
+          ...current.actionSafety,
+          [hold.agent]: {
+            ...agentSafety,
+            probe: {
+              ...agentSafety.probe,
+              starts: agentSafety.probe.starts + 1,
+              lastStartAt: now,
+              inFlightId: reservationId,
+              nextAt: new Date(nowMs + CODEX_PROBE_SPACING_MS).toISOString()
+            }
+          }
+        },
+        updatedAt: now
+      };
+    });
+
+    const lockPath = codexBindingLockPath(this.paths.coordRoot, binding.codexHome, binding.accountId);
+    let lockHandle: number | null = null;
+    try {
+      lockHandle = acquireExclusiveLock(lockPath);
+      const result = await this.codexLimits(binding);
+      if (!result.reaped) {
+        // Orphan helper: leave inFlight set and force owner.
+        return this.mutate(reserved, (current) => ({
+          ...current,
+          holds: current.holds.map((entry) =>
+            entry.id !== holdId
+              ? entry
+              : { ...entry, recovery: { ...entry.recovery!, outcome: "owner" as const, nextAt: null } }
+          ),
+          updatedAt: this.now()
+        }));
+      }
+
+      reserved = this.mutate(reserved, (current) => {
+        const agentSafety = current.actionSafety[hold.agent]!;
+        return {
+          ...current,
+          actionSafety: {
+            ...current.actionSafety,
+            [hold.agent]: {
+              ...agentSafety,
+              probe: { ...agentSafety.probe, inFlightId: null }
+            }
+          },
+          updatedAt: this.now()
+        };
+      });
+
+      if (!result.ok) {
+        const failures = (reserved.actionSafety[hold.agent]?.probe.failures ?? 0) + 1;
+        const retryDelay = CODEX_RETRY_DELAYS_MS[Math.min(failures - 1, CODEX_RETRY_DELAYS_MS.length - 1)];
+        const owner = failures > CODEX_MAX_FAILURE_RETRIES || result.identityGap === true;
+        return this.mutate(reserved, (current) => {
+          const agentSafety = current.actionSafety[hold.agent]!;
+          return {
+            ...current,
+            holds: current.holds.map((entry) =>
+              entry.id !== holdId
+                ? entry
+                : {
+                    ...entry,
+                    failureClass: result.identityGap === true ? ("auth-account" as const) : entry.failureClass,
+                    recovery: {
+                      kind: "codex-probe" as const,
+                      nextAt: owner ? null : new Date(Date.parse(this.now()) + (retryDelay ?? CODEX_PROBE_SPACING_MS)).toISOString(),
+                      lastDeadline: entry.recovery?.lastDeadline ?? null,
+                      outcome: owner ? ("owner" as const) : ("pending" as const)
+                    }
+                  }
+            ),
+            actionSafety: {
+              ...current.actionSafety,
+              [hold.agent]: {
+                ...agentSafety,
+                probe: {
+                  ...agentSafety.probe,
+                  failures: Math.min(failures, CODEX_MAX_FAILURE_RETRIES),
+                  exhausted: owner && agentSafety.probe.starts >= CODEX_MAX_STARTS_PER_EPISODE
+                }
+              }
+            },
+            updatedAt: this.now()
+          };
+        });
+      }
+
+      const snapshot = result.snapshot;
+      const previousBlockers = reserved.actionSafety[hold.agent]?.probe.blockers ?? [];
+      if (codexIsExhausted(snapshot)) {
+        const blockers = codexBlockingWindows(snapshot).map((w) => ({
+          limitId: w.limitId,
+          window: w.window
+        }));
+        const resetsAt = latestBlockingEpochIso(codexBlockingWindows(snapshot));
+        return this.mutate(reserved, (current) => {
+          const agentSafety = current.actionSafety[hold.agent]!;
+          return {
+            ...current,
+            holds: current.holds.map((entry) =>
+              entry.id !== holdId
+                ? entry
+                : {
+                    ...entry,
+                    failureClass: "usage-window" as const,
+                    confidence: "probed" as const,
+                    resetsAt,
+                    windows: snapshot.windows.map((w) => ({
+                      source: "codex-app-server" as const,
+                      bucket: `${w.limitId}:${w.window}`,
+                      usedPercent: w.usedPercent,
+                      resetsAt: w.resetsAt === null ? null : new Date(w.resetsAt * 1000).toISOString()
+                    })),
+                    recovery: {
+                      kind: "codex-probe" as const,
+                      nextAt:
+                        resetsAt === null
+                          ? null
+                          : new Date(Date.parse(resetsAt) + DEADLINE_RECHECK_DELAY_MS).toISOString(),
+                      lastDeadline: resetsAt,
+                      outcome: resetsAt === null ? ("owner" as const) : ("pending" as const)
+                    }
+                  }
+            ),
+            actionSafety: {
+              ...current.actionSafety,
+              [hold.agent]: {
+                ...agentSafety,
+                probe: { ...agentSafety.probe, blockers }
+              }
+            },
+            updatedAt: this.now()
+          };
+        });
+      }
+
+      if (previousBlockers.length > 0 && codexClearsBlockers(previousBlockers, snapshot)) {
+        const cleared = this.mutate(reserved, (current) => releaseResourceHold(current, holdId, this.now()));
+        appendJournal(
+          this.paths,
+          {
+            type: "hold-released",
+            agent: hold.agent,
+            actionId: hold.actionId,
+            details: { holdId, automatic: true, eventId: `resource-release:${holdId}` }
+          },
+          this.now()
+        );
+        return cleared;
+      }
+
+      // Clear with no prior blockers and ordinary usage allowed: still owner if
+      // this was only a detection hold without affirmative prior exhaustion set.
+      return this.mutate(reserved, (current) => ({
+        ...current,
+        holds: current.holds.map((entry) =>
+          entry.id !== holdId
+            ? entry
+            : {
+                ...entry,
+                recovery: { ...entry.recovery!, outcome: "owner" as const, nextAt: null }
+              }
+        ),
+        updatedAt: this.now()
+      }));
+    } finally {
+      if (lockHandle !== null) {
+        try {
+          const { closeSync, existsSync, unlinkSync } = await import("node:fs");
+          closeSync(lockHandle);
+          if (existsSync(lockPath)) unlinkSync(lockPath);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  /** True when paused state still has authorized due observation work. */
+  private hasDueResourceObservation(cursors: CursorsState): boolean {
+    if (cursors.manualPaused || cursors.abandoned || cursors.completed) return false;
+    const nowMs = Date.parse(this.now());
+    return cursors.holds.some((hold) => {
+      if (hold.recovery === null || hold.recovery.outcome !== "pending") return false;
+      if (hold.recovery.nextAt === null) return true;
+      return Date.parse(hold.recovery.nextAt) <= nowMs;
+    });
+  }
+
   async runTick(): Promise<CursorsState> {
     const start = readStartState(this.paths);
     try {
       let cursors = readCursorsState(this.paths);
-      if (cursors.paused || cursors.abandoned || cursors.completed) return cursors;
+      if (cursors.abandoned || cursors.completed) return cursors;
+      if (cursors.paused) {
+        return await this.maintainResourceObservations(cursors);
+      }
       const observations: EvidenceObservation[] = [];
 
       for (const dropped of cursors.droppedAgents) clearCompletion(agentRuntimePaths(this.paths, dropped).complete);
       for (const agent of cursors.activeRoster) {
-      if (cursors.paused) return cursors;
+      if (cursors.paused) return await this.maintainResourceObservations(cursors);
       const cursor = cursors.agents[agent];
       if (cursor === undefined || cursor.actionId === null || cursor.stepId === null) continue;
       const runtime = agentRuntimePaths(this.paths, agent);
@@ -2252,13 +2706,13 @@ export class CoordinatorRunLoop {
       if (this.tmux !== null && ["ordered", "intent", "verifying"].includes(cursor.status)) {
         cursors = this.ensureActionSafety(cursors, agent, cursor.actionId);
         cursors = await this.observeUnfinished(start, cursors, agent, cursor.actionId);
-        if (cursors.paused) return cursors;
+        if (cursors.paused) return await this.maintainResourceObservations(cursors);
       }
       if (completion.status === "missing") {
         if (this.tmux !== null) {
           if (cursor.status === "ordered") {
             cursors = await this.maybeLifecycleNudge(start, cursors, agent, cursor.actionId);
-            if (cursors.paused) return cursors;
+            if (cursors.paused) return await this.maintainResourceObservations(cursors);
           }
         }
         continue;
@@ -2440,18 +2894,45 @@ export class CoordinatorRunLoop {
 
   async run(signal?: AbortSignal): Promise<void> {
     const start = readStartState(this.paths);
-    const beforeEffects = readCursorsState(this.paths);
-    if (beforeEffects.completed || beforeEffects.abandoned || beforeEffects.paused) {
+    let beforeEffects = readCursorsState(this.paths);
+    if (beforeEffects.completed || beforeEffects.abandoned) {
       this.log(renderIssueReport(start, beforeEffects).trimEnd());
+      return;
+    }
+    if (beforeEffects.paused) {
+      // Restarted held run: observation-only — never initializeEffects / attach.
+      while (signal?.aborted !== true) {
+        beforeEffects = await this.maintainResourceObservations(readCursorsState(this.paths));
+        this.log(renderIssueReport(start, beforeEffects).trimEnd());
+        if (!this.hasDueResourceObservation(beforeEffects) && !beforeEffects.paused) break;
+        if (!this.hasDueResourceObservation(beforeEffects)) return;
+        const sleepMs = Math.min(
+          start.pollIntervalMs,
+          ...beforeEffects.holds
+            .map((hold) =>
+              hold.recovery?.nextAt === null || hold.recovery?.nextAt === undefined
+                ? start.pollIntervalMs
+                : Math.max(0, Date.parse(hold.recovery.nextAt) - Date.parse(this.now()))
+            )
+            .filter((ms) => Number.isFinite(ms))
+        );
+        await this.sleep(Number.isFinite(sleepMs) ? sleepMs : start.pollIntervalMs);
+      }
       return;
     }
     this.logPhase(start.issue, beforeEffects.issueCursor.stepId, beforeEffects.issueCursor.round);
     await this.initializeEffects();
     while (signal?.aborted !== true) {
       const cursors = await this.runTick();
-      if (cursors.completed || cursors.abandoned || cursors.paused) {
+      if (cursors.completed || cursors.abandoned) {
         this.log(renderIssueReport(start, cursors).trimEnd());
         return;
+      }
+      if (cursors.paused) {
+        this.log(renderIssueReport(start, cursors).trimEnd());
+        if (!this.hasDueResourceObservation(cursors)) return;
+        await this.sleep(start.pollIntervalMs);
+        continue;
       }
       await this.sleep(start.pollIntervalMs);
     }
