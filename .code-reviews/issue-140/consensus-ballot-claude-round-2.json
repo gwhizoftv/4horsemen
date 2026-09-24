@@ -1,0 +1,14 @@
+{
+  "actionId": "97886bf9-f594-4f11-9e8a-e051b3659551",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "fc30d5addb9aa0be970e0b78c8d02e0ca868af5fdc1a0a0d1db72eb27b7cbfe6",
+  "issue": 140,
+  "issueSessionId": "issue-140:5b2c3050bdb11e112fa890b7d064c4c65f5d6eb4",
+  "protocolVersion": 2,
+  "rationale": "Revision 3c460936 closes the round-1 revise findings: an exhausted read now merges with every unresolved earlier blocker (omitted windows stay blocked, deadline taken over the merged set), more than 16 blockers fail closed to owner release, and a result is discarded and re-queued when the agent's lifecycle revision, session or the binding changed during the read, each with a focused test and check:fast 618/618 plus e2e passing.",
+  "responseSha256": "faf65bfbc739c51b98459c1dc4de89f3a87b30fe45125090ea02638739cacbdb",
+  "revisionCommitSha": "3c460936dd01f0d66e4e7dd2a9e661e8274df4fc",
+  "round": 2
+}

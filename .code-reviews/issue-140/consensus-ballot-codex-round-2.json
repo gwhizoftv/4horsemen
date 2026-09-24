@@ -1,0 +1,14 @@
+{
+  "actionId": "8302023c-e198-4931-9f3b-6191d566bd0c",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "fc30d5addb9aa0be970e0b78c8d02e0ca868af5fdc1a0a0d1db72eb27b7cbfe6",
+  "issue": 140,
+  "issueSessionId": "issue-140:5b2c3050bdb11e112fa890b7d064c4c65f5d6eb4",
+  "protocolVersion": 2,
+  "rationale": "Revise 3c460936dd01f0d66e4e7dd2a9e661e8274df4fc: src/resourceEvidence.ts:353-359 must preserve blockers until complete same-resource clearance, but exact-pin probes show A+B exhausted followed by A exhausted with a later deadline and B below 100 with spendControlReached absent drops B, so a later A-clear/B-missing read falsely clears, while a new exhausted 60-minute window also overwrites a prior 300-minute blocker and later clears without proving that original restriction resolved; add both sequential regressions and fail closed on incomplete or changed identity evidence; src/runLoop.ts:1262-1267 must hold lifecycle exclusion through the cursor mutation because a Stop/session change after lifecycleAfter is read but before this.mutate leaves cached stale=false and can still release, so test a lifecycle event at the post-check/pre-mutation boundary rather than only during the helper read.",
+  "responseSha256": "7c9110fa4b9b3e1a8f6c5b1e4af3a9205dd079e97fa22c596dcdf21b2390b7a0",
+  "revisionCommitSha": "3c460936dd01f0d66e4e7dd2a9e661e8274df4fc",
+  "round": 2
+}
