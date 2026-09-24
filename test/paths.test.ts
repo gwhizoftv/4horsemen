@@ -13,6 +13,7 @@ import {
   PathSafetyError,
   removeIssueMailbox,
   resolveSafeCompletesRoot,
+  resourceBindingPaths,
   RESERVED_EVIDENCE_AGENT
 } from "../src/paths.js";
 
@@ -216,5 +217,17 @@ describe("completion mailbox paths", () => {
     expect(response.startsWith(agentRuntimePaths(paths, "claude").responsesDir)).toBe(true);
     expect(() => agentResponsePath(paths, "claude", "../escape")).toThrow(PathSafetyError);
     expect(() => createIssueRuntime(paths, [RESERVED_EVIDENCE_AGENT])).toThrow(PathSafetyError);
+  });
+
+  it("keys one contained Codex binding record per normalized home and account without exposing either", () => {
+    const root = join(tmpdir(), "coord-bindings-root");
+    const binding = resourceBindingPaths(root, "/home/owner/.codex", "account-123");
+    expect(binding.root).toBe(join(resolve(root), "resource-bindings"));
+    expect(binding.record.startsWith(`${binding.root}/codex-`)).toBe(true);
+    expect(binding.lock).toBe(`${binding.record}.lock`);
+    expect(binding.record).not.toContain("account-123");
+    expect(binding.record).not.toContain("owner");
+    expect(resourceBindingPaths(root, "/home/owner/.codex/", "account-123").record).toBe(binding.record);
+    expect(resourceBindingPaths(root, "/home/owner/.codex", "account-456").record).not.toBe(binding.record);
   });
 });

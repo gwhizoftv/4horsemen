@@ -72,6 +72,7 @@ import {
   syncAgentLifecycleHooks,
   syncAntigravityStatusLine
 } from "./agentHookSync.js";
+import { removeClaudeStatusLine, syncClaudeStatusLine } from "./claudeStatusLine.js";
 
 /**
  * `coord install` / `coord uninstall`.
@@ -415,6 +416,14 @@ export const install = (options: InstallOptions): InstallResult => {
       effects
     );
     syncAgentLifecycleHooks({ clone, agent, cliEntry, options: effects });
+    if (agent === "claude") {
+      const launcher = config.agents.find((candidate) => candidate.id === agent)?.launcher;
+      syncClaudeStatusLine({
+        clone, cliEntry, options: effects,
+        home: options.home === undefined ? homedir() : options.home,
+        ...(launcher === undefined ? {} : { launcher: join(clone, launcher) })
+      });
+    }
     const hooks = writeCloneHooks({
       clone,
       installRoot,
@@ -608,6 +617,9 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
   for (const { agent, clone } of clonePaths) {
     if (!existsSync(clone)) continue;
     removeAgentLifecycleHooks({ clone, agent: agent.id, options: effects });
+    if (agent.id === "claude" && removeClaudeStatusLine({ clone, options: effects }).kept) {
+      kept.push(`${clone}: the Claude status line was changed after installation and was left in place`);
+    }
     const removal = removeCloneHooks(clone, { dryRun: options.dryRun });
     if (removal.removed.length > 0) {
       effects.changes.push(`remove hooks ${removal.removed.join(", ")} from ${clone}`);
@@ -793,7 +805,7 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     log: options.log,
     ...(options.home === undefined ? {} : { home: options.home })
   });
-  const report = doctor({ coordRoot, productRoot });
+  const report = doctor({ coordRoot, productRoot, ...(options.home === undefined ? {} : { home: options.home }) });
   if (report.exitCode === 0) {
     recordOwnerWorkspace(productRoot, installed.configPath);
     options.log(

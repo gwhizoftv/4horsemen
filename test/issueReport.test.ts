@@ -83,6 +83,7 @@ const complete = (overrides: Partial<CursorsState["publication"]> = {}): Cursors
     manualPaused: false,
     holds: [],
     actionSafety: {},
+    resourceBindingChecks: {},
     abandoned: false,
     completed: true,
     agents: {},
@@ -108,13 +109,37 @@ describe("issue report", () => {
     cursors.completed = false; cursors.paused = true; cursors.manualPaused = true;
     cursors.holds = [{ id: "hold-id", agent: "cursor", actionId: "action-id", sessionId: null,
       reason: "nudge-loop", evidenceId: "budget", observedAt: cursors.updatedAt, resetsAt: null,
-      confidence: "unknown", retryOwner: "owner" }];
+      confidence: "unknown", retryOwner: "owner", evidence: null }];
     const text = renderIssueReport(start("owner-only"), cursors);
     expect(text).toContain("Manual pause: active");
     expect(text).toContain("cause unknown, reset unknown, retry owner: owner");
     expect(text).toContain("coord resume --issue 1 --hold hold-id --reset-nudge-budget");
     expect(text).not.toContain("quota exhausted");
   });
+  it("separates cause, exact recheck time, blocked windows and redacted detail from owner release", () => {
+    const cursors = complete();
+    cursors.completed = false; cursors.paused = true;
+    const window = { source: "codex-app-server" as const, limitId: "codex", window: "secondary" as const,
+      usedPercent: 100, windowDurationMins: 10_080, resetsAt: "2026-08-20T00:00:00.000Z" };
+    const evidence = { vendor: "codex" as const, failureClass: "usage-window" as const, classConfidence: "confirmed" as const,
+      windows: [window], detail: "limit for Bearer [redacted]", episodeId: "a:codex", observedAt: cursors.updatedAt };
+    cursors.holds = [{ id: "exact", agent: "codex", actionId: "action-id", sessionId: null, reason: "vendor-failure",
+      evidenceId: "e", observedAt: cursors.updatedAt, resetsAt: window.resetsAt, confidence: "exact", retryOwner: "owner", evidence }];
+    const safety = { actionId: "action-id", sends: 1, lastSendAt: null, reserved: false, deferrals: [], holdGeneration: 0,
+      observationChecks: 0, nextObservationAt: null, activityAt: cursors.updatedAt,
+      resource: { starts: 2, failures: 0, inFlight: null, nextAt: "2026-08-20T00:00:30.000Z", consumedDeadlines: [], terminal: null, episode: null } };
+    cursors.actionSafety = { codex: safety };
+    let text = renderIssueReport(start("owner-only"), cursors);
+    expect(text).toContain("cause usage-window (codex, confirmed), provider reset 2026-08-20T00:00:00.000Z (recheck time, not guaranteed availability)");
+    expect(text).toContain("Blocked windows: codex/secondary 100% (resets 2026-08-20T00:00:00.000Z).");
+    expect(text).toContain("Vendor detail (redacted): limit for Bearer [redacted]");
+    expect(text).toContain("next automatic check at 2026-08-20T00:00:30.000Z; quota reads 2/6");
+    cursors.actionSafety = { codex: { ...safety, resource: { ...safety.resource, nextAt: null, terminal: "no exact provider deadline" } } };
+    text = renderIssueReport(start("owner-only"), cursors);
+    expect(text).toContain("stopped (no exact provider deadline); owner release required.");
+    expect(text).toContain("coord resume --issue 1 --hold exact");
+  });
+
   it("names the pin, published branch, and that the owner merges", () => {
     const text = renderIssueReport(start("coord-open-unmerged"), complete());
     expect(text).toContain("Issue 1: complete");

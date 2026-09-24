@@ -8,6 +8,7 @@ import {
 } from "./agentLifecycle.js";
 import { extractCursorTokenUsage, type CursorUsageJournalDetails } from "./cursorHookUsage.js";
 import { localConfigGet } from "./gitExec.js";
+import { parseClaudeRateLimits } from "./resourceEvidence.js";
 import { resolveWorkspaceConfig } from "./hookPolicy.js";
 import { agentRuntimePaths, issueRuntimePaths } from "./paths.js";
 import { appendJournal, readCursorsState, readStartState } from "./state.js";
@@ -130,7 +131,22 @@ export const normalizeAgentEvent = (
           : { actionId: action.actionId, actionDigest: action.actionDigest, actionPath: action.actionPath })
       };
     }
-    if (normalizedName === "stopfailure") return { kind: "failed", ...common, backgroundActive: false };
+    if (normalizedName === "stopfailure") {
+      // Actual StopFailure fields only; no invented error_type/error_message aliases.
+      return {
+        kind: "failed", ...common, backgroundActive: false,
+        failure: {
+          vendor: "claude",
+          error: stringField(raw, "error") ?? null,
+          errorDetails: stringField(raw, "error_details") ?? null,
+          lastAssistantMessage: stringField(raw, "last_assistant_message") ?? null
+        }
+      };
+    }
+    if (normalizedName === "status-line" || normalizedName === "statusline") {
+      const rateLimits = parseClaudeRateLimits(raw);
+      return rateLimits === null ? null : { kind: "telemetry", ...common, rateLimits };
+    }
     if (normalizedName === "stop") {
       const background = [arrayHasItems(raw, "background_tasks"), arrayHasItems(raw, "session_crons")].some(
         (value) => value === true
@@ -149,7 +165,14 @@ export const normalizeAgentEvent = (
       ...(turnId === undefined ? {} : { turnId })
     };
     if (normalizedName === "sessionstart") return { kind: "session-start", ...common };
-    if (normalizedName === "sessionend") return { kind: "session-end", ...common };
+    if (normalizedName === "sessionend") {
+      const reason = stringField(raw, "reason")?.toLowerCase();
+      const message = stringField(raw, "error_message");
+      // Session-end diagnostics are advisory: never a confirmed quota or cancellation class.
+      return reason === "error" || message !== undefined
+        ? { kind: "session-end", ...common, failure: { vendor: "cursor", status: "error", error: reason ?? null, errorDetails: message ?? null, lastAssistantMessage: null } }
+        : { kind: "session-end", ...common };
+    }
     if (normalizedName === "beforesubmitprompt") {
       return {
         kind: "prompt-submitted",
@@ -162,7 +185,10 @@ export const normalizeAgentEvent = (
     if (normalizedName === "stop") {
       const status = stringField(raw, "status", "reason", "final_status")?.toLowerCase();
       return status === "error" || status === "aborted"
-        ? { kind: "failed", ...common, backgroundActive: false }
+        ? {
+          kind: "failed", ...common, backgroundActive: false,
+          failure: { vendor: "cursor", status, error: stringField(raw, "error", "error_message") ?? null, errorDetails: null, lastAssistantMessage: null }
+        }
         : { kind: "stopped", ...common, backgroundActive: false };
     }
     return null;
@@ -344,7 +370,9 @@ export const handleAgentEvent = (input: HandleAgentEventInput): HandleAgentEvent
     const result = observeAgentLifecycleWithResult(paths, agent, observation, now);
     state = result.state;
     const journalsTurnBoundary = observation.kind === "prompt-submitted" || observation.kind === "stopped";
-    if (result.changed || journalsTurnBoundary) {
+    const failure = observation.failure === undefined ? null : result.state.agents[agent]?.lastFailure ?? null;
+    // Status renders are telemetry: never journaled, however often they change.
+    if (observation.kind !== "telemetry" && (result.changed || journalsTurnBoundary)) {
       appendJournal(
         paths,
         {
@@ -358,7 +386,8 @@ export const handleAgentEvent = (input: HandleAgentEventInput): HandleAgentEvent
             execution: result.state.agents[agent]?.execution ?? "unknown",
             health: result.state.agents[agent]?.health ?? "unknown",
             ...(observation.sessionId === undefined ? {} : { sessionId: observation.sessionId }),
-            ...(observation.turnId === undefined ? {} : { turnId: observation.turnId })
+            ...(observation.turnId === undefined ? {} : { turnId: observation.turnId }),
+            ...(failure === null ? {} : { failureClass: failure.evidence.failureClass, correlated: failure.actionId !== null })
           }
         },
         now

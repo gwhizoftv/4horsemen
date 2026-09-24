@@ -143,6 +143,53 @@ See `config.product.example.json` for declared verification/check commands and
 [`docs/coord-driver.md`](docs/coord-driver.md) for profiles, owner controls,
 tmux behavior, recovery, finalization, and runtime topology.
 
+## Vendor quota evidence and resource holds
+
+Holds carry vendor evidence when it is available. They report the failure
+class (usage window, billing, throttling, context overflow, account,
+cancellation, transport or unknown) separately from deadline confidence. A
+reset time is shown only when the provider supplied an absolute epoch, and it
+is the time of a recheck, not a promise that capacity will be back. Rendered
+clock text such as "resets 3:45pm" is never parsed.
+
+- **Claude.** `StopFailure` fields are kept as sanitized diagnostics
+  (`error`, `error_details`, `last_assistant_message`). `coord install` adds a
+  status-line tee to the clone's `.claude/settings.local.json`. The tee runs
+  your effective status-line command on the original bytes and gives coord a
+  bounded copy of `rate_limits.five_hour`/`seven_day`. It is installed only
+  when precedence is provable. If managed settings or a launcher `--settings`
+  outrank the clone, or the command shape is unsupported, telemetry is
+  disabled and `coord doctor` says why. Uninstall restores the prior value
+  while the tee is still coord's, and your later edits are preserved. A
+  matching exhausted window gives an exact deadline. At that deadline plus 30
+  seconds, coord re-evaluates the hold once without sending a prompt. It then
+  leaves release to you, because a render is not a fresh capacity check.
+  Model-family limits, stale telemetry and spend restrictions keep
+  `reset unknown`. `autoContinueAtUsageLimit` and launcher arguments are never
+  changed.
+- **Codex.** Quota reads happen only with an explicit per-agent binding:
+  `"codexQuota": { "codexHome": "/abs/path", "accountId": "..." }` on the
+  `codex` agent. Each read is one `codex app-server --listen stdio://` helper
+  that runs `account/read` and `account/rateLimits/read` and nothing else. It
+  has a 10 s lifetime and a 256 KiB output cap, and it is always reaped.
+  Reads are triggered only by the initial binding check, by a new hold for
+  that agent, or by an exact deadline plus 30 seconds. Limits:
+  - at most one helper runs per binding, across issues in this coord root;
+  - starts are at least 5 minutes apart;
+  - after a failed read there are two retries (at +5 then +10 minutes);
+  - each action gets six starts in total, and neither restarts nor your
+    acknowledgments replenish them.
+  An automatic release requires a fresh read for the bound account that
+  affirmatively clears every previously blocked window. It removes only that
+  resource hold. A binding shared by two separately managed coord roots
+  cannot be serialized and is unsupported.
+- **Cursor** errors stay unknown and `aborted` is a cancellation. **Antigravity**
+  keeps the vendor-independent protections only.
+
+Manual pause, other holds, the nudge budget, roster, reviews and pins are never
+changed by resource recovery. Whenever evidence is missing, the report says
+`owner release required`.
+
 ## Development
 
 ```sh

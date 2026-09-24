@@ -112,6 +112,9 @@ export type CliDependencies = {
   sessionExists?: (sessionName: string) => Promise<boolean>;
 };
 
+/** Upper bound for one lifecycle hook or status-line payload. */
+const AGENT_EVENT_MAX_BYTES = 1024 * 1024;
+
 const defaultIo: CliIo = {
   stdout: (message) => process.stdout.write(message),
   stderr: (message) => process.stderr.write(message),
@@ -1171,7 +1174,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const report = doctor({
         coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
         ...(parsed.flags.has("product") ? { productRoot: resolve(io.cwd, requireFlag(parsed, "product")) } : {}),
-        ...(parsed.flags.has("project") ? { project: requireFlag(parsed, "project") } : {})
+        ...(parsed.flags.has("project") ? { project: requireFlag(parsed, "project") } : {}),
+        ...(dependencies.home === undefined ? {} : { home: dependencies.home })
       });
       (report.exitCode === 0 ? io.stdout : io.stderr)(renderDoctorReport(report));
       return report.exitCode;
@@ -1191,7 +1195,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         if (vendor === "antigravity" && explicitEvent?.toLowerCase() === "stop") {
           response = JSON.stringify({ decision: "allow" });
         }
-        const raw = JSON.parse(io.stdin()) as unknown;
+        const input = io.stdin();
+        // Hook and status-line payloads are small; an oversized one is dropped, never parsed.
+        if (Buffer.byteLength(input, "utf8") > AGENT_EVENT_MAX_BYTES) throw new Error("payload exceeds the agent-event bound");
+        const raw = JSON.parse(input) as unknown;
         handleAgentEvent({
           vendor,
           raw,

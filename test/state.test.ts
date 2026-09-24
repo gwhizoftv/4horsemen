@@ -17,6 +17,7 @@ import {
   readStartState,
   setPaused,
   releaseHold,
+  releaseResourceHold,
   StateConflictError,
   startStateSchema,
   coordinatorConfigSchema,
@@ -99,6 +100,54 @@ describe("operational state", () => {
     expect(last.paused).toBe(true); // still manually paused
     expect(setPaused(last, false, now).paused).toBe(false);
   });
+  it("releases only a usage-window resource hold and leaves action safety verbatim", () => {
+    const { paths } = initialize();
+    const now = "2026-09-22T12:00:00.000Z";
+    const actionId = "10000000-0000-4000-8000-000000000001";
+    const original = readCursorsState(paths);
+    // A baseline-shaped hold (no evidence, null reset) still parses.
+    const unobservable = { id: "20000000-0000-4000-8000-000000000001", agent: "codex", actionId, sessionId: null,
+      reason: "unobservable", evidenceId: "missing", observedAt: now, resetsAt: null, confidence: "unknown", retryOwner: "owner" };
+    const window = { source: "codex-app-server", limitId: "codex", window: "primary", usedPercent: 100, windowDurationMins: 300,
+      resetsAt: "2026-09-22T15:00:00.000Z" };
+    const evidence = { vendor: "codex", failureClass: "usage-window", classConfidence: "confirmed", windows: [window],
+      detail: null, episodeId: `${actionId}:codex`, observedAt: now };
+    const resource = { ...unobservable, id: "20000000-0000-4000-8000-000000000002", reason: "vendor-failure",
+      evidenceId: "quota", resetsAt: window.resetsAt, confidence: "exact", evidence };
+    const safety = { actionId, sends: 3, lastSendAt: now, reserved: true, holdGeneration: 2, activityAt: now,
+      resource: { starts: 4, consumedDeadlines: [window.resetsAt] } };
+    const held = cursorsStateSchema.parse({ ...original, paused: true, manualPaused: true,
+      agents: { ...original.agents, codex: { ...original.agents.codex, actionId } },
+      actionSafety: { codex: safety }, holds: [unobservable, resource] });
+    const released = releaseResourceHold(held, resource.id, now);
+    expect(released.holds.map((hold) => hold.id)).toEqual([unobservable.id]);
+    expect(released.manualPaused).toBe(true);
+    expect(released.paused).toBe(true);
+    expect(released.actionSafety.codex).toEqual(held.actionSafety.codex);
+    expect(() => releaseResourceHold(held, unobservable.id, now)).toThrow(/usage-window/);
+    const billing = cursorsStateSchema.parse({ ...held, holds: [{ ...resource, evidence: { ...evidence, failureClass: "billing" } }] });
+    expect(() => releaseResourceHold(billing, resource.id, now)).toThrow(/usage-window/);
+    expect(() => releaseResourceHold({ ...held, agents: original.agents }, resource.id, now)).toThrow(/retired/);
+    // Deadline confidence is exact only with a provider epoch.
+    expect(() => cursorsStateSchema.parse({ ...held, holds: [{ ...resource, resetsAt: null }] })).toThrow();
+    const owner = releaseHold(held, resource.id, false, now);
+    expect(owner.actionSafety.codex?.resource).toEqual(held.actionSafety.codex?.resource);
+  });
+
+  it("accepts a codexQuota binding only as an absolute home on the codex agent", () => {
+    const config = {
+      project: "p", origin: "https://github.com/example/p.git", branch: "issue-{issue}/{agent}",
+      checks: [{ name: "check", argv: ["true"] }],
+      agents: [{ id: "codex", root: "/c", launcher: "start-codex.sh", codexQuota: { codexHome: "/home/o/.codex", accountId: "acct" } }]
+    };
+    expect(coordinatorConfigSchema.parse(config).agents[0]?.codexQuota).toEqual({ codexHome: "/home/o/.codex", accountId: "acct" });
+    const withBinding = (agent: Record<string, unknown>) => ({ ...config, agents: [{ ...config.agents[0], ...agent }] });
+    expect(() => coordinatorConfigSchema.parse(withBinding({ codexQuota: { codexHome: "relative/.codex", accountId: "acct" } }))).toThrow();
+    expect(() => coordinatorConfigSchema.parse(withBinding({ codexQuota: { codexHome: "/home/o/../o/.codex", accountId: "acct" } }))).toThrow();
+    expect(() => coordinatorConfigSchema.parse(withBinding({ codexQuota: { codexHome: "/home/o/.codex", accountId: " " } }))).toThrow();
+    expect(() => coordinatorConfigSchema.parse(withBinding({ id: "claude", launcher: "start-claude.sh" }))).toThrow(/only valid on the codex agent/);
+  });
+
   it("writes strict versioned start, cursor, and journal state atomically", () => {
     const { paths } = initialize();
     expect(readStartState(paths)).toMatchObject({ formatVersion: 4, maxRevisionRounds: 3 });

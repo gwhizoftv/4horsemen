@@ -210,6 +210,29 @@ describe("agent lifecycle policy", () => {
     ).toBe(current);
   });
 
+  it("binds failure evidence only to the accepted current episode and never lets telemetry establish a session", () => {
+    const failure = { vendor: "claude" as const, error: "billing_error", errorDetails: null, lastAssistantMessage: null };
+    const action = { actionId, actionDigest: digest, delivery: "injected" as const, orderedAt: now, injectedAt: now,
+      retryableInjectionAt: null, acceptedAt: null, sessionId: null, turnId: null, lastNudgedIdleEpoch: 0, workflowCompleteAt: null };
+    const started = applyLifecycleObservation({ ...entry(), action }, { kind: "session-start", eventName: "SessionStart", sessionId: "s1" }, now);
+    // Injected but never accepted: the failure is advisory only.
+    const advisory = applyLifecycleObservation(started, { kind: "failed", eventName: "StopFailure", sessionId: "s1", failure }, later);
+    expect(advisory.lastFailure).toMatchObject({ actionId: null, evidence: { failureClass: "billing" } });
+    const accepted = applyLifecycleObservation(started, { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "s1",
+      turnId: "t1", actionId, actionDigest: digest }, now);
+    const failed = applyLifecycleObservation(accepted, { kind: "failed", eventName: "StopFailure", sessionId: "s1", failure }, later);
+    expect(failed.lastFailure).toMatchObject({ actionId, sessionId: "s1", evidence: { episodeId: `${actionId}:s1:t1:billing` } });
+    // A retired session's failure and a foreign render change nothing.
+    const replaced = applyLifecycleObservation(failed, { kind: "session-start", eventName: "SessionStart", sessionId: "s2" }, later);
+    expect(applyLifecycleObservation(replaced, { kind: "failed", eventName: "StopFailure", sessionId: "s1", failure }, later)).toBe(replaced);
+    const rateLimits = { fiveHour: null, sevenDay: { source: "claude-statusline" as const, limitId: "seven_day", window: "seven_day" as const,
+      usedPercent: 100, windowDurationMins: 10_080, resetsAt: later } };
+    expect(applyLifecycleObservation(entry(), { kind: "telemetry", eventName: "status-line", sessionId: "s2", rateLimits }, later)).toEqual(entry());
+    const observed = applyLifecycleObservation(replaced, { kind: "telemetry", eventName: "status-line", sessionId: "s2", rateLimits }, later);
+    expect(observed).toMatchObject({ lastEventAt: replaced.lastEventAt, execution: replaced.execution, idleEpoch: replaced.idleEpoch,
+      claudeRateLimits: { sessionId: "s2", observedAt: later } });
+  });
+
   it("rejects stale prompt and work events after a session replacement", () => {
     const previous = applyLifecycleObservation(entry(), {
       kind: "session-start",

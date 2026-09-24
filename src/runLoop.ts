@@ -43,16 +43,26 @@ import {
   agentRuntimePaths,
   containedPath,
   evidenceWorktreePath,
+  resourceBindingPaths,
   type IssueRuntimePaths
 } from "./paths.js";
+import { finishBinding, readBindingRecord, readCodexQuota, reserveBinding, type CodexQuotaReader } from "./codexQuota.js";
+import {
+  assessCodexLimits,
+  codexClearsBlockers,
+  HOLDING_CLASSES,
+  type ResourceEvidence
+} from "./resourceEvidence.js";
 import { decide } from "./machine.js";
 import {
   appendJournal,
   cursorsStateSchema,
+  emptyResourceObservation,
   readConfig,
   readCursorsState,
   readJournal,
   readStartState,
+  releaseResourceHold,
   replaceCursor,
   requireStateMutation,
   StateConflictError,
@@ -180,6 +190,8 @@ export type RunLoopDependencies = {
   verbose?: (message: string) => void;
   /** @deprecated The timer is now an observability watchdog, never resend authority. */
   nudgeRetryMs?: number;
+  /** One-shot Codex quota read for an owner-bound home (#140). */
+  codexQuota?: CodexQuotaReader;
 };
 
 /** Kept as a public compatibility alias; elapsed time no longer authorizes a nudge. */
@@ -763,6 +775,13 @@ const NUDGE_REPEAT_DELAYS_MS = [60_000, 120_000, 240_000];
 const OBSERVATION_INTERVAL_MS = 60_000;
 const STALE_ACTIVITY_MS = 300_000;
 const UNKNOWN_DEFERRAL_LIMIT = 8;
+/** A provider deadline authorizes one recheck this long after it, never a resume. */
+const DEADLINE_RECHECK_MS = 30_000;
+const RESOURCE_RETRY_DELAYS_MS = [300_000, 600_000];
+const RESOURCE_MAX_STARTS = 6;
+
+type Hold = CursorsState["holds"][number];
+type HoldEnrichment = { evidence: ResourceEvidence; resetsAt: string | null; retryOwner?: Hold["retryOwner"] };
 
 export class CoordinatorRunLoop {
   private readonly mirror: BareMirror;
@@ -776,6 +795,7 @@ export class CoordinatorRunLoop {
   private readonly log: (message: string) => void;
   private readonly verbose: (message: string) => void;
   private readonly observabilityWatchdogMs: number;
+  private readonly codexQuota: CodexQuotaReader;
   /** Last RN/round announced on `log`, so resume and first prepare do not repeat. */
   private loggedPhaseKey: string | null = null;
   /** Healthy local probes are advisory; only unresolved episodes need durable schedules. */
@@ -794,6 +814,7 @@ export class CoordinatorRunLoop {
     this.log = dependencies.log ?? ((message) => process.stdout.write(`${message}\n`));
     this.verbose = dependencies.verbose ?? (() => undefined);
     this.observabilityWatchdogMs = dependencies.nudgeRetryMs ?? AGENT_OBSERVABILITY_WATCHDOG_MS;
+    this.codexQuota = dependencies.codexQuota ?? ((input) => readCodexQuota(input));
   }
 
   async initializeEffects(): Promise<void> {
@@ -869,35 +890,88 @@ export class CoordinatorRunLoop {
     return this.mutate(cursors, (current) => ({ ...current, actionSafety: {
       ...current.actionSafety, [agent]: {
         actionId, sends: 0, lastSendAt: null, reserved: false, deferrals: [], holdGeneration: 0,
-        observationChecks: 0, nextObservationAt: null, activityAt: this.now()
+        observationChecks: 0, nextObservationAt: null, activityAt: this.now(), resource: emptyResourceObservation()
       }
     } }));
   }
 
   private hold(
-    cursors: CursorsState, agent: string, reason: CursorsState["holds"][number]["reason"], evidenceId: string
+    cursors: CursorsState, agent: string, reason: Hold["reason"], evidenceId: string, enrichment?: HoldEnrichment
   ): CursorsState {
     const safety = cursors.actionSafety[agent]!;
     evidenceId = `${reason}:${safety.holdGeneration}:${evidenceId}`;
     if (cursors.holds.some((hold) => hold.evidenceId === evidenceId)) return cursors;
     const now = this.now();
-    let hold: CursorsState["holds"][number] = {
+    let created: Hold | null = null;
+    const next = this.mutate(cursors, (current) => {
+      const result = this.holdMutation(readStartState(this.paths), current, agent, reason, evidenceId, enrichment, now);
+      created = result.hold;
+      return result.state;
+    });
+    const hold = created as Hold | null;
+    if (hold !== null) {
+      const cause = hold.evidence === null ? "cause/reset unknown" :
+        `${hold.evidence.failureClass}; reset ${hold.resetsAt ?? "unknown"}`;
+      this.log(`Issue ${readStartState(this.paths).issue}: ${agent} held (${reason}; ${cause}). ` +
+        `Inspect the agent, then coord resume --issue ${this.paths.issue} --hold ${hold.id}` +
+        (reason === "nudge-loop" ? " --reset-nudge-budget" : ""));
+    }
+    return next;
+  }
+
+  /**
+   * One hold transition for use inside a single state mutation. A new hold for
+   * an owner-bound Codex agent is also the watchdog trigger for one quota read.
+   */
+  private holdMutation(
+    start: StartState, current: CursorsState, agent: string, reason: Hold["reason"], evidenceId: string,
+    enrichment: HoldEnrichment | undefined, now: string
+  ): { state: CursorsState; hold: Hold | null } {
+    const safety = current.actionSafety[agent]!;
+    if (current.holds.some((hold) => hold.evidenceId === evidenceId)) return { state: current, hold: null };
+    let hold: Hold = {
       id: randomUUID(), agent, actionId: safety.actionId,
       sessionId: readAgentLifecycle(this.paths).agents[agent]?.sessionId ?? null,
-      reason, evidenceId, observedAt: now, resetsAt: null, confidence: "unknown", retryOwner: reason === "vendor-wait" ? "vendor" : "owner"
+      reason, evidenceId, observedAt: now,
+      resetsAt: enrichment?.resetsAt ?? null, confidence: enrichment?.resetsAt ? "exact" : "unknown",
+      retryOwner: enrichment?.retryOwner ?? (reason === "vendor-wait" ? "vendor" : "owner"),
+      evidence: enrichment?.evidence ?? null
     };
-    const next = this.mutate(cursors, (current) => {
-      const event = appendJournal(this.paths, { type: "hold-created", agent, actionId: safety.actionId,
-        details: { ...hold, eventId: `hold:${evidenceId}` } }, now);
-      // Recover the same hold if the append survived but cursor replacement did not.
-      hold = { ...hold, id: String(event.details.id), observedAt: event.at };
-      if (!current.paused) appendJournal(this.paths, { type: "paused", details: { hold: hold.id, eventId: `pause:${hold.id}` } }, now);
-      return { ...current, paused: true, holds: [...current.holds, hold], updatedAt: now };
-    });
-    this.log(`Issue ${readStartState(this.paths).issue}: ${agent} held (${reason}; cause/reset unknown). ` +
-      `Inspect the agent, then coord resume --issue ${this.paths.issue} --hold ${hold.id}` +
-      (reason === "nudge-loop" ? " --reset-nudge-budget" : ""));
-    return next;
+    const event = appendJournal(this.paths, { type: "hold-created", agent, actionId: safety.actionId,
+      details: { ...hold, eventId: `hold:${evidenceId}` } }, now);
+    // Recover the same hold if the append survived but cursor replacement did not.
+    hold = { ...hold, id: String(event.details.id), observedAt: event.at };
+    if (!current.paused) appendJournal(this.paths, { type: "paused", details: { hold: hold.id, eventId: `pause:${hold.id}` } }, now);
+    const bound = start.agents.find((candidate) => candidate.id === agent)?.codexQuota !== undefined;
+    const resource = safety.resource;
+    const trigger = bound && reason !== "vendor-failure" && resource.terminal === null && resource.nextAt === null;
+    return {
+      hold,
+      state: {
+        ...current, paused: true, holds: [...current.holds, hold], updatedAt: now,
+        actionSafety: trigger
+          ? { ...current.actionSafety, [agent]: { ...safety, resource: { ...resource, nextAt: now } } }
+          : current.actionSafety
+      }
+    };
+  }
+
+  /** Update one resource hold's evidence on a meaningful transition only. */
+  private enrichMutation(current: CursorsState, holdId: string, enrichment: HoldEnrichment, now: string): CursorsState {
+    const hold = current.holds.find((entry) => entry.id === holdId);
+    if (hold === undefined) return current;
+    const next: Hold = {
+      ...hold, evidence: enrichment.evidence, resetsAt: enrichment.resetsAt,
+      confidence: enrichment.resetsAt === null ? "unknown" : "exact",
+      retryOwner: enrichment.retryOwner ?? hold.retryOwner
+    };
+    const identity = (value: Hold) => JSON.stringify([value.evidence?.failureClass, value.evidence?.windows, value.resetsAt, value.retryOwner]);
+    if (identity(next) === identity(hold) && hold.evidence?.episodeId === next.evidence?.episodeId) return current;
+    appendJournal(this.paths, { type: "hold-updated", agent: hold.agent, actionId: hold.actionId, details: {
+      hold: hold.id, failureClass: next.evidence?.failureClass, confidence: next.confidence, resetsAt: next.resetsAt,
+      retryOwner: next.retryOwner, eventId: `hold-update:${hold.id}:${sha256(identity(next))}`
+    } }, now);
+    return { ...current, holds: current.holds.map((entry) => (entry.id === holdId ? next : entry)), updatedAt: now };
   }
 
   private observationEvidence(agent: string, actionId: string): string {
@@ -1018,6 +1092,236 @@ export class CoordinatorRunLoop {
       if (checks >= 3) return this.hold(cursors, agent, "unobservable", evidence);
     }
     return cursors;
+  }
+
+  private codexBinding(start: StartState, agent: string): NonNullable<StartState["agents"][number]["codexQuota"]> | undefined {
+    return agent === "codex" ? start.agents.find((candidate) => candidate.id === agent)?.codexQuota : undefined;
+  }
+
+  private setResource(
+    current: CursorsState, agent: string, update: Partial<CursorsState["actionSafety"][string]["resource"]>
+  ): CursorsState {
+    const safety = current.actionSafety[agent]!;
+    return { ...current, actionSafety: { ...current.actionSafety, [agent]: { ...safety, resource: { ...safety.resource, ...update } } } };
+  }
+
+  /** Scheduled, still-authorized resource observation that justifies keeping a held runner alive. */
+  private resourceWorkPending(start: StartState, cursors: CursorsState): boolean {
+    if (cursors.manualPaused || cursors.abandoned || cursors.completed) return false;
+    return cursors.holds.some((hold) => {
+      const safety = cursors.actionSafety[hold.agent];
+      if (safety === undefined || safety.actionId !== hold.actionId || safety.resource.terminal !== null) return false;
+      if (safety.resource.nextAt !== null && this.codexBinding(start, hold.agent) !== undefined) return true;
+      return hold.reason === "vendor-failure" && hold.evidence?.vendor === "claude" && hold.resetsAt !== null &&
+        !safety.resource.consumedDeadlines.includes(hold.resetsAt);
+    });
+  }
+
+  /**
+   * Observation-only resource work (#140). It may ingest correlated vendor
+   * failure evidence, run one due authorized quota read, and release only a
+   * resource hold whose evidence cleared. It never prepares, delivers,
+   * accepts, publishes or nudges, so it also runs while the issue is held.
+   * A manual pause stops it entirely.
+   */
+  private async observeResources(start: StartState, cursors: CursorsState, agent: string): Promise<CursorsState> {
+    if (cursors.manualPaused) return cursors;
+    const safety = cursors.actionSafety[agent];
+    if (safety === undefined || cursors.agents[agent]?.actionId !== safety.actionId) return cursors;
+    cursors = this.ingestFailure(start, cursors, agent, safety.actionId);
+    cursors = this.consumeClaudeDeadline(cursors, agent);
+    const binding = this.codexBinding(start, agent);
+    if (binding === undefined) return cursors;
+    if (cursors.resourceBindingChecks[agent] === undefined) {
+      // The initial binding check is one persisted trigger, not a read per restart.
+      const now = this.now();
+      cursors = this.mutate(cursors, (current) => this.setResource(
+        { ...current, resourceBindingChecks: { ...current.resourceBindingChecks, [agent]: now } },
+        agent, { nextAt: current.actionSafety[agent]!.resource.nextAt ?? now }
+      ));
+    }
+    return this.observeCodexQuota(start, cursors, agent, binding);
+  }
+
+  /** Turn a correlated, current-episode failure into (or onto) a resource hold. */
+  private ingestFailure(start: StartState, cursors: CursorsState, agent: string, actionId: string): CursorsState {
+    const entry = readAgentLifecycle(this.paths).agents[agent];
+    const failure = entry?.lastFailure ?? null;
+    if (entry === undefined || failure === null || failure.actionId !== actionId || failure.sessionId !== entry.sessionId) return cursors;
+    const episode = failure.evidence.episodeId;
+    const safety = cursors.actionSafety[agent]!;
+    if (!HOLDING_CLASSES.has(failure.evidence.failureClass) || safety.resource.episode === episode) return cursors;
+    const mine = (hold: Hold) => hold.agent === agent && hold.actionId === actionId;
+    const existing = cursors.holds.find((hold) => mine(hold) && hold.reason === "vendor-failure");
+    // The pane reader's native-wait hold is the only accepted proof of vendor retry ownership.
+    const nativeWait = cursors.holds.some((hold) => mine(hold) && hold.reason === "vendor-wait");
+    const enrichment: HoldEnrichment = { evidence: failure.evidence, resetsAt: failure.resetsAt, retryOwner: nativeWait ? "vendor" : "owner" };
+    const now = this.now();
+    let created: Hold | null = null;
+    const next = this.mutate(cursors, (current) => {
+      let state: CursorsState;
+      if (existing !== undefined) state = this.enrichMutation(current, existing.id, enrichment, now);
+      else {
+        const result = this.holdMutation(start, current, agent, "vendor-failure",
+          `vendor-failure:${safety.holdGeneration}:failure:${episode}`, enrichment, now);
+        created = result.hold;
+        state = result.state;
+      }
+      return this.setResource(state, agent, { episode });
+    });
+    const hold = created as Hold | null;
+    if (hold !== null) {
+      this.log(`Issue ${start.issue}: ${agent} held (vendor-failure; ${failure.evidence.failureClass}; reset ${hold.resetsAt ?? "unknown"}). ` +
+        `Inspect the agent, then coord resume --issue ${this.paths.issue} --hold ${hold.id}`);
+    }
+    return next;
+  }
+
+  /**
+   * One cached re-evaluation at a Claude provider deadline plus 30 seconds,
+   * without a prompt. A render, an omitted expired window or native activity
+   * is not a fresh capacity fetch, so the hold stays for owner release.
+   */
+  private consumeClaudeDeadline(cursors: CursorsState, agent: string): CursorsState {
+    const safety = cursors.actionSafety[agent]!;
+    const hold = cursors.holds.find((entry) => entry.agent === agent && entry.actionId === safety.actionId &&
+      entry.reason === "vendor-failure" && entry.evidence?.vendor === "claude" && entry.resetsAt !== null);
+    const deadline = hold?.resetsAt ?? null;
+    if (hold === undefined || deadline === null || safety.resource.consumedDeadlines.includes(deadline)) return cursors;
+    const now = this.now();
+    if (Date.parse(now) < Date.parse(deadline) + DEADLINE_RECHECK_MS) return cursors;
+    return this.mutate(cursors, (current) => {
+      const resource = current.actionSafety[agent]!.resource;
+      appendJournal(this.paths, { type: "hold-updated", agent, actionId: hold.actionId, details: {
+        hold: hold.id, deadline, outcome: "owner-release-required", eventId: `deadline:${hold.id}:${deadline}`
+      } }, now);
+      return this.setResource(current, agent, {
+        consumedDeadlines: [...resource.consumedDeadlines, deadline].slice(-16),
+        terminal: resource.terminal ?? "Claude capacity cannot be proven without a prompt"
+      });
+    });
+  }
+
+  /**
+   * At most one bounded Codex App Server read when a persisted trigger is due.
+   * The start is reserved durably, under the binding exclusion, before spawn;
+   * the result applies only under the latest revision.
+   */
+  private async observeCodexQuota(
+    start: StartState, cursors: CursorsState, agent: string, binding: NonNullable<StartState["agents"][number]["codexQuota"]>
+  ): Promise<CursorsState> {
+    let resource = cursors.actionSafety[agent]!.resource;
+    const now = this.now();
+    if (resource.terminal !== null || resource.nextAt === null || Date.parse(now) < Date.parse(resource.nextAt)) return cursors;
+    const actionId = cursors.actionSafety[agent]!.actionId;
+    const bindingPaths = resourceBindingPaths(this.paths.coordRoot, binding.codexHome, binding.accountId);
+    const terminate = (state: CursorsState, reason: string): CursorsState => this.mutate(state, (current) => {
+      appendJournal(this.paths, { type: "resource-observation", agent, actionId,
+        details: { outcome: "owner-required", reason, eventId: `resource-terminal:${actionId}` } }, now);
+      return this.setResource(current, agent, { terminal: reason, nextAt: null, inFlight: null });
+    });
+    if (resource.inFlight !== null) {
+      const record = readBindingRecord(bindingPaths);
+      if (record === null || record.inFlight?.reservation === resource.inFlight) {
+        return terminate(cursors, "a quota helper from an earlier run was never proved reaped");
+      }
+      // The binding never recorded this reservation, so no helper started; the start stays spent.
+      cursors = this.mutate(cursors, (current) => this.setResource(current, agent, { inFlight: null }));
+      resource = cursors.actionSafety[agent]!.resource;
+    }
+    if (resource.starts >= RESOURCE_MAX_STARTS) return terminate(cursors, "the quota observation budget for this action is spent");
+    const reservation = randomUUID();
+    const session = readAgentLifecycle(this.paths).agents[agent]?.sessionId ?? null;
+    let reserved: CursorsState | null = null;
+    const outcome = reserveBinding(this.paths.coordRoot, bindingPaths,
+      { reservation, issue: this.paths.issue, agent, startedAt: now },
+      () => {
+        reserved = this.mutate(cursors, (current) =>
+          this.setResource(current, agent, { starts: resource.starts + 1, inFlight: reservation, nextAt: null }));
+      });
+    if (outcome.status === "unknown") return terminate(cursors, "the quota binding record is unreadable");
+    if (outcome.status === "busy") {
+      // Coalesced with another reader of the same binding; nothing was spent.
+      return resource.nextAt === outcome.retryAt ? cursors : this.mutate(cursors, (current) =>
+        this.setResource(current, agent, { nextAt: outcome.retryAt }));
+    }
+    cursors = reserved!;
+    const result = await this.codexQuota({ codexHome: binding.codexHome });
+    if (result.reaped) finishBinding(this.paths.coordRoot, bindingPaths, reservation);
+    // A pause, action change or retirement during the read invalidates any decision made before it.
+    const latest = readCursorsState(this.paths);
+    const safety = latest.actionSafety[agent];
+    if (latest.abandoned || latest.completed || safety?.actionId !== actionId ||
+      latest.agents[agent]?.actionId !== actionId || safety.resource.inFlight !== reservation) return latest;
+    const stale = (readAgentLifecycle(this.paths).agents[agent]?.sessionId ?? null) !== session;
+    const later = this.now();
+    return this.mutate(latest, (current) => this.applyCodexResult(start, current, agent, binding.accountId, result, stale, later));
+  }
+
+  private applyCodexResult(
+    start: StartState, current: CursorsState, agent: string, accountId: string,
+    result: Awaited<ReturnType<CodexQuotaReader>>, stale: boolean, now: string
+  ): CursorsState {
+    const safety = current.actionSafety[agent]!;
+    const actionId = safety.actionId;
+    const base = safety.resource;
+    let resource: Partial<typeof base> = { inFlight: null };
+    let state = current;
+    const terminal = (reason: string): void => {
+      appendJournal(this.paths, { type: "resource-observation", agent, actionId,
+        details: { outcome: "owner-required", reason, eventId: `resource-terminal:${actionId}` } }, now);
+      resource = { ...resource, terminal: reason, nextAt: null };
+    };
+    const existing = state.holds.find((hold) => hold.agent === agent && hold.actionId === actionId && hold.reason === "vendor-failure");
+    const holdOn = (evidence: ResourceEvidence, resetsAt: string | null): void => {
+      state = existing !== undefined
+        ? this.enrichMutation(state, existing.id, { evidence, resetsAt }, now)
+        : this.holdMutation(start, state, agent, "vendor-failure",
+          `vendor-failure:${safety.holdGeneration}:codex:${actionId}`, { evidence, resetsAt }, now).state;
+    };
+    const evidence = (failureClass: ResourceEvidence["failureClass"], windows: ResourceEvidence["windows"], detail: string | null): ResourceEvidence =>
+      ({ vendor: "codex", failureClass, classConfidence: failureClass === "auth-account" ? "reported" : "confirmed",
+        windows, detail, episodeId: `${actionId}:codex`, observedAt: now });
+
+    if (!result.reaped) terminal("the quota helper was not proved reaped");
+    else if (result.status === "failed") {
+      const failures = base.failures + 1;
+      resource = { ...resource, failures: Math.min(failures, 3) };
+      const delay = RESOURCE_RETRY_DELAYS_MS[failures - 1];
+      if (delay === undefined) terminal("three quota reads failed");
+      else resource = { ...resource, nextAt: new Date(Date.parse(now) + delay).toISOString() };
+    } else if (result.status === "identity" || result.limits.accountId !== accountId) {
+      // Never infer identity from another field or the coordinator's own default account.
+      const detail = result.status === "identity" ? "the bound CODEX_HOME has no ChatGPT account"
+        : result.limits.accountId === null ? "the limits carried no account id" : "the limits belong to a different account";
+      holdOn(evidence("auth-account", [], detail), null);
+      terminal("the bound Codex account could not be confirmed");
+    } else if (!stale) {
+      const assessment = assessCodexLimits(result.limits, now);
+      if (assessment.status === "exhausted") {
+        const classification = assessment.classification;
+        holdOn(evidence(classification.failureClass, classification.windows, null), classification.resetsAt);
+        const deadline = classification.resetsAt;
+        if (deadline !== null && !base.consumedDeadlines.includes(deadline)) {
+          // Consumed when scheduled: each epoch authorizes exactly one recheck.
+          resource = { ...resource, nextAt: new Date(Date.parse(deadline) + DEADLINE_RECHECK_MS).toISOString(),
+            consumedDeadlines: [...base.consumedDeadlines, deadline].slice(-16) };
+        } else terminal(deadline === null ? "no exact provider deadline" : "the provider deadline did not advance");
+      } else if (existing !== undefined && state.manualPaused) {
+        terminal("a manual pause arrived during the quota read");
+      } else if (existing !== undefined) {
+        const cleared = existing.evidence?.vendor === "codex" &&
+          existing.evidence.failureClass === "usage-window" && codexClearsBlockers(result.limits, existing.evidence.windows, now);
+        if (cleared) {
+          appendJournal(this.paths, { type: "hold-released", agent, actionId, details: {
+            hold: existing.id, automatic: true, eventId: `hold-release:${existing.id}`
+          } }, now);
+          state = releaseResourceHold(state, existing.id, now);
+        } else terminal("fresh limits did not affirmatively clear every blocked window");
+      }
+      // A clear read with no resource hold records nothing: zero credits with ordinary usage allowed is not a hold.
+    }
+    return this.setResource(state, agent, resource);
   }
 
   private logPhase(
@@ -2239,7 +2543,15 @@ export class CoordinatorRunLoop {
     const start = readStartState(this.paths);
     try {
       let cursors = readCursorsState(this.paths);
-      if (cursors.paused || cursors.abandoned || cursors.completed) return cursors;
+      if (cursors.abandoned || cursors.completed) return cursors;
+      if (cursors.paused) {
+        // Observation-only while held: no preparation, delivery, acceptance or publication.
+        for (const agent of cursors.activeRoster) {
+          if (!cursors.paused) break;
+          cursors = await this.observeResources(start, cursors, agent);
+        }
+        return cursors;
+      }
       const observations: EvidenceObservation[] = [];
 
       for (const dropped of cursors.droppedAgents) clearCompletion(agentRuntimePaths(this.paths, dropped).complete);
@@ -2251,6 +2563,8 @@ export class CoordinatorRunLoop {
       const completion = readCompletion(runtime.complete);
       if (this.tmux !== null && ["ordered", "intent", "verifying"].includes(cursor.status)) {
         cursors = this.ensureActionSafety(cursors, agent, cursor.actionId);
+        cursors = await this.observeResources(start, cursors, agent);
+        if (cursors.paused) return cursors;
         cursors = await this.observeUnfinished(start, cursors, agent, cursor.actionId);
         if (cursors.paused) return cursors;
       }
@@ -2440,16 +2754,24 @@ export class CoordinatorRunLoop {
 
   async run(signal?: AbortSignal): Promise<void> {
     const start = readStartState(this.paths);
-    const beforeEffects = readCursorsState(this.paths);
-    if (beforeEffects.completed || beforeEffects.abandoned || beforeEffects.paused) {
-      this.log(renderIssueReport(start, beforeEffects).trimEnd());
+    let cursors = readCursorsState(this.paths);
+    const finished = (state: CursorsState): boolean =>
+      state.completed || state.abandoned || (state.paused && !this.resourceWorkPending(start, state));
+    if (finished(cursors)) {
+      this.log(renderIssueReport(start, cursors).trimEnd());
       return;
     }
-    this.logPhase(start.issue, beforeEffects.issueCursor.stepId, beforeEffects.issueCursor.round);
-    await this.initializeEffects();
+    this.logPhase(start.issue, cursors.issueCursor.stepId, cursors.issueCursor.round);
+    // A resource-held runner stays alive only for authorized observation; it
+    // attaches or launches nothing until normal workflow authority returns.
+    let initialized = false;
     while (signal?.aborted !== true) {
-      const cursors = await this.runTick();
-      if (cursors.completed || cursors.abandoned || cursors.paused) {
+      if (!initialized && !readCursorsState(this.paths).paused) {
+        await this.initializeEffects();
+        initialized = true;
+      }
+      cursors = await this.runTick();
+      if (finished(cursors)) {
         this.log(renderIssueReport(start, cursors).trimEnd());
         return;
       }

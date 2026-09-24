@@ -457,3 +457,17 @@ export const removeIssueMailbox = (paths: IssueRuntimePaths): boolean => {
   rmSync(paths.completesIssueRoot, { recursive: true, force: true });
   return true;
 };
+
+export type ResourceBindingPaths = { root: string; record: string; lock: string };
+
+/**
+ * Owner-runtime record that serializes Codex quota reads for one
+ * home/account binding across every issue under this coord root (#140). The
+ * key is a digest, so neither the home path nor the account id is exposed in
+ * a file name.
+ */
+export const resourceBindingPaths = (coordRoot: string, codexHome: string, accountId: string): ResourceBindingPaths => {
+  const key = createHash("sha256").update(`${resolve(codexHome)}\0${accountId}`).digest("hex").slice(0, 32);
+  const root = containedPath(coordRoot, "resource-bindings");
+  return { root, record: containedPath(root, `codex-${key}.json`), lock: containedPath(root, `codex-${key}.json.lock`) };
+};
