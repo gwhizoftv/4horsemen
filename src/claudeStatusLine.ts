@@ -21,6 +21,8 @@ import type { EffectOptions } from "./setupWorkspace.js";
 
 /** Bytes of each render forwarded to coord; the owner command always gets all of them. */
 export const CLAUDE_STATUSLINE_TELEMETRY_BYTES = 65_536;
+/** Lifetime of one telemetry receiver before it is killed and reaped. */
+export const CLAUDE_STATUSLINE_RECEIVER_SECONDS = 5;
 
 /** Managed settings outrank the clone-local layer; a statusLine there shadows the tee. */
 export const DEFAULT_CLAUDE_MANAGED_SETTINGS = [
@@ -141,8 +143,18 @@ export const renderClaudeStatusLineWrapper = (cliEntry: string, clone: string, d
     "cat >\"$tmp\"",
     "if mkdir \"$lock\" 2>/dev/null; then",
     `  head -c ${CLAUDE_STATUSLINE_TELEMETRY_BYTES} "$tmp" >"$lock/payload" 2>/dev/null`,
-    `  ( ${receiver} <"$lock/payload"; rm -rf "$lock" ) </dev/null >/dev/null 2>&1 &`,
-    "elif [ -n \"$(find \"$lock\" -maxdepth 0 -mmin +1 2>/dev/null)\" ]; then",
+    // The receiver lives at most the bound, is always reaped, and only its own
+    // subshell releases the exclusion it holds.
+    "  (",
+    `    ${receiver} <"$lock/payload" & rpid=$!`,
+    "    echo \"$rpid\" >\"$lock/pid\"",
+    `    ( sleep ${CLAUDE_STATUSLINE_RECEIVER_SECONDS}; kill -9 "$rpid" ) & wpid=$!`,
+    "    wait \"$rpid\"",
+    "    kill \"$wpid\" 2>/dev/null",
+    "    [ \"$(cat \"$lock/pid\" 2>/dev/null)\" = \"$rpid\" ] && rm -rf \"$lock\"",
+    "  ) </dev/null >/dev/null 2>&1 &",
+    // An abandoned exclusion is reused only once its recorded receiver is provably gone.
+    "elif [ -n \"$(find \"$lock\" -maxdepth 0 -mmin +1 2>/dev/null)\" ] && ! kill -0 \"$(cat \"$lock/pid\" 2>/dev/null)\" 2>/dev/null; then",
     "  rm -rf \"$lock\"",
     "fi",
     `${run} <"$tmp"`,

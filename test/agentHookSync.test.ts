@@ -221,6 +221,27 @@ describe("Claude status-line tee", () => {
     expect(existsSync(claudeStatusLinePaths(f.clone).wrapper)).toBe(false);
   });
 
+  it("kills and reaps a receiver that never finishes, one at a time, without touching owner output", async () => {
+    const f = teeFixture();
+    writeFileSync(join(f.home, ".claude", "settings.json"), JSON.stringify({ statusLine: { type: "command", command: "echo shown" } }));
+    const pids = join(f.root, "receiver-pids");
+    writeFileSync(f.cliEntry, `require("fs").appendFileSync(${JSON.stringify(pids)}, process.pid + "\\n"); setInterval(() => {}, 1000);\n`);
+    syncClaudeStatusLine({ ...f.context, options: effectOptions(() => undefined, false) });
+    const lock = join(f.clone, ".claude", "coord-statusline.lock");
+    const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const wait = async (condition: () => boolean, ms: number): Promise<void> => {
+      for (const until = Date.now() + ms; !condition() && Date.now() < until;) await new Promise((resolve) => setTimeout(resolve, 50));
+    };
+    expect(f.run("{}\n")).toMatchObject({ stdout: "shown\n", status: 0 });
+    await wait(() => existsSync(pids), 3_000);
+    expect(f.run("{}\n")).toMatchObject({ stdout: "shown\n", status: 0 }); // no second receiver while one holds the lock
+    const pid = Number(readFileSync(pids, "utf8").trim());
+    expect(readFileSync(pids, "utf8").trim().split("\n")).toHaveLength(1);
+    await wait(() => !alive(pid) && !existsSync(lock), 8_000);
+    expect(alive(pid)).toBe(false);
+    expect(existsSync(lock)).toBe(false);
+  }, 15_000);
+
   it("prints nothing without an owner command and disables itself when precedence is not provable", () => {
     const f = teeFixture();
     const dry = effectOptions(() => undefined, true);

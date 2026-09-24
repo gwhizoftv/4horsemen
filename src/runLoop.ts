@@ -50,6 +50,7 @@ import { finishBinding, readBindingRecord, readCodexQuota, reserveBinding, type 
 import {
   assessCodexLimits,
   codexClearsBlockers,
+  codexHelperVersion,
   HOLDING_CLASSES,
   type ResourceEvidence
 } from "./resourceEvidence.js";
@@ -1255,11 +1256,11 @@ export class CoordinatorRunLoop {
       latest.agents[agent]?.actionId !== actionId || safety.resource.inFlight !== reservation) return latest;
     const stale = (readAgentLifecycle(this.paths).agents[agent]?.sessionId ?? null) !== session;
     const later = this.now();
-    return this.mutate(latest, (current) => this.applyCodexResult(start, current, agent, binding.accountId, result, stale, later));
+    return this.mutate(latest, (current) => this.applyCodexResult(start, current, agent, binding.accountId, binding.validatedVersion, result, stale, later));
   }
 
   private applyCodexResult(
-    start: StartState, current: CursorsState, agent: string, accountId: string,
+    start: StartState, current: CursorsState, agent: string, accountId: string, validatedVersion: string | undefined,
     result: Awaited<ReturnType<CodexQuotaReader>>, stale: boolean, now: string
   ): CursorsState {
     const safety = current.actionSafety[agent]!;
@@ -1297,6 +1298,9 @@ export class CoordinatorRunLoop {
       holdOn(evidence("auth-account", [], detail), null);
       terminal("the bound Codex account could not be confirmed");
     } else if (!stale) {
+      // Only an owner-validated CLI version, answering for the bound home, may release automatically.
+      const validated = validatedVersion !== undefined && result.helper.codexHome !== null &&
+        codexHelperVersion(result.helper.userAgent) === validatedVersion;
       const assessment = assessCodexLimits(result.limits, now);
       if (assessment.status === "exhausted") {
         const classification = assessment.classification;
@@ -1309,6 +1313,8 @@ export class CoordinatorRunLoop {
         } else terminal(deadline === null ? "no exact provider deadline" : "the provider deadline did not advance");
       } else if (existing !== undefined && state.manualPaused) {
         terminal("a manual pause arrived during the quota read");
+      } else if (existing !== undefined && !validated) {
+        terminal("automatic recovery is not validated for this Codex installation");
       } else if (existing !== undefined) {
         const cleared = existing.evidence?.vendor === "codex" &&
           existing.evidence.failureClass === "usage-window" && codexClearsBlockers(result.limits, existing.evidence.windows, now);

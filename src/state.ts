@@ -175,7 +175,13 @@ export const agentConfigSchema = z
           .string()
           .min(1)
           .refine((value) => isAbsolute(value) && resolve(value) === value, "codexHome must be an absolute canonical path"),
-        accountId: z.string().trim().min(1)
+        accountId: z.string().trim().min(1),
+        /**
+         * The Codex CLI version the owner validated live for automatic
+         * recovery. Without it, quota reads only enrich holds and every
+         * resource hold waits for the owner.
+         */
+        validatedVersion: z.string().regex(/^\d+\.\d+\.\d+$/).optional()
       })
       .strict()
       .optional()

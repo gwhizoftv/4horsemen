@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { resolve } from "node:path";
 import { closeSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import type { ResourceBindingPaths } from "./paths.js";
 import { CodexLimitsFormatError, parseCodexRateLimits, type CodexLimits } from "./resourceEvidence.js";
@@ -16,9 +17,12 @@ export const CODEX_QUOTA_MAX_BYTES = 256 * 1024;
 /** Part of the total lifetime reserved for SIGTERM→SIGKILL→close. */
 const SHUTDOWN_RESERVE_MS = 2_000;
 
+/** What the initialized helper reported about itself; null when it did not say. */
+export type CodexHelperIdentity = { userAgent: string | null; codexHome: string | null };
+
 export type CodexQuotaResult =
-  /** Fresh limits from an initialized helper that was proved reaped. */
-  | { status: "ok"; limits: CodexLimits; reaped: true }
+  /** Fresh limits from an initialized helper that was proved reaped, bracketed by identical account reads. */
+  | { status: "ok"; limits: CodexLimits; helper: CodexHelperIdentity; reaped: true }
   /** The bound home has no ChatGPT account the limits can be attributed to. */
   | { status: "identity"; error: string; reaped: boolean }
   | { status: "failed"; error: string; reaped: boolean };
@@ -47,6 +51,7 @@ export const readCodexQuota = (options: CodexQuotaOptions): Promise<CodexQuotaRe
     let settled = false;
     let bytes = 0;
     let buffer = "";
+    let helper: CodexHelperIdentity = { userAgent: null, codexHome: null };
     let account: unknown;
     let limits: unknown;
     let outcome: { status: "ok"; limits: CodexLimits } | { status: "identity" | "failed"; error: string } | null = null;
@@ -62,7 +67,7 @@ export const readCodexQuota = (options: CodexQuotaOptions): Promise<CodexQuotaRe
       child.removeAllListeners();
       const final = outcome ?? { status: "failed" as const, error: "helper ended without a result" };
       resolvePromise(final.status === "ok" && closed
-        ? { status: "ok", limits: final.limits, reaped: true }
+        ? { status: "ok", limits: final.limits, helper, reaped: true }
         : { status: final.status === "ok" ? "failed" : final.status,
           error: final.status === "ok" ? "helper was not proved reaped" : final.error, reaped: closed });
     };
@@ -88,11 +93,21 @@ export const readCodexQuota = (options: CodexQuotaOptions): Promise<CodexQuotaRe
       child.stdin.write(`${JSON.stringify(message)}\n`);
     };
 
-    const complete = (): void => {
-      if (account === undefined || limits === undefined) return;
-      const accountValue = (account as { account?: { type?: unknown } } | null)?.account;
-      if (accountValue === null || accountValue === undefined || accountValue.type !== "chatgpt") {
+    const accountOf = (value: unknown): { type?: unknown } | null | undefined =>
+      (value as { account?: { type?: unknown } } | null)?.account;
+    // The account is read before and after the limits: a change in between invalidates the snapshot.
+    const complete = (after: unknown): void => {
+      const before = accountOf(account);
+      if (before === null || before === undefined || before.type !== "chatgpt") {
         finish({ status: "identity", error: "the bound CODEX_HOME has no ChatGPT account" });
+        return;
+      }
+      if (JSON.stringify(accountOf(after)) !== JSON.stringify(before)) {
+        finish({ status: "identity", error: "the account changed during the quota read" });
+        return;
+      }
+      if (helper.codexHome !== null && resolve(helper.codexHome) !== resolve(options.codexHome)) {
+        finish({ status: "identity", error: "the helper answered for a different CODEX_HOME" });
         return;
       }
       try {
@@ -113,15 +128,21 @@ export const readCodexQuota = (options: CodexQuotaOptions): Promise<CodexQuotaRe
         return;
       }
       if (message.id === 1) {
+        const init = (message.result ?? {}) as { userAgent?: unknown; codexHome?: unknown };
+        helper = {
+          userAgent: typeof init.userAgent === "string" ? init.userAgent : null,
+          codexHome: typeof init.codexHome === "string" ? init.codexHome : null
+        };
         send({ method: "initialized" });
         send({ id: 2, method: "account/read", params: { refreshToken: false } });
-        send({ id: 3, method: "account/rateLimits/read" });
       } else if (message.id === 2) {
         account = message.result ?? null;
-        complete();
+        send({ id: 3, method: "account/rateLimits/read" });
       } else if (message.id === 3) {
         limits = message.result ?? null;
-        complete();
+        send({ id: 4, method: "account/read", params: { refreshToken: false } });
+      } else if (message.id === 4) {
+        complete(message.result ?? null);
       }
     };
 

@@ -145,6 +145,9 @@ describe("operational state", () => {
     expect(() => coordinatorConfigSchema.parse(withBinding({ codexQuota: { codexHome: "relative/.codex", accountId: "acct" } }))).toThrow();
     expect(() => coordinatorConfigSchema.parse(withBinding({ codexQuota: { codexHome: "/home/o/../o/.codex", accountId: "acct" } }))).toThrow();
     expect(() => coordinatorConfigSchema.parse(withBinding({ codexQuota: { codexHome: "/home/o/.codex", accountId: " " } }))).toThrow();
+    expect(coordinatorConfigSchema.parse(withBinding({ codexQuota: { codexHome: "/home/o/.codex", accountId: "acct", validatedVersion: "0.156.1" } }))
+      .agents[0]?.codexQuota?.validatedVersion).toBe("0.156.1");
+    expect(() => coordinatorConfigSchema.parse(withBinding({ codexQuota: { codexHome: "/home/o/.codex", accountId: "acct", validatedVersion: "latest" } }))).toThrow();
     expect(() => coordinatorConfigSchema.parse(withBinding({ id: "claude", launcher: "start-claude.sh" }))).toThrow(/only valid on the codex agent/);
   });
 

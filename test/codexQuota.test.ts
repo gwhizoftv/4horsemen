@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { BINDING_SPACING_MS, finishBinding, readBindingRecord, readCodexQuota, reserveBinding } from "../src/codexQuota.js";
 import { resourceBindingPaths } from "../src/paths.js";
-import { assessCodexLimits, codexClearsBlockers, parseCodexRateLimits } from "../src/resourceEvidence.js";
+import { assessCodexLimits, codexClearsBlockers, codexHelperVersion, parseCodexRateLimits } from "../src/resourceEvidence.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -57,11 +57,15 @@ process.stdin.on("data", (chunk) => {
     if (message.method === "initialize") {
       if (mode.exit) process.exit(3);
       if (mode.flood) process.stdout.write("x".repeat(300000));
-      out({ id: message.id, result: { userAgent: "fake" } });
+      out({ id: message.id, result: { userAgent: "codex_cli_rs/0.156.1 (fake)", codexHome: mode.helperHome ?? home, platformFamily: "unix", platformOs: "macos" } });
       out({ method: "thread/started", params: {} });
       if (mode.serverRequest) out({ id: 99, method: "account/chatgptAuthTokens/refresh", params: {} });
     }
-    if (message.method === "account/read") out({ id: message.id, result: { account: mode.account === undefined ? { type: "chatgpt", email: null, planType: "plus" } : mode.account, requiresOpenaiAuth: true } });
+    if (message.method === "account/read") {
+      const after = message.id === 4 && mode.accountAfter !== undefined;
+      const account = after ? mode.accountAfter : mode.account === undefined ? { type: "chatgpt", email: null, planType: "plus" } : mode.account;
+      out({ id: message.id, result: { account, requiresOpenaiAuth: true } });
+    }
     if (message.method === "account/rateLimits/read") out({ id: message.id, result: mode.limits });
   }
 });
@@ -95,8 +99,10 @@ describe("Codex App Server quota reads", () => {
   it("issues only the read-only allowlist over fragmented frames and reaps the helper", async () => {
     const server = fakeServer({ limits, fragment: true });
     const result = await readCodexQuota({ codexHome: server.codexHome, command: server.command });
-    expect(result).toMatchObject({ status: "ok", reaped: true, limits: { accountId: "acct-1", ordinaryUsageAllowed: true } });
-    expect(server.requests()).toEqual(["initialize", "initialized", "account/read", "account/rateLimits/read"]);
+    expect(result).toMatchObject({ status: "ok", reaped: true, limits: { accountId: "acct-1", ordinaryUsageAllowed: true },
+      helper: { userAgent: "codex_cli_rs/0.156.1 (fake)", codexHome: server.codexHome } });
+    // Identity is read on both sides of the limits snapshot.
+    expect(server.requests()).toEqual(["initialize", "initialized", "account/read", "account/rateLimits/read", "account/read"]);
     expect(server.alive()).toBe(false);
   });
 
@@ -123,11 +129,15 @@ describe("Codex App Server quota reads", () => {
   });
 
   it.each([
-    [{ type: "apiKey" }],
-    [null]
-  ])("reports a missing ChatGPT identity (%j) instead of inferring one", async (account) => {
-    const server = fakeServer({ limits, account });
-    expect(await readCodexQuota({ codexHome: server.codexHome, command: server.command })).toMatchObject({ status: "identity", reaped: true });
+    ["an API-key account", { account: { type: "apiKey" } }, /no ChatGPT account/],
+    ["no account", { account: null }, /no ChatGPT account/],
+    ["an account change during the read", { accountAfter: { type: "chatgpt", email: null, planType: "pro" } }, /changed during/],
+    ["a helper answering for another home", { helperHome: "/elsewhere/.codex" }, /different CODEX_HOME/]
+  ])("reports %s as an identity failure instead of inferring one", async (_label, mode, error) => {
+    const server = fakeServer({ limits, ...mode });
+    const result = await readCodexQuota({ codexHome: server.codexHome, command: server.command });
+    expect(result).toMatchObject({ status: "identity", reaped: true });
+    expect(result.status === "identity" && result.error).toMatch(error);
   });
 
   it("serializes one helper per binding across callers and spaces starts", () => {
@@ -202,5 +212,19 @@ describe("Codex rate-limit evidence", () => {
     expect(codexClearsBlockers(parseCodexRateLimits(response({ codex: bucket("codex", window(5, 4)) })), prior, now)).toBe(false);
     expect(codexClearsBlockers(parseCodexRateLimits(response({ other: bucket("other", window(5, 4), window(5, 9)) })), prior, now)).toBe(false);
     expect(codexClearsBlockers(parseCodexRateLimits(recovered), [], now)).toBe(false);
+    // Missing, null or malformed restriction fields and a changed window are not clearance.
+    const variant = (extra: Record<string, unknown>, omit?: string) => {
+      const entry: Record<string, unknown> = { ...bucket("codex", window(5, 4), window(30, 200, 10_080)), ...extra };
+      if (omit !== undefined) delete entry[omit];
+      return parseCodexRateLimits(response({ codex: entry }));
+    };
+    expect(codexClearsBlockers(variant({}, "spendControlReached"), prior, now)).toBe(false);
+    expect(codexClearsBlockers(variant({ spendControlReached: null }), prior, now)).toBe(false);
+    expect(codexClearsBlockers(variant({ spendControlReached: "no" }), prior, now)).toBe(false);
+    expect(codexClearsBlockers(variant({}, "rateLimitReachedType"), prior, now)).toBe(false);
+    expect(codexClearsBlockers(variant({ secondary: window(30, 200, 43_200) }), prior, now)).toBe(false);
+    expect(codexHelperVersion("codex_cli_rs/0.156.1 (Mac OS 26.4.0; arm64)")).toBe("0.156.1");
+    expect(codexHelperVersion("codex_cli_rs/0.156.1.2")).toBeNull();
+    expect(codexHelperVersion(null)).toBeNull();
   });
 });

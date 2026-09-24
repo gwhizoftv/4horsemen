@@ -179,9 +179,13 @@ clock text such as "resets 3:45pm" is never parsed.
   - after a failed read there are two retries (at +5 then +10 minutes);
   - each action gets six starts in total, and neither restarts nor your
     acknowledgments replenish them.
-  An automatic release requires a fresh read for the bound account that
-  affirmatively clears every previously blocked window. It removes only that
-  resource hold. A binding shared by two separately managed coord roots
+  Automatic release is off unless the binding names the Codex CLI version you
+  validated live: `"validatedVersion": "0.156.1"`. Even then, it needs a
+  fresh read in which every bucket explicitly reports no restriction and every
+  previously blocked window is back below its limit with the same duration.
+  The helper must report that version and the bound home, and the account must
+  be unchanged across the read. It removes only that resource hold. Without a
+  validated version, quota reads only enrich the hold and you release it. A binding shared by two separately managed coord roots
   cannot be serialized and is unsupported.
 - **Cursor** errors stay unknown and `aborted` is a cancellation. **Antigravity**
   keeps the vendor-independent protections only.

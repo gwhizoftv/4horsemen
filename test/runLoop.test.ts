@@ -216,13 +216,14 @@ const codexLimits = (weeklyPercent: number, resetHours: number, extra: Record<st
     rateLimitReachedType: weeklyPercent >= 100 ? "rate_limit_reached" : null,
     primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: hoursFromBase(2) },
     secondary: { usedPercent: weeklyPercent, windowDurationMins: 10_080, resetsAt: hoursFromBase(resetHours) } };
-  return { status: "ok" as const, reaped: true as const, limits: parseCodexRateLimits({ ordinaryUsageAllowed: weeklyPercent < 100,
+  return { status: "ok" as const, reaped: true as const, helper: { userAgent: "codex_cli_rs/0.156.1 (fake)", codexHome: "/owner/.codex" },
+    limits: parseCodexRateLimits({ ordinaryUsageAllowed: weeklyPercent < 100,
     rateLimits: bucket, rateLimitsByLimitId: buckets ?? { codex: bucket }, rateLimitResetCredits: null, accountId: "acct-1",
     rateLimitUpsell: null, ...extra }) };
 };
 
 /** A codex safety fixture bound to one owner-confirmed home/account, with a scripted reader. */
-const quotaFixture = (results: CodexQuotaResult[], during?: () => void) => {
+const quotaFixture = (results: CodexQuotaResult[], during?: () => void, validatedVersion: string | null = "0.156.1") => {
   const reads: string[] = [];
   let clock: () => string = () => "";
   const reader: CodexQuotaReader = async () => {
@@ -233,7 +234,8 @@ const quotaFixture = (results: CodexQuotaResult[], during?: () => void) => {
   const f = safetyFixture("codex", { codexQuota: reader });
   clock = f.now;
   const start = readStartState(f.paths);
-  writeFileSync(f.paths.start, JSON.stringify({ ...start, agents: [{ ...start.agents[0], codexQuota: { codexHome: "/owner/.codex", accountId: "acct-1" } }] }));
+  writeFileSync(f.paths.start, JSON.stringify({ ...start, agents: [{ ...start.agents[0], codexQuota: {
+    codexHome: "/owner/.codex", accountId: "acct-1", ...(validatedVersion === null ? {} : { validatedVersion }) } }] }));
   return { ...f, reads };
 };
 
@@ -371,6 +373,22 @@ describe("vendor resource evidence and recovery", () => {
       expect(after.actionSafety.codex).toEqual(held.actionSafety.codex && { ...held.actionSafety.codex,
         resource: after.actionSafety.codex?.resource }); // the send budget was never refilled
     }
+  });
+
+  it.each([
+    ["no owner-validated version", null, codexLimits(30, 200)],
+    ["a helper reporting another version", "0.156.1", { ...codexLimits(30, 200), helper: { userAgent: "codex_cli_rs/0.157.0", codexHome: "/owner/.codex" } }],
+    ["a helper that does not state its version", "0.156.1", { ...codexLimits(30, 200), helper: { userAgent: null, codexHome: "/owner/.codex" } }]
+  ])("keeps a cleared usage-window hold for the owner with %s", async (_label, validatedVersion, second) => {
+    const f = quotaFixture([codexLimits(100, 50), second], undefined, validatedVersion);
+    await f.tick();
+    await f.tick();
+    f.advance(hoursFromBase(50) * 1000 + 30_000 - Date.parse(f.now()));
+    const after = await f.tick();
+    expect(f.reads).toHaveLength(2);
+    expect(after.holds).toHaveLength(1);
+    expect(after.actionSafety.codex?.resource.terminal).toBe("automatic recovery is not validated for this Codex installation");
+    expect(readJournal(f.paths).filter((event) => event.type === "hold-released")).toHaveLength(0);
   });
 
   it.each([

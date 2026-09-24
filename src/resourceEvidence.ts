@@ -190,6 +190,8 @@ export type CodexBucket = {
   limitId: string;
   reachedType: string | null;
   spendControlReached: boolean | null;
+  /** Both restriction fields were present and well-typed; absence is never read as "no restriction". */
+  restrictionsReported: boolean;
   windows: ResourceWindow[];
 };
 
@@ -231,6 +233,8 @@ const parseCodexBucket = (fallbackId: string, value: unknown): CodexBucket => {
     limitId,
     reachedType: typeof reached === "string" && reached !== "" ? reached : null,
     spendControlReached: nullableBoolean(entry.spendControlReached),
+    restrictionsReported: Object.hasOwn(entry, "rateLimitReachedType") && (reached === null || typeof reached === "string") &&
+      typeof entry.spendControlReached === "boolean",
     windows: [parseCodexWindow(limitId, "primary", entry.primary), parseCodexWindow(limitId, "secondary", entry.secondary)]
       .filter((window) => window !== null)
   };
@@ -316,15 +320,24 @@ export const assessCodexLimits = (limits: CodexLimits, now: string): CodexAssess
 
 /**
  * Recovery needs complete, affirmative, fresh evidence: backend permission,
- * no blocker anywhere, and every previously blocked window present again below
- * its limit. Absent, null or malformed evidence is never clearance.
+ * every bucket reporting no reached type and spend control explicitly off,
+ * and every previously blocked window present again, with the same duration,
+ * below its limit. Absent, null or malformed evidence is never clearance.
  */
 export const codexClearsBlockers = (limits: CodexLimits, prior: readonly ResourceWindow[], now: string): boolean => {
   if (limits.ordinaryUsageAllowed !== true || prior.length === 0) return false;
   if (assessCodexLimits(limits, now).status !== "clear") return false;
+  if (limits.buckets.some((bucket) => !bucket.restrictionsReported || bucket.spendControlReached !== false || bucket.reachedType !== null)) {
+    return false;
+  }
   return prior.every((blocked) => {
     const bucket = limits.buckets.find((candidate) => candidate.limitId === blocked.limitId);
     const window = bucket?.windows.find((candidate) => candidate.window === blocked.window);
-    return window !== undefined && window.usedPercent !== null && window.usedPercent < 100;
+    return window !== undefined && window.windowDurationMins === blocked.windowDurationMins &&
+      window.usedPercent !== null && window.usedPercent < 100;
   });
 };
+
+/** The CLI version in an App Server `userAgent` (e.g. `codex_cli_rs/0.156.1 (...)`), if it states one. */
+export const codexHelperVersion = (userAgent: string | null): string | null =>
+  userAgent?.match(/\/(\d+\.\d+\.\d+)(?![.\d])/)?.[1] ?? null;
