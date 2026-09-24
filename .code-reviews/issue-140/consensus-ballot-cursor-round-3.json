@@ -1,0 +1,14 @@
+{
+  "actionId": "09add4af-9a7f-4d1f-9bb8-d2141cbedd7c",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "3be689a4e9d1d8272da59b9bee6ac9e30c45c17f806c6f0ec8f407670bab1d03",
+  "issue": 140,
+  "issueSessionId": "issue-140:5b2c3050bdb11e112fa890b7d064c4c65f5d6eb4",
+  "protocolVersion": 2,
+  "rationale": "Revision keys Codex blockers by window duration so different lengths cannot overwrite each other, requires known duration and explicit no-restriction fields to drop or clear, and holds the lifecycle lock through apply with matching tests.",
+  "responseSha256": "978792a9a73b44b6720e1abc088074e108f08f1946718af9008afa7dccc4c6cf",
+  "revisionCommitSha": "4cc6925478c51b8f0d264d543a3c26c5258556ac",
+  "round": 3
+}

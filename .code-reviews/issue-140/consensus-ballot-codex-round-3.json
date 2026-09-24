@@ -1,0 +1,14 @@
+{
+  "actionId": "951ef147-0536-4d0a-9c9c-a59324446f20",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "3be689a4e9d1d8272da59b9bee6ac9e30c45c17f806c6f0ec8f407670bab1d03",
+  "issue": 140,
+  "issueSessionId": "issue-140:5b2c3050bdb11e112fa890b7d064c4c65f5d6eb4",
+  "protocolVersion": 2,
+  "rationale": "Approve 4cc6925478c51b8f0d264d543a3c26c5258556ac because exact-pin probes confirm unresolved blockers survive missing restriction fields, omitted windows, and changed durations while complete matching evidence can clear, overflow remains visible to the terminal guard, and source review confirms lifecycle exclusion now spans validation through cursor mutation with focused regressions and the default-disabled live-recovery gate retained.",
+  "responseSha256": "1dad511fbc6e0e7e1fb8c50cb91891926cece223cdd5dbd12512e321a22852b8",
+  "revisionCommitSha": "4cc6925478c51b8f0d264d543a3c26c5258556ac",
+  "round": 3
+}

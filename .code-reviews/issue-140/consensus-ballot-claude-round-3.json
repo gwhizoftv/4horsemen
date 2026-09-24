@@ -1,0 +1,14 @@
+{
+  "actionId": "54cc4b83-5348-483b-b09a-2b2f69a1b9f3",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "3be689a4e9d1d8272da59b9bee6ac9e30c45c17f806c6f0ec8f407670bab1d03",
+  "issue": 140,
+  "issueSessionId": "issue-140:5b2c3050bdb11e112fa890b7d064c4c65f5d6eb4",
+  "protocolVersion": 2,
+  "rationale": "Revision 4cc69254 closes the round-2 revise findings: Codex blockers are keyed by window duration so a different-length blocker never overwrites an earlier one, a prior blocker is dropped only when its same-length window is below limit in a bucket explicitly reporting no restriction, and the lifecycle lock is held from the staleness check through the cursor mutation, each with a discriminating regression test and check:fast 621/621 plus e2e passing.",
+  "responseSha256": "a4027dbf5160a461dadc6c9d5b930a67af8911d7c405bb43f617002aebfcabe9",
+  "revisionCommitSha": "4cc6925478c51b8f0d264d543a3c26c5258556ac",
+  "round": 3
+}
