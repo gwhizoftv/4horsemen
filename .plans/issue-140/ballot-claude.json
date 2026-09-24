@@ -1,0 +1,46 @@
+{
+  "actionId": "85bc32bd-0f3f-4596-82fe-b9bc816bb311",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "d2cb132b2a9bb5ad81e4ccb5ec34cd5956d7588dab91ff1574b5cb3812ae645e",
+  "issue": 140,
+  "issueSessionId": "issue-140:5b2c3050bdb11e112fa890b7d064c4c65f5d6eb4",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "301e148296e001b97191b7e3a97e5fc98a8323f4",
+      "path": ".plans/issue-140/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "834e74bf431c9b12adf5706233181eb8b47b0658",
+      "path": ".plans/issue-140/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "76116be8f36c46d59c4558f704216bacb4e2b087",
+      "path": ".plans/issue-140/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "All three reviews converge on codex's plan as the safest base: it alone keeps run() alive for fenced observation-only rechecks, requires a byte-exact Claude tee with proven precedence, serializes per-binding Codex reads across issues with orphan reservations owner-only, and keeps Claude release owner-only absent proven fresh capacity, needing only the docs/coord-driver.md update as a correction.",
+  "responseSha256": "45fd932a8a8368d599ece49ef6c1ed66314a1e9899cbebe42987e9142190c940",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "9d8923e0ad6bafcbf97d8231f00c716dc02df92f",
+      "path": ".plans/issue-140/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "25fe30d620866b42ecdf2d52da09b33b78c33be7",
+      "path": ".plans/issue-140/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "2b6b25741013ef5267b08b982a5e3b810a57fd95",
+      "path": ".plans/issue-140/review.md"
+    }
+  ]
+}
