@@ -1,0 +1,13 @@
+{
+  "protocolVersion": 1,
+  "issue": 140,
+  "issueSessionId": "issue-140:5b2c3050bdb11e112fa890b7d064c4c65f5d6eb4",
+  "agent": "claude",
+  "inputSetHash": "1251928fa232987251a50743b37611d386306b384a315063670c986dca270a41",
+  "artifact": "revision-ready",
+  "round": 1,
+  "revisedBranchHead": "2a38391475273db828bfca10ff7dbd35911d1c56",
+  "basedOn": [
+    "2cfbcb43bcdfafb7ee2e44bbe6fcb94053b41ae6"
+  ]
+}
