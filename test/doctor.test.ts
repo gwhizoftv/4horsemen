@@ -87,6 +87,16 @@ describe("coord doctor", () => {
     expect(launcherFindings.map((item) => item.code)).not.toContain(DOCTOR_CODES.hooks);
   });
 
+  it("reports disabled Claude quota telemetry without changing anything", () => {
+    const { fixture, clone } = installed();
+    const launcher = join(clone, "start-claude.sh");
+    writeFileSync(launcher, `${readFileSync(launcher, "utf8")}\n# exec claude --settings /elsewhere.json\n`);
+    const local = readFileSync(join(clone, ".claude", "settings.local.json"), "utf8");
+    const telemetry = report(fixture).findings.filter((item) => item.class === "resourceTelemetry");
+    expect(telemetry).toEqual([expect.objectContaining({ code: DOCTOR_CODES.resourceTelemetry, message: expect.stringContaining("--settings") })]);
+    expect(readFileSync(join(clone, ".claude", "settings.local.json"), "utf8")).toBe(local);
+  });
+
   it("reports missing CLI lifecycle hooks separately from Git hooks", () => {
     const { fixture, clone } = installed();
     rmSync(join(clone, ".claude", "settings.local.json"));

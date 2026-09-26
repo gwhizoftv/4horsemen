@@ -55,9 +55,33 @@ export const renderIssueReport = (
   if (cursors.manualPaused) lines.push("Manual pause: active (plain coord resume clears only this pause).");
   for (const hold of cursors.holds) {
     const sends = cursors.actionSafety[hold.agent]?.sends ?? 0;
-    lines.push(`Hold ${hold.id}: ${hold.agent}, ${hold.reason}; cause unknown, reset unknown, retry owner: ${hold.retryOwner}; sends ${sends}/4.`);
+    const evidence = hold.evidence ?? null;
+    const cause = evidence === null ? "cause unknown" : `cause ${evidence.failureClass} (${evidence.vendor}, ${evidence.classConfidence})`;
+    // An exact provider epoch is when to recheck, never a promise of availability.
+    const reset = hold.resetsAt === null ? "reset unknown" : `provider reset ${hold.resetsAt} (recheck time, not guaranteed availability)`;
+    lines.push(`Hold ${hold.id}: ${hold.agent}, ${hold.reason}; ${cause}, ${reset}, retry owner: ${hold.retryOwner}; sends ${sends}/4.`);
+    if (evidence !== null && evidence.windows.length > 0) {
+      lines.push(`Blocked windows: ${evidence.windows.map((window) =>
+        `${window.limitId}/${window.window} ${window.usedPercent ?? "?"}% (resets ${window.resetsAt ?? "unknown"})`).join("; ")}.`);
+    }
+    if (evidence?.detail !== null && evidence?.detail !== undefined) lines.push(`Vendor detail (redacted): ${evidence.detail}`);
     lines.push(`Recovery: inspect the agent, then coord resume --issue ${start.issue} --hold ${hold.id}` +
       (hold.reason === "nudge-loop" ? " --reset-nudge-budget" : ""));
+  }
+  for (const agent of new Set(cursors.holds.map((hold) => hold.agent))) {
+    const safety = cursors.actionSafety[agent];
+    const resource = safety?.resource;
+    if (resource === undefined || (resource.starts === 0 && resource.nextAt === null && resource.terminal === null)) continue;
+    if (resource.terminal !== null) {
+      lines.push(`Resource observation (${agent}): stopped (${resource.terminal}); owner release required.`);
+      if (resource.terminal.includes("reaped")) {
+        lines.push(`Before any further quota read, confirm no codex app-server is running for the bound home, then remove its record under ${start.coordRoot}/resource-bindings/.`);
+      }
+    } else if (resource.nextAt !== null) {
+      lines.push(`Resource observation (${agent}): next automatic check at ${resource.nextAt}; quota reads ${resource.starts}/6.`);
+    } else {
+      lines.push(`Resource observation (${agent}): none scheduled; owner release required. Quota reads ${resource.starts}/6.`);
+    }
   }
   if (url !== null) lines.push(`Pull request: ${url}`);
   else if (pin !== null && cursors.publication.status === "not-required") {

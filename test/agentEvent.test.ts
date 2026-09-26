@@ -12,6 +12,7 @@ import {
 } from "../src/agentLifecycle.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { initializeOperationalState, readJournal } from "../src/state.js";
+import { classifyClaudeFailure, classifyCursorStatus, parseClaudeRateLimits } from "../src/resourceEvidence.js";
 
 const actionId = "11111111-1111-4111-8111-111111111111";
 const digest = "a".repeat(64);
@@ -117,6 +118,83 @@ describe("vendor lifecycle event normalization", () => {
     ).toMatchObject({ kind: "failed", backgroundActive: false });
   });
 
+  it("classifies Claude failures without inferring a deadline from anything but a fresh matching epoch", () => {
+    const now = "2026-09-22T12:00:00.000Z";
+    const epoch = (hours: number) => Date.parse(now) / 1000 + hours * 3600;
+    const fields = (error: string, errorDetails: string | null = null) => ({ error, errorDetails, lastAssistantMessage: null });
+    const telemetry = (fiveHour: number, sevenDay: number, observedAt = now, sessionId = "s1") => ({
+      sessionId, observedAt,
+      limits: parseClaudeRateLimits({ rate_limits: {
+        five_hour: { used_percentage: fiveHour, resets_at: epoch(2) },
+        seven_day: { used_percentage: sevenDay, resets_at: epoch(50) }
+      } })!
+    });
+    const classify = (error: string, details: string | null, cached: ReturnType<typeof telemetry> | null) =>
+      classifyClaudeFailure(fields(error, details), cached, { sessionId: "s1", now });
+    expect(classify("authentication_failed", null, null).failureClass).toBe("auth-account");
+    expect(classify("billing_error", null, telemetry(100, 0))).toMatchObject({ failureClass: "billing", resetsAt: null });
+    expect(classify("server_error", null, null).failureClass).toBe("transport");
+    expect(classify("invalid_request", "Prompt is too long", null).failureClass).toBe("context-overflow");
+    expect(classify("invalid_request", "bad tool schema", null).failureClass).toBe("unknown");
+    expect(classify("max_output_tokens", null, null).failureClass).toBe("unknown");
+    // A typed rate limit alone, stale or foreign telemetry, or rendered clock text proves nothing.
+    expect(classify("rate_limit", "Limit reached · resets 3:45pm", null)).toMatchObject({ failureClass: "unknown", resetsAt: null });
+    expect(classify("rate_limit", null, telemetry(100, 0, "2026-09-22T11:54:00.000Z"))).toMatchObject({ failureClass: "unknown", resetsAt: null });
+    expect(classify("rate_limit", null, telemetry(100, 0, now, "other"))).toMatchObject({ failureClass: "unknown", resetsAt: null });
+    expect(classify("rate_limit", null, telemetry(40, 10)).failureClass).toBe("throttled");
+    expect(classify("rate_limit", null, telemetry(100, 20))).toMatchObject({
+      failureClass: "usage-window", classConfidence: "confirmed", resetsAt: new Date(epoch(2) * 1000).toISOString()
+    });
+    // Both applicable windows are kept; the later one governs the recheck.
+    const both = classify("rate_limit", null, telemetry(100, 100));
+    expect(both.windows.map((window) => window.limitId)).toEqual(["five_hour", "seven_day"]);
+    expect(both.resetsAt).toBe(new Date(epoch(50) * 1000).toISOString());
+    // A model-family restriction never borrows a general window's epoch.
+    expect(classify("rate_limit", "Opus weekly limit reached", telemetry(100, 0))).toMatchObject({ failureClass: "usage-window", resetsAt: null });
+    expect(parseClaudeRateLimits({ rate_limits: { five_hour: { used_percentage: 100, resets_at: epoch(2) * 1000 } } })?.fiveHour?.resetsAt).toBeNull();
+    expect(classifyCursorStatus("aborted")).toBe("cancelled");
+    expect(classifyCursorStatus("error")).toBe("unknown");
+  });
+
+  it("keeps actual Claude failure fields, redacted, and never journals or counts status renders as activity", () => {
+    const { clone, paths } = runtimeFixture("claude");
+    orderAgentAction(paths, "claude", actionId, digest, "2026-09-22T11:59:00.000Z");
+    markActionInjected(paths, "claude", actionId, digest, "2026-09-22T11:59:00.000Z");
+    const route = (raw: Record<string, unknown>, now: string, explicitEvent?: string) =>
+      handleAgentEvent({ vendor: "claude", clone, environmentIssue: "86", raw, now, ...(explicitEvent === undefined ? {} : { explicitEvent }) });
+    route({ hook_event_name: "UserPromptSubmit", session_id: "s1", prompt_id: "t1",
+      prompt: `Read and execute coordinator action ${actionId} digest ${digest} at ${paths.issueRoot}/agents/claude/action.md` }, "2026-09-22T12:00:00.000Z");
+    const before = readAgentLifecycle(paths).agents.claude!;
+    const journal = readJournal(paths).length;
+    const resetsAt = Date.parse("2026-09-22T15:00:00.000Z") / 1000;
+    const render = { session_id: "s1", cwd: clone, model: { id: "x" }, rate_limits: { five_hour: { used_percentage: 100, resets_at: resetsAt } } };
+    for (let index = 0; index < 100; index++) route(render, `2026-09-22T12:0${index < 50 ? 1 : 3}:00.000Z`, "status-line");
+    const cached = readAgentLifecycle(paths).agents.claude!;
+    expect(readJournal(paths)).toHaveLength(journal);
+    expect(cached).toMatchObject({ execution: before.execution, lastEventAt: before.lastEventAt, sessionId: "s1" });
+    // An identical re-render does not refresh the original observation age.
+    expect(cached.claudeRateLimits).toMatchObject({ sessionId: "s1", observedAt: "2026-09-22T12:01:00.000Z" });
+    route({ session_id: "other", rate_limits: render.rate_limits }, "2026-09-22T12:04:00.000Z", "status-line");
+    expect(readAgentLifecycle(paths).agents.claude!.claudeRateLimits?.sessionId).toBe("s1");
+
+    const failure = { hook_event_name: "StopFailure", session_id: "s1", error: "rate_limit",
+      error_details: "\u001b[31mBearer abcdefghijklmnop\u001b[0m for owner@example.com · resets 3:45pm", last_assistant_message: "API Error: sk-ant-1234567890abcdef" };
+    route(failure, "2026-09-22T12:05:00.000Z");
+    const failed = readAgentLifecycle(paths).agents.claude!.lastFailure!;
+    expect(failed).toMatchObject({
+      actionId, sessionId: "s1", error: "rate_limit", resetsAt: "2026-09-22T15:00:00.000Z",
+      evidence: { vendor: "claude", failureClass: "usage-window", classConfidence: "confirmed" }
+    });
+    expect(JSON.stringify(failed)).not.toMatch(/abcdefghijklmnop|owner@example.com|sk-ant/);
+    expect(`${failed.errorDetails}`).not.toContain(String.fromCharCode(27));
+    expect(failed.errorDetails).toContain("Bearer [redacted]");
+    expect(readJournal(paths).at(-1)).toMatchObject({ type: "agent-lifecycle", details: { failureClass: "usage-window", correlated: true } });
+    const afterFailure = readJournal(paths).length;
+    route({ ...failure, error_details: "reworded" }, "2026-09-22T12:06:00.000Z");
+    expect(readJournal(paths)).toHaveLength(afterFailure);
+    expect(readAgentLifecycle(paths).agents.claude!.lastFailure?.evidence.observedAt).toBe(failed.evidence.observedAt);
+  });
+
   it("correlates Cursor conversation and generation identifiers", () => {
     expect(
       normalizeAgentEvent("cursor", {
@@ -139,7 +217,10 @@ describe("vendor lifecycle event normalization", () => {
         generation_id: "generation-1",
         status: "error"
       })
-    ).toMatchObject({ kind: "failed" });
+    ).toMatchObject({ kind: "failed", failure: { vendor: "cursor", status: "error" } });
+    expect(
+      normalizeAgentEvent("cursor", { hook_event_name: "stop", conversation_id: "conversation-1", status: "aborted" })
+    ).toMatchObject({ kind: "failed", failure: { status: "aborted" } });
   });
 
   it("normalizes Cursor analytics hooks for tools and token usage", () => {

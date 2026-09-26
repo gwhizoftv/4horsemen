@@ -12,7 +12,7 @@ import {
   unlinkSync,
   writeFileSync
 } from "node:fs";
-import { dirname, relative } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { z } from "zod";
 import {
   actionIdSchema,
@@ -24,6 +24,7 @@ import {
   issueSessionIdSchema
 } from "./protocol.js";
 import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.js";
+import { resourceEvidenceSchema } from "./resourceEvidence.js";
 import {
   DEFAULT_MAX_REVISION_ROUNDS,
   DEFAULT_PR_POLICY,
@@ -163,7 +164,27 @@ export const agentConfigSchema = z
     /** tmux send-keys after the nudge text (e.g. Enter or C-j). */
     nudgeSubmit: z.array(z.string().min(1)).optional(),
     /** macOS Terminal.app settings-set (profile) name for owner attach windows. */
-    terminalProfile: z.string().min(1).optional()
+    terminalProfile: z.string().min(1).optional(),
+    /**
+     * Owner-confirmed Codex quota binding (#140). Explicit configuration is the
+     * confirmation: the coordinator never discovers a home or account itself.
+     */
+    codexQuota: z
+      .object({
+        codexHome: z
+          .string()
+          .min(1)
+          .refine((value) => isAbsolute(value) && resolve(value) === value, "codexHome must be an absolute canonical path"),
+        accountId: z.string().trim().min(1),
+        /**
+         * The Codex CLI version the owner validated live for automatic
+         * recovery. Without it, quota reads only enrich holds and every
+         * resource hold waits for the owner.
+         */
+        validatedVersion: z.string().regex(/^\d+\.\d+\.\d+$/).optional()
+      })
+      .strict()
+      .optional()
   })
   .strict();
 
@@ -211,6 +232,11 @@ export const coordinatorConfigSchema = z
   .strict()
   .superRefine((config, context) => {
     const ids = config.agents.map((agent) => agent.id);
+    for (const [index, agent] of config.agents.entries()) {
+      if (agent.codexQuota !== undefined && agent.id !== "codex") {
+        context.addIssue({ code: "custom", message: "codexQuota is only valid on the codex agent", path: ["agents", index, "codexQuota"] });
+      }
+    }
     if (new Set(ids).size !== ids.length) {
       context.addIssue({ code: "custom", message: "agent ids must be unique", path: ["agents"] });
     }
@@ -520,6 +546,27 @@ export const ballotBatchSchema = z
   })
   .strict();
 
+/**
+ * Per-action resource observation budget (#140). Owner acknowledgment of a
+ * hold keeps it: only genuinely new work starts a new episode.
+ */
+const resourceObservationSchema = z.object({
+  starts: z.number().int().min(0).max(6).default(0),
+  failures: z.number().int().min(0).max(3).default(0),
+  /** Reservation persisted before any helper spawn; non-null across a crash means unknown outcome. */
+  inFlight: z.string().uuid().nullable().default(null),
+  nextAt: timestampSchema.nullable().default(null),
+  consumedDeadlines: z.array(timestampSchema).max(16).default([]),
+  /** Automatic observation is over for this action; only the owner can proceed. */
+  terminal: z.string().min(1).nullable().default(null),
+  /** Last failure episode turned into hold evidence; an owner release must not re-hold on it. */
+  episode: z.string().min(1).max(512).nullable().default(null)
+}).strict();
+
+export const emptyResourceObservation = (): z.infer<typeof resourceObservationSchema> => ({
+  starts: 0, failures: 0, inFlight: null, nextAt: null, consumedDeadlines: [], terminal: null, episode: null
+});
+
 const actionSafetySchema = z.object({
   actionId: z.string().uuid(),
   sends: z.number().int().nonnegative().default(0),
@@ -529,7 +576,8 @@ const actionSafetySchema = z.object({
   holdGeneration: z.number().int().nonnegative().default(0),
   observationChecks: z.number().int().nonnegative().default(0),
   nextObservationAt: timestampSchema.nullable().default(null),
-  activityAt: timestampSchema
+  activityAt: timestampSchema,
+  resource: resourceObservationSchema.default(emptyResourceObservation)
 }).strict();
 
 const holdSchema = z.object({
@@ -537,13 +585,15 @@ const holdSchema = z.object({
   agent: agentIdSchema,
   actionId: z.string().uuid(),
   sessionId: z.string().nullable(),
-  reason: z.enum(["nudge-loop", "delivery-uncertain", "harness-gone", "unobservable", "vendor-wait"]),
+  reason: z.enum(["nudge-loop", "delivery-uncertain", "harness-gone", "unobservable", "vendor-wait", "vendor-failure"]),
   evidenceId: z.string(),
   observedAt: timestampSchema,
-  resetsAt: z.null(),
-  confidence: z.literal("unknown"),
-  retryOwner: z.enum(["owner", "vendor"])
-}).strict();
+  /** Provider epoch only; `confidence` is deadline confidence, never cause confidence. */
+  resetsAt: timestampSchema.nullable(),
+  confidence: z.enum(["unknown", "exact"]),
+  retryOwner: z.enum(["owner", "vendor"]),
+  evidence: resourceEvidenceSchema.nullable().default(null)
+}).strict().refine((hold) => (hold.confidence === "exact") === (hold.resetsAt !== null), "exact confidence requires a provider reset epoch");
 
 export const cursorsStateSchema = z
   .object({
@@ -597,6 +647,8 @@ export const cursorsStateSchema = z
     manualPaused: z.boolean().default(false),
     holds: z.array(holdSchema).default([]),
     actionSafety: z.record(agentIdSchema, actionSafetySchema).default({}),
+    /** Codex bindings whose one-time initial check was already triggered (#140). */
+    resourceBindingChecks: z.record(agentIdSchema, timestampSchema).default({}),
     abandoned: z.boolean(),
     completed: z.boolean(),
     agents: z.record(agentIdSchema, agentCursorSchema),
@@ -618,6 +670,8 @@ const journalEventTypeSchema = z.enum([
   "nudge-deferred",
   "hold-created",
   "hold-released",
+  "hold-updated",
+  "resource-observation",
   "intent-seen",
   "verify-result",
   "gate-advanced",
@@ -1139,6 +1193,25 @@ export const releaseHold = (cursors: CursorsState, id: string, resetBudget: bool
       observationChecks: 0, nextObservationAt: null, activityAt: now
     } }
   });
+};
+
+/**
+ * Automatic release of one cleared resource hold (#140). Unlike the owner's
+ * `releaseHold`, it leaves action safety verbatim — sends, last send, any
+ * uncertain reservation, hold generation and the observation budget — and it
+ * cannot touch manual pause or any other hold.
+ */
+export const releaseResourceHold = (cursors: CursorsState, id: string, now: string): CursorsState => {
+  const hold = cursors.holds.find((entry) => entry.id === id);
+  if (hold === undefined) throw new Error(`Unknown hold ${id}.`);
+  if (cursors.abandoned || cursors.completed || cursors.agents[hold.agent]?.actionId !== hold.actionId) {
+    throw new Error("Cannot release a hold for retired work.");
+  }
+  if (hold.reason !== "vendor-failure" || hold.evidence?.failureClass !== "usage-window") {
+    throw new Error("Only a usage-window resource hold can be released automatically.");
+  }
+  const holds = cursors.holds.filter((entry) => entry.id !== id);
+  return cursorsStateSchema.parse({ ...cursors, holds, paused: cursors.manualPaused || holds.length > 0, updatedAt: now });
 };
 
 /**

@@ -336,6 +336,22 @@ describe("coord uninstall", () => {
     expect(existsSync(result.configPath)).toBe(false);
   });
 
+  it("installs the Claude status-line tee in the ignored clone layer and removes it on uninstall", () => {
+    const fixture = product();
+    const home = join(fixture.workspaceRoot, "owner-home");
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ statusLine: { type: "command", command: "echo owner" } }));
+    const clone = installOnce(fixture, { home }).clones[0] as string;
+    const local = join(clone, ".claude", "settings.local.json");
+    const settings = JSON.parse(readFileSync(local, "utf8")) as { statusLine?: { command?: string }; hooks?: unknown };
+    expect(settings.statusLine?.command).toBe(join(clone, ".claude", "coord-statusline.sh"));
+    expect(readFileSync(join(clone, ".claude", "coord-statusline.sh"), "utf8")).toContain("'echo owner'");
+    expect(git(clone, "status", "--porcelain")).toBe("");
+    uninstallOnce(fixture, { home });
+    expect(existsSync(join(clone, ".claude", "coord-statusline.sh"))).toBe(false);
+    expect(existsSync(local) && "statusLine" in (JSON.parse(readFileSync(local, "utf8")) as object)).toBe(false);
+  });
+
   it("removes the managed product ignore block only when the install wrote it", () => {
     const written = product();
     writeFileSync(join(written.productRoot, ".gitignore"), "# product's own\nbuild/\n");

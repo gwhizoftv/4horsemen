@@ -26,7 +26,7 @@ export const agentLifecycleHookPath = (clone: string, agent: string): string | n
   }
 };
 
-const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
+export const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
 
 export const renderAgentLifecycleHookCommand = (
   cliEntry: string,
@@ -38,11 +38,11 @@ export const renderAgentLifecycleHookCommand = (
     resolve(cliEntry)
   )} agent-event --vendor ${vendor} --clone ${shellQuote(resolve(clone))} --event ${shellQuote(event)}`;
 
-type JsonObject = Record<string, unknown>;
-const isObject = (value: unknown): value is JsonObject =>
+export type JsonObject = Record<string, unknown>;
+export const isObject = (value: unknown): value is JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-const readDocument = (path: string): JsonObject => {
+export const readDocument = (path: string): JsonObject => {
   if (!existsSync(path)) return {};
   let parsed: unknown;
   try {

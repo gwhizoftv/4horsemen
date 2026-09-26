@@ -1,4 +1,5 @@
 import { existsSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { git, localConfigGet, worktreeRoot } from "./gitExec.js";
 import { canonicalSourceDigest, inspectCloneHooks, readHookManifest } from "./hookSync.js";
@@ -9,6 +10,7 @@ import { readConfig, type CoordinatorConfig } from "./state.js";
 import { resolveWorkspaceLocation } from "./workspace.js";
 import { inspectAgentLifecycleHooks } from "./agentHookSync.js";
 import { cloneAgentsProtocolState } from "./agentsProtocol.js";
+import { inspectClaudeStatusLine } from "./claudeStatusLine.js";
 
 /**
  * `coord doctor` — say exactly which part of an install is wrong.
@@ -32,7 +34,8 @@ export const DOCTOR_CODES = {
   verifyUndeclared: 18,
   cloneMissing: 19,
   lifecycleHooks: 20,
-  agentsProtocol: 21
+  agentsProtocol: 21,
+  resourceTelemetry: 22
 } as const;
 
 export type DoctorClass = keyof typeof DOCTOR_CODES;
@@ -131,6 +134,7 @@ const checkClone = (input: {
   configPath: string;
   agent: CoordinatorConfig["agents"][number];
   installDigest: string | null;
+  home: string | null;
 }): DoctorFinding[] => {
   const findings: DoctorFinding[] = [];
   const clone = cloneOf(input.configPath, input.agent.root);
@@ -378,6 +382,24 @@ const checkClone = (input: {
     }
   }
 
+  // Resource telemetry is read-only here: no probe, no mutation, no owner command or account id printed.
+  if (input.agent.id === "claude" && stamp !== undefined) {
+    const tee = inspectClaudeStatusLine({
+      clone, home: input.home, cliEntry: stamp.cliEntry, launcher: join(clone, input.agent.launcher)
+    });
+    if (tee.kind === "missing") {
+      findings.push(finding("resourceTelemetry", tee.path, "The Claude status-line tee is not installed, so quota windows are never observed.", "Re-run coord install."));
+    } else if (tee.kind === "modified" || tee.kind === "disabled") {
+      findings.push(finding("resourceTelemetry", tee.path, `Claude quota telemetry is ${tee.kind}: ${tee.reason}.`,
+        tee.kind === "modified" ? "Re-run coord install to follow the owner's current status line." :
+          "Holds keep an unknown reset and owner release; resolve the reported ambiguity to enable telemetry."));
+    }
+  }
+  if (input.agent.codexQuota !== undefined && !existsSync(input.agent.codexQuota.codexHome)) {
+    findings.push(finding("resourceTelemetry", clone, "The configured codexQuota home does not exist, so quota reads cannot confirm the bound account.",
+      "Point codexQuota.codexHome at the agent's CODEX_HOME, or remove the binding."));
+  }
+
   const launcher = join(clone, input.agent.launcher);
   if (!existsSync(launcher)) {
     findings.push(finding("launcher", launcher, "The agent launcher is missing.", "Re-run coord install."));
@@ -430,6 +452,8 @@ const checkDeclarations = (config: CoordinatorConfig, configPath: string, cwd: s
 
 export type DoctorOptions = {
   coordRoot: string;
+  /** Owner home for Claude's user settings layer; tests pass their own. */
+  home?: string | null;
   productRoot?: string;
   project?: string;
 };
@@ -477,7 +501,9 @@ export const doctor = (options: DoctorOptions): DoctorReport => {
 
   const findings = [
     ...checkInstallRoot(config),
-    ...config.agents.flatMap((agent) => checkClone({ config, configPath, agent, installDigest })),
+    ...config.agents.flatMap((agent) => checkClone({
+      config, configPath, agent, installDigest, home: options.home === undefined ? homedir() : options.home
+    })),
     ...checkStartCompatibility(config, configPath),
     ...checkDeclarations(config, configPath, dirname(configPath))
   ];

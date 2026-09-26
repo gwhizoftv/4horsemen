@@ -1396,6 +1396,19 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     expect(errors.join("")).toContain("agent-event");
   });
 
+  it("drops an oversized status-line payload before parsing and still answers the tee", async () => {
+    const output: string[] = [];
+    const errors: string[] = [];
+    const payload = JSON.stringify({ session_id: "s", padding: "x".repeat(1024 * 1024) });
+    expect(
+      await runCli(["agent-event", "--vendor", "claude", "--event", "status-line"], {
+        io: { stdin: () => payload, stdout: (message) => output.push(message), stderr: (message) => errors.push(message) }
+      })
+    ).toBe(0);
+    expect(output.join("")).toBe("{}\n");
+    expect(errors.join("")).toContain("exceeds the agent-event bound");
+  });
+
   it("returns a non-continuing response even when an Antigravity Stop observation is rejected", async () => {
     const output: string[] = [];
     expect(

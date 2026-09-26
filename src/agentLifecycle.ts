@@ -2,6 +2,17 @@ import { closeSync, existsSync, readFileSync, unlinkSync } from "node:fs";
 import { z } from "zod";
 import { digestSchema, agentIdSchema } from "./protocol.js";
 import type { IssueRuntimePaths } from "./paths.js";
+import {
+  classifyClaudeFailure,
+  classifyCursorStatus,
+  DIAGNOSTIC_MAX_BYTES,
+  redactDiagnostic,
+  resourceEvidenceSchema,
+  resourceWindowSchema,
+  type ClaudeRateLimits,
+  type Classification,
+  type FailureFields
+} from "./resourceEvidence.js";
 import { acquireExclusiveLock, atomicWriteJson, readStartState } from "./state.js";
 
 /** Independent from the workflow runtime format: hook traffic is not workflow authority. */
@@ -26,6 +37,33 @@ export const lifecycleActionSchema = z
   })
   .strict();
 
+const diagnosticSchema = z.string().max(DIAGNOSTIC_MAX_BYTES).nullable();
+
+/** Latest correlated vendor failure; `actionId: null` is advisory and cannot hold or release work. */
+export const lifecycleFailureSchema = z
+  .object({
+    evidence: resourceEvidenceSchema,
+    resetsAt: timestampSchema.nullable(),
+    error: diagnosticSchema,
+    errorDetails: diagnosticSchema,
+    lastAssistantMessage: diagnosticSchema,
+    sessionId: z.string().min(1).nullable(),
+    turnId: z.string().min(1).nullable(),
+    actionId: z.string().uuid().nullable()
+  })
+  .strict();
+
+/** Claude statusline windows; `observedAt` is first receipt of this exact identity, not the latest render. */
+export const claudeRateLimitsSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    identity: z.string().max(1024),
+    observedAt: timestampSchema,
+    fiveHour: resourceWindowSchema.nullable(),
+    sevenDay: resourceWindowSchema.nullable()
+  })
+  .strict();
+
 export const agentLifecycleEntrySchema = z
   .object({
     action: lifecycleActionSchema.nullable(),
@@ -41,6 +79,8 @@ export const agentLifecycleEntrySchema = z
     degradedCause: z.enum(["hooks-never-seen", "correlation-lagged"]).nullable().default(null),
     lastEvent: z.string().min(1).nullable(),
     lastEventAt: timestampSchema.nullable(),
+    lastFailure: lifecycleFailureSchema.nullable().default(null),
+    claudeRateLimits: claudeRateLimitsSchema.nullable().default(null),
     updatedAt: timestampSchema
   })
   .strict();
@@ -58,8 +98,13 @@ export type LifecycleAction = z.infer<typeof lifecycleActionSchema>;
 export type AgentLifecycleEntry = z.infer<typeof agentLifecycleEntrySchema>;
 export type AgentLifecycleState = z.infer<typeof agentLifecycleStateSchema>;
 
+export type LifecycleFailure = z.infer<typeof lifecycleFailureSchema>;
+
+/** Raw vendor failure fields, sanitized before persistence. */
+export type ObservedFailure = FailureFields & { vendor: "claude" | "cursor"; status?: string };
+
 export type LifecycleObservation = {
-  kind: "session-start" | "session-end" | "prompt-submitted" | "working" | "stopped" | "failed" | "status";
+  kind: "session-start" | "session-end" | "prompt-submitted" | "working" | "stopped" | "failed" | "status" | "telemetry";
   eventName: string;
   sessionId?: string;
   turnId?: string;
@@ -71,6 +116,9 @@ export type LifecycleObservation = {
   backgroundActive?: boolean;
   /** Vendor proves a fully-idle stop even without a prompt-submit hook. */
   allowInjectedIdle?: boolean;
+  failure?: ObservedFailure;
+  /** Claude statusline rate limits; a render is telemetry, never activity. */
+  rateLimits?: ClaudeRateLimits;
 };
 
 const emptyEntry = (now: string): AgentLifecycleEntry => ({
@@ -86,6 +134,8 @@ const emptyEntry = (now: string): AgentLifecycleEntry => ({
   degradedCause: null,
   lastEvent: null,
   lastEventAt: null,
+  lastFailure: null,
+  claudeRateLimits: null,
   updatedAt: now
 });
 
@@ -356,6 +406,80 @@ const positiveIdle = (entry: AgentLifecycleEntry, nextExecution: AgentLifecycleE
     ? entry.idleEpoch + 1
     : entry.idleEpoch;
 
+const applyTelemetry = (
+  entry: AgentLifecycleEntry,
+  observation: LifecycleObservation,
+  now: string
+): AgentLifecycleEntry => {
+  const sessionId = observation.sessionId ?? null;
+  // A render never establishes a session, and never counts as activity.
+  if (observation.rateLimits === undefined || sessionId === null || sessionId !== entry.sessionId) return entry;
+  const identity = JSON.stringify(observation.rateLimits);
+  const cached = entry.claudeRateLimits;
+  if (cached?.sessionId === sessionId && cached.identity === identity) return entry;
+  return agentLifecycleEntrySchema.parse({
+    ...entry,
+    claudeRateLimits: {
+      sessionId, identity, observedAt: now,
+      fiveHour: observation.rateLimits.fiveHour, sevenDay: observation.rateLimits.sevenDay
+    }
+  });
+};
+
+/**
+ * Bind a failure to the current episode only through the accepted-session
+ * correlation. Hook delivery time alone does not make an old event current.
+ */
+const recordFailure = (
+  entry: AgentLifecycleEntry,
+  failure: ObservedFailure,
+  context: { action: LifecycleAction | null; sessionId: string | null; turnId: string | null; now: string }
+): LifecycleFailure => {
+  const { action, sessionId, turnId, now } = context;
+  const correlated =
+    action !== null &&
+    action.workflowCompleteAt === null &&
+    action.delivery === "accepted" &&
+    sessionId !== null &&
+    action.sessionId === sessionId &&
+    (action.turnId === null || turnId === null || action.turnId === turnId);
+  const fields: FailureFields = {
+    error: redactDiagnostic(failure.error),
+    errorDetails: redactDiagnostic(failure.errorDetails),
+    lastAssistantMessage: redactDiagnostic(failure.lastAssistantMessage)
+  };
+  const telemetry = entry.claudeRateLimits === null ? null : {
+    sessionId: entry.claudeRateLimits.sessionId,
+    observedAt: entry.claudeRateLimits.observedAt,
+    limits: { fiveHour: entry.claudeRateLimits.fiveHour, sevenDay: entry.claudeRateLimits.sevenDay }
+  };
+  const classification: Classification = failure.vendor === "claude"
+    ? classifyClaudeFailure(fields, telemetry, { sessionId, now })
+    : { failureClass: classifyCursorStatus(failure.status), classConfidence: "reported", windows: [],
+      detail: redactDiagnostic([failure.status, fields.error, fields.errorDetails].filter((part) => part !== null && part !== undefined).join(" | ")),
+      resetsAt: null };
+  const actionId = correlated ? action.actionId : null;
+  const episodeId = `${actionId ?? "advisory"}:${sessionId ?? "none"}:${turnId ?? action?.turnId ?? "none"}:${classification.failureClass}`;
+  // A duplicate delivery of the same episode keeps its original observation.
+  if (entry.lastFailure?.evidence.episodeId === episodeId) return entry.lastFailure;
+  return lifecycleFailureSchema.parse({
+    evidence: {
+      vendor: failure.vendor,
+      failureClass: classification.failureClass,
+      classConfidence: classification.classConfidence,
+      windows: classification.windows,
+      detail: classification.detail,
+      episodeId,
+      observedAt: now
+    },
+    resetsAt: classification.resetsAt,
+    ...fields,
+    sessionId,
+    turnId,
+    actionId
+  });
+};
+
 /** Apply a validated vendor observation. Duplicate and stale events are harmless. */
 export const applyLifecycleObservation = (
   entry: AgentLifecycleEntry,
@@ -376,6 +500,8 @@ export const applyLifecycleObservation = (
   // tool, or stop event from the previous process must not become current
   // merely because it carries the action UUID.
   if (sessionChanged && !beginsSession) return entry;
+
+  if (observation.kind === "telemetry") return applyTelemetry(entry, observation, now);
 
   let action = entry.action;
   let execution = observation.execution ?? entry.execution;
@@ -471,8 +597,12 @@ export const applyLifecycleObservation = (
   }
 
   const idleEpoch = positiveIdle(entry, execution);
+  const lastFailure = observation.failure === undefined
+    ? entry.lastFailure
+    : recordFailure(entry, observation.failure, { action, sessionId, turnId: observation.turnId ?? null, now });
   return agentLifecycleEntrySchema.parse({
     ...entry,
+    lastFailure,
     action,
     execution,
     sessionId,
