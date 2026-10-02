@@ -5,7 +5,7 @@
   "agent": "cursor",
   "inputSetHash": "2b23f5a83fd4c44518ebef30f82ad5923d311e6865d391fdca033fe334077363",
   "artifact": "implementation-ready",
-  "implementationCommitSha": "20697c200f16a2fd14005dad430d9d09dcef6051",
+  "implementationCommitSha": "3c2dd0bc666c99e9fd081e6f366ae5877d9539d5",
   "approvedPaths": [
     ".git/info/exclude",
     ".gitignore",
