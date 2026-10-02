@@ -1,0 +1,46 @@
+{
+  "actionId": "391102cd-2bc6-455d-9e0d-a1b23c4a939e",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "bdb0ffb41a8220752a71d4856ba1d8b6eea68a2cec93b0dc8d0616cee204c579",
+  "issue": 139,
+  "issueSessionId": "issue-139:845d28d091c530926fa4ab59d615654b56ac2977",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "432794d656297a115bc044eecacbaa108fd30c8b",
+      "path": ".plans/issue-139/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c4096d1d8aff38b17e298ca0c43816a0335235ff",
+      "path": ".plans/issue-139/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "1b668bfd64034dacdd0d6b0f7fb4c1dfd930e5a4",
+      "path": ".plans/issue-139/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude's plan is the smallest complete in-repo cover of #139 (MIT LICENSE, scrub incl. docs/analytics.md, /tags ignore, install-based --declare docs, and one hygiene test that fails today), as cursor's review also concluded, and codex's attribution blocker is now resolved because the owner confirmed MIT with 'Copyright (c) 2026 Michael Glenn Williams'; implementation must apply that holder, the corrected private-wording regex, the AGENTS.md owner note, and a SECURITY.md reporting-availability gate.",
+  "responseSha256": "6c2ab3400895e875248d4acc16166e8dc13a969fa4b0841831cb881326a56f8c",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "cc1f9375f3320729f6543b6747bead6a6b35354a",
+      "path": ".plans/issue-139/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "501a11d6ee4488c780b24e6289f0f2e8aec14ece",
+      "path": ".plans/issue-139/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "6774380514e111bc7ef057b7b2c0e7b72cfe75d7",
+      "path": ".plans/issue-139/review.md"
+    }
+  ]
+}

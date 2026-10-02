@@ -1,0 +1,46 @@
+{
+  "actionId": "19004dd5-6bee-466c-8dcb-d60b94180fca",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "bdb0ffb41a8220752a71d4856ba1d8b6eea68a2cec93b0dc8d0616cee204c579",
+  "issue": 139,
+  "issueSessionId": "issue-139:845d28d091c530926fa4ab59d615654b56ac2977",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "432794d656297a115bc044eecacbaa108fd30c8b",
+      "path": ".plans/issue-139/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c4096d1d8aff38b17e298ca0c43816a0335235ff",
+      "path": ".plans/issue-139/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "1b668bfd64034dacdd0d6b0f7fb4c1dfd930e5a4",
+      "path": ".plans/issue-139/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude’s plan is the smallest complete in-repo public-release baseline with a real hygiene regression test; with the owner-confirmed MIT copyright line it should land LICENSE in the same PR, while Codex’s extra public-release.md and Cursor’s weaker gitignore/test gates are unnecessary.",
+  "responseSha256": "eb211e619b9edf0e4d35b406b37a10bd2d6c764c2c705e0f1e8e6c674dd4b0f2",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "cc1f9375f3320729f6543b6747bead6a6b35354a",
+      "path": ".plans/issue-139/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "501a11d6ee4488c780b24e6289f0f2e8aec14ece",
+      "path": ".plans/issue-139/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "6774380514e111bc7ef057b7b2c0e7b72cfe75d7",
+      "path": ".plans/issue-139/review.md"
+    }
+  ]
+}
