@@ -48,6 +48,8 @@ const installOnce = (
     dryRun: false,
     log: io.log,
     declarePath: writeDeclaration(fixture.workspaceRoot, { checks: declaredChecks, verify: passingVerify }),
+    // Fixture-local home so antigravity/claude status-line writes never touch the owner.
+    home: join(fixture.workspaceRoot, "home"),
     ...overrides
   });
 };
@@ -256,6 +258,7 @@ const uninstallOnce = (fixture: ProductFixture, overrides: Partial<Parameters<ty
     force: false,
     dryRun: false,
     log: silence().log,
+    home: join(fixture.workspaceRoot, "home"),
     ...overrides
   });
 
@@ -762,6 +765,13 @@ describe("completion mailbox wiring", () => {
  * exit code real git invocations get, so these run the generated file.
  */
 describe("generated git shim", () => {
+  /** Fresh agent-call env: drop a leaked hook-side COORD_GIT_DELEGATE so refusals stay testable. */
+  const shimEnv = (): NodeJS.ProcessEnv => {
+    const env = { ...process.env };
+    delete env.COORD_GIT_DELEGATE;
+    return env;
+  };
+
   const runGit = (
     clone: string,
     cwd: string,
@@ -772,7 +782,7 @@ describe("generated git shim", () => {
       join(clone, ".coord", "bin"), ...args], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, COORD_ISSUE: "42", ...env },
+      env: { ...shimEnv(), COORD_ISSUE: "42", ...env },
       stdio: ["ignore", "pipe", "pipe"]
     });
     const match = /exit=(\d+)\s*$/.exec(result);
@@ -841,6 +851,19 @@ describe("generated git shim", () => {
     expect(runGit(clone, elsewhere, ["status", "--porcelain"]).status).toBe(0);
     expect(runGit(clone, clone, ["-C", elsewhere, "status", "--porcelain"]).status).toBe(0);
     expect(runGit(clone, elsewhere, ["--git-dir", join(elsewhere, ".git"), "status", "--porcelain"]).status).toBe(0);
+  });
+
+  it("refuses even when the suite itself runs under a delegated git", () => {
+    const fixture = product();
+    const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
+    const prior = process.env.COORD_GIT_DELEGATE;
+    try {
+      process.env.COORD_GIT_DELEGATE = "1";
+      expect(runGit(clone, clone, ["status"]).status).toBe(2);
+    } finally {
+      if (prior === undefined) delete process.env.COORD_GIT_DELEGATE;
+      else process.env.COORD_GIT_DELEGATE = prior;
+    }
   });
 
   /**
@@ -922,5 +945,8 @@ describe("generated agent launchers", () => {
     const launcher = readFileSync(join(clone, "start-antigravity.sh"), "utf8");
     expect(launcher).toContain("exec agy --mode accept-edits --dangerously-skip-permissions");
     expect(launcher).toContain('export PATH="$HOME/.local/bin:$PATH"');
+    expect(
+      existsSync(join(fixture.workspaceRoot, "home", ".gemini", "antigravity-cli", "settings.json"))
+    ).toBe(true);
   });
 });
