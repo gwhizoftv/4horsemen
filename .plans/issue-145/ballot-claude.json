@@ -1,0 +1,46 @@
+{
+  "actionId": "c72d5d2c-0db1-4552-9876-5f7f838a1da6",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "f8693c4e12c1133470810133f69e8c7bf5d47da7c6328360230731dad1ce16d9",
+  "issue": 145,
+  "issueSessionId": "issue-145:845d28d091c530926fa4ab59d615654b56ac2977",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "4415a10d356c858b27a9c911b771de8b2b1944a9",
+      "path": ".plans/issue-145/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "efc8ad44d8672911a5d7e4313d74d10aea96ac05",
+      "path": ".plans/issue-145/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "098cb8181ef8221e2ace0a2df106f54a3ef0c874",
+      "path": ".plans/issue-145/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "All three reviews converge on the claude plan as the smallest evidence-backed, test-only fix (hermetic runGit env, fixture-default home on installOnce/uninstallOnce, and a setupFiles beforeEach macrotask yield validated 3/3 fail to 3/3 pass) without cursor's product hookPolicy regression or codex's unproven serialization cost.",
+  "responseSha256": "14ef8508562a0183af626a28b70d9485521d941133edeb192617b645561be94b",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "278590e457e67b1f99a8024e069ae94ced753ebd",
+      "path": ".plans/issue-145/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "b7f32ad24b58a47e13de954998b5096bbd76d26b",
+      "path": ".plans/issue-145/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e28b9fcf1008a180b7352a434d79e1b41ddafc25",
+      "path": ".plans/issue-145/review.md"
+    }
+  ]
+}
