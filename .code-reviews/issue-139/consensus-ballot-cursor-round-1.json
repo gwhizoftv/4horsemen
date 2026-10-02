@@ -1,0 +1,14 @@
+{
+  "actionId": "11cd79a6-b50a-415b-909c-7dfb0f8aa303",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "8dcb15513db45178576eff64865cd19c0f780ed1c4637e82c13873c155de7ed8",
+  "issue": 139,
+  "issueSessionId": "issue-139:845d28d091c530926fa4ab59d615654b56ac2977",
+  "protocolVersion": 2,
+  "rationale": "Codex revision keeps the approved-path public-release prep, honest LICENSE/security gates, and hygiene coverage without out-of-scope edits.",
+  "responseSha256": "fb8e8f6feb2a499bb6a3569ffaab2b175d658cfdfdccb9416e24f55b1682b0fe",
+  "revisionCommitSha": "5b57ead8d9600340c4d88835b50dd9e1fff5ebe2",
+  "round": 1
+}

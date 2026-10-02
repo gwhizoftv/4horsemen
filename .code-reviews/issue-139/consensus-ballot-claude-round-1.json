@@ -1,0 +1,14 @@
+{
+  "actionId": "ccc9d2a3-9457-4e3a-b434-3e0dc65b70d5",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "8dcb15513db45178576eff64865cd19c0f780ed1c4637e82c13873c155de7ed8",
+  "issue": 139,
+  "issueSessionId": "issue-139:845d28d091c530926fa4ab59d615654b56ac2977",
+  "protocolVersion": 2,
+  "rationale": "Codex's 5b57ead8 carries the same product tree as its 16cc7f3f implementation (later commits only touch coordination files), which delivers the selected public-release scope accurately: personal paths and private-install wording are gone from every published doc and example, the hygiene test guards them, the detection table matches proposeProjectPolicy, and the README truthfully says LICENSE is deferred; its README/SECURITY release-gate prose will need a post-release edit but blocks nothing.",
+  "responseSha256": "ea5aed111e2998278d07fcf735b97761b4b7f192dc08d85d60be271fe3f970c5",
+  "revisionCommitSha": "5b57ead8d9600340c4d88835b50dd9e1fff5ebe2",
+  "round": 1
+}
