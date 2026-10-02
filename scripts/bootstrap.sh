@@ -2,10 +2,10 @@
 # Install or update a complete coordination checkout and optionally link
 # ~/.local/bin/coord.
 #
-# Private repos: do not rely on anonymous curl|sh from raw.githubusercontent.com
-# (404 without public raw access). Clone with gh/git, then:
+# Public install: curl -fsSL <public-raw-bootstrap-url> | sh
+# Or inspect a Git clone first, then run:
 #   sh /path/to/clone/scripts/bootstrap.sh --source /path/to/clone
-# Public forks may still pipe a world-readable raw URL into sh.
+# For private forks, authenticate Git and supply the local clone as --source.
 set -eu
 
 die() {
@@ -43,8 +43,10 @@ Defaults:
   --source $COORD_SOURCE or https://github.com/gwhizoftv/coordination.git
   PATH     install ~/.local/bin/coord unless --no-path is supplied
 
-Private repositories: clone with gh/git first, then pass --source <local-path>.
-Anonymous curl to raw.githubusercontent.com will 404 when the repo is private.
+Public install: curl -fsSL <public-raw-bootstrap-url> | sh
+Inspect-first alternative: clone with Git, then pass --source <local-path>.
+For private forks, authenticate Git before cloning; bootstrap itself needs no gh.
+Dependencies still require registry access unless already cached locally.
 EOF
       exit 0
       ;;

@@ -201,6 +201,27 @@ describe("installer proposals", () => {
 });
 
 describe("shipped examples", () => {
+  it("ships release-preparation docs without machine-specific paths or private-install wording", () => {
+    // The owner deferred LICENSE; this change prepares, but does not complete, the release.
+    for (const file of ["CONTRIBUTING.md", "SECURITY.md"]) {
+      expect(readFileSync(join(repoRoot, file), "utf8").trim(), file).not.toBe("");
+    }
+    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { private?: boolean };
+    expect(pkg.private).toBe(true);
+    const files = [
+      "README.md",
+      ...readdirSync(join(repoRoot, "docs")).filter((file) => file.endsWith(".md")).map((file) => `docs/${file}`),
+      "config.example.json",
+      "config.product.example.json",
+      "scripts/bootstrap.sh"
+    ];
+    for (const file of files) {
+      const content = readFileSync(join(repoRoot, file), "utf8");
+      expect(content, file).not.toMatch(/\/Volumes\/|\/Users\/[A-Za-z]/);
+      expect(content, file).not.toMatch(/\b(?:repo|repository) is private\b|Private repos/i);
+    }
+  });
+
   it("keeps config.product.example.json parseable by the driver's own schema", () => {
     const example = JSON.parse(readFileSync(join(repoRoot, "config.product.example.json"), "utf8")) as unknown;
     expect(coordinatorConfigSchema.safeParse(example).success).toBe(true);
