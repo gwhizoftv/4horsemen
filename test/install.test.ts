@@ -48,6 +48,8 @@ const installOnce = (
     dryRun: false,
     log: io.log,
     declarePath: writeDeclaration(fixture.workspaceRoot, { checks: declaredChecks, verify: passingVerify }),
+    // Never the owner's real home: an Antigravity install writes user-global settings there.
+    home: join(fixture.workspaceRoot, "home"),
     ...overrides
   });
 };
@@ -256,6 +258,7 @@ const uninstallOnce = (fixture: ProductFixture, overrides: Partial<Parameters<ty
     force: false,
     dryRun: false,
     log: silence().log,
+    home: join(fixture.workspaceRoot, "home"),
     ...overrides
   });
 
@@ -761,6 +764,12 @@ describe("completion mailbox wiring", () => {
  * already owns. Asserting the rendered text is not enough: what matters is the
  * exit code real git invocations get, so these run the generated file.
  */
+const shimEnv = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env };
+  delete env.COORD_GIT_DELEGATE;
+  return env;
+};
+
 describe("generated git shim", () => {
   const runGit = (
     clone: string,
@@ -772,7 +781,11 @@ describe("generated git shim", () => {
       join(clone, ".coord", "bin"), ...args], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, COORD_ISSUE: "42", ...env },
+      // `git commit` in a coord-launched session runs through this very shim,
+      // which exports COORD_GIT_DELEGATE=1 before exec'ing real git. Inherited,
+      // it makes the shim under test delegate instead of deciding, so the
+      // refusal cases silently pass through. The suite runs inside that hook.
+      env: { ...shimEnv(), COORD_ISSUE: "42", ...env },
       stdio: ["ignore", "pipe", "pipe"]
     });
     const match = /exit=(\d+)\s*$/.exec(result);
@@ -821,6 +834,19 @@ describe("generated git shim", () => {
     // delegate guard, so a commit that triggers them still completes.
     for (const args of [["rev-parse", "HEAD"], ["log", "--oneline", "-1"], ["config", "--get", "consensus.agentId"]]) {
       expect(runGit(clone, clone, args).status, args.join(" ")).toBe(0);
+    }
+  });
+
+  it("refuses even when the suite itself runs under a delegated git", () => {
+    const fixture = product();
+    const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
+    const prior = process.env.COORD_GIT_DELEGATE;
+    try {
+      process.env.COORD_GIT_DELEGATE = "1";
+      expect(runGit(clone, clone, ["status"]).status).toBe(2);
+    } finally {
+      if (prior === undefined) delete process.env.COORD_GIT_DELEGATE;
+      else process.env.COORD_GIT_DELEGATE = prior;
     }
   });
 
@@ -922,5 +948,7 @@ describe("generated agent launchers", () => {
     const launcher = readFileSync(join(clone, "start-antigravity.sh"), "utf8");
     expect(launcher).toContain("exec agy --mode accept-edits --dangerously-skip-permissions");
     expect(launcher).toContain('export PATH="$HOME/.local/bin:$PATH"');
+    // The user-global status line lands in the fixture, never the owner's home.
+    expect(existsSync(join(fixture.workspaceRoot, "home", ".gemini", "antigravity-cli", "settings.json"))).toBe(true);
   });
 });
