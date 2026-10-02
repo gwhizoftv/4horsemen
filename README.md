@@ -8,21 +8,17 @@ merges a pull request.
 ## Happy path
 
 Install coordination once, onboard each product once, and then drive work from
-GitHub issues. **This repository is private** — do not use anonymous
-`curl … raw.githubusercontent.com … | sh` (it 404s without a public raw URL).
+GitHub issues. Install Node 26, pnpm 11 and Git first. The public install path
+needs no GitHub CLI authentication to coordination:
 
 ```sh
-# Once per machine (GitHub CLI must already reach this private repo).
-gh auth login          # if needed
-gh auth setup-git      # so git clone/https works for private remotes
-
-gh repo clone gwhizoftv/coordination /tmp/coordination-src
-sh /tmp/coordination-src/scripts/bootstrap.sh --source /tmp/coordination-src
-# Optional: rm -rf /tmp/coordination-src
+# Once per machine, once the upstream repository is publicly accessible.
+curl -fsSL https://raw.githubusercontent.com/gwhizoftv/coordination/main/scripts/bootstrap.sh | sh
 # Add ~/.local/bin to PATH if the script prints that hint.
 
-# Once per product.
-coord onboard /path/to/app
+# Once per product (example: one installed Codex harness).
+# Authenticate gh for your product repository before issue/PR operations.
+coord onboard /path/to/app --agents codex --profile solo
 
 # Each unit of work.
 cd /path/to/app
@@ -31,9 +27,23 @@ coord 42
 ```
 
 Bootstrap installs a complete checkout under `~/.local/share/coordination` and
-links `~/.local/bin/coord`. `--source` may be a local clone (as above) or any
-git URL your credentials can read. Public forks may still use
-`curl -fsSL <raw-bootstrap-url> | sh` if the raw file is world-readable.
+links `~/.local/bin/coord`. To inspect the script before running it instead:
+
+```sh
+git clone https://github.com/gwhizoftv/coordination.git coordination-src
+# Review coordination-src/scripts/bootstrap.sh first.
+sh coordination-src/scripts/bootstrap.sh --source "$PWD/coordination-src"
+```
+
+`--source` (or `COORD_SOURCE`) accepts a Git URL or local clone. For a private
+fork, authenticate Git, clone it, then pass `--source <local-clone>`.
+Anonymous clone/raw access requires a public upstream; these preparation docs
+do not mean that the release gates in [issue #139](https://github.com/gwhizoftv/coordination/issues/139)
+have passed. Before publication the owner must audit content/history, verify
+private security reporting, and neutralize the tracked machine-specific runtime
+instruction in `AGENTS.md` from an owner checkout (not an agent's protected
+overlay). After the authorized visibility change, verify the anonymous cold
+install and sample-product doctor run before announcing the release.
 
 `coord onboard` defaults to four agents (`claude,codex,cursor,antigravity`),
 the consensus profile, sibling agent clones, and
@@ -103,14 +113,43 @@ discoverable. See [`docs/setup-workspace.md`](docs/setup-workspace.md).
 
 ## Requirements
 
-- Node 26 and pnpm 11
-- Git and GitHub CLI (`gh`), authenticated for the product repository
+- Node 26 and pnpm 11 to run coordination, regardless of the product language
+- Git for bootstrap and product repositories
+- GitHub CLI (`gh`), authenticated for product issue/PR operations, not for
+  installing coordination from a public URL
 - tmux for interactive agent launch and delivery
 - the configured agent harnesses (Claude, Codex, Cursor, or Antigravity)
+- the product's declared tools (for example Go, Cargo, or Python test tools)
+
+The owner UI opens Terminal.app windows on macOS. Other platforms use tmux
+without that Terminal integration; native Windows operation is not promised.
+Install every harness selected by your configuration, or select only one as in
+the example above; the unqualified onboarding default selects all four.
 
 Bootstrap accepts `--root`, `COORD_INSTALL_ROOT`, and `--no-path`. It clones or
 cleanly fast-forwards a complete install checkout, performs the locked build,
 and refuses dirty or unrelated paths rather than resetting them.
+
+## Product languages
+
+Go (`go.mod`) and Rust (`Cargo.toml`) verification policies are proposed
+automatically, as are Node (pnpm/yarn/npm) scripts and recognized Makefile
+targets. **Python has no auto-detection yet**: use `coord install --declare`
+with explicit checks. Any language works when its verification commands can be
+expressed as argument arrays and its tools are installed on the agent machine.
+Node/pnpm run the driver; they do not have to be the product's toolchain.
+
+See [Product languages](docs/setup-workspace.md#product-languages) for detection
+precedence, Go/Rust commands and a complete Python declaration. Agent coding
+quality is independent of coordination's command execution and evidence gates.
+
+## License
+
+MIT is the planned license, but the owner has deferred adding `LICENSE` to a
+follow-up. Licensing and public release remain incomplete until that file lands.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for human contribution guidance and
+[SECURITY.md](SECURITY.md) for private vulnerability reporting. Distribution
+remains through GitHub; the package is not published to npm.
 
 ## Advanced install and explicit operation
 

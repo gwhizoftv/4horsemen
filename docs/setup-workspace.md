@@ -24,17 +24,19 @@ them alone. "No hooks for humans" means none *from coordination*.
 
 ## Bootstrap once
 
-Private repositories (the usual case for this package) cannot be fetched with
-anonymous `curl` to `raw.githubusercontent.com` — that URL returns **404**
-without public raw access. Prefer GitHub CLI + a local `--source`:
+With Node 26, pnpm 11 and Git installed, bootstrap from the public URL without
+GitHub CLI authentication to coordination:
 
 ```sh
-gh auth login          # if needed
-gh auth setup-git      # private HTTPS remotes via gh credentials
+curl -fsSL https://raw.githubusercontent.com/gwhizoftv/coordination/main/scripts/bootstrap.sh | sh
+```
 
-gh repo clone gwhizoftv/coordination /tmp/coordination-src
-sh /tmp/coordination-src/scripts/bootstrap.sh --source /tmp/coordination-src
-# Optional: rm -rf /tmp/coordination-src
+Or clone and inspect the script before executing it:
+
+```sh
+git clone https://github.com/gwhizoftv/coordination.git coordination-src
+# Review coordination-src/scripts/bootstrap.sh first.
+sh coordination-src/scripts/bootstrap.sh --source "$PWD/coordination-src"
 ```
 
 The POSIX shell bootstrap clones or updates a complete install at
@@ -49,9 +51,16 @@ Only a checkout created by bootstrap receives ownership metadata under its
 `.git/` directory. Building a developer checkout never makes uninstall the
 owner of that checkout.
 
-Public forks that expose `scripts/bootstrap.sh` on a world-readable raw URL may
-still use `curl -fsSL <url> | sh`. That path is optional, not the default for
-this private repository.
+`COORD_SOURCE` supplies the default source; `--source` overrides it. For private
+forks, authenticate Git and pass a local authenticated clone as `--source`.
+The anonymous commands require a public upstream: release preparation does not
+itself change repository visibility. Owner release gates remain in
+[issue #139](https://github.com/gwhizoftv/coordination/issues/139).
+
+GitHub CLI (`gh`) authentication is needed for product issue/PR operations, not
+for public bootstrap. Interactive operation also needs tmux, the configured
+harnesses and the product's own tools. Terminal.app windows are a macOS-only
+integration; on other platforms use tmux without those windows.
 
 ## Onboard a product
 
@@ -361,6 +370,61 @@ three tiers that are easy to conflate:
 Tiers 2 and 3 run the product's own suite and answer different questions. Tier 2
 is fast feedback in a dirty worktree; tier 3 is hermetic and is what gates
 publication. The journal records which tier failed.
+
+### Product languages
+
+The driver needs Node 26 and pnpm 11, but the product does not. Installation
+uses `proposeProjectPolicy` in `src/setupWorkspace.ts` to propose the policy
+below, in order: **first matching detector wins**. Review the generated config;
+multi-language monorepos may need an explicit declaration instead.
+
+| Marker | Toolchain | Precommit / prepush proposal | Finalization checks |
+| --- | --- | --- | --- |
+| `Cargo.toml` | `cargo` | `cargo check --all-targets` / `cargo test` | `cargo test` |
+| `go.mod` | `go` | `go vet ./...` / `go test ./...` | `go build ./...`, `go test ./...` |
+| `package.json` | `pnpm`, `yarn`, or `npm` (lockfile-selected) | first existing `check:fast`, `check`, `lint` / existing `test:e2e` | first existing `check`, `test` |
+| recognized targets in `Makefile` | `make` | `make check` if present / none | `make test` if present |
+| none of these | unspecified | no inference | no inference; supply `--declare` |
+
+For Node, the entries name package scripts, not bare executables. A marker
+alone does not guarantee usable checks: install refuses missing finalization
+checks, and absent `verify` fails closed in agent hooks. Detection happens only
+at install; hooks execute the recorded policy without inspecting language files.
+
+Python works through an explicit declaration today; `pyproject.toml`, uv,
+Poetry and Hatch are not auto-detected. Save this as `declaration.json` outside
+the product's tracked tree, adjusting commands and critical paths to its layout:
+
+```json
+{
+  "toolchain": "python",
+  "verify": {
+    "precommit": [{ "name": "lint", "argv": ["ruff", "check", "."] }],
+    "prepush": [{ "name": "test", "argv": ["pytest", "-q"] }]
+  },
+  "checks": [{ "name": "test", "argv": ["pytest", "-q"] }],
+  "workflowCriticalPrefixes": ["src/", "tests/"],
+  "workflowCriticalFiles": ["pyproject.toml", "uv.lock"]
+}
+```
+
+```sh
+coord install --product /path/to/app --coord-root /path/to/coord-runtime \
+  --agents codex --profile solo --declare /path/to/declaration.json
+coord doctor --coord-root /path/to/coord-runtime --product /path/to/app
+```
+
+Use `install`, not `onboard`, for `--declare`. Install Ruff/pytest and expose
+them on the PATH inherited by the agents and coordinator (including any virtual
+environment); doctor reports a `toolchain` finding when an `argv[0]` cannot be
+resolved. The same requirement applies to Go/Cargo and every declared tool.
+Arguments are passed directly, not interpreted as shell syntax.
+
+`config.product.example.json` illustrates a **full generated Go workspace
+config**, not a file accepted by `--declare`: identity, agent roots and the
+installation stamp are generated by install and are forbidden in declarations.
+Reuse only its policy fields when writing a declaration. Its absolute example
+paths are placeholders to replace, not shell variables or real install stamps.
 
 ### Declaring verification
 
