@@ -24,18 +24,17 @@ them alone. "No hooks for humans" means none *from coordination*.
 
 ## Bootstrap once
 
-Private repositories (the usual case for this package) cannot be fetched with
-anonymous `curl` to `raw.githubusercontent.com` — that URL returns **404**
-without public raw access. Prefer GitHub CLI + a local `--source`:
-
 ```sh
-gh auth login          # if needed
-gh auth setup-git      # private HTTPS remotes via gh credentials
+curl -fsSL https://raw.githubusercontent.com/gwhizoftv/coordination/main/scripts/bootstrap.sh | sh
 
-gh repo clone gwhizoftv/coordination /tmp/coordination-src
+# Or inspect the source first, then install from that clone.
+git clone https://github.com/gwhizoftv/coordination.git /tmp/coordination-src
 sh /tmp/coordination-src/scripts/bootstrap.sh --source /tmp/coordination-src
 # Optional: rm -rf /tmp/coordination-src
 ```
+
+Installing coordination needs Git, Node 26, and pnpm 11, but no GitHub
+authentication. `gh` is needed later, for the product repository.
 
 The POSIX shell bootstrap clones or updates a complete install at
 `${COORD_INSTALL_ROOT:-$HOME/.local/share/coordination}` (override with
@@ -49,9 +48,9 @@ Only a checkout created by bootstrap receives ownership metadata under its
 `.git/` directory. Building a developer checkout never makes uninstall the
 owner of that checkout.
 
-Public forks that expose `scripts/bootstrap.sh` on a world-readable raw URL may
-still use `curl -fsSL <url> | sh`. That path is optional, not the default for
-this private repository.
+A private fork cannot be fetched anonymously from `raw.githubusercontent.com`.
+Clone it with credentials that can read it (`git clone` or `gh repo clone`),
+then pass that clone with `--source <clone>`, or set `COORD_SOURCE` to its URL.
 
 ## Onboard a product
 
@@ -388,6 +387,58 @@ publication. The journal records which tier failed.
 product's obvious ecosystem (cargo, go, pnpm/npm/yarn, make) and writes it into
 the config for review. That detection happens once, in the installer, and is
 recorded. Hooks never sniff.
+
+### Product languages
+
+Coordination never embeds a product's language. Node and pnpm are required to
+run coordination itself, not to be the product's language. The installer's
+proposal (`proposeProjectPolicy` in `src/setupWorkspace.ts`) takes the first
+marker that matches, in this order:
+
+| Marker | `toolchain` | Proposed `verify` | Proposed `checks` |
+| --- | --- | --- | --- |
+| `Cargo.toml` | `cargo` | `cargo check --all-targets` / `cargo test` | `cargo test` |
+| `go.mod` | `go` | `go vet ./...` / `go test ./...` | `go build ./...`, `go test ./...` |
+| `package.json` | `pnpm` / `yarn` / `npm` | the first of `check:fast`, `check`, `lint` / `test:e2e`, when those scripts exist | the first of `check`, `test` |
+| `Makefile` with `check` or `test` targets | `make` | `make check` / none | `make test` |
+| none | — | nothing inferred | nothing inferred; install refuses until `--declare` supplies `checks` |
+
+Python has no detection yet. Declare it explicitly. A declaration file holds
+only policy fields (`workspaceDeclarationSchema`); it is not a full workspace
+config like `config.product.example.json`:
+
+```json
+{
+  "toolchain": "python",
+  "verify": {
+    "precommit": [{ "name": "lint", "argv": ["ruff", "check", "."] }],
+    "prepush": [{ "name": "test", "argv": ["pytest", "-q"] }]
+  },
+  "checks": [{ "name": "test", "argv": ["pytest", "-q"] }],
+  "workflowCriticalPrefixes": ["src/", "tests/"],
+  "workflowCriticalFiles": ["pyproject.toml", "uv.lock"]
+}
+```
+
+```sh
+coord install --product /path/to/app --coord-root /path/to/coord-runtime \
+  --declare /path/to/declaration.json
+coord doctor --coord-root /path/to/coord-runtime --product /path/to/app
+```
+
+`coord onboard` does not take `--declare`; use `coord install` for a declared
+policy.
+
+Caveats:
+
+- Doctor's `toolchain` finding requires every declared `argv[0]` (`go`,
+  `cargo`, `pytest`, `ruff`, …) on PATH on the machine that runs the agents.
+  For a virtualenv, declare the interpreter path or activate it before launch.
+- A mixed-language monorepo gets only the first matching proposal; write its
+  declaration by hand.
+- Agent harness quality on a given language is outside coordination's
+  control. Coordination supplies the workflow, evidence gates, and command
+  execution.
 
 ### Scoping the pre-push checks
 

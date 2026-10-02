@@ -8,18 +8,16 @@ merges a pull request.
 ## Happy path
 
 Install coordination once, onboard each product once, and then drive work from
-GitHub issues. **This repository is private** — do not use anonymous
-`curl … raw.githubusercontent.com … | sh` (it 404s without a public raw URL).
+GitHub issues.
 
 ```sh
-# Once per machine (GitHub CLI must already reach this private repo).
-gh auth login          # if needed
-gh auth setup-git      # so git clone/https works for private remotes
-
-gh repo clone gwhizoftv/coordination /tmp/coordination-src
-sh /tmp/coordination-src/scripts/bootstrap.sh --source /tmp/coordination-src
-# Optional: rm -rf /tmp/coordination-src
+# Once per machine.
+curl -fsSL https://raw.githubusercontent.com/gwhizoftv/coordination/main/scripts/bootstrap.sh | sh
 # Add ~/.local/bin to PATH if the script prints that hint.
+
+# Or inspect the source first, then install from that clone.
+git clone https://github.com/gwhizoftv/coordination.git /tmp/coordination-src
+sh /tmp/coordination-src/scripts/bootstrap.sh --source /tmp/coordination-src
 
 # Once per product.
 coord onboard /path/to/app
@@ -32,8 +30,9 @@ coord 42
 
 Bootstrap installs a complete checkout under `~/.local/share/coordination` and
 links `~/.local/bin/coord`. `--source` may be a local clone (as above) or any
-git URL your credentials can read. Public forks may still use
-`curl -fsSL <raw-bootstrap-url> | sh` if the raw file is world-readable.
+git URL your credentials can read; a private fork installs from a local clone
+with `--source <clone>`. Installing coordination needs no GitHub
+authentication.
 
 `coord onboard` defaults to four agents (`claude,codex,cursor,antigravity`),
 the consensus profile, sibling agent clones, and
@@ -103,14 +102,41 @@ discoverable. See [`docs/setup-workspace.md`](docs/setup-workspace.md).
 
 ## Requirements
 
-- Node 26 and pnpm 11
-- Git and GitHub CLI (`gh`), authenticated for the product repository
-- tmux for interactive agent launch and delivery
-- the configured agent harnesses (Claude, Codex, Cursor, or Antigravity)
+- Node 26 and pnpm 11 to run coordination itself. They are not a requirement on
+  the product's language (see [Product languages](#product-languages)).
+- Git, plus GitHub CLI (`gh`) authenticated for the **product** repository.
+  Installing coordination does not use `gh`.
+- tmux for interactive agent launch and delivery. On macOS, coordination also
+  opens one Terminal.app window per agent; elsewhere the tmux session is the
+  owner UI.
+- at least one configured agent harness (Claude, Codex, Cursor, or Antigravity)
+- the product's own tools (`go`, `cargo`, `pytest`, …) on PATH, because agents
+  and finalization run the product's declared commands
 
 Bootstrap accepts `--root`, `COORD_INSTALL_ROOT`, and `--no-path`. It clones or
 cleanly fast-forwards a complete install checkout, performs the locked build,
 and refuses dirty or unrelated paths rather than resetting them.
+
+## Product languages
+
+Coordination runs a product's own commands, declared as `argv` arrays; it embeds
+no language runtime and hooks never sniff the product tree. Any language whose
+checks can be written that way is supported.
+
+`coord install` and `coord onboard` propose `verify` / `checks` once, from the
+first marker they find:
+
+| Marker | Proposed toolchain |
+| --- | --- |
+| `Cargo.toml` | Rust: `cargo check --all-targets`, `cargo test` |
+| `go.mod` | Go: `go vet ./...`, `go test ./...`, `go build ./...` |
+| `package.json` | pnpm / yarn / npm scripts such as `check:fast`, `check`, `test:e2e` |
+| `Makefile` | `make check` / `make test` when those targets exist |
+
+Python has no detection yet: declare its commands with
+`coord install --declare <file>`. See
+[Product languages](docs/setup-workspace.md#product-languages) for a Python
+declaration and the caveats.
 
 ## Advanced install and explicit operation
 
@@ -139,7 +165,8 @@ coord start 42 --config /path/to/config.json --coord-root /path/to/runtime
 coord run --issue 42 --coord-root /path/to/runtime
 ```
 
-See `config.product.example.json` for declared verification/check commands and
+See `config.product.example.json` for a complete generated Go workspace config
+(only its policy fields belong in a `--declare` file) and
 [`docs/coord-driver.md`](docs/coord-driver.md) for profiles, owner controls,
 tmux behavior, recovery, finalization, and runtime topology.
 
@@ -226,3 +253,8 @@ The action names an absolute `complete` path. After pushing the commit that
 contains the required artifact, the agent writes that exact lowercase 40-hex
 SHA—or `commit <sha>`—to `complete`. Branch-tip movement alone never completes
 an action.
+
+## License
+
+MIT; see [`LICENSE`](LICENSE). Contributions: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Security reports: [`SECURITY.md`](SECURITY.md).
