@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -204,6 +204,32 @@ describe("shipped examples", () => {
   it("keeps config.product.example.json parseable by the driver's own schema", () => {
     const example = JSON.parse(readFileSync(join(repoRoot, "config.product.example.json"), "utf8")) as unknown;
     expect(coordinatorConfigSchema.safeParse(example).success).toBe(true);
+  });
+
+  it("ships the public baseline without machine-specific paths or private-install wording", () => {
+    expect(existsSync(join(repoRoot, "LICENSE"))).toBe(true);
+    expect(existsSync(join(repoRoot, "CONTRIBUTING.md"))).toBe(true);
+    expect(existsSync(join(repoRoot, "SECURITY.md"))).toBe(true);
+    const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { license?: string };
+    expect(packageJson.license).toBe("MIT");
+
+    const personalPath = /\/Volumes\/|\/Users\/[A-Za-z]/;
+    const privateInstall = /\b(?:repo|repository) is private\b|Private repos/i;
+    const docFiles = readdirSync(join(repoRoot, "docs"))
+      .filter((name) => name.endsWith(".md"))
+      .map((name) => join("docs", name));
+    const paths = [
+      "README.md",
+      ...docFiles,
+      "config.example.json",
+      "config.product.example.json",
+      "scripts/bootstrap.sh"
+    ];
+    for (const relative of paths) {
+      const body = readFileSync(join(repoRoot, relative), "utf8");
+      expect(body, relative).not.toMatch(personalPath);
+      expect(body, relative).not.toMatch(privateInstall);
+    }
   });
 });
 

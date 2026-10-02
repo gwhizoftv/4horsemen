@@ -8,18 +8,16 @@ merges a pull request.
 ## Happy path
 
 Install coordination once, onboard each product once, and then drive work from
-GitHub issues. **This repository is private** — do not use anonymous
-`curl … raw.githubusercontent.com … | sh` (it 404s without a public raw URL).
+GitHub issues.
 
 ```sh
-# Once per machine (GitHub CLI must already reach this private repo).
-gh auth login          # if needed
-gh auth setup-git      # so git clone/https works for private remotes
-
-gh repo clone gwhizoftv/coordination /tmp/coordination-src
-sh /tmp/coordination-src/scripts/bootstrap.sh --source /tmp/coordination-src
-# Optional: rm -rf /tmp/coordination-src
+# Once per machine (public install).
+curl -fsSL https://raw.githubusercontent.com/gwhizoftv/coordination/main/scripts/bootstrap.sh | sh
 # Add ~/.local/bin to PATH if the script prints that hint.
+
+# Inspect-first alternative:
+# git clone https://github.com/gwhizoftv/coordination.git /tmp/coordination-src
+# sh /tmp/coordination-src/scripts/bootstrap.sh --source /tmp/coordination-src
 
 # Once per product.
 coord onboard /path/to/app
@@ -31,9 +29,10 @@ coord 42
 ```
 
 Bootstrap installs a complete checkout under `~/.local/share/coordination` and
-links `~/.local/bin/coord`. `--source` may be a local clone (as above) or any
-git URL your credentials can read. Public forks may still use
-`curl -fsSL <raw-bootstrap-url> | sh` if the raw file is world-readable.
+links `~/.local/bin/coord`. `--source` may be a local clone or any git URL your
+credentials can read. A private fork installs with
+`sh scripts/bootstrap.sh --source <local clone>` after you clone it with your
+own credentials.
 
 `coord onboard` defaults to four agents (`claude,codex,cursor,antigravity`),
 the consensus profile, sibling agent clones, and
@@ -103,14 +102,42 @@ discoverable. See [`docs/setup-workspace.md`](docs/setup-workspace.md).
 
 ## Requirements
 
-- Node 26 and pnpm 11
-- Git and GitHub CLI (`gh`), authenticated for the product repository
+- Node 26 and pnpm 11 **to run coordination** (not required as the product’s
+  language)
+- Git
+- GitHub CLI (`gh`), authenticated for the **product** repository (not required
+  to install coordination itself)
 - tmux for interactive agent launch and delivery
 - the configured agent harnesses (Claude, Codex, Cursor, or Antigravity)
+
+On macOS, `coord start` / `coord manual` can open Terminal.app windows for the
+owner UI; tmux itself works on other platforms without Terminal.app.
 
 Bootstrap accepts `--root`, `COORD_INSTALL_ROOT`, and `--no-path`. It clones or
 cleanly fast-forwards a complete install checkout, performs the locked build,
 and refuses dirty or unrelated paths rather than resetting them.
+
+## Product languages
+
+Coordination does not embed a product language runtime. It runs the commands
+declared in workspace config (`verify` / `checks` as argv arrays).
+
+At install time, `proposeProjectPolicy` auto-proposes policy when it finds
+`Cargo.toml` (Rust), `go.mod` (Go), `package.json` (pnpm/yarn/npm), or a
+`Makefile` with recognized targets — first match wins. Python is not detected
+yet; pass an explicit declaration with `coord install … --declare <file>`.
+Any language works the same way once its build/test commands are declared.
+
+See [`docs/setup-workspace.md`](docs/setup-workspace.md#product-languages) for
+the detection table, a Python `--declare` example, and PATH caveats.
+`config.product.example.json` is a full generated-workspace example (Go), not a
+drop-in `--declare` file — extract only the policy fields (`toolchain`,
+`verify`, `checks`, critical paths) when declaring.
+
+## License
+
+Released under the [MIT License](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md)
+and [SECURITY.md](SECURITY.md).
 
 ## Advanced install and explicit operation
 

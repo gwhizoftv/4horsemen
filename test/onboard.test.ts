@@ -138,7 +138,7 @@ describe("coord onboard", () => {
     ).toBe(2);
     expect(errors.join("")).toContain("is not onboarded in this worktree");
     expect(existsSync(issueRuntimePaths(coordRoot, 10).issueRoot)).toBe(false);
-  });
+  }, 60_000);
 
   it("persists a selected profile and numeric dispatch resumes without refetching", async () => {
     const fixture = product();

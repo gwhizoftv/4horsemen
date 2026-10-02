@@ -15,7 +15,7 @@ does three things:
 Every number below is measured from the issue-76 consensus run
 (`2026-08-20T18:12:56Z` → `19:17:24Z`, profile `consensus`, roster
 `claude, codex, cursor, antigravity`), reconstructed from
-`/Volumes/4TB-SOURCE/REPOS/coord/coord-runtime/issue-76/`. It is one run, so
+`<coord-root>/issue-76/`. It is one run, so
 treat the absolute values as a baseline to beat, not as a stable average.
 
 ---
@@ -124,7 +124,7 @@ belongs to the phase named in `details.from`. The first phase starts at the
 After Phase 1, reproduce the journal-only table with the supported reader:
 
 ```bash
-coord analytics --issue 76 --coord-root /Volumes/4TB-SOURCE/REPOS/coord/coord-runtime
+coord analytics --issue 76 --coord-root /path/to/coord-runtime
 ```
 
 Issue-76 result — **64.47 min wall clock** from `started` to the terminal

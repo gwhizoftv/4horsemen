@@ -2,6 +2,7 @@ node_modules/
 dist/
 coverage/
 .DS_Store
+/tags
 /start-*.sh
 .claude/
 .codex/

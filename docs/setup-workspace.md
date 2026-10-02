@@ -24,15 +24,16 @@ them alone. "No hooks for humans" means none *from coordination*.
 
 ## Bootstrap once
 
-Private repositories (the usual case for this package) cannot be fetched with
-anonymous `curl` to `raw.githubusercontent.com` — that URL returns **404**
-without public raw access. Prefer GitHub CLI + a local `--source`:
+Public install (default):
 
 ```sh
-gh auth login          # if needed
-gh auth setup-git      # private HTTPS remotes via gh credentials
+curl -fsSL https://raw.githubusercontent.com/gwhizoftv/coordination/main/scripts/bootstrap.sh | sh
+```
 
-gh repo clone gwhizoftv/coordination /tmp/coordination-src
+Inspect-first alternative:
+
+```sh
+git clone https://github.com/gwhizoftv/coordination.git /tmp/coordination-src
 sh /tmp/coordination-src/scripts/bootstrap.sh --source /tmp/coordination-src
 # Optional: rm -rf /tmp/coordination-src
 ```
@@ -49,9 +50,9 @@ Only a checkout created by bootstrap receives ownership metadata under its
 `.git/` directory. Building a developer checkout never makes uninstall the
 owner of that checkout.
 
-Public forks that expose `scripts/bootstrap.sh` on a world-readable raw URL may
-still use `curl -fsSL <url> | sh`. That path is optional, not the default for
-this private repository.
+Private forks or offline installs use a local clone plus
+`sh scripts/bootstrap.sh --source <local clone>` with credentials that can read
+that fork.
 
 ## Onboard a product
 
@@ -361,6 +362,60 @@ three tiers that are easy to conflate:
 Tiers 2 and 3 run the product's own suite and answer different questions. Tier 2
 is fast feedback in a dirty worktree; tier 3 is hermetic and is what gates
 publication. The journal records which tier failed.
+
+### Product languages
+
+`proposeProjectPolicy` in `src/setupWorkspace.ts` runs once at
+`coord install` / `coord onboard` and proposes `verify` / `checks` / critical
+paths from the first matching marker:
+
+| Marker | Toolchain label | Typical proposal |
+| --- | --- | --- |
+| `Cargo.toml` | `cargo` | `cargo check --all-targets` / `cargo test` |
+| `go.mod` | `go` | `go vet ./...` / `go test ./...` (+ build/test checks) |
+| `package.json` | `pnpm` / `yarn` / `npm` | scripts such as `check:fast`, `check`, `test`, `test:e2e` when present |
+| `Makefile` | `make` | `make check` / `make test` when those targets exist |
+| *(else)* | none | no `verify`/`checks` inferred → install refuses until `--declare` supplies at least `checks` |
+
+Python has no auto-detection yet. Declare policy explicitly, for example:
+
+```jsonc
+{
+  "toolchain": "python",
+  "verify": {
+    "precommit": [{ "name": "lint", "argv": ["ruff", "check", "."] }],
+    "prepush": [{ "name": "test", "argv": ["pytest", "-q"] }]
+  },
+  "checks": [
+    { "name": "test", "argv": ["pytest", "-q"] }
+  ],
+  "workflowCriticalPrefixes": ["src/", "tests/"],
+  "workflowCriticalFiles": ["pyproject.toml", "uv.lock"]
+}
+```
+
+```sh
+coord install \
+  --product /path/to/app \
+  --coord-root /path/to/coord-runtime \
+  --agents claude,codex \
+  --profile reviewed \
+  --declare /path/to/declaration.json
+```
+
+`coord onboard` does not accept `--declare`; use `coord install` for an
+explicit declaration. `config.product.example.json` is a full generated
+workspace config (Go example), not a drop-in `--declare` file — copy only the
+policy fields above.
+
+Caveats:
+
+- Doctor’s `toolchain` finding requires each declared `argv[0]` on PATH
+  (operators must install `go` / `cargo` / `pytest` / etc. on agent machines).
+- Mixed-language monorepos usually need a hand-written declaration (first
+  matching detector wins).
+- Node 26 + pnpm 11 are required to **run coordination**, not to be the
+  product’s language.
 
 ### Declaring verification
 
