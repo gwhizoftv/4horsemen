@@ -1,0 +1,29 @@
+{
+  "actionId": "45535c81-bda3-424c-bde9-62b74691b035",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "c79f036028456a635e092b9807c5e2a546561980",
+      "path": ".signals/issue-139/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "16cc7f3f92e69eb7b575ab0cb6c7c057c6184998",
+      "path": ".signals/issue-139/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "3c2dd0bc666c99e9fd081e6f366ae5877d9539d5",
+      "path": ".signals/issue-139/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "0c86e47877b822c3d04ad37391ff4fc90b3592e1581e4898ff862b084aff6c2f",
+  "issue": 139,
+  "issueSessionId": "issue-139:845d28d091c530926fa4ab59d615654b56ac2977",
+  "protocolVersion": 2,
+  "rationale": "Codex stays within the approved map, documents release gates honestly without a broken LICENSE link, and avoids Cursor’s out-of-scope onboard timeout edit.",
+  "responseSha256": "b78ddb51283704e34c31692bd4a7a36822bcd0cb0ea0c0064c61f63866e14b2e"
+}
