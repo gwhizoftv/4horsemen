@@ -837,13 +837,6 @@ describe("generated git shim", () => {
     }
   });
 
-  /**
-   * The reason the shim resolves the target repository instead of refusing on
-   * the subcommand alone. A product's own tooling shells out to git against
-   * other repositories, and this repository's fast suite does exactly that; a
-   * blanket block breaks `pnpm check:fast`, which is the check an agent has to
-   * pass before it can commit anything.
-   */
   it("refuses even when the suite itself runs under a delegated git", () => {
     const fixture = product();
     const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
@@ -857,6 +850,13 @@ describe("generated git shim", () => {
     }
   });
 
+  /**
+   * The reason the shim resolves the target repository instead of refusing on
+   * the subcommand alone. A product's own tooling shells out to git against
+   * other repositories, and this repository's fast suite does exactly that; a
+   * blanket block breaks `pnpm check:fast`, which is the check an agent has to
+   * pass before it can commit anything.
+   */
   it("stays out of the way of manual mode and of other repositories", () => {
     const fixture = product();
     const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
