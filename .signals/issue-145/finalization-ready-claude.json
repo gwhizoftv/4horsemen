@@ -1,0 +1,19 @@
+{
+  "protocolVersion": 1,
+  "issue": 145,
+  "issueSessionId": "issue-145:845d28d091c530926fa4ab59d615654b56ac2977",
+  "agent": "claude",
+  "artifact": "finalization",
+  "consensusSha": "4cf92ca6e7cf307dfc60f4737b7659ca8b810f1c",
+  "finalSha": "1cdf2ee38af748792dd3c530f87762e69fafcc1b",
+  "checks": [
+    {
+      "argv": [
+        "pnpm",
+        "run",
+        "check"
+      ],
+      "exitCode": 0
+    }
+  ]
+}
