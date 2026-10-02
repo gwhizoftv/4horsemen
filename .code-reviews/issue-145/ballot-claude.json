@@ -1,0 +1,29 @@
+{
+  "actionId": "4ab39a02-7335-446f-9491-c6efececcc7a",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "cursor",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "846a8344ffdea493149c68e5e79dcc96c82f453f",
+      "path": ".signals/issue-145/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ae32d27f68b915b2302c50b3d18fd1ec629169cb",
+      "path": ".signals/issue-145/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "a3fbd7ce8cd351d83a7be513c108470f12ce8136",
+      "path": ".signals/issue-145/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "e777f193684423ea5fe3e9215ad40fb13d5ca4afffe613d7fd2fcc4f6e5e9f11",
+  "issue": 145,
+  "issueSessionId": "issue-145:845d28d091c530926fa4ab59d615654b56ac2977",
+  "protocolVersion": 2,
+  "rationale": "All three pins are behaviorally identical and in scope, but cursor's keeps the existing JSDoc attached to its own test and the full shim-leak rationale, whereas claude's pin misplaces that JSDoc onto the new case and codex's drops the mechanism comment.",
+  "responseSha256": "dcd49686ce852913dca4f9997ff2b788e122e5717c37343e6763bcdcbd26430d"
+}

@@ -1,0 +1,29 @@
+{
+  "actionId": "93359dd9-7c91-49e6-b73e-4be6152d58b7",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "846a8344ffdea493149c68e5e79dcc96c82f453f",
+      "path": ".signals/issue-145/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ae32d27f68b915b2302c50b3d18fd1ec629169cb",
+      "path": ".signals/issue-145/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "a3fbd7ce8cd351d83a7be513c108470f12ce8136",
+      "path": ".signals/issue-145/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "e777f193684423ea5fe3e9215ad40fb13d5ca4afffe613d7fd2fcc4f6e5e9f11",
+  "issue": 145,
+  "issueSessionId": "issue-145:845d28d091c530926fa4ab59d615654b56ac2977",
+  "protocolVersion": 2,
+  "rationale": "Claude 846a8344 matches the selected plan with the same three hermetic fixes as the peers and the clearest runGit commentary; the only gap is a misplaced JSDoc, not a behavioral defect.",
+  "responseSha256": "a1bc4236d53f371b4e1c175bfa7635892ea8c54c9ce504a227b52b638c82c157"
+}
