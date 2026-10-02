@@ -136,8 +136,8 @@ drop-in `--declare` file — extract only the policy fields (`toolchain`,
 
 ## License
 
-Released under the [MIT License](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md)
-and [SECURITY.md](SECURITY.md).
+Released under the MIT License (`"license": "MIT"` in `package.json`). See
+[CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## Advanced install and explicit operation
 

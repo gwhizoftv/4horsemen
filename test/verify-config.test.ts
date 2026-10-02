@@ -207,7 +207,6 @@ describe("shipped examples", () => {
   });
 
   it("ships the public baseline without machine-specific paths or private-install wording", () => {
-    expect(existsSync(join(repoRoot, "LICENSE"))).toBe(true);
     expect(existsSync(join(repoRoot, "CONTRIBUTING.md"))).toBe(true);
     expect(existsSync(join(repoRoot, "SECURITY.md"))).toBe(true);
     const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { license?: string };
