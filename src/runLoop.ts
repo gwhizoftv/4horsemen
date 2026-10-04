@@ -9,7 +9,6 @@ import {
   markActionInjected,
   markActionWorkflowComplete,
   markInjectedActionAbsent,
-  markObservabilityDegraded,
   mutateAgentLifecycle,
   orderAgentAction,
   readAgentLifecycle
@@ -193,7 +192,7 @@ export type RunLoopDependencies = {
   actionId?: () => string;
   log?: (message: string) => void;
   verbose?: (message: string) => void;
-  /** @deprecated The timer is now an observability watchdog, never resend authority. */
+  /** @deprecated Minimum wait before checking for lost delivery, never resend authority. */
   nudgeRetryMs?: number;
   /** One-shot Codex quota read for an owner-bound home (#140). */
   codexQuota?: CodexQuotaReader;
@@ -775,10 +774,9 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
 const deferralRationale = (code: string): string =>
   DEFERRAL_RATIONALE[code] ?? "the terminal or lifecycle layer refused delivery";
 
-// Delivery protection is deliberately independent of the observability watchdog.
+// Delivery protection is independent of the wait before checking for lost delivery.
 const NUDGE_REPEAT_DELAYS_MS = [60_000, 120_000, 240_000];
 const OBSERVATION_INTERVAL_MS = 60_000;
-const STALE_ACTIVITY_MS = 300_000;
 const UNKNOWN_DEFERRAL_LIMIT = 8;
 /** A provider deadline authorizes one recheck this long after it, never a resume. */
 const DEADLINE_RECHECK_MS = 30_000;
@@ -799,12 +797,12 @@ export class CoordinatorRunLoop {
   private readonly actionId: () => string;
   private readonly log: (message: string) => void;
   private readonly verbose: (message: string) => void;
-  private readonly observabilityWatchdogMs: number;
+  private readonly lostDeliveryDelayMs: number;
   private readonly codexQuota: CodexQuotaReader;
   /** Last RN/round announced on `log`, so resume and first prepare do not repeat. */
   private loggedPhaseKey: string | null = null;
-  /** Healthy local probes are advisory; only unresolved episodes need durable schedules. */
-  private readonly healthyObservations = new Map<string, { identity: string; nextAt: number }>();
+  /** Local probes are advisory; restarting may probe again without changing workflow state. */
+  private readonly paneObservations = new Map<string, { identity: string; nextAt: number; available: boolean }>();
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
@@ -818,7 +816,7 @@ export class CoordinatorRunLoop {
     this.actionId = dependencies.actionId ?? createActionId;
     this.log = dependencies.log ?? ((message) => process.stdout.write(`${message}\n`));
     this.verbose = dependencies.verbose ?? (() => undefined);
-    this.observabilityWatchdogMs = dependencies.nudgeRetryMs ?? AGENT_OBSERVABILITY_WATCHDOG_MS;
+    this.lostDeliveryDelayMs = dependencies.nudgeRetryMs ?? AGENT_OBSERVABILITY_WATCHDOG_MS;
     this.codexQuota = dependencies.codexQuota ?? ((input) => readCodexQuota(input));
   }
 
@@ -1046,56 +1044,33 @@ export class CoordinatorRunLoop {
     return cursors;
   }
 
-  /** No hooks is a primary path, even when the last cached execution was working. */
+  /** Quiet work is normal. Only explicit pane conditions can hold unfinished work. */
   private async observeUnfinished(start: StartState, cursors: CursorsState, agent: string, actionId: string): Promise<CursorsState> {
     if (this.tmux === null) return cursors;
-    let safety = cursors.actionSafety[agent]!;
+    const safety = cursors.actionSafety[agent]!;
     if (safety.reserved) return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends}`);
     const now = this.now();
-    const entry = readAgentLifecycle(this.paths).agents[agent];
-    const freshAt = entry?.action?.actionId === actionId ? entry.lastEventAt : null;
-    if (freshAt !== null && freshAt !== undefined && Date.parse(freshAt) > Date.parse(safety.activityAt)) {
-      safety = { ...safety, activityAt: freshAt, observationChecks: 0, nextObservationAt: null };
-      cursors = this.mutate(cursors, (current) => ({ ...current, actionSafety: { ...current.actionSafety, [agent]: safety } }));
-    }
-    if (safety.observationChecks >= 3) {
-      return this.hold(cursors, agent, "unobservable", this.observationEvidence(agent, actionId));
-    }
-    if (safety.nextObservationAt !== null && Date.parse(now) < Date.parse(safety.nextObservationAt)) return cursors;
+    const identity = `${actionId}:${safety.holdGeneration}`;
+    const previous = this.paneObservations.get(agent);
+    if (previous?.identity === identity && Date.parse(now) < previous.nextAt) return cursors;
+    // Schedule before inspection so failed reads also stay bounded.
+    const observation = { identity, nextAt: Date.parse(now) + OBSERVATION_INTERVAL_MS, available: false };
+    this.paneObservations.set(agent, observation);
     const evidence = this.observationEvidence(agent, actionId);
-    const injectedAt = entry?.action?.injectedAt;
-    const correlationMissing = injectedAt !== null && injectedAt !== undefined && entry?.action?.delivery === "injected" &&
-      Date.parse(now) - Date.parse(injectedAt) >= this.observabilityWatchdogMs;
-    const stale = Date.parse(now) - Date.parse(safety.activityAt) >= STALE_ACTIVITY_MS;
-    // Fresh lifecycle activity is the only supported activity proof here. A changing
-    // spinner/clock or a static prompt must not replenish the observation budget.
-    const checks = correlationMissing || stale ? Math.min(3, safety.observationChecks + 1) : 0;
-    const identity = `${actionId}:${safety.holdGeneration}:${safety.activityAt}`;
-    const healthy = this.healthyObservations.get(agent);
-    if (checks === 0 && healthy?.identity === identity && Date.parse(now) < healthy.nextAt) return cursors;
-    const nextAt = Date.parse(now) + OBSERVATION_INTERVAL_MS;
-    if (checks > 0) {
-      // Reserve before inspection: a crash/restart cannot replenish the episode.
-      cursors = this.mutate(cursors, (current) => ({ ...current, actionSafety: { ...current.actionSafety, [agent]: {
-        ...safety, observationChecks: checks, nextObservationAt: new Date(nextAt).toISOString()
-      } } }));
-    } else {
-      this.healthyObservations.set(agent, { identity, nextAt });
-    }
     const target = this.tmux.target(start.issue, agent);
     const pane = await this.tmux.inspectPane(target).catch(() => null);
     this.authority(cursors);
-    if (pane === null) return this.hold(cursors, agent, "unobservable", evidence);
+    if (pane === null) return cursors;
     if (!pane.alive) return this.hold(cursors, agent, "harness-gone", evidence);
-    if (checks > 0 || agent === "claude") {
+    if (agent === "claude") {
       const text = await this.tmux.capturePane(target).catch(() => null);
       this.authority(cursors);
-      if (text === null) return this.hold(cursors, agent, "unobservable", evidence);
+      if (text === null) return cursors;
       const config = start.agents.find((candidate) => candidate.id === agent);
       const readiness = harnessPromptReadiness(text, config?.id ?? agent, actionId);
       if (!readiness.ready && readiness.reason === "claude-usage-wait") return this.hold(cursors, agent, "vendor-wait", evidence);
-      if (checks >= 3) return this.hold(cursors, agent, "unobservable", evidence);
     }
+    observation.available = true;
     return cursors;
   }
 
@@ -1602,6 +1577,10 @@ export class CoordinatorRunLoop {
     if (config.delivery !== "nudge" && config.delivery !== "both") return cursors;
     const runtime = agentRuntimePaths(this.paths, agent);
     if (!existsSync(runtime.action)) return cursors;
+    // An unavailable observation must not trigger another pane probe through lost-delivery recovery.
+    const observation = this.paneObservations.get(agent);
+    if (observation?.identity === `${actionId}:${cursors.actionSafety[agent]?.holdGeneration}` &&
+      !observation.available && Date.parse(this.now()) < observation.nextAt) return cursors;
 
     if (reason === "idle") {
       cursors = await this.rewriteOrderedAction(start, cursors, agent, actionId);
@@ -1610,37 +1589,7 @@ export class CoordinatorRunLoop {
     orderAgentAction(this.paths, agent, actionId, actionDigest, this.now());
 
     if (reason === "idle") {
-      const degraded = markObservabilityDegraded(
-        this.paths,
-        agent,
-        this.now(),
-        this.observabilityWatchdogMs
-      );
-      if (degraded.changed) {
-        appendJournal(
-          this.paths,
-          {
-            type: "agent-observability-degraded",
-            agent,
-            actionId,
-            details: { actionDigest, watchdogMs: this.observabilityWatchdogMs, cause: degraded.cause }
-          },
-          this.now()
-        );
-        // The watchdog proves correlation lag, not a dead hook bridge. Only an
-        // agent that never announced a session gets the restart remedy; telling
-        // an operator to restart a healthy CLI kills the turn that was about to
-        // write `complete`.
-        this.log(
-          degraded.cause === "hooks-never-seen"
-            ? `Issue ${start.issue}: no lifecycle signal has ever arrived from ${agent}; duplicate send suppressed. ` +
-                `Restart ${agent}'s CLI so it loads coordinator lifecycle hooks.`
-            : `Issue ${start.issue}: no lifecycle signal correlated with the last delivery to ${agent} within ` +
-                `${this.observabilityWatchdogMs}ms; duplicate send suppressed. The agent may still be finishing its ` +
-                `previous turn — no action needed unless it stays quiet.`
-        );
-      }
-      const entry = degraded.state.agents[agent];
+      const entry = readAgentLifecycle(this.paths).agents[agent];
       if (entry === undefined) return cursors;
       // An action that is still only ordered has never been sent. Retrying a
       // prior busy readiness rejection cannot create a duplicate; tmux
@@ -1657,14 +1606,14 @@ export class CoordinatorRunLoop {
             entry.lastEventAt !== null &&
             Date.parse(entry.lastEventAt) >= Date.parse(injected.injectedAt);
           const tmux = this.tmux;
-          // A send that was never accepted and whose watchdog has elapsed can be
+          // A send that was never accepted and whose delivery delay has elapsed can be
           // retried, but only on the positive scrape proof below. Elapsed time
           // and a missing `complete` never authorize a retry on their own.
-          const watchdogElapsed =
+          const deliveryDelayElapsed =
             injected !== null &&
             injected !== undefined &&
             injected.injectedAt !== null &&
-            Date.parse(this.now()) - Date.parse(injected.injectedAt) >= this.observabilityWatchdogMs;
+            Date.parse(this.now()) - Date.parse(injected.injectedAt) >= this.lostDeliveryDelayMs;
           const canProveLostInjection =
             tmux !== null &&
             injected?.delivery === "injected" &&
@@ -1672,10 +1621,10 @@ export class CoordinatorRunLoop {
             (entry.pendingInputCount ?? 0) === 0 &&
             entry.backgroundActive !== true &&
             ((entry.execution === "queued" && observedAfterInjection) ||
-              (entry.execution === "unknown" && entry.health === "degraded") ||
+              (entry.execution === "unknown" && deliveryDelayElapsed) ||
               (entry.execution === "idle" &&
                 decision.code === "idle-transition-already-used" &&
-                watchdogElapsed));
+                deliveryDelayElapsed));
           if (
             !canProveLostInjection ||
             tmux === null ||
