@@ -1,0 +1,14 @@
+{
+  "actionId": "06aa6fd5-9b06-49b1-bf85-2e75760d4b8a",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "27aa17e9cec135573149722547d2321b5a6c42a8e64c45f38ec9a4ee4eaa90ea",
+  "issue": 129,
+  "issueSessionId": "issue-129:8392d92d365f298bf9d04dd8d19793705a3ff77e",
+  "protocolVersion": 2,
+  "rationale": "The bound revision separates path and PATH diagnoses from retained OS detail, preserves pre-wipe refusal and repository state, stays within the approved scope, and passed full pnpm check with 685 fast tests and two e2e tests.",
+  "responseSha256": "628848ed45e6a36a8cdbd70d56527991c683c03775b29b1e20171fbdbdba8a34",
+  "revisionCommitSha": "a321f50a7750666ced7d8f75ead90b25458bb716",
+  "round": 1
+}

@@ -1,0 +1,14 @@
+{
+  "actionId": "5237b510-cba6-40b6-a4f5-1c18eb8f27e6",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "27aa17e9cec135573149722547d2321b5a6c42a8e64c45f38ec9a4ee4eaa90ea",
+  "issue": 129,
+  "issueSessionId": "issue-129:8392d92d365f298bf9d04dd8d19793705a3ff77e",
+  "protocolVersion": 2,
+  "rationale": "Revision keeps PATH/path diagnosis primary and relegates spawnSync to a detail suffix, while retaining correct ENOTDIR labeling and spawnSync-free wipe-issue missing-product errors.",
+  "responseSha256": "e135a23a2c4bdafac4370ab8468a048a1847859e431ce1ca3526e69be79cb00c",
+  "revisionCommitSha": "a321f50a7750666ced7d8f75ead90b25458bb716",
+  "round": 1
+}

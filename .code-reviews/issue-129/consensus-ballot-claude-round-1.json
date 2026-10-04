@@ -1,0 +1,14 @@
+{
+  "actionId": "ca937b11-05d3-42a1-9494-819a1d10cec1",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "27aa17e9cec135573149722547d2321b5a6c42a8e64c45f38ec9a4ee4eaa90ea",
+  "issue": 129,
+  "issueSessionId": "issue-129:8392d92d365f298bf9d04dd8d19793705a3ff77e",
+  "protocolVersion": 2,
+  "rationale": "Revision a321f50a only relabels the secondary OS launch detail ('; detail: ') in git() spawn-failure messages and tightens the two affected tests to assert the full message, leaving the working-directory preflight, recheck, PATH diagnosis, and all coverage from the recommended pin 95b888dd intact.",
+  "responseSha256": "3f91aa49162d1ef592fc9b2218da0f5e2cb2b9fe14a41fdfdeaa07b20911600e",
+  "revisionCommitSha": "a321f50a7750666ced7d8f75ead90b25458bb716",
+  "round": 1
+}
