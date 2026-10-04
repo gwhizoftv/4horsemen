@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { decide } from "../src/machine.js";
+import { planAmendmentRequestSchema } from "../src/protocol.js";
 import {
   cursorsStateSchema,
   initialCursors,
@@ -163,6 +164,49 @@ const implementationDerived = {
 };
 
 describe("pure workflow machine", () => {
+  it.each(["consensus", "reviewed", "solo"] as const)("requires explicit amendment unanimity under %s", (profile) => {
+    const activeRoster = profile === "solo" ? ["codex"] : roster;
+    const pending = {
+      sequence: 2,
+      request: { agent: "codex", commitSha: gitSha("request"), path: ".signals/issue-1/revision-ready-codex-round-1.json" },
+      proposal: {
+        protocolVersion: 1, artifact: "plan-amendment-request", issue: 1,
+        issueSessionId: start.issueSessionId, agent: "codex", actionId: actionIdFor("codex"),
+        inputSetHash: responseDigest("inputs"), scopeHash: responseDigest("scope"),
+        explanation: "Missing regression test", additionalPaths: [{ path: "test/product.test.ts", reason: "Regression coverage" }]
+      },
+      plans: [{ agent: "codex", commitSha: gitSha("plan"), path: ".plans/issue-1/plan.md" }],
+      activeRoster, resume: { stepId: "R6.revise", round: 1 }, requestedAt: now
+    };
+    const base = cursorsStateSchema.parse({
+      ...initialCursors(start, now), activeRoster, amendmentSequence: 2, pendingAmendment: pending,
+      issueCursor: { stepId: "R4.amend-ballot", gateId: "gate-4-implementations", round: 2 },
+      acceptedResponses: activeRoster.map((agent) => acceptedResponseFixture({ stepId: "R4.amend-ballot", agent, round: 1, disposition: "approve" }))
+    });
+    const context = { ...start, profile };
+    expect(decide({ start: context, cursors: base })).toEqual(activeRoster.map((agent) => ({
+      type: "prepare-action", agent, stepId: "R4.amend-ballot", round: 2
+    })));
+    const responses = activeRoster.map((agent) => acceptedResponseFixture({ stepId: "R4.amend-ballot", agent, round: 2, disposition: "approve" }));
+    const complete = cursorsStateSchema.parse({ ...base, acceptedResponses: [...base.acceptedResponses, ...responses] });
+    expect(decide({ start: context, cursors: complete })).toEqual([{ type: "publish-ballot-batch", stepId: "R4.amend-ballot", round: 2 }]);
+    const published = cursorsStateSchema.parse({ ...complete, ballotBatches: [publishedBallotBatchFixture({ kind: "amendment-ballot-batch", activeRoster, round: 2 })] });
+    expect(decide({ start: context, cursors: published })).toEqual([{ type: "resolve-amendment", approved: true }]);
+    published.acceptedResponses.find((response) => response.round === 2)!.disposition = "revise";
+    expect(decide({ start: context, cursors: published })).toEqual([{ type: "resolve-amendment", approved: false }]);
+    expect(published.pendingAmendment?.resume).toEqual({ stepId: "R6.revise", round: 1 });
+    const work = cursorsStateSchema.parse({ ...base, pendingAmendment: null,
+      issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
+      agents: Object.fromEntries(activeRoster.map((agent) => [agent, { ...base.agents[agent], stepId: "R4.implement", actionId: actionIdFor(agent) }]))
+    });
+    const observations = [...activeRoster].reverse().map((agent) => ({ agent, actionId: actionIdFor(agent),
+      submissionSha: gitSha(agent), status: "satisfied" as const, outstanding: [],
+      amendmentRequest: planAmendmentRequestSchema.parse({ ...pending.proposal, agent, actionId: actionIdFor(agent) }) }));
+    expect(decide({ start: context, cursors: work, observations })).toEqual([{
+      type: "begin-amendment", agent: activeRoster[0], submissionSha: gitSha(activeRoster[0]!), request: observations.at(-1)!.amendmentRequest
+    }]);
+  });
+
   it("orders all four consensus participants at the join gate", () => {
     const decisions = decide({ start, cursors: initialCursors(start, now) });
     expect(decisions).toEqual(

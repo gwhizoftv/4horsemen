@@ -13,6 +13,7 @@ export type ArtifactScaffoldContext = {
   round: number | null;
   approvedPaths: readonly string[];
   actionId?: string;
+  scopeHash?: string;
 };
 
 const PLACEHOLDER_SHA = "<40-lowercase-hex-commit-sha>";
@@ -53,6 +54,7 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
         ...withHash(ctx),
         artifact: "implementation-ready",
         implementationCommitSha: PLACEHOLDER_SHA,
+        ...(ctx.scopeHash === undefined ? {} : { scopeHash: ctx.scopeHash }),
         approvedPaths: ctx.approvedPaths.length > 0 ? [...ctx.approvedPaths] : ["<path-from-selected-plan>"]
       };
     case "R5.compare-ballot":
@@ -67,8 +69,10 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
         artifact: "revision-ready",
         round: ctx.round ?? 1,
         revisedBranchHead: PLACEHOLDER_SHA,
+        ...(ctx.scopeHash === undefined ? {} : { scopeHash: ctx.scopeHash }),
         basedOn: ctx.inputs.map((input) => input.commitSha)
       };
+    case "R4.amend-ballot":
     case "R6.ballot":
       return {
         actionId: ctx.actionId ?? "<action-uuid>",
@@ -153,9 +157,19 @@ export const renderArtifactScaffold = (ctx: ArtifactScaffoldContext): string => 
   if (value === null) return "";
   const json = JSON.stringify(value, null, 2);
   const isResponse =
-    ctx.stepId === "R3.plan-ballot" || ctx.stepId === "R5.compare-ballot" || ctx.stepId === "R6.ballot";
+    ctx.stepId === "R3.plan-ballot" || ctx.stepId === "R5.compare-ballot" || ctx.stepId === "R6.ballot" || ctx.stepId === "R4.amend-ballot";
   const preamble = isResponse
     ? `\n\nWrite this JSON to the response path (replace any \`<...>\` placeholders):\n\n`
     : `\n\nWrite this JSON to the required path (replace any \`<...>\` placeholders; keep bound citations and digests exact):\n\n`;
-  return preamble + "```json\n" + `${json}\n` + "```";
+  const request = ctx.scopeHash !== undefined && (ctx.stepId === "R4.implement" || ctx.stepId === "R6.revise")
+    ? "\n\nIf the selected plan overlooked a necessary file, do not claim readiness or change the approved map yourself. " +
+      "Instead, write the following alternative JSON at the same required path, commit and push ONLY that request artifact " +
+      "(leave unfinished product edits unstaged), and submit its commit SHA using the same completion instructions. " +
+      "The request is not approval; wait for the coordinator's new action before using additional paths. " +
+      "Explain why each exact file is needed for the original behavior, not new scope. Product checks still apply to the eventual implementation.\n\n```json\n" +
+      JSON.stringify({ ...withHash(ctx), artifact: "plan-amendment-request", actionId: ctx.actionId ?? "<action-uuid>",
+        scopeHash: ctx.scopeHash, explanation: "<discovered omission>",
+        additionalPaths: [{ path: "<exact-product-file-path>", reason: "<why the original plan needs this file>" }] }, null, 2) + "\n```"
+    : "";
+  return preamble + "```json\n" + `${json}\n` + "```" + request;
 };

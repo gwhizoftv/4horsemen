@@ -5,6 +5,7 @@ import {
   finalizationArtifactSchema,
   implementationReadyArtifactSchema,
   participationReadyArtifactSchema,
+  planAmendmentRequestSchema,
   parseJsonWithSchema,
   revisionReadyArtifactSchema,
   validateCommonArtifactFields
@@ -163,8 +164,9 @@ const approvedTreeRoot = (pattern: string): string => {
 };
 
 /** Git records a directory delete as a change to every file under it. A map entry names that tree. */
-const matchesApprovedPath = (path: string, approved: readonly string[]): boolean =>
+const matchesApprovedPath = (path: string, approved: readonly string[], exact: readonly string[] = []): boolean =>
   approved.some((pattern) => {
+    if (exact.includes(pattern)) return path === pattern;
     const root = approvedTreeRoot(pattern);
     return root.length > 0 && (path === root || path.startsWith(`${root}/`));
   });
@@ -205,6 +207,10 @@ const commonErrors = (
 
 const inputHashErrors = (actual: string, order: InternalOrder): string[] =>
   actual === computeInputSetHash(order.inputs) ? [] : ["artifact inputSetHash does not match the bound action inputs"];
+
+const scopeErrors = (actual: string | undefined, order: InternalOrder): string[] =>
+  (order.scopeRequired === true && actual === undefined) || (actual !== undefined && actual !== order.scopeHash)
+    ? ["artifact scopeHash does not match the current approved file map; use the current action"] : [];
 
 const pinErrors = async (
   pin: string,
@@ -262,6 +268,23 @@ export const evaluateEvidence = async (
   assertAuthority();
   if (blob === null) return rejected(order, submissionSha, [`required artifact ${requiredPath} is missing`]);
 
+  if (order.stepId === "R4.implement" || order.stepId === "R6.revise") {
+    let isRequest = false;
+    try { isRequest = (JSON.parse(blob) as { artifact?: unknown })?.artifact === "plan-amendment-request"; } catch { /* ready-signal parsing reports malformed JSON */ }
+    if (isRequest) {
+      const parsed = parseJsonWithSchema(blob, planAmendmentRequestSchema);
+      if (!parsed.ok) return rejected(order, submissionSha, [`invalid amendment request: ${parsed.error}`]);
+      const request = parsed.value;
+      const errors = [...commonErrors(request, order), ...inputHashErrors(request.inputSetHash, order), ...scopeErrors(request.scopeHash, order)];
+      if (request.actionId !== order.actionId) errors.push("amendment request actionId does not match the current action");
+      if (order.approvedPaths.length === 0) errors.push("no selected plan file map is available");
+      for (const entry of request.additionalPaths) {
+        if (matchesApprovedPath(entry.path, order.approvedPaths, order.exactApprovedPaths)) errors.push(`path is already approved: ${entry.path}`);
+      }
+      return errors.length === 0 ? { ...satisfied(order, submissionSha), amendmentRequest: request } : rejected(order, submissionSha, errors);
+    }
+  }
+
   if (order.evidenceId === "plan-published") {
     const errors = checkPlan(blob);
     const approvedPaths = extractApprovedPaths(blob);
@@ -305,16 +328,18 @@ export const evaluateEvidence = async (
     const errors = [
       ...commonErrors(parsed.value, order),
       ...inputHashErrors(parsed.value.inputSetHash, order),
+      ...scopeErrors(parsed.value.scopeHash, order),
       ...(await pinErrors(parsed.value.implementationCommitSha, submissionSha, fetched.ref, order, mirror))
     ];
-    const approved = order.approvedPaths.length === 0 ? parsed.value.approvedPaths : order.approvedPaths;
+    const approved = order.approvedPaths;
+    if (approved.length === 0) errors.push("no selected plan file map is available");
     if (JSON.stringify([...parsed.value.approvedPaths].sort()) !== JSON.stringify([...approved].sort())) {
       errors.push("implementation approvedPaths do not match the selected plan file map");
     }
     if (errors.length === 0) {
       const changed = await mirror.changedPaths(order.baselineSha, parsed.value.implementationCommitSha);
       const disallowed = changed.filter(
-        (path) => !isCurrentIssueCoordinationPath(path, order.issue) && !matchesApprovedPath(path, approved)
+        (path) => !isCurrentIssueCoordinationPath(path, order.issue) && !matchesApprovedPath(path, approved, order.exactApprovedPaths)
       );
       if (disallowed.length > 0) errors.push(`implementation changes paths outside the approved file map: ${disallowed.join(", ")}`);
     }
@@ -329,9 +354,11 @@ export const evaluateEvidence = async (
     const errors = [
       ...commonErrors(parsed.value, order),
       ...inputHashErrors(parsed.value.inputSetHash, order),
+      ...scopeErrors(parsed.value.scopeHash, order),
       ...(await pinErrors(parsed.value.revisedBranchHead, submissionSha, fetched.ref, order, mirror))
     ];
     if (parsed.value.round !== order.round) errors.push(`revision round must be ${order.round ?? 1}`);
+    if (order.approvedPaths.length === 0) errors.push("no selected plan file map is available");
     const expectedPins = order.inputs.map((input) => input.commitSha).sort();
     if (JSON.stringify([...parsed.value.basedOn].sort()) !== JSON.stringify(expectedPins)) errors.push("revision basedOn pins do not equal bound inputs");
     if (expectedPins.length !== 1) errors.push("revision must be based on exactly one authorized product pin");
@@ -342,7 +369,7 @@ export const evaluateEvidence = async (
     if (inputPin !== undefined) {
       const changed = await mirror.changedPaths(inputPin, parsed.value.revisedBranchHead);
       const disallowed = changed.filter(
-        (path) => !isCurrentIssueCoordinationPath(path, order.issue) && !matchesApprovedPath(path, order.approvedPaths)
+        (path) => !isCurrentIssueCoordinationPath(path, order.issue) && !matchesApprovedPath(path, order.approvedPaths, order.exactApprovedPaths)
       );
       if (disallowed.length > 0) errors.push(`revision changes paths outside the approved file map: ${disallowed.join(", ")}`);
     }

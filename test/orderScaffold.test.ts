@@ -1,8 +1,31 @@
 import { describe, expect, it } from "vitest";
 import { artifactScaffoldValue, renderArtifactScaffold } from "../src/orderScaffold.js";
+import { planAmendmentRequestSchema } from "../src/protocol.js";
 import { BUILD_DISCIPLINE_NOTE, STEP_DEFINITIONS } from "../src/steps.js";
 
 describe("orderScaffold", () => {
+  it("offers a request without a product pin and keeps revision ancestry separate", () => {
+    const ctx = {
+      stepId: "R6.revise" as const, issue: 1, issueSessionId: "s", agent: "codex",
+      actionId: "10000000-0000-4000-8000-000000000001", baselineSha: "a".repeat(40), automationDigest: "b".repeat(64),
+      inputs: [{ kind: "implementation", agent: "codex", commitSha: "c".repeat(40), path: ".signals/issue-1/implementation-ready-codex.json" }],
+      eligibleChoices: [], round: 2, approvedPaths: ["src/product.ts"], scopeHash: "d".repeat(64)
+    };
+    expect(artifactScaffoldValue(ctx)).toMatchObject({ scopeHash: ctx.scopeHash, basedOn: ["c".repeat(40)], round: 2 });
+    const rendered = renderArtifactScaffold(ctx);
+    expect(rendered).toContain('"artifact": "plan-amendment-request"');
+    expect(rendered).toContain('"scopeHash": "' + ctx.scopeHash + '"');
+    expect(rendered).toContain("unstaged");
+    expect(rendered).toContain('"explanation": "<discovered omission>"');
+    expect(rendered).not.toContain('"rationale"');
+    const requestJson = [...rendered.matchAll(/```json\n([\s\S]*?)\n```/g)][1]![1]!;
+    expect(planAmendmentRequestSchema.parse({ ...JSON.parse(requestJson),
+      additionalPaths: [{ path: "test/product.test.ts", reason: "Regression coverage" }]
+    })).toMatchObject({ explanation: "<discovered omission>" });
+    const ballot = artifactScaffoldValue({ ...ctx, stepId: "R4.amend-ballot" });
+    expect(ballot).toEqual({ actionId: ctx.actionId, disposition: "approve", rationale: "<one sentence>" });
+  });
+
   it("renders a filled join JSON scaffold", () => {
     const ctx = {
       stepId: "R1.join" as const,

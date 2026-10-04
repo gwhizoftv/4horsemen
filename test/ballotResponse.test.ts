@@ -31,6 +31,16 @@ const fixture = () => {
 const actionId = "b2337d85-6617-4e9f-8ace-901453764aa4";
 
 describe("ballotResponse", () => {
+  it("binds amendment judgments to the current action and rejects non-judgment fields", () => {
+    const body = { actionId, disposition: "approve", rationale: "Necessary for the selected behavior." };
+    for (const disposition of ["approve", "revise"]) {
+      expect(parseBallotResponse(JSON.stringify({ ...body, disposition }), "R4.amend-ballot", actionId, []).ok).toBe(true);
+    }
+    for (const patch of [{ actionId: "10000000-0000-4000-8000-000000000001" },
+      { disposition: "escalate" }, { rationale: " " }, { scopeHash: "a".repeat(64) }]) {
+      expect(parseBallotResponse(JSON.stringify({ ...body, ...patch }), "R4.amend-ballot", actionId, []).ok).toBe(false);
+    }
+  });
   it("parses strict plan and comparison responses", () => {
     const ok = parseBallotResponse(
       JSON.stringify({ actionId, choice: "claude", rationale: "Prefer the complete plan." }),

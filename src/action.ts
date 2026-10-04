@@ -136,6 +136,11 @@ const inputText = (order: InternalOrder): string =>
         .map((input) => `- ${input.kind} from ${input.agent}: \`${input.commitSha}\` at \`${input.path}\``)
         .join("\n");
 
+const scopeInputText = (order: InternalOrder): string =>
+  (order.scopeInputs?.length ?? 0) === 0 ? "" :
+    "\n\n## Approved file-map amendments\n\nThese bound documents authorize the additional exact paths; they are not product parents.\n\n" +
+    order.scopeInputs!.map((input) => `- ${input.kind} from ${input.agent}: \`${input.commitSha}\` at ${encodePath(input.path)}`).join("\n");
+
 const renderGitAction = (order: InternalOrder): string => {
   if (order.requiredPath === "") throw new Error("Git action requires requiredPath.");
   repositoryPathSchema.parse(order.requiredPath);
@@ -155,7 +160,7 @@ Publish the required artifact at:
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${scopeInputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
 
 Push the commit containing the artifact to \`${order.branch}\`. Then write that
 exact 40-character lowercase commit SHA as the sole contents of:

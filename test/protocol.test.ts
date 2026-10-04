@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   comparisonBallotArtifactSchema,
+  planAmendmentRequestSchema,
   consensusBallotResponseSchema,
   implementationReadyArtifactSchema,
   participationReadyArtifactSchema,
@@ -22,6 +23,21 @@ const actionId = "b2337d85-6617-4e9f-8ace-901453764aa4";
 const digest = "c".repeat(64);
 
 describe("published protocol schemas", () => {
+  it("accepts only bounded exact additive request paths with nonblank reasons", () => {
+    const request = { ...common, artifact: "plan-amendment-request", actionId, inputSetHash: digest,
+      scopeHash: digest, explanation: "The original behavior needs its regression test.",
+      additionalPaths: [{ path: "test/product.test.ts", reason: "Existing assertion needs updating." }] };
+    expect(planAmendmentRequestSchema.parse(request)).toEqual(request);
+    for (const path of ["/test/a.ts", "../a.ts", "test/./a.ts", "test//a.ts", "test/", "test/**", "test/{a,b}.ts", ".git/config", ".plans/issue-1/plan.md"]) {
+      expect(planAmendmentRequestSchema.safeParse({ ...request, additionalPaths: [{ path, reason: "needed" }] }).success, path).toBe(false);
+    }
+    for (const patch of [{ explanation: " " }, { explanation: undefined },
+      { explanation: undefined, rationale: request.explanation }, { rationale: request.explanation }, { additionalPaths: [] },
+      { additionalPaths: [...request.additionalPaths, ...request.additionalPaths] },
+      { additionalPaths: [{ path: "test/a.ts", reason: " " }] }, { surprise: true }]) {
+      expect(planAmendmentRequestSchema.safeParse({ ...request, ...patch }).success).toBe(false);
+    }
+  });
   it("accepts a strict participation-readiness artifact and rejects unknown or stale shapes", () => {
     const join = {
       ...common,

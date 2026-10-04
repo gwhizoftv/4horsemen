@@ -33,6 +33,16 @@ const order = (root: string): InternalOrder => ({
 });
 
 describe("agent actions", () => {
+  it("renders scope approvals separately from the authorized product parent", () => {
+    const base = order("/external/coord");
+    const raw = renderAction({ ...base, stepId: "R6.revise", scopeInputs: [{
+      agent: "codex", commitSha: "4".repeat(40), path: ".plans/issue-1/amendment-ballot-codex-1.json", kind: "amendment-approval"
+    }] });
+    expect(raw).toContain("## Approved file-map amendments");
+    expect(raw).toContain("4".repeat(40));
+    expect(raw).toContain("not product parents");
+  });
+
   it("renders only the restricted public front matter and exact inputs", () => {
     const raw = renderAction(order("/external/coord"));
     const parsed = parseAction(raw);

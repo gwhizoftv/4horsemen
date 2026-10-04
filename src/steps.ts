@@ -1,3 +1,5 @@
+import type { PlanAmendmentRequest } from "./protocol.js";
+
 export const DEFAULT_MAX_REVISION_ROUNDS = 3;
 
 export type WorkflowProfile = "solo" | "reviewed" | "consensus";
@@ -13,6 +15,7 @@ export type EvidenceId =
   | "review-published"
   | "plan-response-accepted"
   | "implementation-pinned"
+  | "amendment-response-accepted"
   | "comparison-published"
   | "comparison-response-accepted"
   | "revision-pinned"
@@ -25,6 +28,7 @@ export type WorkflowStepId =
   | "R3.review"
   | "R3.plan-ballot"
   | "R4.implement"
+  | "R4.amend-ballot"
   | "R5.compare"
   | "R5.compare-ballot"
   | "R6.revise"
@@ -122,6 +126,15 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     requiredPath: (issue, agent) => `.signals/issue-${issue}/implementation-ready-${agent}.json`,
     task: `Implement the selected plan and publish an implementation-ready signal that pins the product commit.${BUILD_DISCIPLINE_NOTE}`
   },
+  "R4.amend-ballot": {
+    id: "R4.amend-ballot",
+    gateId: "gate-4-implementations",
+    evidenceId: "amendment-response-accepted",
+    participants: "all",
+    submissionMode: "response",
+    requiredPath: (issue, agent, sequence) => `.plans/issue-${issue}/amendment-ballot-${agent}-${sequence ?? 1}.json`,
+    task: "Judge whether every requested file addition is necessary to finish the original selected plan, not expand its intended behavior. Approve only if all additions are justified; revise rejects the request with reasons, not a request to edit product code. Submit only a private response; do not commit or push."
+  },
   "R5.compare": {
     id: "R5.compare",
     gateId: "gate-5-comparison",
@@ -175,6 +188,14 @@ export const describeWorkflowStep = (stepId: WorkflowStepId | null, round: numbe
   if (stepId === null) return "complete";
   return round === null ? stepId : `${stepId} (round ${round})`;
 };
+
+/** Amendment sequence numbers never consume product revision rounds. */
+export const roundForStep = (stepId: WorkflowStepId, round: number | null): number | null =>
+  stepId.startsWith("R6.") || stepId === "R4.amend-ballot" ? (round ?? 1) : null;
+
+export type BallotStepId = "R3.plan-ballot" | "R5.compare-ballot" | "R6.ballot" | "R4.amend-ballot";
+export const isBallotStep = (stepId: WorkflowStepId): stepId is BallotStepId =>
+  ["R3.plan-ballot", "R5.compare-ballot", "R6.ballot", "R4.amend-ballot"].includes(stepId);
 
 const consensusSteps: readonly WorkflowStepId[] = [
   "R1.join",
@@ -305,6 +326,10 @@ export type InternalOrder = {
   task: string;
   inputs: readonly BoundInput[];
   approvedPaths: readonly string[];
+  scopeHash?: string;
+  scopeRequired?: boolean;
+  scopeInputs?: readonly BoundInput[];
+  exactApprovedPaths?: readonly string[];
   /**
    * Advisory, and optional on purpose: an added hint must not become a required
    * argument at every site that builds an order, and rendering must cope with
@@ -334,9 +359,12 @@ export type EvidenceObservation = {
   /** Present when the observation came from a private ballot response. */
   responseSha256?: string;
   rationale?: string;
+  amendmentRequest?: PlanAmendmentRequest;
 };
 
 export type MachineDecision =
+  | { type: "begin-amendment"; agent: string; submissionSha: string; request: PlanAmendmentRequest }
+  | { type: "resolve-amendment"; approved: boolean }
   | { type: "prepare-action"; agent: string; stepId: WorkflowStepId; round: number | null }
   | {
       type: "accept-submission";

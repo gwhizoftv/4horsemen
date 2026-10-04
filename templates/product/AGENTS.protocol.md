@@ -144,6 +144,23 @@ avoid unrelated cleanup and speculative flexibility. Add the fewest focused
 tests needed, prefer extending an existing test file, and still run every
 required check.
 
+## Necessary files missing from the approved plan
+
+During implementation or revision, do not quietly expand the file map or
+rewrite the selected plan. If the current action offers a
+`plan-amendment-request` scaffold, use it at that action's required signal path
+to propose exact additional files with a nonblank `explanation` of the omission
+and a `reason` for each file. Commit only that coordination artifact, leave
+product edits unstaged, push, and complete the Git action with
+the request commit SHA. No product pin is required for a request.
+
+The request is not permission to use those files. Every active agent must
+explicitly approve their necessity for the existing issue; `revise` rejects
+the request, not the implementation. Ballots use private response JSON, not
+Git commits. Wait for a new implementation/revision action with the approved
+map and `scopeHash` before submitting product work. Preserve the revision's
+single `basedOn` product parent; scope approvals are separate evidence.
+
 ## Checks that actually run
 
 Do not modify the product `githooks/` tree as the way to satisfy checks. Follow
