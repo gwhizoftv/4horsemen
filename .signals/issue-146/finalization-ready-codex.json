@@ -1,0 +1,15 @@
+{
+  "protocolVersion": 1,
+  "issue": 146,
+  "issueSessionId": "issue-146:a792b19e8757c734c1c572b1c3fc1675a78d8bfc",
+  "agent": "codex",
+  "artifact": "finalization",
+  "consensusSha": "21e6c794ac50391a83f30331358cccf1296915d7",
+  "finalSha": "8ad89264d8b9a4c6af72131842474348e5d3fc1f",
+  "checks": [
+    {
+      "argv": ["pnpm", "run", "check"],
+      "exitCode": 0
+    }
+  ]
+}
