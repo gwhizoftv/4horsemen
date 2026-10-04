@@ -149,8 +149,9 @@ required check.
 During implementation or revision, do not quietly expand the file map or
 rewrite the selected plan. If the current action offers a
 `plan-amendment-request` scaffold, use it at that action's required signal path
-to propose exact additional files with reasons. Commit only that coordination
-artifact, leave product edits unstaged, push, and complete the Git action with
+to propose exact additional files with a nonblank `explanation` of the omission
+and a `reason` for each file. Commit only that coordination artifact, leave
+product edits unstaged, push, and complete the Git action with
 the request commit SHA. No product pin is required for a request.
 
 The request is not permission to use those files. Every active agent must

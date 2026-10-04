@@ -25,13 +25,14 @@ const digest = "c".repeat(64);
 describe("published protocol schemas", () => {
   it("accepts only bounded exact additive request paths with nonblank reasons", () => {
     const request = { ...common, artifact: "plan-amendment-request", actionId, inputSetHash: digest,
-      scopeHash: digest, rationale: "The original behavior needs its regression test.",
+      scopeHash: digest, explanation: "The original behavior needs its regression test.",
       additionalPaths: [{ path: "test/product.test.ts", reason: "Existing assertion needs updating." }] };
     expect(planAmendmentRequestSchema.parse(request)).toEqual(request);
     for (const path of ["/test/a.ts", "../a.ts", "test/./a.ts", "test//a.ts", "test/", "test/**", "test/{a,b}.ts", ".git/config", ".plans/issue-1/plan.md"]) {
       expect(planAmendmentRequestSchema.safeParse({ ...request, additionalPaths: [{ path, reason: "needed" }] }).success, path).toBe(false);
     }
-    for (const patch of [{ rationale: " " }, { additionalPaths: [] },
+    for (const patch of [{ explanation: " " }, { explanation: undefined },
+      { explanation: undefined, rationale: request.explanation }, { rationale: request.explanation }, { additionalPaths: [] },
       { additionalPaths: [...request.additionalPaths, ...request.additionalPaths] },
       { additionalPaths: [{ path: "test/a.ts", reason: " " }] }, { surprise: true }]) {
       expect(planAmendmentRequestSchema.safeParse({ ...request, ...patch }).success).toBe(false);

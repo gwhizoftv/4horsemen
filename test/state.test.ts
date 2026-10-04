@@ -83,7 +83,7 @@ describe("operational state", () => {
       proposal: {
         protocolVersion: 1, artifact: "plan-amendment-request", issue: 1, issueSessionId: start.issueSessionId,
         agent: "codex", actionId: "10000000-0000-4000-8000-000000000001", inputSetHash: "e".repeat(64), scopeHash: "f".repeat(64),
-        rationale: "Necessary regression", additionalPaths: [{ path: "test/product.test.ts", reason: "Missing test" }]
+        explanation: "Necessary regression", additionalPaths: [{ path: "test/product.test.ts", reason: "Missing test" }]
       },
       plans: [{ agent: "codex", commitSha: "c".repeat(40), path: ".plans/issue-1/plan.md" }],
       activeRoster: cursors.activeRoster, resume: { stepId: "R6.revise", round: 2 }, requestedAt: start.createdAt

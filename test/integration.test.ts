@@ -302,7 +302,7 @@ Implement the selected product files.
         const order = currentOrder(agent);
         return submit(agent, JSON.stringify({ ...commonArtifact(order, "plan-amendment-request"),
           actionId: order.actionId, inputSetHash: computeInputSetHash(order.inputs), scopeHash: order.scopeHash,
-          rationale: "A necessary regression test was omitted from the original map.",
+          explanation: "A necessary regression test was omitted from the original map.",
           additionalPaths: [{ path, reason: "Test the approved behavior." }] }));
       };
       const proposalSha = request("codex", "test/product.test.ts");

@@ -168,7 +168,7 @@ export const renderArtifactScaffold = (ctx: ArtifactScaffoldContext): string => 
       "The request is not approval; wait for the coordinator's new action before using additional paths. " +
       "Explain why each exact file is needed for the original behavior, not new scope. Product checks still apply to the eventual implementation.\n\n```json\n" +
       JSON.stringify({ ...withHash(ctx), artifact: "plan-amendment-request", actionId: ctx.actionId ?? "<action-uuid>",
-        scopeHash: ctx.scopeHash, rationale: "<discovered omission>",
+        scopeHash: ctx.scopeHash, explanation: "<discovered omission>",
         additionalPaths: [{ path: "<exact-product-file-path>", reason: "<why the original plan needs this file>" }] }, null, 2) + "\n```"
     : "";
   return preamble + "```json\n" + `${json}\n` + "```" + request;

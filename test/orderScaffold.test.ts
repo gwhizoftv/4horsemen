@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { artifactScaffoldValue, renderArtifactScaffold } from "../src/orderScaffold.js";
+import { planAmendmentRequestSchema } from "../src/protocol.js";
 import { BUILD_DISCIPLINE_NOTE, STEP_DEFINITIONS } from "../src/steps.js";
 
 describe("orderScaffold", () => {
@@ -15,6 +16,12 @@ describe("orderScaffold", () => {
     expect(rendered).toContain('"artifact": "plan-amendment-request"');
     expect(rendered).toContain('"scopeHash": "' + ctx.scopeHash + '"');
     expect(rendered).toContain("unstaged");
+    expect(rendered).toContain('"explanation": "<discovered omission>"');
+    expect(rendered).not.toContain('"rationale"');
+    const requestJson = [...rendered.matchAll(/```json\n([\s\S]*?)\n```/g)][1]![1]!;
+    expect(planAmendmentRequestSchema.parse({ ...JSON.parse(requestJson),
+      additionalPaths: [{ path: "test/product.test.ts", reason: "Regression coverage" }]
+    })).toMatchObject({ explanation: "<discovered omission>" });
     const ballot = artifactScaffoldValue({ ...ctx, stepId: "R4.amend-ballot" });
     expect(ballot).toEqual({ actionId: ctx.actionId, disposition: "approve", rationale: "<one sentence>" });
   });

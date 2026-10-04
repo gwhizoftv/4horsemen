@@ -1197,7 +1197,7 @@ describe("CLI", () => {
           sequence: 1, request: { agent: "codex", commitSha: "d".repeat(40), path: ".signals/issue-1/implementation-ready-codex.json" },
           proposal: { protocolVersion: 1, artifact: "plan-amendment-request", issue: 1, issueSessionId: "fixture",
             agent: "codex", actionId, inputSetHash: "e".repeat(64), scopeHash: "f".repeat(64),
-            rationale: "Missing regression", additionalPaths: [{ path: "test/product.test.ts", reason: "Regression" }] },
+            explanation: "Missing regression", additionalPaths: [{ path: "test/product.test.ts", reason: "Regression" }] },
           plans: [{ agent: "codex", commitSha: "1".repeat(40), path: ".plans/issue-1/plan-codex.md" }],
           activeRoster: prior.activeRoster, resume: { stepId: "R4.implement", round: null }, requestedAt: now
         },

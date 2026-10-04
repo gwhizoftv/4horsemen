@@ -49,7 +49,7 @@ describe("agreed file-map amendments", () => {
       approvedPaths: ["src/product.ts"], scopeHash: "a".repeat(64) });
     const request = { protocolVersion: 1, artifact: "plan-amendment-request", issue: 1, agent: action.agent,
       issueSessionId: action.issueSessionId, actionId: action.actionId, inputSetHash: computeInputSetHash(action.inputs),
-      scopeHash: action.scopeHash, rationale: "The regression assertion was omitted.",
+      scopeHash: action.scopeHash, explanation: "The regression assertion was omitted.",
       additionalPaths: [{ path: "test/product.test.ts", reason: "Tests the changed behavior." }] };
     const accepted = await evaluateEvidence(action, sha("e"), mirror(JSON.stringify(request)));
     expect(accepted).toMatchObject({ status: "satisfied", amendmentRequest: request });

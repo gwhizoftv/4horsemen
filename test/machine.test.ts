@@ -173,7 +173,7 @@ describe("pure workflow machine", () => {
         protocolVersion: 1, artifact: "plan-amendment-request", issue: 1,
         issueSessionId: start.issueSessionId, agent: "codex", actionId: actionIdFor("codex"),
         inputSetHash: responseDigest("inputs"), scopeHash: responseDigest("scope"),
-        rationale: "Missing regression test", additionalPaths: [{ path: "test/product.test.ts", reason: "Regression coverage" }]
+        explanation: "Missing regression test", additionalPaths: [{ path: "test/product.test.ts", reason: "Regression coverage" }]
       },
       plans: [{ agent: "codex", commitSha: gitSha("plan"), path: ".plans/issue-1/plan.md" }],
       activeRoster, resume: { stepId: "R6.revise", round: 1 }, requestedAt: now

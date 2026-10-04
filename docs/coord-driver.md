@@ -440,9 +440,11 @@ sequence. Completed historical gates and immutable product pins are retained.
 Implementation and revision actions include an alternative
 `plan-amendment-request` JSON scaffold at their existing required signal path.
 Use it only for files necessary to the original issue, not feature expansion.
-The request binds the current action UUID, input hash, and scope hash, and
-lists at most 100 unique, exact repository-relative product paths with nonblank
-reasons. Directory-prefix forms, patterns, traversal, Git metadata, coordination paths,
+The request binds the current action UUID, input hash, and scope hash, includes
+a nonblank `explanation` of the omission, and lists at most 100 unique, exact
+repository-relative product paths with nonblank per-file `reason` values.
+Ballot judgments retain their separate `rationale` field.
+Directory-prefix forms, patterns, traversal, Git metadata, coordination paths,
 and files already covered by the effective map are refused. Commit only the
 request artifact (leave unfinished product edits unstaged), push, and submit
 that commit SHA. It needs no product pin and grants no permission by itself.

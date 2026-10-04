@@ -101,7 +101,7 @@ export const planAmendmentRequestSchema = z.object({
   actionId: actionIdSchema,
   inputSetHash: digestSchema,
   scopeHash: digestSchema,
-  rationale: amendmentReasonSchema,
+  explanation: amendmentReasonSchema,
   additionalPaths: z.array(z.object({ path: amendmentPathSchema, reason: amendmentReasonSchema }).strict()).min(1).max(100)
 }).strict().refine((value) => new Set(value.additionalPaths.map((entry) => entry.path)).size === value.additionalPaths.length,
   "additional paths must be unique");
