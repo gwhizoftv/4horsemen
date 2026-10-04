@@ -1058,12 +1058,18 @@ export class CoordinatorRunLoop {
     this.paneObservations.set(agent, observation);
     const evidence = this.observationEvidence(agent, actionId);
     const target = this.tmux.target(start.issue, agent);
-    const pane = await this.tmux.inspectPane(target).catch(() => null);
+    const pane = await this.tmux.inspectPane(target).catch((error) => {
+      this.verbose(`Issue ${start.issue}: ${agent} pane inspection failed: ${error}`);
+      return null;
+    });
     this.authority(cursors);
     if (pane === null) return cursors;
     if (!pane.alive) return this.hold(cursors, agent, "harness-gone", evidence);
     if (agent === "claude") {
-      const text = await this.tmux.capturePane(target).catch(() => null);
+      const text = await this.tmux.capturePane(target).catch((error) => {
+        this.verbose(`Issue ${start.issue}: ${agent} pane capture failed: ${error}`);
+        return null;
+      });
       this.authority(cursors);
       if (text === null) return cursors;
       const config = start.agents.find((candidate) => candidate.id === agent);
@@ -1621,7 +1627,7 @@ export class CoordinatorRunLoop {
             (entry.pendingInputCount ?? 0) === 0 &&
             entry.backgroundActive !== true &&
             ((entry.execution === "queued" && observedAfterInjection) ||
-              (entry.execution === "unknown" && deliveryDelayElapsed) ||
+              (entry.execution === "unknown" && deliveryDelayElapsed && !observedAfterInjection) ||
               (entry.execution === "idle" &&
                 decision.code === "idle-transition-already-used" &&
                 deliveryDelayElapsed));

@@ -752,16 +752,24 @@ describe("durable delivery safety", () => {
       if (working) f.working();
       f.ui.failInspect = failure === "inspect";
       f.ui.failCapture = failure === "capture";
-      const loop = f.makeLoop();
+      const verbose: string[] = [];
+      const loop = f.makeLoop({ verbose: (message) => verbose.push(message) });
+      const operation = failure === "inspect" ? "inspection" : "capture";
+      const failures = () => verbose.filter((message) => message.includes(`pane ${operation} failed`));
       await loop.runTick();
+      expect(failures()).toHaveLength(1);
+      expect(failures()[0]).toContain(`${operation} unavailable`);
       const before = { inspections: f.ui.inspections, captures: f.ui.captures };
       for (let i = 0; i < 10; i++) { f.advance(1_000); expect((await loop.runTick()).paused).toBe(false); }
       expect(f.ui.inspections).toBe(before.inspections);
       expect(f.ui.captures).toBe(before.captures);
+      expect(failures()).toHaveLength(1);
       f.advance(50_000);
       expect((await loop.runTick()).holds).toEqual([]);
       expect(f.ui.inspections).toBe(before.inspections + 1);
       expect(f.ui.captures).toBe(before.captures + (vendor === "claude" && failure === "capture" ? 1 : 0));
+      expect(failures()).toHaveLength(2);
+      expect(f.messages.join("\n")).not.toContain(`pane ${operation} failed`);
       f.ui.failInspect = false; f.ui.failCapture = false; f.ui.dead = true;
       f.advance(60_000);
       expect((await loop.runTick()).holds[0]?.reason).toBe("harness-gone");
@@ -1725,6 +1733,27 @@ describe("effectful run loop", () => {
     const cleared = markActionWorkflowComplete(f.paths, "codex", actionId, f.now());
     expect(cleared.clearedDegraded).toBe(true);
     expect(readAgentLifecycle(f.paths).agents.codex).toMatchObject({ health: "healthy", degradedCause: null });
+  });
+
+  it.each(["claude", "codex"])("does not resend to %s after a delayed SessionStart", async (vendor) => {
+    const f = safetyFixture(vendor, { nudgeRetryMs: NUDGE_RETRY_MS });
+    await f.tick();
+    expect(f.ui.sends).toBe(1);
+    expect(readAgentLifecycle(f.paths).agents[vendor]).toMatchObject({
+      execution: "unknown", action: { delivery: "injected" }
+    });
+    f.advance(1_000);
+    observeAgentLifecycle(f.paths, vendor, {
+      kind: "session-start", eventName: "SessionStart", sessionId: "session-1"
+    }, f.now());
+    expect(readAgentLifecycle(f.paths).agents[vendor]?.execution).toBe("unknown");
+    f.ui.text = "❯ ready"; // The action UUID has scrolled out of the captured viewport.
+    f.advance(120_000);
+    await f.tick();
+    await f.tick();
+    expect(f.ui.sends).toBe(1);
+    expect(readAgentLifecycle(f.paths).agents[vendor]?.action?.delivery).toBe("injected");
+    expect(readJournal(f.paths).some((event) => event.details?.event === "prompt-ready-action-absent")).toBe(false);
   });
 
   it.each(["claude", "codex"])("recovers lost %s delivery without a degraded-health flag", async (vendor) => {

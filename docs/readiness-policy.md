@@ -46,9 +46,11 @@ action on screen long after it stopped being true.
 A send that was never accepted may be retried when, and only when,
 `actionAbsentAtReadyPrompt` shows a live, ready prompt whose captured viewport
 no longer contains the action id. Unknown or exhausted-idle delivery must first
-pass the 45-second delivery wait; no degraded-health flag is required. Queue,
-background, turn-correlation and send-budget checks still apply. Elapsed time or
-a missing `complete` never authorize a retry on their own.
+pass the 45-second delivery wait; no degraded-health flag is required. Unknown
+execution also requires no lifecycle event at or after injection, so a delayed
+`SessionStart` cannot reopen delivery. Queue, background, turn-correlation and
+send-budget checks still apply. Elapsed time or a missing `complete` never
+authorize a retry on their own.
 
 ## Reason codes
 
@@ -95,8 +97,8 @@ correlated, and does not fabricate acceptance, execution state or completion.
 Quota/resource evidence, vendor waits, harness loss and delivery uncertainty keep
 their existing controls. An operator question or a wait for coordinator work must
 not be inferred from silence. Inspecting the pane can veto delivery, but a failed
-observation cannot establish progress. Observation exceptions are retried at the
-bounded pane-check cadence.
+observation cannot establish progress. Observation exceptions emit a verbose
+diagnostic and are retried at the bounded pane-check cadence.
 
 Legacy degraded states remain readable. Already persisted `unobservable` holds
 still require scoped owner recovery with `coord resume --issue N --hold HOLD_ID`;
