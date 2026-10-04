@@ -1,0 +1,17 @@
+{
+  "protocolVersion": 1,
+  "issue": 129,
+  "issueSessionId": "issue-129:8392d92d365f298bf9d04dd8d19793705a3ff77e",
+  "agent": "claude",
+  "inputSetHash": "0a92d5ee0ac8e94ebe2b904fca43aaace21a2aac681e0e8b4cf67fdd6c6dadad",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "0f04c419068f70d5452d0798423a4ae4548a8665",
+  "approvedPaths": [
+    ".git",
+    "docs/coord-driver.md",
+    "process.env",
+    "src/gitExec.ts",
+    "test/cli.test.ts",
+    "test/workspace.test.ts"
+  ]
+}
