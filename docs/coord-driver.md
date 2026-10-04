@@ -192,6 +192,23 @@ refetching or rebinding an edited issue. From an unrelated worktree, pass
 `--product /path/to/onboarded/product`; coordination never guesses from a
 machine-global registry.
 
+`--product` takes a filesystem path, not a project nickname. Relative paths are
+resolved from the directory where you invoke `coord`; for example, from a parent
+directory use `--product ./my-product` or an absolute path to that onboarded
+worktree. A typo reports **working directory does not exist**, while a regular
+file reports **working directory is not a directory**. Directory symlinks remain
+supported. An existing non-repository directory still reports **not a Git
+worktree**, and a repository without a valid owner locator still requires
+onboarding. Correcting a path does not bypass those checks.
+
+If the directory is valid but Git cannot be launched, the error retains the OS
+failure and may suggest checking PATH; use `command -v git` in the invoking shell.
+An inaccessible-directory error instead calls for checking that path's access
+permissions. Invalid product selection stops before `wipe-issue` effects, even
+with `--force`. These errors alone do not establish earlier repository damage:
+check the resolved path and preceding commands rather than running `git init`,
+resetting, or re-cloning a repository as a diagnostic repair.
+
 The explicit forms remain available:
 
 ```bash

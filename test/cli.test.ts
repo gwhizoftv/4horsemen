@@ -18,7 +18,7 @@ import {
 } from "../src/state.js";
 import { DOCTOR_CODES } from "../src/doctor.js";
 import { renderGitHubIssueSnapshot } from "../src/githubIssue.js";
-import { ensureBuilt, makeProduct, repoRoot, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
+import { ensureBuilt, git as fixtureGit, makeProduct, repoRoot, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
 import { createHash } from "node:crypto";
 import type { AcceptedResponse, BallotBatch } from "../src/state.js";
 
@@ -381,6 +381,54 @@ describe("CLI manual mode", () => {
 });
 
 describe("CLI", () => {
+  it("rejects invalid wipe product paths without changing repositories or runtime", async () => {
+    const product = makeProduct("plain");
+    productFixtures.push(product);
+    const clone = join(product.workspaceRoot, "clone-codex");
+    fixtureGit(product.workspaceRoot, "clone", "-q", product.originPath, clone);
+    fixtureGit(clone, "checkout", "-q", "-b", "issue-392/codex", "origin/main");
+    const configPath = join(product.coordRoot, "config.json");
+    writeFileSync(configPath, JSON.stringify({
+      project: "myserver", origin: product.originPath,
+      agents: [{ id: "codex", root: clone, launcher: "start-codex.sh" }],
+      checks: [{ name: "ok", argv: ["true"] }]
+    }));
+    fixtureGit(product.productRoot, "config", "--local", "coord.ownerWorkspaceConfig", configPath);
+    const paths = issueRuntimePaths(product.coordRoot, 392, join(product.workspaceRoot, "completes"));
+    const drop = agentRuntimePaths(paths, "codex");
+    mkdirSync(paths.issueRoot, { recursive: true });
+    mkdirSync(drop.completeDir, { recursive: true });
+    writeFileSync(paths.journal, "runtime sentinel\n");
+    writeFileSync(drop.complete, "mailbox sentinel\n");
+    const files = [configPath, paths.journal, drop.complete];
+    for (const repo of [product.productRoot, clone]) {
+      writeFileSync(join(repo, "README.md"), "staged work\n");
+      fixtureGit(repo, "add", "README.md");
+      writeFileSync(join(repo, "README.md"), "unstaged work\n");
+      writeFileSync(join(repo, "untracked.txt"), "untracked work\n");
+      files.push(...[".git/HEAD", ".git/config", ".git/index", "README.md", "untracked.txt"].map((path) => join(repo, path)));
+    }
+    const snapshot = () => ({
+      files: files.map((path) => readFileSync(path)),
+      refs: [product.productRoot, clone, product.originPath].map((repo) => fixtureGit(repo, "show-ref"))
+    });
+    const before = snapshot();
+    const missing = join(product.workspaceRoot, "coordinator");
+    for (const flags of [["--product", "coordinator"], ["--product", missing], []]) {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      expect(await runCli(["wipe-issue", "392", "--force", ...flags], {
+        io: { cwd: product.workspaceRoot, stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) }
+      })).toBe(2);
+      expect(stderr.join("")).toContain(flags.length === 0 ? "not a Git worktree" : "working directory does not exist");
+      expect(stderr.join("")).toContain(flags.length === 0 ? product.workspaceRoot : missing);
+      expect(stderr.join("")).not.toContain("spawnSync");
+      expect(stdout).toEqual([]);
+      expect(existsSync(missing)).toBe(false);
+      expect(snapshot()).toEqual(before);
+    }
+  });
+
   it("requires the external coord root explicitly rather than accepting COORD_ROOT", async () => {
     const fixture = setup();
     const messages: string[] = [];
