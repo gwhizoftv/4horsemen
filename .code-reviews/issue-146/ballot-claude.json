@@ -1,0 +1,29 @@
+{
+  "actionId": "a4a00512-8e0a-44c9-86d5-4b12d46990ef",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "c798f46594cf1192311ce3de044f6b555c2768ee",
+      "path": ".signals/issue-146/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "7ecd02f2b22225a22c0e63eca2d03acf71946f6b",
+      "path": ".signals/issue-146/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "70a73f4cdb8bd595898c16eda169869294921edb",
+      "path": ".signals/issue-146/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "6b3ea8f37ccf6a7d6ddf535c9dd0a8299cb9620220abcc06eb17bbe3ea180498",
+  "issue": 146,
+  "issueSessionId": "issue-146:a792b19e8757c734c1c572b1c3fc1675a78d8bfc",
+  "protocolVersion": 2,
+  "rationale": "Codex follows the selected plan most faithfully (healthy-overlay skip, shared run entry, branch-change check), skips the tick correctly on an initialization conflict unlike cursor, and has the broadest focused coverage including hold release and init-conflict retry; its only gap is the narrow pause-check race that claude's one-line observeOnly guard closes.",
+  "responseSha256": "5036369dbd03fc7bf80cb39205ee98b4d1d4776c9164834f1b7cbd4a40edcddf"
+}

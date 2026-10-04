@@ -1,0 +1,29 @@
+{
+  "actionId": "f22e4e89-39be-4823-8f81-27fda7a99d54",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "c798f46594cf1192311ce3de044f6b555c2768ee",
+      "path": ".signals/issue-146/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "7ecd02f2b22225a22c0e63eca2d03acf71946f6b",
+      "path": ".signals/issue-146/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "70a73f4cdb8bd595898c16eda169869294921edb",
+      "path": ".signals/issue-146/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "6b3ea8f37ccf6a7d6ddf535c9dd0a8299cb9620220abcc06eb17bbe3ea180498",
+  "issue": 146,
+  "issueSessionId": "issue-146:a792b19e8757c734c1c572b1c3fc1675a78d8bfc",
+  "protocolVersion": 2,
+  "rationale": "Claude preserves scoped recovery and unfinished same-branch work while its observation-only initialization guard prevents the premature action publication reproduced in Cursor and Codex during pause-release races and in Cursor after initialization conflicts.",
+  "responseSha256": "48caa5da90b46bf10e39d8ea6af084f3c94073e6632ff9f11caf47a52d5be73e"
+}
