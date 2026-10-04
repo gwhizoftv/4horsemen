@@ -1,7 +1,23 @@
 import { spawnSync } from "node:child_process";
+import { accessSync, constants, statSync } from "node:fs";
 import { hermeticGitEnv } from "./mirror.js";
 
 export type GitResult = { exitCode: number; stdout: string; stderr: string };
+
+/** Follow directory symlinks; do not confuse a bad cwd with a missing Git binary. */
+const workingDirectoryProblem = (cwd: string): string | null => {
+  try {
+    if (!statSync(cwd).isDirectory()) return "working directory is not a directory";
+    accessSync(cwd, constants.X_OK);
+    return null;
+  } catch (error) {
+    const { code, message } = error as NodeJS.ErrnoException;
+    if (code === "ENOENT") return "working directory does not exist";
+    if (code === "ENOTDIR") return "working directory is not a directory";
+    if (code === "EACCES" || code === "EPERM") return `working directory is inaccessible: ${message}`;
+    return `cannot inspect working directory: ${message}`;
+  }
+};
 
 /**
  * Synchronous git for the installer. `coord install` is an operator-driven,
@@ -15,9 +31,16 @@ export type GitResult = { exitCode: number; stdout: string; stderr: string };
  * to pass while the wrong repository gets wired.
  */
 export const git = (cwd: string, ...args: readonly string[]): GitResult => {
+  const context = `Cannot run git ${args.join(" ")} in ${cwd}`;
+  const problem = workingDirectoryProblem(cwd);
+  if (problem !== null) throw new Error(`${context}: ${problem}`);
   const result = spawnSync("git", args, { cwd, encoding: "utf8", env: hermeticGitEnv() });
   if (result.error !== undefined) {
-    throw new Error(`Cannot run git ${args.join(" ")} in ${cwd}: ${result.error.message}`);
+    // Best-effort recheck: cwd may have disappeared after preflight. Never retry
+    // in another directory. Keep OS detail secondary to the path/PATH diagnosis.
+    const reason = workingDirectoryProblem(cwd) ??
+      ((result.error as NodeJS.ErrnoException).code === "ENOENT" ? "could not find or launch git; check PATH" : null);
+    throw new Error(`${context}: ${reason === null ? "" : `${reason}; detail: `}${result.error.message}`);
   }
   return {
     exitCode: result.status ?? 1,
