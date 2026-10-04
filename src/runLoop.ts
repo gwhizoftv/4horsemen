@@ -2511,7 +2511,7 @@ export class CoordinatorRunLoop {
     return next;
   }
 
-  async runTick(): Promise<CursorsState> {
+  async runTick(options: { observeOnly?: boolean } = {}): Promise<CursorsState> {
     const start = readStartState(this.paths);
     try {
       let cursors = readCursorsState(this.paths);
@@ -2524,6 +2524,9 @@ export class CoordinatorRunLoop {
         }
         return cursors;
       }
+      // A pause can be released after run() skips initialization but before
+      // this read. Keep that poll effect-free until initialization succeeds.
+      if (options.observeOnly === true) return cursors;
       const observations: EvidenceObservation[] = [];
 
       for (const dropped of cursors.droppedAgents) clearCompletion(agentRuntimePaths(this.paths, dropped).complete);
@@ -2745,7 +2748,7 @@ export class CoordinatorRunLoop {
             await this.initializeEffects();
             initialized = true;
           }
-          cursors = await this.runTick();
+          cursors = await this.runTick({ observeOnly: !initialized });
         }
       } catch (error) {
         // An owner command can revoke initialization authority during a slow

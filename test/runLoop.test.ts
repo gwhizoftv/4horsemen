@@ -286,21 +286,58 @@ describe("runner waiting and initialization", () => {
     expect(f.messages.filter((message) => message.startsWith("Issue 1: paused"))).toHaveLength(1);
   });
 
-  it("reobserves initialization authority conflicts on the next poll without hiding other errors", async () => {
+  it("defers workflow effects when an owner resumes between the initialization check and the tick", async () => {
+    const { paths } = fixture();
+    mutateCursorsState(paths, (current) => setPaused(current, true));
+    let initializations = 0;
+    let sleeps = 0;
+    let ticks = 0;
+    const mirror = new BareMirror(paths.mirror, "/origin.git", async (args) => {
+      if (args[0] === "init") initializations++;
+      return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { mirror, tmux: null, log: () => undefined, sleep: async () => {
+      sleeps++;
+      expect(readCursorsState(paths).paused).toBe(false);
+      expect(initializations).toBe(sleeps === 1 ? 0 : 1);
+      for (const agent of ["claude", "codex"]) {
+        expect(existsSync(agentRuntimePaths(paths, agent).action)).toBe(sleeps !== 1);
+        if (sleeps === 1) expect(readCursorsState(paths).agents[agent]!.actionId).toBeNull();
+        else expect(readCursorsState(paths).agents[agent]!.actionId).not.toBeNull();
+      }
+      if (sleeps === 2) mutateCursorsState(paths, (current) => cursorsStateSchema.parse({ ...current, abandoned: true }));
+      if (sleeps > 2) throw new Error("runner did not stop at terminal state");
+    } });
+    const runTick = loop.runTick.bind(loop);
+    loop.runTick = async (...args) => {
+      // Model another process releasing the pause after run() decides not to
+      // initialize, but before the real tick reads the latest durable state.
+      if (++ticks === 1) mutateCursorsState(paths, (current) => setPaused(current, false));
+      return runTick(...args);
+    };
+    await loop.run();
+    expect(sleeps).toBe(2);
+    expect(ticks).toBe(2);
+  });
+
+  it.each([true, false])("reobserves initialization conflicts with paused=%s without hiding other errors", async (pauseOnConflict) => {
     const { paths } = fixture();
     let initializations = 0;
     let sleeps = 0;
     const mirror = new BareMirror(paths.mirror, "/origin.git", async (args) => {
       if (args[0] === "init" && ++initializations === 1) {
-        mutateCursorsState(paths, (current) => setPaused(current, true));
+        mutateCursorsState(paths, (current) => setPaused(current, pauseOnConflict));
       }
       return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
     });
     const loop = new CoordinatorRunLoop(paths, { mirror, tmux: null, log: () => undefined, sleep: async () => {
       sleeps++;
       if (sleeps === 1) {
-        expect(readCursorsState(paths).paused).toBe(true);
-        expect(readCursorsState(paths).agents.codex!.actionId).toBeNull();
+        expect(readCursorsState(paths).paused).toBe(pauseOnConflict);
+        for (const agent of ["claude", "codex"]) {
+          expect(readCursorsState(paths).agents[agent]!.actionId).toBeNull();
+          expect(existsSync(agentRuntimePaths(paths, agent).action)).toBe(false);
+        }
         mutateCursorsState(paths, (current) => setPaused(current, false));
       } else {
         expect(initializations).toBe(2);
