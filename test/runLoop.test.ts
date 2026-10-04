@@ -269,9 +269,10 @@ describe("vendor resource evidence and recovery", () => {
     expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
     expect(readFileSync(f.paths.cursors, "utf8")).toBe(cursors);
     let sleeps = 0;
-    // A held runner stays alive only for the scheduled recheck; it never initializes effects here.
-    await f.makeLoop({ sleep: async () => { sleeps++; f.advance(1_000); } }).run();
-    expect(sleeps).toBeGreaterThan(0);
+    const stop = new AbortController();
+    // A held runner waits rather than exits; it runs the scheduled recheck and never initializes effects here.
+    await f.makeLoop({ sleep: async () => { sleeps++; f.advance(1_000); if (sleeps === 10) stop.abort(); } }).run(stop.signal);
+    expect(sleeps).toBe(10);
     const after = readCursorsState(f.paths);
     expect(after.holds).toEqual(held.holds);
     expect(readJournal(f.paths).filter((event) => event.type === "hold-updated")).toEqual([
@@ -287,7 +288,7 @@ describe("vendor resource evidence and recovery", () => {
   it.each([
     ["a model-family restriction", "rate_limit", "Opus weekly limit reached", 100, "usage-window"],
     ["a spend restriction", "billing_error", null, 100, "billing"]
-  ])("keeps %s at an unknown reset and lets run() return at once", async (_label, error, details, fiveHour, failureClass) => {
+  ])("keeps %s at an unknown reset and keeps run() waiting without effects", async (_label, error, details, fiveHour, failureClass) => {
     const f = safetyFixture("claude");
     await f.tick();
     f.advance(1); f.working();
@@ -295,8 +296,13 @@ describe("vendor resource evidence and recovery", () => {
     const held = await f.tick();
     expect(held.holds[0]).toMatchObject({ reason: "vendor-failure", resetsAt: null, confidence: "unknown", evidence: { failureClass } });
     let sleeps = 0;
-    await f.makeLoop({ sleep: async () => { sleeps++; } }).run();
-    expect(sleeps).toBe(0);
+    const stop = new AbortController();
+    const journalBefore = readFileSync(f.paths.journal, "utf8");
+    await f.makeLoop({ sleep: async () => { sleeps++; if (sleeps === 3) stop.abort(); } }).run(stop.signal);
+    expect(sleeps).toBe(3);
+    expect(readFileSync(f.paths.journal, "utf8")).toBe(journalBefore);
+    expect(readCursorsState(f.paths).holds).toEqual(held.holds);
+    expect(f.ui.sends).toBe(1);
     const journal = readFileSync(f.paths.journal, "utf8");
     f.advance(7 * 86400_000);
     for (let i = 0; i < 200; i++) await f.tick();
@@ -1298,6 +1304,66 @@ describe("effectful run loop", () => {
     await new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) }).initializeEffects();
     expect(launched).toEqual(["claude", "codex"]);
     expect(messages.join("\n")).toContain("Opened 2 Terminal window(s)");
+  });
+
+  // #146: a pause is a wait, not an exit. The same runner initializes effects
+  // only after the owner releases it from another shell, then keeps going.
+  it("waits through a manual pause and initializes in the same runner once resumed", async () => {
+    const { paths } = fixture();
+    mutateCursorsState(paths, (current) => setPaused(current, true));
+    const calls: string[] = [];
+    const tmux = new TmuxController(
+      async (args) => {
+        calls.push(args[0]!);
+        if (args[0] === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
+        if (args[0] === "list-windows") return { exitCode: 0, stdout: "claude\ncodex\n", stderr: "" };
+        if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tclaude\t0\n", stderr: "" };
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      null, async () => undefined, null, async () => undefined, null, () => []
+    );
+    const messages: string[] = [];
+    const stop = new AbortController();
+    let sleeps = 0;
+    let callsWhilePaused = -1;
+    await new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message), sleep: async () => {
+      sleeps++;
+      if (sleeps === 3) {
+        callsWhilePaused = calls.length;
+        mutateCursorsState(paths, (current) => setPaused(current, false));
+      }
+      if (sleeps === 5) stop.abort();
+    } }).run(stop.signal);
+    expect(sleeps).toBe(5);
+    expect(callsWhilePaused).toBe(0);
+    expect(calls).toContain("has-session");
+    expect(readCursorsState(paths).paused).toBe(false);
+    expect(messages.filter((message) => message.includes("Waiting: this coordinator continues"))).toHaveLength(1);
+  });
+
+  it("retries initialization after a concurrent owner change instead of exiting", async () => {
+    const { paths } = fixture();
+    let sessions = 0;
+    const tmux = new TmuxController(
+      async (args) => {
+        if (args[0] === "has-session") {
+          // The first initialization races an owner command that moves the revision.
+          if (++sessions === 1) mutateCursorsState(paths, (current) => cursorsStateSchema.parse({ ...current }));
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "list-windows") return { exitCode: 0, stdout: "claude\ncodex\n", stderr: "" };
+        if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tclaude\t0\n", stderr: "" };
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      null, async () => undefined, null, async () => undefined, null, () => []
+    );
+    const stop = new AbortController();
+    let sleeps = 0;
+    await new CoordinatorRunLoop(paths, { tmux, log: () => undefined, sleep: async () => {
+      if (++sleeps === 3) stop.abort();
+    } }).run(stop.signal);
+    expect(sleeps).toBe(3);
+    expect(sessions).toBeGreaterThanOrEqual(2);
   });
 
   it("clears malformed completion and reissues the same action with a concrete correction", async () => {

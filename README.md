@@ -233,6 +233,13 @@ Manual pause, other holds, the nudge budget, roster, reviews and pins are never
 changed by resource recovery. Whenever evidence is missing, the report says
 `owner release required`.
 
+A held coordinator waits instead of exiting; staying alive never releases a
+hold. After inspecting the agent, release its hold from another shell with
+`coord resume --issue N --agent AGENT` and the running coordinator continues.
+If it was stopped, `coord resume --issue N --agent AGENT --run` releases the
+hold and restarts it in one command. See `docs/coord-driver.md` for the exact
+`--hold` form and nudge-loop budget rules.
+
 ## Development
 
 ```sh

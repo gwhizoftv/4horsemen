@@ -9,6 +9,19 @@ const latestBatchByUpdatedAt = (batches: readonly BallotBatch[]): BallotBatch | 
   return [...batches].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt)).at(-1) ?? null;
 };
 
+type Hold = CursorsState["holds"][number];
+
+/**
+ * The owner command that releases one hold. An agent with exactly one hold can
+ * be named instead of the hold id; the exact id stays the unambiguous form.
+ */
+export const holdRecoveryCommand = (issue: number, holds: readonly Hold[], hold: Hold): string => {
+  const budget = hold.reason === "nudge-loop" ? " --reset-nudge-budget" : "";
+  const exact = `coord resume --issue ${issue} --hold ${hold.id}${budget}`;
+  const unique = holds.filter((entry) => entry.agent === hold.agent).length === 1;
+  return unique ? `coord resume --issue ${issue} --agent ${hold.agent}${budget} (or ${exact})` : exact;
+};
+
 /**
  * What the owner needs after a run: who won, which commit is the PR head,
  * which branch coord pushed, evidence publication state, and whether they
@@ -65,8 +78,10 @@ export const renderIssueReport = (
         `${window.limitId}/${window.window} ${window.usedPercent ?? "?"}% (resets ${window.resetsAt ?? "unknown"})`).join("; ")}.`);
     }
     if (evidence?.detail !== null && evidence?.detail !== undefined) lines.push(`Vendor detail (redacted): ${evidence.detail}`);
-    lines.push(`Recovery: inspect the agent, then coord resume --issue ${start.issue} --hold ${hold.id}` +
-      (hold.reason === "nudge-loop" ? " --reset-nudge-budget" : ""));
+    lines.push(`Recovery: inspect the agent, then ${holdRecoveryCommand(start.issue, cursors.holds, hold)}`);
+  }
+  if (cursors.paused && !cursors.abandoned && !cursors.completed) {
+    lines.push("A running coordinator continues after recovery; add --run only to restart a stopped one.");
   }
   for (const agent of new Set(cursors.holds.map((hold) => hold.agent))) {
     const safety = cursors.actionSafety[agent];

@@ -94,7 +94,7 @@ import {
   type MachineDecision,
   type WorkflowStepId
 } from "./steps.js";
-import { renderIssueReport } from "./issueReport.js";
+import { holdRecoveryCommand, renderIssueReport } from "./issueReport.js";
 import { formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import { harnessPromptReadiness, TmuxController } from "./tmux.js";
@@ -916,8 +916,7 @@ export class CoordinatorRunLoop {
       const cause = hold.evidence === null ? "cause/reset unknown" :
         `${hold.evidence.failureClass}; reset ${hold.resetsAt ?? "unknown"}`;
       this.log(`Issue ${readStartState(this.paths).issue}: ${agent} held (${reason}; ${cause}). ` +
-        `Inspect the agent, then coord resume --issue ${this.paths.issue} --hold ${hold.id}` +
-        (reason === "nudge-loop" ? " --reset-nudge-budget" : ""));
+        `Inspect the agent, then ${holdRecoveryCommand(this.paths.issue, next.holds, hold)}`);
     }
     return next;
   }
@@ -1091,18 +1090,6 @@ export class CoordinatorRunLoop {
     return { ...current, actionSafety: { ...current.actionSafety, [agent]: { ...safety, resource: { ...safety.resource, ...update } } } };
   }
 
-  /** Scheduled, still-authorized resource observation that justifies keeping a held runner alive. */
-  private resourceWorkPending(start: StartState, cursors: CursorsState): boolean {
-    if (cursors.manualPaused || cursors.abandoned || cursors.completed) return false;
-    return cursors.holds.some((hold) => {
-      const safety = cursors.actionSafety[hold.agent];
-      if (safety === undefined || safety.actionId !== hold.actionId || safety.resource.terminal !== null) return false;
-      if (safety.resource.nextAt !== null && this.codexBinding(start, hold.agent) !== undefined) return true;
-      return hold.reason === "vendor-failure" && hold.evidence?.vendor === "claude" && hold.resetsAt !== null &&
-        !safety.resource.consumedDeadlines.includes(hold.resetsAt);
-    });
-  }
-
   /**
    * Observation-only resource work (#140). It may ingest correlated vendor
    * failure evidence, run one due authorized quota read, and release only a
@@ -1158,7 +1145,7 @@ export class CoordinatorRunLoop {
     const hold = created as Hold | null;
     if (hold !== null) {
       this.log(`Issue ${start.issue}: ${agent} held (vendor-failure; ${failure.evidence.failureClass}; reset ${hold.resetsAt ?? "unknown"}). ` +
-        `Inspect the agent, then coord resume --issue ${this.paths.issue} --hold ${hold.id}`);
+        `Inspect the agent, then ${holdRecoveryCommand(this.paths.issue, next.holds, hold)}`);
     }
     return next;
   }
@@ -2524,7 +2511,12 @@ export class CoordinatorRunLoop {
     return next;
   }
 
-  async runTick(): Promise<CursorsState> {
+  /**
+   * `observeOnly` lets a runner whose effects are not initialized yet poll
+   * without advancing: an issue unpaused between its check and this read must
+   * not be delivered to before its clones and sessions are prepared.
+   */
+  async runTick(options: { observeOnly?: boolean } = {}): Promise<CursorsState> {
     const start = readStartState(this.paths);
     try {
       let cursors = readCursorsState(this.paths);
@@ -2537,6 +2529,7 @@ export class CoordinatorRunLoop {
         }
         return cursors;
       }
+      if (options.observeOnly === true) return cursors;
       const observations: EvidenceObservation[] = [];
 
       for (const dropped of cursors.droppedAgents) clearCompletion(agentRuntimePaths(this.paths, dropped).complete);
@@ -2737,29 +2730,46 @@ export class CoordinatorRunLoop {
     }
   }
 
+  /**
+   * A pause or hold is a waiting condition, not completion (#146): the runner
+   * keeps polling, observation-only, until an owner command in another shell
+   * releases it, then continues in this same process. Only completion,
+   * abandonment, an abort, or a genuine error ends it.
+   */
   async run(signal?: AbortSignal): Promise<void> {
     const start = readStartState(this.paths);
     let cursors = readCursorsState(this.paths);
-    const finished = (state: CursorsState): boolean =>
-      state.completed || state.abandoned || (state.paused && !this.resourceWorkPending(start, state));
+    const finished = (state: CursorsState): boolean => state.completed || state.abandoned;
     if (finished(cursors)) {
       this.log(renderIssueReport(start, cursors).trimEnd());
       return;
     }
     this.logPhase(start.issue, cursors.issueCursor.stepId, cursors.issueCursor.round);
-    // A resource-held runner stays alive only for authorized observation; it
-    // attaches or launches nothing until normal workflow authority returns.
     let initialized = false;
+    let waitingReport: string | null = null;
     while (signal?.aborted !== true) {
       if (!initialized && !readCursorsState(this.paths).paused) {
-        await this.initializeEffects();
-        initialized = true;
+        try {
+          await this.initializeEffects();
+          initialized = true;
+        } catch (error) {
+          // An owner command or observation moved the state mid-initialization;
+          // reobserve on a later poll rather than exit or claim it succeeded.
+          if (!(error instanceof StateConflictError)) throw error;
+        }
       }
-      cursors = await this.runTick();
+      cursors = await this.runTick({ observeOnly: !initialized });
       if (finished(cursors)) {
         this.log(renderIssueReport(start, cursors).trimEnd());
         return;
       }
+      // Report on entering a wait and when its recovery information changes,
+      // not on every poll.
+      const report = cursors.paused ? renderIssueReport(start, cursors).trimEnd() : null;
+      if (report !== null && report !== waitingReport) {
+        this.log(`${report}\nWaiting: this coordinator continues once the issue is resumed.`);
+      }
+      waitingReport = report;
       await this.sleep(start.pollIntervalMs);
     }
   }

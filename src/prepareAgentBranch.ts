@@ -203,15 +203,21 @@ export const prepareAgentIssueBranches = (input: {
 }): PrepareAgentIssueBranchResult[] => {
   const log = input.log ?? (() => undefined);
   const installRoot = input.installRoot ?? null;
-  const dirty = input.agents
-    .filter(({ root }) => existsSync(root) && isGitWorktree(root) && blockingDirtyPaths(root).length > 0)
-    .map(({ root }) => root);
+  // Dirt blocks only a clone that needs a branch switch. A clone already on its
+  // own issue branch holds the agent's in-progress plan or implementation; it is
+  // never checked out, reset or cleaned, so refusing on it only stopped a
+  // restart from rejoining that work.
+  const snapshots = snapshotCloneReadiness(input).filter(
+    (snapshot) => snapshot.available && snapshot.dirtyLines.length > 0
+  );
+  const dirty = snapshots.filter((snapshot) => snapshot.head !== snapshot.branch).map(({ clone }) => clone);
   if (dirty.length > 0) {
     throw new Error(
       `Refusing to check out issue branches: uncommitted changes in ${dirty.join(", ")}. ` +
         "Commit/stash them, then retry. Nothing has been changed."
     );
   }
+  const keptDirty = new Set(snapshots.map(({ clone }) => clone));
 
   const results: PrepareAgentIssueBranchResult[] = [];
   for (const agent of input.agents) {
@@ -229,8 +235,14 @@ export const prepareAgentIssueBranches = (input: {
       continue;
     }
 
-    const captured = captureCloneAgentsProtocol(agent.root);
     const onBranch = git(agent.root, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+    if (onBranch !== branch && keptDirty.has(agent.root)) {
+      throw new Error(
+        `Refusing to check out ${branch} in ${agent.root}: it left that branch with uncommitted changes ` +
+          "after the preflight. Its work was not touched."
+      );
+    }
+    const captured = captureCloneAgentsProtocol(agent.root);
     if (onBranch === branch) {
       const protocol = restoreProtocol(agent.root, installRoot, captured, log);
       log(`${agent.id} already on ${branch}\n`);

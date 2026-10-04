@@ -113,8 +113,21 @@ describe("issue report", () => {
     const text = renderIssueReport(start("owner-only"), cursors);
     expect(text).toContain("Manual pause: active");
     expect(text).toContain("cause unknown, reset unknown, retry owner: owner");
-    expect(text).toContain("coord resume --issue 1 --hold hold-id --reset-nudge-budget");
+    expect(text).toContain("coord resume --issue 1 --agent cursor --reset-nudge-budget (or coord resume --issue 1 --hold hold-id --reset-nudge-budget)");
+    expect(text).toContain("A running coordinator continues after recovery; add --run only to restart a stopped one.");
     expect(text).not.toContain("quota exhausted");
+  });
+  it("falls back to the exact hold id when one agent has several holds", () => {
+    const cursors = complete();
+    cursors.completed = false; cursors.paused = true;
+    const hold = (id: string) => ({ id, agent: "cursor", actionId: "action-id", sessionId: null,
+      reason: "unobservable" as const, evidenceId: id, observedAt: cursors.updatedAt, resetsAt: null,
+      confidence: "unknown" as const, retryOwner: "owner" as const, evidence: null });
+    cursors.holds = [hold("one"), hold("two")];
+    const text = renderIssueReport(start("owner-only"), cursors);
+    expect(text).toContain("Recovery: inspect the agent, then coord resume --issue 1 --hold one\n");
+    expect(text).toContain("Recovery: inspect the agent, then coord resume --issue 1 --hold two\n");
+    expect(text).not.toContain("--agent cursor");
   });
   it("separates cause, exact recheck time, blocked windows and redacted detail from owner release", () => {
     const cursors = complete();

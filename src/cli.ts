@@ -163,7 +163,7 @@ const parseArgs = (args: readonly string[], booleans: readonly string[] = []): P
  * absorbing the next flag.
  */
 const booleanFlags: Record<string, readonly string[]> = {
-  resume: ["reset-nudge-budget"],
+  resume: ["reset-nudge-budget", "run"],
   install: ["write-product", "vendor", "bootstrap-coordination", "dry-run"],
   uninstall: ["delete-clones", "wipe-runtime", "delete-coordination", "force", "dry-run"],
   "wipe-issue": ["force", "dry-run", "delete-evidence"],
@@ -172,6 +172,20 @@ const booleanFlags: Record<string, readonly string[]> = {
 };
 
 const flagIsSet = (parsed: ParsedArgs, name: string): boolean => parsed.flags.get(name) === "true";
+
+/** Resolve `resume --agent` to that active agent's one hold; never pick among several. */
+const agentHoldId = (cursors: CursorsState, agent: string): string => {
+  if (!cursors.activeRoster.includes(agent)) throw new Error(`resume --agent ${agent}: not an active agent.`);
+  const holds = cursors.holds.filter((hold) => hold.agent === agent);
+  if (holds.length === 1) return holds[0]!.id;
+  const all = cursors.holds.map((hold) => `${hold.id} (${hold.agent}, ${hold.reason})`).join(", ");
+  throw new Error(
+    holds.length === 0
+      ? `resume --agent ${agent}: ${agent} has no active hold.${all === "" ? "" : ` Active holds: ${all}.`}`
+      : `resume --agent ${agent}: ${agent} has ${holds.length} holds (${holds.map((hold) => hold.id).join(", ")}); ` +
+          "choose one with --hold <id>."
+  );
+};
 
 const requireFlag = (parsed: ParsedArgs, name: string): string => {
   const value = parsed.flags.get(name);
@@ -236,7 +250,8 @@ Usage:
   coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
   coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
   coord pause|resume|restart-action|abandon --issue <issue> [--product <path> | --coord-root <path>]
-  coord resume --issue <issue> --hold <id> [--reset-nudge-budget] [--product <path> | --coord-root <path>]
+  coord resume --issue <issue> [--agent <agent> | --hold <id>] [--reset-nudge-budget] [--run] [-v|--verbose]
+               [--product <path> | --coord-root <path>]
   coord attach <issue> [--product <path> | --coord-root <path>]
   coord detach <issue> [--product <path> | --coord-root <path>] [--dry-run]
   coord detach manual [--product <path> | --config <path> --coord-root <path>] [--dry-run]
@@ -881,6 +896,16 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
   };
 
+  /** The same manual-session exclusion `coord run` applies, for any command that starts the loop. */
+  const assertNoManualSessionFor = async (paths: IssueRuntimePaths): Promise<void> => {
+    const workspace = workspaceLocationFromConfig(readStartState(paths).configPath);
+    const manualWorkspaceRoot =
+      workspace.layout === "nested" && resolve(paths.coordRoot) === resolve(workspace.coordRoot)
+        ? workspace.workspaceRoot
+        : paths.coordRoot;
+    await assertNoManualSession(manualWorkspaceRoot);
+  };
+
   const assertNoAutomatedSession = async (resolution: StartResolution): Promise<void> => {
     const sessions = new Map<string, number>();
     const currentIdentity = workspaceUiIdentity(resolution.runtimeRoot);
@@ -1415,12 +1440,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (parsed.positionals.length !== 0) throw new Error("run takes no positional arguments.");
       verboseState.enabled = flagIsSet(parsed, "verbose");
       const paths = existingContext(parsed, io);
-      const workspace = workspaceLocationFromConfig(readStartState(paths).configPath);
-      const manualWorkspaceRoot =
-        workspace.layout === "nested" && resolve(paths.coordRoot) === resolve(workspace.coordRoot)
-          ? workspace.workspaceRoot
-          : paths.coordRoot;
-      await assertNoManualSession(manualWorkspaceRoot);
+      await assertNoManualSessionFor(paths);
       await makeRunLoop(paths).run();
       return await detachCompletedIssue(paths, io);
     }
@@ -1581,15 +1601,27 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "pause" || command === "resume") {
-      allowedFlags(parsed, ["issue", "coord-root", "product", ...(command === "resume" ? ["hold", "reset-nudge-budget"] : [])]);
+      allowedFlags(parsed, ["issue", "coord-root", "product",
+        ...(command === "resume" ? ["hold", "agent", "reset-nudge-budget", "run", "verbose"] : [])]);
       if (parsed.positionals.length !== 0) throw new Error(`${command} takes no positional arguments.`);
       const paths = existingContext(parsed, io);
       const paused = command === "pause";
       const now = new Date().toISOString();
-      const holdId = parsed.flags.has("hold") ? requireFlag(parsed, "hold") : null;
+      const selectedHold = parsed.flags.has("hold") ? requireFlag(parsed, "hold") : null;
+      const selectedAgent = parsed.flags.has("agent") ? requireFlag(parsed, "agent") : null;
+      if (selectedHold !== null && selectedAgent !== null) throw new Error("--hold and --agent are mutually exclusive.");
       const resetBudget = flagIsSet(parsed, "reset-nudge-budget");
-      if (resetBudget && holdId === null) throw new Error("--reset-nudge-budget requires --hold.");
+      if (resetBudget && selectedHold === null && selectedAgent === null) {
+        throw new Error("--reset-nudge-budget requires --hold or --agent.");
+      }
+      const runAfter = flagIsSet(parsed, "run");
+      if (runAfter) {
+        verboseState.enabled = flagIsSet(parsed, "verbose");
+        // Refuse before releasing anything, so a refused run changes no state.
+        await assertNoManualSessionFor(paths);
+      }
       const result = mutateCursorsState(paths, (current) => {
+        const holdId = selectedAgent === null ? selectedHold : agentHoldId(current, selectedAgent);
         const next = holdId === null ? setPaused(current, paused, now) : releaseHold(current, holdId, resetBudget, now);
         if (holdId !== null) appendJournal(paths, { type: "hold-released", details: {
           hold: holdId, resetNudgeBudget: resetBudget, eventId: `release:${holdId}`
@@ -1599,7 +1631,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       });
       io.stdout(`${result.state.paused ? "Paused" : "Resumed"} issue ${readStartState(paths).issue}.` +
         (result.state.holds.length > 0 ? ` ${result.state.holds.length} active hold(s); use coord status for scoped recovery.` : "") + "\n");
-      return 0;
+      if (!runAfter) return 0;
+      // For a stopped coordinator only: beside a live one, omit --run and let it continue.
+      await makeRunLoop(paths).run();
+      return await detachCompletedIssue(paths, io);
     }
 
     if (command === "restart-action") {

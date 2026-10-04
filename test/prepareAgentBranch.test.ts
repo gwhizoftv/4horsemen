@@ -268,6 +268,62 @@ describe("prepareAgentIssueBranches", () => {
     expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toBe(humanEdit);
   });
 
+  // #146: an agent's unfinished plan or implementation on its own issue branch
+  // is normal mid-issue state; a restart must rejoin it, not refuse on it.
+  it("keeps commits, staged, unstaged and untracked work in a clone already on its issue branch", () => {
+    const { clone, baseline } = seedClone();
+    const prepare = () => prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+    prepare();
+    writeFileSync(join(clone, "work.txt"), "committed\n");
+    git(clone, "add", "work.txt");
+    git(clone, "commit", "-qm", "Claude: local only");
+    const head = git(clone, "rev-parse", "HEAD");
+    writeFileSync(join(clone, "work.txt"), "staged\n");
+    git(clone, "add", "work.txt");
+    writeFileSync(join(clone, "work.txt"), "unstaged\n");
+    writeFileSync(join(clone, "plan.md"), "draft\n");
+
+    expect(prepare()[0]?.action).toBe("already-on-branch");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
+    expect(git(clone, "rev-parse", "HEAD")).toBe(head);
+    expect(git(clone, "show", ":work.txt")).toBe("staged");
+    expect(readFileSync(join(clone, "work.txt"), "utf8")).toBe("unstaged\n");
+    expect(readFileSync(join(clone, "plan.md"), "utf8")).toBe("draft\n");
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it.each([
+    ["main", () => undefined],
+    ["a detached HEAD", (clone: string) => git(clone, "checkout", "-q", "--detach")],
+    ["another issue's branch", (clone: string) => git(clone, "checkout", "-q", "-b", "issue-8/codex")]
+  ])("still refuses every clone when another dirty clone is on %s", (_label, place) => {
+    const kept = seedClone();
+    const other = seedClone();
+    const agents = [{ id: "claude", root: kept.clone }, { id: "codex", root: other.clone }];
+    const input = { issue: 9, branchTemplate: "issue-{issue}/{agent}", baselineSha: kept.baseline,
+      baseBranch: "main", installRoot: repoRoot };
+    prepareAgentIssueBranches({ ...input, agents: [agents[0]!] });
+    writeFileSync(join(kept.clone, "plan.md"), "draft\n");
+    place(other.clone);
+    const otherHead = git(other.clone, "rev-parse", "--abbrev-ref", "HEAD");
+    writeFileSync(join(other.clone, "dirty.txt"), "nope\n");
+
+    expect(() => prepareAgentIssueBranches({ ...input, agents })).toThrow(
+      new RegExp(`uncommitted changes in ${other.clone}\\. `)
+    );
+    expect(git(kept.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
+    expect(readFileSync(join(kept.clone, "plan.md"), "utf8")).toBe("draft\n");
+    expect(git(other.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe(otherHead);
+    expect(existsSync(join(other.clone, "dirty.txt"))).toBe(true);
+  });
+
   it("refuses a dirty clone", () => {
     const { clone, baseline } = seedClone();
     writeFileSync(join(clone, "dirty.txt"), "nope\n");

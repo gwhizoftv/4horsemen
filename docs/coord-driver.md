@@ -285,7 +285,12 @@ protocol overlay plus bit are restored afterward.
 On `coord N` start (and resume), coordination lifts that skip-worktree bit,
 checks each agent clone out on `issue-N/<agent>` at the issue baseline (or the
 existing issue branch, without resetting it), then restores the protocol overlay.
-Agents do not switch branches under skip-worktree `AGENTS.md`. Dirty clones refuse.
+Agents do not switch branches under skip-worktree `AGENTS.md`. A clone already on
+its exact `issue-N/<agent>` branch keeps its local commits and its staged,
+unstaged, and untracked work: it is not checked out, reset, cleaned, or stashed,
+so a restart rejoins an agent's unfinished plan or implementation. A dirty clone
+that needs a branch switch (the base branch, another branch, or a detached HEAD)
+refuses the whole preparation before any clone changes.
 
 Nudge delivery uses literal `send-keys -l` (not paste-buffer — some TUIs such
 as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`.
@@ -455,7 +460,11 @@ finalization may not be silently rebound without a new authorization.
 
 `pause` retains actions, mirror data, journal, and tmux sessions. Plain `resume`
 clears only the manual pause; active safety holds still prevent advancement.
-After recovery, `run` continues from strict versioned state. State changes use a short
+A pause or hold is a wait, not an exit: a running `coord N` / `coord run` keeps
+polling (observation only) and continues in the same process once the owner
+resumes from another shell. `coord pause` therefore does not stop the runner;
+use Ctrl-C to stop it. Only completion, abandonment, or a genuine error ends it.
+After recovery, the runner continues from strict versioned state. State changes use a short
 exclusive lock plus a monotonic revision, so an in-flight fetch or check cannot
 overwrite a concurrent pause, drop, or abandon. `restart-action` reissues
 pending work without changing a gate. `answer` consumes one typed pending
@@ -507,12 +516,20 @@ Use `coord status --issue N` to see the hold ID and recovery instruction. After
 inspecting the agent and fixing the underlying problem:
 
 ```sh
-coord resume --issue N --hold HOLD_ID
+coord resume --issue N --agent AGENT     # the agent's only hold
+coord resume --issue N --hold HOLD_ID    # exact form; required when the agent has several
 # A nudge-loop latch requires explicit authorization for a fresh send budget:
-coord resume --issue N --hold HOLD_ID --reset-nudge-budget
+coord resume --issue N --agent AGENT --reset-nudge-budget
 coord resume --issue N  # separately clear a manual pause, if present
-coord run --issue N
 ```
+
+The running coordinator continues by itself. If it was stopped, add `--run` to
+restart it in the same command (`coord resume --issue N --agent AGENT --run`);
+`--run` applies the same manual-session exclusion and completed-issue cleanup as
+`coord run`, and refuses before releasing anything. Do not add `--run` beside a
+live coordinator: there is no single-runner lock. `--agent` and `--hold` are
+mutually exclusive; `--agent` refuses, changing nothing, when that active agent
+has no hold or more than one, and lists the candidates.
 
 Include `--product PATH` or `--coord-root PATH` as usual. Releasing one hold never
 clears another hold or a manual pause, and is audited. Retired actions cannot be

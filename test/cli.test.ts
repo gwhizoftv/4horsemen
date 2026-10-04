@@ -487,6 +487,54 @@ describe("CLI", () => {
     expect(readJournal(paths).filter((event) => event.type === "resumed")).toHaveLength(1);
   });
 
+  it("resumes one hold by agent, keeps other pauses, and restarts a stopped runner only with --run", async () => {
+    const fixture = setup();
+    expect(await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+      { processRunner: resolvableStartGit, makeRunLoop: fakeLoop })).toBe(0);
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const current = readCursorsState(paths);
+    const actionId = actionIdFor("codex");
+    const hold = (id: string) => ({ id, agent: "codex", actionId, sessionId: null, reason: "unobservable" as const,
+      evidenceId: id, observedAt: current.updatedAt, resetsAt: null, confidence: "unknown" as const, retryOwner: "owner" as const });
+    const seed = (holds: ReturnType<typeof hold>[], manualPaused: boolean) => writeCursorsState(paths, cursorsStateSchema.parse({
+      ...readCursorsState(paths), manualPaused, paused: manualPaused || holds.length > 0, holds,
+      agents: { ...current.agents, codex: { ...current.agents.codex, actionId } },
+      actionSafety: { codex: { actionId, sends: 1, lastSendAt: current.updatedAt, activityAt: current.updatedAt } } }));
+    const first = "20000000-0000-4000-8000-000000000001";
+    const second = "20000000-0000-4000-8000-000000000002";
+    const errors: string[] = [];
+    let runs = 0;
+    const deps = (manual = false) => ({
+      io: { stdout: () => undefined, stderr: (message: string) => errors.push(message) },
+      sessionExists: async (name: string) => manual && name.startsWith("coord-manual-"),
+      makeRunLoop: (loopPaths: ReturnType<typeof issueRuntimePaths>) => ({ ...fakeLoop(loopPaths), run: async () => { runs++; } })
+    });
+    const args = ["--issue", "1", "--coord-root", fixture.runtime];
+    const released = () => readJournal(paths).filter((event) => event.type === "hold-released");
+
+    seed([hold(first), hold(second)], false);
+    expect(await runCli(["resume", ...args, "--agent", "codex"], deps())).toBe(2);
+    expect(errors.join("")).toContain(`${first}, ${second}`);
+    expect(await runCli(["resume", ...args, "--agent", "codex", "--hold", first], deps())).toBe(2);
+    expect(await runCli(["resume", ...args, "--agent", "claude"], deps())).toBe(2);
+    expect(readCursorsState(paths).holds).toHaveLength(2);
+
+    seed([hold(first)], true);
+    expect(await runCli(["resume", ...args, "--agent", "codex", "--run"], deps(true))).toBe(2);
+    expect(errors.join("")).toContain("coord detach manual");
+    expect(readCursorsState(paths).holds).toHaveLength(1);
+    expect(await runCli(["resume", ...args, "--agent", "codex"], deps())).toBe(0);
+    expect(readCursorsState(paths)).toMatchObject({ holds: [], manualPaused: true, paused: true });
+    expect(released()).toEqual([expect.objectContaining({ details: expect.objectContaining({ hold: first }) })]);
+    expect(runs).toBe(0);
+
+    seed([hold(second)], false);
+    expect(await runCli(["resume", ...args, "--agent", "codex", "--run"], deps())).toBe(0);
+    expect(readCursorsState(paths)).toMatchObject({ holds: [], paused: false });
+    expect(released().map((event) => event.details.hold)).toEqual([first, second]);
+    expect(runs).toBe(1);
+  });
+
   it("prints all four analytics sections, rejects unknown flags, and fails clearly without a journal", async () => {
     const fixture = setup();
     expect(
