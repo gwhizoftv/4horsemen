@@ -1,0 +1,46 @@
+{
+  "actionId": "db5592f3-0223-4496-b993-36d250f84168",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "9acd5f43c95b4f0ece47c5c5bcac7b5d6069c09a295f2e755bdae006c9fe97c8",
+  "issue": 129,
+  "issueSessionId": "issue-129:8392d92d365f298bf9d04dd8d19793705a3ff77e",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "885c34bdc34d5f4b3b7e80570ac4008272584a58",
+      "path": ".plans/issue-129/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "5b801354c2cab2ea45a0bde2e773acbfba53f18b",
+      "path": ".plans/issue-129/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "148a424e454e3c4de6a9fec7d809ad79d94f4e14",
+      "path": ".plans/issue-129/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude fixes the confirmed wipe-issue --product diagnostic at resolveWorkspaceFromProduct with the smallest safe file map and focused tests, without Cursor's untested wipe-admission change or Codex's broader git() rewrite.",
+  "responseSha256": "4352ef33ff825e2bae2fd6d17222cf5880e49d3aab7f493daae099c068082c94",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "ecc9edb4ffdd94d1d59dd4d17cf46a8f7d0cf136",
+      "path": ".plans/issue-129/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "42ecbde6254d05772466605c9b1e3ba818904ce0",
+      "path": ".plans/issue-129/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "ce3aa8600d33f690ba3426d16625c1ac1ab6ab60",
+      "path": ".plans/issue-129/review.md"
+    }
+  ]
+}

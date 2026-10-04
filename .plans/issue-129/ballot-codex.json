@@ -1,0 +1,46 @@
+{
+  "actionId": "5f73a3b9-219b-42a8-a776-017565f573a7",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "9acd5f43c95b4f0ece47c5c5bcac7b5d6069c09a295f2e755bdae006c9fe97c8",
+  "issue": 129,
+  "issueSessionId": "issue-129:8392d92d365f298bf9d04dd8d19793705a3ff77e",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "885c34bdc34d5f4b3b7e80570ac4008272584a58",
+      "path": ".plans/issue-129/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "5b801354c2cab2ea45a0bde2e773acbfba53f18b",
+      "path": ".plans/issue-129/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "148a424e454e3c4de6a9fec7d809ad79d94f4e14",
+      "path": ".plans/issue-129/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex's shared Git-boundary plan also fixes the onboard-path failure confirmed after reading Claude's review, while preserving fatal invalid-path handling and explicitly testing genuine Git-launch errors rather than broadening destructive wipe admission.",
+  "responseSha256": "fdb644cb5398d29ef28923766618be0212cdb0473e313431a293bbc9f1032467",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "ecc9edb4ffdd94d1d59dd4d17cf46a8f7d0cf136",
+      "path": ".plans/issue-129/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "42ecbde6254d05772466605c9b1e3ba818904ce0",
+      "path": ".plans/issue-129/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "ce3aa8600d33f690ba3426d16625c1ac1ab6ab60",
+      "path": ".plans/issue-129/review.md"
+    }
+  ]
+}
