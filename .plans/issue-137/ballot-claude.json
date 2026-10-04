@@ -1,0 +1,56 @@
+{
+  "actionId": "26ab7bfd-2bd4-4f2a-b337-e27a5224f5b8",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "5645b194a42fc37386f7c5693e76b58d4c1a396f794ed7bc79fafefdf60ce247",
+  "issue": 137,
+  "issueSessionId": "issue-137:3d1bf995c2327978374d863c16828a24e311c159",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "c91a1c98e239aab9cc534c46d9b88956300948bf",
+      "path": ".plans/issue-137/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "283f72447e43206d1ef6c8fe104382a7df0ec713",
+      "path": ".plans/issue-137/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "82873282557e9c24e08621ed4356b736618fd7df",
+      "path": ".plans/issue-137/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "bc5f9ae75426112fa1eb2379bdc0c278eb0b3844",
+      "path": ".plans/issue-137/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex is the only plan whose agreement mechanism survives every review as written (request at the existing required path, detour handled before profile normalization, amendment sequence separate from revision round, literal file paths, publication before authorization), whereas claude's self-grants in reviewed mode and cursor/antigravity skip their own ballot or reuse stale votes; trim its scopeHash and use approve/reject during implementation.",
+  "responseSha256": "148d2c4c03cb7f3e5ff49cb4f8009d4da4cfe987f2cb8c62679f297b0f8c44f1",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "b97b6ca36e12b4f91ce6dd725d075b3711962cb2",
+      "path": ".plans/issue-137/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "28a178b69649c4b989f310ab601a993e626bce41",
+      "path": ".plans/issue-137/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "b8f31c58d9336f4550a04ee86be0e07a456992a5",
+      "path": ".plans/issue-137/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "c353e5a5d459973a9abd914d400db433d50882aa",
+      "path": ".plans/issue-137/review.md"
+    }
+  ]
+}
