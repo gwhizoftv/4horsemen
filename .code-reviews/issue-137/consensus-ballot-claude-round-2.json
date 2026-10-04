@@ -1,0 +1,14 @@
+{
+  "actionId": "9ff2323e-974a-4cc6-bdc2-f4318e5ffe5b",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "27e6efe336ee0218653cbf7b87268909cdc7b3da0bdd0c99fd969df6430fd22f",
+  "issue": 137,
+  "issueSessionId": "issue-137:3d1bf995c2327978374d863c16828a24e311c159",
+  "protocolVersion": 2,
+  "rationale": "Round 2 (f8f6fdb0) only renames the amendment request's rationale field to the plan's explanation consistently across schema, scaffold, docs, template, and tests while ballots keep rationale, and it typechecks, lints, passes all amendment-related unit tests, agent-language checks, and the real-git canary.",
+  "responseSha256": "f0bf2fb6580ab853905c8c068e31d07b75da091836ef592b1890dcb46a8685a1",
+  "revisionCommitSha": "f8f6fdb07cc25d9cdcb07654d77815aa35556af9",
+  "round": 2
+}

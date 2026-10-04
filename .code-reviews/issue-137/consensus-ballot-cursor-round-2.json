@@ -1,0 +1,14 @@
+{
+  "actionId": "f8c98fc0-7766-43f7-8a69-d772ee9a93a8",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "27e6efe336ee0218653cbf7b87268909cdc7b3da0bdd0c99fd969df6430fd22f",
+  "issue": 137,
+  "issueSessionId": "issue-137:3d1bf995c2327978374d863c16828a24e311c159",
+  "protocolVersion": 2,
+  "rationale": "Round-2 renames the request field to explanation and keeps exactApprovedPaths plus fail-closed empty-map enforcement.",
+  "responseSha256": "8418c88854af2c7476226d5e68536702beaacc0be60253712f75c9ef88597eac",
+  "revisionCommitSha": "f8f6fdb07cc25d9cdcb07654d77815aa35556af9",
+  "round": 2
+}
