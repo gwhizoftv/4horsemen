@@ -1,0 +1,34 @@
+{
+  "actionId": "f067809c-bef5-40ab-ad32-7102a2230351",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "b915e8c9f45a032a4afa1498ef229083de8ac1e8",
+      "path": ".signals/issue-137/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "f8543ea6bd7fe695ecb1b25638a29100d67cff3c",
+      "path": ".signals/issue-137/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a4d2b46480d89b5dfcd79991e520530b4ed427ac",
+      "path": ".signals/issue-137/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "13804a10c6fdb0965c79d016559397fe4adf304b",
+      "path": ".signals/issue-137/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "3f7654cee3244cc229cc1d33f07035981915c013fc5496771c8e9c76fc1e1741",
+  "issue": 137,
+  "issueSessionId": "issue-137:3d1bf995c2327978374d863c16828a24e311c159",
+  "protocolVersion": 2,
+  "rationale": "Codex is the smallest correct implementation (about 420 source lines versus 900-1100 for the others), follows the plan's ballot vocabulary, persists action retirements durably before deleting runtime files, and has the strongest real-git coverage (partial-ballot restart, failed-publication exact retry, pause race), whereas cursor drops rejection reasons, antigravity retires work outside the durable transition, and mine departs from the plan wording at 2.5x the size.",
+  "responseSha256": "374df38bd84dd2c39dfab96f70e7169f9a98929eeccae1c630bc4ca8e48cdaf6"
+}

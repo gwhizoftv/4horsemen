@@ -1,0 +1,34 @@
+{
+  "actionId": "cba3df7b-2cb7-4363-9d0c-28791ff048c0",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "b915e8c9f45a032a4afa1498ef229083de8ac1e8",
+      "path": ".signals/issue-137/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "f8543ea6bd7fe695ecb1b25638a29100d67cff3c",
+      "path": ".signals/issue-137/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a4d2b46480d89b5dfcd79991e520530b4ed427ac",
+      "path": ".signals/issue-137/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "13804a10c6fdb0965c79d016559397fe4adf304b",
+      "path": ".signals/issue-137/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "3f7654cee3244cc229cc1d33f07035981915c013fc5496771c8e9c76fc1e1741",
+  "issue": 137,
+  "issueSessionId": "issue-137:3d1bf995c2327978374d863c16828a24e311c159",
+  "protocolVersion": 2,
+  "rationale": "Best overall match: explanation field, roster-ordered request freeze, correct amendment-ballot artifact, detour before normalize, and integration coverage.",
+  "responseSha256": "60314fe61408dc56e37df6be47412a766446b00c323ce77f9b51f6595208a8ba"
+}
