@@ -487,6 +487,70 @@ describe("CLI", () => {
     expect(readJournal(paths).filter((event) => event.type === "resumed")).toHaveLength(1);
   });
 
+  it("resolves scoped agent recovery under the lock and runs only on explicit request", async () => {
+    const f = setup();
+    await runCli(["start", "1", "--config", f.configPath, "--coord-root", f.runtime],
+      { processRunner: resolvableStartGit, makeRunLoop: fakeLoop });
+    const paths = issueRuntimePaths(f.runtime, 1);
+    const current = readCursorsState(paths);
+    const holds = ["codex", "claude"].map((agent, index) => ({
+      id: `20000000-0000-4000-8000-00000000000${index + 1}`, agent, actionId: actionIdFor(agent), sessionId: null,
+      reason: index === 0 ? "nudge-loop" : "unobservable", evidenceId: agent, observedAt: current.updatedAt,
+      resetsAt: null, confidence: "unknown", retryOwner: "owner"
+    }));
+    const held = cursorsStateSchema.parse({ ...current, paused: true, manualPaused: true, holds,
+      agents: { ...current.agents, ...Object.fromEntries(holds.map((hold) =>
+        [hold.agent, { ...current.agents[hold.agent], actionId: hold.actionId }])) },
+      actionSafety: Object.fromEntries(holds.map((hold) => [hold.agent,
+        { actionId: hold.actionId, sends: 4, lastSendAt: current.updatedAt, activityAt: current.updatedAt }])) });
+    writeCursorsState(paths, held);
+    let runs = 0;
+    const errors: string[] = [];
+    const deps = { io: { stdout: () => undefined, stderr: (s: string) => errors.push(s) },
+      makeRunLoop: () => ({ ...fakeLoop(paths), run: async () => { runs++; } }) };
+    const args = ["resume", "--issue", "1", "--coord-root", f.runtime];
+    const rejectUnchanged = async (flags: string[], sessionExists?: (name: string) => Promise<boolean>) => {
+      const before = readFileSync(paths.cursors, "utf8");
+      const journal = readFileSync(paths.journal, "utf8");
+      expect(await runCli([...args, ...flags], { ...deps, ...(sessionExists ? { sessionExists } : {}) })).toBe(2);
+      expect(readFileSync(paths.cursors, "utf8")).toBe(before);
+      expect(readFileSync(paths.journal, "utf8")).toBe(journal);
+      expect(runs).toBe(0);
+    };
+    for (const flags of [
+      ["--agent", "unknown"], ["--agent", "cursor"],
+      ["--agent", "codex", "--hold", holds[0]!.id], ["--agent", "codex"],
+      ["--agent", "claude", "--reset-nudge-budget"]
+    ]) await rejectUnchanged(flags);
+
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...held,
+      holds: [...held.holds, { ...held.holds[0], id: "20000000-0000-4000-8000-000000000003" }] }));
+    await rejectUnchanged(["--agent", "codex", "--reset-nudge-budget"]);
+    expect(errors.join("")).toContain("2 active holds");
+    expect(errors.join("")).toContain("20000000-0000-4000-8000-000000000003");
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...held,
+      agents: { ...held.agents, codex: { ...held.agents.codex, actionId: "10000000-0000-4000-8000-000000000099" } } }));
+    await rejectUnchanged(["--agent", "codex", "--reset-nudge-budget"]);
+    expect(errors.join("")).toContain("retired work");
+    writeCursorsState(paths, held);
+    await rejectUnchanged(["--agent", "codex", "--reset-nudge-budget", "--run"], async () => true);
+    expect(errors.join("")).toContain("coord detach manual");
+
+    expect(await runCli([...args, "--agent", "codex", "--reset-nudge-budget"], deps)).toBe(0);
+    expect(runs).toBe(0);
+    expect(readCursorsState(paths)).toMatchObject({ manualPaused: true, paused: true,
+      holds: [expect.objectContaining({ agent: "claude" })], actionSafety: { codex: { sends: 0 } } });
+    expect(readJournal(paths).filter((event) => event.type === "hold-released")).toEqual([
+      expect.objectContaining({ details: expect.objectContaining({ hold: holds[0]!.id, resetNudgeBudget: true }) })
+    ]);
+    expect(await runCli([...args, "--agent", "claude", "--run"], deps)).toBe(0);
+    expect(runs).toBe(1);
+    expect(readCursorsState(paths)).toMatchObject({ manualPaused: true, paused: true, holds: [] });
+    expect(await runCli([...args, "--run"], deps)).toBe(0);
+    expect(runs).toBe(2);
+    expect(readCursorsState(paths)).toMatchObject({ manualPaused: false, paused: false, holds: [] });
+  });
+
   it("prints all four analytics sections, rejects unknown flags, and fails clearly without a journal", async () => {
     const fixture = setup();
     expect(
@@ -888,7 +952,7 @@ describe("CLI", () => {
 
     const runOutput: string[] = [];
     expect(
-      await runCli(["run", "--issue", "1", "--coord-root", fixture.runtime], {
+      await runCli(["resume", "--run", "--issue", "1", "--coord-root", fixture.runtime], {
         io: { stdout: (message) => runOutput.push(message) },
         makeRunLoop: fakeLoop
       })

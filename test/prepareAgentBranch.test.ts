@@ -51,6 +51,53 @@ const seedClone = (): { clone: string; baseline: string; earlier: string } => {
 };
 
 describe("prepareAgentIssueBranches", () => {
+  it("rejoins its exact issue branch without touching local commits, index, worktree or untracked work", () => {
+    const { clone, baseline } = seedClone();
+    const input = { agents: [{ id: "claude", root: clone }], issue: 9,
+      branchTemplate: "issue-{issue}/{agent}", baselineSha: baseline, baseBranch: "main", installRoot: repoRoot };
+    prepareAgentIssueBranches(input);
+    writeFileSync(join(clone, "work.txt"), "local commit\n");
+    git(clone, "add", "work.txt");
+    git(clone, "commit", "-qm", "Claude: local work");
+    const tip = git(clone, "rev-parse", "HEAD");
+    writeFileSync(join(clone, "work.txt"), "staged work\n");
+    git(clone, "add", "work.txt");
+    writeFileSync(join(clone, "work.txt"), "unstaged work\n");
+    mkdirSync(join(clone, ".plans", "issue-9"), { recursive: true });
+    const plan = join(clone, ".plans", "issue-9", "plan.md");
+    writeFileSync(plan, "unfinished plan\n");
+    const agents = `${readFileSync(join(clone, "AGENTS.md"), "utf8")}\nHuman note\n`;
+    writeFileSync(join(clone, "AGENTS.md"), agents);
+
+    expect(prepareAgentIssueBranches(input)[0]?.action).toBe("already-on-branch");
+    expect(git(clone, "rev-parse", "HEAD")).toBe(tip);
+    expect(git(clone, "show", ":work.txt")).toBe("staged work");
+    expect(readFileSync(join(clone, "work.txt"), "utf8")).toBe("unstaged work\n");
+    expect(readFileSync(plan, "utf8")).toBe("unfinished plan\n");
+    expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toBe(agents);
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("refuses a mixed batch before touching eligible same-branch WIP or another clone", () => {
+    const ready = seedClone();
+    const other = seedClone();
+    const input = { agents: [{ id: "claude", root: ready.clone }], issue: 9,
+      branchTemplate: "issue-{issue}/{agent}", baselineSha: ready.baseline, baseBranch: "main", installRoot: repoRoot };
+    prepareAgentIssueBranches(input);
+    for (const clone of [ready.clone, other.clone]) writeFileSync(join(clone, "dirty.txt"), "keep\n");
+    const before = [ready.clone, other.clone].map((clone) => ({
+      head: git(clone, "rev-parse", "HEAD"), agents: readFileSync(join(clone, "AGENTS.md"), "utf8")
+    }));
+    expect(() => prepareAgentIssueBranches({ ...input, agents: [...input.agents, { id: "codex", root: other.clone }] }))
+      .toThrow(`uncommitted changes in ${other.clone}`);
+    [ready.clone, other.clone].forEach((clone, index) => {
+      expect(git(clone, "rev-parse", "HEAD")).toBe(before[index]!.head);
+      expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toBe(before[index]!.agents);
+      expect(readFileSync(join(clone, "dirty.txt"), "utf8")).toBe("keep\n");
+      expect(skipWorktree(clone)).toBe(true);
+    });
+  });
+
   it("checks out issue-N/agent at the baseline around skip-worktree AGENTS.md and restores the overlay", () => {
     const { clone, baseline } = seedClone();
     expect(skipWorktree(clone)).toBe(true);
@@ -268,8 +315,10 @@ describe("prepareAgentIssueBranches", () => {
     expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toBe(humanEdit);
   });
 
-  it("refuses a dirty clone", () => {
+  it.each(["main", "issue-10/claude", "detached"])("refuses a dirty clone on %s", (branch) => {
     const { clone, baseline } = seedClone();
+    if (branch === "detached") git(clone, "checkout", "-q", "--detach");
+    else if (branch !== "main") git(clone, "checkout", "-q", "-b", branch);
     writeFileSync(join(clone, "dirty.txt"), "nope\n");
     expect(() =>
       prepareAgentIssueBranches({
@@ -282,7 +331,7 @@ describe("prepareAgentIssueBranches", () => {
       })
     ).toThrow(/uncommitted changes/);
     expect(existsSync(join(clone, "dirty.txt"))).toBe(true);
-    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe(branch === "detached" ? "HEAD" : branch);
   });
 });
 

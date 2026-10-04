@@ -203,9 +203,12 @@ export const prepareAgentIssueBranches = (input: {
 }): PrepareAgentIssueBranchResult[] => {
   const log = input.log ?? (() => undefined);
   const installRoot = input.installRoot ?? null;
-  const dirty = input.agents
-    .filter(({ root }) => existsSync(root) && isGitWorktree(root) && blockingDirtyPaths(root).length > 0)
-    .map(({ root }) => root);
+  // Same-branch WIP needs no checkout. Share the read-only snapshot with base
+  // readiness, but not its discard policy: preparation never discards work.
+  const snapshots = snapshotCloneReadiness(input);
+  const dirty = snapshots
+    .filter(({ available, head, branch, dirtyLines }) => available && head !== branch && dirtyLines.length > 0)
+    .map(({ clone }) => clone);
   if (dirty.length > 0) {
     throw new Error(
       `Refusing to check out issue branches: uncommitted changes in ${dirty.join(", ")}. ` +
@@ -214,9 +217,10 @@ export const prepareAgentIssueBranches = (input: {
   }
 
   const results: PrepareAgentIssueBranchResult[] = [];
-  for (const agent of input.agents) {
-    const branch = issueBranchFor(input.branchTemplate, input.issue, agent.id);
-    if (!existsSync(agent.root) || !isGitWorktree(agent.root)) {
+  for (const snapshot of snapshots) {
+    const agent = { id: snapshot.agent, root: snapshot.clone };
+    const branch = snapshot.branch;
+    if (!snapshot.available) {
       log(`skip missing clone for ${agent.id}: ${agent.root}\n`);
       results.push({
         agent: agent.id,
@@ -231,8 +235,14 @@ export const prepareAgentIssueBranches = (input: {
 
     const captured = captureCloneAgentsProtocol(agent.root);
     const onBranch = git(agent.root, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+    if (onBranch !== snapshot.head) {
+      throw new Error(`Agent clone ${agent.root} changed branches during preparation. Retry without switching agent branches.`);
+    }
     if (onBranch === branch) {
-      const protocol = restoreProtocol(agent.root, installRoot, captured, log);
+      const state = cloneAgentsProtocolState(agent.root);
+      const protocol = state.overlayPresent && (!state.tracked || state.skipWorktree)
+        ? "overlay"
+        : restoreProtocol(agent.root, installRoot, captured, log);
       log(`${agent.id} already on ${branch}\n`);
       results.push({
         agent: agent.id,

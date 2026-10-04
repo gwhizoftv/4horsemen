@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readAction, writeAction } from "../src/action.js";
+import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
+import { git, repoRoot } from "./support/workspaceFixture.js";
 import { decideLifecycleNudge, initialAgentLifecycle, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentResponsePath, agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
@@ -244,6 +246,77 @@ const quotaFixture = (results: CodexQuotaResult[], during?: () => void, validate
   return { ...f, reads };
 };
 
+describe("runner waiting and initialization", () => {
+  it.each(["manual", "hold"])("waits through a %s pause and continues in the same runner after release", async (kind) => {
+    const f = safetyFixture("claude");
+    await f.tick();
+    mutateCursorsState(f.paths, (current) => kind === "manual" ? setPaused(current, true, f.now()) :
+      cursorsStateSchema.parse({ ...current, paused: true, holds: [{
+        id: "20000000-0000-4000-8000-000000000001", agent: "claude", actionId: current.agents.claude!.actionId,
+        sessionId: null, reason: "unobservable", evidenceId: "legacy", observedAt: f.now(), resetsAt: null,
+        confidence: "unknown", retryOwner: "owner"
+      }] }));
+    const journal = readFileSync(f.paths.journal, "utf8");
+    let initializations = 0;
+    let sleeps = 0;
+    const mirror = new BareMirror(f.paths.mirror, "/origin.git", async (args) => {
+      if (args[0] === "init") initializations++;
+      return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+    });
+    await f.makeLoop({ tmux: null, mirror, sleep: async (ms) => {
+      expect(ms).toBe(readStartState(f.paths).pollIntervalMs);
+      sleeps++;
+      if (sleeps <= 2) {
+        expect(initializations).toBe(0);
+        expect(f.ui.sends).toBe(1);
+        expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
+      }
+      if (sleeps === 2) mutateCursorsState(f.paths, (current) => kind === "manual"
+        ? setPaused(current, false, f.now()) : releaseHold(current, current.holds[0]!.id, false, f.now()));
+      if (sleeps === 3) {
+        expect(initializations).toBe(1);
+        expect(readCursorsState(f.paths).paused).toBe(false);
+        mutateCursorsState(f.paths, (current) => cursorsStateSchema.parse({ ...current,
+          ...(kind === "manual" ? { completed: true } : { abandoned: true }) }));
+      }
+      if (sleeps > 3) throw new Error("runner did not stop at terminal state");
+    } }).run();
+    expect(sleeps).toBe(3);
+    expect(initializations).toBe(1);
+    expect(f.messages.filter((message) => message.startsWith("Issue 1: paused"))).toHaveLength(1);
+  });
+
+  it("reobserves initialization authority conflicts on the next poll without hiding other errors", async () => {
+    const { paths } = fixture();
+    let initializations = 0;
+    let sleeps = 0;
+    const mirror = new BareMirror(paths.mirror, "/origin.git", async (args) => {
+      if (args[0] === "init" && ++initializations === 1) {
+        mutateCursorsState(paths, (current) => setPaused(current, true));
+      }
+      return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { mirror, tmux: null, log: () => undefined, sleep: async () => {
+      sleeps++;
+      if (sleeps === 1) {
+        expect(readCursorsState(paths).paused).toBe(true);
+        expect(readCursorsState(paths).agents.codex!.actionId).toBeNull();
+        mutateCursorsState(paths, (current) => setPaused(current, false));
+      } else {
+        expect(initializations).toBe(2);
+        expect(readCursorsState(paths).agents.codex!.actionId).not.toBeNull();
+        mutateCursorsState(paths, (current) => cursorsStateSchema.parse({ ...current, abandoned: true }));
+      }
+    } });
+    await loop.run();
+    expect(sleeps).toBe(2);
+    mutateCursorsState(paths, (current) => cursorsStateSchema.parse({ ...current, abandoned: false }));
+    const failedMirror = new BareMirror(paths.mirror, "/origin.git", async () => { throw new Error("fatal mirror error"); });
+    await expect(new CoordinatorRunLoop(paths, { mirror: failedMirror, tmux: null, log: () => undefined }).run())
+      .rejects.toThrow("fatal mirror error");
+  });
+});
+
 describe("vendor resource evidence and recovery", () => {
   const claudeFailure = (f: ReturnType<typeof safetyFixture>, error: string, details: string | null, fiveHour: number) => {
     observeAgentLifecycle(f.paths, "claude", { kind: "telemetry", eventName: "status-line", sessionId: "session",
@@ -269,15 +342,20 @@ describe("vendor resource evidence and recovery", () => {
     expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
     expect(readFileSync(f.paths.cursors, "utf8")).toBe(cursors);
     let sleeps = 0;
-    // A held runner stays alive only for the scheduled recheck; it never initializes effects here.
-    await f.makeLoop({ sleep: async () => { sleeps++; f.advance(1_000); } }).run();
-    expect(sleeps).toBeGreaterThan(0);
+    // The recheck is bounded, but the runner keeps waiting for owner release.
+    const controller = new AbortController();
+    await f.makeLoop({ sleep: async () => {
+      sleeps++; f.advance(1_000);
+      if (sleeps === 5) controller.abort();
+    } }).run(controller.signal);
+    expect(sleeps).toBe(5);
     const after = readCursorsState(f.paths);
     expect(after.holds).toEqual(held.holds);
     expect(readJournal(f.paths).filter((event) => event.type === "hold-updated")).toEqual([
       expect.objectContaining({ details: expect.objectContaining({ outcome: "owner-release-required" }) })
     ]);
     expect(f.messages.at(-1)).toContain("owner release required");
+    expect(f.messages.filter((message) => message.startsWith("Issue 1: paused"))).toHaveLength(2);
     expect(f.ui.sends).toBe(1);
     // An owner release is not re-held by the same failure episode.
     mutateCursorsState(f.paths, (current) => releaseHold(current, held.holds[0]!.id, false, f.now()));
@@ -287,7 +365,7 @@ describe("vendor resource evidence and recovery", () => {
   it.each([
     ["a model-family restriction", "rate_limit", "Opus weekly limit reached", 100, "usage-window"],
     ["a spend restriction", "billing_error", null, 100, "billing"]
-  ])("keeps %s at an unknown reset and lets run() return at once", async (_label, error, details, fiveHour, failureClass) => {
+  ])("keeps waiting on %s at an unknown reset without new effects", async (_label, error, details, fiveHour, failureClass) => {
     const f = safetyFixture("claude");
     await f.tick();
     f.advance(1); f.working();
@@ -295,9 +373,15 @@ describe("vendor resource evidence and recovery", () => {
     const held = await f.tick();
     expect(held.holds[0]).toMatchObject({ reason: "vendor-failure", resetsAt: null, confidence: "unknown", evidence: { failureClass } });
     let sleeps = 0;
-    await f.makeLoop({ sleep: async () => { sleeps++; } }).run();
-    expect(sleeps).toBe(0);
     const journal = readFileSync(f.paths.journal, "utf8");
+    const cursors = readFileSync(f.paths.cursors, "utf8");
+    const controller = new AbortController();
+    await f.makeLoop({ sleep: async () => { if (++sleeps === 3) controller.abort(); } }).run(controller.signal);
+    expect(sleeps).toBe(3);
+    expect(readFileSync(f.paths.cursors, "utf8")).toBe(cursors);
+    expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
+    expect(f.ui.sends).toBe(1);
+    expect(f.messages.filter((message) => message.startsWith("Issue 1: paused"))).toHaveLength(1);
     f.advance(7 * 86400_000);
     for (let i = 0; i < 200; i++) await f.tick();
     expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
@@ -1275,8 +1359,22 @@ describe("effectful run loop", () => {
     expect(messages).toEqual(["Issue 1: R1.join", "Issue 1: R1.join → R2.plan"]);
   });
 
-  it("reopens missing Terminal windows when resuming a live issue", async () => {
+  it("reopens missing Terminal windows without disturbing same-branch agent WIP", async () => {
     const { paths } = fixture();
+    const clone = join(paths.coordRoot, "..", "clone-claude");
+    mkdirSync(clone);
+    git(clone, "init", "-q", "--initial-branch=issue-1/claude");
+    git(clone, "config", "user.name", "Fixture");
+    git(clone, "config", "user.email", "fixture@example.com");
+    writeFileSync(join(clone, "AGENTS.md"), "# product\n");
+    git(clone, "add", "AGENTS.md");
+    git(clone, "commit", "-qm", "initial");
+    const tip = git(clone, "rev-parse", "HEAD");
+    writeCloneAgentsProtocol({ clone, installRoot: repoRoot, options: { dryRun: false, log: () => undefined, changes: [] } });
+    writeFileSync(join(clone, "plan.md"), "unfinished plan\n");
+    const start = readStartState(paths);
+    writeFileSync(paths.start, JSON.stringify({ ...start,
+      agents: start.agents.map((agent) => agent.id === "claude" ? { ...agent, root: clone } : agent) }));
     const launched: string[] = [];
     const messages: string[] = [];
     const tmux = new TmuxController(
@@ -1298,6 +1396,9 @@ describe("effectful run loop", () => {
     await new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) }).initializeEffects();
     expect(launched).toEqual(["claude", "codex"]);
     expect(messages.join("\n")).toContain("Opened 2 Terminal window(s)");
+    expect(readFileSync(join(clone, "plan.md"), "utf8")).toBe("unfinished plan\n");
+    expect(git(clone, "rev-parse", "HEAD")).toBe(tip);
+    expect(git(clone, "ls-files", "-v", "--", "AGENTS.md")).toMatch(/^S /);
   });
 
   it("clears malformed completion and reissues the same action with a concrete correction", async () => {

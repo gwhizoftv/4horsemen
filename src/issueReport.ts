@@ -9,6 +9,15 @@ const latestBatchByUpdatedAt = (batches: readonly BallotBatch[]): BallotBatch | 
   return [...batches].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt)).at(-1) ?? null;
 };
 
+/** One scoped recovery command, shared by immediate hold logs and status. */
+export const holdRecoveryCommand = (issue: number, cursors: CursorsState, hold: CursorsState["holds"][number]): string => {
+  const uniqueAgent = cursors.activeRoster.includes(hold.agent) &&
+    cursors.holds.filter((entry) => entry.agent === hold.agent).length === 1;
+  return `coord resume --issue ${issue} ` +
+    (uniqueAgent ? `--agent ${hold.agent}` : `--hold ${hold.id}`) +
+    (hold.reason === "nudge-loop" ? " --reset-nudge-budget" : "");
+};
+
 /**
  * What the owner needs after a run: who won, which commit is the PR head,
  * which branch coord pushed, evidence publication state, and whether they
@@ -52,7 +61,7 @@ export const renderIssueReport = (
     `Final pin (PR head): ${pin ?? "(none)"}`,
     `Published branch: ${branch ?? "(not pushed yet)"}`
   ];
-  if (cursors.manualPaused) lines.push("Manual pause: active (plain coord resume clears only this pause).");
+  if (cursors.manualPaused) lines.push(`Manual pause: active (coord resume --issue ${start.issue} clears only this pause).`);
   for (const hold of cursors.holds) {
     const sends = cursors.actionSafety[hold.agent]?.sends ?? 0;
     const evidence = hold.evidence ?? null;
@@ -65,8 +74,10 @@ export const renderIssueReport = (
         `${window.limitId}/${window.window} ${window.usedPercent ?? "?"}% (resets ${window.resetsAt ?? "unknown"})`).join("; ")}.`);
     }
     if (evidence?.detail !== null && evidence?.detail !== undefined) lines.push(`Vendor detail (redacted): ${evidence.detail}`);
-    lines.push(`Recovery: inspect the agent, then coord resume --issue ${start.issue} --hold ${hold.id}` +
-      (hold.reason === "nudge-loop" ? " --reset-nudge-budget" : ""));
+    lines.push(`Recovery: inspect the agent, then ${holdRecoveryCommand(start.issue, cursors, hold)}`);
+  }
+  if (cursors.paused) {
+    lines.push("The running coordinator waits and continues after all pauses are released; add --run to resume only if the coordinator was stopped.");
   }
   for (const agent of new Set(cursors.holds.map((hold) => hold.agent))) {
     const safety = cursors.actionSafety[agent];
