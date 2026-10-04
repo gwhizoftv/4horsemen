@@ -1,0 +1,14 @@
+{
+  "actionId": "373b6ffb-6659-4cf2-b337-66d4f5b58e5e",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "42ebd1bf9d2879f51cf2c45de2c1967941a53e308b18b3c67d93304603768c9a",
+  "issue": 146,
+  "issueSessionId": "issue-146:a792b19e8757c734c1c572b1c3fc1675a78d8bfc",
+  "protocolVersion": 2,
+  "rationale": "The round-1 revision adds the observeOnly guard so an uninitialized runner stays effect-free when a resume lands between the pause check and the tick, closing the only remaining comparison finding, and proves it with a deterministic test plus a paused/unpaused init-conflict table without touching any other behaviour.",
+  "responseSha256": "639c7b7bb40bf79e1baf7f4df392b6c6b09dc3ce62283077c85f225a567287fb",
+  "revisionCommitSha": "21e6c794ac50391a83f30331358cccf1296915d7",
+  "round": 1
+}

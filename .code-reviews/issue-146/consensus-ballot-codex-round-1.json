@@ -1,0 +1,14 @@
+{
+  "actionId": "5ef727c2-0148-4fc5-8a6a-e58cdcf167cd",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "42ebd1bf9d2879f51cf2c45de2c1967941a53e308b18b3c67d93304603768c9a",
+  "issue": 146,
+  "issueSessionId": "issue-146:a792b19e8757c734c1c572b1c3fc1675a78d8bfc",
+  "protocolVersion": 2,
+  "rationale": "Revision 21e6c794ac50391a83f30331358cccf1296915d7 closes the demonstrated initialization race with a minimal observation-only guard and focused regressions while preserving scoped recovery and unfinished work, with full checks passing 665 fast tests and 2 integration tests.",
+  "responseSha256": "7f490d6e1244ef76f74371943c6d95619958edbaefc29590a7e39bc41a4b0094",
+  "revisionCommitSha": "21e6c794ac50391a83f30331358cccf1296915d7",
+  "round": 1
+}
