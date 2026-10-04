@@ -1,0 +1,14 @@
+{
+  "actionId": "a95eae67-11fd-4d41-8b5d-cd1e87949dbb",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "3527c0ad90558621e4dead8a49daf60b20ce59eef988e607adb74962b369dcb1",
+  "issue": 137,
+  "issueSessionId": "issue-137:3d1bf995c2327978374d863c16828a24e311c159",
+  "protocolVersion": 2,
+  "rationale": "The bound revision preserves exact-file scope and durable request recovery, requires published unanimous approval, and passed full pnpm check with 680 fast tests and two end-to-end tests.",
+  "responseSha256": "bfee8c2cbae13659b9324d775fa5b7a76f3c9268b5faaa76ae1d961d7db0b9af",
+  "revisionCommitSha": "a4d2b46480d89b5dfcd79991e520530b4ed427ac",
+  "round": 1
+}

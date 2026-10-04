@@ -1,0 +1,14 @@
+{
+  "actionId": "137c325e-88a8-4cef-98af-02c1451aba06",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "3527c0ad90558621e4dead8a49daf60b20ce59eef988e607adb74962b369dcb1",
+  "issue": 137,
+  "issueSessionId": "issue-137:3d1bf995c2327978374d863c16828a24e311c159",
+  "protocolVersion": 2,
+  "rationale": "Rename plan-amendment-request field rationale to explanation per the selected plan; keep exactApprovedPaths and fail-closed empty-map behavior.",
+  "responseSha256": "1a1908c9ee8a840dd8bfebf88485edd8633559a4b135332f677e199ce798213d",
+  "revisionCommitSha": "a4d2b46480d89b5dfcd79991e520530b4ed427ac",
+  "round": 1
+}
