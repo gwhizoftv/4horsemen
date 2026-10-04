@@ -70,6 +70,19 @@ describe("ballotResponse", () => {
     ).toBe(false);
   });
 
+  it("parses amendment judgments as approve or reject only, bound to the action", () => {
+    const parse = (body: Record<string, unknown>, expected = actionId) =>
+      parseBallotResponse(JSON.stringify({ actionId, rationale: "Needed for the agreed change.", ...body }), "R4.amend-ballot", expected, []);
+    expect(parse({ disposition: "approve" })).toMatchObject({ ok: true, value: { disposition: "approve" } });
+    expect(parse({ disposition: "reject" })).toMatchObject({ ok: true, value: { disposition: "reject" } });
+    expect(parse({ disposition: "revise" }).ok).toBe(false);
+    expect(parse({ choice: "codex", disposition: "approve" }).ok).toBe(false);
+    expect(parse({ disposition: "approve" }, "c2337d85-6617-4e9f-8ace-901453764aa4")).toEqual({
+      ok: false,
+      outstanding: ["response actionId must be c2337d85-6617-4e9f-8ace-901453764aa4"]
+    });
+  });
+
   it("rejects action-id mismatch, envelope fields, and oversized payloads", () => {
     const mismatch = parseBallotResponse(
       JSON.stringify({

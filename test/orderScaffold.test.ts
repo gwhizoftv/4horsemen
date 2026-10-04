@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { artifactScaffoldValue, renderArtifactScaffold } from "../src/orderScaffold.js";
+import { amendmentRequestScaffoldValue, artifactScaffoldValue, renderArtifactScaffold } from "../src/orderScaffold.js";
 import { BUILD_DISCIPLINE_NOTE, STEP_DEFINITIONS } from "../src/steps.js";
 
 describe("orderScaffold", () => {
@@ -152,6 +152,40 @@ describe("orderScaffold", () => {
       disposition: "approve",
       rationale: "<one sentence>"
     });
+  });
+
+  it("offers the amendment request beside the ready signal and binds scope once amended", () => {
+    const ctx = {
+      stepId: "R4.implement" as const,
+      issue: 1,
+      issueSessionId: "s",
+      agent: "claude",
+      baselineSha: "a".repeat(40),
+      automationDigest: "b".repeat(64),
+      inputs: [],
+      eligibleChoices: [],
+      round: null,
+      approvedPaths: ["src/product.ts"],
+      actionId: "b2337d85-6617-4e9f-8ace-901453764aa4",
+      scopeHash: "5".repeat(64)
+    };
+    expect(artifactScaffoldValue(ctx)).not.toHaveProperty("scopeHash");
+    expect(artifactScaffoldValue({ ...ctx, amended: true })).toMatchObject({ scopeHash: "5".repeat(64) });
+    expect(amendmentRequestScaffoldValue(ctx)).toMatchObject({
+      artifact: "plan-amendment-request",
+      actionId: ctx.actionId,
+      scopeHash: ctx.scopeHash
+    });
+    const rendered = renderArtifactScaffold(ctx);
+    expect(rendered).toContain('"artifact": "implementation-ready"');
+    expect(rendered).toContain('"artifact": "plan-amendment-request"');
+    expect(amendmentRequestScaffoldValue({ ...ctx, stepId: "R5.compare" })).toBeNull();
+    expect(
+      artifactScaffoldValue({ ...ctx, stepId: "R4.amend-ballot", round: 1, approvedPaths: [] })
+    ).toEqual({ actionId: ctx.actionId, disposition: "approve", rationale: "<one sentence>" });
+    expect(renderArtifactScaffold({ ...ctx, stepId: "R4.amend-ballot", round: 1 })).toContain(
+      "Write this JSON to the response path"
+    );
   });
 
   it("limits build discipline to planning, implementation, and revision tasks", () => {

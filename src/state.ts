@@ -54,6 +54,7 @@ const stepIdSchema = z.enum([
   "R3.review",
   "R3.plan-ballot",
   "R4.implement",
+  "R4.amend-ballot",
   "R5.compare",
   "R5.compare-ballot",
   "R6.revise",
@@ -75,13 +76,14 @@ const evidenceIdSchema = z.enum([
   "review-published",
   "plan-response-accepted",
   "implementation-pinned",
+  "amendment-response-accepted",
   "comparison-published",
   "comparison-response-accepted",
   "revision-pinned",
   "consensus-response-accepted",
   "finalization-verified"
 ]);
-const ballotStepIdSchema = z.enum(["R3.plan-ballot", "R5.compare-ballot", "R6.ballot"]);
+const ballotStepIdSchema = z.enum(["R3.plan-ballot", "R4.amend-ballot", "R5.compare-ballot", "R6.ballot"]);
 const timestampSchema = z.string().datetime({ offset: true });
 
 export const checkCommandSchema = z
@@ -510,7 +512,7 @@ export const acceptedResponseSchema = z
     round: z.number().int().min(1).nullable(),
     responseSha256: digestSchema,
     choice: agentIdSchema.optional(),
-    disposition: z.enum(["approve", "revise", "escalate"]).optional(),
+    disposition: z.enum(["approve", "revise", "escalate", "reject"]).optional(),
     rationale: z.string().min(1),
     path: z.string().min(1),
     acceptedAt: timestampSchema
@@ -520,7 +522,7 @@ export const acceptedResponseSchema = z
 export const ballotBatchSchema = z
   .object({
     batchId: z.string().uuid(),
-    kind: z.enum(["plan-ballot-batch", "comparison-ballot-batch", "consensus-ballot-batch"]),
+    kind: z.enum(["plan-ballot-batch", "comparison-ballot-batch", "consensus-ballot-batch", "amendment-ballot-batch"]),
     round: z.number().int().min(1).nullable(),
     inputSetHash: digestSchema,
     activeRoster: z.array(agentIdSchema),
@@ -545,6 +547,74 @@ export const ballotBatchSchema = z
     updatedAt: timestampSchema
   })
   .strict();
+
+const amendmentCitationSchema = z
+  .object({
+    agent: agentIdSchema,
+    submissionSha: gitShaSchema,
+    path: z.string().min(1)
+  })
+  .strict();
+
+const amendmentRequestRecordSchema = z
+  .object({
+    /** Monotonic per issue; also the amendment ballot's round. Never a revision round. */
+    sequence: z.number().int().min(1),
+    agent: agentIdSchema,
+    actionId: actionIdSchema,
+    submissionSha: gitShaSchema,
+    path: z.string().min(1),
+    explanation: z.string().min(1),
+    scopeHash: digestSchema,
+    additionalPaths: z
+      .array(z.object({ path: z.string().min(1), reason: z.string().min(1) }).strict())
+      .min(1),
+    /** The selected-plan citations this request extends; additions apply only to this exact set. */
+    selectedPlans: z.array(amendmentCitationSchema).min(1),
+    activeRoster: z.array(agentIdSchema).min(1),
+    /** The work the detour interrupted, resumed with its original round. */
+    source: z
+      .object({
+        stepId: z.enum(["R4.implement", "R6.revise"]),
+        round: z.number().int().min(1).nullable()
+      })
+      .strict(),
+    /** Authors of simultaneous requests that were not chosen; they must resubmit. */
+    deferredAgents: z.array(agentIdSchema),
+    requestedAt: timestampSchema
+  })
+  .strict();
+
+export const amendmentDecisionRecordSchema = amendmentRequestRecordSchema
+  .extend({
+    outcome: z.enum(["approved", "rejected", "cancelled"]),
+    /** Published ballot evidence; null only for a cancelled request. */
+    evidenceCommitSha: gitShaSchema.nullable(),
+    decidedAt: timestampSchema
+  })
+  .strict()
+  .refine((record) => (record.outcome === "cancelled") === (record.evidenceCommitSha === null), {
+    path: ["evidenceCommitSha"],
+    message: "only a cancelled amendment lacks published ballot evidence"
+  });
+
+export const amendmentStateSchema = z
+  .object({
+    sequence: z.number().int().nonnegative(),
+    pending: amendmentRequestRecordSchema.nullable(),
+    history: z.array(amendmentDecisionRecordSchema)
+  })
+  .strict();
+
+export const emptyAmendmentState = (): z.infer<typeof amendmentStateSchema> => ({
+  sequence: 0,
+  pending: null,
+  history: []
+});
+
+/** Amendment state of an issue, empty for one that never opened an amendment ballot. */
+export const amendmentState = (cursors: { amendments?: z.infer<typeof amendmentStateSchema> | undefined }) =>
+  cursors.amendments ?? emptyAmendmentState();
 
 /**
  * Per-action resource observation budget (#140). Owner acknowledgment of a
@@ -655,6 +725,12 @@ export const cursorsStateSchema = z
     accepted: z.array(acceptedSubmissionSchema),
     acceptedResponses: z.array(acceptedResponseSchema),
     ballotBatches: z.array(ballotBatchSchema),
+    /**
+     * Optional so format-4 issues written before plan amendments existed still
+     * parse unchanged; read it through `amendmentState`, which supplies the
+     * empty default.
+     */
+    amendments: amendmentStateSchema.optional(),
     updatedAt: timestampSchema
   })
   .strict();
@@ -693,6 +769,8 @@ const journalEventTypeSchema = z.enum([
   "ballot-batch-published",
   "ballot-batch-failed",
   "ballot-batch-invalidated",
+  "amendment-requested",
+  "amendment-decided",
   "clone-readiness-refused"
 ]);
 
@@ -732,6 +810,9 @@ export type ImplementationSelectionDerived = z.infer<typeof implementationSelect
 export type ConsensusDerived = z.infer<typeof consensusDerivedSchema>;
 export type DerivedState = z.infer<typeof derivedStateSchema>;
 export type CursorsState = z.infer<typeof cursorsStateSchema>;
+export type AmendmentState = z.infer<typeof amendmentStateSchema>;
+export type AmendmentRequestRecord = z.infer<typeof amendmentRequestRecordSchema>;
+export type AmendmentDecisionRecord = z.infer<typeof amendmentDecisionRecordSchema>;
 export type JournalEvent = z.infer<typeof journalEventSchema>;
 
 /**
@@ -1225,6 +1306,64 @@ export const invalidateDerivedForDrop = (derived: DerivedState, agent: string): 
   void derived;
   void agent;
   return { planSelection: null, implementationSelection: null, consensus: null };
+};
+
+const AMENDMENT_SOURCES = {
+  "R4.implement": { gateId: "gate-4-implementations", evidenceId: "implementation-pinned" },
+  "R6.revise": { gateId: "gate-6-consensus", evidenceId: "revision-pinned" }
+} as const;
+
+/**
+ * Close a still-open amendment ballot without deciding it, and put the issue
+ * back on the work it interrupted. Its votes can never satisfy a later request:
+ * the next request takes a fresh sequence. Returns the cancelled record so the
+ * caller can journal it; `null` when nothing was pending.
+ */
+export const cancelPendingAmendment = (
+  cursors: CursorsState,
+  now = new Date().toISOString()
+): { cursors: CursorsState; cancelled: AmendmentDecisionRecord | null } => {
+  const amendments = amendmentState(cursors);
+  const pending = amendments.pending;
+  if (pending === null) return { cursors, cancelled: null };
+  const cancelled: AmendmentDecisionRecord = { ...pending, outcome: "cancelled", evidenceCommitSha: null, decidedAt: now };
+  const onBallot = cursors.issueCursor.stepId === "R4.amend-ballot";
+  const source = AMENDMENT_SOURCES[pending.source.stepId];
+  const agents = { ...cursors.agents };
+  if (onBallot) {
+    for (const agent of cursors.activeRoster) {
+      const existing = agents[agent];
+      if (existing === undefined) continue;
+      const satisfied = cursors.accepted.some(
+        (submission) =>
+          submission.stepId === pending.source.stepId && submission.agent === agent && submission.round === pending.source.round
+      );
+      agents[agent] = {
+        ...existing,
+        stepId: pending.source.stepId,
+        evidenceId: source.evidenceId,
+        actionId: null,
+        submissionMode: null,
+        actionDigest: null,
+        status: satisfied ? "waiting-peer" : "idle",
+        submissionSha: null,
+        outstanding: [],
+        updatedAt: now
+      };
+    }
+  }
+  return {
+    cancelled,
+    cursors: cursorsStateSchema.parse({
+      ...cursors,
+      issueCursor: onBallot
+        ? { stepId: pending.source.stepId, gateId: source.gateId, round: pending.source.round }
+        : cursors.issueCursor,
+      agents,
+      amendments: { ...amendments, pending: null, history: [...amendments.history, cancelled] },
+      updatedAt: now
+    })
+  };
 };
 
 export const dropAgent = (cursors: CursorsState, agent: string, now = new Date().toISOString()): CursorsState => {

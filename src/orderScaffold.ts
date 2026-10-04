@@ -13,6 +13,10 @@ export type ArtifactScaffoldContext = {
   round: number | null;
   approvedPaths: readonly string[];
   actionId?: string;
+  /** Implementation and revision: identity of the effective file map. */
+  scopeHash?: string;
+  /** True once an approved plan amendment extends the file map; ready signals must then bind `scopeHash`. */
+  amended?: boolean;
 };
 
 const PLACEHOLDER_SHA = "<40-lowercase-hex-commit-sha>";
@@ -28,6 +32,27 @@ const withHash = (ctx: ArtifactScaffoldContext) => ({
   ...common(ctx),
   inputSetHash: computeInputSetHash(ctx.inputs)
 });
+
+/** Ready signals carry the scope binding only once an approved amendment makes it mandatory. */
+const scopeBinding = (ctx: ArtifactScaffoldContext): { scopeHash?: string } =>
+  ctx.amended === true && ctx.scopeHash !== undefined ? { scopeHash: ctx.scopeHash } : {};
+
+/**
+ * The alternative JSON body for an implementation or revision action whose
+ * selected plan overlooked a needed file. Every binding is supplied; only the
+ * explanation and the requested files are written by the agent.
+ */
+export const amendmentRequestScaffoldValue = (ctx: ArtifactScaffoldContext): Record<string, unknown> | null => {
+  if ((ctx.stepId !== "R4.implement" && ctx.stepId !== "R6.revise") || ctx.scopeHash === undefined) return null;
+  return {
+    ...withHash(ctx),
+    artifact: "plan-amendment-request",
+    actionId: ctx.actionId ?? "<action-uuid>",
+    scopeHash: ctx.scopeHash,
+    explanation: "<what the selected plan overlooked and why the agreed change cannot be finished without it>",
+    additionalPaths: [{ path: "<exact repository file path>", reason: "<why this file is necessary>" }]
+  };
+};
 
 /**
  * Full minimal JSON body for JSON evidence steps. Known bindings are filled;
@@ -53,7 +78,14 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
         ...withHash(ctx),
         artifact: "implementation-ready",
         implementationCommitSha: PLACEHOLDER_SHA,
-        approvedPaths: ctx.approvedPaths.length > 0 ? [...ctx.approvedPaths] : ["<path-from-selected-plan>"]
+        approvedPaths: ctx.approvedPaths.length > 0 ? [...ctx.approvedPaths] : ["<path-from-selected-plan>"],
+        ...scopeBinding(ctx)
+      };
+    case "R4.amend-ballot":
+      return {
+        actionId: ctx.actionId ?? "<action-uuid>",
+        disposition: "approve",
+        rationale: "<one sentence>"
       };
     case "R5.compare-ballot":
       return {
@@ -67,7 +99,8 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
         artifact: "revision-ready",
         round: ctx.round ?? 1,
         revisedBranchHead: PLACEHOLDER_SHA,
-        basedOn: ctx.inputs.map((input) => input.commitSha)
+        basedOn: ctx.inputs.map((input) => input.commitSha),
+        ...scopeBinding(ctx)
       };
     case "R6.ballot":
       return {
@@ -153,9 +186,25 @@ export const renderArtifactScaffold = (ctx: ArtifactScaffoldContext): string => 
   if (value === null) return "";
   const json = JSON.stringify(value, null, 2);
   const isResponse =
-    ctx.stepId === "R3.plan-ballot" || ctx.stepId === "R5.compare-ballot" || ctx.stepId === "R6.ballot";
+    ctx.stepId === "R3.plan-ballot" ||
+    ctx.stepId === "R4.amend-ballot" ||
+    ctx.stepId === "R5.compare-ballot" ||
+    ctx.stepId === "R6.ballot";
   const preamble = isResponse
     ? `\n\nWrite this JSON to the response path (replace any \`<...>\` placeholders):\n\n`
     : `\n\nWrite this JSON to the required path (replace any \`<...>\` placeholders; keep bound citations and digests exact):\n\n`;
-  return preamble + "```json\n" + `${json}\n` + "```";
+  const disposition =
+    ctx.stepId === "R4.amend-ballot"
+      ? "\n\nUse `\"disposition\": \"approve\"` or `\"disposition\": \"reject\"`, and give the reason in the rationale."
+      : "";
+  const request = amendmentRequestScaffoldValue(ctx);
+  const alternative =
+    request === null
+      ? ""
+      : "\n\nOnly if the selected plan overlooked a needed file, write this plan amendment request to the same " +
+        "required path instead of the signal above. List at most 20 exact file paths; no directories or patterns:\n\n" +
+        "```json\n" +
+        `${JSON.stringify(request, null, 2)}\n` +
+        "```";
+  return preamble + "```json\n" + `${json}\n` + "```" + disposition + alternative;
 };

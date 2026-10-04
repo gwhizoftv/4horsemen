@@ -186,13 +186,37 @@ const seedAcceptedSubmissions = (paths: ReturnType<typeof fixture>) => {
         consensus: null
       },
       accepted,
+      // One approved amendment that later actions cite, and one open request
+      // that the amendment ballot renders, so both agent-facing texts are scanned.
+      amendments: {
+        sequence: 2,
+        pending: amendment(2, now),
+        history: [{ ...amendment(1, now), outcome: "approved" as const, evidenceCommitSha: "e".repeat(40), decidedAt: now }]
+      },
       updatedAt: now
     })
   );
 };
 
+const amendment = (sequence: number, now: string) => ({
+  sequence,
+  agent: "claude",
+  actionId: "c2337d85-6617-4e9f-8ace-901453764aa4",
+  submissionSha: "d".repeat(40),
+  path: ".signals/issue-1/implementation-ready-claude.json",
+  explanation: "The selected plan changes the source but omits its test.",
+  scopeHash: "f".repeat(64),
+  additionalPaths: [{ path: `test/steps-${sequence}.test.ts`, reason: "covers the listed source file" }],
+  selectedPlans: [{ agent: "claude", submissionSha: "1".repeat(40), path: ".plans/issue-1/plan.md" }],
+  activeRoster: ["claude", "codex"],
+  source: { stepId: "R4.implement" as const, round: null },
+  deferredAgents: [],
+  requestedAt: now
+});
+
 const everyStep = Object.keys(STEP_DEFINITIONS) as WorkflowStepId[];
-const roundOf = (stepId: WorkflowStepId): number | null => (stepId.startsWith("R6.") ? 1 : null);
+const roundOf = (stepId: WorkflowStepId): number | null =>
+  stepId === "R4.amend-ballot" ? 2 : stepId.startsWith("R6.") ? 1 : null;
 
 const sampleChangeScope = [
   { agent: "claude", commitSha: "1".repeat(40), paths: ["src/steps.ts"], truncated: false }
@@ -328,14 +352,14 @@ describe("agent-facing language", () => {
   });
 
   it("covers every workflow step and every evidence id", () => {
-    expect(everyStep).toHaveLength(10);
+    expect(everyStep).toHaveLength(11);
     const subjects = new Set<string>();
     for (const stepId of everyStep) {
       const subject = agentFacingSubject(STEP_DEFINITIONS[stepId].evidenceId);
       expect(subject, stepId).toBeTruthy();
       subjects.add(subject);
     }
-    expect(subjects.size).toBe(10);
+    expect(subjects.size).toBe(11);
     for (const subject of agentFacingSubjects()) {
       expect(findAgentLanguageViolations(subject), subject).toEqual([]);
     }

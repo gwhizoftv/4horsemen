@@ -435,6 +435,51 @@ implementation, and later rounds bind only the preceding accepted revision.
 When drops leave one active agent, future unresolved work degrades to the solo
 sequence. Completed historical gates and immutable product pins are retained.
 
+### Plan amendments
+
+A selected plan's file map can overlook a file the agreed change needs — most
+often the test that covers a listed source file. Instead of changing it (and
+being rejected for touching a path outside the map) or claiming readiness, an
+implementer or reviser publishes a `plan-amendment-request` at its action's
+usual required path, pushes only that coordination commit, and writes the SHA
+to `complete`. The request binds the action ID, input-set hash, and the
+coordinator-supplied `scopeHash`, explains the omission, and lists at most 20
+literal file paths, each with a reason. Directories, patterns, Git metadata,
+coordination paths, and already-approved files are refused. A request never
+satisfies implementation or revision readiness.
+
+A valid request opens `R4.amend-ballot`, a detour outside every profile's
+normal sequence. At most one request is open at a time; simultaneous requests
+are chosen in active-roster order and the others' authors are told to resubmit
+when work resumes. Unfinished implementation or revision actions are retired
+through the runtime only; accepted pins, branches, and worktrees are untouched.
+Every active agent — in `solo`, `reviewed`, and `consensus` — answers privately
+with `approve` or `reject`. Ballots are keyed by a monotonic amendment
+sequence that never consumes a revision round, so an earlier request's votes
+cannot decide a later one. After every response is accepted, the coordinator
+publishes one canonical `amendment-ballot` per voter at
+`.plans/issue-<n>/amendment-ballot-<agent>-<sequence>.json` on the evidence
+branch, citing the exact request and selected plans. Only then is the decision
+recorded in `cursors.json` (`amendments.history`) and journalled as
+`amendment-decided`.
+
+Unanimous approval adds exactly the requested files; any `reject` leaves the
+map unchanged and the requester's resumed action lists every rejection reason.
+Either way the saved implementation or revision work resumes with its original
+round and fresh action IDs. The effective approved map is the selected plan's
+extraction plus approved additions bound to that exact selected-plan set; a
+plan reselection makes earlier additions historical. Once an approved
+amendment applies, `implementation-ready` and `revision-ready` must carry the
+action's `scopeHash`, so an old signal cannot claim the extended scope.
+Approval citations are rendered under "Approved plan amendments", separate from
+bound inputs, so a revision keeps exactly one authorized product parent.
+
+Dropping an agent while an amendment ballot is open cancels the request (its
+votes are void because the denominator changed), records it as `cancelled`,
+and returns the issue to the interrupted work; the author resubmits if still
+necessary.
+
+## Owner controls
 ## Owner controls
 
 Every issue command accepts either an explicit workspace `--coord-root` or an

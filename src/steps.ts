@@ -13,6 +13,7 @@ export type EvidenceId =
   | "review-published"
   | "plan-response-accepted"
   | "implementation-pinned"
+  | "amendment-response-accepted"
   | "comparison-published"
   | "comparison-response-accepted"
   | "revision-pinned"
@@ -25,6 +26,7 @@ export type WorkflowStepId =
   | "R3.review"
   | "R3.plan-ballot"
   | "R4.implement"
+  | "R4.amend-ballot"
   | "R5.compare"
   | "R5.compare-ballot"
   | "R6.revise"
@@ -60,6 +62,18 @@ export const BUILD_DISCIPLINE_NOTE =
   "Inspect and reuse existing functions, types, helpers, tests, and fixtures before creating new ones. " +
   "Justify every new file, abstraction, and dependency; avoid unrelated cleanup and speculative flexibility. " +
   "Add the fewest focused tests needed, prefer extending an existing test file, and still run every required check.";
+
+/**
+ * Appended to implementation and revision tasks: the one sanctioned way out
+ * when the selected plan's file map overlooked a file the agreed change needs.
+ */
+export const PLAN_AMENDMENT_NOTE =
+  "\n\nIf finishing the agreed change needs a file the approved path list does not name " +
+  "(for example the test that covers a listed source file), do not change it and do not " +
+  "claim readiness. Instead publish the plan amendment request shown below at the same " +
+  "required path, push only that coordination commit, and write its SHA to the completion " +
+  "file. Every active agent then judges whether each file is necessary for the original " +
+  "scope; only unanimous approval adds them, and your work resumes with a fresh action.";
 
 export type StepDefinition = {
   id: WorkflowStepId;
@@ -120,7 +134,19 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     participants: "implementer",
     submissionMode: "git",
     requiredPath: (issue, agent) => `.signals/issue-${issue}/implementation-ready-${agent}.json`,
-    task: `Implement the selected plan and publish an implementation-ready signal that pins the product commit.${BUILD_DISCIPLINE_NOTE}`
+    task: `Implement the selected plan and publish an implementation-ready signal that pins the product commit.${BUILD_DISCIPLINE_NOTE}${PLAN_AMENDMENT_NOTE}`
+  },
+  "R4.amend-ballot": {
+    id: "R4.amend-ballot",
+    gateId: "gate-4-implementations",
+    evidenceId: "amendment-response-accepted",
+    participants: "all",
+    submissionMode: "response",
+    requiredPath: (issue, agent, round) => `.plans/issue-${issue}/amendment-ballot-${agent}-${round ?? 1}.json`,
+    task:
+      "Judge the bound plan amendment request as a private response. Approve only if every requested " +
+      "file is necessary to complete the scope of the selected plan as already agreed; reject if any file " +
+      "would widen that scope or is not needed. Do not commit or push."
   },
   "R5.compare": {
     id: "R5.compare",
@@ -148,7 +174,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     submissionMode: "git",
     requiredPath: (issue, agent, round) =>
       `.signals/issue-${issue}/revision-ready-${agent}-round-${round ?? 1}.json`,
-    task: `Prepare the requested revision and publish a signal pinning the revised product commit.${BUILD_DISCIPLINE_NOTE}`
+    task: `Prepare the requested revision and publish a signal pinning the revised product commit.${BUILD_DISCIPLINE_NOTE}${PLAN_AMENDMENT_NOTE}`
   },
   "R6.ballot": {
     id: "R6.ballot",
@@ -170,6 +196,17 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     task: "Finalize the consensus commit, remove only current-issue coordination files, and publish finalization evidence."
   }
 };
+
+/**
+ * The round a step's actions, accepted work, and ballots are keyed by.
+ *
+ * Revision steps use the revision round. The amendment ballot uses the
+ * amendment sequence held in the issue cursor while the ballot is open, so a
+ * second request can never be satisfied by the first request's votes, and the
+ * saved revision round is untouched by the detour.
+ */
+export const roundForStep = (stepId: WorkflowStepId, issueRound: number | null): number | null =>
+  stepId.startsWith("R6.") || stepId === "R4.amend-ballot" ? (issueRound ?? 1) : null;
 
 export const describeWorkflowStep = (stepId: WorkflowStepId | null, round: number | null): string => {
   if (stepId === null) return "complete";
@@ -233,6 +270,29 @@ export type BoundInput = {
  * `approvedPaths` remains the sole authority over what an implementation may
  * touch.
  */
+/** One requested file and the requester's reason it is needed. */
+export type AmendmentPath = { path: string; reason: string };
+
+/** A validated plan amendment request, before any agent has judged it. */
+export type AmendmentRequest = {
+  explanation: string;
+  scopeHash: string;
+  additionalPaths: readonly AmendmentPath[];
+};
+
+/**
+ * An approved amendment as cited by later actions: the request commit, the
+ * published ballot commit that approved it, and the files it added.
+ */
+export type ApprovedAmendmentCitation = {
+  sequence: number;
+  agent: string;
+  submissionSha: string;
+  path: string;
+  evidenceCommitSha: string;
+  additionalPaths: readonly AmendmentPath[];
+};
+
 export type ChangeScopeEntry = {
   agent: string;
   commitSha: string;
@@ -314,9 +374,18 @@ export type InternalOrder = {
   changeScope?: readonly ChangeScopeEntry[];
   /** Optional for the same reason as `changeScope`: rendering copes without it. */
   materialized?: MaterializedInputs;
+  /**
+   * Implementation and revision only: identity of the effective file map, and
+   * the approved amendments that extended it. Kept apart from `inputs` so the
+   * single authorized product parent of a revision is never diluted.
+   */
+  scopeHash?: string;
+  amendments?: readonly ApprovedAmendmentCitation[];
   activeRoster: readonly string[];
   eligibleChoices: readonly string[];
 };
+
+export type BallotDisposition = "approve" | "revise" | "escalate" | "reject";
 
 export type CheckResult = { name: string; argv: readonly string[]; exitCode: number };
 
@@ -327,10 +396,12 @@ export type EvidenceObservation = {
   status: "satisfied" | "rejected" | "retry";
   outstanding: readonly string[];
   productPin?: string;
-  disposition?: "approve" | "revise" | "escalate";
+  disposition?: BallotDisposition;
   approvedPaths?: readonly string[];
   choice?: string;
   checkResults?: readonly CheckResult[];
+  /** A valid plan amendment request; never an accepted submission. */
+  amendmentRequest?: AmendmentRequest;
   /** Present when the observation came from a private ballot response. */
   responseSha256?: string;
   rationale?: string;
@@ -353,9 +424,18 @@ export type MachineDecision =
       agent: string;
       responseSha256: string;
       choice?: string;
-      disposition?: "approve" | "revise" | "escalate";
+      disposition?: BallotDisposition;
       rationale: string;
     }
+  | {
+      type: "request-amendment";
+      agent: string;
+      submissionSha: string;
+      request: AmendmentRequest;
+      /** Other valid requests observed at the same time; their authors must resubmit. */
+      deferredAgents: readonly string[];
+    }
+  | { type: "resolve-amendment"; sequence: number; outcome: "approved" | "rejected" }
   | { type: "publish-ballot-batch"; stepId: WorkflowStepId; round: number | null }
   | { type: "reissue-action"; agent: string; outstanding: readonly string[] }
   | { type: "retry-verification"; agent: string; outstanding: readonly string[] }

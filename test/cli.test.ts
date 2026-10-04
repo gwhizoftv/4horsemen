@@ -1253,6 +1253,84 @@ describe("CLI", () => {
     expect(after.agents.claude?.actionId).toBeNull();
   });
 
+  it("cancels an open amendment ballot on drop and resumes the interrupted work without its votes", async () => {
+    const fixture = setup();
+    await runCli(["start", "1", "--profile", "reviewed", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      processRunner: successfulStartGit,
+      makeRunLoop: fakeLoop
+    });
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const now = "2026-08-11T17:00:00.000Z";
+    const current = readCursorsState(paths);
+    const ballotAction = "c2337d85-6617-4e9f-8ace-901453764aa4";
+    writeCursorsState(
+      paths,
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R4.amend-ballot", gateId: "gate-4-implementations", round: 1 },
+        agents: Object.fromEntries(
+          current.activeRoster.map((agent) => [
+            agent,
+            {
+              ...current.agents[agent],
+              stepId: "R4.amend-ballot",
+              evidenceId: "amendment-response-accepted",
+              submissionMode: "response",
+              actionId: agent === "claude" ? ballotAction : null,
+              status: agent === "claude" ? "ordered" : "waiting-peer",
+              updatedAt: now
+            }
+          ])
+        ),
+        acceptedResponses: [
+          {
+            stepId: "R4.amend-ballot",
+            agent: "codex",
+            actionId: "d2337d85-6617-4e9f-8ace-901453764aa4",
+            round: 1,
+            responseSha256: "a".repeat(64),
+            disposition: "approve",
+            rationale: "needed",
+            path: ".plans/issue-1/amendment-ballot-codex-1.json",
+            acceptedAt: now
+          }
+        ],
+        amendments: {
+          sequence: 1,
+          pending: {
+            sequence: 1,
+            agent: "codex",
+            actionId: "e2337d85-6617-4e9f-8ace-901453764aa4",
+            submissionSha: "d".repeat(40),
+            path: ".signals/issue-1/implementation-ready-codex.json",
+            explanation: "The plan omits the test for its source file.",
+            scopeHash: "5".repeat(64),
+            additionalPaths: [{ path: "test/product.test.ts", reason: "covers the listed source file" }],
+            selectedPlans: [{ agent: "codex", submissionSha: "b".repeat(40), path: ".plans/issue-1/plan.md" }],
+            activeRoster: current.activeRoster,
+            source: { stepId: "R4.implement", round: null },
+            deferredAgents: [],
+            requestedAt: now
+          },
+          history: []
+        },
+        updatedAt: now
+      })
+    );
+
+    expect(
+      await runCli(["drop", "cursor", "--issue", "1", "--coord-root", fixture.runtime], { makeRunLoop: fakeLoop })
+    ).toBe(0);
+    const after = readCursorsState(paths);
+    expect(after.issueCursor).toEqual({ stepId: "R4.implement", gateId: "gate-4-implementations", round: null });
+    expect(after.amendments?.pending).toBeNull();
+    expect(after.amendments?.history).toMatchObject([{ sequence: 1, outcome: "cancelled", evidenceCommitSha: null }]);
+    expect(after.agents.claude).toMatchObject({ stepId: "R4.implement", actionId: null });
+    expect(readJournal(paths).filter((event) => event.type === "amendment-decided")).toMatchObject([
+      { details: { sequence: 1, outcome: "cancelled" } }
+    ]);
+  });
+
   it("applies typed owner answers durably and idempotently without allowing round four", async () => {
     const fixture = setup();
     await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {

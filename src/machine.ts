@@ -1,7 +1,8 @@
-import type { AcceptedResponse, CursorsState, StartState } from "./state.js";
+import { amendmentState, type AcceptedResponse, type CursorsState, type StartState } from "./state.js";
 import {
   STEP_DEFINITIONS,
   participantsForStep,
+  roundForStep,
   stepsForProfile,
   type EvidenceObservation,
   type MachineDecision,
@@ -28,7 +29,7 @@ const globalOrder: readonly WorkflowStepId[] = [
   "R7.finalize"
 ];
 
-const ballotSteps = new Set<WorkflowStepId>(["R3.plan-ballot", "R5.compare-ballot", "R6.ballot"]);
+const ballotSteps = new Set<WorkflowStepId>(["R3.plan-ballot", "R4.amend-ballot", "R5.compare-ballot", "R6.ballot"]);
 
 const effectiveProfile = (start: StartState, cursors: CursorsState): WorkflowProfile =>
   cursors.activeRoster.length === 1 ? "solo" : start.profile;
@@ -60,21 +61,31 @@ const hasResponse = (cursors: CursorsState, stepId: WorkflowStepId, agent: strin
   );
 
 const batchKindFor = (stepId: WorkflowStepId): AcceptedResponse["stepId"] | null => {
-  if (stepId === "R3.plan-ballot" || stepId === "R5.compare-ballot" || stepId === "R6.ballot") return stepId;
+  if (
+    stepId === "R3.plan-ballot" ||
+    stepId === "R4.amend-ballot" ||
+    stepId === "R5.compare-ballot" ||
+    stepId === "R6.ballot"
+  ) {
+    return stepId;
+  }
   return null;
 };
 
-const hasPublishedBatch = (cursors: CursorsState, stepId: WorkflowStepId, round: number | null): boolean => {
-  const kind =
-    stepId === "R3.plan-ballot"
-      ? "plan-ballot-batch"
+const batchKindForBallot = (stepId: WorkflowStepId): string | null =>
+  stepId === "R3.plan-ballot"
+    ? "plan-ballot-batch"
+    : stepId === "R4.amend-ballot"
+      ? "amendment-ballot-batch"
       : stepId === "R5.compare-ballot"
         ? "comparison-ballot-batch"
         : stepId === "R6.ballot"
           ? "consensus-ballot-batch"
           : null;
-  if (kind === null) return true;
-  if (stepId !== "R3.plan-ballot" && stepId !== "R5.compare-ballot" && stepId !== "R6.ballot") return true;
+
+const hasPublishedBatch = (cursors: CursorsState, stepId: WorkflowStepId, round: number | null): boolean => {
+  const kind = batchKindForBallot(stepId);
+  if (kind === null || batchKindFor(stepId) === null) return true;
   const closed = cursors.activeRoster.map((agent) =>
     cursors.acceptedResponses.find(
       (response) => response.stepId === stepId && response.agent === agent && response.round === round
@@ -115,6 +126,46 @@ const needsConsensusDerive = (cursors: CursorsState, round: number): boolean =>
   cursors.derived.consensus.round !== round ||
   !sameRoster(cursors.derived.consensus.activeRoster, cursors.activeRoster);
 
+/**
+ * The plan amendment detour. It is not part of any profile's sequence, so it
+ * is decided here, before profile normalization could treat it as finished and
+ * skip ahead. Every active agent judges, in every profile, and only a published
+ * unanimous approval authorizes the requested files.
+ */
+const decideAmendmentBallot = (cursors: CursorsState): readonly MachineDecision[] => {
+  const current: WorkflowStepId = "R4.amend-ballot";
+  const pending = amendmentState(cursors).pending;
+  const round = roundForStep(current, cursors.issueCursor.round);
+  if (pending === null || pending.sequence !== round) {
+    return [{ type: "wait", reason: "plan amendment ballot has no matching pending request" }];
+  }
+  const participants = cursors.activeRoster;
+  const complete = participants.every((agent) => hasResponse(cursors, current, agent, round));
+  if (!complete) {
+    const decisions: MachineDecision[] = [];
+    for (const agent of participants) {
+      if (hasResponse(cursors, current, agent, round)) continue;
+      const cursor = cursors.agents[agent];
+      if (cursor === undefined || cursor.status === "dropped") continue;
+      if (cursor.actionId === null || cursor.stepId !== current) {
+        decisions.push({ type: "prepare-action", agent, stepId: current, round });
+      }
+    }
+    return decisions.length > 0 ? decisions : [{ type: "wait", reason: "waiting for plan amendment judgments" }];
+  }
+  if (!hasPublishedBatch(cursors, current, round)) {
+    const pendingBatch = cursors.ballotBatches.some(
+      (batch) => batch.status === "pending" && batch.kind === "amendment-ballot-batch" && batch.round === round
+    );
+    if (pendingBatch) return [{ type: "wait", reason: "ballot evidence publication pending" }];
+    return [{ type: "publish-ballot-batch", stepId: current, round }];
+  }
+  const approved = cursors.acceptedResponses
+    .filter((response) => response.stepId === current && response.round === round && participants.includes(response.agent))
+    .every((response) => response.disposition === "approve");
+  return [{ type: "resolve-amendment", sequence: pending.sequence, outcome: approved ? "approved" : "rejected" }];
+};
+
 export const decide = (input: MachineInput): readonly MachineDecision[] => {
   const { start, cursors } = input;
   if (cursors.abandoned) return [{ type: "wait", reason: "workflow was abandoned" }];
@@ -122,11 +173,36 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
   if (cursors.paused) return [{ type: "wait", reason: "workflow is paused" }];
 
   const decisions: MachineDecision[] = [];
+  // At most one amendment request is frozen at a time, chosen in active-roster
+  // order. The others are not merged or silently approved: their authors get a
+  // fresh action when the detour resumes and resubmit if still necessary.
+  const isCurrentRequest = (observation: EvidenceObservation): boolean =>
+    observation.status === "satisfied" &&
+    observation.amendmentRequest !== undefined &&
+    cursors.activeRoster.includes(observation.agent) &&
+    cursors.agents[observation.agent]?.actionId === observation.actionId;
+  const requests = (input.observations ?? []).filter(isCurrentRequest);
+  const chosen =
+    amendmentState(cursors).pending === null
+      ? cursors.activeRoster
+          .map((agent) => requests.find((observation) => observation.agent === agent))
+          .find((observation) => observation !== undefined)
+      : undefined;
   for (const observation of input.observations ?? []) {
     if (!cursors.activeRoster.includes(observation.agent)) continue;
     const cursor = cursors.agents[observation.agent];
     if (cursor === undefined || cursor.actionId !== observation.actionId) continue;
-    if (observation.status === "retry") {
+    if (isCurrentRequest(observation)) {
+      if (chosen === undefined) {
+        decisions.push({
+          type: "reissue-action",
+          agent: observation.agent,
+          outstanding: [
+            "a plan amendment ballot is already open; resubmit after it resolves if the request is still necessary"
+          ]
+        });
+      }
+    } else if (observation.status === "retry") {
       decisions.push({ type: "retry-verification", agent: observation.agent, outstanding: observation.outstanding });
     } else if (observation.status === "rejected") {
       decisions.push({ type: "reissue-action", agent: observation.agent, outstanding: observation.outstanding });
@@ -145,12 +221,25 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
         agent: observation.agent,
         submissionSha: observation.submissionSha,
         ...(observation.productPin === undefined ? {} : { productPin: observation.productPin }),
-        ...(observation.disposition === undefined ? {} : { disposition: observation.disposition }),
+        ...(observation.disposition === undefined || observation.disposition === "reject"
+          ? {}
+          : { disposition: observation.disposition }),
         ...(observation.approvedPaths === undefined ? {} : { approvedPaths: observation.approvedPaths }),
         ...(observation.choice === undefined ? {} : { choice: observation.choice }),
         ...(observation.checkResults === undefined ? {} : { checkResults: observation.checkResults })
       });
     }
+  }
+  if (chosen?.amendmentRequest !== undefined) {
+    // Opening the detour takes priority over advancing the interrupted work;
+    // peer work observed in the same pass is accepted first, above.
+    decisions.push({
+      type: "request-amendment",
+      agent: chosen.agent,
+      submissionSha: chosen.submissionSha,
+      request: chosen.amendmentRequest,
+      deferredAgents: requests.filter((observation) => observation !== chosen).map((observation) => observation.agent)
+    });
   }
   if (decisions.length > 0) return decisions;
   if (cursors.ownerQuestion !== null) {
@@ -164,6 +253,8 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
       }
     ];
   }
+
+  if (cursors.issueCursor.stepId === "R4.amend-ballot") return decideAmendmentBallot(cursors);
 
   const profile = effectiveProfile(start, cursors);
   const current = cursors.issueCursor.stepId;
@@ -211,7 +302,7 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
               : cursors.activeRoster[0]
         : cursors.activeRoster[0];
   const participants = participantsForStep(current, profile, cursors.activeRoster, designated);
-  const round = current.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+  const round = roundForStep(current, cursors.issueCursor.round);
   const complete = participants.every((agent) =>
     ballotSteps.has(current) ? hasResponse(cursors, current, agent, round) : hasAccepted(cursors, current, agent, round)
   );

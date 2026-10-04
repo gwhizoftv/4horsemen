@@ -105,7 +105,96 @@ export const implementationReadyArtifactSchema = z
     artifact: z.literal("implementation-ready"),
     inputSetHash: digestSchema,
     implementationCommitSha: gitShaSchema,
-    approvedPaths: z.array(repositoryPathSchema).min(1)
+    approvedPaths: z.array(repositoryPathSchema).min(1),
+    /** Required once an approved plan amendment applies; validated whenever present. */
+    scopeHash: digestSchema.optional()
+  })
+  .strict();
+
+/** Agent-authored amendment prose: bounded like a rationale and never blank. */
+const nonBlankRationaleSchema = rationaleSchema.refine((value) => value.trim().length > 0, "must not be blank");
+
+/** Most files one plan amendment request may add; a longer list is a re-plan, not a correction. */
+export const PLAN_AMENDMENT_MAX_PATHS = 20;
+
+/**
+ * Coordination namespaces an amendment can never authorize: they are written by
+ * the protocol itself, and the file map does not govern them.
+ */
+const AMENDMENT_RESERVED_PREFIXES = [".plans/", ".signals/", ".code-reviews/"] as const;
+
+/**
+ * One literal repository file. Directories, globs, braces, empty or dot
+ * segments, Git metadata, and coordination namespaces are refused: an
+ * amendment authorizes exactly the files peers read, never a tree.
+ */
+export const amendmentFilePathSchema = repositoryPathSchema.refine(
+  (path) =>
+    !/[*?[\]{}\\]/.test(path) &&
+    !/\s/.test(path) &&
+    path.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".git") &&
+    !AMENDMENT_RESERVED_PREFIXES.some((prefix) => path.startsWith(prefix)),
+  "expected one literal repository file path (no directory, pattern, Git metadata, or coordination path)"
+);
+
+/**
+ * The alternative to an implementation or revision signal: a request that the
+ * active agents agree to add files the selected plan overlooked. It never
+ * claims implementation readiness and needs no product commit.
+ */
+export const planAmendmentRequestArtifactSchema = z
+  .object({
+    ...commonArtifactFields,
+    artifact: z.literal("plan-amendment-request"),
+    actionId: actionIdSchema,
+    inputSetHash: digestSchema,
+    scopeHash: digestSchema,
+    explanation: nonBlankRationaleSchema,
+    additionalPaths: z
+      .array(
+        z
+          .object({
+            path: amendmentFilePathSchema,
+            reason: nonBlankRationaleSchema
+          })
+          .strict()
+      )
+      .min(1)
+      .max(PLAN_AMENDMENT_MAX_PATHS)
+  })
+  .strict()
+  .superRefine((request, context) => {
+    const seen = new Set<string>();
+    for (const [index, entry] of request.additionalPaths.entries()) {
+      if (seen.has(entry.path)) {
+        context.addIssue({
+          code: "custom",
+          message: `additionalPaths repeats ${entry.path}`,
+          path: ["additionalPaths", index, "path"]
+        });
+      }
+      seen.add(entry.path);
+    }
+  });
+
+/** Private agent response for a plan amendment ballot. */
+export const amendmentBallotResponseSchema = z
+  .object({
+    actionId: actionIdSchema,
+    disposition: z.enum(["approve", "reject"]),
+    rationale: rationaleSchema
+  })
+  .strict();
+
+/** Coordinator-published canonical plan amendment ballot (protocol version 2). */
+export const amendmentBallotArtifactSchema = z
+  .object({
+    ...commonPublishedBallotFields,
+    artifact: z.literal("amendment-ballot"),
+    sequence: z.number().int().min(1),
+    request: artifactCitationSchema,
+    plans: z.array(artifactCitationSchema).min(1),
+    disposition: z.enum(["approve", "reject"])
   })
   .strict();
 
@@ -126,7 +215,9 @@ export const revisionReadyArtifactSchema = z
     inputSetHash: digestSchema,
     round: z.number().int().min(1),
     revisedBranchHead: gitShaSchema,
-    basedOn: z.array(gitShaSchema).min(1)
+    basedOn: z.array(gitShaSchema).min(1),
+    /** Required once an approved plan amendment applies; validated whenever present. */
+    scopeHash: digestSchema.optional()
   })
   .strict();
 
@@ -165,6 +256,7 @@ export const publishedArtifactSchema = z.discriminatedUnion("artifact", [
   comparisonBallotArtifactSchema,
   revisionReadyArtifactSchema,
   consensusBallotArtifactSchema,
+  amendmentBallotArtifactSchema,
   finalizationArtifactSchema
 ]);
 
@@ -177,6 +269,9 @@ export type ComparisonBallotArtifact = z.infer<typeof comparisonBallotArtifactSc
 export type RevisionReadyArtifact = z.infer<typeof revisionReadyArtifactSchema>;
 export type ConsensusBallotArtifact = z.infer<typeof consensusBallotArtifactSchema>;
 export type FinalizationArtifact = z.infer<typeof finalizationArtifactSchema>;
+export type PlanAmendmentRequestArtifact = z.infer<typeof planAmendmentRequestArtifactSchema>;
+export type AmendmentBallotResponse = z.infer<typeof amendmentBallotResponseSchema>;
+export type AmendmentBallotArtifact = z.infer<typeof amendmentBallotArtifactSchema>;
 export type PublishedArtifact = z.infer<typeof publishedArtifactSchema>;
 
 export type JsonResult<T> = { ok: true; value: T } | { ok: false; error: string };

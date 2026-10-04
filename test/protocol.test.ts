@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  PLAN_AMENDMENT_MAX_PATHS,
+  planAmendmentRequestArtifactSchema,
   comparisonBallotArtifactSchema,
   consensusBallotResponseSchema,
   implementationReadyArtifactSchema,
@@ -66,6 +68,37 @@ describe("published protocol schemas", () => {
         basedOn: ["e".repeat(40)]
       }).success
     ).toBe(false);
+  });
+
+  it("bounds a plan amendment request to literal files and an optional ready-signal scope binding", () => {
+    const request = {
+      ...common,
+      artifact: "plan-amendment-request" as const,
+      actionId,
+      inputSetHash: digest,
+      scopeHash: digest,
+      explanation: "The plan omits a needed test.",
+      additionalPaths: [{ path: "test/product.test.ts", reason: "covers the listed file" }]
+    };
+    expect(planAmendmentRequestArtifactSchema.safeParse(request).success).toBe(true);
+    const many = Array.from({ length: PLAN_AMENDMENT_MAX_PATHS + 1 }, (_, index) => ({ path: `test/${index}.ts`, reason: "r" }));
+    expect(planAmendmentRequestArtifactSchema.safeParse({ ...request, additionalPaths: many }).success).toBe(false);
+    expect(planAmendmentRequestArtifactSchema.safeParse({ ...request, additionalPaths: [] }).success).toBe(false);
+    expect(planAmendmentRequestArtifactSchema.safeParse({ ...request, explanation: " " }).success).toBe(false);
+    expect(
+      planAmendmentRequestArtifactSchema.safeParse({ ...request, additionalPaths: [{ path: "test/a.ts", reason: "\n" }] }).success
+    ).toBe(false);
+    expect(planAmendmentRequestArtifactSchema.safeParse({ ...request, productPin: "a".repeat(40) }).success).toBe(false);
+    const ready = {
+      ...common,
+      artifact: "implementation-ready" as const,
+      inputSetHash: digest,
+      implementationCommitSha: "a".repeat(40),
+      approvedPaths: ["src/product.ts"]
+    };
+    expect(implementationReadyArtifactSchema.safeParse(ready).success).toBe(true);
+    expect(implementationReadyArtifactSchema.safeParse({ ...ready, scopeHash: digest }).success).toBe(true);
+    expect(implementationReadyArtifactSchema.safeParse({ ...ready, scopeHash: "short" }).success).toBe(false);
   });
 
   it("reports JSON and schema errors without returning unchecked values", () => {

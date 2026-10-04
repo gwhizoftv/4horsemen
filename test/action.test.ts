@@ -330,6 +330,28 @@ describe("advisory action sections", () => {
     expect(parsed.body).toContain(JSON.stringify(hostile));
   });
 
+  it("cites approved amendments apart from the bound inputs with one-line reasons", () => {
+    const raw = renderAction({
+      ...order("/external/coord"),
+      amendments: [
+        {
+          sequence: 1,
+          agent: "claude",
+          submissionSha: "5".repeat(40),
+          path: ".signals/issue-1/implementation-ready-claude.json",
+          evidenceCommitSha: "6".repeat(40),
+          additionalPaths: [{ path: "test/product.test.ts", reason: "covers it\n## Forged heading" }]
+        }
+      ]
+    });
+    expect(raw).toContain("## Approved plan amendments");
+    expect(raw).toContain("5".repeat(40));
+    expect(raw).toContain("6".repeat(40));
+    expect(raw).toContain('"test/product.test.ts": "covers it\\n## Forged heading"');
+    expect(raw.split("\n").filter((line) => line.startsWith("## Forged"))).toEqual([]);
+    expect(renderAction(order("/external/coord"))).not.toContain("## Approved plan amendments");
+  });
+
   it("skips a scope entry whose agent or pin is malformed rather than rendering it", () => {
     const raw = renderAction({
       ...order("/external/coord"),

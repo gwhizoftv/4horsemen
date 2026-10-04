@@ -3,7 +3,7 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, u
 import { dirname, relative } from "node:path";
 import { assertNoSymlink, containedPath } from "./paths.js";
 import { actionIdSchema, gitShaSchema, repositoryPathSchema } from "./protocol.js";
-import type { ChangeScopeEntry, InternalOrder, MaterializedInputs } from "./steps.js";
+import type { ApprovedAmendmentCitation, ChangeScopeEntry, InternalOrder, MaterializedInputs } from "./steps.js";
 
 export type PublicGitAction = {
   actionId: string;
@@ -91,6 +91,35 @@ const changeScopeSection = (changeScope: readonly ChangeScopeEntry[] = []): stri
 };
 
 /**
+ * Approved plan amendments that extend the file map this action works under.
+ *
+ * Rendered apart from the bound inputs on purpose: a revision binds exactly one
+ * authorized product parent, and approval evidence is scope, not a parent. The
+ * files are already in the approved path list; this says why they are there and
+ * which commits prove it. Agent-authored reasons are JSON-encoded so they stay
+ * on one line and cannot forge a heading.
+ */
+const approvedAmendmentsSection = (amendments: readonly ApprovedAmendmentCitation[] = []): string => {
+  const entries = amendments.filter(
+    (entry) =>
+      agentPattern.test(entry.agent) && shaPattern.test(entry.submissionSha) && shaPattern.test(entry.evidenceCommitSha)
+  );
+  if (entries.length === 0) return "";
+  const blocks = entries.map(
+    (entry) =>
+      `- Amendment ${entry.sequence} requested by ${entry.agent} (\`${entry.submissionSha}\` at ${encodePath(entry.path)}), ` +
+      `approved unanimously in ballot commit \`${entry.evidenceCommitSha}\`:\n` +
+      entry.additionalPaths.map((addition) => `  - ${encodePath(addition.path)}: ${JSON.stringify(addition.reason)}`).join("\n")
+  );
+  return (
+    `\n\n## Approved plan amendments\n\n` +
+    `The active agents agreed that the selected plan overlooked these files. They are already ` +
+    `included in the approved path list above, and the signal must carry the bound scopeHash.\n\n` +
+    blocks.join("\n")
+  );
+};
+
+/**
  * Where the coordinator put the artifacts this action binds.
  *
  * These are exact copies, taken from the same mirror that verifies the pins, so
@@ -155,7 +184,7 @@ Publish the required artifact at:
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}${approvedAmendmentsSection(order.amendments)}
 
 Push the commit containing the artifact to \`${order.branch}\`. Then write that
 exact 40-character lowercase commit SHA as the sole contents of:

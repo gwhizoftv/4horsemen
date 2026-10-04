@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
+  amendmentState,
   appendJournal,
   consensusDerivedSchema,
   cursorsStateSchema,
@@ -158,6 +159,43 @@ describe("operational state", () => {
     expect(readJournal(paths).map((event) => event.type)).toEqual(["started"]);
     appendJournal(paths, { type: "paused", details: {} }, "2026-08-11T10:01:00.000Z");
     expect(readJournal(paths).at(-1)?.sequence).toBe(1);
+  });
+
+  it("reads issues written before amendments as empty and round-trips a pending request with its history", () => {
+    const { paths, cursors } = initialize();
+    const legacy = JSON.parse(JSON.stringify(cursors)) as Record<string, unknown>;
+    delete legacy.amendments;
+    expect(amendmentState(cursorsStateSchema.parse(legacy))).toEqual({ sequence: 0, pending: null, history: [] });
+    const request = {
+      sequence: 2,
+      agent: "codex",
+      actionId: "c2337d85-6617-4e9f-8ace-901453764aa4",
+      submissionSha: "d".repeat(40),
+      path: ".signals/issue-1/revision-ready-codex-round-2.json",
+      explanation: "The plan omits the test for its source file.",
+      scopeHash: "5".repeat(64),
+      additionalPaths: [{ path: "test/product.test.ts", reason: "covers the listed source file" }],
+      selectedPlans: [{ agent: "codex", submissionSha: "e".repeat(40), path: ".plans/issue-1/plan.md" }],
+      activeRoster: ["claude", "codex"],
+      source: { stepId: "R6.revise" as const, round: 2 },
+      deferredAgents: ["claude"],
+      requestedAt: "2026-08-11T10:05:00.000Z"
+    };
+    const amendments = {
+      sequence: 2,
+      pending: request,
+      history: [
+        { ...request, sequence: 1, outcome: "approved" as const, evidenceCommitSha: "f".repeat(40), decidedAt: "2026-08-11T10:04:00.000Z" }
+      ]
+    };
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...cursors, amendments }));
+    expect(readCursorsState(paths).amendments).toEqual(amendments);
+    expect(() =>
+      cursorsStateSchema.parse({
+        ...cursors,
+        amendments: { ...amendments, history: [{ ...amendments.history[0], evidenceCommitSha: null }] }
+      })
+    ).toThrow("only a cancelled amendment lacks published ballot evidence");
   });
 
   it("persists pause and drop state but refuses a zero-agent workflow", () => {

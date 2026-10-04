@@ -430,3 +430,124 @@ describe("pure workflow machine", () => {
     ]);
   });
 });
+
+describe("plan amendment detour", () => {
+  const request = {
+    explanation: "The plan omits the test for its source file.",
+    scopeHash: "5".repeat(64),
+    additionalPaths: [{ path: "test/product.test.ts", reason: "covers the listed source file" }]
+  };
+  const pendingAmendment = (sequence: number, activeRoster = roster) => ({
+    sequence,
+    agent: "codex",
+    actionId: "c2337d85-6617-4e9f-8ace-901453764aa4",
+    submissionSha: "d".repeat(40),
+    path: ".signals/issue-1/implementation-ready-codex.json",
+    explanation: request.explanation,
+    scopeHash: request.scopeHash,
+    additionalPaths: request.additionalPaths,
+    selectedPlans: [{ agent: "codex", submissionSha: "e".repeat(40), path: ".plans/issue-1/plan.md" }],
+    activeRoster,
+    source: { stepId: "R4.implement" as const, round: null },
+    deferredAgents: [],
+    requestedAt: now
+  });
+  const onBallot = (profile: "consensus" | "reviewed" | "solo", sequence: number, extra: Record<string, unknown> = {}) => {
+    const shaped = startStateSchema.parse({ ...start, profile });
+    const base = initialCursors(shaped, now);
+    return {
+      start: shaped,
+      cursors: cursorsStateSchema.parse({
+        ...base,
+        issueCursor: { stepId: "R4.amend-ballot", gateId: "gate-4-implementations", round: sequence },
+        amendments: { sequence, pending: pendingAmendment(sequence), history: [] },
+        ...extra
+      })
+    };
+  };
+  const votes = (sequence: number, rejecter: string | null = null) =>
+    roster.map((agent) =>
+      acceptedResponseFixture({
+        stepId: "R4.amend-ballot",
+        agent,
+        round: sequence,
+        disposition: agent === rejecter ? "reject" : "approve"
+      })
+    );
+  const amendmentBatch = (sequence: number) => ({
+    ...publishedBallotBatchFixture({ kind: "amendment-ballot-batch", activeRoster: roster, round: sequence }),
+    paths: roster.map((agent) => `.plans/issue-1/amendment-ballot-${agent}-${sequence}.json`)
+  });
+
+  it("opens the detour for the first request in roster order after accepting peer work", () => {
+    const base = initialCursors(start, now);
+    const ids = { claude: "11111111-1111-4111-8111-111111111111", codex: "22222222-2222-4222-8222-222222222222", cursor: "33333333-3333-4333-8333-333333333333" };
+    const cursors = cursorsStateSchema.parse({
+      ...base,
+      issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
+      agents: Object.fromEntries(
+        roster.map((agent) => [
+          agent,
+          {
+            ...base.agents[agent],
+            stepId: "R4.implement",
+            evidenceId: "implementation-pinned",
+            actionId: ids[agent as keyof typeof ids] ?? null,
+            status: "verifying"
+          }
+        ])
+      )
+    });
+    const satisfied = { submissionSha: "d".repeat(40), status: "satisfied" as const, outstanding: [] };
+    expect(
+      decide({
+        start,
+        cursors,
+        observations: [
+          { agent: "cursor", actionId: ids.cursor, ...satisfied, amendmentRequest: request },
+          { agent: "claude", actionId: ids.claude, ...satisfied, productPin: "f".repeat(40) },
+          { agent: "codex", actionId: ids.codex, ...satisfied, amendmentRequest: request }
+        ]
+      })
+    ).toEqual([
+      { type: "accept-submission", agent: "claude", submissionSha: "d".repeat(40), productPin: "f".repeat(40) },
+      { type: "request-amendment", agent: "codex", submissionSha: "d".repeat(40), request, deferredAgents: ["cursor"] }
+    ]);
+  });
+
+  it("asks every active agent in every profile and never normalizes the ballot away", () => {
+    for (const profile of ["consensus", "reviewed"] as const) {
+      const { start: shaped, cursors } = onBallot(profile, 1);
+      expect(decide({ start: shaped, cursors })).toEqual(
+        roster.map((agent) => ({ type: "prepare-action", agent, stepId: "R4.amend-ballot", round: 1 }))
+      );
+    }
+    const solo = startStateSchema.parse({ ...start, profile: "solo", originalRoster: ["codex"], agents: [start.agents[1]] });
+    const soloCursors = cursorsStateSchema.parse({
+      ...initialCursors(solo, now),
+      issueCursor: { stepId: "R4.amend-ballot", gateId: "gate-4-implementations", round: 1 },
+      amendments: { sequence: 1, pending: pendingAmendment(1, ["codex"]), history: [] }
+    });
+    expect(decide({ start: solo, cursors: soloCursors })).toEqual([
+      { type: "prepare-action", agent: "codex", stepId: "R4.amend-ballot", round: 1 }
+    ]);
+  });
+
+  it("waits for every voter and for published evidence before deciding", () => {
+    const missing = onBallot("consensus", 1, { acceptedResponses: votes(1).slice(1) });
+    expect(decide(missing).every((decision) => decision.type !== "resolve-amendment")).toBe(true);
+    const unpublished = onBallot("consensus", 1, { acceptedResponses: votes(1) });
+    expect(decide(unpublished)).toEqual([{ type: "publish-ballot-batch", stepId: "R4.amend-ballot", round: 1 }]);
+    const approved = onBallot("consensus", 1, { acceptedResponses: votes(1), ballotBatches: [amendmentBatch(1)] });
+    expect(decide(approved)).toEqual([{ type: "resolve-amendment", sequence: 1, outcome: "approved" }]);
+    const rejected = onBallot("consensus", 1, { acceptedResponses: votes(1, "cursor"), ballotBatches: [amendmentBatch(1)] });
+    expect(decide(rejected)).toEqual([{ type: "resolve-amendment", sequence: 1, outcome: "rejected" }]);
+  });
+
+  it("never lets an earlier request's votes or evidence decide a later one", () => {
+    const second = onBallot("consensus", 2, { acceptedResponses: votes(1), ballotBatches: [amendmentBatch(1)] });
+    expect(decide(second)).toEqual(
+      roster.map((agent) => ({ type: "prepare-action", agent, stepId: "R4.amend-ballot", round: 2 }))
+    );
+  });
+});

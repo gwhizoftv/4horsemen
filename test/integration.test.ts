@@ -19,7 +19,7 @@ import {
   readStartState,
   writeCursorsState
 } from "../src/state.js";
-import type { InternalOrder, WorkflowStepId } from "../src/steps.js";
+import { roundForStep, type InternalOrder, type WorkflowStepId } from "../src/steps.js";
 import { TmuxController } from "../src/tmux.js";
 
 const agents = ["claude", "codex", "cursor", "antigravity"] as const;
@@ -142,7 +142,7 @@ describe("four-agent coordinator canary", () => {
           cursors,
           agent,
           cursor.stepId,
-          cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
+          roundForStep(cursor.stepId, cursors.issueCursor.round),
           cursor.actionId,
           cursor.outstanding
         );
@@ -175,7 +175,9 @@ describe("four-agent coordinator canary", () => {
 
       const respond = (
         agent: string,
-        body: { choice: string; rationale: string } | { disposition: "approve" | "revise" | "escalate"; rationale: string }
+        body:
+          | { choice: string; rationale: string }
+          | { disposition: "approve" | "revise" | "escalate" | "reject"; rationale: string }
       ): void => {
         const order = currentOrder(agent);
         expect(order.submissionMode).toBe("response");
@@ -285,17 +287,71 @@ Implement the selected product files.
       }
       expect(readJournal(paths).some((event) => event.type === "decision-derived")).toBe(true);
       expect(readJournal(paths).some((event) => event.type === "ballot-batch-published")).toBe(true);
+      // The selected plan overlooked the test that covers codex's product file.
+      // Codex asks instead of changing it; every active agent must agree first.
+      const overlooked = "test/product-codex.test.txt";
+      {
+        const order = currentOrder("codex");
+        expect(order.approvedPaths).not.toContain(overlooked);
+        expect(order.scopeHash).toMatch(/^[a-f0-9]{64}$/);
+        submit(
+          "codex",
+          JSON.stringify({
+            ...commonArtifact(order, "plan-amendment-request"),
+            actionId: order.actionId,
+            inputSetHash: computeInputSetHash(order.inputs),
+            scopeHash: order.scopeHash,
+            explanation: "The plan changes src/product-codex.txt but omits its test.",
+            additionalPaths: [{ path: overlooked, reason: "covers the listed product file" }]
+          })
+        );
+      }
+      await loop.runTick();
+
+      expectStep("R4.amend-ballot");
+      // A request is never readiness: nothing was accepted for implementation.
+      expect(readCursorsState(paths).accepted.some((submission) => submission.stepId === "R4.implement")).toBe(false);
+      for (const agent of activeAfterDrop) {
+        const order = currentOrder(agent);
+        expect(order.inputs.map((input) => input.kind)).toEqual(["amendment-request", "selected-plan"]);
+        expect(order.task).toContain(overlooked);
+        respond(agent, { disposition: "approve", rationale: "The test is needed to finish the agreed change." });
+      }
+      // Votes are durable: a restarted coordinator publishes and resumes from state alone.
+      await new CoordinatorRunLoop(paths, {
+        tmux: null,
+        mirror,
+        processRunner: async () => ({ exitCode: 0, stdout: "", stderr: "" })
+      }).runTick();
+
+      expectStep("R4.implement");
+      {
+        const resumed = readCursorsState(paths);
+        expect(resumed.amendments?.history).toMatchObject([{ sequence: 1, outcome: "approved", agent: "codex" }]);
+        expect(
+          resumed.ballotBatches.some(
+            (batch) => batch.kind === "amendment-ballot-batch" && batch.status === "published" && batch.round === 1
+          )
+        ).toBe(true);
+        expect(git(origin, "show", `${resumed.evidence.tip}:.plans/issue-1/amendment-ballot-codex-1.json`)).toContain(
+          '"artifact": "amendment-ballot"'
+        );
+      }
       for (const agent of activeAfterDrop) {
         const order = currentOrder(agent);
         expect(order.inputs.map((input) => input.agent)).toEqual(["codex"]);
-        const pin = commitAndPush(agent, `src/product-${agent}.txt`, `${agent} product\n`, `product ${agent}`);
+        expect(order.approvedPaths).toContain(overlooked);
+        expect(order.amendments).toHaveLength(1);
+        let pin = commitAndPush(agent, `src/product-${agent}.txt`, `${agent} product\n`, `product ${agent}`);
+        if (agent === "codex") pin = commitAndPush(agent, overlooked, "codex test\n", "codex test");
         submit(
           agent,
           JSON.stringify({
             ...commonArtifact(order, "implementation-ready"),
             inputSetHash: computeInputSetHash(order.inputs),
             implementationCommitSha: pin,
-            approvedPaths: order.approvedPaths
+            approvedPaths: order.approvedPaths,
+            scopeHash: order.scopeHash
           })
         );
       }
@@ -341,7 +397,9 @@ Implement the selected product files.
             inputSetHash: computeInputSetHash(order.inputs),
             round: 1,
             revisedBranchHead: revisionPin,
-            basedOn: order.inputs.map((input) => input.commitSha)
+            basedOn: order.inputs.map((input) => input.commitSha),
+            // Required now that an approved amendment extends the file map.
+            scopeHash: order.scopeHash
           })
         );
       }

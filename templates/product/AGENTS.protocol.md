@@ -144,6 +144,19 @@ avoid unrelated cleanup and speculative flexibility. Add the fewest focused
 tests needed, prefer extending an existing test file, and still run every
 required check.
 
+## Overlooked files
+
+If finishing the agreed change needs a file the approved path list does not
+name — for example the test that covers a listed source file — do not change
+it and do not claim readiness. Publish the plan amendment request that your
+implementation or revision action shows, at that action's required path, push
+only that coordination commit, and complete with its SHA. List only exact files
+the original scope cannot be finished without, each with a reason; a request
+is not approval. Every active agent then judges it privately; only unanimous
+approval adds the files, and your work resumes with a fresh action that lists
+them. When you judge a request, approve only if every file is necessary for the
+selected plan's existing scope.
+
 ## Checks that actually run
 
 Do not modify the product `githooks/` tree as the way to satisfy checks. Follow

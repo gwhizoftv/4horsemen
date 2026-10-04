@@ -25,9 +25,17 @@ import type { BoundInput, MaterializedInputEntry, MaterializedInputs, Materializ
 
 /**
  * Bound inputs whose `commitSha`/`path` names a coordination document. These are
- * small, and are exported as files.
+ * small, and are exported as files. A plan amendment request and the published
+ * ballots that approved an earlier amendment are JSON documents of the same
+ * kind: an agent judging a request reads them beside the selected plan.
  */
-export const MATERIALIZED_MARKDOWN_KINDS: ReadonlySet<string> = new Set(["plan", "review", "selected-plan"]);
+export const MATERIALIZED_MARKDOWN_KINDS: ReadonlySet<string> = new Set([
+  "plan",
+  "review",
+  "selected-plan",
+  "amendment-request",
+  "amendment-approval"
+]);
 
 /**
  * Bound inputs whose `commitSha` is a product pin. These are exported as

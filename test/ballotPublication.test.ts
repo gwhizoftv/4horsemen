@@ -117,6 +117,45 @@ describe("ballotPublication", () => {
     ).not.toBe(prepared.inputSetHash);
   });
 
+  it("publishes one amendment judgment per voter citing the exact request and selected plan", () => {
+    const request = {
+      agent: "codex",
+      commitSha: sha("3"),
+      path: ".signals/issue-1/implementation-ready-codex.json",
+      kind: "amendment-request"
+    };
+    const plan = { agent: "claude", commitSha: sha("1"), path: ".plans/issue-1/plan.md", kind: "selected-plan" };
+    const responses = [
+      { agent: "claude", actionId: "11111111-1111-4111-8111-111111111111", responseSha256: "1".repeat(64), rationale: "needed", disposition: "approve" as const },
+      { agent: "codex", actionId: "22222222-2222-4222-8222-222222222222", responseSha256: "2".repeat(64), rationale: "widens scope", disposition: "reject" as const }
+    ];
+    const batch = (boundInputs: readonly (typeof request)[]) =>
+      prepareBallotBatch({
+        kind: "amendment-ballot-batch",
+        issue: 1,
+        issueSessionId: `issue-1:${sha("a")}`,
+        round: 2,
+        activeRoster: ["claude", "codex"],
+        boundInputs,
+        responses
+      });
+    const prepared = batch([request, plan]);
+    expect(prepared.paths).toEqual([
+      ".plans/issue-1/amendment-ballot-claude-2.json",
+      ".plans/issue-1/amendment-ballot-codex-2.json"
+    ]);
+    expect(prepared.message).toBe("Coordinator: publish amendment-ballot-batch evidence for issue 1 amendment 2");
+    expect(JSON.parse(prepared.files[1]?.content ?? "{}")).toMatchObject({
+      protocolVersion: 2,
+      artifact: "amendment-ballot",
+      sequence: 2,
+      request: { agent: "codex", commitSha: sha("3"), path: request.path },
+      plans: [{ agent: "claude", commitSha: sha("1"), path: plan.path }],
+      disposition: "reject"
+    });
+    expect(() => batch([plan])).toThrow("exactly one bound amendment request");
+  });
+
   it("reconciles publication retries against the frozen commit SHA", () => {
     const commitSha = sha("c");
     const parentSha = sha("a");

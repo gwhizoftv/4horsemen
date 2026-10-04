@@ -41,6 +41,7 @@ import {
 import {
   appendJournal,
   atomicWriteJson,
+  cancelPendingAmendment,
   cursorsStateSchema,
   dropAgent,
   initializeOperationalState,
@@ -58,7 +59,7 @@ import {
   type CoordinatorConfig,
   type CursorsState
 } from "./state.js";
-import { STEP_DEFINITIONS, type WorkflowProfile, type WorkflowStepId } from "./steps.js";
+import { STEP_DEFINITIONS, roundForStep, type WorkflowProfile, type WorkflowStepId } from "./steps.js";
 import {
   resolveAgentLauncher,
   TmuxController,
@@ -367,7 +368,28 @@ const rederiveAfterDrop = (
   const priorPlan = cursors.derived.planSelection;
   const priorImplementation = cursors.derived.implementationSelection;
   const priorConsensus = cursors.derived.consensus;
-  let next = dropAgent(cursors, dropped, now);
+  // A drop changes the voting denominator, so an open amendment ballot can no
+  // longer be decided by its votes. Cancel it and put the issue back on the
+  // interrupted work before any rederivation; its author resubmits if needed.
+  const cancellation = cancelPendingAmendment(cursors, now);
+  if (cancellation.cancelled !== null) {
+    for (const agent of cursors.activeRoster) clearAgentLocalWork(paths, agent, cursors.agents[agent]?.actionId ?? null);
+    appendJournal(
+      paths,
+      {
+        type: "amendment-decided",
+        agent: cancellation.cancelled.agent,
+        details: {
+          eventId: `amendment-decided:${cancellation.cancelled.sequence}:cancelled-by-drop-${dropped}`,
+          sequence: cancellation.cancelled.sequence,
+          outcome: "cancelled",
+          reason: `drop of ${dropped}`
+        }
+      },
+      now
+    );
+  }
+  let next = dropAgent(cancellation.cursors, dropped, now);
   // A ballot cast for an agent who is no longer eligible must be replaced by
   // its active author. Other evidence from the dropped agent remains as
   // historical provenance but is excluded by every active-only derivation.
@@ -540,7 +562,7 @@ const rederiveAfterDrop = (
   if (reset) return next;
 
   const currentStep = next.issueCursor.stepId;
-  const round = currentStep.startsWith("R6.") ? (next.issueCursor.round ?? 1) : null;
+  const round = roundForStep(currentStep, next.issueCursor.round);
   const definition = STEP_DEFINITIONS[currentStep];
   for (const agent of next.activeRoster) {
     const alreadySatisfied =

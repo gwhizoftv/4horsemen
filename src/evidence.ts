@@ -6,6 +6,7 @@ import {
   implementationReadyArtifactSchema,
   participationReadyArtifactSchema,
   parseJsonWithSchema,
+  planAmendmentRequestArtifactSchema,
   revisionReadyArtifactSchema,
   validateCommonArtifactFields
 } from "./protocol.js";
@@ -174,6 +175,67 @@ const isCurrentIssueCoordinationPath = (path: string, issue: number): boolean =>
     path.startsWith(prefix)
   );
 
+/** Appended to an out-of-map rejection so the sanctioned route is named where it is needed. */
+const OVERLOOKED_FILE_HINT =
+  " (if the selected plan overlooked a file the agreed change needs, publish a plan amendment request instead of changing it)";
+
+const declaredArtifact = (raw: string): unknown => {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return value !== null && typeof value === "object" ? (value as { artifact?: unknown }).artifact : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * The alternative outcome of an implementation or revision action. A valid
+ * request is reported with `amendmentRequest` and is never an accepted
+ * submission: it cannot satisfy readiness, and it widens nothing until the
+ * active agents have published unanimous approval.
+ */
+const evaluateAmendmentRequest = (order: InternalOrder, submissionSha: string, blob: string): EvidenceObservation => {
+  const parsed = parseJsonWithSchema(blob, planAmendmentRequestArtifactSchema);
+  if (!parsed.ok) return rejected(order, submissionSha, [`invalid plan amendment request: ${parsed.error}`]);
+  const request = parsed.value;
+  if (order.scopeHash === undefined) {
+    return rejected(order, submissionSha, ["this action does not accept a plan amendment request"]);
+  }
+  const errors = [...commonErrors(request, order), ...inputHashErrors(request.inputSetHash, order)];
+  if (request.actionId !== order.actionId) errors.push(`plan amendment request actionId must be ${order.actionId}`);
+  if (request.scopeHash !== order.scopeHash) {
+    errors.push("plan amendment request scopeHash does not match the current approved file map");
+  }
+  for (const entry of request.additionalPaths) {
+    if (matchesApprovedPath(entry.path, order.approvedPaths)) {
+      errors.push(`plan amendment request path ${entry.path} is already approved`);
+    }
+  }
+  if (errors.length > 0) return rejected(order, submissionSha, errors);
+  return {
+    ...satisfied(order, submissionSha),
+    amendmentRequest: {
+      explanation: request.explanation,
+      scopeHash: request.scopeHash,
+      additionalPaths: request.additionalPaths.map((entry) => ({ path: entry.path, reason: entry.reason }))
+    }
+  };
+};
+
+/**
+ * Bind a ready signal to the effective file map. Optional while no approved
+ * amendment applies, so earlier signals stay valid; required afterwards, so an
+ * old signal cannot claim the extended scope; validated whenever supplied.
+ */
+const scopeHashErrors = (actual: string | undefined, order: InternalOrder): string[] => {
+  if (actual !== undefined) {
+    return actual === order.scopeHash ? [] : ["artifact scopeHash does not match the current approved file map"];
+  }
+  return (order.amendments?.length ?? 0) > 0
+    ? ["artifact scopeHash is required because an approved plan amendment extends the file map"]
+    : [];
+};
+
 const rejected = (order: InternalOrder, sha: string, outstanding: readonly string[]): EvidenceObservation => ({
   agent: order.agent,
   actionId: order.actionId,
@@ -299,12 +361,20 @@ export const evaluateEvidence = async (
     return errors.length === 0 ? satisfied(order, submissionSha) : rejected(order, submissionSha, errors);
   }
 
+  if (
+    (order.evidenceId === "implementation-pinned" || order.evidenceId === "revision-pinned") &&
+    declaredArtifact(blob) === "plan-amendment-request"
+  ) {
+    return evaluateAmendmentRequest(order, submissionSha, blob);
+  }
+
   if (order.evidenceId === "implementation-pinned") {
     const parsed = parseJsonWithSchema(blob, implementationReadyArtifactSchema);
     if (!parsed.ok) return rejected(order, submissionSha, [`invalid implementation-ready artifact: ${parsed.error}`]);
     const errors = [
       ...commonErrors(parsed.value, order),
       ...inputHashErrors(parsed.value.inputSetHash, order),
+      ...scopeHashErrors(parsed.value.scopeHash, order),
       ...(await pinErrors(parsed.value.implementationCommitSha, submissionSha, fetched.ref, order, mirror))
     ];
     const approved = order.approvedPaths.length === 0 ? parsed.value.approvedPaths : order.approvedPaths;
@@ -316,7 +386,9 @@ export const evaluateEvidence = async (
       const disallowed = changed.filter(
         (path) => !isCurrentIssueCoordinationPath(path, order.issue) && !matchesApprovedPath(path, approved)
       );
-      if (disallowed.length > 0) errors.push(`implementation changes paths outside the approved file map: ${disallowed.join(", ")}`);
+      if (disallowed.length > 0) errors.push(
+          `implementation changes paths outside the approved file map: ${disallowed.join(", ")}${OVERLOOKED_FILE_HINT}`
+        );
     }
     return errors.length === 0
       ? satisfied(order, submissionSha, { productPin: parsed.value.implementationCommitSha })
@@ -329,6 +401,7 @@ export const evaluateEvidence = async (
     const errors = [
       ...commonErrors(parsed.value, order),
       ...inputHashErrors(parsed.value.inputSetHash, order),
+      ...scopeHashErrors(parsed.value.scopeHash, order),
       ...(await pinErrors(parsed.value.revisedBranchHead, submissionSha, fetched.ref, order, mirror))
     ];
     if (parsed.value.round !== order.round) errors.push(`revision round must be ${order.round ?? 1}`);
@@ -344,7 +417,7 @@ export const evaluateEvidence = async (
       const disallowed = changed.filter(
         (path) => !isCurrentIssueCoordinationPath(path, order.issue) && !matchesApprovedPath(path, order.approvedPaths)
       );
-      if (disallowed.length > 0) errors.push(`revision changes paths outside the approved file map: ${disallowed.join(", ")}`);
+      if (disallowed.length > 0) errors.push(`revision changes paths outside the approved file map: ${disallowed.join(", ")}${OVERLOOKED_FILE_HINT}`);
     }
     return errors.length === 0
       ? satisfied(order, submissionSha, { productPin: parsed.value.revisedBranchHead })

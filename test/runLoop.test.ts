@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readAction, writeAction } from "../src/action.js";
+import { readAction, renderAction, writeAction } from "../src/action.js";
 import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
 import { git, repoRoot } from "./support/workspaceFixture.js";
 import { decideLifecycleNudge, initialAgentLifecycle, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
@@ -15,8 +15,11 @@ import {
   worktreeLabelsFor
 } from "../src/materializedInputs.js";
 import {
+  applicableAmendments,
   buildOrder,
   computeDerivedInputSetHash,
+  computeScopeHash,
+  selectedPlanCitations,
   computePlanSelectionDerived,
   CoordinatorRunLoop,
   derivedDecisionJournalDetails,
@@ -2966,5 +2969,150 @@ describe("coordinator-resolved change scope", () => {
     const order = buildOrder(paths, start, readCursorsState(paths), "claude", "R2.plan", null);
     expect(order.contextPaths).toEqual(["docs/repo-map.md"]);
     expect(order.changeScope).toEqual([]);
+  });
+});
+
+describe("plan amendment detour", () => {
+  const now = "2026-08-11T17:00:00.000Z";
+  const plan = "# Plan\n## Exact File Map\n- `src/product.ts`\n";
+  const amendment = (sequence: number, path: string, plansSha = "c".repeat(40)) => ({
+    sequence,
+    agent: "codex",
+    actionId: "c2337d85-6617-4e9f-8ace-901453764aa4",
+    submissionSha: "d".repeat(40),
+    path: ".signals/issue-1/implementation-ready-codex.json",
+    explanation: "The plan omits the test for its source file.",
+    scopeHash: "5".repeat(64),
+    additionalPaths: [{ path, reason: "covers the listed source file" }],
+    selectedPlans: [{ agent: "codex", submissionSha: plansSha, path: ".plans/issue-1/plan.md" }],
+    activeRoster: ["claude", "codex"],
+    source: { stepId: "R4.implement" as const, round: null },
+    deferredAgents: ["claude"],
+    requestedAt: now
+  });
+  const seed = (paths: ReturnType<typeof fixture>["paths"], extra: Record<string, unknown>) =>
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        derived: {
+          ...current.derived,
+          planSelection: {
+            kind: "plan-selection",
+            algorithm: "plurality-active-roster-v1",
+            inputSetHash: "e".repeat(64),
+            activeRoster: current.activeRoster,
+            inputs: [{ kind: "plan", agent: "codex", submissionSha: "c".repeat(40), path: ".plans/issue-1/plan.md" }],
+            decisionId: `plan-selection:${"e".repeat(64)}`,
+            supersedes: null,
+            decidedAt: now,
+            selectedAgents: ["codex"]
+          }
+        },
+        accepted: [
+          {
+            stepId: "R2.plan",
+            agent: "codex",
+            round: null,
+            submissionSha: "c".repeat(40),
+            path: ".plans/issue-1/plan.md",
+            approvedPaths: ["src/product.ts"],
+            acceptedAt: now
+          }
+        ],
+        ...extra
+      })
+    );
+  const stubMirror = (paths: ReturnType<typeof fixture>["paths"]) =>
+    ({
+      path: paths.mirror,
+      async initialize() {},
+      async fetchBranch() {
+        return { ok: false as const, details: "unused" };
+      },
+      async readBlob() {
+        return plan;
+      },
+      async changedPaths() {
+        return [];
+      },
+      async materializeWorktree() {},
+      async removeWorktree() {},
+      async publishBranch() {}
+    }) as never;
+
+  it("extends the map only for the exact selected plan that the approval was bound to", async () => {
+    const { paths } = fixture();
+    const approved = (sequence: number, path: string, plansSha?: string) => ({
+      ...amendment(sequence, path, plansSha),
+      outcome: "approved" as const,
+      evidenceCommitSha: "f".repeat(40),
+      decidedAt: now
+    });
+    seed(paths, {
+      issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
+      amendments: {
+        sequence: 2,
+        pending: null,
+        history: [approved(1, "test/product.test.ts"), approved(2, "test/other-plan.test.ts", "9".repeat(40))]
+      }
+    });
+    const cursors = readCursorsState(paths);
+    expect(applicableAmendments(cursors).map((record) => record.sequence)).toEqual([1]);
+    const paths_ = await resolveApprovedPaths({ readBlob: async () => plan }, cursors, "R4.implement");
+    expect(paths_).toEqual(["src/product.ts", "test/product.test.ts"]);
+    const order = buildOrder(paths, readStartState(paths), cursors, "claude", "R4.implement", null, undefined, [], paths_);
+    expect(order.amendments).toMatchObject([{ sequence: 1, evidenceCommitSha: "f".repeat(40) }]);
+    expect(order.scopeHash).toBe(
+      computeScopeHash(selectedPlanCitations(cursors), paths_, [
+        { sequence: 1, submissionSha: "d".repeat(40), evidenceCommitSha: "f".repeat(40) }
+      ])
+    );
+    expect(renderAction(order)).toContain("## Approved plan amendments");
+  });
+
+  it("resumes a rejected request with every rejection reason and an unchanged map", async () => {
+    const { paths } = fixture();
+    const votes = ["claude", "codex"].map((agent) =>
+      acceptedResponseFixture({
+        stepId: "R4.amend-ballot",
+        agent,
+        round: 1,
+        disposition: agent === "claude" ? "reject" : "approve",
+        rationale: agent === "claude" ? "The test belongs to a different issue." : "Needed."
+      })
+    );
+    seed(paths, {
+      issueCursor: { stepId: "R4.amend-ballot", gateId: "gate-4-implementations", round: 1 },
+      agents: Object.fromEntries(
+        ["claude", "codex"].map((agent) => [
+          agent,
+          {
+            ...readCursorsState(paths).agents[agent],
+            stepId: "R4.amend-ballot",
+            evidenceId: "amendment-response-accepted",
+            status: "waiting-peer",
+            actionId: null
+          }
+        ])
+      ),
+      acceptedResponses: votes,
+      ballotBatches: [
+        {
+          ...publishedBallotBatchFixture({ kind: "amendment-ballot-batch", activeRoster: ["claude", "codex"], round: 1 }),
+          responses: votes.map((vote) => ({ agent: vote.agent, actionId: vote.actionId, responseSha256: vote.responseSha256 }))
+        }
+      ],
+      amendments: { sequence: 1, pending: amendment(1, "test/product.test.ts"), history: [] }
+    });
+
+    const after = await new CoordinatorRunLoop(paths, { tmux: null, mirror: stubMirror(paths) }).runTick();
+    expect(after.issueCursor).toEqual({ stepId: "R4.implement", gateId: "gate-4-implementations", round: null });
+    expect(after.amendments).toMatchObject({ pending: null, history: [{ sequence: 1, outcome: "rejected" }] });
+    expect(readJournal(paths).filter((event) => event.type === "amendment-decided")).toHaveLength(1);
+    const requester = readAction(agentRuntimePaths(paths, "codex").action).body;
+    expect(requester).toContain("claude rejected plan amendment 1: The test belongs to a different issue.");
+    expect(requester).not.toContain('"test/product.test.ts"');
+    expect(requester).not.toContain("## Approved plan amendments");
+    expect(readAction(agentRuntimePaths(paths, "claude").action).body).toContain("judged first");
   });
 });

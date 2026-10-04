@@ -692,3 +692,148 @@ Implement it.
     ).toMatchObject({ status: "satisfied", productPin: artifact.revisedBranchHead });
   });
 });
+
+describe("plan amendment requests", () => {
+  const input = { agent: "codex", commitSha: sha("c"), path: ".plans/issue-1/plan.md", kind: "selected-plan" };
+  const scopeHash = "5".repeat(64);
+  const implement = (overrides: Partial<InternalOrder> = {}): InternalOrder =>
+    order({
+      stepId: "R4.implement",
+      evidenceId: "implementation-pinned",
+      requiredPath: ".signals/issue-1/implementation-ready-codex.json",
+      inputs: [input],
+      approvedPaths: ["src/product.ts"],
+      scopeHash,
+      amendments: [],
+      ...overrides
+    });
+  const request = (action: InternalOrder, overrides: Record<string, unknown> = {}) => ({
+    protocolVersion: 1,
+    artifact: "plan-amendment-request",
+    issue: 1,
+    issueSessionId: action.issueSessionId,
+    agent: "codex",
+    actionId: action.actionId,
+    inputSetHash: computeInputSetHash(action.inputs),
+    scopeHash,
+    explanation: "The plan changes src/product.ts but omits its test.",
+    additionalPaths: [{ path: "test/product.test.ts", reason: "covers the listed source file" }],
+    ...overrides
+  });
+  const ready = (action: InternalOrder, overrides: Record<string, unknown> = {}) => ({
+    protocolVersion: 1,
+    artifact: "implementation-ready",
+    issue: 1,
+    issueSessionId: action.issueSessionId,
+    agent: "codex",
+    inputSetHash: computeInputSetHash(action.inputs),
+    implementationCommitSha: sha("d"),
+    approvedPaths: action.approvedPaths,
+    ...overrides
+  });
+
+  it("reports a valid request without accepting implementation readiness", async () => {
+    const action = implement();
+    const observation = await evaluateEvidence(action, sha("e"), mirror(JSON.stringify(request(action))));
+    expect(observation).toMatchObject({
+      status: "satisfied",
+      amendmentRequest: {
+        scopeHash,
+        additionalPaths: [{ path: "test/product.test.ts", reason: "covers the listed source file" }]
+      }
+    });
+    expect(observation.productPin).toBeUndefined();
+  });
+
+  it("refuses stale, unbound, already-approved, and non-literal requests", async () => {
+    const action = implement();
+    const evaluate = async (overrides: Record<string, unknown>, target = action) =>
+      (await evaluateEvidence(target, sha("e"), mirror(JSON.stringify(request(target, overrides))))).outstanding.join(" ");
+    expect(await evaluate({ scopeHash: "6".repeat(64) })).toContain("scopeHash does not match");
+    expect(await evaluate({ actionId: "279da8c7-ae22-47eb-b6eb-211ceea6b732" })).toContain("actionId must be");
+    expect(await evaluate({ additionalPaths: [{ path: "src/product.ts", reason: "already listed" }] })).toContain(
+      "is already approved"
+    );
+    for (const path of ["test/", "test/**", "test/{a,b}.ts", ".signals/issue-1/x.json", ".git/config", "/abs.ts"]) {
+      expect(await evaluate({ additionalPaths: [{ path, reason: "r" }] }), path).toContain("invalid plan amendment request");
+    }
+    expect(
+      await evaluate({
+        additionalPaths: [
+          { path: "test/a.ts", reason: "r" },
+          { path: "test/a.ts", reason: "r" }
+        ]
+      })
+    ).toContain("repeats test/a.ts");
+    const { scopeHash: _unused, ...unscoped } = implement();
+    void _unused;
+    expect(await evaluate({}, unscoped)).toContain("does not accept a plan amendment request");
+  });
+
+  it("rejects the overlooked path before approval and accepts it only with the bound scope after", async () => {
+    const changed = { changedPaths: async () => ["src/product.ts", "test/product.test.ts"] };
+    const before = implement();
+    const rejected = await evaluateEvidence(before, sha("e"), mirror(JSON.stringify(ready(before)), changed));
+    expect(rejected.outstanding.join(" ")).toContain("outside the approved file map: test/product.test.ts");
+    expect(rejected.outstanding.join(" ")).toContain("publish a plan amendment request");
+
+    const after = implement({
+      approvedPaths: ["src/product.ts", "test/product.test.ts"],
+      scopeHash: "7".repeat(64),
+      amendments: [
+        {
+          sequence: 1,
+          agent: "codex",
+          submissionSha: sha("9"),
+          path: ".signals/issue-1/implementation-ready-codex.json",
+          evidenceCommitSha: sha("8"),
+          additionalPaths: [{ path: "test/product.test.ts", reason: "covers the listed source file" }]
+        }
+      ]
+    });
+    const unbound = await evaluateEvidence(after, sha("e"), mirror(JSON.stringify(ready(after)), changed));
+    expect(unbound.outstanding.join(" ")).toContain("scopeHash is required");
+    const stale = await evaluateEvidence(after, sha("e"), mirror(JSON.stringify(ready(after, { scopeHash })), changed));
+    expect(stale.outstanding.join(" ")).toContain("scopeHash does not match");
+    expect(
+      await evaluateEvidence(after, sha("e"), mirror(JSON.stringify(ready(after, { scopeHash: "7".repeat(64) })), changed))
+    ).toMatchObject({ status: "satisfied", productPin: sha("d") });
+    const third = await evaluateEvidence(
+      after,
+      sha("e"),
+      mirror(JSON.stringify(ready(after, { scopeHash: "7".repeat(64) })), {
+        changedPaths: async () => ["src/product.ts", "test/product.test.ts", "docs/unrelated.md"]
+      })
+    );
+    expect(third.outstanding.join(" ")).toContain("outside the approved file map: docs/unrelated.md");
+  });
+
+  it("accepts a request from a revision without relaxing its single authorized parent", async () => {
+    const pin = { agent: "codex", commitSha: sha("c"), path: ".signals/issue-1/implementation-ready-codex.json", kind: "implementation" };
+    const action = implement({
+      stepId: "R6.revise",
+      evidenceId: "revision-pinned",
+      requiredPath: ".signals/issue-1/revision-ready-codex-round-1.json",
+      round: 1,
+      inputs: [pin]
+    });
+    expect(await evaluateEvidence(action, sha("e"), mirror(JSON.stringify(request(action))))).toMatchObject({
+      status: "satisfied",
+      amendmentRequest: { scopeHash }
+    });
+    const revision = {
+      protocolVersion: 1,
+      artifact: "revision-ready",
+      issue: 1,
+      issueSessionId: action.issueSessionId,
+      agent: "codex",
+      inputSetHash: computeInputSetHash(action.inputs),
+      round: 1,
+      revisedBranchHead: sha("d"),
+      basedOn: [pin.commitSha, sha("8")],
+      scopeHash
+    };
+    const twoParents = await evaluateEvidence(action, sha("e"), mirror(JSON.stringify(revision)));
+    expect(twoParents.outstanding.join(" ")).toContain("basedOn pins do not equal bound inputs");
+  });
+});
