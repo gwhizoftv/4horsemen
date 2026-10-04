@@ -1,8 +1,8 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { localConfigGet } from "../src/gitExec.js";
+import { git, localConfigGet, worktreeRoot } from "../src/gitExec.js";
 import {
   OWNER_WORKSPACE_CONFIG_KEY,
   nestedConfigPath,
@@ -117,6 +117,14 @@ describe("workspace layout", () => {
       expect(localConfigGet(product.productRoot, key)).toBeNull();
     }
     expect(resolveWorkspaceFromProduct(product.productRoot)).toMatchObject({ configPath, layout: "flat" });
+
+    const nested = join(product.productRoot, "nested");
+    mkdirSync(nested);
+    expect(resolveWorkspaceFromProduct(nested)).toMatchObject({ configPath, layout: "flat" });
+
+    const link = join(product.workspaceRoot, "product-link");
+    symlinkSync(product.productRoot, link);
+    expect(resolveWorkspaceFromProduct(link)).toMatchObject({ configPath, layout: "flat" });
   });
 
   it("keeps same-named products registered in their own canonical worktrees", () => {
@@ -132,5 +140,45 @@ describe("workspace layout", () => {
 
     expect(resolveWorkspaceFromProduct(first.productRoot).configPath).toBe(firstConfig);
     expect(resolveWorkspaceFromProduct(second.productRoot).configPath).toBe(secondConfig);
+  });
+
+  it("names missing and non-directory git working directories without spawnSync wrappers", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-git-cwd-"));
+    roots.push(root);
+    const missing = join(root, "missing-product");
+    const filePath = join(root, "not-a-dir");
+    writeFileSync(filePath, "regular file\n");
+    const dangling = join(root, "dangling-link");
+    symlinkSync(join(root, "no-such-target"), dangling);
+
+    for (const path of [missing, dangling]) {
+      expect(() => git(path, "rev-parse", "--show-toplevel")).toThrow(/does not exist/);
+      expect(() => git(path, "rev-parse", "--show-toplevel")).not.toThrow(/spawnSync/);
+      expect(() => worktreeRoot(path)).toThrow(/does not exist/);
+      expect(() => resolveWorkspaceFromProduct(path)).toThrow(/does not exist/);
+    }
+
+    expect(() => git(filePath, "rev-parse", "--show-toplevel")).toThrow(/is not a directory/);
+    expect(() => git(filePath, "rev-parse", "--show-toplevel")).not.toThrow(/spawnSync/);
+    expect(() => resolveWorkspaceFromProduct(filePath)).toThrow(/is not a directory/);
+  });
+
+  it("reports a missing git executable separately from a missing working directory", () => {
+    const product = makeProduct("plain");
+    products.push(product);
+    const emptyPath = mkdtempSync(join(tmpdir(), "coord-empty-path-"));
+    roots.push(emptyPath);
+    // Build fixtures before scrubbing PATH; hermeticGitEnv copies process.env.
+    const previousPath = process.env.PATH;
+    try {
+      process.env.PATH = emptyPath;
+      expect(() => git(product.productRoot, "rev-parse", "--show-toplevel")).toThrow(
+        /git executable not found on PATH/
+      );
+      expect(() => git(product.productRoot, "rev-parse", "--show-toplevel")).not.toThrow(/does not exist/);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
   });
 });

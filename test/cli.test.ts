@@ -1,5 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -18,7 +27,14 @@ import {
 } from "../src/state.js";
 import { DOCTOR_CODES } from "../src/doctor.js";
 import { renderGitHubIssueSnapshot } from "../src/githubIssue.js";
-import { ensureBuilt, makeProduct, repoRoot, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
+import {
+  ensureBuilt,
+  git,
+  makeProduct,
+  repoRoot,
+  writeDeclaration,
+  type ProductFixture
+} from "./support/workspaceFixture.js";
 import { createHash } from "node:crypto";
 import type { AcceptedResponse, BallotBatch } from "../src/state.js";
 
@@ -1514,5 +1530,78 @@ describe("CLI — install, doctor, and the hook bridge", () => {
       })
     ).toBe(0);
     expect(JSON.parse(output.join(""))).toEqual({ decision: "allow" });
+  });
+
+  it("wipe-issue refuses invalid --product paths without spawnSync or mutating fixtures", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "coord-wipe-product-diag-"));
+    roots.push(parent);
+    const owner = join(parent, "app");
+    const agent = join(parent, "app-claude");
+    const runtime = join(parent, "coord-runtime");
+    const mailbox = join(parent, "completes");
+    mkdirSync(owner, { recursive: true });
+    git(owner, "init", "-q", "--initial-branch=main");
+    git(owner, "config", "user.name", "Fixture");
+    git(owner, "config", "user.email", "fixture@example.com");
+    writeFileSync(join(owner, "README.md"), "# app\n");
+    writeFileSync(join(owner, "owner-sentinel.txt"), "owner-bytes\n");
+    git(owner, "add", "-A");
+    git(owner, "commit", "-qm", "init");
+    git(parent, "clone", "-q", owner, agent);
+    writeFileSync(join(agent, "clone-sentinel.txt"), "clone-bytes\n");
+    mkdirSync(join(runtime, "issue-392"), { recursive: true });
+    writeFileSync(join(runtime, "issue-392", "runtime-sentinel.txt"), "runtime-bytes\n");
+    mkdirSync(mailbox, { recursive: true });
+    writeFileSync(join(mailbox, "mailbox-sentinel.txt"), "mailbox-bytes\n");
+
+    const snapshot = () => ({
+      ownerHead: git(owner, "rev-parse", "HEAD"),
+      ownerReadme: readFileSync(join(owner, "README.md"), "utf8"),
+      ownerSentinel: readFileSync(join(owner, "owner-sentinel.txt"), "utf8"),
+      ownerConfig: readFileSync(join(owner, ".git", "config"), "utf8"),
+      agentHead: git(agent, "rev-parse", "HEAD"),
+      agentSentinel: readFileSync(join(agent, "clone-sentinel.txt"), "utf8"),
+      runtimeSentinel: readFileSync(join(runtime, "issue-392", "runtime-sentinel.txt"), "utf8"),
+      mailboxSentinel: readFileSync(join(mailbox, "mailbox-sentinel.txt"), "utf8"),
+      parentEntries: readdirSync(parent).sort()
+    });
+    const before = snapshot();
+
+    const runMissing = async (productFlag: string, expectedPath: string): Promise<void> => {
+      const errors: string[] = [];
+      const output: string[] = [];
+      const code = await runCli(["wipe-issue", "392", "--force", "--product", productFlag], {
+        io: {
+          cwd: parent,
+          stdout: (message) => output.push(message),
+          stderr: (message) => errors.push(message)
+        }
+      });
+      const err = errors.join("");
+      expect(code).toBe(2);
+      expect(err).toContain(expectedPath);
+      expect(err).toMatch(/does not exist/);
+      expect(err).not.toMatch(/spawnSync/);
+      expect(output.join("")).not.toMatch(/Wiped issue/);
+      expect(existsSync(expectedPath)).toBe(false);
+      expect(snapshot()).toEqual(before);
+    };
+
+    await runMissing("coordinator", join(parent, "coordinator"));
+    await runMissing(join(parent, "missing-absolute"), join(parent, "missing-absolute"));
+
+    const controlErrors: string[] = [];
+    expect(
+      await runCli(["wipe-issue", "392", "--force"], {
+        io: {
+          cwd: parent,
+          stdout: () => undefined,
+          stderr: (message) => controlErrors.push(message)
+        }
+      })
+    ).toBe(2);
+    expect(controlErrors.join("")).toMatch(/not a Git worktree/);
+    expect(controlErrors.join("")).not.toMatch(/spawnSync/);
+    expect(snapshot()).toEqual(before);
   });
 });

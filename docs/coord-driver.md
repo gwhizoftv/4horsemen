@@ -192,6 +192,20 @@ refetching or rebinding an edited issue. From an unrelated worktree, pass
 `--product /path/to/onboarded/product`; coordination never guesses from a
 machine-global registry.
 
+`--product` is always a filesystem path (relative to the caller's working
+directory, or absolute). It is not a project nickname and does not search
+sibling directories. Resolve failures are distinct:
+
+- an existing directory that is not a Git worktree → “not a Git worktree”
+- a missing path (including a dangling symlink) → “path does not exist”
+- an existing non-directory → “path is not a directory”
+- a valid directory when `git` cannot be launched from `PATH` → a Git
+  executable / PATH diagnostic, not a missing-product message
+
+None of those messages by itself proves that a repository was damaged or
+deleted. A typo’d `--product` is refused before wipe/start effects run; fix the
+path (or re-onboard the intended product) rather than assuming corruption.
+
 The explicit forms remain available:
 
 ```bash

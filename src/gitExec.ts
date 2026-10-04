@@ -1,7 +1,39 @@
 import { spawnSync } from "node:child_process";
+import { statSync } from "node:fs";
 import { hermeticGitEnv } from "./mirror.js";
 
 export type GitResult = { exitCode: number; stdout: string; stderr: string };
+
+type WorkingDirectoryCheck =
+  | { kind: "directory" }
+  | { kind: "missing" }
+  | { kind: "not-directory" }
+  | { kind: "inaccessible"; detail: string };
+
+const inspectWorkingDirectory = (cwd: string): WorkingDirectoryCheck => {
+  try {
+    if (!statSync(cwd).isDirectory()) return { kind: "not-directory" };
+    return { kind: "directory" };
+  } catch (error) {
+    if (error instanceof Error && "code" in error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return { kind: "missing" };
+      if (code === "ENOTDIR") return { kind: "not-directory" };
+      return { kind: "inaccessible", detail: error.message };
+    }
+    throw error;
+  }
+};
+
+const workingDirectoryError = (cwd: string, check: Exclude<WorkingDirectoryCheck, { kind: "directory" }>): Error => {
+  if (check.kind === "missing") {
+    return new Error(`Cannot run git in ${cwd}: path does not exist.`);
+  }
+  if (check.kind === "not-directory") {
+    return new Error(`Cannot run git in ${cwd}: path is not a directory.`);
+  }
+  return new Error(`Cannot run git in ${cwd}: ${check.detail}`);
+};
 
 /**
  * Synchronous git for the installer. `coord install` is an operator-driven,
@@ -15,8 +47,23 @@ export type GitResult = { exitCode: number; stdout: string; stderr: string };
  * to pass while the wrong repository gets wired.
  */
 export const git = (cwd: string, ...args: readonly string[]): GitResult => {
+  const preflight = inspectWorkingDirectory(cwd);
+  if (preflight.kind !== "directory") {
+    throw workingDirectoryError(cwd, preflight);
+  }
+
   const result = spawnSync("git", args, { cwd, encoding: "utf8", env: hermeticGitEnv() });
   if (result.error !== undefined) {
+    const recheck = inspectWorkingDirectory(cwd);
+    if (recheck.kind !== "directory") {
+      throw workingDirectoryError(cwd, recheck);
+    }
+    const code = "code" in result.error ? result.error.code : undefined;
+    if (code === "ENOENT") {
+      throw new Error(
+        `Cannot run git ${args.join(" ")} in ${cwd}: git executable not found on PATH (${result.error.message}).`
+      );
+    }
     throw new Error(`Cannot run git ${args.join(" ")} in ${cwd}: ${result.error.message}`);
   }
   return {
