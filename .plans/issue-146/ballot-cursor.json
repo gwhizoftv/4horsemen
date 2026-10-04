@@ -1,0 +1,46 @@
+{
+  "actionId": "1c91ca65-367b-4dba-a904-7c784ab7a35e",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "bb26b181bd821eabf1469763b161befcc7b3032b9fa3766c4ca9dd83c45e300f",
+  "issue": 146,
+  "issueSessionId": "issue-146:a792b19e8757c734c1c572b1c3fc1675a78d8bfc",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "fae0a54ca4a4f6f1a3260a71e16ddf2bbce9d93f",
+      "path": ".plans/issue-146/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9cc96e5a69b432a41ad1ed6212d85ac8acd10f5f",
+      "path": ".plans/issue-146/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "29331e5a206544d2bb3fa9c7534616027db6bb97",
+      "path": ".plans/issue-146/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex alone keeps the runner alive on holds, preserves scoped hold release with an explicit --run for stopped recovery, and fixes same-branch dirty rejoin without weakening #126.",
+  "responseSha256": "b6319aa6a58255aa91b4e6228b3fa75cd48f24c1bb121ef1279dded7c20aa4b2",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "9e04efeb77aad221051eaa0f9ebd6bc3964ddc79",
+      "path": ".plans/issue-146/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "0fc243f7d1d665cc31fc4f83e385de7cc599d54f",
+      "path": ".plans/issue-146/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "ce7df1bbd2bfa66ed245162b69668e6b84ed24bd",
+      "path": ".plans/issue-146/review.md"
+    }
+  ]
+}

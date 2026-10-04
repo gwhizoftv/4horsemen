@@ -1,0 +1,46 @@
+{
+  "actionId": "2017840d-7a0a-4941-a053-be6e25aa0ec3",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "bb26b181bd821eabf1469763b161befcc7b3032b9fa3766c4ca9dd83c45e300f",
+  "issue": 146,
+  "issueSessionId": "issue-146:a792b19e8757c734c1c572b1c3fc1675a78d8bfc",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "fae0a54ca4a4f6f1a3260a71e16ddf2bbce9d93f",
+      "path": ".plans/issue-146/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9cc96e5a69b432a41ad1ed6212d85ac8acd10f5f",
+      "path": ".plans/issue-146/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "29331e5a206544d2bb3fa9c7534616027db6bb97",
+      "path": ".plans/issue-146/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex best addresses dirty-branch reattachment and runner liveness while preserving scoped hold authorization, handling initialization conflicts, and making restart explicit, with the reviews' remaining test-scope and manual-pause documentation concerns addressable within its existing file map.",
+  "responseSha256": "f2cd9ba4718bde265fb9ad7d78717808337d0753c4963271f7d9973b7cd8bbec",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "9e04efeb77aad221051eaa0f9ebd6bc3964ddc79",
+      "path": ".plans/issue-146/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "0fc243f7d1d665cc31fc4f83e385de7cc599d54f",
+      "path": ".plans/issue-146/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "ce7df1bbd2bfa66ed245162b69668e6b84ed24bd",
+      "path": ".plans/issue-146/review.md"
+    }
+  ]
+}
