@@ -55,8 +55,11 @@ import {
   releaseHold,
   verifyPhaseSchema,
   type BallotBatch,
+  type ConsensusDerived,
   type CoordinatorConfig,
-  type CursorsState
+  type CursorsState,
+  type ImplementationSelectionDerived,
+  type PlanSelectionDerived
 } from "./state.js";
 import { STEP_DEFINITIONS, type WorkflowProfile, type WorkflowStepId } from "./steps.js";
 import {
@@ -395,7 +398,51 @@ const rederiveAfterDrop = (
     updatedAt: now
   });
 
-  const persistDecision = <T extends NonNullable<CursorsState["derived"][keyof CursorsState["derived"]]>>(
+  if (next.pendingAmendment !== null || next.issueCursor.stepId === "R4.amend-ballot") {
+    const seq = next.pendingAmendment?.sequence ?? next.issueCursor.round ?? 1;
+    const sourceStep = next.pendingAmendment?.sourceStep ?? "R4.implement";
+    const sourceRound = next.pendingAmendment?.sourceRound ?? null;
+    next = cursorsStateSchema.parse({
+      ...next,
+      issueCursor: { stepId: sourceStep, gateId: STEP_DEFINITIONS[sourceStep].gateId, round: sourceRound },
+      pendingAmendment: null,
+      acceptedResponses: next.acceptedResponses.filter(
+        (r) => !(r.stepId === "R4.amend-ballot" && r.round === seq)
+      ),
+      ballotBatches: invalidateUnpublishedBatches(
+        next.ballotBatches,
+        now,
+        "invalidated by drop during pending amendment"
+      ),
+      updatedAt: now
+    });
+    for (const agent of next.activeRoster) {
+      const cursor = next.agents[agent];
+      if (cursor !== undefined && cursor.stepId === "R4.amend-ballot") {
+        clearAgentLocalWork(paths, agent, cursor.actionId);
+        const isAccepted = next.accepted.some(
+          (s) => s.stepId === sourceStep && s.agent === agent && s.round === sourceRound
+        );
+        next = replaceCursor(
+          next,
+          agent,
+          {
+            stepId: sourceStep,
+            evidenceId: STEP_DEFINITIONS[sourceStep].evidenceId,
+            actionId: null,
+            submissionMode: null,
+            actionDigest: null,
+            status: isAccepted ? "waiting-peer" : "idle",
+            submissionSha: null,
+            outstanding: []
+          },
+          now
+        );
+      }
+    }
+  }
+
+  const persistDecision = <T extends PlanSelectionDerived | ImplementationSelectionDerived | ConsensusDerived>(
     record: T
   ): T => {
     const event = appendJournal(
@@ -440,12 +487,17 @@ const rederiveAfterDrop = (
       };
       clearAgentLocalWork(paths, agent, cursor.actionId);
     }
+    const derived = { ...state.derived };
+    if (stepId === "R3.plan-ballot" || (stepId === "R4.implement" && removeStep("R4.implement"))) {
+      derived.scopeAmendments = [];
+    }
     return cursorsStateSchema.parse({
       ...state,
       issueCursor: { stepId, gateId: STEP_DEFINITIONS[stepId].gateId, round },
       agents,
       accepted,
       acceptedResponses,
+      derived,
       ballotBatches: invalidateUnpublishedBatches(state.ballotBatches, now, `invalidated by reset to ${stepId}`),
       ownerQuestion: null,
       publication: {
@@ -466,7 +518,7 @@ const rederiveAfterDrop = (
     if (next.activeRoster.length === 1) {
       if (priorPlan.selectedAgents[0] !== next.activeRoster[0]) {
         next = resetTo(next, "R4.implement", null, (step) =>
-          ["R4.implement", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(step)
+          ["R4.implement", "R4.amend-ballot", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(step)
         );
         reset = true;
       }
@@ -474,7 +526,7 @@ const rederiveAfterDrop = (
       const plan = computePlanSelectionDerived(next, now, priorPlan.decisionId);
       if (plan === null) {
         next = resetTo(next, "R3.plan-ballot", null, (step) =>
-          ["R4.implement", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(step)
+          ["R4.implement", "R4.amend-ballot", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(step)
         );
         reset = true;
       } else {
@@ -485,7 +537,7 @@ const rederiveAfterDrop = (
         });
         if (plan.selectedAgents[0] !== priorPlan.selectedAgents[0]) {
           next = resetTo(next, "R4.implement", null, (step) =>
-            ["R4.implement", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(step)
+            ["R4.implement", "R4.amend-ballot", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(step)
           );
           reset = true;
         }
@@ -1516,7 +1568,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           { type: "owner-answer", details: { questionId, kind: question.kind, round: question.round, answer } },
           now
         );
-        let next = cursorsStateSchema.parse({
+        let next: CursorsState = cursorsStateSchema.parse({
           ...current,
           ownerQuestion: null,
           lastOwnerAnswer: { questionId, answer, answeredAt: now },
@@ -1645,7 +1697,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         const agents = requestedAgent === null ? current.activeRoster : [requestedAgent];
         if (agents.some((agent) => !current.activeRoster.includes(agent))) throw new Error("restart-action agent must be active.");
         appendJournal(paths, { type: "action-restarted", details: { agents } }, now);
-        let next = cursorsStateSchema.parse({
+        let next: CursorsState = cursorsStateSchema.parse({
           ...current,
           // Preserve still-valid accepted responses; retain published batch history;
           // invalidate only unpublished stale roster batches.

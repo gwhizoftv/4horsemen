@@ -144,6 +144,32 @@ avoid unrelated cleanup and speculative flexibility. Add the fewest focused
 tests needed, prefer extending an existing test file, and still run every
 required check.
 
+## Scope amendments
+
+When implementing or revising, if completing the selected plan requires
+modifying or creating a file not listed in `approvedPaths`, the implementing
+agent may propose an amendment using an alternate artifact:
+`.plans/issue-<n>/plan-amendment-request-<agent>.json`.
+
+The request must include:
+- `issue`: current issue number
+- `issueSessionId`: active issue session UUID
+- `agent`: requesting agent ID
+- `actionId`: current action UUID
+- `scopeHash`: the hash of current approved paths
+- `explanation`: rationale for why the added paths are necessary to fulfill the original plan
+- `additionalPaths`: an array of `{ path, reason }` entries
+
+A request never satisfies implementation or revision readiness on its own, and
+submitting a request does not authorize touching the added paths. Touching
+unapproved paths before a request is unanimously approved and published by the
+coordinator is rejected by verification hooks.
+If the proposal is approved unanimously by active agents in an amendment ballot,
+the coordinator derives the expanded scope and reissues the action with updated
+`approvedPaths` and `scopeEvidence`. If rejected, the requester receives the
+rejection reasons and must either stay within the original map or submit a
+corrected proposal.
+
 ## Checks that actually run
 
 Do not modify the product `githooks/` tree as the way to satisfy checks. Follow

@@ -1253,6 +1253,118 @@ describe("CLI", () => {
     expect(after.agents.claude?.actionId).toBeNull();
   });
 
+  it("cancels pending amendment ballot and invalidates unpublished batches on drop", async () => {
+    const fixture = setup();
+    await runCli(["start", "1", "--profile", "reviewed", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      processRunner: successfulStartGit,
+      makeRunLoop: fakeLoop
+    });
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const now = "2026-08-11T17:00:00.000Z";
+    const current = readCursorsState(paths);
+    const pendingAmend = {
+      sequence: 1,
+      agent: "claude" as const,
+      actionId: actionIdFor("claude"),
+      submissionSha: "b".repeat(40),
+      sourceStep: "R4.implement" as const,
+      sourceRound: null,
+      scopeHash: "a".repeat(64),
+      explanation: "need extra test",
+      additionalPaths: [{ path: "test/extra.test.ts", reason: "unit tests" }],
+      proposedAt: now
+    };
+    writeCursorsState(
+      paths,
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R4.amend-ballot", gateId: "gate-4-implementations", round: 1 },
+        pendingAmendment: pendingAmend,
+        amendmentSequence: 1,
+        agents: {
+          ...current.agents,
+          claude: { ...current.agents.claude, stepId: "R4.amend-ballot", status: "ordered", updatedAt: now },
+          codex: { ...current.agents.codex, stepId: "R4.amend-ballot", status: "ordered", updatedAt: now },
+          cursor: { ...current.agents.cursor, stepId: "R4.amend-ballot", status: "ordered", updatedAt: now }
+        },
+        acceptedResponses: [
+          acceptedResponseFixture({ stepId: "R4.amend-ballot", agent: "codex", round: 1, disposition: "approve" })
+        ],
+        updatedAt: now
+      })
+    );
+
+    expect(
+      await runCli(["drop", "cursor", "--issue", "1", "--coord-root", fixture.runtime], { makeRunLoop: fakeLoop })
+    ).toBe(0);
+    const after = readCursorsState(paths);
+    expect(after.pendingAmendment).toBeNull();
+    expect(after.issueCursor.stepId).toBe("R4.implement");
+    expect(after.acceptedResponses.filter((r) => r.stepId === "R4.amend-ballot")).toHaveLength(0);
+  });
+
+  it("resets approved scope amendments when dropped agent causes plan reselection", async () => {
+    const fixture = setup();
+    await runCli(["start", "1", "--profile", "reviewed", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      processRunner: successfulStartGit,
+      makeRunLoop: fakeLoop
+    });
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const now = "2026-08-11T17:00:00.000Z";
+    const current = readCursorsState(paths);
+    const scopeAmendment = {
+      kind: "scope-amendment" as const,
+      sequence: 1,
+      decisionId: `scope-amendment:1:${"a".repeat(64)}`,
+      proposal: {
+        sequence: 1,
+        agent: "claude" as const,
+        actionId: actionIdFor("claude"),
+        submissionSha: "b".repeat(40),
+        sourceStep: "R4.implement" as const,
+        sourceRound: null,
+        scopeHash: "a".repeat(64),
+        explanation: "need extra test",
+        additionalPaths: [{ path: "test/extra.test.ts", reason: "unit tests" }],
+        proposedAt: now
+      },
+      batchCommitSha: "c".repeat(40),
+      addedPaths: ["test/extra.test.ts"],
+      decidedAt: now
+    };
+    writeCursorsState(
+      paths,
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
+        derived: {
+          ...current.derived,
+          planSelection: {
+            kind: "plan-selection",
+            algorithm: "plurality-active-roster-v1",
+            inputSetHash: "d".repeat(64),
+            activeRoster: ["claude", "codex", "cursor"],
+            inputs: [
+              { kind: "plan", agent: "cursor", submissionSha: "e".repeat(40), path: ".plans/issue-1/plan.md" }
+            ],
+            decisionId: `plan-selection:${"d".repeat(64)}`,
+            supersedes: null,
+            decidedAt: now,
+            selectedAgents: ["cursor"]
+          },
+          scopeAmendments: [scopeAmendment]
+        },
+        updatedAt: now
+      })
+    );
+
+    expect(
+      await runCli(["drop", "cursor", "--issue", "1", "--coord-root", fixture.runtime], { makeRunLoop: fakeLoop })
+    ).toBe(0);
+    const after = readCursorsState(paths);
+    expect(after.derived.scopeAmendments).toEqual([]);
+  });
+
   it("applies typed owner answers durably and idempotently without allowing round four", async () => {
     const fixture = setup();
     await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {

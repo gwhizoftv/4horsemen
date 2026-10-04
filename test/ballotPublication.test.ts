@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertEvidenceBranchSafe,
+  buildCanonicalAmendmentBallot,
   buildCanonicalPlanBallot,
   canonicalBallotPath,
   computeBallotBatchInputSetHash,
@@ -61,6 +62,68 @@ describe("ballotPublication", () => {
       ".plans/issue-1/ballot-codex.json"
     );
     expect(serializeCanonicalJson({ b: 1, a: 2 })).toBe('{\n  "a": 2,\n  "b": 1\n}\n');
+  });
+
+  it("builds canonical amendment ballot bytes citing the exact request and selected plan", () => {
+    const artifact = buildCanonicalAmendmentBallot({
+      issue: 1,
+      issueSessionId: `issue-1:${sha("a")}`,
+      agent: "codex",
+      actionId,
+      responseSha256: digest,
+      rationale: "Addition is necessary for tests.",
+      disposition: "approve",
+      inputSetHash: digest,
+      sequence: 1,
+      request: { agent: "claude", commitSha: sha("3"), path: ".signals/issue-1/implementation-ready-claude.json" },
+      plans: [{ agent: "claude", commitSha: sha("1"), path: ".plans/issue-1/plan.md" }]
+    });
+    expect(artifact.protocolVersion).toBe(2);
+    expect(artifact.actionId).toBe(actionId);
+    expect(artifact.sequence).toBe(1);
+    expect(artifact.disposition).toBe("approve");
+    expect(artifact.request.commitSha).toBe(sha("3"));
+    expect(canonicalBallotPath("amendment-ballot-batch", 1, "codex", 1)).toBe(
+      ".plans/issue-1/amendment-ballot-codex-seq-1.json"
+    );
+    expect(evidenceCommitMessage("amendment-ballot-batch", 1, 1)).toBe(
+      "Coordinator: publish amendment-ballot-batch evidence for issue 1 sequence 1"
+    );
+
+    const boundInputs = [
+      { agent: "claude", commitSha: sha("1"), path: ".plans/issue-1/plan.md", kind: "selected-plan" },
+      { agent: "claude", commitSha: sha("3"), path: ".signals/issue-1/implementation-ready-claude.json", kind: "amendment-request" }
+    ] as const;
+    const responses = [
+      {
+        agent: "claude",
+        actionId: "11111111-1111-4111-8111-111111111111",
+        responseSha256: "1".repeat(64),
+        rationale: "claude",
+        disposition: "approve" as const
+      },
+      {
+        agent: "codex",
+        actionId: "22222222-2222-4222-8222-222222222222",
+        responseSha256: "2".repeat(64),
+        rationale: "codex",
+        disposition: "approve" as const
+      }
+    ];
+    const prepared = prepareBallotBatch({
+      kind: "amendment-ballot-batch",
+      issue: 1,
+      issueSessionId: `issue-1:${sha("a")}`,
+      round: 1,
+      activeRoster: ["claude", "codex"],
+      boundInputs,
+      responses
+    });
+    expect(prepared.files).toHaveLength(2);
+    expect(prepared.files.map((f) => f.path)).toEqual([
+      ".plans/issue-1/amendment-ballot-claude-seq-1.json",
+      ".plans/issue-1/amendment-ballot-codex-seq-1.json"
+    ]);
   });
 
   it("freezes one batch for the active roster with a stable input-set hash", () => {

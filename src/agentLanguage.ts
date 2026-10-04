@@ -124,7 +124,9 @@ const AGENT_FACING_SUBJECT: Readonly<Record<EvidenceId, string>> = {
   "comparison-response-accepted": "the comparison ballot",
   "revision-pinned": "the revision signal",
   "consensus-response-accepted": "the consensus ballot",
-  "finalization-verified": "the finalization signal"
+  "finalization-verified": "the finalization signal",
+  "amendment-request-submitted": "the plan amendment request",
+  "amendment-response-accepted": "the amendment ballot"
 };
 
 export const agentFacingSubject = (evidenceId: EvidenceId): string => AGENT_FACING_SUBJECT[evidenceId];

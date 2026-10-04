@@ -330,3 +330,62 @@ describe("context paths", () => {
     expect(start.contextPaths).toEqual([]);
   });
 });
+
+describe("scope amendment state", () => {
+  it("defaults pending amendment, sequence, and scope amendments in legacy cursors", () => {
+    const { paths } = initialize();
+    const cursors = readCursorsState(paths);
+    const legacy: Record<string, unknown> = JSON.parse(JSON.stringify(cursors));
+    delete legacy.pendingAmendment;
+    delete legacy.amendmentSequence;
+    if (legacy.derived && typeof legacy.derived === "object") {
+      delete (legacy.derived as Record<string, unknown>).scopeAmendments;
+    }
+    const parsed = cursorsStateSchema.parse(legacy);
+    expect(parsed.pendingAmendment).toBeNull();
+    expect(parsed.amendmentSequence).toBe(0);
+    expect(parsed.derived.scopeAmendments).toEqual([]);
+  });
+
+  it("round-trips pending amendment and derived scope amendments through disk serialization", () => {
+    const { paths } = initialize();
+    const now = "2026-08-11T12:00:00.000Z";
+    const pending = {
+      sequence: 1,
+      agent: "claude" as const,
+      actionId: "10000000-0000-4000-8000-000000000001",
+      submissionSha: "a".repeat(40),
+      sourceStep: "R4.implement" as const,
+      sourceRound: null,
+      scopeHash: "b".repeat(64),
+      explanation: "need extra test file",
+      additionalPaths: [{ path: "test/extra.test.ts", reason: "unit tests" }],
+      proposedAt: now
+    };
+    const derivedScopeAmendment = {
+      kind: "scope-amendment" as const,
+      sequence: 1,
+      decisionId: `scope-amendment:1:${"b".repeat(64)}`,
+      proposal: pending,
+      batchCommitSha: "c".repeat(40),
+      addedPaths: ["test/extra.test.ts"],
+      decidedAt: now
+    };
+
+    mutateCursorsState(paths, (current) => ({
+      ...current,
+      pendingAmendment: pending,
+      amendmentSequence: 1,
+      derived: {
+        ...current.derived,
+        scopeAmendments: [derivedScopeAmendment]
+      }
+    }));
+
+    const read = readCursorsState(paths);
+    expect(read.pendingAmendment).toEqual(pending);
+    expect(read.amendmentSequence).toBe(1);
+    expect(read.derived.scopeAmendments).toEqual([derivedScopeAmendment]);
+  });
+});
+

@@ -337,4 +337,21 @@ describe("advisory action sections", () => {
     });
     expect(raw).not.toContain("## Changed paths for the bound pins");
   });
+
+  it("renders approved scope amendment evidence alongside inputs without modifying inputs", () => {
+    const raw = renderAction({
+      ...order("/external/coord"),
+      scopeEvidence: [
+        {
+          agent: "coordinator",
+          commitSha: "5".repeat(40),
+          path: ".plans/issue-1/amendment-ballot-claude-seq-1.json",
+          kind: "amendment-ballot"
+        }
+      ]
+    });
+    expect(raw).toContain("Approved scope amendment evidence:");
+    expect(raw).toContain(".plans/issue-1/amendment-ballot-claude-seq-1.json");
+    expect(raw).toContain("5".repeat(40));
+  });
 });

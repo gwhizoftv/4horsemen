@@ -54,6 +54,7 @@ const stepIdSchema = z.enum([
   "R3.review",
   "R3.plan-ballot",
   "R4.implement",
+  "R4.amend-ballot",
   "R5.compare",
   "R5.compare-ballot",
   "R6.revise",
@@ -79,9 +80,11 @@ const evidenceIdSchema = z.enum([
   "comparison-response-accepted",
   "revision-pinned",
   "consensus-response-accepted",
-  "finalization-verified"
+  "finalization-verified",
+  "amendment-request-submitted",
+  "amendment-response-accepted"
 ]);
-const ballotStepIdSchema = z.enum(["R3.plan-ballot", "R5.compare-ballot", "R6.ballot"]);
+const ballotStepIdSchema = z.enum(["R3.plan-ballot", "R4.amend-ballot", "R5.compare-ballot", "R6.ballot"]);
 const timestampSchema = z.string().datetime({ offset: true });
 
 export const checkCommandSchema = z
@@ -468,11 +471,52 @@ export const consensusDerivedSchema = derivedDecisionBaseSchema
     message: "decision identity must match the consensus input hash and round"
   });
 
+export const pendingAmendmentSchema = z
+  .object({
+    sequence: z.number().int().min(1),
+    agent: agentIdSchema,
+    actionId: actionIdSchema,
+    submissionSha: gitShaSchema,
+    sourceStep: z.enum(["R4.implement", "R6.revise"]),
+    sourceRound: z.number().int().min(1).nullable(),
+    scopeHash: digestSchema,
+    explanation: z.string().min(1),
+    additionalPaths: z
+      .array(
+        z
+          .object({
+            path: z.string().min(1),
+            reason: z.string().min(1)
+          })
+          .strict()
+      )
+      .min(1),
+    proposedAt: timestampSchema
+  })
+  .strict();
+
+export type PendingAmendment = z.infer<typeof pendingAmendmentSchema>;
+
+export const scopeAmendmentDerivedSchema = z
+  .object({
+    kind: z.literal("scope-amendment"),
+    sequence: z.number().int().min(1),
+    decisionId: z.string().min(1),
+    proposal: pendingAmendmentSchema,
+    batchCommitSha: gitShaSchema,
+    addedPaths: z.array(z.string().min(1)).min(1),
+    decidedAt: timestampSchema
+  })
+  .strict();
+
+export type ScopeAmendmentDerived = z.infer<typeof scopeAmendmentDerivedSchema>;
+
 export const derivedStateSchema = z
   .object({
     planSelection: planSelectionDerivedSchema.nullable(),
     implementationSelection: implementationSelectionDerivedSchema.nullable(),
-    consensus: consensusDerivedSchema.nullable()
+    consensus: consensusDerivedSchema.nullable(),
+    scopeAmendments: z.array(scopeAmendmentDerivedSchema).default([])
   })
   .strict();
 
@@ -520,7 +564,7 @@ export const acceptedResponseSchema = z
 export const ballotBatchSchema = z
   .object({
     batchId: z.string().uuid(),
-    kind: z.enum(["plan-ballot-batch", "comparison-ballot-batch", "consensus-ballot-batch"]),
+    kind: z.enum(["plan-ballot-batch", "comparison-ballot-batch", "consensus-ballot-batch", "amendment-ballot-batch"]),
     round: z.number().int().min(1).nullable(),
     inputSetHash: digestSchema,
     activeRoster: z.array(agentIdSchema),
@@ -655,6 +699,8 @@ export const cursorsStateSchema = z
     accepted: z.array(acceptedSubmissionSchema),
     acceptedResponses: z.array(acceptedResponseSchema),
     ballotBatches: z.array(ballotBatchSchema),
+    amendmentSequence: z.number().int().nonnegative().default(0),
+    pendingAmendment: pendingAmendmentSchema.nullable().default(null),
     updatedAt: timestampSchema
   })
   .strict();
@@ -693,7 +739,10 @@ const journalEventTypeSchema = z.enum([
   "ballot-batch-published",
   "ballot-batch-failed",
   "ballot-batch-invalidated",
-  "clone-readiness-refused"
+  "clone-readiness-refused",
+  "amendment-requested",
+  "amendment-derived",
+  "amendment-rejected"
 ]);
 
 export const journalEventSchema = z
@@ -730,8 +779,16 @@ export type DerivedInputCitation = z.infer<typeof derivedInputCitationSchema>;
 export type PlanSelectionDerived = z.infer<typeof planSelectionDerivedSchema>;
 export type ImplementationSelectionDerived = z.infer<typeof implementationSelectionDerivedSchema>;
 export type ConsensusDerived = z.infer<typeof consensusDerivedSchema>;
-export type DerivedState = z.infer<typeof derivedStateSchema>;
-export type CursorsState = z.infer<typeof cursorsStateSchema>;
+type DerivedStateParsed = z.infer<typeof derivedStateSchema>;
+export type DerivedState = Omit<DerivedStateParsed, "scopeAmendments"> & {
+  scopeAmendments?: ScopeAmendmentDerived[];
+};
+type CursorsStateParsed = z.infer<typeof cursorsStateSchema>;
+export type CursorsState = Omit<CursorsStateParsed, "amendmentSequence" | "pendingAmendment" | "derived"> & {
+  derived: DerivedState;
+  amendmentSequence?: number;
+  pendingAmendment?: PendingAmendment | null;
+};
 export type JournalEvent = z.infer<typeof journalEventSchema>;
 
 /**
@@ -839,7 +896,7 @@ export const initialCursors = (start: StartState, now = new Date().toISOString()
     issueCursor: { stepId: "R1.join", gateId: "gate-1-join", round: null },
     activeRoster: start.originalRoster,
     droppedAgents: [],
-    derived: { planSelection: null, implementationSelection: null, consensus: null },
+    derived: { planSelection: null, implementationSelection: null, consensus: null, scopeAmendments: [] },
     ownerQuestion: null,
     lastOwnerAnswer: null,
     publication: {
@@ -1222,9 +1279,8 @@ export const releaseResourceHold = (cursors: CursorsState, id: string, now: stri
  * closed for callers that cannot do that recomputation themselves.
  */
 export const invalidateDerivedForDrop = (derived: DerivedState, agent: string): DerivedState => {
-  void derived;
   void agent;
-  return { planSelection: null, implementationSelection: null, consensus: null };
+  return { planSelection: null, implementationSelection: null, consensus: null, scopeAmendments: [...(derived.scopeAmendments ?? [])] };
 };
 
 export const dropAgent = (cursors: CursorsState, agent: string, now = new Date().toISOString()): CursorsState => {

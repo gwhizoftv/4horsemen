@@ -285,9 +285,52 @@ Implement the selected product files.
       }
       expect(readJournal(paths).some((event) => event.type === "decision-derived")).toBe(true);
       expect(readJournal(paths).some((event) => event.type === "ballot-batch-published")).toBe(true);
+
+      // Claude requests an amendment to add an overlooked product file
+      {
+        const order = currentOrder("claude");
+        submit(
+          "claude",
+          JSON.stringify({
+            ...commonArtifact(order, "plan-amendment-request"),
+            actionId: order.actionId,
+            inputSetHash: computeInputSetHash(order.inputs),
+            scopeHash: order.scopeHash,
+            explanation: "Overlooked an additive product file needed to finish original scope.",
+            additionalPaths: [{ path: "src/product-extra.txt", reason: "extra requirement" }]
+          })
+        );
+      }
+      await loop.runTick();
+
+      expectStep("R4.amend-ballot");
+      for (const agent of activeAfterDrop) {
+        respond(agent, {
+          disposition: "approve",
+          rationale: "Addition is necessary."
+        });
+      }
+      await loop.runTick();
+
+      expectStep("R4.implement");
+      {
+        const state = readCursorsState(paths);
+        expect(state.derived.scopeAmendments).toHaveLength(1);
+        expect(
+          state.ballotBatches.some(
+            (batch) => batch.kind === "amendment-ballot-batch" && batch.status === "published"
+          )
+        ).toBe(true);
+        expect(readJournal(paths).some((event) => event.type === "amendment-derived")).toBe(true);
+      }
+
       for (const agent of activeAfterDrop) {
         const order = currentOrder(agent);
+        expect(order.approvedPaths).toContain("src/product-extra.txt");
         expect(order.inputs.map((input) => input.agent)).toEqual(["codex"]);
+        if (agent === "claude") {
+          commitAndPush(agent, "src/product-extra.txt", "extra product\n", "product extra");
+        }
         const pin = commitAndPush(agent, `src/product-${agent}.txt`, `${agent} product\n`, `product ${agent}`);
         submit(
           agent,
@@ -295,7 +338,8 @@ Implement the selected product files.
             ...commonArtifact(order, "implementation-ready"),
             inputSetHash: computeInputSetHash(order.inputs),
             implementationCommitSha: pin,
-            approvedPaths: order.approvedPaths
+            approvedPaths: order.approvedPaths,
+            scopeHash: order.scopeHash
           })
         );
       }
@@ -341,7 +385,8 @@ Implement the selected product files.
             inputSetHash: computeInputSetHash(order.inputs),
             round: 1,
             revisedBranchHead: revisionPin,
-            basedOn: order.inputs.map((input) => input.commitSha)
+            basedOn: order.inputs.map((input) => input.commitSha),
+            scopeHash: order.scopeHash
           })
         );
       }

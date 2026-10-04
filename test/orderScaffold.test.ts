@@ -152,6 +152,46 @@ describe("orderScaffold", () => {
       disposition: "approve",
       rationale: "<one sentence>"
     });
+
+    const amendment = artifactScaffoldValue({
+      stepId: "R4.amend-ballot",
+      issue: 1,
+      issueSessionId: "s",
+      agent: "claude",
+      baselineSha: "a".repeat(40),
+      automationDigest: "b".repeat(64),
+      inputs: [],
+      eligibleChoices: [],
+      round: 1,
+      approvedPaths: [],
+      actionId: "b2337d85-6617-4e9f-8ace-901453764aa4"
+    });
+    expect(amendment).toEqual({
+      actionId: "b2337d85-6617-4e9f-8ace-901453764aa4",
+      disposition: "approve",
+      rationale: "<one sentence>"
+    });
+  });
+
+  it("renders amendment request alternative scaffold for implementation and revision", () => {
+    const rendered = renderArtifactScaffold({
+      stepId: "R4.implement",
+      issue: 1,
+      issueSessionId: "s",
+      agent: "claude",
+      baselineSha: "a".repeat(40),
+      automationDigest: "b".repeat(64),
+      inputs: [],
+      eligibleChoices: [],
+      round: null,
+      approvedPaths: ["src/a.ts"],
+      scopeHash: "e".repeat(64),
+      hasApprovedAmendments: true
+    });
+    expect(rendered).toContain('"artifact": "implementation-ready"');
+    expect(rendered).toContain('"scopeHash": "' + "e".repeat(64) + '"');
+    expect(rendered).toContain("Alternatively, if overlooked files are discovered");
+    expect(rendered).toContain('"artifact": "plan-amendment-request"');
   });
 
   it("limits build discipline to planning, implementation, and revision tasks", () => {

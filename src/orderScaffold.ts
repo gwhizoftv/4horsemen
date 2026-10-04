@@ -13,6 +13,8 @@ export type ArtifactScaffoldContext = {
   round: number | null;
   approvedPaths: readonly string[];
   actionId?: string;
+  scopeHash?: string;
+  hasApprovedAmendments?: boolean;
 };
 
 const PLACEHOLDER_SHA = "<40-lowercase-hex-commit-sha>";
@@ -52,8 +54,15 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
       return {
         ...withHash(ctx),
         artifact: "implementation-ready",
+        ...(ctx.scopeHash !== undefined && ctx.hasApprovedAmendments ? { scopeHash: ctx.scopeHash } : {}),
         implementationCommitSha: PLACEHOLDER_SHA,
         approvedPaths: ctx.approvedPaths.length > 0 ? [...ctx.approvedPaths] : ["<path-from-selected-plan>"]
+      };
+    case "R4.amend-ballot":
+      return {
+        actionId: ctx.actionId ?? "<action-uuid>",
+        disposition: "approve",
+        rationale: "<one sentence>"
       };
     case "R5.compare-ballot":
       return {
@@ -65,6 +74,7 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
       return {
         ...withHash(ctx),
         artifact: "revision-ready",
+        ...(ctx.scopeHash !== undefined && ctx.hasApprovedAmendments ? { scopeHash: ctx.scopeHash } : {}),
         round: ctx.round ?? 1,
         revisedBranchHead: PLACEHOLDER_SHA,
         basedOn: ctx.inputs.map((input) => input.commitSha)
@@ -146,6 +156,20 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
   }
 };
 
+export const amendmentRequestScaffoldValue = (ctx: ArtifactScaffoldContext): Record<string, unknown> => ({
+  ...withHash(ctx),
+  artifact: "plan-amendment-request",
+  actionId: ctx.actionId ?? "<action-uuid>",
+  scopeHash: ctx.scopeHash ?? "<scope-hash>",
+  explanation: "<explain why the additional files are necessary for the agreed plan>",
+  additionalPaths: [
+    {
+      path: "<exact/repository/relative/file.ext>",
+      reason: "<why this specific file is needed>"
+    }
+  ]
+});
+
 export const renderArtifactScaffold = (ctx: ArtifactScaffoldContext): string => {
   const markdown = markdownHeadingScaffold(ctx);
   if (markdown !== "") return markdown;
@@ -153,9 +177,25 @@ export const renderArtifactScaffold = (ctx: ArtifactScaffoldContext): string => 
   if (value === null) return "";
   const json = JSON.stringify(value, null, 2);
   const isResponse =
-    ctx.stepId === "R3.plan-ballot" || ctx.stepId === "R5.compare-ballot" || ctx.stepId === "R6.ballot";
+    ctx.stepId === "R3.plan-ballot" ||
+    ctx.stepId === "R4.amend-ballot" ||
+    ctx.stepId === "R5.compare-ballot" ||
+    ctx.stepId === "R6.ballot";
   const preamble = isResponse
     ? `\n\nWrite this JSON to the response path (replace any \`<...>\` placeholders):\n\n`
     : `\n\nWrite this JSON to the required path (replace any \`<...>\` placeholders; keep bound citations and digests exact):\n\n`;
-  return preamble + "```json\n" + `${json}\n` + "```";
+  const primary = preamble + "```json\n" + `${json}\n` + "```";
+
+  if (ctx.stepId === "R4.implement" || ctx.stepId === "R6.revise") {
+    const altValue = amendmentRequestScaffoldValue(ctx);
+    const altJson = JSON.stringify(altValue, null, 2);
+    return (
+      primary +
+      "\n\nAlternatively, if overlooked files are discovered, publish a plan-amendment-request artifact to the same required path:\n\n" +
+      "```json\n" +
+      `${altJson}\n` +
+      "```"
+    );
+  }
+  return primary;
 };

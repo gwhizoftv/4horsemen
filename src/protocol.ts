@@ -88,6 +88,14 @@ export const consensusBallotResponseSchema = z
   })
   .strict();
 
+export const amendmentBallotResponseSchema = z
+  .object({
+    actionId: actionIdSchema,
+    disposition: z.enum(["approve", "revise"]),
+    rationale: rationaleSchema
+  })
+  .strict();
+
 /** Coordinator-published canonical plan ballot (protocol version 2). */
 export const planBallotArtifactSchema = z
   .object({
@@ -99,11 +107,56 @@ export const planBallotArtifactSchema = z
   })
   .strict();
 
+export const amendmentPathSchema = z
+  .string()
+  .min(1)
+  .max(1024)
+  .refine(
+    (path) => {
+      if (path.startsWith("/")) return false;
+      const segments = path.split("/");
+      if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) return false;
+      if (path === ".git" || path.startsWith(".git/")) return false;
+      if (path.startsWith(".plans/") || path.startsWith(".signals/") || path.startsWith(".code-reviews/")) return false;
+      if (path.endsWith("/")) return false;
+      if (/[*?{}[\]]/.test(path)) return false;
+      return true;
+    },
+    "expected a safe, literal repository file path outside git metadata and coordination namespaces"
+  );
+
+export const additionalPathEntrySchema = z
+  .object({
+    path: amendmentPathSchema,
+    reason: z.string().trim().min(1)
+  })
+  .strict();
+
+export const planAmendmentRequestSchema = z
+  .object({
+    ...commonArtifactFields,
+    artifact: z.literal("plan-amendment-request"),
+    actionId: actionIdSchema,
+    inputSetHash: digestSchema,
+    scopeHash: digestSchema,
+    explanation: z.string().trim().min(1),
+    additionalPaths: z.array(additionalPathEntrySchema).min(1)
+  })
+  .strict()
+  .refine(
+    (request) => {
+      const paths = request.additionalPaths.map((e) => e.path);
+      return new Set(paths).size === paths.length;
+    },
+    { path: ["additionalPaths"], message: "amendment paths must be unique" }
+  );
+
 export const implementationReadyArtifactSchema = z
   .object({
     ...commonArtifactFields,
     artifact: z.literal("implementation-ready"),
     inputSetHash: digestSchema,
+    scopeHash: digestSchema.optional(),
     implementationCommitSha: gitShaSchema,
     approvedPaths: z.array(repositoryPathSchema).min(1)
   })
@@ -124,6 +177,7 @@ export const revisionReadyArtifactSchema = z
     ...commonArtifactFields,
     artifact: z.literal("revision-ready"),
     inputSetHash: digestSchema,
+    scopeHash: digestSchema.optional(),
     round: z.number().int().min(1),
     revisedBranchHead: gitShaSchema,
     basedOn: z.array(gitShaSchema).min(1)
@@ -138,6 +192,17 @@ export const consensusBallotArtifactSchema = z
     round: z.number().int().min(1),
     revisionCommitSha: gitShaSchema,
     disposition: z.enum(["approve", "revise", "escalate"])
+  })
+  .strict();
+
+export const amendmentBallotArtifactSchema = z
+  .object({
+    ...commonPublishedBallotFields,
+    artifact: z.literal("amendment-ballot"),
+    sequence: z.number().int().min(1),
+    request: artifactCitationSchema,
+    plans: z.array(artifactCitationSchema).min(1),
+    disposition: z.enum(["approve", "revise"])
   })
   .strict();
 
@@ -161,21 +226,27 @@ export const finalizationArtifactSchema = z
 export const publishedArtifactSchema = z.discriminatedUnion("artifact", [
   participationReadyArtifactSchema,
   planBallotArtifactSchema,
+  planAmendmentRequestSchema,
   implementationReadyArtifactSchema,
   comparisonBallotArtifactSchema,
   revisionReadyArtifactSchema,
   consensusBallotArtifactSchema,
+  amendmentBallotArtifactSchema,
   finalizationArtifactSchema
 ]);
 
 export type ParticipationReadyArtifact = z.infer<typeof participationReadyArtifactSchema>;
 export type PlanComparisonBallotResponse = z.infer<typeof planComparisonBallotResponseSchema>;
 export type ConsensusBallotResponse = z.infer<typeof consensusBallotResponseSchema>;
+export type AmendmentBallotResponse = z.infer<typeof amendmentBallotResponseSchema>;
 export type PlanBallotArtifact = z.infer<typeof planBallotArtifactSchema>;
+export type AdditionalPathEntry = z.infer<typeof additionalPathEntrySchema>;
+export type PlanAmendmentRequest = z.infer<typeof planAmendmentRequestSchema>;
 export type ImplementationReadyArtifact = z.infer<typeof implementationReadyArtifactSchema>;
 export type ComparisonBallotArtifact = z.infer<typeof comparisonBallotArtifactSchema>;
 export type RevisionReadyArtifact = z.infer<typeof revisionReadyArtifactSchema>;
 export type ConsensusBallotArtifact = z.infer<typeof consensusBallotArtifactSchema>;
+export type AmendmentBallotArtifact = z.infer<typeof amendmentBallotArtifactSchema>;
 export type FinalizationArtifact = z.infer<typeof finalizationArtifactSchema>;
 export type PublishedArtifact = z.infer<typeof publishedArtifactSchema>;
 

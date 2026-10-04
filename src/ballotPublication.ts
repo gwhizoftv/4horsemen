@@ -4,11 +4,13 @@ import { sha256 } from "./hash.js";
 import { GitCommandError, isTransientGitFailure, runGitCommand } from "./mirror.js";
 import { RESERVED_EVIDENCE_AGENT } from "./paths.js";
 import {
+  amendmentBallotArtifactSchema,
   comparisonBallotArtifactSchema,
   consensusBallotArtifactSchema,
   gitShaSchema,
   planBallotArtifactSchema,
   repositoryPathSchema,
+  type AmendmentBallotArtifact,
   type ComparisonBallotArtifact,
   type ConsensusBallotArtifact,
   type PlanBallotArtifact
@@ -21,7 +23,11 @@ export const COORDINATOR_EVIDENCE_AUTHOR = {
   email: "coordination@local"
 } as const;
 
-export type BallotBatchKind = "plan-ballot-batch" | "comparison-ballot-batch" | "consensus-ballot-batch";
+export type BallotBatchKind =
+  | "plan-ballot-batch"
+  | "comparison-ballot-batch"
+  | "consensus-ballot-batch"
+  | "amendment-ballot-batch";
 
 export type BallotBatchStatus = "pending" | "published" | "failed" | "invalidated";
 
@@ -171,11 +177,13 @@ export const canonicalBallotPath = (
 ): string => {
   if (kind === "plan-ballot-batch") return `.plans/issue-${issue}/ballot-${agent}.json`;
   if (kind === "comparison-ballot-batch") return `.code-reviews/issue-${issue}/ballot-${agent}.json`;
+  if (kind === "amendment-ballot-batch") return `.plans/issue-${issue}/amendment-ballot-${agent}-seq-${round ?? 1}.json`;
   return `.code-reviews/issue-${issue}/consensus-ballot-${agent}-round-${round ?? 1}.json`;
 };
 
 export const ballotBatchKindForStep = (stepId: WorkflowStepId): BallotBatchKind => {
   if (stepId === "R3.plan-ballot") return "plan-ballot-batch";
+  if (stepId === "R4.amend-ballot") return "amendment-ballot-batch";
   if (stepId === "R5.compare-ballot") return "comparison-ballot-batch";
   if (stepId === "R6.ballot") return "consensus-ballot-batch";
   throw new Error(`Step ${stepId} is not a ballot batch step.`);
@@ -186,7 +194,12 @@ export const evidenceCommitMessage = (
   issue: number,
   round: number | null
 ): string => {
-  const roundSuffix = kind === "consensus-ballot-batch" ? ` round ${round ?? 1}` : "";
+  const roundSuffix =
+    kind === "consensus-ballot-batch"
+      ? ` round ${round ?? 1}`
+      : kind === "amendment-ballot-batch"
+        ? ` sequence ${round ?? 1}`
+        : "";
   return `Coordinator: publish ${kind} evidence for issue ${issue}${roundSuffix}`;
 };
 
@@ -300,6 +313,35 @@ export const buildCanonicalConsensusBallot = (input: {
     disposition: input.disposition
   });
 
+export const buildCanonicalAmendmentBallot = (input: {
+  issue: number;
+  issueSessionId: string;
+  agent: string;
+  actionId: string;
+  responseSha256: string;
+  rationale: string;
+  disposition: "approve" | "revise";
+  inputSetHash: string;
+  sequence: number;
+  request: ArtifactCitation;
+  plans: readonly ArtifactCitation[];
+}): AmendmentBallotArtifact =>
+  amendmentBallotArtifactSchema.parse({
+    protocolVersion: 2,
+    issue: input.issue,
+    issueSessionId: input.issueSessionId,
+    agent: input.agent,
+    inputSetHash: input.inputSetHash,
+    actionId: input.actionId,
+    responseSha256: input.responseSha256,
+    rationale: input.rationale,
+    artifact: "amendment-ballot",
+    sequence: input.sequence,
+    request: input.request,
+    plans: sortCitations(input.plans),
+    disposition: input.disposition
+  });
+
 /** Build the path → canonical-bytes map for one completed active-roster batch. */
 export const buildBallotBatchFileMap = (input: {
   kind: BallotBatchKind;
@@ -324,7 +366,11 @@ export const buildBallotBatchFileMap = (input: {
 
   return ordered.map((response) => {
     const path = canonicalBallotPath(input.kind, input.issue, response.agent, input.round);
-    let artifact: PlanBallotArtifact | ComparisonBallotArtifact | ConsensusBallotArtifact;
+    let artifact:
+      | PlanBallotArtifact
+      | ComparisonBallotArtifact
+      | ConsensusBallotArtifact
+      | AmendmentBallotArtifact;
     if (input.kind === "plan-ballot-batch") {
       if (response.choice === undefined) {
         throw new Error(`Plan ballot for ${response.agent} is missing choice.`);
@@ -355,6 +401,34 @@ export const buildBallotBatchFileMap = (input: {
         choice: response.choice,
         inputSetHash: input.inputSetHash,
         implementations: citationsFromBoundInputs(input.boundInputs, "implementation")
+      });
+    } else if (input.kind === "amendment-ballot-batch") {
+      if (response.disposition === undefined || (response.disposition !== "approve" && response.disposition !== "revise")) {
+        throw new Error(`Amendment ballot for ${response.agent} is missing valid disposition.`);
+      }
+      const requestInput = input.boundInputs.find((bound) => bound.kind === "amendment-request");
+      if (requestInput === undefined) {
+        throw new Error("An amendment ballot batch requires a bound amendment-request pin.");
+      }
+      artifact = buildCanonicalAmendmentBallot({
+        issue: input.issue,
+        issueSessionId: input.issueSessionId,
+        agent: response.agent,
+        actionId: response.actionId,
+        responseSha256: response.responseSha256,
+        rationale: response.rationale,
+        disposition: response.disposition,
+        inputSetHash: input.inputSetHash,
+        sequence: input.round ?? 1,
+        request: {
+          agent: requestInput.agent,
+          commitSha: requestInput.commitSha,
+          path: requestInput.path
+        },
+        plans: [
+          ...citationsFromBoundInputs(input.boundInputs, "plan"),
+          ...citationsFromBoundInputs(input.boundInputs, "selected-plan")
+        ]
       });
     } else {
       if (response.disposition === undefined) {

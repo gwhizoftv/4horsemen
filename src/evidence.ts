@@ -6,11 +6,42 @@ import {
   implementationReadyArtifactSchema,
   participationReadyArtifactSchema,
   parseJsonWithSchema,
+  planAmendmentRequestSchema,
   revisionReadyArtifactSchema,
   validateCommonArtifactFields
 } from "./protocol.js";
 import type { BoundInput, EvidenceObservation, InternalOrder } from "./steps.js";
 import type { PinValidationResult } from "./pinValidation.js";
+
+export const computeScopeHash = (input: {
+  selectedPlans: readonly { agent: string; commitSha: string; path: string }[];
+  effectivePaths: readonly string[];
+  scopeAmendments?: readonly {
+    sequence: number;
+    decisionId: string;
+    batchCommitSha: string;
+    proposalSha: string;
+  }[];
+}): string => {
+  const sortedPlans = [...input.selectedPlans]
+    .sort((a, b) => `${a.agent}\0${a.commitSha}\0${a.path}`.localeCompare(`${b.agent}\0${b.commitSha}\0${b.path}`))
+    .map((p) => `${p.agent}:${p.commitSha}:${p.path}`);
+  const sortedPaths = [...new Set(input.effectivePaths)].sort();
+  const amendments = (input.scopeAmendments ?? []).map((a) =>
+    `${a.sequence}:${a.decisionId}:${a.batchCommitSha}:${a.proposalSha}`
+  );
+  return sha256(
+    [
+      "coord-scope-v1",
+      String(sortedPlans.length),
+      ...sortedPlans,
+      String(sortedPaths.length),
+      ...sortedPaths,
+      String(amendments.length),
+      ...amendments
+    ].join("\n")
+  );
+};
 
 export type EvidenceMirror = {
   fetchBranch(branch: string): Promise<FetchResult>;
@@ -229,6 +260,90 @@ const pinErrors = async (
   return outstanding;
 };
 
+export const validateAmendmentRequestPath = (
+  path: string,
+  approvedPaths: readonly string[]
+): string[] => {
+  const errors: string[] = [];
+  if (path.startsWith("/")) errors.push(`amendment path cannot be absolute: ${path}`);
+  const segments = path.split("/");
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    errors.push(`amendment path cannot contain empty or dot segments: ${path}`);
+  }
+  if (path === ".git" || path.startsWith(".git/")) {
+    errors.push(`amendment path cannot refer to git metadata: ${path}`);
+  }
+  if (
+    path.startsWith(".plans/") ||
+    path.startsWith(".signals/") ||
+    path.startsWith(".code-reviews/")
+  ) {
+    errors.push(`amendment path cannot be in coordination artifact namespaces: ${path}`);
+  }
+  if (path.endsWith("/")) {
+    errors.push(`amendment paths must be explicit files, not directories: ${path}`);
+  }
+  if (path.includes("*") || path.includes("?") || path.includes("{") || path.includes("}")) {
+    errors.push(`amendment paths must be literal paths, not patterns: ${path}`);
+  }
+  if (matchesApprovedPath(path, approvedPaths)) {
+    errors.push(`amendment path is already covered by the approved file map: ${path}`);
+  }
+  return errors;
+};
+
+const evaluateAmendmentRequest = (
+  order: InternalOrder,
+  submissionSha: string,
+  raw: string
+): EvidenceObservation | null => {
+  let isRequest = false;
+  try {
+    const rawParsed = JSON.parse(raw) as { artifact?: unknown };
+    isRequest = rawParsed.artifact === "plan-amendment-request";
+  } catch {
+    return null;
+  }
+  if (!isRequest) return null;
+
+  const parsed = parseJsonWithSchema(raw, planAmendmentRequestSchema);
+  if (!parsed.ok) {
+    return rejected(order, submissionSha, [`invalid plan-amendment-request artifact: ${parsed.error}`]);
+  }
+  const errors: string[] = [
+    ...commonErrors(parsed.value, order),
+    ...inputHashErrors(parsed.value.inputSetHash, order)
+  ];
+  if (parsed.value.actionId !== order.actionId) {
+    errors.push(`artifact actionId does not match current action ${order.actionId}`);
+  }
+  if (order.scopeHash !== undefined && parsed.value.scopeHash !== order.scopeHash) {
+    errors.push("plan-amendment-request scopeHash does not match the current scope hash");
+  }
+  if (parsed.value.explanation.trim().length === 0) {
+    errors.push("plan-amendment-request explanation cannot be blank");
+  }
+  const seenPaths = new Set<string>();
+  for (const entry of parsed.value.additionalPaths) {
+    if (seenPaths.has(entry.path)) {
+      errors.push(`plan-amendment-request contains duplicate path: ${entry.path}`);
+    }
+    seenPaths.add(entry.path);
+    if (entry.reason.trim().length === 0) {
+      errors.push(`necessity reason for path ${entry.path} cannot be blank`);
+    }
+    errors.push(...validateAmendmentRequestPath(entry.path, order.approvedPaths));
+  }
+
+  if (errors.length > 0) {
+    return rejected(order, submissionSha, errors);
+  }
+  return {
+    ...satisfied(order, submissionSha),
+    amendmentRequest: parsed.value
+  };
+};
+
 export const evaluateEvidence = async (
   order: InternalOrder,
   submissionSha: string,
@@ -300,6 +415,9 @@ export const evaluateEvidence = async (
   }
 
   if (order.evidenceId === "implementation-pinned") {
+    const amendmentObs = evaluateAmendmentRequest(order, submissionSha, blob);
+    if (amendmentObs !== null) return amendmentObs;
+
     const parsed = parseJsonWithSchema(blob, implementationReadyArtifactSchema);
     if (!parsed.ok) return rejected(order, submissionSha, [`invalid implementation-ready artifact: ${parsed.error}`]);
     const errors = [
@@ -307,6 +425,13 @@ export const evaluateEvidence = async (
       ...inputHashErrors(parsed.value.inputSetHash, order),
       ...(await pinErrors(parsed.value.implementationCommitSha, submissionSha, fetched.ref, order, mirror))
     ];
+    if (parsed.value.scopeHash !== undefined) {
+      if (order.scopeHash !== undefined && parsed.value.scopeHash !== order.scopeHash) {
+        errors.push("artifact scopeHash does not match the current scope hash");
+      }
+    } else if (order.hasApprovedAmendments) {
+      errors.push("scopeHash is required after plan amendments have been approved");
+    }
     const approved = order.approvedPaths.length === 0 ? parsed.value.approvedPaths : order.approvedPaths;
     if (JSON.stringify([...parsed.value.approvedPaths].sort()) !== JSON.stringify([...approved].sort())) {
       errors.push("implementation approvedPaths do not match the selected plan file map");
@@ -324,6 +449,9 @@ export const evaluateEvidence = async (
   }
 
   if (order.evidenceId === "revision-pinned") {
+    const amendmentObs = evaluateAmendmentRequest(order, submissionSha, blob);
+    if (amendmentObs !== null) return amendmentObs;
+
     const parsed = parseJsonWithSchema(blob, revisionReadyArtifactSchema);
     if (!parsed.ok) return rejected(order, submissionSha, [`invalid revision-ready artifact: ${parsed.error}`]);
     const errors = [
@@ -331,6 +459,13 @@ export const evaluateEvidence = async (
       ...inputHashErrors(parsed.value.inputSetHash, order),
       ...(await pinErrors(parsed.value.revisedBranchHead, submissionSha, fetched.ref, order, mirror))
     ];
+    if (parsed.value.scopeHash !== undefined) {
+      if (order.scopeHash !== undefined && parsed.value.scopeHash !== order.scopeHash) {
+        errors.push("artifact scopeHash does not match the current scope hash");
+      }
+    } else if (order.hasApprovedAmendments) {
+      errors.push("scopeHash is required after plan amendments have been approved");
+    }
     if (parsed.value.round !== order.round) errors.push(`revision round must be ${order.round ?? 1}`);
     const expectedPins = order.inputs.map((input) => input.commitSha).sort();
     if (JSON.stringify([...parsed.value.basedOn].sort()) !== JSON.stringify(expectedPins)) errors.push("revision basedOn pins do not equal bound inputs");

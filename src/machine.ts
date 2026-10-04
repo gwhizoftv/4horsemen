@@ -28,7 +28,7 @@ const globalOrder: readonly WorkflowStepId[] = [
   "R7.finalize"
 ];
 
-const ballotSteps = new Set<WorkflowStepId>(["R3.plan-ballot", "R5.compare-ballot", "R6.ballot"]);
+const ballotSteps = new Set<WorkflowStepId>(["R3.plan-ballot", "R4.amend-ballot", "R5.compare-ballot", "R6.ballot"]);
 
 const effectiveProfile = (start: StartState, cursors: CursorsState): WorkflowProfile =>
   cursors.activeRoster.length === 1 ? "solo" : start.profile;
@@ -37,6 +37,7 @@ const normalizeCurrentStep = (
   current: WorkflowStepId,
   profile: WorkflowProfile
 ): WorkflowStepId | null => {
+  if (current === "R4.amend-ballot") return current;
   const sequence = stepsForProfile(profile);
   if (sequence.includes(current)) return current;
   const currentRank = globalOrder.indexOf(current);
@@ -60,7 +61,7 @@ const hasResponse = (cursors: CursorsState, stepId: WorkflowStepId, agent: strin
   );
 
 const batchKindFor = (stepId: WorkflowStepId): AcceptedResponse["stepId"] | null => {
-  if (stepId === "R3.plan-ballot" || stepId === "R5.compare-ballot" || stepId === "R6.ballot") return stepId;
+  if (stepId === "R3.plan-ballot" || stepId === "R4.amend-ballot" || stepId === "R5.compare-ballot" || stepId === "R6.ballot") return stepId;
   return null;
 };
 
@@ -68,13 +69,22 @@ const hasPublishedBatch = (cursors: CursorsState, stepId: WorkflowStepId, round:
   const kind =
     stepId === "R3.plan-ballot"
       ? "plan-ballot-batch"
-      : stepId === "R5.compare-ballot"
-        ? "comparison-ballot-batch"
-        : stepId === "R6.ballot"
-          ? "consensus-ballot-batch"
-          : null;
+      : stepId === "R4.amend-ballot"
+        ? "amendment-ballot-batch"
+        : stepId === "R5.compare-ballot"
+          ? "comparison-ballot-batch"
+          : stepId === "R6.ballot"
+            ? "consensus-ballot-batch"
+            : null;
   if (kind === null) return true;
-  if (stepId !== "R3.plan-ballot" && stepId !== "R5.compare-ballot" && stepId !== "R6.ballot") return true;
+  if (
+    stepId !== "R3.plan-ballot" &&
+    stepId !== "R4.amend-ballot" &&
+    stepId !== "R5.compare-ballot" &&
+    stepId !== "R6.ballot"
+  ) {
+    return true;
+  }
   const closed = cursors.activeRoster.map((agent) =>
     cursors.acceptedResponses.find(
       (response) => response.stepId === stepId && response.agent === agent && response.round === round
@@ -148,7 +158,8 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
         ...(observation.disposition === undefined ? {} : { disposition: observation.disposition }),
         ...(observation.approvedPaths === undefined ? {} : { approvedPaths: observation.approvedPaths }),
         ...(observation.choice === undefined ? {} : { choice: observation.choice }),
-        ...(observation.checkResults === undefined ? {} : { checkResults: observation.checkResults })
+        ...(observation.checkResults === undefined ? {} : { checkResults: observation.checkResults }),
+        ...(observation.amendmentRequest === undefined ? {} : { amendmentRequest: observation.amendmentRequest })
       });
     }
   }
@@ -211,7 +222,12 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
               : cursors.activeRoster[0]
         : cursors.activeRoster[0];
   const participants = participantsForStep(current, profile, cursors.activeRoster, designated);
-  const round = current.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+  const round =
+    current === "R4.amend-ballot"
+      ? (cursors.issueCursor.round ?? ((cursors.amendmentSequence ?? 0) > 0 ? (cursors.amendmentSequence ?? 1) : 1))
+      : current.startsWith("R6.")
+        ? (cursors.issueCursor.round ?? 1)
+        : null;
   const complete = participants.every((agent) =>
     ballotSteps.has(current) ? hasResponse(cursors, current, agent, round) : hasAccepted(cursors, current, agent, round)
   );
@@ -222,11 +238,24 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
         (batch) =>
           batch.status === "pending" &&
           ((current === "R3.plan-ballot" && batch.kind === "plan-ballot-batch") ||
+            (current === "R4.amend-ballot" && batch.kind === "amendment-ballot-batch" && batch.round === round) ||
             (current === "R5.compare-ballot" && batch.kind === "comparison-ballot-batch") ||
             (current === "R6.ballot" && batch.kind === "consensus-ballot-batch" && batch.round === round))
       );
       if (pending) return [{ type: "wait", reason: "ballot evidence publication pending" }];
       return [{ type: "publish-ballot-batch", stepId: current, round }];
+    }
+
+    if (current === "R4.amend-ballot") {
+      const ballots = cursors.acceptedResponses.filter(
+        (response) => response.stepId === current && response.round === round && participants.includes(response.agent)
+      );
+      const unanimousApprove = ballots.every((b) => b.disposition === "approve");
+      if (unanimousApprove) {
+        return [{ type: "derive-scope-amendment", sequence: round ?? 1 }];
+      } else {
+        return [{ type: "reject-scope-amendment", sequence: round ?? 1 }];
+      }
     }
 
     if (current === "R6.ballot") {

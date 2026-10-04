@@ -118,9 +118,11 @@ const publishedBallotBatchFixture = (input: {
     paths: input.activeRoster.map((agent) =>
       input.kind === "plan-ballot-batch"
         ? `.plans/issue-1/ballot-${agent}.json`
-        : input.kind === "comparison-ballot-batch"
-          ? `.code-reviews/issue-1/ballot-${agent}.json`
-          : `.code-reviews/issue-1/consensus-ballot-${agent}-round-${round ?? 1}.json`
+        : input.kind === "amendment-ballot-batch"
+          ? `.plans/issue-1/amendment-ballot-${agent}-seq-${round ?? 1}.json`
+          : input.kind === "comparison-ballot-batch"
+            ? `.code-reviews/issue-1/ballot-${agent}.json`
+            : `.code-reviews/issue-1/consensus-ballot-${agent}-round-${round ?? 1}.json`
     ),
     branch: "issue-1/coordinator-evidence",
     parentSha: input.parentSha ?? gitShaFixture("a"),
@@ -2967,4 +2969,165 @@ describe("coordinator-resolved change scope", () => {
     expect(order.contextPaths).toEqual(["docs/repo-map.md"]);
     expect(order.changeScope).toEqual([]);
   });
+
+  it("processes plan amendment detour, batch publication, approval derivation, and resume with expanded approved paths", async () => {
+    const { paths } = fixture();
+    const now = "2026-08-11T17:00:00.000Z";
+    const planSha = "1".repeat(40);
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
+        accepted: [
+          {
+            stepId: "R2.plan",
+            agent: "claude",
+            round: null,
+            submissionSha: planSha,
+            path: ".plans/issue-1/plan.md",
+            approvedPaths: ["src/product.ts"],
+            acceptedAt: now
+          },
+          {
+            stepId: "R2.plan",
+            agent: "codex",
+            round: null,
+            submissionSha: planSha,
+            path: ".plans/issue-1/plan.md",
+            approvedPaths: ["src/product.ts"],
+            acceptedAt: now
+          }
+        ],
+        derived: {
+          ...current.derived,
+          planSelection: {
+            kind: "plan-selection",
+            algorithm: "plurality-active-roster-v1",
+            inputSetHash: "d".repeat(64),
+            activeRoster: ["claude", "codex"],
+            inputs: [
+              { kind: "plan", agent: "claude", submissionSha: planSha, path: ".plans/issue-1/plan.md" }
+            ],
+            decisionId: `plan-selection:${"d".repeat(64)}`,
+            supersedes: null,
+            decidedAt: now,
+            selectedAgents: ["claude"]
+          }
+        },
+        agents: {
+          ...current.agents,
+          claude: { ...current.agents.claude, stepId: "R4.implement", status: "ordered", actionId: actionIdFor("claude") },
+          codex: { ...current.agents.codex, stepId: "R4.implement", status: "ordered", actionId: actionIdFor("codex") }
+        },
+        updatedAt: now
+      })
+    );
+
+    const mirror = { readBlob: async () => "## Exact File List to be changed or deleted\n- `src/product.ts`\n" };
+
+    // Initial approved paths before amendment:
+    const initialApproved = await resolveApprovedPaths(mirror, readCursorsState(paths), "R4.implement");
+    expect(initialApproved).toEqual(["src/product.ts"]);
+
+    // Test derivation directly with applyDecisions / derive-scope-amendment
+    const pendingAmend = {
+      sequence: 1,
+      agent: "claude" as const,
+      actionId: actionIdFor("claude"),
+      submissionSha: "2".repeat(40),
+      sourceStep: "R4.implement" as const,
+      sourceRound: null,
+      scopeHash: "3".repeat(64),
+      explanation: "need unit test file",
+      additionalPaths: [{ path: "test/product.test.ts", reason: "unit tests" }],
+      proposedAt: now
+    };
+    const batch = publishedBallotBatchFixture({
+      kind: "amendment-ballot-batch",
+      activeRoster: ["claude", "codex"],
+      round: 1,
+      commitSha: "4".repeat(40)
+    });
+
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R4.amend-ballot", gateId: "gate-4-implementations", round: 1 },
+        pendingAmendment: pendingAmend,
+        amendmentSequence: 1,
+        ballotBatches: [batch],
+        evidence: { branch: "issue-1/coordinator-evidence", tip: "4".repeat(40) },
+        acceptedResponses: [
+          acceptedResponseFixture({ stepId: "R4.amend-ballot", agent: "claude", round: 1, disposition: "approve" }),
+          acceptedResponseFixture({ stepId: "R4.amend-ballot", agent: "codex", round: 1, disposition: "approve" })
+        ]
+      })
+    );
+
+    // Run tick - will derive scope amendment and resume R4.implement
+    const loop = new CoordinatorRunLoop(paths, { tmux: null, log: () => undefined });
+    await loop.runTick();
+
+    const afterDerive = readCursorsState(paths);
+    expect(afterDerive.issueCursor.stepId).toBe("R4.implement");
+    expect(afterDerive.pendingAmendment).toBeNull();
+    expect(afterDerive.derived.scopeAmendments).toHaveLength(1);
+    expect(afterDerive.derived.scopeAmendments?.[0]?.addedPaths).toEqual(["test/product.test.ts"]);
+
+    // Approved paths now includes the newly approved amendment path!
+    const expandedApproved = await resolveApprovedPaths(mirror, afterDerive, "R4.implement");
+    expect(expandedApproved).toEqual(["src/product.ts", "test/product.test.ts"]);
+
+    // Order built for R4.implement carries expanded approved paths and hasApprovedAmendments flag
+    const order = buildOrder(paths, readStartState(paths), afterDerive, "claude", "R4.implement", null);
+    expect(order.approvedPaths).toEqual(["src/product.ts", "test/product.test.ts"]);
+    expect(order.hasApprovedAmendments).toBe(true);
+
+    // Test rejection: when disposition is revise, reject-scope-amendment resumes R4.implement with outstanding reasons
+    const rejectedBatch = publishedBallotBatchFixture({
+      kind: "amendment-ballot-batch",
+      activeRoster: ["claude", "codex"],
+      round: 2,
+      commitSha: "5".repeat(40)
+    });
+    const secondPending = {
+      ...pendingAmend,
+      sequence: 2,
+      additionalPaths: [{ path: "test/unnecessary.ts", reason: "not needed" }]
+    };
+    mutateCursorsState(paths, (current) =>
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R4.amend-ballot", gateId: "gate-4-implementations", round: 2 },
+        pendingAmendment: secondPending,
+        amendmentSequence: 2,
+        ballotBatches: [...current.ballotBatches, rejectedBatch],
+        evidence: { branch: "issue-1/coordinator-evidence", tip: "5".repeat(40) },
+        acceptedResponses: [
+          ...current.acceptedResponses,
+          acceptedResponseFixture({ stepId: "R4.amend-ballot", agent: "claude", round: 2, disposition: "approve" }),
+          acceptedResponseFixture({
+            stepId: "R4.amend-ballot",
+            agent: "codex",
+            round: 2,
+            disposition: "revise",
+            rationale: "path is unnecessary"
+          })
+        ]
+      })
+    );
+
+    await loop.runTick();
+
+    const afterReject = readCursorsState(paths);
+    expect(afterReject.issueCursor.stepId).toBe("R4.implement");
+    expect(afterReject.pendingAmendment).toBeNull();
+    // Scope amendments did not increase
+    expect(afterReject.derived.scopeAmendments).toHaveLength(1);
+    // Requester has rejection reason in outstanding
+    expect(afterReject.agents.claude?.outstanding.join(" ")).toContain("Plan amendment rejected by codex: path is unnecessary");
+    // Approved paths unchanged from previous expansion
+    expect(await resolveApprovedPaths(mirror, afterReject, "R4.implement")).toEqual(["src/product.ts", "test/product.test.ts"]);
+  });
 });
+

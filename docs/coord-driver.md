@@ -435,6 +435,32 @@ implementation, and later rounds bind only the preceding accepted revision.
 When drops leave one active agent, future unresolved work degrades to the solo
 sequence. Completed historical gates and immutable product pins are retained.
 
+## Plan amendment detour
+
+During implementation (`R4.implement`) or revision (`R6.revise`), if an agent
+discovers that completing the selected plan requires changes outside the
+previously approved file map, it may propose an amendment via an alternate
+artifact (`.plans/issue-<n>/plan-amendment-request-<agent>.json`).
+
+The coordinator verifies the request, enters internal step `R4.amend-ballot`,
+and pauses the source implementation work. All active agents submit private
+ballot responses (`approve` or `revise`). Once every active agent's response is
+accepted, the coordinator publishes an `amendment-ballot-batch` commit to
+`issue-<n>/coordinator-evidence`.
+
+- **Unanimous approval (`approve`)**: The proposed additional paths are derived
+  into the issue's scope amendments, expanding `approvedPaths` for the issue.
+  The coordinator resumes the source step (`R4.implement` or `R6.revise`) at the
+  saved round with reissued action orders citing the approved scope evidence.
+- **Rejection (`revise`)**: Any `revise` vote rejects the amendment. The
+  approved scope remains unchanged. The requester receives the voters' rejection
+  reasons in its resumed action order under outstanding issues.
+- **Preservation and Drops**: Previously approved amendments remain valid as long
+  as the selected plan is unchanged. If a drop occurs during a pending amendment,
+  the pending ballot is cancelled and work resumes at the source step. If a drop
+  causes plan reselection, historical scope amendments for the prior plan are
+  cleared.
+
 ## Owner controls
 
 Every issue command accepts either an explicit workspace `--coord-root` or an

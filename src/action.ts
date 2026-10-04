@@ -136,6 +136,14 @@ const inputText = (order: InternalOrder): string =>
         .map((input) => `- ${input.kind} from ${input.agent}: \`${input.commitSha}\` at \`${input.path}\``)
         .join("\n");
 
+const scopeEvidenceText = (order: InternalOrder): string => {
+  if (order.scopeEvidence === undefined || order.scopeEvidence.length === 0) return "";
+  const lines = order.scopeEvidence.map(
+    (input) => `- ${input.kind} from ${input.agent}: \`${input.commitSha}\` at \`${input.path}\``
+  );
+  return `\n\nApproved scope amendment evidence:\n\n${lines.join("\n")}`;
+};
+
 const renderGitAction = (order: InternalOrder): string => {
   if (order.requiredPath === "") throw new Error("Git action requires requiredPath.");
   repositoryPathSchema.parse(order.requiredPath);
@@ -155,7 +163,7 @@ Publish the required artifact at:
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${scopeEvidenceText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
 
 Push the commit containing the artifact to \`${order.branch}\`. Then write that
 exact 40-character lowercase commit SHA as the sole contents of:
@@ -202,7 +210,7 @@ inputs from the files listed below.
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${eligible}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${scopeEvidenceText(order)}${eligible}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
 
 After writing the marker, keep this file. Before waiting for more input, re-read
 it. If \`actionId\` in the front matter has changed, execute the new instructions

@@ -27,7 +27,13 @@ import type { BoundInput, MaterializedInputEntry, MaterializedInputs, Materializ
  * Bound inputs whose `commitSha`/`path` names a coordination document. These are
  * small, and are exported as files.
  */
-export const MATERIALIZED_MARKDOWN_KINDS: ReadonlySet<string> = new Set(["plan", "review", "selected-plan"]);
+export const MATERIALIZED_MARKDOWN_KINDS: ReadonlySet<string> = new Set([
+  "plan",
+  "review",
+  "selected-plan",
+  "amendment-request",
+  "amendment-ballot"
+]);
 
 /**
  * Bound inputs whose `commitSha` is a product pin. These are exported as

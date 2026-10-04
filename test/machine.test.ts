@@ -65,9 +65,11 @@ const publishedBallotBatchFixture = (input: {
     paths: input.activeRoster.map((agent) =>
       input.kind === "plan-ballot-batch"
         ? `.plans/issue-1/ballot-${agent}.json`
-        : input.kind === "comparison-ballot-batch"
-          ? `.code-reviews/issue-1/ballot-${agent}.json`
-          : `.code-reviews/issue-1/consensus-ballot-${agent}-round-${round ?? 1}.json`
+        : input.kind === "amendment-ballot-batch"
+          ? `.plans/issue-1/amendment-ballot-${agent}-seq-${round ?? 1}.json`
+          : input.kind === "comparison-ballot-batch"
+            ? `.code-reviews/issue-1/ballot-${agent}.json`
+            : `.code-reviews/issue-1/consensus-ballot-${agent}-round-${round ?? 1}.json`
     ),
     branch: "issue-1/coordinator-evidence",
     parentSha: gitSha("a"),
@@ -429,4 +431,97 @@ describe("pure workflow machine", () => {
       }
     ]);
   });
+
+  it("table-drives R4.amend-ballot participation, missing responses, publish batch, and approve/revise outcomes", () => {
+    const base = initialCursors(start, now);
+    const amendStep = { stepId: "R4.amend-ballot" as const, gateId: "gate-4-implementations" as const, round: 1 };
+    const pendingAmend = {
+      sequence: 1,
+      agent: "claude",
+      actionId: actionIdFor("claude"),
+      submissionSha: gitSha("req"),
+      sourceStep: "R4.implement" as const,
+      sourceRound: null,
+      scopeHash: "a".repeat(64),
+      explanation: "need new test",
+      additionalPaths: [{ path: "test/new.test.ts", reason: "unit tests" }],
+      proposedAt: now
+    };
+
+    // 1. Missing responses -> prepares action for unresponded agents
+    const unrespondedCursors = cursorsStateSchema.parse({
+      ...base,
+      issueCursor: amendStep,
+      pendingAmendment: pendingAmend,
+      amendmentSequence: 1,
+      acceptedResponses: [
+        acceptedResponseFixture({ stepId: "R4.amend-ballot", agent: "claude", round: 1, disposition: "approve" })
+      ]
+    });
+    const unrespondedDecisions = decide({ start, cursors: unrespondedCursors });
+    expect(unrespondedDecisions).toEqual([
+      { type: "prepare-action", agent: "codex", stepId: "R4.amend-ballot", round: 1 },
+      { type: "prepare-action", agent: "cursor", stepId: "R4.amend-ballot", round: 1 },
+      { type: "prepare-action", agent: "antigravity", stepId: "R4.amend-ballot", round: 1 }
+    ]);
+
+    // 2. All responses accepted, batch not published -> publish-ballot-batch
+    const allApprovedResponses = roster.map((agent) =>
+      acceptedResponseFixture({ stepId: "R4.amend-ballot", agent, round: 1, disposition: "approve" })
+    );
+    const unpublishedCursors = cursorsStateSchema.parse({
+      ...base,
+      issueCursor: amendStep,
+      pendingAmendment: pendingAmend,
+      amendmentSequence: 1,
+      acceptedResponses: allApprovedResponses,
+      ballotBatches: []
+    });
+    expect(decide({ start, cursors: unpublishedCursors })).toEqual([
+      { type: "publish-ballot-batch", stepId: "R4.amend-ballot", round: 1 }
+    ]);
+
+    // 3. Batch published, unanimous approve -> derive-scope-amendment
+    const batch = publishedBallotBatchFixture({
+      kind: "amendment-ballot-batch",
+      activeRoster: roster,
+      round: 1
+    });
+    const unanimousCursors = cursorsStateSchema.parse({
+      ...unpublishedCursors,
+      ballotBatches: [batch],
+      evidence: { branch: "issue-1/coordinator-evidence", tip: batch.commitSha! }
+    });
+    expect(decide({ start, cursors: unanimousCursors })).toEqual([
+      { type: "derive-scope-amendment", sequence: 1 }
+    ]);
+
+    // 4. Batch published, any revise -> reject-scope-amendment
+    const mixedResponses = roster.map((agent) =>
+      acceptedResponseFixture({
+        stepId: "R4.amend-ballot",
+        agent,
+        round: 1,
+        disposition: agent === "cursor" ? "revise" : "approve"
+      })
+    );
+    const reviseBatch = publishedBallotBatchFixture({
+      kind: "amendment-ballot-batch",
+      activeRoster: roster,
+      round: 1
+    });
+    const rejectedCursors = cursorsStateSchema.parse({
+      ...base,
+      issueCursor: amendStep,
+      pendingAmendment: pendingAmend,
+      amendmentSequence: 1,
+      acceptedResponses: mixedResponses,
+      ballotBatches: [reviseBatch],
+      evidence: { branch: "issue-1/coordinator-evidence", tip: reviseBatch.commitSha! }
+    });
+    expect(decide({ start, cursors: rejectedCursors })).toEqual([
+      { type: "reject-scope-amendment", sequence: 1 }
+    ]);
+  });
 });
+

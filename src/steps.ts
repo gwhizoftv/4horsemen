@@ -1,3 +1,6 @@
+import type { PlanAmendmentRequest } from "./protocol.js";
+import type { PendingAmendment } from "./state.js";
+
 export const DEFAULT_MAX_REVISION_ROUNDS = 3;
 
 export type WorkflowProfile = "solo" | "reviewed" | "consensus";
@@ -17,7 +20,9 @@ export type EvidenceId =
   | "comparison-response-accepted"
   | "revision-pinned"
   | "consensus-response-accepted"
-  | "finalization-verified";
+  | "finalization-verified"
+  | "amendment-request-submitted"
+  | "amendment-response-accepted";
 
 export type WorkflowStepId =
   | "R1.join"
@@ -25,6 +30,7 @@ export type WorkflowStepId =
   | "R3.review"
   | "R3.plan-ballot"
   | "R4.implement"
+  | "R4.amend-ballot"
   | "R5.compare"
   | "R5.compare-ballot"
   | "R6.revise"
@@ -122,6 +128,16 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     requiredPath: (issue, agent) => `.signals/issue-${issue}/implementation-ready-${agent}.json`,
     task: `Implement the selected plan and publish an implementation-ready signal that pins the product commit.${BUILD_DISCIPLINE_NOTE}`
   },
+  "R4.amend-ballot": {
+    id: "R4.amend-ballot",
+    gateId: "gate-4-implementations",
+    evidenceId: "amendment-response-accepted",
+    participants: "all",
+    submissionMode: "response",
+    requiredPath: (issue, agent, round) =>
+      `.plans/issue-${issue}/amendment-ballot-${agent}-seq-${round ?? 1}.json`,
+    task: "Submit an amendment ballot judgment as a private response with your disposition and rationale. Do not commit or push."
+  },
   "R5.compare": {
     id: "R5.compare",
     gateId: "gate-5-comparison",
@@ -173,6 +189,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
 
 export const describeWorkflowStep = (stepId: WorkflowStepId | null, round: number | null): string => {
   if (stepId === null) return "complete";
+  if (stepId === "R4.amend-ballot") return round === null ? stepId : `${stepId} (sequence ${round})`;
   return round === null ? stepId : `${stepId} (round ${round})`;
 };
 
@@ -305,6 +322,11 @@ export type InternalOrder = {
   task: string;
   inputs: readonly BoundInput[];
   approvedPaths: readonly string[];
+  scopeHash?: string;
+  hasApprovedAmendments?: boolean;
+  scopeEvidence?: readonly BoundInput[];
+  amendmentSequence?: number;
+  pendingAmendment?: PendingAmendment;
   /**
    * Advisory, and optional on purpose: an added hint must not become a required
    * argument at every site that builds an order, and rendering must cope with
@@ -334,6 +356,7 @@ export type EvidenceObservation = {
   /** Present when the observation came from a private ballot response. */
   responseSha256?: string;
   rationale?: string;
+  amendmentRequest?: PlanAmendmentRequest;
 };
 
 export type MachineDecision =
@@ -347,6 +370,7 @@ export type MachineDecision =
       approvedPaths?: readonly string[];
       choice?: string;
       checkResults?: readonly CheckResult[];
+      amendmentRequest?: PlanAmendmentRequest;
     }
   | {
       type: "accept-response";
@@ -363,6 +387,8 @@ export type MachineDecision =
   | { type: "derive-plan-selection" }
   | { type: "derive-implementation-selection" }
   | { type: "derive-consensus"; round: number }
+  | { type: "derive-scope-amendment"; sequence: number }
+  | { type: "reject-scope-amendment"; sequence: number }
   | { type: "wait"; reason: string }
   | {
       type: "owner-action-required";
@@ -371,3 +397,4 @@ export type MachineDecision =
       round: number;
       allowedAnswers: readonly ("retry" | "revise" | "abandon")[];
     };
+

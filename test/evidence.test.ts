@@ -691,4 +691,98 @@ Implement it.
       )
     ).toMatchObject({ status: "satisfied", productPin: artifact.revisedBranchHead });
   });
+
+  it("evaluates plan amendment requests as alternate artifacts without completing implementation", async () => {
+    const action = order({
+      stepId: "R4.implement",
+      evidenceId: "implementation-pinned",
+      requiredPath: ".signals/issue-1/implementation-ready-codex.json",
+      approvedPaths: ["src/product.ts"],
+      scopeHash: "a".repeat(64)
+    });
+    const request = {
+      protocolVersion: 1,
+      artifact: "plan-amendment-request",
+      issue: 1,
+      issueSessionId: action.issueSessionId,
+      agent: "codex",
+      actionId: action.actionId,
+      inputSetHash: computeInputSetHash(action.inputs),
+      scopeHash: "a".repeat(64),
+      explanation: "Need test file",
+      additionalPaths: [{ path: "test/product.test.ts", reason: "unit tests" }]
+    };
+
+    const obs = await evaluateEvidence(action, sha("e"), mirror(JSON.stringify(request)));
+    expect(obs.status).toBe("satisfied");
+    expect(obs.productPin).toBeUndefined();
+    expect(obs.amendmentRequest).toMatchObject({
+      artifact: "plan-amendment-request",
+      scopeHash: "a".repeat(64),
+      additionalPaths: [{ path: "test/product.test.ts", reason: "unit tests" }]
+    });
+
+    // Rejects if scopeHash is stale
+    const staleObs = await evaluateEvidence(
+      action,
+      sha("e"),
+      mirror(JSON.stringify({ ...request, scopeHash: "b".repeat(64) }))
+    );
+    expect(staleObs.status).toBe("rejected");
+    expect(staleObs.outstanding.join(" ")).toContain("does not match the current scope hash");
+
+    // Rejects unapproved path in normal implementation ready signal before approval
+    const normalSignal = {
+      protocolVersion: 1,
+      artifact: "implementation-ready",
+      issue: 1,
+      issueSessionId: action.issueSessionId,
+      agent: "codex",
+      inputSetHash: computeInputSetHash(action.inputs),
+      implementationCommitSha: sha("d"),
+      approvedPaths: ["src/product.ts"]
+    };
+    const beforeApproval = await evaluateEvidence(
+      action,
+      sha("e"),
+      mirror(JSON.stringify(normalSignal), {
+        changedPaths: async () => ["src/product.ts", "test/product.test.ts"]
+      })
+    );
+    expect(beforeApproval.status).toBe("rejected");
+    expect(beforeApproval.outstanding.join(" ")).toContain("outside the approved file map");
+
+    // Accepts when approvedPaths includes the amended path
+    const amendedAction = {
+      ...action,
+      approvedPaths: ["src/product.ts", "test/product.test.ts"],
+      hasApprovedAmendments: true,
+      scopeHash: "c".repeat(64)
+    };
+    const afterApprovalSignal = {
+      ...normalSignal,
+      approvedPaths: ["src/product.ts", "test/product.test.ts"],
+      scopeHash: "c".repeat(64)
+    };
+    const afterApproval = await evaluateEvidence(
+      amendedAction,
+      sha("e"),
+      mirror(JSON.stringify(afterApprovalSignal), {
+        changedPaths: async () => ["src/product.ts", "test/product.test.ts"]
+      })
+    );
+    expect(afterApproval.status).toBe("satisfied");
+    expect(afterApproval.productPin).toBe(sha("d"));
+
+    // Rejects an unrelated third path even after amendment
+    const unrelatedThird = await evaluateEvidence(
+      amendedAction,
+      sha("e"),
+      mirror(JSON.stringify(afterApprovalSignal), {
+        changedPaths: async () => ["src/product.ts", "test/product.test.ts", "src/unrelated.ts"]
+      })
+    );
+    expect(unrelatedThird.status).toBe("rejected");
+    expect(unrelatedThird.outstanding.join(" ")).toContain("outside the approved file map");
+  });
 });

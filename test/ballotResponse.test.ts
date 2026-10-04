@@ -70,6 +70,50 @@ describe("ballotResponse", () => {
     ).toBe(false);
   });
 
+  it("parses amendment ballot responses and rejects choices or escalation", () => {
+    const approved = parseBallotResponse(
+      JSON.stringify({ actionId, disposition: "approve", rationale: "Looks necessary." }),
+      "R4.amend-ballot",
+      actionId,
+      []
+    );
+    expect(approved).toEqual({
+      ok: true,
+      value: { actionId, disposition: "approve", rationale: "Looks necessary." }
+    });
+
+    const revised = parseBallotResponse(
+      JSON.stringify({ actionId, disposition: "revise", rationale: "Not needed." }),
+      "R4.amend-ballot",
+      actionId,
+      []
+    );
+    expect(revised).toEqual({
+      ok: true,
+      value: { actionId, disposition: "revise", rationale: "Not needed." }
+    });
+
+    // Rejects escalate disposition
+    expect(
+      parseBallotResponse(
+        JSON.stringify({ actionId, disposition: "escalate", rationale: "Cannot escalate" }),
+        "R4.amend-ballot",
+        actionId,
+        []
+      ).ok
+    ).toBe(false);
+
+    // Rejects choice field
+    expect(
+      parseBallotResponse(
+        JSON.stringify({ actionId, disposition: "approve", rationale: "ok", choice: "codex" }),
+        "R4.amend-ballot",
+        actionId,
+        ["codex"]
+      ).ok
+    ).toBe(false);
+  });
+
   it("rejects action-id mismatch, envelope fields, and oversized payloads", () => {
     const mismatch = parseBallotResponse(
       JSON.stringify({
