@@ -708,13 +708,8 @@ export type ObservabilityDegradeResult = {
 };
 
 /**
- * The watchdog proves one thing only: no lifecycle event correlated with the
- * last delivery inside the window. That is `correlation-lagged`, and it is not
- * evidence that the hook bridge is down — an agent finishing a previous turn
- * produces it routinely. Only an agent that never announced a session at all is
- * `hooks-never-seen`, which is the sole case where restarting the CLI is the
- * right remedy. An action that already reached workflow completion is never
- * degraded: delivery is proven, so there is nothing to warn about.
+ * @deprecated Retained for legacy-state fixtures only. The coordinator must not
+ * degrade agent health merely because lifecycle events are missing.
  */
 export const markObservabilityDegraded = (
   paths: IssueRuntimePaths,

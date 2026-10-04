@@ -28,9 +28,9 @@ recovery below.
 pushed commit proves the action arrived. For ballot response-mode actions,
 workflow truth is the completion marker (`response <actionId>`) plus an
 accepted private response, and the gate advances only after the coordinator
-publishes that roster's evidence batch. An action that reached workflow
-completion is never marked degraded, and completing one clears a degraded alert
-already raised against it.
+publishes that roster's evidence batch. Quiet work continues through normal
+completion validation. Completing an action also clears a legacy degraded alert
+already raised against it by an older coordinator.
 
 ## Positive evidence is additive
 
@@ -45,9 +45,12 @@ action on screen long after it stopped being true.
 
 A send that was never accepted may be retried when, and only when,
 `actionAbsentAtReadyPrompt` shows a live, ready prompt whose captured viewport
-no longer contains the action id. Elapsed time, a missing `complete`, or a
-watchdog alert never authorize a retry on their own. Time only opens the door;
-the absence proof walks through it.
+no longer contains the action id. Unknown or exhausted-idle delivery must first
+pass the 45-second delivery wait; no degraded-health flag is required. Unknown
+execution also requires no lifecycle event at or after injection, so a delayed
+`SessionStart` cannot reopen delivery. Queue, background, turn-correlation and
+send-budget checks still apply. Elapsed time or a missing `complete` never
+authorize a retry on their own.
 
 ## Reason codes
 
@@ -83,14 +86,23 @@ Lifecycle wait (`NudgeWaitCode`): `unmatched-action`, `workflow-complete`,
 `pending-input`, `background-active`, `unknown`, `queued`, `working`,
 `idle-transition-already-used`.
 
-## Degraded means correlation lag
+## Quiet work is normal
 
-`health: "degraded"` means no lifecycle event correlated with the last delivery
-inside the watchdog window. That is `correlation-lagged`, the ordinary case when
-an agent is still finishing a previous turn, and the operator is told to wait.
-Only an agent that never announced a session at all (`lastEvent` and `sessionId`
-both null) is `hooks-never-seen`, and only that case is told to restart the CLI
-— restarting kills the in-flight turn that was about to write `complete`.
+Lifecycle hooks describe transitions, not a continuous heartbeat. An unfinished,
+delivered action is presumed to continue until evidence says otherwise. Missing
+hooks do not create degraded health, an `unobservable` hold, a restart warning or
+permission to resend. This policy applies even when acceptance has not yet
+correlated, and does not fabricate acceptance, execution state or completion.
+
+Quota/resource evidence, vendor waits, harness loss and delivery uncertainty keep
+their existing controls. An operator question or a wait for coordinator work must
+not be inferred from silence. Inspecting the pane can veto delivery, but a failed
+observation cannot establish progress. Observation exceptions emit a verbose
+diagnostic and are retried at the bounded pane-check cadence.
+
+Legacy degraded states remain readable. Already persisted `unobservable` holds
+still require scoped owner recovery with `coord resume --issue N --hold HOLD_ID`;
+this change neither migrates them nor releases other holds or manual pauses.
 
 ## Journalling
 
@@ -104,4 +116,6 @@ state, so the field currently reads true wherever it appears, and it is recorded
 so a consumer can tell the difference without re-deriving cursor state. The line
 reaches normal stdout when `gateWaiting` holds or the layers disagree; an
 unchanged code repeating on later ticks stays verbose.
-Clearing a degraded alert appends `agent-observability-recovered`.
+Clearing a legacy degraded alert on workflow completion appends
+`agent-observability-recovered`. The run loop no longer emits
+`agent-observability-degraded` merely because lifecycle events are missing.

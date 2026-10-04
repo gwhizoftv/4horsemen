@@ -181,12 +181,17 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
   writeCursorsState(paths, cursorsStateSchema.parse({ ...current, activeRoster: [vendor], agents: { [vendor]: current.agents.codex } }));
   writeFileSync(paths.agentLifecycle, JSON.stringify(initialAgentLifecycle([vendor], now())));
   const ui = { foreground: "harness", busy: false, dead: false, text: "❯ Antigravity Gemini >", failSubmit: false,
-    waitAtCapture: Infinity, sends: 0, captures: 0 };
+    failInspect: false, failCapture: false, waitAtCapture: Infinity, sends: 0, inspections: 0, captures: 0 };
   const messages: string[] = [];
   const tmux = new TmuxController(async (args) => {
-    if (args[0] === "display-message") return { exitCode: 0, stdout: `${ui.dead ? 1 : 0}\t${ui.foreground}\t${ui.busy ? 1 : 0}\t0\n`, stderr: "" };
+    if (args[0] === "display-message") {
+      ui.inspections++;
+      if (ui.failInspect) throw new Error("inspection unavailable");
+      return { exitCode: 0, stdout: `${ui.dead ? 1 : 0}\t${ui.foreground}\t${ui.busy ? 1 : 0}\t0\n`, stderr: "" };
+    }
     if (args[0] === "capture-pane") {
       ui.captures++;
+      if (ui.failCapture) throw new Error("capture unavailable");
       return { exitCode: 0, stdout: ui.captures >= ui.waitAtCapture ? "Usage limit reset · continuing automatically\n❯" : ui.text, stderr: "" };
     }
     if (args[0] === "send-keys" && args.includes("-l")) ui.sends++;
@@ -517,21 +522,21 @@ describe("vendor resource evidence and recovery", () => {
 });
 
 describe("durable delivery safety", () => {
-  it("keeps healthy minute-boundary probes out of durable cursor state", async () => {
-    const f = safetyFixture();
+  it.each(["claude", "codex"])("keeps %s minute-boundary probes out of durable cursor state", async (vendor) => {
+    const f = safetyFixture(vendor);
     await f.tick(); f.advance(1); f.working();
     const loop = f.makeLoop();
     await loop.runTick();
     const before = readFileSync(f.paths.cursors, "utf8");
-    for (let minute = 0; minute < 4; minute++) {
+    const inspections = f.ui.inspections;
+    for (let minute = 0; minute < 10; minute++) {
       f.advance(60_000);
       await loop.runTick();
       expect(readFileSync(f.paths.cursors, "utf8")).toBe(before);
     }
+    expect(f.ui.inspections - inspections).toBe(10);
     await f.tick(); // even a restarted advisory probe must not rewrite authority
     expect(readFileSync(f.paths.cursors, "utf8")).toBe(before);
-    f.advance(60_000);
-    expect((await loop.runTick()).actionSafety.codex?.observationChecks).toBe(1);
   });
 
   it("retains distinct unknown deferral diagnostics with a bounded overflow record", async () => {
@@ -633,15 +638,18 @@ describe("durable delivery safety", () => {
     expect(f.ui.sends).toBe(1);
   });
 
-  it("does not repeat a third observation reserved before a crash", async () => {
-    const f = safetyFixture();
+  it.each(["claude", "codex"])("ignores legacy exhausted observation counters for %s after restart", async (vendor) => {
+    const f = safetyFixture(vendor);
     await f.tick();
-    mutateCursorsState(f.paths, (current) => ({ ...current, actionSafety: { codex: {
-      ...current.actionSafety.codex!, observationChecks: 3, nextObservationAt: f.now()
+    f.ui.text = readCursorsState(f.paths).agents[vendor]!.actionId!;
+    mutateCursorsState(f.paths, (current) => ({ ...current, actionSafety: { [vendor]: {
+      ...current.actionSafety[vendor]!, observationChecks: 3, nextObservationAt: f.now()
     } } }));
-    const captures = f.ui.captures;
-    expect((await f.tick()).holds[0]?.reason).toBe("unobservable");
-    expect(f.ui.captures).toBe(captures);
+    f.advance(30 * 60_000);
+    const after = await f.tick();
+    expect(after.paused).toBe(false);
+    expect(after.holds).toEqual([]);
+    expect(f.ui.sends).toBe(1);
   });
 
   it("recovers the original hold ID after append-before-cursor failure", async () => {
@@ -655,6 +663,26 @@ describe("durable delivery safety", () => {
     expect(recovered.holds).toEqual(held.holds);
     expect(readJournal(f.paths).filter((event) => event.type === "hold-created")).toHaveLength(1);
     expect(readJournal(f.paths).filter((event) => event.type === "paused")).toHaveLength(1);
+  });
+
+  it.each(["claude", "codex"])("requires owner release of a legacy %s unobservable hold", async (vendor) => {
+    const f = safetyFixture(vendor);
+    await f.tick();
+    f.ui.dead = true;
+    await f.tick();
+    mutateCursorsState(f.paths, (current) => ({ ...current,
+      holds: current.holds.map((hold) => ({ ...hold, reason: "unobservable" as const }))
+    }));
+    const before = readCursorsState(f.paths);
+    f.ui.dead = false; f.advance(1); f.working();
+    const marker = `${"d".repeat(40)}\n`;
+    writeFileSync(agentRuntimePaths(f.paths, vendor).complete, marker);
+    const after = await f.tick();
+    expect(after.paused).toBe(true);
+    expect(after.holds).toEqual(before.holds);
+    expect(readFileSync(agentRuntimePaths(f.paths, vendor).complete, "utf8")).toBe(marker);
+    expect(releaseHold(after, after.holds[0]!.id, false, f.now()).paused).toBe(false);
+    expect(f.ui.sends).toBe(1);
   });
 
   it("does not let simultaneous coordinators send duplicate initial prompts", async () => {
@@ -685,25 +713,97 @@ describe("durable delivery safety", () => {
     expect((await f.tick()).holds).toEqual(held.holds);
   });
 
-  it.each([false, true])("holds silent Cursor with stale working=%s after three bounded inspections", async (working) => {
-    const f = safetyFixture("cursor");
+  it.each(["claude", "codex", "cursor", "antigravity"].flatMap((vendor) =>
+    [false, true].flatMap((working) => [false, true].map((changingOutput) => ({ vendor, working, changingOutput })))
+  ))("waits for quiet $vendor work with accepted=$working and changing output=$changingOutput", async ({ vendor, working, changingOutput }) => {
+    const f = safetyFixture(vendor);
     await f.tick();
-    // Keep the action visible: lack of hooks must not turn into a prompt probe.
-    f.ui.text = readCursorsState(f.paths).agents.cursor!.actionId!;
+    const actionId = readCursorsState(f.paths).agents[vendor]!.actionId!;
+    // Keep the action visible so this never supplies positive lost-delivery evidence.
+    f.ui.text = actionId;
     if (working) { f.advance(1); f.working(); await f.tick(); }
-    f.advance(300_000);
-    for (let i = 0; i < 2; i++) {
-      expect((await f.tick()).paused).toBe(false);
-      const checks = readCursorsState(f.paths).actionSafety.cursor!.observationChecks;
-      for (let j = 0; j < 20; j++) await f.tick();
-      expect(readCursorsState(f.paths).actionSafety.cursor!.observationChecks).toBe(checks);
-      f.advance(60_000);
+    await f.tick(); // record the ordinary delivery deferral before advancing time
+    const messages = [...f.messages];
+    const execution = readAgentLifecycle(f.paths).agents[vendor]!.execution;
+    for (const delay of [300_000, 60_000, 60_000, 30 * 60_000]) {
+      f.advance(delay);
+      if (changingOutput) f.ui.text = `${actionId}\nRunning tests at ${f.now()}`;
+      const after = await f.tick();
+      expect(after.paused).toBe(false);
+      expect(after.holds).toEqual([]);
+      expect(readAgentLifecycle(f.paths).agents[vendor]).toMatchObject({ execution, degradedCause: null });
     }
-    const held = await f.tick();
-    expect(held.holds[0]).toMatchObject({ reason: "unobservable", confidence: "unknown", resetsAt: null });
-    expect(held.actionSafety.cursor?.observationChecks).toBe(3);
+    expect(readAgentLifecycle(f.paths).agents[vendor]?.health).not.toBe("degraded");
+    expect(readJournal(f.paths).some((event) => event.type === "agent-observability-degraded")).toBe(false);
+    expect(f.messages).toEqual(messages);
+    expect(f.messages.join("\n")).not.toMatch(/unobservable|degraded|Restart/);
     expect(f.ui.sends).toBe(1);
   });
+
+  it.each([
+    { vendor: "claude", failure: "inspect" },
+    { vendor: "claude", failure: "capture" },
+    { vendor: "codex", failure: "inspect" }
+  ].flatMap((input) => [false, true].map((working) => ({ ...input, working }))))(
+    "bounds failed $failure observations for $vendor with accepted=$working", async ({ vendor, failure, working }) => {
+      const f = safetyFixture(vendor);
+      await f.tick(); f.advance(1);
+      f.ui.text = readCursorsState(f.paths).agents[vendor]!.actionId!;
+      if (working) f.working();
+      f.ui.failInspect = failure === "inspect";
+      f.ui.failCapture = failure === "capture";
+      const verbose: string[] = [];
+      const loop = f.makeLoop({ verbose: (message) => verbose.push(message) });
+      const operation = failure === "inspect" ? "inspection" : "capture";
+      const failures = () => verbose.filter((message) => message.includes(`pane ${operation} failed`));
+      await loop.runTick();
+      expect(failures()).toHaveLength(1);
+      expect(failures()[0]).toContain(`${operation} unavailable`);
+      const before = { inspections: f.ui.inspections, captures: f.ui.captures };
+      for (let i = 0; i < 10; i++) { f.advance(1_000); expect((await loop.runTick()).paused).toBe(false); }
+      expect(f.ui.inspections).toBe(before.inspections);
+      expect(f.ui.captures).toBe(before.captures);
+      expect(failures()).toHaveLength(1);
+      f.advance(50_000);
+      expect((await loop.runTick()).holds).toEqual([]);
+      expect(f.ui.inspections).toBe(before.inspections + 1);
+      expect(f.ui.captures).toBe(before.captures + (vendor === "claude" && failure === "capture" ? 1 : 0));
+      expect(failures()).toHaveLength(2);
+      expect(f.messages.join("\n")).not.toContain(`pane ${operation} failed`);
+      f.ui.failInspect = false; f.ui.failCapture = false; f.ui.dead = true;
+      f.advance(60_000);
+      expect((await loop.runTick()).holds[0]?.reason).toBe("harness-gone");
+      expect(f.ui.sends).toBe(1);
+    }
+  );
+
+  it.each(["claude", "codex"].flatMap((vendor) => [420_000, 30 * 60_000].map((delay) => ({ vendor, delay }))))(
+    "validates $vendor completion after $delay ms of quiet work", async ({ vendor, delay }) => {
+      const f = safetyFixture(vendor);
+      await f.tick(); f.advance(1); f.working();
+      const actionId = readCursorsState(f.paths).agents[vendor]!.actionId!;
+      for (const wait of [300_000, 60_000]) { f.advance(wait); await f.tick(); }
+      f.advance(delay - 360_000);
+      const sha = "d".repeat(40);
+      const start = readStartState(f.paths);
+      const mirror = new BareMirror(f.paths.mirror, start.origin, async (args) => {
+        if (args[2] === "rev-parse") return { exitCode: 0, stdout: Buffer.from(`${sha}\n`), stderr: "" };
+        if (args[2] === "show") return { exitCode: 0, stdout: Buffer.from(JSON.stringify({
+          protocolVersion: 1, artifact: "participation-ready", issue: start.issue, issueSessionId: start.issueSessionId,
+          agent: vendor, baselineSha: start.baselineSha, automationDigest: start.automationDigest
+        })), stderr: "" };
+        return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+      });
+      writeFileSync(agentRuntimePaths(f.paths, vendor).complete, `${sha}\n`);
+      const after = await f.makeLoop({ mirror }).runTick();
+      expect(after.paused).toBe(false);
+      expect(after.accepted).toContainEqual(expect.objectContaining({ agent: vendor, stepId: "R1.join", submissionSha: sha }));
+      expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({
+        type: "verify-result", agent: vendor, actionId, submissionSha: sha, details: { ok: true }
+      }));
+      expect(readJournal(f.paths).filter((event) => event.type === "nudged" && event.actionId === actionId)).toHaveLength(1);
+    }
+  );
 
   it.each(["cursor", "claude"])("re-holds a still-broken %s after release without needing new hooks", async (vendor) => {
     const f = safetyFixture(vendor);
@@ -1349,7 +1449,7 @@ describe("effectful run loop", () => {
     expect(messages.some((message) => message.includes("looks idle to its lifecycle hooks"))).toBe(true);
   });
 
-  it("blames correlation lag rather than the CLI when lifecycle hooks are live", async () => {
+  it("does not turn delayed correlation into a health warning when lifecycle hooks are live", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);
     writeFileSync(
@@ -1393,17 +1493,17 @@ describe("effectful run loop", () => {
     nowMs += NUDGE_RETRY_MS + 1;
     await loop.runTick();
     expect(readAgentLifecycle(paths).agents.codex).toMatchObject({
-      health: "degraded",
-      degradedCause: "correlation-lagged"
+      health: "unknown",
+      degradedCause: null
     });
     const text = messages.join("\n");
-    expect(text).toContain("no lifecycle signal correlated with the last delivery");
+    expect(text).not.toContain("no lifecycle signal correlated with the last delivery");
     expect(text).not.toContain("Restart");
     const degraded = readJournal(paths).find((event) => event.type === "agent-observability-degraded");
-    expect(degraded?.details).toMatchObject({ cause: "correlation-lagged" });
+    expect(degraded).toBeUndefined();
   });
 
-  it("uses 45 seconds only as a health watchdog and nudges once after a positive idle transition", async () => {
+  it("does not warn at 45 seconds and nudges once after a positive idle transition", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);
     writeFileSync(
@@ -1448,8 +1548,8 @@ describe("effectful run loop", () => {
     nowMs += 1;
     await loop.runTick();
     expect(literalNudges).toBe(1);
-    expect(readAgentLifecycle(paths).agents.codex?.health).toBe("degraded");
-    expect(messages.join("\n")).toContain("Restart codex's CLI");
+    expect(readAgentLifecycle(paths).agents.codex?.health).toBe("unknown");
+    expect(messages.join("\n")).not.toContain("Restart codex's CLI");
     const action = readAgentLifecycle(paths).agents.codex?.action;
     expect(action).not.toBeNull();
     observeAgentLifecycle(
@@ -1620,54 +1720,62 @@ describe("effectful run loop", () => {
     expect(literalNudges).toBe(3);
   });
 
-  it("retracts a degraded warning once the agent's work reaches the workflow", async () => {
-    const { paths } = fixture();
-    const start = readStartState(paths);
-    writeFileSync(
-      paths.start,
-      `${JSON.stringify(
-        {
-          ...start,
-          agents: start.agents.map((agent) =>
-            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
-          )
-        },
-        null,
-        2
-      )}\n`
-    );
-    let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
-    const messages: string[] = [];
-    let paneText = "❯ ";
-    const tmux = new TmuxController(async (args) => {
-      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\t0\n", stderr: "" };
-      if (args[0] === "capture-pane") return { exitCode: 0, stdout: paneText, stderr: "" };
-      return { exitCode: 0, stdout: "", stderr: "" };
-    });
-    const loop = new CoordinatorRunLoop(paths, {
-      tmux,
-      now: () => new Date(nowMs).toISOString(),
-      nudgeRetryMs: NUDGE_RETRY_MS,
-      log: (message) => messages.push(message)
-    });
-    await loop.runTick();
-    const codex = readCursorsState(paths).agents.codex;
-    const actionId = codex?.actionId as string;
-    // The action is on screen, so the delivery was not lost and the watchdog
-    // alert stands until workflow truth disproves it.
-    paneText = `❯ ${actionId}`;
-    nowMs += NUDGE_RETRY_MS + 1;
-    await loop.runTick();
-    expect(readAgentLifecycle(paths).agents.codex?.health).toBe("degraded");
-
-    // Workflow truth arrives late: the agent had the action all along.
-    const { markActionWorkflowComplete } = await import("../src/agentLifecycle.js");
-    const cleared = markActionWorkflowComplete(paths, "codex", actionId, new Date(nowMs).toISOString());
+  it("still clears a legacy degraded state when work reaches completion", async () => {
+    const f = safetyFixture();
+    await f.tick();
+    const actionId = readCursorsState(f.paths).agents.codex!.actionId!;
+    f.ui.text = actionId;
+    f.advance(NUDGE_RETRY_MS + 1);
+    const { markActionWorkflowComplete, markObservabilityDegraded } = await import("../src/agentLifecycle.js");
+    markObservabilityDegraded(f.paths, "codex", f.now()); // persisted by an older coordinator
+    await f.tick();
+    expect(f.messages.join("\n")).not.toMatch(/Restart|no lifecycle signal has ever arrived/);
+    const cleared = markActionWorkflowComplete(f.paths, "codex", actionId, f.now());
     expect(cleared.clearedDegraded).toBe(true);
-    expect(readAgentLifecycle(paths).agents.codex).toMatchObject({
-      health: "healthy",
-      degradedCause: null
+    expect(readAgentLifecycle(f.paths).agents.codex).toMatchObject({ health: "healthy", degradedCause: null });
+  });
+
+  it.each(["claude", "codex"])("does not resend to %s after a delayed SessionStart", async (vendor) => {
+    const f = safetyFixture(vendor, { nudgeRetryMs: NUDGE_RETRY_MS });
+    await f.tick();
+    expect(f.ui.sends).toBe(1);
+    expect(readAgentLifecycle(f.paths).agents[vendor]).toMatchObject({
+      execution: "unknown", action: { delivery: "injected" }
     });
+    f.advance(1_000);
+    observeAgentLifecycle(f.paths, vendor, {
+      kind: "session-start", eventName: "SessionStart", sessionId: "session-1"
+    }, f.now());
+    expect(readAgentLifecycle(f.paths).agents[vendor]?.execution).toBe("unknown");
+    f.ui.text = "❯ ready"; // The action UUID has scrolled out of the captured viewport.
+    f.advance(120_000);
+    await f.tick();
+    await f.tick();
+    expect(f.ui.sends).toBe(1);
+    expect(readAgentLifecycle(f.paths).agents[vendor]?.action?.delivery).toBe("injected");
+    expect(readJournal(f.paths).some((event) => event.details?.event === "prompt-ready-action-absent")).toBe(false);
+  });
+
+  it.each(["claude", "codex"])("recovers lost %s delivery without a degraded-health flag", async (vendor) => {
+    const f = safetyFixture(vendor, { nudgeRetryMs: NUDGE_RETRY_MS });
+    await f.tick();
+    // A ready prompt without the UUID is positive evidence; time alone is insufficient.
+    f.ui.text = "❯ ready";
+    f.advance(NUDGE_RETRY_MS - 1);
+    await f.tick();
+    expect(readAgentLifecycle(f.paths).agents[vendor]?.action?.delivery).toBe("injected");
+    expect(f.ui.sends).toBe(1);
+    f.advance(1);
+    await f.tick();
+    expect(readAgentLifecycle(f.paths).agents[vendor]?.action?.delivery).toBe("ordered");
+    expect(f.ui.sends).toBe(1); // the independent minimum send spacing still applies
+    f.advance(60_000 - NUDGE_RETRY_MS);
+    await f.tick();
+    expect(f.ui.sends).toBe(2);
+    expect(readAgentLifecycle(f.paths).agents[vendor]?.health).toBe("unknown");
+    expect(readJournal(f.paths).some((event) => event.type === "agent-observability-degraded")).toBe(false);
+    await f.tick();
+    expect(f.ui.sends).toBe(2);
   });
 
   it("retries once when a later ready prompt proves an injected action is absent", async () => {

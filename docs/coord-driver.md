@@ -316,10 +316,9 @@ If the first delivery is skipped, the action remains ordered. It is eligible
 again only after a positive lifecycle observation says the CLI became idle or
 the CLI session was replaced. After a successful send, the coordinator records
 only `injected`. Native CLI hooks separately establish `accepted`, `queued`,
-`working`, `idle`, or `failed`. The 45-second interval is now a hook-health
-watchdog: missing observations change health to `degraded`, print an operator
-remedy on normal output, and suppress duplicates instead of authorizing another
-send. One nudge is allowed per new eligible idle transition.
+`working`, `idle`, or `failed`. Missing lifecycle events are normal during a
+long turn: their age does not degrade health, warn the owner, pause the issue or
+authorize another send. One nudge is allowed per new eligible idle transition.
 
 There is one narrowly scoped recovery for a successful tmux write whose
 keystrokes never reached the CLI: no hook may have correlated a turn, pending
@@ -469,7 +468,8 @@ All vendors (including Antigravity) share a durable delivery budget for each
 unfinished action: one initial send and at most three automatic repeats, spaced
 at least 60, 120 and 240 seconds after the previous send. These are minimum delays,
 not permission to send: lifecycle and terminal readiness must still allow it.
-The 45-second observability watchdog is independent of delivery spacing.
+The 45-second wait before checking unknown/idle lost delivery is independent of
+delivery spacing; it is not an agent-health timeout.
 Reissue, coordinator restart, changing error text and fresh idle epochs do not
 reset this budget. Partial/ambiguous sends consume a reservation and hold for
 owner inspection; a refusal before any key is sent consumes nothing.
@@ -481,23 +481,27 @@ their original diagnostics; one overflow record then signals suppression of
 further unknown codes. Status remains available on demand.
 
 An exhausted nudge budget, ambiguous delivery, missing/dead harness, active
-Claude usage wait or insufficient observability creates a durable whole-issue
+Claude usage wait or explicit blocking resource evidence creates a durable whole-issue
 hold. The coordinator preserves the roster, selected roles, pins, action files
 and incoming completion/response bytes; it does not hand off or pretend work
 completed. It does not stop an already-running vendor process. Claude wait UI
 vetoes typing even when a prompt is visible, including immediately before keys;
 the coordinator never disables Claude's native waiter.
 
-Silent agents need not deliver a terminal hook. Correlation failure, or five
-minutes without fresh lifecycle activity even if the last state was `working`,
-starts up to three local inspections at least 60 seconds apart. Budgets survive
-restart. A spinner, changing clock or a static prompt is not a heartbeat; a long
-quiet operation may therefore need an owner to inspect and release an unknown
-hold. No prompt is sent merely to test liveness. Normal local pane checks also
-run no more than once per minute; a dead pane observed at any delivery boundary
-holds immediately. Healthy probe cadence is in memory (restart may probe again),
-without cursor revisions or writes. Unresolved observation episodes still use
-durable check counts and deadlines across restarts.
+Delivered, unfinished work is presumed to continue even without fresh lifecycle
+events or changing terminal output. This does not synthesize acceptance or an
+execution event. Quiet work creates no observation warning or hold; completion
+continues through normal validation. No prompt is sent merely to test liveness.
+Local pane checks run no more than once per minute per action/hold generation;
+a dead pane observed at a delivery boundary still holds immediately. Probe cadence
+is in memory (restart may probe again), without cursor revisions or writes.
+Inspection/capture exceptions leave activity unknown and are retried on that
+cadence. Existing tmux harness-loss classification and resource controls remain.
+
+Old observation counters/deadlines remain readable but no longer cause holds.
+An `unobservable` hold already persisted by an older coordinator is not released
+automatically: inspect the agent and use the scoped owner recovery below once.
+Other holds and a manual pause retain their existing semantics.
 
 Use `coord status --issue N` to see the hold ID and recovery instruction. After
 inspecting the agent and fixing the underlying problem:
