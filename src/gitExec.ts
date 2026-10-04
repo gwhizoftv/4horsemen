@@ -37,10 +37,10 @@ export const git = (cwd: string, ...args: readonly string[]): GitResult => {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", env: hermeticGitEnv() });
   if (result.error !== undefined) {
     // Best-effort recheck: cwd may have disappeared after preflight. Never retry
-    // in another directory, and retain the original launch failure details.
+    // in another directory. Keep OS detail secondary to the path/PATH diagnosis.
     const reason = workingDirectoryProblem(cwd) ??
       ((result.error as NodeJS.ErrnoException).code === "ENOENT" ? "could not find or launch git; check PATH" : null);
-    throw new Error(`${context}: ${reason === null ? "" : `${reason}; `}${result.error.message}`);
+    throw new Error(`${context}: ${reason === null ? "" : `${reason}; detail: `}${result.error.message}`);
   }
   return {
     exitCode: result.status ?? 1,

@@ -89,8 +89,9 @@ describe("workspace layout", () => {
     const previousPath = process.env.PATH;
     try {
       process.env.PATH = root;
-      expect(() => worktreeRoot(root)).toThrow("could not find or launch git; check PATH");
-      expect(() => worktreeRoot(root)).toThrow("spawnSync git ENOENT");
+      expect(() => worktreeRoot(root)).toThrow(
+        `Cannot run git rev-parse --show-toplevel in ${root}: could not find or launch git; check PATH; detail: spawnSync git ENOENT`
+      );
       expect(() => worktreeRoot(root)).not.toThrow("working directory does not exist");
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
@@ -129,7 +130,9 @@ describe("workspace layout", () => {
         rmSync(root, { recursive: true });
         return failed("ENOENT");
       });
-      expect(() => git(root, "rev-parse", "--show-toplevel")).toThrow("working directory does not exist");
+      expect(() => git(root, "rev-parse", "--show-toplevel")).toThrow(
+        `Cannot run git rev-parse --show-toplevel in ${root}: working directory does not exist; detail: spawnSync git ENOENT`
+      );
       expect(spawn).toHaveBeenCalledTimes(1);
       mkdirSync(root);
       spawn.mockImplementationOnce(() => failed("EACCES"));
