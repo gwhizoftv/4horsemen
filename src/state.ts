@@ -16,6 +16,8 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { z } from "zod";
 import {
   actionIdSchema,
+  artifactCitationSchema,
+  planAmendmentRequestSchema,
   agentIdSchema,
   citationDigestSchema,
   digestSchema,
@@ -54,6 +56,7 @@ const stepIdSchema = z.enum([
   "R3.review",
   "R3.plan-ballot",
   "R4.implement",
+  "R4.amend-ballot",
   "R5.compare",
   "R5.compare-ballot",
   "R6.revise",
@@ -75,13 +78,14 @@ const evidenceIdSchema = z.enum([
   "review-published",
   "plan-response-accepted",
   "implementation-pinned",
+  "amendment-response-accepted",
   "comparison-published",
   "comparison-response-accepted",
   "revision-pinned",
   "consensus-response-accepted",
   "finalization-verified"
 ]);
-const ballotStepIdSchema = z.enum(["R3.plan-ballot", "R5.compare-ballot", "R6.ballot"]);
+const ballotStepIdSchema = z.enum(["R3.plan-ballot", "R5.compare-ballot", "R6.ballot", "R4.amend-ballot"]);
 const timestampSchema = z.string().datetime({ offset: true });
 
 export const checkCommandSchema = z
@@ -520,7 +524,7 @@ export const acceptedResponseSchema = z
 export const ballotBatchSchema = z
   .object({
     batchId: z.string().uuid(),
-    kind: z.enum(["plan-ballot-batch", "comparison-ballot-batch", "consensus-ballot-batch"]),
+    kind: z.enum(["plan-ballot-batch", "comparison-ballot-batch", "consensus-ballot-batch", "amendment-ballot-batch"]),
     round: z.number().int().min(1).nullable(),
     inputSetHash: digestSchema,
     activeRoster: z.array(agentIdSchema),
@@ -595,6 +599,24 @@ const holdSchema = z.object({
   evidence: resourceEvidenceSchema.nullable().default(null)
 }).strict().refine((hold) => (hold.confidence === "exact") === (hold.resetsAt !== null), "exact confidence requires a provider reset epoch");
 
+export const pendingAmendmentSchema = z.object({
+  sequence: z.number().int().positive(),
+  request: artifactCitationSchema,
+  proposal: planAmendmentRequestSchema,
+  plans: z.array(artifactCitationSchema).min(1),
+  activeRoster: z.array(agentIdSchema).min(1),
+  resume: z.object({ stepId: z.enum(["R4.implement", "R6.revise"]), round: z.number().int().positive().nullable() }).strict(),
+  requestedAt: timestampSchema
+}).strict();
+
+export const amendmentDecisionSchema = pendingAmendmentSchema.extend({
+  outcome: z.enum(["approved", "rejected", "cancelled"]),
+  evidenceSha: gitShaSchema.nullable(),
+  ballots: z.array(artifactCitationSchema),
+  rationale: z.string(),
+  decidedAt: timestampSchema
+}).strict();
+
 export const cursorsStateSchema = z
   .object({
     formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
@@ -609,6 +631,11 @@ export const cursorsStateSchema = z
     activeRoster: z.array(agentIdSchema).min(1),
     droppedAgents: z.array(agentIdSchema),
     derived: derivedStateSchema,
+    amendmentSequence: z.number().int().nonnegative().default(0),
+    pendingAmendment: pendingAmendmentSchema.nullable().default(null),
+    amendments: z.array(amendmentDecisionSchema).default([]),
+    // Durable cleanup intent: never delete an old request before its transition is saved.
+    amendmentRetirements: z.array(z.object({ agent: agentIdSchema, actionId: z.string().uuid() }).strict()).default([]),
     ownerQuestion: z
       .object({
         id: z.string().uuid(),
@@ -693,7 +720,9 @@ const journalEventTypeSchema = z.enum([
   "ballot-batch-published",
   "ballot-batch-failed",
   "ballot-batch-invalidated",
-  "clone-readiness-refused"
+  "clone-readiness-refused",
+  "amendment-requested",
+  "amendment-decided"
 ]);
 
 export const journalEventSchema = z
@@ -731,7 +760,11 @@ export type PlanSelectionDerived = z.infer<typeof planSelectionDerivedSchema>;
 export type ImplementationSelectionDerived = z.infer<typeof implementationSelectionDerivedSchema>;
 export type ConsensusDerived = z.infer<typeof consensusDerivedSchema>;
 export type DerivedState = z.infer<typeof derivedStateSchema>;
-export type CursorsState = z.infer<typeof cursorsStateSchema>;
+// Preserve source compatibility for clients constructing pre-amendment state;
+// durable reads still validate and fill the new defaults with the schema.
+type AmendmentStateKeys = "amendmentSequence" | "pendingAmendment" | "amendments" | "amendmentRetirements";
+export type CursorsState = Omit<z.infer<typeof cursorsStateSchema>, AmendmentStateKeys> &
+  Partial<Pick<z.infer<typeof cursorsStateSchema>, AmendmentStateKeys>>;
 export type JournalEvent = z.infer<typeof journalEventSchema>;
 
 /**
@@ -1233,13 +1266,33 @@ export const dropAgent = (cursors: CursorsState, agent: string, now = new Date()
   const activeRoster = cursors.activeRoster.filter((candidate) => candidate !== agent);
   const current = cursors.agents[agent];
   if (current === undefined) throw new Error(`Unknown agent ${agent}.`);
+  const pending = cursors.pendingAmendment ?? null;
+  const agents = { ...cursors.agents };
+  if (pending !== null) {
+    for (const id of activeRoster) {
+      const cursor = agents[id];
+      if (cursor !== undefined) agents[id] = { ...cursor,
+        stepId: pending.resume.stepId,
+        evidenceId: pending.resume.stepId === "R4.implement" ? "implementation-pinned" : "revision-pinned",
+        actionId: null, actionDigest: null, submissionMode: null, submissionSha: null,
+        status: "idle", outstanding: [], updatedAt: now };
+    }
+  }
   return cursorsStateSchema.parse({
     ...cursors,
+    ...(pending === null ? {} : {
+      issueCursor: { stepId: pending.resume.stepId,
+        gateId: pending.resume.stepId === "R4.implement" ? "gate-4-implementations" : "gate-6-consensus",
+        round: pending.resume.round },
+      pendingAmendment: null,
+      amendments: [...(cursors.amendments ?? []), { ...pending, outcome: "cancelled", evidenceSha: null, ballots: [],
+        rationale: `Roster changed: ${agent} was dropped; resubmit against the current selected plan if still needed.`, decidedAt: now }]
+    }),
     activeRoster,
     droppedAgents: [...cursors.droppedAgents, agent],
     derived: invalidateDerivedForDrop(cursors.derived, agent),
     agents: {
-      ...cursors.agents,
+      ...agents,
       [agent]: {
         ...current,
         status: "dropped",

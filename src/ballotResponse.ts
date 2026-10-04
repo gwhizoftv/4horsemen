@@ -16,12 +16,13 @@ import { sha256 } from "./hash.js";
 import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.js";
 import {
   actionIdSchema,
+  amendmentBallotResponseSchema,
   consensusBallotResponseSchema,
   planComparisonBallotResponseSchema,
   type ConsensusBallotResponse,
   type PlanComparisonBallotResponse
 } from "./protocol.js";
-import type { WorkflowStepId } from "./steps.js";
+import { isBallotStep, type WorkflowStepId } from "./steps.js";
 
 export const RESPONSE_MAX_BYTES = 8192;
 
@@ -37,9 +38,6 @@ export type ResponseReadResult =
 export type ResponseParseResult =
   | { ok: true; value: BallotResponseValue }
   | { ok: false; outstanding: readonly string[] };
-
-const isBallotStep = (stepId: WorkflowStepId): boolean =>
-  stepId === "R3.plan-ballot" || stepId === "R5.compare-ballot" || stepId === "R6.ballot";
 
 export const readAgentResponse = (path: string, root: string): ResponseReadResult => {
   if (!existsSync(path)) return { status: "missing" };
@@ -76,7 +74,8 @@ export const parseBallotResponse = (
     };
   }
   const schema =
-    stepId === "R6.ballot" ? consensusBallotResponseSchema : planComparisonBallotResponseSchema;
+    stepId === "R4.amend-ballot" ? amendmentBallotResponseSchema :
+      stepId === "R6.ballot" ? consensusBallotResponseSchema : planComparisonBallotResponseSchema;
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
     return { ok: false, outstanding: [parsed.error.issues.map((issue) => issue.message).join("; ")] };
@@ -85,7 +84,7 @@ export const parseBallotResponse = (
   if (parsed.data.actionId !== expectedActionId) {
     outstanding.push(`response actionId must be ${expectedActionId}`);
   }
-  if (stepId !== "R6.ballot") {
+  if (stepId !== "R6.ballot" && stepId !== "R4.amend-ballot") {
     const choice = (parsed.data as PlanComparisonBallotResponse).choice;
     if (!eligibleChoices.includes(choice)) {
       outstanding.push(`choice ${choice} is not eligible`);

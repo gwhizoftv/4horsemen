@@ -435,6 +435,43 @@ implementation, and later rounds bind only the preceding accepted revision.
 When drops leave one active agent, future unresolved work degrades to the solo
 sequence. Completed historical gates and immutable product pins are retained.
 
+## Additive file-map amendments
+
+Implementation and revision actions include an alternative
+`plan-amendment-request` JSON scaffold at their existing required signal path.
+Use it only for files necessary to the original issue, not feature expansion.
+The request binds the current action UUID, input hash, and scope hash, and
+lists at most 100 unique, exact repository-relative product paths with nonblank
+reasons. Directory-prefix forms, patterns, traversal, Git metadata, coordination paths,
+and files already covered by the effective map are refused. Commit only the
+request artifact (leave unfinished product edits unstaged), push, and submit
+that commit SHA. It needs no product pin and grants no permission by itself.
+
+The coordinator serializes requests in active-roster order, preserving accepted
+product pins and local work. It retires the old orders and opens a private
+amendment ballot for **every active agent**, including reviewed profiles and
+explicit solo approval. `approve` means the additions are necessary;
+`revise` rejects the proposal, not the code. No tally, plurality, timeout, or
+owner override can approve a missing vote. Only unanimous approval followed by
+successful publication of the canonical ballot batch expands the effective map.
+
+The selected plan remains immutable. Approved exact additions form a durable
+overlay bound to that selected plan set; amendment sequence numbers are separate
+from revision rounds. Fresh work actions carry the resulting `scopeHash`, which
+subsequent readiness signals must echo once any amendment applies. Scope
+documents are separately exported: revision `basedOn` still contains only its
+single authorized product parent. Rejected requests resume unchanged scope
+with the reasons. A new request gets a new sequence and new action UUIDs.
+
+Pending proposals, accepted private responses, and published decisions survive
+restart. Failed evidence pushes retry the same frozen SHA; scope never changes
+before publication. Pause, holds, and concurrent owner controls retain their
+normal authority. Dropping an agent cancels a pending proposal and retires its
+orders; existing selection recovery then runs with the reduced roster. Prior
+approved overlays apply only while the exact selected plan set is unchanged.
+No-amendment format-4 issues load with empty history and keep their ordinary
+workflow; no new owner command is required.
+
 ## Owner controls
 
 Every issue command accepts either an explicit workspace `--coord-root` or an

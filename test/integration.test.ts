@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,7 +9,7 @@ import { writeAgentResponse } from "../src/ballotResponse.js";
 import { computeInputSetHash } from "../src/evidence.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
-import { buildOrder, CoordinatorRunLoop } from "../src/runLoop.js";
+import { buildOrder, CoordinatorRunLoop, type RunLoopDependencies } from "../src/runLoop.js";
 import {
   appendJournal,
   dropAgent,
@@ -17,9 +17,11 @@ import {
   readCursorsState,
   readJournal,
   readStartState,
+  mutateCursorsState,
+  setPaused,
   writeCursorsState
 } from "../src/state.js";
-import type { InternalOrder, WorkflowStepId } from "../src/steps.js";
+import { roundForStep, type InternalOrder, type WorkflowStepId } from "../src/steps.js";
 import { TmuxController } from "../src/tmux.js";
 
 const agents = ["claude", "codex", "cursor", "antigravity"] as const;
@@ -111,7 +113,7 @@ describe("four-agent coordinator canary", () => {
 
       const checkArgv: string[][] = [];
       const mirror = new BareMirror(paths.mirror, origin);
-      const loop = new CoordinatorRunLoop(paths, {
+      const dependencies: RunLoopDependencies = {
         tmux: null,
         mirror,
         pullRequestOpener: async (input) => {
@@ -125,7 +127,8 @@ describe("four-agent coordinator canary", () => {
           checkArgv.push([...argv]);
           return { exitCode: 0, stdout: "", stderr: "" };
         }
-      });
+      };
+      let loop = new CoordinatorRunLoop(paths, dependencies);
       await loop.initializeEffects();
       await loop.runTick();
 
@@ -142,7 +145,7 @@ describe("four-agent coordinator canary", () => {
           cursors,
           agent,
           cursor.stepId,
-          cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null,
+          roundForStep(cursor.stepId, cursors.issueCursor.round),
           cursor.actionId,
           cursor.outstanding
         );
@@ -154,7 +157,7 @@ describe("four-agent coordinator canary", () => {
         const target = join(clone, path);
         mkdirSync(dirname(target), { recursive: true });
         writeFileSync(target, content);
-        git(clone, "add", "-A");
+        git(clone, "add", path);
         git(clone, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", message);
         const commit = git(clone, "rev-parse", "HEAD");
         git(clone, "push", "-q", "origin", `HEAD:refs/heads/issue-1/${agent}`);
@@ -285,15 +288,74 @@ Implement the selected product files.
       }
       expect(readJournal(paths).some((event) => event.type === "decision-derived")).toBe(true);
       expect(readJournal(paths).some((event) => event.type === "ballot-batch-published")).toBe(true);
-      for (const agent of activeAfterDrop) {
+      const claudeOrder = currentOrder("claude");
+      const claudePin = commitAndPush("claude", "src/product-claude.txt", "claude product\n", "product claude");
+      submit("claude", JSON.stringify({ ...commonArtifact(claudeOrder, "implementation-ready"),
+        inputSetHash: computeInputSetHash(claudeOrder.inputs), implementationCommitSha: claudePin,
+        approvedPaths: claudeOrder.approvedPaths }));
+      await loop.runTick();
+      const originalOrder = currentOrder("codex");
+      const wip = join(clones.get("codex")!, "src/product-codex.txt");
+      mkdirSync(dirname(wip), { recursive: true });
+      writeFileSync(wip, "unfinished product\n");
+      const request = (agent: string, path: string): string => {
+        const order = currentOrder(agent);
+        return submit(agent, JSON.stringify({ ...commonArtifact(order, "plan-amendment-request"),
+          actionId: order.actionId, inputSetHash: computeInputSetHash(order.inputs), scopeHash: order.scopeHash,
+          rationale: "A necessary regression test was omitted from the original map.",
+          additionalPaths: [{ path, reason: "Test the approved behavior." }] }));
+      };
+      const proposalSha = request("codex", "test/product.test.ts");
+      await loop.runTick();
+      expectStep("R4.amend-ballot");
+      expect(currentOrder("claude").inputs.some((input) => input.commitSha === proposalSha)).toBe(true);
+      expect(readCursorsState(paths).accepted.find((entry) => entry.agent === "claude" && entry.stepId === "R4.implement")?.productPin).toBe(claudePin);
+      expect(readFileSync(wip, "utf8")).toBe("unfinished product\n");
+      respond("claude", { disposition: "approve", rationale: "Necessary test." });
+      await loop.runTick();
+      loop = new CoordinatorRunLoop(paths, dependencies); // resume a partial ballot
+      for (const agent of ["codex", "cursor"]) respond(agent, { disposition: "approve", rationale: "Necessary test." });
+      const publish = mirror.publishBranch.bind(mirror);
+      mirror.publishBranch = async () => { throw new Error("network timeout"); };
+      await loop.runTick();
+      expectStep("R4.amend-ballot");
+      expect(readCursorsState(paths).amendments).toEqual([]);
+      const frozen = readCursorsState(paths).ballotBatches.find((batch) => batch.kind === "amendment-ballot-batch")!;
+      expect(frozen.status).toBe("failed");
+      mirror.publishBranch = async (sha, branch) => {
+        await publish(sha, branch);
+        // A concurrent owner pause after the push must win over acceptance.
+        mutateCursorsState(paths, (state) => setPaused(state, true));
+      };
+      loop = new CoordinatorRunLoop(paths, dependencies); // retry the exact frozen publication
+      await loop.runTick();
+      expect(readCursorsState(paths).paused).toBe(true);
+      expect(readCursorsState(paths).amendments).toEqual([]);
+      expectStep("R4.amend-ballot");
+      mirror.publishBranch = publish;
+      mutateCursorsState(paths, (state) => setPaused(state, false));
+      loop = new CoordinatorRunLoop(paths, dependencies);
+      await loop.runTick(); // reconcile the already-pushed commit, then resolve once
+      expectStep("R4.implement");
+      expect(readCursorsState(paths).amendments).toHaveLength(1);
+      expect(readCursorsState(paths).amendments?.[0]?.evidenceSha).toBe(frozen.commitSha);
+      expect(existsSync(agentRuntimePaths(paths, "claude").action)).toBe(false);
+      expect(currentOrder("codex").actionId).not.toBe(originalOrder.actionId);
+      expect(currentOrder("codex").scopeHash).not.toBe(originalOrder.scopeHash);
+      expect(currentOrder("codex").inputs).toEqual(originalOrder.inputs);
+      expect(currentOrder("codex").approvedPaths).toContain("test/product.test.ts");
+      expect(readFileSync(agentRuntimePaths(paths, "codex").action, "utf8")).toContain("Approved file-map amendments");
+      for (const agent of ["codex", "cursor"] as const) {
         const order = currentOrder(agent);
         expect(order.inputs.map((input) => input.agent)).toEqual(["codex"]);
+        commitAndPush(agent, "test/product.test.ts", "regression\n", "missing regression test");
         const pin = commitAndPush(agent, `src/product-${agent}.txt`, `${agent} product\n`, `product ${agent}`);
         submit(
           agent,
           JSON.stringify({
             ...commonArtifact(order, "implementation-ready"),
             inputSetHash: computeInputSetHash(order.inputs),
+            scopeHash: order.scopeHash,
             implementationCommitSha: pin,
             approvedPaths: order.approvedPaths
           })
@@ -330,6 +392,35 @@ Implement the selected product files.
       ).toBe(true);
       expect(existsSync(agentRuntimePaths(paths, "claude").action)).toBe(false);
       expect(existsSync(agentRuntimePaths(paths, "codex").action)).toBe(false);
+      const revisionBefore = currentOrder("cursor");
+      request("cursor", "test/unnecessary.test.ts");
+      await loop.runTick();
+      expectStep("R4.amend-ballot");
+      expect(readCursorsState(paths).pendingAmendment?.sequence).toBe(2);
+      expect(readCursorsState(paths).pendingAmendment?.resume).toEqual({ stepId: "R6.revise", round: 1 });
+      for (const agent of activeAfterDrop) respond(agent, {
+        disposition: agent === "codex" ? "revise" : "approve", rationale: "Use the already approved regression file."
+      });
+      await loop.runTick();
+      expectStep("R6.revise");
+      expect(currentOrder("cursor").round).toBe(1);
+      expect(currentOrder("cursor").inputs).toEqual(revisionBefore.inputs);
+      expect(currentOrder("cursor").inputs).toHaveLength(1);
+      expect(currentOrder("cursor").scopeHash).toBe(revisionBefore.scopeHash);
+      expect(currentOrder("cursor").approvedPaths).not.toContain("test/unnecessary.test.ts");
+      expect(currentOrder("cursor").task).toContain("last amendment was rejected");
+      request("cursor", "test/revision.test.ts");
+      await loop.runTick();
+      expectStep("R4.amend-ballot");
+      expect(readCursorsState(paths).pendingAmendment?.sequence).toBe(3);
+      for (const agent of activeAfterDrop) respond(agent, { disposition: "approve", rationale: "Necessary revision regression." });
+      await loop.runTick();
+      expectStep("R6.revise");
+      expect(currentOrder("cursor").inputs).toEqual(revisionBefore.inputs);
+      expect(currentOrder("cursor").scopeHash).not.toBe(revisionBefore.scopeHash);
+      expect(currentOrder("cursor").approvedPaths).toContain("test/revision.test.ts");
+      expect(readCursorsState(paths).amendments?.map((entry) => entry.outcome)).toEqual(["approved", "rejected", "approved"]);
+      commitAndPush("cursor", "test/revision.test.ts", "revision regression\n", "revision regression");
       let revisionPin = "";
       {
         const order = currentOrder("cursor");
@@ -339,6 +430,7 @@ Implement the selected product files.
           JSON.stringify({
             ...commonArtifact(order, "revision-ready"),
             inputSetHash: computeInputSetHash(order.inputs),
+            scopeHash: order.scopeHash,
             round: 1,
             revisedBranchHead: revisionPin,
             basedOn: order.inputs.map((input) => input.commitSha)
@@ -405,7 +497,7 @@ Implement the selected product files.
       expect(checkArgv).toEqual([["node", "-e", "process.exit(0)"]]);
       expect(final.accepted.find((submission) => submission.stepId === "R7.finalize")?.productPin).toBe(finalSha);
     },
-    30_000
+    120_000
   );
 });
 

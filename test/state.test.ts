@@ -70,6 +70,36 @@ const initialize = () => {
 };
 
 describe("operational state", () => {
+  it("defaults old format-4 amendment state and durably cancels a pending proposal on drop", () => {
+    const { paths, start, cursors } = initialize();
+    const legacy = { ...cursors };
+    delete legacy.amendmentSequence;
+    delete legacy.pendingAmendment;
+    delete legacy.amendments;
+    delete legacy.amendmentRetirements;
+    expect(cursorsStateSchema.parse(legacy)).toMatchObject({ amendmentSequence: 0, pendingAmendment: null, amendments: [], amendmentRetirements: [] });
+    const pending = {
+      sequence: 3, request: { agent: "codex", commitSha: "d".repeat(40), path: ".signals/issue-1/implementation-ready-codex.json" },
+      proposal: {
+        protocolVersion: 1, artifact: "plan-amendment-request", issue: 1, issueSessionId: start.issueSessionId,
+        agent: "codex", actionId: "10000000-0000-4000-8000-000000000001", inputSetHash: "e".repeat(64), scopeHash: "f".repeat(64),
+        rationale: "Necessary regression", additionalPaths: [{ path: "test/product.test.ts", reason: "Missing test" }]
+      },
+      plans: [{ agent: "codex", commitSha: "c".repeat(40), path: ".plans/issue-1/plan.md" }],
+      activeRoster: cursors.activeRoster, resume: { stepId: "R6.revise", round: 2 }, requestedAt: start.createdAt
+    };
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...cursors, amendmentSequence: 3, pendingAmendment: pending,
+      issueCursor: { stepId: "R4.amend-ballot", gateId: "gate-4-implementations", round: 3 } }));
+    expect(readCursorsState(paths).pendingAmendment).toEqual(pending);
+    writeCursorsState(paths, dropAgent(readCursorsState(paths), "claude"));
+    const after = readCursorsState(paths);
+    expect(after.pendingAmendment).toBeNull();
+    expect(after.amendmentSequence).toBe(3);
+    expect(after.amendments).toEqual([expect.objectContaining({ ...pending, outcome: "cancelled", evidenceSha: null, ballots: [] })]);
+    expect(after.issueCursor).toEqual({ stepId: "R6.revise", gateId: "gate-6-consensus", round: 2 });
+    expect(after.agents.codex?.actionId).toBeNull();
+  });
+
   it("keeps manual and independent holds separate and requires an explicit breaker reset", () => {
     const { paths } = initialize();
     const now = "2026-09-22T12:00:00.000Z";

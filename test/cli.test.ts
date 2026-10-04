@@ -1124,7 +1124,7 @@ describe("CLI", () => {
     expect(errors.join("")).toContain("Cannot drop authorized reviser cursor");
   });
 
-  it("resets to plan-ballot after a drop when the published evidence roster no longer matches", async () => {
+  it.each([false, true])("resets to plan-ballot after a drop when evidence roster changes (amendment: %s)", async (amendment) => {
     const fixture = setup();
     await runCli(["start", "1", "--profile", "consensus", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
       processRunner: successfulStartGit,
@@ -1188,6 +1188,27 @@ describe("CLI", () => {
       })
     );
 
+    if (amendment) {
+      const prior = readCursorsState(paths);
+      const actionId = "10000000-0000-4000-8000-000000000001";
+      writeCursorsState(paths, cursorsStateSchema.parse({ ...prior, amendmentSequence: 1,
+        issueCursor: { stepId: "R4.amend-ballot", gateId: "gate-4-implementations", round: 1 },
+        pendingAmendment: {
+          sequence: 1, request: { agent: "codex", commitSha: "d".repeat(40), path: ".signals/issue-1/implementation-ready-codex.json" },
+          proposal: { protocolVersion: 1, artifact: "plan-amendment-request", issue: 1, issueSessionId: "fixture",
+            agent: "codex", actionId, inputSetHash: "e".repeat(64), scopeHash: "f".repeat(64),
+            rationale: "Missing regression", additionalPaths: [{ path: "test/product.test.ts", reason: "Regression" }] },
+          plans: [{ agent: "codex", commitSha: "1".repeat(40), path: ".plans/issue-1/plan-codex.md" }],
+          activeRoster: prior.activeRoster, resume: { stepId: "R4.implement", round: null }, requestedAt: now
+        },
+        agents: Object.fromEntries(Object.entries(prior.agents).map(([agent, cursor]) => [agent, { ...cursor, actionId, stepId: "R4.amend-ballot" }]))
+      }));
+      for (const agent of prior.activeRoster) {
+        const runtime = agentRuntimePaths(paths, agent);
+        writeFileSync(runtime.action, "retired amendment order");
+        writeFileSync(runtime.complete, `response ${actionId}`);
+      }
+    }
     expect(
       await runCli(["drop", "cursor", "--issue", "1", "--coord-root", fixture.runtime], {
         makeRunLoop: fakeLoop
@@ -1197,6 +1218,14 @@ describe("CLI", () => {
     expect(after.activeRoster).toEqual(["codex", "claude"]);
     expect(after.issueCursor.stepId).toBe("R3.plan-ballot");
     expect(after.derived.planSelection).toBeNull();
+    if (amendment) {
+      expect(after.pendingAmendment).toBeNull();
+      expect(after.amendments?.at(-1)?.outcome).toBe("cancelled");
+      for (const agent of current.activeRoster) {
+        expect(existsSync(agentRuntimePaths(paths, agent).action)).toBe(false);
+        expect(existsSync(agentRuntimePaths(paths, agent).complete)).toBe(false);
+      }
+    }
     expect(after.ballotBatches).toContainEqual(
       expect.objectContaining({
         batchId: priorBatch.batchId,

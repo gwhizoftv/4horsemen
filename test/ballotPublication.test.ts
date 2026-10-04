@@ -29,6 +29,19 @@ const digest = "a".repeat(64);
 const sha = (ch: string): string => ch.repeat(40);
 
 describe("ballotPublication", () => {
+  it("publishes proposal-specific amendment citations and distinguishes a second proposal", () => {
+    const input = { kind: "amendment-ballot-batch" as const, issue: 1, issueSessionId: "issue-1",
+      round: 1, activeRoster: ["codex"], boundInputs: [
+        { kind: "amendment-request", agent: "codex", commitSha: sha("1"), path: ".signals/issue-1/implementation-ready-codex.json" },
+        { kind: "selected-plan", agent: "codex", commitSha: sha("2"), path: ".plans/issue-1/plan.md" }
+      ], responses: [{ agent: "codex", actionId, responseSha256: digest, disposition: "approve" as const, rationale: "Needed." }] };
+    const first = prepareBallotBatch(input);
+    const second = prepareBallotBatch({ ...input, round: 2 });
+    expect(first.inputSetHash).not.toBe(second.inputSetHash);
+    expect(first.paths).not.toEqual(second.paths);
+    expect(JSON.parse(first.files[0]!.content)).toMatchObject({ artifact: "amendment-ballot", sequence: 1,
+      request: { commitSha: sha("1") }, plans: [{ commitSha: sha("2") }], disposition: "approve" });
+  });
   it("derives a reserved evidence branch and rejects agent collisions", () => {
     expect(deriveEvidenceBranch("issue-{issue}/{agent}", 12)).toBe("issue-12/coordinator-evidence");
     expect(() =>

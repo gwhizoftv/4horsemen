@@ -29,7 +29,7 @@ import {
   resolveEvidenceParentSha,
   type BallotAcceptedSemantics
 } from "./ballotPublication.js";
-import { evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
+import { computeInputSetHash, evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
 import { BareMirror, GitCommandError, hermeticGitEnv, isTransientGitFailure } from "./mirror.js";
 import {
@@ -84,6 +84,9 @@ import {
 import {
   BRANCH_PREPARED_NOTE,
   STEP_DEFINITIONS,
+  isBallotStep,
+  roundForStep,
+  type BallotStepId,
   coordMergesPullRequest,
   describeWorkflowStep,
   type BoundInput,
@@ -223,7 +226,7 @@ const acceptedAt = (
 
 const acceptedResponsesAt = (
   cursors: CursorsState,
-  stepId: "R3.plan-ballot" | "R5.compare-ballot" | "R6.ballot",
+  stepId: BallotStepId,
   activeOnly = true,
   round?: number | null
 ): AcceptedResponse[] =>
@@ -236,7 +239,7 @@ const acceptedResponsesAt = (
 
 const publishedBallotBatch = (
   cursors: CursorsState,
-  stepId: "R3.plan-ballot" | "R5.compare-ballot" | "R6.ballot",
+  stepId: BallotStepId,
   round: number | null
 ): BallotBatch | null => {
   const kind = ballotBatchKindForStep(stepId);
@@ -274,7 +277,7 @@ const pendingOrFailedBallotBatch = (
   stepId: WorkflowStepId,
   round: number | null
 ): BallotBatch | null => {
-  if (stepId !== "R3.plan-ballot" && stepId !== "R5.compare-ballot" && stepId !== "R6.ballot") {
+  if (!isBallotStep(stepId)) {
     return null;
   }
   const kind = ballotBatchKindForStep(stepId);
@@ -518,6 +521,14 @@ export const deriveBoundInputs = (
   stepId: WorkflowStepId,
   round: number | null
 ): BoundInput[] => {
+  if (stepId === "R4.amend-ballot") {
+    const pending = cursors.pendingAmendment ?? null;
+    return pending === null ? [] : [
+      { ...pending.request, kind: "amendment-request" },
+      ...pending.plans.map((plan) => ({ ...plan, kind: "selected-plan" })),
+      ...amendmentScopeInputs(cursors)
+    ];
+  }
   if (stepId === "R3.review") return acceptedAt(cursors, "R2.plan").map((value) => inputFromSubmission(value, "plan"));
   if (stepId === "R3.plan-ballot") {
     return [
@@ -587,6 +598,32 @@ const selectedPlanAgents = (cursors: CursorsState): string[] => {
   return selected.length > 0 ? selected : cursors.activeRoster.length === 1 ? [...cursors.activeRoster] : [];
 };
 
+export const selectedPlanInputs = (cursors: CursorsState): BoundInput[] =>
+  acceptedAt(cursors, "R2.plan").filter((plan) => selectedPlanAgents(cursors).includes(plan.agent))
+    .map((plan) => inputFromSubmission(plan, "selected-plan"));
+
+const approvedAmendments = (cursors: CursorsState): NonNullable<CursorsState["amendments"]> => {
+  const hash = computeInputSetHash(selectedPlanInputs(cursors));
+  return (cursors.amendments ?? []).filter((record) => record.outcome === "approved" && record.evidenceSha !== null &&
+    computeInputSetHash(record.plans.map((plan) => ({ ...plan, kind: "selected-plan" }))) === hash);
+};
+
+const amendmentPaths = (cursors: CursorsState): string[] =>
+  [...new Set(approvedAmendments(cursors).flatMap((record) => record.proposal.additionalPaths.map((entry) => entry.path)))].sort();
+
+const amendmentScopeInputs = (cursors: CursorsState): BoundInput[] => approvedAmendments(cursors).flatMap((record) => [
+  { ...record.request, kind: "approved-amendment-request" },
+  ...record.ballots.map((ballot) => ({ ...ballot, kind: "amendment-approval" }))
+]);
+
+const scopeHashFor = (cursors: CursorsState, paths: readonly string[]): string => sha256(JSON.stringify([
+  "approved-scope-v1", computeInputSetHash(selectedPlanInputs(cursors)), [...paths].sort(),
+  approvedAmendments(cursors).map((record) => [record.sequence, record.request, record.evidenceSha])
+]));
+
+const scopeInputsFor = (cursors: CursorsState, stepId: WorkflowStepId): BoundInput[] =>
+  stepId === "R4.implement" || stepId === "R6.revise" ? amendmentScopeInputs(cursors) : [];
+
 const approvedPathsForOrder = (cursors: CursorsState, stepId: WorkflowStepId): string[] => {
   if (stepId !== "R4.implement" && stepId !== "R6.revise") return [];
   const selectedAgents = selectedPlanAgents(cursors);
@@ -594,7 +631,7 @@ const approvedPathsForOrder = (cursors: CursorsState, stepId: WorkflowStepId): s
     ...new Set(
       acceptedAt(cursors, "R2.plan")
         .filter((submission) => selectedAgents.includes(submission.agent))
-        .flatMap((submission) => submission.approvedPaths ?? [])
+        .flatMap((submission) => submission.approvedPaths ?? []).concat(amendmentPaths(cursors))
     )
   ].sort();
 };
@@ -619,7 +656,7 @@ export const resolveApprovedPaths = async (
     if (blob === null) continue;
     for (const path of extractApprovedPaths(blob)) paths.add(path);
   }
-  return paths.size > 0 ? [...paths].sort() : frozen;
+  return paths.size > 0 ? [...new Set([...paths, ...amendmentPaths(cursors)])].sort() : frozen;
 };
 
 /** Kinds whose bound `commitSha` is a product pin with a diff worth resolving. */
@@ -690,6 +727,12 @@ export const buildOrder = (
   const implementationChoices = acceptedAt(cursors, "R4.implement").map((submission) => submission.agent);
   const approvedPaths =
     approvedPathOverride === undefined ? approvedPathsForOrder(cursors, stepId) : [...approvedPathOverride];
+  const isWork = stepId === "R4.implement" || stepId === "R6.revise";
+  const scopeHash = isWork ? scopeHashFor(cursors, approvedPaths) : undefined;
+  const scopeInputs = scopeInputsFor(cursors, stepId);
+  const lastAmendment = cursors.amendments?.at(-1);
+  const amendmentNotice = isWork && lastAmendment !== undefined && lastAmendment.outcome !== "approved"
+    ? `\n\nThe last amendment was ${lastAmendment.outcome}; it grants no additional paths. Reasons: ${JSON.stringify(lastAmendment.rationale)}` : "";
   const eligibleChoices =
     stepId === "R3.plan-ballot"
       ? planChoices
@@ -707,7 +750,8 @@ export const buildOrder = (
     eligibleChoices,
     round,
     approvedPaths,
-    actionId
+    actionId,
+    scopeHash
   });
   const binding =
     scaffold === ""
@@ -733,9 +777,13 @@ export const buildOrder = (
     issueSessionId: start.issueSessionId,
     baselineSha: start.baselineSha,
     automationDigest: start.automationDigest,
-    task: `${definition.task}${BRANCH_PREPARED_NOTE}${binding}${scaffold}${correction}`,
+    task: `${definition.task}${BRANCH_PREPARED_NOTE}${binding}${scaffold}${correction}${amendmentNotice}`,
     inputs,
     approvedPaths,
+    scopeHash,
+    scopeRequired: isWork && approvedAmendments(cursors).length > 0,
+    exactApprovedPaths: isWork ? amendmentPaths(cursors) : [],
+    scopeInputs,
     contextPaths: [...start.contextPaths],
     changeScope,
     ...(materialized === undefined ? {} : { materialized }),
@@ -1377,7 +1425,7 @@ export class CoordinatorRunLoop {
     const materialized = await materializeBoundInputs({
       mirror: this.mirror,
       paths: this.paths,
-      inputs: boundInputs
+      inputs: [...boundInputs, ...scopeInputsFor(cursors, stepId)]
     });
     for (const omission of materialized.omitted) {
       this.log(`Issue ${start.issue}: could not materialize ${omission}; the action still cites the pin`);
@@ -1454,13 +1502,13 @@ export class CoordinatorRunLoop {
     const previous = readAction(runtime.action).body;
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, cursor.stepId);
     this.authority(cursors);
-    const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+    const round = roundForStep(cursor.stepId, cursors.issueCursor.round);
     const boundInputs = deriveBoundInputs(start, cursors, cursor.stepId, round);
     const changeScope = await resolveChangeScope(this.mirror, start, boundInputs);
     const materialized = await materializeBoundInputs({
       mirror: this.mirror,
       paths: this.paths,
-      inputs: boundInputs
+      inputs: [...boundInputs, ...scopeInputsFor(cursors, cursor.stepId)]
     });
     const order = buildOrder(
       this.paths,
@@ -1657,7 +1705,7 @@ export class CoordinatorRunLoop {
   private accept(start: StartState, cursors: CursorsState, decision: Extract<MachineDecision, { type: "accept-submission" }>): CursorsState {
     const cursor = cursors.agents[decision.agent];
     if (cursor === undefined || cursor.stepId === null || cursor.actionId === null) return cursors;
-    const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+    const round = roundForStep(cursor.stepId, cursors.issueCursor.round);
     const path = STEP_DEFINITIONS[cursor.stepId].requiredPath(start.issue, decision.agent, round);
     const accepted: AcceptedSubmission = {
       stepId: cursor.stepId,
@@ -1758,6 +1806,86 @@ export class CoordinatorRunLoop {
     return next;
   }
 
+  /** Retire runtime orders only; Git work and accepted product pins are untouched. */
+  private amendmentTransition(cursors: CursorsState, to: WorkflowStepId, round: number | null): CursorsState {
+    const agents = { ...cursors.agents };
+    const retirements = [...(cursors.amendmentRetirements ?? [])];
+    for (const agent of cursors.activeRoster) {
+      const cursor = agents[agent];
+      if (cursor === undefined) continue;
+      if (cursor.actionId !== null) retirements.push({ agent, actionId: cursor.actionId });
+      const accepted = cursors.accepted.some((entry) => entry.agent === agent && entry.stepId === to && entry.round === round);
+      agents[agent] = { ...cursor, stepId: to, evidenceId: STEP_DEFINITIONS[to].evidenceId,
+        actionId: null, actionDigest: null, submissionMode: null, submissionSha: null,
+        status: accepted ? "waiting-peer" : "idle", outstanding: [], updatedAt: this.now() };
+    }
+    return cursorsStateSchema.parse({ ...cursors, agents, amendmentRetirements: retirements,
+      issueCursor: { stepId: to, gateId: STEP_DEFINITIONS[to].gateId, round }, updatedAt: this.now() });
+  }
+
+  private retireAmendmentActions(cursors: CursorsState): CursorsState {
+    if ((cursors.amendmentRetirements ?? []).length === 0) return cursors;
+    return this.mutate(cursors, (current) => {
+      for (const retired of current.amendmentRetirements ?? []) {
+        const cursor = current.agents[retired.agent];
+        // A later owner recovery may already have prepared a different order.
+        if (cursor?.actionId == null || cursor.actionId === retired.actionId) {
+          const runtime = agentRuntimePaths(this.paths, retired.agent);
+          clearCompletion(runtime.complete);
+          if (existsSync(runtime.action)) unlinkSync(runtime.action);
+        }
+        clearAgentResponse(agentResponsePath(this.paths, retired.agent, retired.actionId));
+      }
+      return cursorsStateSchema.parse({ ...current, amendmentRetirements: [] });
+    });
+  }
+
+  private beginAmendment(cursors: CursorsState, decision: Extract<MachineDecision, { type: "begin-amendment" }>): CursorsState {
+    const source = cursors.issueCursor;
+    if (cursors.pendingAmendment != null || (source.stepId !== "R4.implement" && source.stepId !== "R6.revise")) return cursors;
+    const plans = selectedPlanInputs(cursors).map(({ agent, commitSha, path }) => ({ agent, commitSha, path }));
+    if (plans.length === 0) throw new Error("Cannot open an amendment without selected plan evidence.");
+    const pending = {
+      sequence: (cursors.amendmentSequence ?? 0) + 1,
+      request: { agent: decision.agent, commitSha: decision.submissionSha,
+        path: STEP_DEFINITIONS[source.stepId].requiredPath(decision.request.issue, decision.agent, source.round) },
+      proposal: decision.request, plans, activeRoster: [...cursors.activeRoster],
+      resume: { stepId: source.stepId, round: source.round }, requestedAt: this.now()
+    };
+    const next = this.mutate(cursors, (current) => {
+      const event = appendJournal(this.paths, { type: "amendment-requested", agent: decision.agent,
+        actionId: decision.request.actionId, submissionSha: decision.submissionSha,
+        details: { sequence: pending.sequence, scopeHash: decision.request.scopeHash,
+          eventId: `amendment-request:${pending.sequence}:${decision.request.actionId}:${decision.submissionSha}` } }, this.now());
+      return this.amendmentTransition(cursorsStateSchema.parse({ ...current,
+        pendingAmendment: { ...pending, requestedAt: event.at }, amendmentSequence: pending.sequence }), "R4.amend-ballot", pending.sequence);
+    });
+    return this.retireAmendmentActions(next);
+  }
+
+  private resolveAmendment(cursors: CursorsState, approved: boolean): CursorsState {
+    const pending = cursors.pendingAmendment ?? null;
+    if (pending === null) return cursors;
+    const batch = publishedBallotBatch(cursors, "R4.amend-ballot", pending.sequence);
+    if (batch === null) throw new Error("Cannot resolve an amendment without its published ballot batch.");
+    const responses = acceptedResponsesAt(cursors, "R4.amend-ballot", true, pending.sequence);
+    const unanimous = responses.every((response) => response.disposition === "approve");
+    if (approved !== unanimous) throw new Error("Amendment decision does not match the accepted judgments.");
+    const record = { ...pending, outcome: approved ? "approved" : "rejected", evidenceSha: batch.commitSha,
+      ballots: responses.map((response) => ({ agent: response.agent, commitSha: batch.commitSha, path: response.path })),
+      rationale: responses.filter((response) => response.disposition !== "approve")
+        .map((response) => `${response.agent}: ${response.rationale}`).join("; "), decidedAt: this.now() };
+    const next = this.mutate(cursors, (current) => {
+      const event = appendJournal(this.paths, { type: "amendment-decided", details: {
+        sequence: pending.sequence, outcome: record.outcome, evidenceSha: batch.commitSha,
+        eventId: `amendment-decision:${pending.sequence}:${batch.commitSha}`
+      } }, this.now());
+      return this.amendmentTransition(cursorsStateSchema.parse({ ...current,
+        pendingAmendment: null, amendments: [...(current.amendments ?? []), { ...record, decidedAt: event.at }] }), pending.resume.stepId, pending.resume.round);
+    });
+    return this.retireAmendmentActions(next);
+  }
+
   private async reissue(
     start: StartState,
     cursors: CursorsState,
@@ -1769,7 +1897,7 @@ export class CoordinatorRunLoop {
     const runtime = agentRuntimePaths(this.paths, agent);
     const actionId = cursor.actionId;
     const stepId = cursor.stepId;
-    const round = stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+    const round = roundForStep(stepId, cursors.issueCursor.round);
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
     const boundInputs = deriveBoundInputs(start, cursors, stepId, round);
     const changeScope = await resolveChangeScope(this.mirror, start, boundInputs);
@@ -1782,7 +1910,7 @@ export class CoordinatorRunLoop {
     const materialized = await materializeBoundInputs({
       mirror: this.mirror,
       paths: this.paths,
-      inputs: boundInputs
+      inputs: [...boundInputs, ...scopeInputsFor(cursors, stepId)]
     });
     this.authority(cursors);
     const order = buildOrder(
@@ -1832,10 +1960,10 @@ export class CoordinatorRunLoop {
   ): CursorsState {
     const cursor = cursors.agents[decision.agent];
     if (cursor === undefined || cursor.stepId === null || cursor.actionId === null) return cursors;
-    if (cursor.stepId !== "R3.plan-ballot" && cursor.stepId !== "R5.compare-ballot" && cursor.stepId !== "R6.ballot") {
+    if (!isBallotStep(cursor.stepId)) {
       return cursors;
     }
-    const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+    const round = roundForStep(cursor.stepId, cursors.issueCursor.round);
     const canonicalPath = STEP_DEFINITIONS[cursor.stepId].requiredPath(start.issue, decision.agent, round);
     const responsePath = agentResponsePath(this.paths, decision.agent, cursor.actionId);
     const read = readAgentResponse(responsePath, this.paths.issueRoot);
@@ -1931,7 +2059,8 @@ export class CoordinatorRunLoop {
     if (
       decision.stepId !== "R3.plan-ballot" &&
       decision.stepId !== "R5.compare-ballot" &&
-      decision.stepId !== "R6.ballot"
+      decision.stepId !== "R6.ballot" &&
+      decision.stepId !== "R4.amend-ballot"
     ) {
       return cursors;
     }
@@ -2454,7 +2583,9 @@ export class CoordinatorRunLoop {
       if (decision.type === "prepare-action") {
         this.logPhase(start.issue, decision.stepId, decision.round);
         next = await this.prepareAction(start, next, decision.agent, decision.stepId, decision.round);
-      } else if (decision.type === "accept-submission") next = this.accept(start, next, decision);
+      } else if (decision.type === "begin-amendment") next = this.beginAmendment(next, decision);
+      else if (decision.type === "resolve-amendment") next = this.resolveAmendment(next, decision.approved);
+      else if (decision.type === "accept-submission") next = this.accept(start, next, decision);
       else if (decision.type === "accept-response") next = this.acceptResponse(start, next, decision);
       else if (decision.type === "publish-ballot-batch") {
         next = await this.publishBallotBatch(start, next, decision);
@@ -2527,6 +2658,7 @@ export class CoordinatorRunLoop {
       // A pause can be released after run() skips initialization but before
       // this read. Keep that poll effect-free until initialization succeeds.
       if (options.observeOnly === true) return cursors;
+      cursors = this.retireAmendmentActions(cursors);
       const observations: EvidenceObservation[] = [];
 
       for (const dropped of cursors.droppedAgents) clearCompletion(agentRuntimePaths(this.paths, dropped).complete);
@@ -2559,7 +2691,7 @@ export class CoordinatorRunLoop {
       }
 
       const submissionMode = STEP_DEFINITIONS[cursor.stepId].submissionMode;
-      const round = cursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+      const round = roundForStep(cursor.stepId, cursors.issueCursor.round);
 
       if (submissionMode === "response") {
         if (completion.kind !== "response") {
@@ -2681,13 +2813,13 @@ export class CoordinatorRunLoop {
       const pendingBatch = pendingOrFailedBallotBatch(
         cursors,
         cursors.issueCursor.stepId,
-        cursors.issueCursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null
+        roundForStep(cursors.issueCursor.stepId, cursors.issueCursor.round)
       );
       if (pendingBatch !== null && pendingBatch.status === "pending") {
         cursors = await this.publishBallotBatch(start, cursors, {
           type: "publish-ballot-batch",
           stepId: cursors.issueCursor.stepId,
-          round: cursors.issueCursor.stepId.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null
+          round: roundForStep(cursors.issueCursor.stepId, cursors.issueCursor.round)
         });
       }
 

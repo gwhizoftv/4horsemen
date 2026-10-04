@@ -1200,6 +1200,73 @@ describe("effectful run loop", () => {
     expect(approved).toEqual(["scripts/setup_claude.sh", "scripts/setup_codex.sh", "src/product.ts"]);
     const order = buildOrder(paths, readStartState(paths), cursors, "codex", "R4.implement", null, undefined, [], approved);
     expect(order.approvedPaths).toEqual(approved);
+    const amended = cursorsStateSchema.parse({ ...cursors, amendmentSequence: 1, amendments: [{
+      sequence: 1, request: { agent: "codex", commitSha: "d".repeat(40), path: ".signals/issue-1/implementation-ready-codex.json" },
+      proposal: { protocolVersion: 1, artifact: "plan-amendment-request", issue: 1, issueSessionId: readStartState(paths).issueSessionId,
+        agent: "codex", actionId: actionIdFor("codex"), inputSetHash: responseDigestFixture("input"), scopeHash: order.scopeHash,
+        rationale: "Necessary regression", additionalPaths: [{ path: "test/product.test.ts", reason: "Regression" }] },
+      plans: [{ agent: "codex", commitSha: "c".repeat(40), path: ".plans/issue-1/plan.md" }],
+      activeRoster: cursors.activeRoster, resume: { stepId: "R4.implement", round: null }, requestedAt: now,
+      outcome: "approved", evidenceSha: "e".repeat(40),
+      ballots: [{ agent: "codex", commitSha: "e".repeat(40), path: ".plans/issue-1/amendment-ballot-codex-1.json" }],
+      rationale: "", decidedAt: now
+    }] });
+    const effective = await resolveApprovedPaths({ readBlob: async () => plan }, amended, "R4.implement");
+    expect(effective).toEqual([...approved, "test/product.test.ts"]);
+    const amendedOrder = buildOrder(paths, readStartState(paths), amended, "codex", "R4.implement", null, undefined, [], effective);
+    expect(amendedOrder.scopeHash).not.toBe(order.scopeHash);
+    expect(amendedOrder.scopeRequired).toBe(true);
+    expect(amendedOrder.exactApprovedPaths).toEqual(["test/product.test.ts"]);
+    expect(amendedOrder.scopeInputs).toHaveLength(2);
+    // Even a replacement plan with identical text is a different authority.
+    const replaced = cursorsStateSchema.parse({ ...amended, accepted: amended.accepted.map((entry) => ({ ...entry, submissionSha: "f".repeat(40) })) });
+    expect(await resolveApprovedPaths({ readBlob: async () => plan }, replaced, "R4.implement")).toEqual(approved);
+    expect(buildOrder(paths, readStartState(paths), replaced, "codex", "R4.implement", null).scopeInputs).toEqual([]);
+  });
+
+  it("recovers durable amendment retirements before preparing votes and refuses delayed old markers", async () => {
+    const { paths } = fixture();
+    const base = readCursorsState(paths);
+    const start = readStartState(paths);
+    const actionId = actionIdFor("codex");
+    const now = start.createdAt;
+    const pending = {
+      sequence: 1, request: { agent: "codex", commitSha: "d".repeat(40), path: ".signals/issue-1/implementation-ready-codex.json" },
+      proposal: { protocolVersion: 1, artifact: "plan-amendment-request", issue: 1, issueSessionId: start.issueSessionId,
+        agent: "codex", actionId, inputSetHash: "e".repeat(64), scopeHash: "f".repeat(64),
+        rationale: "Necessary regression", additionalPaths: [{ path: "test/product.test.ts", reason: "Regression" }] },
+      plans: [{ agent: "codex", commitSha: "c".repeat(40), path: ".plans/issue-1/plan.md" }],
+      activeRoster: base.activeRoster, resume: { stepId: "R4.implement", round: null }, requestedAt: now
+    };
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...base, paused: true, manualPaused: true,
+      issueCursor: { stepId: "R4.amend-ballot", gateId: "gate-4-implementations", round: 1 },
+      amendmentSequence: 1, pendingAmendment: pending, amendmentRetirements: [{ agent: "codex", actionId }]
+    }));
+    const runtime = agentRuntimePaths(paths, "codex");
+    writeFileSync(runtime.action, "old action");
+    writeFileSync(runtime.complete, "d".repeat(40));
+    const responsePath = agentResponsePath(paths, "codex", actionId);
+    writeAgentResponse(responsePath, paths.issueRoot, { actionId, disposition: "approve", rationale: "old vote" });
+    const mirror = new BareMirror(paths.mirror, "/origin.git");
+    mirror.readBlob = async () => "bound document";
+    let loop = new CoordinatorRunLoop(paths, { tmux: null, mirror });
+    await loop.runTick();
+    expect(existsSync(runtime.complete)).toBe(true); // pause blocks even retirement effects
+    mutateCursorsState(paths, (current) => setPaused(current, false));
+    loop = new CoordinatorRunLoop(paths, { tmux: null, mirror });
+    await loop.runTick();
+    const fresh = readAction(runtime.action);
+    expect(fresh.actionId).not.toBe(actionId);
+    expect(fresh.submissionMode).toBe("response");
+    expect(existsSync(runtime.complete)).toBe(false);
+    expect(existsSync(responsePath)).toBe(false);
+    expect(readCursorsState(paths).amendmentRetirements).toEqual([]);
+    writeFileSync(runtime.complete, `response ${actionId}`);
+    await loop.runTick();
+    expect(readCursorsState(paths).acceptedResponses).toEqual([]);
+    expect(readAction(runtime.action).actionId).toBe(fresh.actionId);
+    expect(readAction(runtime.action).body).toContain("does not match ordered action");
+    expect(readCursorsState(paths).amendments).toEqual([]);
   });
 
   it("refreshes in-flight approved paths and reinjects only after positive idle evidence", async () => {

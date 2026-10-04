@@ -58,7 +58,7 @@ import {
   type CoordinatorConfig,
   type CursorsState
 } from "./state.js";
-import { STEP_DEFINITIONS, type WorkflowProfile, type WorkflowStepId } from "./steps.js";
+import { STEP_DEFINITIONS, roundForStep, type WorkflowProfile, type WorkflowStepId } from "./steps.js";
 import {
   resolveAgentLauncher,
   TmuxController,
@@ -368,6 +368,13 @@ const rederiveAfterDrop = (
   const priorImplementation = cursors.derived.implementationSelection;
   const priorConsensus = cursors.derived.consensus;
   let next = dropAgent(cursors, dropped, now);
+  if (cursors.pendingAmendment != null) {
+    for (const agent of cursors.activeRoster) clearAgentLocalWork(paths, agent, cursors.agents[agent]?.actionId ?? null);
+    appendJournal(paths, { type: "amendment-decided", details: {
+      sequence: cursors.pendingAmendment.sequence, outcome: "cancelled", reason: `drop of ${dropped}`,
+      eventId: `amendment-cancel:${cursors.pendingAmendment.sequence}:${dropped}`
+    } }, now);
+  }
   // A ballot cast for an agent who is no longer eligible must be replaced by
   // its active author. Other evidence from the dropped agent remains as
   // historical provenance but is excluded by every active-only derivation.
@@ -540,7 +547,7 @@ const rederiveAfterDrop = (
   if (reset) return next;
 
   const currentStep = next.issueCursor.stepId;
-  const round = currentStep.startsWith("R6.") ? (next.issueCursor.round ?? 1) : null;
+  const round = roundForStep(currentStep, next.issueCursor.round);
   const definition = STEP_DEFINITIONS[currentStep];
   for (const agent of next.activeRoster) {
     const alreadySatisfied =
@@ -1516,7 +1523,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           { type: "owner-answer", details: { questionId, kind: question.kind, round: question.round, answer } },
           now
         );
-        let next = cursorsStateSchema.parse({
+        let next: CursorsState = cursorsStateSchema.parse({
           ...current,
           ownerQuestion: null,
           lastOwnerAnswer: { questionId, answer, answeredAt: now },
@@ -1645,7 +1652,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         const agents = requestedAgent === null ? current.activeRoster : [requestedAgent];
         if (agents.some((agent) => !current.activeRoster.includes(agent))) throw new Error("restart-action agent must be active.");
         appendJournal(paths, { type: "action-restarted", details: { agents } }, now);
-        let next = cursorsStateSchema.parse({
+        let next: CursorsState = cursorsStateSchema.parse({
           ...current,
           // Preserve still-valid accepted responses; retain published batch history;
           // invalidate only unpublished stale roster batches.

@@ -43,6 +43,46 @@ const mirror = (blob: string | null, overrides: Partial<EvidenceMirror> = {}): E
   ...overrides
 });
 
+describe("agreed file-map amendments", () => {
+  it.each(["R4.implement", "R6.revise"] as const)("admits a bound request, not readiness, from %s", async (stepId) => {
+    const action = order({ stepId, evidenceId: stepId === "R4.implement" ? "implementation-pinned" : "revision-pinned",
+      approvedPaths: ["src/product.ts"], scopeHash: "a".repeat(64) });
+    const request = { protocolVersion: 1, artifact: "plan-amendment-request", issue: 1, agent: action.agent,
+      issueSessionId: action.issueSessionId, actionId: action.actionId, inputSetHash: computeInputSetHash(action.inputs),
+      scopeHash: action.scopeHash, rationale: "The regression assertion was omitted.",
+      additionalPaths: [{ path: "test/product.test.ts", reason: "Tests the changed behavior." }] };
+    const accepted = await evaluateEvidence(action, sha("e"), mirror(JSON.stringify(request)));
+    expect(accepted).toMatchObject({ status: "satisfied", amendmentRequest: request });
+    expect(accepted.productPin).toBeUndefined();
+    for (const patch of [{ actionId: "10000000-0000-4000-8000-000000000001" }, { scopeHash: "b".repeat(64) },
+      { inputSetHash: "c".repeat(64) }, { issueSessionId: "other" },
+      { additionalPaths: [{ path: "src/product.ts", reason: "Already covered." }] }]) {
+      expect((await evaluateEvidence(action, sha("e"), mirror(JSON.stringify({ ...request, ...patch })))).status).toBe("rejected");
+    }
+  });
+
+  it.each(["R4.implement", "R6.revise"] as const)("enforces exact approved additions and current scope for %s", async (stepId) => {
+    const input = { kind: "implementation", agent: "claude", commitSha: sha("2"), path: ".signals/issue-1/implementation-ready-claude.json" };
+    const action = order({ stepId, evidenceId: stepId === "R4.implement" ? "implementation-pinned" : "revision-pinned",
+      round: stepId === "R6.revise" ? 2 : null, inputs: [input], approvedPaths: ["src/product.ts"], scopeHash: "a".repeat(64) });
+    const artifact = { protocolVersion: 1, issue: 1, issueSessionId: action.issueSessionId, agent: action.agent,
+      inputSetHash: computeInputSetHash(action.inputs), ...(stepId === "R4.implement"
+        ? { artifact: "implementation-ready", implementationCommitSha: sha("d"), approvedPaths: action.approvedPaths }
+        : { artifact: "revision-ready", revisedBranchHead: sha("d"), basedOn: [input.commitSha], round: 2 }) };
+    const verify = (target: InternalOrder, patch: object, changed = ["test/product.test.ts"]) =>
+      evaluateEvidence(target, sha("e"), mirror(JSON.stringify({ ...artifact, ...patch }), { changedPaths: async () => changed }));
+    expect((await verify(action, {})).status).toBe("rejected");
+    const amended = { ...action, approvedPaths: ["src/product.ts", "test/product.test.ts"],
+      exactApprovedPaths: ["test/product.test.ts"], scopeRequired: true, scopeHash: "b".repeat(64) };
+    const ready = { scopeHash: amended.scopeHash, ...(stepId === "R4.implement" ? { approvedPaths: amended.approvedPaths } : {}) };
+    expect((await verify(amended, ready)).status).toBe("satisfied");
+    expect((await verify(amended, { ...ready, scopeHash: undefined })).status).toBe("rejected");
+    expect((await verify(amended, { ...ready, scopeHash: action.scopeHash })).status).toBe("rejected");
+    expect((await verify(amended, ready, ["test/product.test.ts/child"])).status).toBe("rejected");
+    expect((await verify(amended, ready, ["src/other.ts"])).status).toBe("rejected");
+  });
+});
+
 describe("plan file-map path extraction", () => {
   it("accepts nested repository paths including monorepo prefixes", () => {
     expect(isFileMapPath("packages/core/src/domain/model.ts")).toBe(true);

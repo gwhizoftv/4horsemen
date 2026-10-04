@@ -1,6 +1,8 @@
-import type { AcceptedResponse, CursorsState, StartState } from "./state.js";
+import type { CursorsState, StartState } from "./state.js";
 import {
   STEP_DEFINITIONS,
+  isBallotStep,
+  roundForStep,
   participantsForStep,
   stepsForProfile,
   type EvidenceObservation,
@@ -28,7 +30,6 @@ const globalOrder: readonly WorkflowStepId[] = [
   "R7.finalize"
 ];
 
-const ballotSteps = new Set<WorkflowStepId>(["R3.plan-ballot", "R5.compare-ballot", "R6.ballot"]);
 
 const effectiveProfile = (start: StartState, cursors: CursorsState): WorkflowProfile =>
   cursors.activeRoster.length === 1 ? "solo" : start.profile;
@@ -59,22 +60,19 @@ const hasResponse = (cursors: CursorsState, stepId: WorkflowStepId, agent: strin
     (response) => response.stepId === stepId && response.agent === agent && response.round === round
   );
 
-const batchKindFor = (stepId: WorkflowStepId): AcceptedResponse["stepId"] | null => {
-  if (stepId === "R3.plan-ballot" || stepId === "R5.compare-ballot" || stepId === "R6.ballot") return stepId;
-  return null;
-};
-
 const hasPublishedBatch = (cursors: CursorsState, stepId: WorkflowStepId, round: number | null): boolean => {
   const kind =
     stepId === "R3.plan-ballot"
       ? "plan-ballot-batch"
       : stepId === "R5.compare-ballot"
         ? "comparison-ballot-batch"
+        : stepId === "R4.amend-ballot"
+          ? "amendment-ballot-batch"
         : stepId === "R6.ballot"
           ? "consensus-ballot-batch"
           : null;
   if (kind === null) return true;
-  if (stepId !== "R3.plan-ballot" && stepId !== "R5.compare-ballot" && stepId !== "R6.ballot") return true;
+  if (!isBallotStep(stepId)) return true;
   const closed = cursors.activeRoster.map((agent) =>
     cursors.acceptedResponses.find(
       (response) => response.stepId === stepId && response.agent === agent && response.round === round
@@ -121,6 +119,19 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
   if (cursors.completed) return [{ type: "wait", reason: "workflow is complete" }];
   if (cursors.paused) return [{ type: "wait", reason: "workflow is paused" }];
 
+  // A request is not a ready signal. Serialize competing requests before any
+  // source-step advancement, independent of observation arrival order.
+  if (cursors.pendingAmendment == null && ["R4.implement", "R6.revise"].includes(cursors.issueCursor.stepId)) {
+    for (const agent of cursors.activeRoster) {
+      const proposal = input.observations?.find((item) => item.agent === agent && item.status === "satisfied" &&
+        item.amendmentRequest !== undefined && item.actionId === cursors.agents[agent]?.actionId &&
+        cursors.agents[agent]?.stepId === cursors.issueCursor.stepId);
+      if (proposal?.amendmentRequest !== undefined) return [{
+        type: "begin-amendment", agent, submissionSha: proposal.submissionSha, request: proposal.amendmentRequest
+      }];
+    }
+  }
+
   const decisions: MachineDecision[] = [];
   for (const observation of input.observations ?? []) {
     if (!cursors.activeRoster.includes(observation.agent)) continue;
@@ -153,6 +164,29 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
     }
   }
   if (decisions.length > 0) return decisions;
+  if (cursors.issueCursor.stepId === "R4.amend-ballot") {
+    const pending = cursors.pendingAmendment ?? null;
+    if (pending === null || !sameRoster(pending.activeRoster, cursors.activeRoster)) {
+      return [{ type: "wait", reason: "amendment request is missing or its roster changed" }];
+    }
+    const round = pending.sequence;
+    const complete = cursors.activeRoster.every((agent) => hasResponse(cursors, "R4.amend-ballot", agent, round));
+    if (complete) {
+      if (!hasPublishedBatch(cursors, "R4.amend-ballot", round)) {
+        if (cursors.ballotBatches.some((batch) => batch.kind === "amendment-ballot-batch" &&
+          batch.round === round && batch.status === "pending" && sameRoster(batch.activeRoster, cursors.activeRoster))) {
+          return [{ type: "wait", reason: "ballot evidence publication pending" }];
+        }
+        return [{ type: "publish-ballot-batch", stepId: "R4.amend-ballot", round }];
+      }
+      return [{ type: "resolve-amendment", approved: cursors.acceptedResponses
+        .filter((response) => response.stepId === "R4.amend-ballot" && response.round === round && cursors.activeRoster.includes(response.agent))
+        .every((response) => response.disposition === "approve") }];
+    }
+    return cursors.activeRoster.filter((agent) => !hasResponse(cursors, "R4.amend-ballot", agent, round) &&
+      (cursors.agents[agent]?.actionId === null || cursors.agents[agent]?.stepId !== "R4.amend-ballot"))
+      .map((agent) => ({ type: "prepare-action", agent, stepId: "R4.amend-ballot", round }));
+  }
   if (cursors.ownerQuestion !== null) {
     return [
       {
@@ -211,13 +245,13 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
               : cursors.activeRoster[0]
         : cursors.activeRoster[0];
   const participants = participantsForStep(current, profile, cursors.activeRoster, designated);
-  const round = current.startsWith("R6.") ? (cursors.issueCursor.round ?? 1) : null;
+  const round = roundForStep(current, cursors.issueCursor.round);
   const complete = participants.every((agent) =>
-    ballotSteps.has(current) ? hasResponse(cursors, current, agent, round) : hasAccepted(cursors, current, agent, round)
+    isBallotStep(current) ? hasResponse(cursors, current, agent, round) : hasAccepted(cursors, current, agent, round)
   );
 
   if (complete) {
-    if (ballotSteps.has(current) && !hasPublishedBatch(cursors, current, round)) {
+    if (isBallotStep(current) && !hasPublishedBatch(cursors, current, round)) {
       const pending = cursors.ballotBatches.some(
         (batch) =>
           batch.status === "pending" &&
@@ -278,7 +312,7 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
   }
 
   for (const agent of participants) {
-    if (ballotSteps.has(current) ? hasResponse(cursors, current, agent, round) : hasAccepted(cursors, current, agent, round)) {
+    if (isBallotStep(current) ? hasResponse(cursors, current, agent, round) : hasAccepted(cursors, current, agent, round)) {
       continue;
     }
     const cursor = cursors.agents[agent];
@@ -290,5 +324,3 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
 
   return decisions.length > 0 ? decisions : [{ type: "wait", reason: `waiting for ${STEP_DEFINITIONS[current].gateId}` }];
 };
-
-void batchKindFor;

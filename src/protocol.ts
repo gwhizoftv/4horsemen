@@ -88,6 +88,43 @@ export const consensusBallotResponseSchema = z
   })
   .strict();
 
+const amendmentReasonSchema = rationaleSchema.refine((value) => value.trim().length > 0, "reason must not be blank");
+export const amendmentPathSchema = repositoryPathSchema.refine((path) => {
+  const segments = path.split("/");
+  return segments.every((segment) => /^[A-Za-z0-9_.@+-]+$/.test(segment) && segment !== "." && segment !== ".." && segment.toLowerCase() !== ".git") &&
+    ![".plans", ".signals", ".code-reviews"].includes(segments[0] ?? "");
+}, "expected an exact product file path, not a directory, pattern, or coordination path");
+
+export const planAmendmentRequestSchema = z.object({
+  ...commonArtifactFields,
+  artifact: z.literal("plan-amendment-request"),
+  actionId: actionIdSchema,
+  inputSetHash: digestSchema,
+  scopeHash: digestSchema,
+  rationale: amendmentReasonSchema,
+  additionalPaths: z.array(z.object({ path: amendmentPathSchema, reason: amendmentReasonSchema }).strict()).min(1).max(100)
+}).strict().refine((value) => new Set(value.additionalPaths.map((entry) => entry.path)).size === value.additionalPaths.length,
+  "additional paths must be unique");
+
+export const amendmentBallotResponseSchema = z.object({
+  actionId: actionIdSchema,
+  disposition: z.enum(["approve", "revise"]),
+  rationale: amendmentReasonSchema
+}).strict();
+
+export const amendmentBallotArtifactSchema = z.object({
+  ...commonPublishedBallotFields,
+  artifact: z.literal("amendment-ballot"),
+  sequence: z.number().int().positive(),
+  request: artifactCitationSchema,
+  plans: z.array(artifactCitationSchema).min(1),
+  priorApprovals: z.array(artifactCitationSchema),
+  disposition: z.enum(["approve", "revise"])
+}).strict();
+
+export type PlanAmendmentRequest = z.infer<typeof planAmendmentRequestSchema>;
+export type AmendmentBallotArtifact = z.infer<typeof amendmentBallotArtifactSchema>;
+
 /** Coordinator-published canonical plan ballot (protocol version 2). */
 export const planBallotArtifactSchema = z
   .object({
@@ -105,6 +142,7 @@ export const implementationReadyArtifactSchema = z
     artifact: z.literal("implementation-ready"),
     inputSetHash: digestSchema,
     implementationCommitSha: gitShaSchema,
+    scopeHash: digestSchema.optional(),
     approvedPaths: z.array(repositoryPathSchema).min(1)
   })
   .strict();
@@ -126,6 +164,7 @@ export const revisionReadyArtifactSchema = z
     inputSetHash: digestSchema,
     round: z.number().int().min(1),
     revisedBranchHead: gitShaSchema,
+    scopeHash: digestSchema.optional(),
     basedOn: z.array(gitShaSchema).min(1)
   })
   .strict();
@@ -165,7 +204,9 @@ export const publishedArtifactSchema = z.discriminatedUnion("artifact", [
   comparisonBallotArtifactSchema,
   revisionReadyArtifactSchema,
   consensusBallotArtifactSchema,
-  finalizationArtifactSchema
+  finalizationArtifactSchema,
+  planAmendmentRequestSchema,
+  amendmentBallotArtifactSchema
 ]);
 
 export type ParticipationReadyArtifact = z.infer<typeof participationReadyArtifactSchema>;
