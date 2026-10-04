@@ -1,0 +1,29 @@
+{
+  "actionId": "b6c0f8e6-c144-49d5-8cd6-2b6a695045b4",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "0f04c419068f70d5452d0798423a4ae4548a8665",
+      "path": ".signals/issue-129/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "95b888dd77a79316d6efaffc43442de19d929fa4",
+      "path": ".signals/issue-129/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e329a8706499f95edd3926155924da9cea41fa81",
+      "path": ".signals/issue-129/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "aa44380ad73f9959497096cddfd90a7606cf7a740656c6d115f76829729b2842",
+  "issue": 129,
+  "issueSessionId": "issue-129:8392d92d365f298bf9d04dd8d19793705a3ff77e",
+  "protocolVersion": 2,
+  "rationale": "Codex most completely satisfies the approved plan with accurate missing-path, non-directory, permission, race, and Git-launch diagnostics plus focused tests preserving owner and agent repository state, runtime, and mailbox contents without changing wipe behavior.",
+  "responseSha256": "7cc1e482b4f64cfa2e589ee2eb595919821e26361e43db5d3703704db7180f1c"
+}

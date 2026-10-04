@@ -1,0 +1,29 @@
+{
+  "actionId": "12e76bd3-dfd2-4c72-a0f8-d55c95eb245e",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "cursor",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "0f04c419068f70d5452d0798423a4ae4548a8665",
+      "path": ".signals/issue-129/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "95b888dd77a79316d6efaffc43442de19d929fa4",
+      "path": ".signals/issue-129/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e329a8706499f95edd3926155924da9cea41fa81",
+      "path": ".signals/issue-129/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "aa44380ad73f9959497096cddfd90a7606cf7a740656c6d115f76829729b2842",
+  "issue": 129,
+  "issueSessionId": "issue-129:8392d92d365f298bf9d04dd8d19793705a3ff77e",
+  "protocolVersion": 2,
+  "rationale": "Cursor maps ENOTDIR to not-a-directory (unlike Claude) and keeps PATH failures free of spawnSync (unlike Codex) while still fixing the missing-product diagnostic.",
+  "responseSha256": "ac176a819dd3e01048e7a2410e6d87d9adf7e07682e07d6991e9c5d200b1bdd8"
+}

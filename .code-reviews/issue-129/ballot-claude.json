@@ -1,0 +1,29 @@
+{
+  "actionId": "05d5baac-f23c-4a01-b811-2d640c212305",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "0f04c419068f70d5452d0798423a4ae4548a8665",
+      "path": ".signals/issue-129/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "95b888dd77a79316d6efaffc43442de19d929fa4",
+      "path": ".signals/issue-129/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e329a8706499f95edd3926155924da9cea41fa81",
+      "path": ".signals/issue-129/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "aa44380ad73f9959497096cddfd90a7606cf7a740656c6d115f76829729b2842",
+  "issue": 129,
+  "issueSessionId": "issue-129:8392d92d365f298bf9d04dd8d19793705a3ff77e",
+  "protocolVersion": 2,
+  "rationale": "All three pins implement the same correct git() working-directory preflight, but codex's is the only one that tests every branch the selected plan required (post-spawn recheck via a spawnSync spy and the inaccessible-directory case), keeps the git subcommand in path errors, restores PATH safely, and has no correctness findings, at the cost of heavier tests.",
+  "responseSha256": "3cfe0f3ef2db602daaa1b4faf3006e5470283c49c4585b8a575e12faaa216d29"
+}
