@@ -1,7 +1,24 @@
 import { spawnSync } from "node:child_process";
+import { statSync } from "node:fs";
 import { hermeticGitEnv } from "./mirror.js";
 
 export type GitResult = { exitCode: number; stdout: string; stderr: string };
+
+/**
+ * Why `cwd` cannot be a working directory, or null when it can. Node reports a
+ * missing cwd as `spawnSync git ENOENT` and a regular file as `ENOTDIR`, which
+ * read as a broken Git install; naming the path problem first keeps a mistyped
+ * `--product` from looking like repository damage. Symlinks are followed.
+ */
+const workingDirectoryProblem = (cwd: string): string | null => {
+  try {
+    return statSync(cwd).isDirectory() ? null : "is not a directory";
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return "does not exist";
+    return `cannot be accessed (${(error as Error).message})`;
+  }
+};
 
 /**
  * Synchronous git for the installer. `coord install` is an operator-driven,
@@ -15,9 +32,19 @@ export type GitResult = { exitCode: number; stdout: string; stderr: string };
  * to pass while the wrong repository gets wired.
  */
 export const git = (cwd: string, ...args: readonly string[]): GitResult => {
+  const command = `git ${args.join(" ")}`;
+  const before = workingDirectoryProblem(cwd);
+  if (before !== null) throw new Error(`Cannot run ${command}: ${cwd} ${before}.`);
   const result = spawnSync("git", args, { cwd, encoding: "utf8", env: hermeticGitEnv() });
   if (result.error !== undefined) {
-    throw new Error(`Cannot run git ${args.join(" ")} in ${cwd}: ${result.error.message}`);
+    // A missing cwd and a missing executable both surface as ENOENT, so check
+    // the directory again before blaming PATH: it may have gone since preflight.
+    const after = workingDirectoryProblem(cwd);
+    if (after !== null) throw new Error(`Cannot run ${command}: ${cwd} ${after}.`);
+    if ((result.error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`Cannot run ${command} in ${cwd}: the git executable was not found on PATH (${result.error.message}).`);
+    }
+    throw new Error(`Cannot run ${command} in ${cwd}: ${result.error.message}`);
   }
   return {
     exitCode: result.status ?? 1,

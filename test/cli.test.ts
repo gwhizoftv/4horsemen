@@ -381,6 +381,43 @@ describe("CLI manual mode", () => {
 });
 
 describe("CLI", () => {
+  it("refuses wipe-issue with a mistyped --product path before touching any repository", async () => {
+    const product = makeProduct("plain", "coordination");
+    productFixtures.push(product);
+    const parent = product.workspaceRoot;
+    const sentinel = join(product.coordRoot, "sentinel");
+    writeFileSync(sentinel, "runtime\n");
+    const snapshot = () => ({
+      refs: execFileSync("git", ["for-each-ref"], { cwd: product.productRoot, encoding: "utf8" }),
+      status: execFileSync("git", ["status", "--porcelain", "--ignored"], { cwd: product.productRoot, encoding: "utf8" }),
+      config: readFileSync(join(product.productRoot, ".git", "config"), "utf8"),
+      sentinel: readFileSync(sentinel, "utf8")
+    });
+    const before = snapshot();
+    const missing = join(parent, "coordinator");
+
+    const attempt = async (...extra: string[]) => {
+      const errors: string[] = [];
+      const code = await runCli(["wipe-issue", "392", "--force", ...extra], {
+        io: { cwd: parent, stdout: () => undefined, stderr: (message) => errors.push(message) }
+      });
+      return { code, stderr: errors.join("") };
+    };
+
+    for (const value of ["coordinator", missing]) {
+      const result = await attempt("--product", value);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain(`${missing} does not exist`);
+      expect(result.stderr).not.toContain("spawnSync");
+    }
+    const control = await attempt();
+    expect(control.code).toBe(2);
+    expect(control.stderr).toContain("is not a Git worktree");
+
+    expect(existsSync(missing)).toBe(false);
+    expect(snapshot()).toEqual(before);
+  });
+
   it("requires the external coord root explicitly rather than accepting COORD_ROOT", async () => {
     const fixture = setup();
     const messages: string[] = [];

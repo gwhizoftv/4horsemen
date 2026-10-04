@@ -192,6 +192,22 @@ refetching or rebinding an edited issue. From an unrelated worktree, pass
 `--product /path/to/onboarded/product`; coordination never guesses from a
 machine-global registry.
 
+`--product` is a filesystem path, resolved against the directory you run `coord`
+from; it is not a project name. Product selection runs before any command
+effect (including `wipe-issue --force`) and fails with exit 2 in distinct ways:
+
+- `<path> does not exist` / `<path> is not a directory` — the path is mistyped,
+  a dangling symlink, or a file. Check the spelling and the current directory.
+- `<path> is not a Git worktree` — the directory exists but is not inside a
+  repository; this is also what running `coord` from a non-repository parent
+  without `--product` reports.
+- `… is not onboarded in this worktree` — a real worktree without
+  `coord.ownerWorkspaceConfig`; run `coord onboard` for the intended product.
+- `the git executable was not found on PATH` — the directory is fine but `git`
+  could not be launched; fix `PATH`.
+
+None of these messages by itself means a repository was damaged.
+
 The explicit forms remain available:
 
 ```bash

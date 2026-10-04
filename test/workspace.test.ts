@@ -1,8 +1,8 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { localConfigGet } from "../src/gitExec.js";
+import { localConfigGet, worktreeRoot } from "../src/gitExec.js";
 import {
   OWNER_WORKSPACE_CONFIG_KEY,
   nestedConfigPath,
@@ -117,6 +117,44 @@ describe("workspace layout", () => {
       expect(localConfigGet(product.productRoot, key)).toBeNull();
     }
     expect(resolveWorkspaceFromProduct(product.productRoot)).toMatchObject({ configPath, layout: "flat" });
+    mkdirSync(join(product.productRoot, "sub"));
+    expect(resolveWorkspaceFromProduct(join(product.productRoot, "sub")).configPath).toBe(configPath);
+    const link = join(product.workspaceRoot, "product-link");
+    symlinkSync(product.productRoot, link, "dir");
+    expect(resolveWorkspaceFromProduct(link).configPath).toBe(configPath);
+  });
+
+  it("names a missing or non-directory product path instead of a raw git spawn error", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-product-path-"));
+    roots.push(root);
+    const missing = join(root, "coordinator");
+    const file = join(root, "file");
+    writeFileSync(file, "not a directory\n");
+    const dangling = join(root, "dangling");
+    symlinkSync(join(root, "gone"), dangling);
+
+    for (const [path, problem] of [
+      [missing, "does not exist"],
+      [dangling, "does not exist"],
+      [file, "is not a directory"]
+    ] as const) {
+      expect(() => resolveWorkspaceFromProduct(path)).toThrow(`${path} ${problem}`);
+      expect(() => resolveWorkspaceFromProduct(path)).not.toThrow(/spawnSync/);
+    }
+  });
+
+  it("still reports a git executable missing from PATH for an existing directory", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-no-git-"));
+    roots.push(root);
+    const emptyBin = join(root, "bin");
+    mkdirSync(emptyBin);
+    const savedPath = process.env.PATH;
+    process.env.PATH = emptyBin;
+    try {
+      expect(() => worktreeRoot(root)).toThrow(`in ${root}: the git executable was not found on PATH`);
+    } finally {
+      process.env.PATH = savedPath;
+    }
   });
 
   it("keeps same-named products registered in their own canonical worktrees", () => {
