@@ -285,7 +285,10 @@ protocol overlay plus bit are restored afterward.
 On `coord N` start (and resume), coordination lifts that skip-worktree bit,
 checks each agent clone out on `issue-N/<agent>` at the issue baseline (or the
 existing issue branch, without resetting it), then restores the protocol overlay.
-Agents do not switch branches under skip-worktree `AGENTS.md`. Dirty clones refuse.
+Agents do not switch branches under skip-worktree `AGENTS.md`. Dirty clones that
+still need a branch switch refuse before any clone is changed. A clone already
+on its exact `issue-N/<agent>` branch may keep uncommitted plan or implementation
+work across restart; that path never checks out, resets, or stashes.
 
 Nudge delivery uses literal `send-keys -l` (not paste-buffer — some TUIs such
 as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`.
@@ -503,23 +506,36 @@ An `unobservable` hold already persisted by an older coordinator is not released
 automatically: inspect the agent and use the scoped owner recovery below once.
 Other holds and a manual pause retain their existing semantics.
 
+While held or manually paused, the foreground `coord N` runner stays alive and
+polls observation-only; it does not exit merely because advancement is blocked.
+`coord pause` from another shell keeps that runner waiting (it does not terminate
+the process); Ctrl-C still stops it. Staying alive never releases a hold.
+
 Use `coord status --issue N` to see the hold ID and recovery instruction. After
 inspecting the agent and fixing the underlying problem:
 
 ```sh
+# Prefer --agent when that agent has exactly one hold (status shows the UUID too):
+coord resume --issue N --agent AGENT
+# Or the unambiguous hold id:
 coord resume --issue N --hold HOLD_ID
 # A nudge-loop latch requires explicit authorization for a fresh send budget:
-coord resume --issue N --hold HOLD_ID --reset-nudge-budget
+coord resume --issue N --agent AGENT --reset-nudge-budget
 coord resume --issue N  # separately clear a manual pause, if present
-coord run --issue N
+# A live coordinator continues after release. Restart a stopped one with:
+coord resume --issue N --agent AGENT --run
 ```
 
-Include `--product PATH` or `--coord-root PATH` as usual. Releasing one hold never
-clears another hold or a manual pause, and is audited. Retired actions cannot be
-released; `restart-action` and `drop` require resolving holds first. Owner release
-acknowledges a hold, not the continuing condition: a fresh local observation of
-the same dead pane or wait banner can re-hold immediately, even without new hooks.
-Each acknowledged hold generation has a distinct crash-idempotent journal identity.
+Include `--product PATH` or `--coord-root PATH` as usual. `--hold` and `--agent`
+are mutually exclusive; `--agent` refuses when that agent has zero or multiple
+holds (use `--hold` then). Releasing one hold never clears another hold or a
+manual pause, and is audited. Plain `coord resume` still clears only the manual
+pause. `--run` is for a stopped coordinator only; omit it beside a live runner.
+Retired actions cannot be released; `restart-action` and `drop` require resolving
+holds first. Owner release acknowledges a hold, not the continuing condition: a
+fresh local observation of the same dead pane or wait banner can re-hold
+immediately, even without new hooks. Each acknowledged hold generation has a
+distinct crash-idempotent journal identity.
 
 This intentionally replaces the earlier pushed-tip recovery on harness death:
 even a valid submission at origin without a completion receipt does not bypass

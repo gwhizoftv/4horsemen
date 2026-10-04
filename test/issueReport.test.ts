@@ -112,8 +112,11 @@ describe("issue report", () => {
       confidence: "unknown", retryOwner: "owner", evidence: null }];
     const text = renderIssueReport(start("owner-only"), cursors);
     expect(text).toContain("Manual pause: active");
+    expect(text).toContain("plain coord resume clears only this pause");
     expect(text).toContain("cause unknown, reset unknown, retry owner: owner");
-    expect(text).toContain("coord resume --issue 1 --hold hold-id --reset-nudge-budget");
+    expect(text).toContain("coord resume --issue 1 --agent cursor --reset-nudge-budget");
+    expect(text).toContain("or --hold hold-id --reset-nudge-budget");
+    expect(text).toContain("add --run only if restarting a stopped coordinator");
     expect(text).not.toContain("quota exhausted");
   });
   it("separates cause, exact recheck time, blocked windows and redacted detail from owner release", () => {
@@ -137,7 +140,46 @@ describe("issue report", () => {
     cursors.actionSafety = { codex: { ...safety, resource: { ...safety.resource, nextAt: null, terminal: "no exact provider deadline" } } };
     text = renderIssueReport(start("owner-only"), cursors);
     expect(text).toContain("stopped (no exact provider deadline); owner release required.");
-    expect(text).toContain("coord resume --issue 1 --hold exact");
+    expect(text).toContain("coord resume --issue 1 --agent codex");
+    expect(text).toContain("or --hold exact");
+  });
+
+  it("falls back to --hold when one agent has multiple holds", () => {
+    const cursors = complete();
+    cursors.completed = false;
+    cursors.paused = true;
+    cursors.holds = [
+      {
+        id: "first",
+        agent: "claude",
+        actionId: "action-id",
+        sessionId: null,
+        reason: "harness-gone",
+        evidenceId: "a",
+        observedAt: cursors.updatedAt,
+        resetsAt: null,
+        confidence: "unknown",
+        retryOwner: "owner",
+        evidence: null
+      },
+      {
+        id: "second",
+        agent: "claude",
+        actionId: "action-id",
+        sessionId: null,
+        reason: "delivery-uncertain",
+        evidenceId: "b",
+        observedAt: cursors.updatedAt,
+        resetsAt: null,
+        confidence: "unknown",
+        retryOwner: "owner",
+        evidence: null
+      }
+    ];
+    const text = renderIssueReport(start("owner-only"), cursors);
+    expect(text).toContain("coord resume --issue 1 --hold first");
+    expect(text).toContain("coord resume --issue 1 --hold second");
+    expect(text).not.toContain("--agent claude");
   });
 
   it("names the pin, published branch, and that the owner merges", () => {

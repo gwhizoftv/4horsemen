@@ -176,6 +176,11 @@ coord run --issue 42 --product /path/to/app
 # Manual configs can still supply both paths explicitly.
 coord start 42 --config /path/to/config.json --coord-root /path/to/runtime
 coord run --issue 42 --coord-root /path/to/runtime
+
+# After a hold: a live coordinator keeps waiting. Release with --agent (or --hold).
+# Add --run only when restarting a stopped coordinator — staying alive is not
+# automatic hold clearance.
+coord resume --issue 42 --agent claude --run --coord-root /path/to/runtime
 ```
 
 See `config.product.example.json` for declared verification/check commands and

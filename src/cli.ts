@@ -163,7 +163,7 @@ const parseArgs = (args: readonly string[], booleans: readonly string[] = []): P
  * absorbing the next flag.
  */
 const booleanFlags: Record<string, readonly string[]> = {
-  resume: ["reset-nudge-budget"],
+  resume: ["reset-nudge-budget", "run"],
   install: ["write-product", "vendor", "bootstrap-coordination", "dry-run"],
   uninstall: ["delete-clones", "wipe-runtime", "delete-coordination", "force", "dry-run"],
   "wipe-issue": ["force", "dry-run", "delete-evidence"],
@@ -236,7 +236,8 @@ Usage:
   coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
   coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
   coord pause|resume|restart-action|abandon --issue <issue> [--product <path> | --coord-root <path>]
-  coord resume --issue <issue> --hold <id> [--reset-nudge-budget] [--product <path> | --coord-root <path>]
+  coord resume --issue <issue> [--hold <id> | --agent <id>] [--reset-nudge-budget] [--run]
+               [--product <path> | --coord-root <path>]
   coord attach <issue> [--product <path> | --coord-root <path>]
   coord detach <issue> [--product <path> | --coord-root <path>] [--dry-run]
   coord detach manual [--product <path> | --config <path> --coord-root <path>] [--dry-run]
@@ -1581,25 +1582,79 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "pause" || command === "resume") {
-      allowedFlags(parsed, ["issue", "coord-root", "product", ...(command === "resume" ? ["hold", "reset-nudge-budget"] : [])]);
+      allowedFlags(parsed, [
+        "issue",
+        "coord-root",
+        "product",
+        ...(command === "resume" ? ["hold", "agent", "reset-nudge-budget", "run"] : [])
+      ]);
       if (parsed.positionals.length !== 0) throw new Error(`${command} takes no positional arguments.`);
       const paths = existingContext(parsed, io);
       const paused = command === "pause";
       const now = new Date().toISOString();
-      const holdId = parsed.flags.has("hold") ? requireFlag(parsed, "hold") : null;
+      const holdFlag = parsed.flags.has("hold") ? requireFlag(parsed, "hold") : null;
+      const agentFlag = parsed.flags.has("agent") ? requireFlag(parsed, "agent") : null;
       const resetBudget = flagIsSet(parsed, "reset-nudge-budget");
-      if (resetBudget && holdId === null) throw new Error("--reset-nudge-budget requires --hold.");
+      const continueRun = command === "resume" && flagIsSet(parsed, "run");
+      if (command === "resume" && holdFlag !== null && agentFlag !== null) {
+        throw new Error("--hold and --agent are mutually exclusive.");
+      }
+      if (resetBudget && holdFlag === null && agentFlag === null) {
+        throw new Error("--reset-nudge-budget requires --hold or --agent.");
+      }
+      if (continueRun) {
+        const start = readStartState(paths);
+        const workspace = workspaceLocationFromConfig(start.configPath);
+        const manualWorkspaceRoot =
+          workspace.layout === "nested" && resolve(paths.coordRoot) === resolve(workspace.coordRoot)
+            ? workspace.workspaceRoot
+            : paths.coordRoot;
+        await assertNoManualSession(manualWorkspaceRoot);
+      }
       const result = mutateCursorsState(paths, (current) => {
-        const next = holdId === null ? setPaused(current, paused, now) : releaseHold(current, holdId, resetBudget, now);
-        if (holdId !== null) appendJournal(paths, { type: "hold-released", details: {
-          hold: holdId, resetNudgeBudget: resetBudget, eventId: `release:${holdId}`
-        } }, now);
-        if (current.paused !== next.paused) appendJournal(paths, { type: next.paused ? "paused" : "resumed", details: {} }, now);
+        let holdId = holdFlag;
+        if (holdId === null && agentFlag !== null) {
+          const matches = current.holds.filter((hold) => hold.agent === agentFlag);
+          if (matches.length === 0) {
+            throw new Error(
+              `No active hold for agent ${agentFlag}.` +
+                (current.holds.length > 0
+                  ? ` Active holds: ${current.holds.map((hold) => `${hold.agent}/${hold.id}`).join(", ")}.`
+                  : "")
+            );
+          }
+          if (matches.length > 1) {
+            throw new Error(
+              `Agent ${agentFlag} has ${matches.length} active holds; use --hold with one of: ` +
+                `${matches.map((hold) => hold.id).join(", ")}.`
+            );
+          }
+          holdId = matches[0]!.id;
+        }
+        const next =
+          holdId === null ? setPaused(current, paused, now) : releaseHold(current, holdId, resetBudget, now);
+        if (holdId !== null) {
+          appendJournal(paths, {
+            type: "hold-released",
+            details: { hold: holdId, resetNudgeBudget: resetBudget, eventId: `release:${holdId}` }
+          }, now);
+        }
+        if (current.paused !== next.paused) {
+          appendJournal(paths, { type: next.paused ? "paused" : "resumed", details: {} }, now);
+        }
         return next;
       });
-      io.stdout(`${result.state.paused ? "Paused" : "Resumed"} issue ${readStartState(paths).issue}.` +
-        (result.state.holds.length > 0 ? ` ${result.state.holds.length} active hold(s); use coord status for scoped recovery.` : "") + "\n");
-      return 0;
+      io.stdout(
+        `${result.state.paused ? "Paused" : "Resumed"} issue ${readStartState(paths).issue}.` +
+          (result.state.holds.length > 0
+            ? ` ${result.state.holds.length} active hold(s); use coord status for scoped recovery.`
+            : "") +
+          (continueRun ? " Continuing the run loop (--run)." : "") +
+          "\n"
+      );
+      if (!continueRun) return 0;
+      await makeRunLoop(paths).run();
+      return await detachCompletedIssue(paths, io);
     }
 
     if (command === "restart-action") {

@@ -179,6 +179,35 @@ const assertClonesReady = (results: readonly PrepareAgentIssueBranchResult[]): v
   }
 };
 
+type CloneReadinessSnapshot = {
+  agent: string;
+  clone: string;
+  branch: string;
+  available: boolean;
+  head: string;
+  dirtyLines: readonly string[];
+};
+
+const snapshotCloneReadiness = (input: {
+  agents: readonly { id: string; root: string }[];
+  issue: number;
+  branchTemplate: string;
+}): CloneReadinessSnapshot[] =>
+  input.agents.map((agent) => {
+    const branch = issueBranchFor(input.branchTemplate, input.issue, agent.id);
+    if (!existsSync(agent.root) || !isGitWorktree(agent.root)) {
+      return { agent: agent.id, clone: agent.root, branch, available: false, head: "", dirtyLines: [] };
+    }
+    return {
+      agent: agent.id,
+      clone: agent.root,
+      branch,
+      available: true,
+      head: git(agent.root, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim(),
+      dirtyLines: blockingDirtyPaths(agent.root)
+    };
+  });
+
 /**
  * Put each agent clone on `issue-N/<agent>` before any harness starts. Lifts
  * skip-worktree AGENTS.md, checks out the issue branch at the baseline (or an
@@ -191,6 +220,11 @@ const assertClonesReady = (results: readonly PrepareAgentIssueBranchResult[]): v
  * check above. The readiness of every clone is asserted before returning,
  * because both callers launch agent CLIs only after this function returns
  * (`coord start` through `startEffects`, resume through `tmux.ensureSession`).
+ *
+ * Dirty clones already on the exact issue branch are not blocking: that path
+ * never checks out, so in-progress plan/implement work is preserved across
+ * restart. Dirt that would require a branch switch still refuses the whole
+ * batch before any clone is modified.
  */
 export const prepareAgentIssueBranches = (input: {
   agents: readonly { id: string; root: string }[];
@@ -203,9 +237,10 @@ export const prepareAgentIssueBranches = (input: {
 }): PrepareAgentIssueBranchResult[] => {
   const log = input.log ?? (() => undefined);
   const installRoot = input.installRoot ?? null;
-  const dirty = input.agents
-    .filter(({ root }) => existsSync(root) && isGitWorktree(root) && blockingDirtyPaths(root).length > 0)
-    .map(({ root }) => root);
+  const snapshots = snapshotCloneReadiness(input);
+  const dirty = snapshots
+    .filter((snapshot) => snapshot.available && snapshot.dirtyLines.length > 0 && snapshot.head !== snapshot.branch)
+    .map((snapshot) => snapshot.clone);
   if (dirty.length > 0) {
     throw new Error(
       `Refusing to check out issue branches: uncommitted changes in ${dirty.join(", ")}. ` +
@@ -230,8 +265,8 @@ export const prepareAgentIssueBranches = (input: {
     }
 
     const captured = captureCloneAgentsProtocol(agent.root);
-    const onBranch = git(agent.root, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
-    if (onBranch === branch) {
+    const head = git(agent.root, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+    if (head === branch) {
       const protocol = restoreProtocol(agent.root, installRoot, captured, log);
       log(`${agent.id} already on ${branch}\n`);
       results.push({
@@ -270,35 +305,6 @@ export const prepareAgentIssueBranches = (input: {
   assertClonesReady(results);
   return results;
 };
-
-type CloneReadinessSnapshot = {
-  agent: string;
-  clone: string;
-  branch: string;
-  available: boolean;
-  head: string;
-  dirtyLines: readonly string[];
-};
-
-const snapshotCloneReadiness = (input: {
-  agents: readonly { id: string; root: string }[];
-  issue: number;
-  branchTemplate: string;
-}): CloneReadinessSnapshot[] =>
-  input.agents.map((agent) => {
-    const branch = issueBranchFor(input.branchTemplate, input.issue, agent.id);
-    if (!existsSync(agent.root) || !isGitWorktree(agent.root)) {
-      return { agent: agent.id, clone: agent.root, branch, available: false, head: "", dirtyLines: [] };
-    }
-    return {
-      agent: agent.id,
-      clone: agent.root,
-      branch,
-      available: true,
-      head: git(agent.root, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim(),
-      dirtyLines: blockingDirtyPaths(agent.root)
-    };
-  });
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 

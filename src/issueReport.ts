@@ -1,12 +1,28 @@
 import type { BallotBatch, CursorsState, StartState } from "./state.js";
 import { coordMergesPullRequest } from "./steps.js";
 
+type Hold = CursorsState["holds"][number];
+
 const finalization = (cursors: CursorsState) =>
   [...cursors.accepted].reverse().find((submission) => submission.stepId === "R7.finalize");
 
 const latestBatchByUpdatedAt = (batches: readonly BallotBatch[]): BallotBatch | null => {
   if (batches.length === 0) return null;
   return [...batches].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt)).at(-1) ?? null;
+};
+
+/** Owner recovery line for one hold; prefers `--agent` when unambiguous. */
+export const formatHoldRecovery = (issue: number, hold: Hold, holds: readonly Hold[]): string => {
+  const budget = hold.reason === "nudge-loop" ? " --reset-nudge-budget" : "";
+  const agentMatches = holds.filter((entry) => entry.agent === hold.agent);
+  const selector =
+    agentMatches.length === 1
+      ? `--agent ${hold.agent}${budget} (or --hold ${hold.id}${budget})`
+      : `--hold ${hold.id}${budget}`;
+  return (
+    `Recovery: inspect the agent, then coord resume --issue ${issue} ${selector}. ` +
+    "A live coordinator continues after release; add --run only if restarting a stopped coordinator."
+  );
 };
 
 /**
@@ -52,7 +68,11 @@ export const renderIssueReport = (
     `Final pin (PR head): ${pin ?? "(none)"}`,
     `Published branch: ${branch ?? "(not pushed yet)"}`
   ];
-  if (cursors.manualPaused) lines.push("Manual pause: active (plain coord resume clears only this pause).");
+  if (cursors.manualPaused) {
+    lines.push(
+      "Manual pause: active (plain coord resume clears only this pause; the foreground runner waits until then)."
+    );
+  }
   for (const hold of cursors.holds) {
     const sends = cursors.actionSafety[hold.agent]?.sends ?? 0;
     const evidence = hold.evidence ?? null;
@@ -65,8 +85,7 @@ export const renderIssueReport = (
         `${window.limitId}/${window.window} ${window.usedPercent ?? "?"}% (resets ${window.resetsAt ?? "unknown"})`).join("; ")}.`);
     }
     if (evidence?.detail !== null && evidence?.detail !== undefined) lines.push(`Vendor detail (redacted): ${evidence.detail}`);
-    lines.push(`Recovery: inspect the agent, then coord resume --issue ${start.issue} --hold ${hold.id}` +
-      (hold.reason === "nudge-loop" ? " --reset-nudge-budget" : ""));
+    lines.push(formatHoldRecovery(start.issue, hold, cursors.holds));
   }
   for (const agent of new Set(cursors.holds.map((hold) => hold.agent))) {
     const safety = cursors.actionSafety[agent];

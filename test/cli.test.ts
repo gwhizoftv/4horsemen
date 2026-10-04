@@ -487,6 +487,111 @@ describe("CLI", () => {
     expect(readJournal(paths).filter((event) => event.type === "resumed")).toHaveLength(1);
   });
 
+  it("resolves --agent to one hold and starts run only with --run", async () => {
+    const fixture = setup();
+    expect(await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+      { processRunner: resolvableStartGit, makeRunLoop: fakeLoop })).toBe(0);
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const current = readCursorsState(paths);
+    const actionId = actionIdFor("codex");
+    const id = "20000000-0000-4000-8000-000000000011";
+    const other = "20000000-0000-4000-8000-000000000012";
+    writeCursorsState(paths, cursorsStateSchema.parse({
+      ...current,
+      paused: true,
+      agents: { ...current.agents, codex: { ...current.agents.codex, actionId } },
+      actionSafety: {
+        codex: { actionId, sends: 1, lastSendAt: current.updatedAt, activityAt: current.updatedAt }
+      },
+      holds: [
+        {
+          id,
+          agent: "codex",
+          actionId,
+          sessionId: null,
+          reason: "unobservable",
+          evidenceId: "u",
+          observedAt: current.updatedAt,
+          resetsAt: null,
+          confidence: "unknown",
+          retryOwner: "owner"
+        },
+        {
+          id: other,
+          agent: "codex",
+          actionId,
+          sessionId: null,
+          reason: "harness-gone",
+          evidenceId: "h",
+          observedAt: current.updatedAt,
+          resetsAt: null,
+          confidence: "unknown",
+          retryOwner: "owner"
+        }
+      ]
+    }));
+    const args = ["--issue", "1", "--coord-root", fixture.runtime];
+    const io = { stdout: () => undefined, stderr: () => undefined };
+    expect(await runCli(["resume", ...args, "--agent", "codex", "--hold", id], { io })).toBe(2);
+    expect(await runCli(["resume", ...args, "--agent", "codex"], { io })).toBe(2);
+    expect(await runCli(["resume", ...args, "--agent", "missing"], { io })).toBe(2);
+    writeCursorsState(paths, cursorsStateSchema.parse({
+      ...readCursorsState(paths),
+      paused: true,
+      holds: [
+        {
+          id,
+          agent: "codex",
+          actionId,
+          sessionId: null,
+          reason: "unobservable",
+          evidenceId: "u",
+          observedAt: current.updatedAt,
+          resetsAt: null,
+          confidence: "unknown",
+          retryOwner: "owner"
+        }
+      ]
+    }));
+    let runs = 0;
+    const looping: CliRunLoop = {
+      runTick: async () => readCursorsState(paths),
+      run: async () => { runs += 1; },
+      initializeEffects: async () => undefined
+    };
+    expect(await runCli(["resume", ...args, "--agent", "codex"], { io, makeRunLoop: () => looping })).toBe(0);
+    expect(runs).toBe(0);
+    expect(readCursorsState(paths).holds).toEqual([]);
+    expect(readJournal(paths).filter((event) => event.type === "hold-released")).toEqual([
+      expect.objectContaining({ details: expect.objectContaining({ hold: id, resetNudgeBudget: false }) })
+    ]);
+    writeCursorsState(paths, cursorsStateSchema.parse({
+      ...readCursorsState(paths),
+      paused: true,
+      holds: [
+        {
+          id,
+          agent: "codex",
+          actionId,
+          sessionId: null,
+          reason: "unobservable",
+          evidenceId: "u2",
+          observedAt: current.updatedAt,
+          resetsAt: null,
+          confidence: "unknown",
+          retryOwner: "owner"
+        }
+      ],
+      actionSafety: {
+        codex: { actionId, sends: 1, lastSendAt: current.updatedAt, activityAt: current.updatedAt }
+      },
+      agents: { ...readCursorsState(paths).agents, codex: { ...readCursorsState(paths).agents.codex, actionId } }
+    }));
+    expect(await runCli(["resume", ...args, "--agent", "codex", "--run"], { io, makeRunLoop: () => looping })).toBe(0);
+    expect(runs).toBe(1);
+    expect(readCursorsState(paths).holds).toEqual([]);
+  });
+
   it("prints all four analytics sections, rejects unknown flags, and fails clearly without a journal", async () => {
     const fixture = setup();
     expect(

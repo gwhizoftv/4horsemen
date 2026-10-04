@@ -269,15 +269,22 @@ describe("vendor resource evidence and recovery", () => {
     expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
     expect(readFileSync(f.paths.cursors, "utf8")).toBe(cursors);
     let sleeps = 0;
-    // A held runner stays alive only for the scheduled recheck; it never initializes effects here.
-    await f.makeLoop({ sleep: async () => { sleeps++; f.advance(1_000); } }).run();
+    const abort = new AbortController();
+    // Held runners stay alive after the recheck; stop explicitly once it has slept.
+    await f.makeLoop({
+      sleep: async () => {
+        sleeps++;
+        f.advance(1_000);
+        if (sleeps >= 2) abort.abort();
+      }
+    }).run(abort.signal);
     expect(sleeps).toBeGreaterThan(0);
     const after = readCursorsState(f.paths);
     expect(after.holds).toEqual(held.holds);
     expect(readJournal(f.paths).filter((event) => event.type === "hold-updated")).toEqual([
       expect.objectContaining({ details: expect.objectContaining({ outcome: "owner-release-required" }) })
     ]);
-    expect(f.messages.at(-1)).toContain("owner release required");
+    expect(f.messages.some((message) => message.includes("owner release required"))).toBe(true);
     expect(f.ui.sends).toBe(1);
     // An owner release is not re-held by the same failure episode.
     mutateCursorsState(f.paths, (current) => releaseHold(current, held.holds[0]!.id, false, f.now()));
@@ -287,7 +294,7 @@ describe("vendor resource evidence and recovery", () => {
   it.each([
     ["a model-family restriction", "rate_limit", "Opus weekly limit reached", 100, "usage-window"],
     ["a spend restriction", "billing_error", null, 100, "billing"]
-  ])("keeps %s at an unknown reset and lets run() return at once", async (_label, error, details, fiveHour, failureClass) => {
+  ])("keeps the runner alive while %s holds the issue", async (_label, error, details, fiveHour, failureClass) => {
     const f = safetyFixture("claude");
     await f.tick();
     f.advance(1); f.working();
@@ -295,12 +302,39 @@ describe("vendor resource evidence and recovery", () => {
     const held = await f.tick();
     expect(held.holds[0]).toMatchObject({ reason: "vendor-failure", resetsAt: null, confidence: "unknown", evidence: { failureClass } });
     let sleeps = 0;
-    await f.makeLoop({ sleep: async () => { sleeps++; } }).run();
-    expect(sleeps).toBe(0);
+    const abort = new AbortController();
+    const beforeSends = f.ui.sends;
+    await f.makeLoop({
+      sleep: async () => {
+        sleeps++;
+        if (sleeps >= 3) abort.abort();
+      }
+    }).run(abort.signal);
+    expect(sleeps).toBe(3);
+    expect(readCursorsState(f.paths).holds).toEqual(held.holds);
+    expect(f.ui.sends).toBe(beforeSends);
     const journal = readFileSync(f.paths.journal, "utf8");
     f.advance(7 * 86400_000);
     for (let i = 0; i < 200; i++) await f.tick();
     expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
+  });
+
+  it("keeps the runner alive across a manual pause", async () => {
+    const f = safetyFixture("claude");
+    await f.tick();
+    mutateCursorsState(f.paths, (current) => setPaused(current, true, f.now()));
+    let sleeps = 0;
+    const abort = new AbortController();
+    const beforeSends = f.ui.sends;
+    await f.makeLoop({
+      sleep: async () => {
+        sleeps++;
+        if (sleeps >= 3) abort.abort();
+      }
+    }).run(abort.signal);
+    expect(sleeps).toBe(3);
+    expect(readCursorsState(f.paths).manualPaused).toBe(true);
+    expect(f.ui.sends).toBe(beforeSends);
   });
 
   it("leaves throttling and unknown Claude failures on the budgeted #126 path", async () => {

@@ -284,6 +284,86 @@ describe("prepareAgentIssueBranches", () => {
     expect(existsSync(join(clone, "dirty.txt"))).toBe(true);
     expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
   });
+
+  it("keeps uncommitted work in a clone already on its issue branch", () => {
+    const { clone, baseline } = seedClone();
+    prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+    writeFileSync(join(clone, "plan.md"), "draft\n");
+    git(clone, "add", "plan.md");
+    git(clone, "commit", "-qm", "Claude: draft plan");
+    const kept = git(clone, "rev-parse", "HEAD");
+    writeFileSync(join(clone, "plan.md"), "draft\nedited\n");
+    writeFileSync(join(clone, "notes.txt"), "untracked\n");
+    git(clone, "add", "plan.md");
+    const stagedAfter = git(clone, "show", ":plan.md");
+
+    const outcome = prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(outcome).toEqual([
+      {
+        agent: "claude",
+        clone,
+        branch: "issue-9/claude",
+        action: "already-on-branch",
+        protocol: "overlay",
+        hadOverlay: true
+      }
+    ]);
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("issue-9/claude");
+    expect(git(clone, "rev-parse", "HEAD")).toBe(kept);
+    expect(readFileSync(join(clone, "plan.md"), "utf8")).toBe("draft\nedited\n");
+    expect(readFileSync(join(clone, "notes.txt"), "utf8")).toBe("untracked\n");
+    expect(git(clone, "show", ":plan.md")).toBe(stagedAfter);
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("refuses the batch when another dirty clone still needs a checkout", () => {
+    const first = seedClone();
+    const second = seedClone();
+    prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: first.clone }],
+      issue: 9,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: first.baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+    writeFileSync(join(first.clone, "wip.txt"), "keep\n");
+    writeFileSync(join(second.clone, "other.txt"), "block\n");
+    const beforeFirst = readFileSync(join(first.clone, "wip.txt"), "utf8");
+    const beforeHead = git(second.clone, "rev-parse", "--abbrev-ref", "HEAD");
+
+    expect(() =>
+      prepareAgentIssueBranches({
+        agents: [
+          { id: "claude", root: first.clone },
+          { id: "codex", root: second.clone }
+        ],
+        issue: 9,
+        branchTemplate: "issue-{issue}/{agent}",
+        baselineSha: first.baseline,
+        baseBranch: "main",
+        installRoot: repoRoot
+      })
+    ).toThrow(/uncommitted changes/);
+    expect(readFileSync(join(first.clone, "wip.txt"), "utf8")).toBe(beforeFirst);
+    expect(git(second.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe(beforeHead);
+    expect(existsSync(join(second.clone, "other.txt"))).toBe(true);
+  });
 });
 
 describe("makeAgentClonesBaseReady", () => {
