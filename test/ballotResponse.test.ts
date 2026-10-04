@@ -51,6 +51,29 @@ describe("ballotResponse", () => {
     expect(ineligible.ok).toBe(false);
   });
 
+  it("parses amendment ballot dispositions and rejects stale action ids", () => {
+    expect(
+      parseBallotResponse(
+        JSON.stringify({ actionId, disposition: "revise", rationale: "Not necessary." }),
+        "R4.amend-ballot",
+        actionId,
+        []
+      )
+    ).toMatchObject({ ok: true });
+    expect(
+      parseBallotResponse(
+        JSON.stringify({
+          actionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          disposition: "approve",
+          rationale: "stale"
+        }),
+        "R4.amend-ballot",
+        actionId,
+        []
+      ).ok
+    ).toBe(false);
+  });
+
   it("parses consensus dispositions and rejects illegal values", () => {
     expect(
       parseBallotResponse(

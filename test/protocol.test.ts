@@ -5,6 +5,9 @@ import {
   implementationReadyArtifactSchema,
   participationReadyArtifactSchema,
   parseJsonWithSchema,
+  planAmendmentBallotArtifactSchema,
+  planAmendmentBallotResponseSchema,
+  planAmendmentRequestArtifactSchema,
   planBallotArtifactSchema,
   planComparisonBallotResponseSchema,
   publishedArtifactSchema,
@@ -100,6 +103,56 @@ describe("published protocol schemas", () => {
         actionId,
         disposition: "revise",
         rationale: "Needs another pass."
+      }).success
+    ).toBe(true);
+  });
+
+  it("validates plan-amendment request and ballot contracts", () => {
+    const request = {
+      ...common,
+      artifact: "plan-amendment-request" as const,
+      actionId,
+      inputSetHash: digest,
+      scopeHash: digest,
+      explanation: "The plan omitted the test file.",
+      additionalPaths: [{ path: "test/product.test.ts", reason: "covers the new behavior" }]
+    };
+    expect(planAmendmentRequestArtifactSchema.parse(request)).toEqual(request);
+    expect(
+      planAmendmentRequestArtifactSchema.safeParse({
+        ...request,
+        additionalPaths: [{ path: "../escape.ts", reason: "traversal" }]
+      }).success
+    ).toBe(false);
+    expect(
+      planAmendmentBallotResponseSchema.safeParse({
+        actionId,
+        disposition: "approve",
+        rationale: "Necessary addition."
+      }).success
+    ).toBe(true);
+    expect(
+      planAmendmentBallotResponseSchema.safeParse({
+        actionId,
+        disposition: "escalate",
+        rationale: "nope"
+      }).success
+    ).toBe(false);
+    expect(
+      planAmendmentBallotArtifactSchema.safeParse({
+        protocolVersion: 2,
+        issue: 1,
+        issueSessionId: common.issueSessionId,
+        agent: "codex",
+        inputSetHash: digest,
+        actionId,
+        responseSha256: digest,
+        rationale: "Necessary addition.",
+        artifact: "plan-amendment-ballot",
+        sequence: 1,
+        request: { agent: "cursor", commitSha: "a".repeat(40), path: ".signals/issue-1/implementation-ready-cursor.json" },
+        selectedPlans: [{ agent: "codex", commitSha: "b".repeat(40), path: ".plans/issue-1/plan.md" }],
+        disposition: "approve"
       }).success
     ).toBe(true);
   });

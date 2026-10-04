@@ -129,6 +129,22 @@ const boundInputFilesSection = (materialized: MaterializedInputs | undefined): s
   );
 };
 
+const scopeEvidenceSection = (order: InternalOrder): string => {
+  const evidence = order.scopeEvidence ?? [];
+  if (evidence.length === 0 && order.scopeHash === undefined) return "";
+  const lines = evidence.map(
+    (input) => `- ${input.kind} from ${input.agent}: \`${input.commitSha}\` at \`${input.path}\``
+  );
+  const hashLine =
+    order.scopeHash === undefined ? "" : `\n\nCurrent scope hash: \`${order.scopeHash}\``;
+  return (
+    `\n\n## Scope binding\n\n` +
+    `These amendment citations extend the selected plan file map. They are bound separately from product inputs.` +
+    hashLine +
+    (lines.length === 0 ? "" : `\n\n${lines.join("\n")}`)
+  );
+};
+
 const inputText = (order: InternalOrder): string =>
   order.inputs.length === 0
     ? "- No peer commits are required for this action."
@@ -155,7 +171,7 @@ Publish the required artifact at:
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${scopeEvidenceSection(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
 
 Push the commit containing the artifact to \`${order.branch}\`. Then write that
 exact 40-character lowercase commit SHA as the sole contents of:
@@ -202,7 +218,7 @@ inputs from the files listed below.
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${eligible}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${scopeEvidenceSection(order)}${eligible}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
 
 After writing the marker, keep this file. Before waiting for more input, re-read
 it. If \`actionId\` in the front matter has changed, execute the new instructions

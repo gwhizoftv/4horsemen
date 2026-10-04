@@ -1124,6 +1124,122 @@ describe("CLI", () => {
     expect(errors.join("")).toContain("Cannot drop authorized reviser cursor");
   });
 
+  it("cancels a pending amendment ballot when an agent is dropped", async () => {
+    const fixture = setup();
+    await runCli(["start", "1", "--profile", "consensus", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      processRunner: successfulStartGit,
+      makeRunLoop: fakeLoop
+    });
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const current = readCursorsState(paths);
+    const now = "2026-08-11T17:30:00.000Z";
+    const planHash = "a".repeat(64);
+    writeCursorsState(
+      paths,
+      cursorsStateSchema.parse({
+        ...current,
+        issueCursor: { stepId: "R4.amend-ballot", gateId: "gate-4-implementations", round: 1 },
+        derived: {
+          ...current.derived,
+          planSelection: {
+            kind: "plan-selection",
+            algorithm: "plurality-active-roster-v1",
+            inputSetHash: planHash,
+            activeRoster: current.activeRoster,
+            inputs: [
+              {
+                kind: "plan",
+                agent: "codex",
+                submissionSha: "1".repeat(40),
+                path: ".plans/issue-1/plan.md"
+              }
+            ],
+            decisionId: `plan-selection:${planHash}`,
+            supersedes: null,
+            decidedAt: now,
+            selectedAgents: ["codex"]
+          }
+        },
+        accepted: [
+          {
+            stepId: "R2.plan" as const,
+            agent: "codex",
+            round: null,
+            submissionSha: "1".repeat(40),
+            path: ".plans/issue-1/plan.md",
+            acceptedAt: now,
+            approvedPaths: ["src/product.ts"]
+          }
+        ],
+        acceptedResponses: [
+          acceptedResponseFixture({
+            stepId: "R4.amend-ballot",
+            agent: "codex",
+            disposition: "approve",
+            round: 1,
+            acceptedAt: now
+          })
+        ],
+        ballotBatches: [
+          publishedBallotBatchFixture({
+            kind: "amendment-ballot-batch",
+            activeRoster: current.activeRoster,
+            round: 1,
+            status: "pending",
+            createdAt: now
+          })
+        ],
+        amendments: {
+          sequence: 2,
+          pending: {
+            sequence: 1,
+            requestAgent: "codex",
+            requestSha: "2".repeat(40),
+            requestPath: ".signals/issue-1/implementation-ready-codex.json",
+            requestIdentity: "d".repeat(64),
+            actionId: actionIdFor("codex"),
+            scopeHash: "c".repeat(64),
+            explanation: "need the omitted test",
+            additionalPaths: [{ path: "test/product.test.ts", reason: "covers the change" }],
+            selectedPlans: [
+              { agent: "codex", commitSha: "1".repeat(40), path: ".plans/issue-1/plan.md" }
+            ],
+            selectedPlanInputSetHash: planHash,
+            savedSourceStep: "R4.implement" as const,
+            savedSourceRound: null,
+            activeRoster: [...current.activeRoster]
+          },
+          approved: []
+        },
+        agents: Object.fromEntries(
+          current.activeRoster.map((agent) => [
+            agent,
+            {
+              ...current.agents[agent]!,
+              stepId: "R4.amend-ballot" as const,
+              evidenceId: "amendment-response-accepted" as const,
+              actionId: actionIdFor(agent),
+              status: "ordered" as const,
+              updatedAt: now
+            }
+          ])
+        ),
+        updatedAt: now
+      })
+    );
+
+    expect(
+      await runCli(["drop", "cursor", "--issue", "1", "--coord-root", fixture.runtime], {
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    const after = readCursorsState(paths);
+    expect(after.amendments?.pending ?? null).toBeNull();
+    expect(after.acceptedResponses.some((response) => response.stepId === "R4.amend-ballot")).toBe(false);
+    expect(after.ballotBatches.every((batch) => batch.status !== "pending")).toBe(true);
+    expect(after.issueCursor.stepId).not.toBe("R4.amend-ballot");
+  });
+
   it("resets to plan-ballot after a drop when the published evidence roster no longer matches", async () => {
     const fixture = setup();
     await runCli(["start", "1", "--profile", "consensus", "--config", fixture.configPath, "--coord-root", fixture.runtime], {

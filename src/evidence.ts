@@ -6,6 +6,7 @@ import {
   implementationReadyArtifactSchema,
   participationReadyArtifactSchema,
   parseJsonWithSchema,
+  planAmendmentRequestArtifactSchema,
   revisionReadyArtifactSchema,
   validateCommonArtifactFields
 } from "./protocol.js";
@@ -163,7 +164,7 @@ const approvedTreeRoot = (pattern: string): string => {
 };
 
 /** Git records a directory delete as a change to every file under it. A map entry names that tree. */
-const matchesApprovedPath = (path: string, approved: readonly string[]): boolean =>
+export const matchesApprovedPath = (path: string, approved: readonly string[]): boolean =>
   approved.some((pattern) => {
     const root = approvedTreeRoot(pattern);
     return root.length > 0 && (path === root || path.startsWith(`${root}/`));
@@ -173,6 +174,48 @@ const isCurrentIssueCoordinationPath = (path: string, issue: number): boolean =>
   [`.plans/issue-${issue}/`, `.signals/issue-${issue}/`, `.code-reviews/issue-${issue}/`].some((prefix) =>
     path.startsWith(prefix)
   );
+
+/** Amendment additions must be explicit files, not directories, globs, or coordination paths. */
+export const isExactAmendmentPath = (candidate: string): boolean => {
+  if (!isFileMapPath(candidate)) return false;
+  if (candidate.endsWith("/") || candidate.endsWith("/**")) return false;
+  if (candidate.includes("{") || candidate.includes("*") || candidate.includes("?")) return false;
+  const segments = candidate.split("/");
+  if (segments.some((segment) => segment === "" || segment === ".")) return false;
+  return true;
+};
+
+export const validateAmendmentAdditionalPaths = (
+  paths: readonly { path: string; reason: string }[],
+  effectiveApproved: readonly string[],
+  issue: number
+): string[] => {
+  const outstanding: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of paths) {
+    if (entry.reason.replace(/\s/gu, "").length === 0) {
+      outstanding.push(`additional path ${entry.path} requires a nonblank reason`);
+    }
+    if (!isExactAmendmentPath(entry.path)) {
+      outstanding.push(`additional path ${entry.path} must be an exact repository file path`);
+      continue;
+    }
+    if (isCurrentIssueCoordinationPath(entry.path, issue)) {
+      outstanding.push(`additional path ${entry.path} cannot be a coordination artifact namespace`);
+      continue;
+    }
+    if (seen.has(entry.path)) {
+      outstanding.push(`additional path ${entry.path} is duplicated`);
+      continue;
+    }
+    seen.add(entry.path);
+    if (matchesApprovedPath(entry.path, effectiveApproved)) {
+      outstanding.push(`additional path ${entry.path} is already covered by the effective approved map`);
+    }
+  }
+  if (paths.length === 0) outstanding.push("plan-amendment-request requires at least one additional path");
+  return outstanding;
+};
 
 const rejected = (order: InternalOrder, sha: string, outstanding: readonly string[]): EvidenceObservation => ({
   agent: order.agent,
@@ -205,6 +248,136 @@ const commonErrors = (
 
 const inputHashErrors = (actual: string, order: InternalOrder): string[] =>
   actual === computeInputSetHash(order.inputs) ? [] : ["artifact inputSetHash does not match the bound action inputs"];
+
+const scopeHashErrors = (actual: string | undefined, order: InternalOrder): string[] => {
+  if (order.scopeHash === undefined) return [];
+  if (actual === undefined) {
+    if ((order.scopeEvidence?.length ?? 0) > 0) {
+      return ["artifact scopeHash is required when approved amendments apply"];
+    }
+    return [];
+  }
+  return actual === order.scopeHash ? [] : ["artifact scopeHash does not match the current effective scope"];
+};
+
+const amendmentRequestObservation = (
+  order: InternalOrder,
+  sha: string,
+  request: {
+    scopeHash: string;
+    explanation: string;
+    additionalPaths: { path: string; reason: string }[];
+  },
+  requiredPath: string
+) => ({
+  agent: order.agent,
+  actionId: order.actionId,
+  submissionSha: sha,
+  status: "amendment-request" as const,
+  outstanding: [],
+  amendmentRequest: {
+    scopeHash: request.scopeHash,
+    explanation: request.explanation,
+    additionalPaths: request.additionalPaths,
+    requestPath: requiredPath
+  }
+});
+
+const evaluateAmendmentOrReady = async (
+  order: InternalOrder,
+  submissionSha: string,
+  blob: string,
+  requiredPath: string,
+  fetchedRef: string,
+  mirror: EvidenceMirror,
+  readyKind: "implementation" | "revision"
+): Promise<EvidenceObservation> => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(blob) as unknown;
+  } catch {
+    return rejected(order, submissionSha, [`invalid ${readyKind}-ready artifact: invalid JSON`]);
+  }
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "artifact" in parsed &&
+    (parsed as { artifact: unknown }).artifact === "plan-amendment-request"
+  ) {
+    const request = parseJsonWithSchema(blob, planAmendmentRequestArtifactSchema);
+    if (!request.ok) {
+      return rejected(order, submissionSha, [`invalid plan-amendment-request artifact: ${request.error}`]);
+    }
+    const errors = [
+      ...commonErrors(request.value, order),
+      ...inputHashErrors(request.value.inputSetHash, order),
+      ...scopeHashErrors(request.value.scopeHash, order)
+    ];
+    if (request.value.actionId !== order.actionId) {
+      errors.push(`artifact actionId must be ${order.actionId}`);
+    }
+    errors.push(
+      ...validateAmendmentAdditionalPaths(request.value.additionalPaths, order.approvedPaths, order.issue)
+    );
+    return errors.length === 0
+      ? amendmentRequestObservation(order, submissionSha, request.value, requiredPath)
+      : rejected(order, submissionSha, errors);
+  }
+
+  if (readyKind === "implementation") {
+    const ready = parseJsonWithSchema(blob, implementationReadyArtifactSchema);
+    if (!ready.ok) return rejected(order, submissionSha, [`invalid implementation-ready artifact: ${ready.error}`]);
+    const errors = [
+      ...commonErrors(ready.value, order),
+      ...inputHashErrors(ready.value.inputSetHash, order),
+      ...scopeHashErrors(ready.value.scopeHash, order),
+      ...(await pinErrors(ready.value.implementationCommitSha, submissionSha, fetchedRef, order, mirror))
+    ];
+    const approved = order.approvedPaths.length === 0 ? ready.value.approvedPaths : order.approvedPaths;
+    if (JSON.stringify([...ready.value.approvedPaths].sort()) !== JSON.stringify([...approved].sort())) {
+      errors.push("implementation approvedPaths do not match the effective approved file map");
+    }
+    if (errors.length === 0) {
+      const changed = await mirror.changedPaths(order.baselineSha, ready.value.implementationCommitSha);
+      const disallowed = changed.filter(
+        (path) => !isCurrentIssueCoordinationPath(path, order.issue) && !matchesApprovedPath(path, approved)
+      );
+      if (disallowed.length > 0) errors.push(`implementation changes paths outside the approved file map: ${disallowed.join(", ")}`);
+    }
+    return errors.length === 0
+      ? satisfied(order, submissionSha, { productPin: ready.value.implementationCommitSha })
+      : rejected(order, submissionSha, errors);
+  }
+
+  const ready = parseJsonWithSchema(blob, revisionReadyArtifactSchema);
+  if (!ready.ok) return rejected(order, submissionSha, [`invalid revision-ready artifact: ${ready.error}`]);
+  const errors = [
+    ...commonErrors(ready.value, order),
+    ...inputHashErrors(ready.value.inputSetHash, order),
+    ...scopeHashErrors(ready.value.scopeHash, order),
+    ...(await pinErrors(ready.value.revisedBranchHead, submissionSha, fetchedRef, order, mirror))
+  ];
+  if (ready.value.round !== order.round) errors.push(`revision round must be ${order.round ?? 1}`);
+  const expectedPins = order.inputs.map((input) => input.commitSha).sort();
+  if (JSON.stringify([...ready.value.basedOn].sort()) !== JSON.stringify(expectedPins)) {
+    errors.push("revision basedOn pins do not equal bound inputs");
+  }
+  if (expectedPins.length !== 1) errors.push("revision must be based on exactly one authorized product pin");
+  const inputPin = expectedPins[0];
+  if (inputPin !== undefined && !(await mirror.isAncestor(inputPin, ready.value.revisedBranchHead))) {
+    errors.push("revised product pin does not descend from its exact authorized input pin");
+  }
+  if (inputPin !== undefined) {
+    const changed = await mirror.changedPaths(inputPin, ready.value.revisedBranchHead);
+    const disallowed = changed.filter(
+      (path) => !isCurrentIssueCoordinationPath(path, order.issue) && !matchesApprovedPath(path, order.approvedPaths)
+    );
+    if (disallowed.length > 0) errors.push(`revision changes paths outside the approved file map: ${disallowed.join(", ")}`);
+  }
+  return errors.length === 0
+    ? satisfied(order, submissionSha, { productPin: ready.value.revisedBranchHead })
+    : rejected(order, submissionSha, errors);
+};
 
 const pinErrors = async (
   pin: string,
@@ -300,55 +473,11 @@ export const evaluateEvidence = async (
   }
 
   if (order.evidenceId === "implementation-pinned") {
-    const parsed = parseJsonWithSchema(blob, implementationReadyArtifactSchema);
-    if (!parsed.ok) return rejected(order, submissionSha, [`invalid implementation-ready artifact: ${parsed.error}`]);
-    const errors = [
-      ...commonErrors(parsed.value, order),
-      ...inputHashErrors(parsed.value.inputSetHash, order),
-      ...(await pinErrors(parsed.value.implementationCommitSha, submissionSha, fetched.ref, order, mirror))
-    ];
-    const approved = order.approvedPaths.length === 0 ? parsed.value.approvedPaths : order.approvedPaths;
-    if (JSON.stringify([...parsed.value.approvedPaths].sort()) !== JSON.stringify([...approved].sort())) {
-      errors.push("implementation approvedPaths do not match the selected plan file map");
-    }
-    if (errors.length === 0) {
-      const changed = await mirror.changedPaths(order.baselineSha, parsed.value.implementationCommitSha);
-      const disallowed = changed.filter(
-        (path) => !isCurrentIssueCoordinationPath(path, order.issue) && !matchesApprovedPath(path, approved)
-      );
-      if (disallowed.length > 0) errors.push(`implementation changes paths outside the approved file map: ${disallowed.join(", ")}`);
-    }
-    return errors.length === 0
-      ? satisfied(order, submissionSha, { productPin: parsed.value.implementationCommitSha })
-      : rejected(order, submissionSha, errors);
+    return evaluateAmendmentOrReady(order, submissionSha, blob, requiredPath, fetched.ref, mirror, "implementation");
   }
 
   if (order.evidenceId === "revision-pinned") {
-    const parsed = parseJsonWithSchema(blob, revisionReadyArtifactSchema);
-    if (!parsed.ok) return rejected(order, submissionSha, [`invalid revision-ready artifact: ${parsed.error}`]);
-    const errors = [
-      ...commonErrors(parsed.value, order),
-      ...inputHashErrors(parsed.value.inputSetHash, order),
-      ...(await pinErrors(parsed.value.revisedBranchHead, submissionSha, fetched.ref, order, mirror))
-    ];
-    if (parsed.value.round !== order.round) errors.push(`revision round must be ${order.round ?? 1}`);
-    const expectedPins = order.inputs.map((input) => input.commitSha).sort();
-    if (JSON.stringify([...parsed.value.basedOn].sort()) !== JSON.stringify(expectedPins)) errors.push("revision basedOn pins do not equal bound inputs");
-    if (expectedPins.length !== 1) errors.push("revision must be based on exactly one authorized product pin");
-    const inputPin = expectedPins[0];
-    if (inputPin !== undefined && !(await mirror.isAncestor(inputPin, parsed.value.revisedBranchHead))) {
-      errors.push("revised product pin does not descend from its exact authorized input pin");
-    }
-    if (inputPin !== undefined) {
-      const changed = await mirror.changedPaths(inputPin, parsed.value.revisedBranchHead);
-      const disallowed = changed.filter(
-        (path) => !isCurrentIssueCoordinationPath(path, order.issue) && !matchesApprovedPath(path, order.approvedPaths)
-      );
-      if (disallowed.length > 0) errors.push(`revision changes paths outside the approved file map: ${disallowed.join(", ")}`);
-    }
-    return errors.length === 0
-      ? satisfied(order, submissionSha, { productPin: parsed.value.revisedBranchHead })
-      : rejected(order, submissionSha, errors);
+    return evaluateAmendmentOrReady(order, submissionSha, blob, requiredPath, fetched.ref, mirror, "revision");
   }
 
   const parsed = parseJsonWithSchema(blob, finalizationArtifactSchema);

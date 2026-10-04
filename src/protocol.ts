@@ -105,7 +105,37 @@ export const implementationReadyArtifactSchema = z
     artifact: z.literal("implementation-ready"),
     inputSetHash: digestSchema,
     implementationCommitSha: gitShaSchema,
-    approvedPaths: z.array(repositoryPathSchema).min(1)
+    approvedPaths: z.array(repositoryPathSchema).min(1),
+    scopeHash: digestSchema.optional()
+  })
+  .strict();
+
+const amendmentPathEntrySchema = z
+  .object({
+    path: repositoryPathSchema,
+    reason: rationaleSchema
+  })
+  .strict();
+
+/** Agent-published request to extend the approved file map during implement/revise. */
+export const planAmendmentRequestArtifactSchema = z
+  .object({
+    ...commonArtifactFields,
+    artifact: z.literal("plan-amendment-request"),
+    actionId: actionIdSchema,
+    inputSetHash: digestSchema,
+    scopeHash: digestSchema,
+    explanation: rationaleSchema,
+    additionalPaths: z.array(amendmentPathEntrySchema).min(1).max(32)
+  })
+  .strict();
+
+/** Private agent response for amendment ballots (`approve` accepts; `revise` rejects). */
+export const planAmendmentBallotResponseSchema = z
+  .object({
+    actionId: actionIdSchema,
+    disposition: z.enum(["approve", "revise"]),
+    rationale: rationaleSchema
   })
   .strict();
 
@@ -126,7 +156,20 @@ export const revisionReadyArtifactSchema = z
     inputSetHash: digestSchema,
     round: z.number().int().min(1),
     revisedBranchHead: gitShaSchema,
-    basedOn: z.array(gitShaSchema).min(1)
+    basedOn: z.array(gitShaSchema).min(1),
+    scopeHash: digestSchema.optional()
+  })
+  .strict();
+
+/** Coordinator-published canonical amendment ballot (protocol version 2). */
+export const planAmendmentBallotArtifactSchema = z
+  .object({
+    ...commonPublishedBallotFields,
+    artifact: z.literal("plan-amendment-ballot"),
+    sequence: z.number().int().min(1),
+    request: artifactCitationSchema,
+    selectedPlans: z.array(artifactCitationSchema).min(1),
+    disposition: z.enum(["approve", "revise"])
   })
   .strict();
 
@@ -162,9 +205,11 @@ export const publishedArtifactSchema = z.discriminatedUnion("artifact", [
   participationReadyArtifactSchema,
   planBallotArtifactSchema,
   implementationReadyArtifactSchema,
+  planAmendmentRequestArtifactSchema,
   comparisonBallotArtifactSchema,
   revisionReadyArtifactSchema,
   consensusBallotArtifactSchema,
+  planAmendmentBallotArtifactSchema,
   finalizationArtifactSchema
 ]);
 
@@ -173,9 +218,12 @@ export type PlanComparisonBallotResponse = z.infer<typeof planComparisonBallotRe
 export type ConsensusBallotResponse = z.infer<typeof consensusBallotResponseSchema>;
 export type PlanBallotArtifact = z.infer<typeof planBallotArtifactSchema>;
 export type ImplementationReadyArtifact = z.infer<typeof implementationReadyArtifactSchema>;
+export type PlanAmendmentRequestArtifact = z.infer<typeof planAmendmentRequestArtifactSchema>;
+export type PlanAmendmentBallotResponse = z.infer<typeof planAmendmentBallotResponseSchema>;
 export type ComparisonBallotArtifact = z.infer<typeof comparisonBallotArtifactSchema>;
 export type RevisionReadyArtifact = z.infer<typeof revisionReadyArtifactSchema>;
 export type ConsensusBallotArtifact = z.infer<typeof consensusBallotArtifactSchema>;
+export type PlanAmendmentBallotArtifact = z.infer<typeof planAmendmentBallotArtifactSchema>;
 export type FinalizationArtifact = z.infer<typeof finalizationArtifactSchema>;
 export type PublishedArtifact = z.infer<typeof publishedArtifactSchema>;
 

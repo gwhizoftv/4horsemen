@@ -13,6 +13,7 @@ export type EvidenceId =
   | "review-published"
   | "plan-response-accepted"
   | "implementation-pinned"
+  | "amendment-response-accepted"
   | "comparison-published"
   | "comparison-response-accepted"
   | "revision-pinned"
@@ -25,6 +26,7 @@ export type WorkflowStepId =
   | "R3.review"
   | "R3.plan-ballot"
   | "R4.implement"
+  | "R4.amend-ballot"
   | "R5.compare"
   | "R5.compare-ballot"
   | "R6.revise"
@@ -120,7 +122,21 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     participants: "implementer",
     submissionMode: "git",
     requiredPath: (issue, agent) => `.signals/issue-${issue}/implementation-ready-${agent}.json`,
-    task: `Implement the selected plan and publish an implementation-ready signal that pins the product commit.${BUILD_DISCIPLINE_NOTE}`
+    task:
+      `Implement the selected plan and publish an implementation-ready signal that pins the product commit, ` +
+      `or publish a plan-amendment-request at the same path when the selected plan omitted necessary files.${BUILD_DISCIPLINE_NOTE}`
+  },
+  "R4.amend-ballot": {
+    id: "R4.amend-ballot",
+    gateId: "gate-4-implementations",
+    evidenceId: "amendment-response-accepted",
+    participants: "all",
+    submissionMode: "response",
+    requiredPath: (issue, agent, round) =>
+      `.plans/issue-${issue}/amendment-ballot-${agent}-seq-${round ?? 1}.json`,
+    task:
+      "Submit an amendment ballot judgment as a private response with your disposition and rationale. " +
+      "Do not commit or push."
   },
   "R5.compare": {
     id: "R5.compare",
@@ -148,7 +164,9 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     submissionMode: "git",
     requiredPath: (issue, agent, round) =>
       `.signals/issue-${issue}/revision-ready-${agent}-round-${round ?? 1}.json`,
-    task: `Prepare the requested revision and publish a signal pinning the revised product commit.${BUILD_DISCIPLINE_NOTE}`
+    task:
+      `Prepare the requested revision and publish a revision-ready signal that pins the revised product commit, ` +
+      `or publish a plan-amendment-request at the same path when the selected plan omitted necessary files.${BUILD_DISCIPLINE_NOTE}`
   },
   "R6.ballot": {
     id: "R6.ballot",
@@ -174,6 +192,16 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
 export const describeWorkflowStep = (stepId: WorkflowStepId | null, round: number | null): string => {
   if (stepId === null) return "complete";
   return round === null ? stepId : `${stepId} (round ${round})`;
+};
+
+/** Amendment sequence for ballot steps; revision round for R6.* steps; otherwise null. */
+export const ballotRoundForStep = (
+  stepId: WorkflowStepId,
+  cursors: { issueCursor: { round: number | null } }
+): number | null => {
+  if (stepId === "R4.amend-ballot") return cursors.issueCursor.round ?? 1;
+  if (stepId.startsWith("R6.")) return cursors.issueCursor.round ?? 1;
+  return null;
 };
 
 const consensusSteps: readonly WorkflowStepId[] = [
@@ -316,15 +344,26 @@ export type InternalOrder = {
   materialized?: MaterializedInputs;
   activeRoster: readonly string[];
   eligibleChoices: readonly string[];
+  /** Coordinator-computed scope identity for implement/revise/amendment actions. */
+  scopeHash?: string;
+  /** Applicable approved-amendment citations bound separately from product inputs. */
+  scopeEvidence?: readonly BoundInput[];
 };
 
 export type CheckResult = { name: string; argv: readonly string[]; exitCode: number };
+
+export type AmendmentRequestPayload = {
+  scopeHash: string;
+  explanation: string;
+  additionalPaths: readonly { path: string; reason: string }[];
+  requestPath: string;
+};
 
 export type EvidenceObservation = {
   agent: string;
   actionId: string;
   submissionSha: string;
-  status: "satisfied" | "rejected" | "retry";
+  status: "satisfied" | "rejected" | "retry" | "amendment-request";
   outstanding: readonly string[];
   productPin?: string;
   disposition?: "approve" | "revise" | "escalate";
@@ -334,6 +373,13 @@ export type EvidenceObservation = {
   /** Present when the observation came from a private ballot response. */
   responseSha256?: string;
   rationale?: string;
+  /** Present when an implement/revise artifact is a plan-amendment-request. */
+  amendmentRequest?: AmendmentRequestPayload;
+};
+
+export type SavedAmendmentSource = {
+  stepId: "R4.implement" | "R6.revise";
+  round: number | null;
 };
 
 export type MachineDecision =
@@ -363,6 +409,13 @@ export type MachineDecision =
   | { type: "derive-plan-selection" }
   | { type: "derive-implementation-selection" }
   | { type: "derive-consensus"; round: number }
+  | {
+      type: "admit-amendment-request";
+      agent: string;
+      submissionSha: string;
+      amendmentRequest: AmendmentRequestPayload;
+    }
+  | { type: "resume-amendment-detour"; approved: boolean; rejectionReasons?: readonly string[] }
   | { type: "wait"; reason: string }
   | {
       type: "owner-action-required";

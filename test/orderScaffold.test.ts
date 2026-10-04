@@ -47,6 +47,49 @@ describe("orderScaffold", () => {
     expect(rendered).toContain('"artifact": "implementation-ready"');
   });
 
+  it("offers mutually exclusive ready and plan-amendment-request scaffolds for implement", () => {
+    const rendered = renderArtifactScaffold({
+      stepId: "R4.implement",
+      issue: 1,
+      issueSessionId: "s",
+      agent: "claude",
+      baselineSha: "a".repeat(40),
+      automationDigest: "b".repeat(64),
+      inputs: [],
+      eligibleChoices: [],
+      round: null,
+      approvedPaths: ["src/product.ts"],
+      actionId: "b2337d85-6617-4e9f-8ace-901453764aa4",
+      scopeHash: "c".repeat(64)
+    });
+    expect(rendered).toContain("mutually exclusive outcome");
+    expect(rendered).toContain('"artifact": "implementation-ready"');
+    expect(rendered).toContain('"artifact": "plan-amendment-request"');
+    expect(rendered).toContain('"scopeHash": "' + "c".repeat(64) + '"');
+    expect(rendered).toContain("does not claim completion");
+  });
+
+  it("renders approve/revise amendment ballot response JSON", () => {
+    const value = artifactScaffoldValue({
+      stepId: "R4.amend-ballot",
+      issue: 1,
+      issueSessionId: "s",
+      agent: "claude",
+      baselineSha: "a".repeat(40),
+      automationDigest: "b".repeat(64),
+      inputs: [],
+      eligibleChoices: [],
+      round: 1,
+      approvedPaths: [],
+      actionId: "b2337d85-6617-4e9f-8ace-901453764aa4"
+    });
+    expect(value).toEqual({
+      actionId: "b2337d85-6617-4e9f-8ace-901453764aa4",
+      disposition: "approve",
+      rationale: "<one sentence>"
+    });
+  });
+
   it("lists required plan headings for R2.plan", () => {
     const rendered = renderArtifactScaffold({
       stepId: "R2.plan",

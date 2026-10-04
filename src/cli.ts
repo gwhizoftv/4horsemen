@@ -34,14 +34,17 @@ import {
   computeConsensusDerived,
   computeImplementationSelectionDerived,
   computePlanSelectionDerived,
+  deriveBoundInputs,
   derivedDecisionJournalDetails,
   runArgv,
+  selectedPlanInputSetHash,
   type ProcessRunner
 } from "./runLoop.js";
 import {
   appendJournal,
   atomicWriteJson,
   cursorsStateSchema,
+  amendmentsStateOf,
   dropAgent,
   initializeOperationalState,
   mutateCursorsState,
@@ -56,7 +59,8 @@ import {
   verifyPhaseSchema,
   type BallotBatch,
   type CoordinatorConfig,
-  type CursorsState
+  type CursorsState,
+  type StartState
 } from "./state.js";
 import { STEP_DEFINITIONS, type WorkflowProfile, type WorkflowStepId } from "./steps.js";
 import {
@@ -351,6 +355,62 @@ const invalidateUnpublishedBatches = (
         }
   );
 
+const cancelPendingAmendment = (state: CursorsState, _start: StartState, now: string): CursorsState => {
+  const pending = amendmentsStateOf(state).pending;
+  if (pending === null) return state;
+  const resumeStep = pending.savedSourceStep;
+  const resumeRound = pending.savedSourceRound;
+  const agents = { ...state.agents };
+  for (const agent of state.activeRoster) {
+    const cursor = agents[agent];
+    if (cursor === undefined) continue;
+    if (cursor.stepId === "R4.amend-ballot" || cursor.stepId === pending.savedSourceStep) {
+      agents[agent] = {
+        ...cursor,
+        stepId: resumeStep,
+        evidenceId: STEP_DEFINITIONS[resumeStep].evidenceId,
+        actionId: null,
+        submissionMode: null,
+        actionDigest: null,
+        status: "idle",
+        submissionSha: null,
+        outstanding: [],
+        updatedAt: now
+      };
+    }
+  }
+  return cursorsStateSchema.parse({
+    ...state,
+    issueCursor: { stepId: resumeStep, gateId: STEP_DEFINITIONS[resumeStep].gateId, round: resumeRound },
+    agents,
+    amendments: { ...amendmentsStateOf(state), pending: null },
+    acceptedResponses: state.acceptedResponses.filter(
+      (response) => !(response.stepId === "R4.amend-ballot" && response.round === pending.sequence)
+    ),
+    ballotBatches: invalidateUnpublishedBatches(
+      state.ballotBatches,
+      now,
+      "invalidated by pending amendment cancellation"
+    ).map((batch) =>
+      batch.kind === "amendment-ballot-batch" && batch.round === pending.sequence && batch.status !== "published"
+        ? { ...batch, status: "invalidated" as const, error: batch.error ?? "invalidated by pending amendment cancellation", updatedAt: now }
+        : batch
+    ),
+    updatedAt: now
+  });
+};
+
+const retainApplicableAmendments = (state: CursorsState, start: StartState): CursorsState => {
+  const planHash = selectedPlanInputSetHash(deriveBoundInputs(start, state, "R4.implement", null));
+  return cursorsStateSchema.parse({
+    ...state,
+    amendments: {
+      ...amendmentsStateOf(state),
+      approved: amendmentsStateOf(state).approved.filter((entry) => entry.selectedPlanInputSetHash === planHash)
+    }
+  });
+};
+
 const clearAgentLocalWork = (paths: IssueRuntimePaths, agent: string, actionId: string | null): void => {
   const runtime = agentRuntimePaths(paths, agent);
   clearCompletion(runtime.complete);
@@ -360,6 +420,7 @@ const clearAgentLocalWork = (paths: IssueRuntimePaths, agent: string, actionId: 
 
 const rederiveAfterDrop = (
   paths: IssueRuntimePaths,
+  start: StartState,
   cursors: CursorsState,
   dropped: string,
   now: string
@@ -368,6 +429,9 @@ const rederiveAfterDrop = (
   const priorImplementation = cursors.derived.implementationSelection;
   const priorConsensus = cursors.derived.consensus;
   let next = dropAgent(cursors, dropped, now);
+  if (amendmentsStateOf(next).pending !== null) {
+    next = cancelPendingAmendment(next, start, now);
+  }
   // A ballot cast for an agent who is no longer eligible must be replaced by
   // its active author. Other evidence from the dropped agent remains as
   // historical provenance but is excluded by every active-only derivation.
@@ -465,9 +529,9 @@ const rederiveAfterDrop = (
   if (priorPlan !== null) {
     if (next.activeRoster.length === 1) {
       if (priorPlan.selectedAgents[0] !== next.activeRoster[0]) {
-        next = resetTo(next, "R4.implement", null, (step) =>
+        next = retainApplicableAmendments(resetTo(next, "R4.implement", null, (step) =>
           ["R4.implement", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(step)
-        );
+        ), start);
         reset = true;
       }
     } else {
@@ -484,9 +548,9 @@ const rederiveAfterDrop = (
           updatedAt: now
         });
         if (plan.selectedAgents[0] !== priorPlan.selectedAgents[0]) {
-          next = resetTo(next, "R4.implement", null, (step) =>
+          next = retainApplicableAmendments(resetTo(next, "R4.implement", null, (step) =>
             ["R4.implement", "R5.compare", "R5.compare-ballot", "R6.revise", "R6.ballot", "R7.finalize"].includes(step)
-          );
+          ), start);
           reset = true;
         }
       }
@@ -1587,7 +1651,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           );
         }
         appendJournal(paths, { type: "agent-dropped", agent, details: {} }, now);
-        return rederiveAfterDrop(paths, current, agent, now);
+        return rederiveAfterDrop(paths, readStartState(paths), current, agent, now);
       });
       await makeRunLoop(paths).runTick();
       io.stdout(`Dropped ${agent}; remaining inputs have been rederived.\n`);

@@ -13,6 +13,7 @@ export type ArtifactScaffoldContext = {
   round: number | null;
   approvedPaths: readonly string[];
   actionId?: string;
+  scopeHash?: string;
 };
 
 const PLACEHOLDER_SHA = "<40-lowercase-hex-commit-sha>";
@@ -53,7 +54,14 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
         ...withHash(ctx),
         artifact: "implementation-ready",
         implementationCommitSha: PLACEHOLDER_SHA,
-        approvedPaths: ctx.approvedPaths.length > 0 ? [...ctx.approvedPaths] : ["<path-from-selected-plan>"]
+        approvedPaths: ctx.approvedPaths.length > 0 ? [...ctx.approvedPaths] : ["<path-from-selected-plan>"],
+        ...(ctx.scopeHash === undefined ? {} : { scopeHash: ctx.scopeHash })
+      };
+    case "R4.amend-ballot":
+      return {
+        actionId: ctx.actionId ?? "<action-uuid>",
+        disposition: "approve",
+        rationale: "<one sentence>"
       };
     case "R5.compare-ballot":
       return {
@@ -67,7 +75,8 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
         artifact: "revision-ready",
         round: ctx.round ?? 1,
         revisedBranchHead: PLACEHOLDER_SHA,
-        basedOn: ctx.inputs.map((input) => input.commitSha)
+        basedOn: ctx.inputs.map((input) => input.commitSha),
+        ...(ctx.scopeHash === undefined ? {} : { scopeHash: ctx.scopeHash })
       };
     case "R6.ballot":
       return {
@@ -146,14 +155,36 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
   }
 };
 
+const amendmentRequestScaffold = (ctx: ArtifactScaffoldContext): Record<string, unknown> => ({
+  ...withHash(ctx),
+  artifact: "plan-amendment-request",
+  actionId: ctx.actionId ?? "<action-uuid>",
+  scopeHash: ctx.scopeHash ?? "<scope-hash-from-action>",
+  explanation: "<why each additional path is necessary>",
+  additionalPaths: [{ path: "<exact-repository-file>", reason: "<necessity>" }]
+});
+
 export const renderArtifactScaffold = (ctx: ArtifactScaffoldContext): string => {
   const markdown = markdownHeadingScaffold(ctx);
   if (markdown !== "") return markdown;
   const value = artifactScaffoldValue(ctx);
   if (value === null) return "";
-  const json = JSON.stringify(value, null, 2);
   const isResponse =
-    ctx.stepId === "R3.plan-ballot" || ctx.stepId === "R5.compare-ballot" || ctx.stepId === "R6.ballot";
+    ctx.stepId === "R3.plan-ballot" ||
+    ctx.stepId === "R5.compare-ballot" ||
+    ctx.stepId === "R6.ballot" ||
+    ctx.stepId === "R4.amend-ballot";
+  if (ctx.stepId === "R4.implement" || ctx.stepId === "R6.revise") {
+    const ready = JSON.stringify(value, null, 2);
+    const request = JSON.stringify(amendmentRequestScaffold(ctx), null, 2);
+    return (
+      `\n\nPublish exactly one mutually exclusive outcome at the required path.\n\n` +
+      `Implementation/revision ready signal:\n\n\`\`\`json\n${ready}\n\`\`\`\n\n` +
+      `Plan-amendment request (does not claim completion; coordination-only commit is acceptable):\n\n` +
+      `\`\`\`json\n${request}\n\`\`\``
+    );
+  }
+  const json = JSON.stringify(value, null, 2);
   const preamble = isResponse
     ? `\n\nWrite this JSON to the response path (replace any \`<...>\` placeholders):\n\n`
     : `\n\nWrite this JSON to the required path (replace any \`<...>\` placeholders; keep bound citations and digests exact):\n\n`;

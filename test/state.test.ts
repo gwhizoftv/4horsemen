@@ -329,4 +329,28 @@ describe("context paths", () => {
     const { start } = initialize();
     expect(start.contextPaths).toEqual([]);
   });
+
+  it("defaults amendment state empty and round-trips pending requests", () => {
+    const { paths } = initialize();
+    const cursors = readCursorsState(paths);
+    expect(cursors.amendments).toEqual({ sequence: 1, pending: null, approved: [] });
+    const pending = {
+      sequence: 1,
+      requestAgent: "claude" as const,
+      requestSha: "a".repeat(40),
+      requestPath: ".signals/issue-1/implementation-ready-claude.json",
+      requestIdentity: "b".repeat(64),
+      actionId: "10000000-0000-4000-8000-000000000001",
+      scopeHash: "c".repeat(64),
+      explanation: "Need test file.",
+      additionalPaths: [{ path: "test/product.test.ts", reason: "coverage" }],
+      selectedPlans: [{ agent: "codex", commitSha: "d".repeat(40), path: ".plans/issue-1/plan.md" }],
+      selectedPlanInputSetHash: "e".repeat(64),
+      savedSourceStep: "R4.implement" as const,
+      savedSourceRound: null,
+      activeRoster: ["claude", "codex"]
+    };
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...cursors, amendments: { sequence: 2, pending, approved: [] } }));
+    expect(readCursorsState(paths).amendments?.pending?.sequence).toBe(1);
+  });
 });

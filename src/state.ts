@@ -54,6 +54,7 @@ const stepIdSchema = z.enum([
   "R3.review",
   "R3.plan-ballot",
   "R4.implement",
+  "R4.amend-ballot",
   "R5.compare",
   "R5.compare-ballot",
   "R6.revise",
@@ -75,13 +76,14 @@ const evidenceIdSchema = z.enum([
   "review-published",
   "plan-response-accepted",
   "implementation-pinned",
+  "amendment-response-accepted",
   "comparison-published",
   "comparison-response-accepted",
   "revision-pinned",
   "consensus-response-accepted",
   "finalization-verified"
 ]);
-const ballotStepIdSchema = z.enum(["R3.plan-ballot", "R5.compare-ballot", "R6.ballot"]);
+const ballotStepIdSchema = z.enum(["R3.plan-ballot", "R5.compare-ballot", "R6.ballot", "R4.amend-ballot"]);
 const timestampSchema = z.string().datetime({ offset: true });
 
 export const checkCommandSchema = z
@@ -387,7 +389,9 @@ const derivedInputKindSchema = z.enum([
   "implementation",
   "comparison-ballot",
   "revision",
-  "consensus-ballot"
+  "consensus-ballot",
+  "amendment-request",
+  "amendment-ballot"
 ]);
 
 const derivedInputCitationSchema = z
@@ -517,10 +521,67 @@ export const acceptedResponseSchema = z
   })
   .strict();
 
+const amendmentPathEntrySchema = z
+  .object({
+    path: z.string().min(1),
+    reason: z.string().min(1)
+  })
+  .strict();
+
+const planCitationSchema = z
+  .object({
+    agent: agentIdSchema,
+    commitSha: gitShaSchema,
+    path: z.string().min(1)
+  })
+  .strict();
+
+export const pendingAmendmentRequestSchema = z
+  .object({
+    sequence: z.number().int().min(1),
+    requestAgent: agentIdSchema,
+    requestSha: gitShaSchema,
+    requestPath: z.string().min(1),
+    requestIdentity: digestSchema,
+    actionId: actionIdSchema,
+    scopeHash: digestSchema,
+    explanation: z.string().min(1),
+    additionalPaths: z.array(amendmentPathEntrySchema).min(1),
+    selectedPlans: z.array(planCitationSchema).min(1),
+    selectedPlanInputSetHash: digestSchema,
+    savedSourceStep: z.enum(["R4.implement", "R6.revise"]),
+    savedSourceRound: z.number().int().min(1).nullable(),
+    activeRoster: z.array(agentIdSchema).min(1)
+  })
+  .strict();
+
+export const approvedAmendmentSchema = z
+  .object({
+    sequence: z.number().int().min(1),
+    requestIdentity: digestSchema,
+    requestAgent: agentIdSchema,
+    requestSha: gitShaSchema,
+    requestPath: z.string().min(1),
+    publicationSha: gitShaSchema,
+    batchId: z.string().uuid(),
+    addedPaths: z.array(z.string().min(1)).min(1),
+    selectedPlanInputSetHash: digestSchema,
+    approvedAt: timestampSchema
+  })
+  .strict();
+
+export const amendmentsStateSchema = z
+  .object({
+    sequence: z.number().int().min(1),
+    pending: pendingAmendmentRequestSchema.nullable(),
+    approved: z.array(approvedAmendmentSchema)
+  })
+  .strict();
+
 export const ballotBatchSchema = z
   .object({
     batchId: z.string().uuid(),
-    kind: z.enum(["plan-ballot-batch", "comparison-ballot-batch", "consensus-ballot-batch"]),
+    kind: z.enum(["plan-ballot-batch", "comparison-ballot-batch", "consensus-ballot-batch", "amendment-ballot-batch"]),
     round: z.number().int().min(1).nullable(),
     inputSetHash: digestSchema,
     activeRoster: z.array(agentIdSchema),
@@ -655,6 +716,7 @@ export const cursorsStateSchema = z
     accepted: z.array(acceptedSubmissionSchema),
     acceptedResponses: z.array(acceptedResponseSchema),
     ballotBatches: z.array(ballotBatchSchema),
+    amendments: amendmentsStateSchema.optional(),
     updatedAt: timestampSchema
   })
   .strict();
@@ -693,7 +755,10 @@ const journalEventTypeSchema = z.enum([
   "ballot-batch-published",
   "ballot-batch-failed",
   "ballot-batch-invalidated",
-  "clone-readiness-refused"
+  "clone-readiness-refused",
+  "amendment-request-admitted",
+  "amendment-approved",
+  "amendment-rejected"
 ]);
 
 export const journalEventSchema = z
@@ -725,6 +790,15 @@ export type AgentCursor = z.infer<typeof agentCursorSchema>;
 export type AcceptedSubmission = z.infer<typeof acceptedSubmissionSchema>;
 export type AcceptedResponse = z.infer<typeof acceptedResponseSchema>;
 export type BallotBatch = z.infer<typeof ballotBatchSchema>;
+export type PendingAmendmentRequest = z.infer<typeof pendingAmendmentRequestSchema>;
+export type ApprovedAmendment = z.infer<typeof approvedAmendmentSchema>;
+export type AmendmentsState = z.infer<typeof amendmentsStateSchema>;
+
+export const emptyAmendmentsState = (): AmendmentsState => ({ sequence: 1, pending: null, approved: [] });
+
+export const amendmentsStateOf = (cursors: { amendments?: AmendmentsState | undefined }): AmendmentsState =>
+  cursors.amendments ?? emptyAmendmentsState();
+
 export type DerivedInputKind = z.infer<typeof derivedInputKindSchema>;
 export type DerivedInputCitation = z.infer<typeof derivedInputCitationSchema>;
 export type PlanSelectionDerived = z.infer<typeof planSelectionDerivedSchema>;
@@ -858,6 +932,7 @@ export const initialCursors = (start: StartState, now = new Date().toISOString()
     accepted: [],
     acceptedResponses: [],
     ballotBatches: [],
+    amendments: { sequence: 1, pending: null, approved: [] },
     updatedAt: now
   });
 };

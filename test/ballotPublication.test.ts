@@ -206,4 +206,52 @@ describe("ballotPublication", () => {
       else process.env.GIT_AUTHOR_EMAIL = priorEmail;
     }
   }, 30_000);
+
+  it("builds amendment ballot batch paths keyed by sequence", () => {
+    expect(canonicalBallotPath("amendment-ballot-batch", 1, "codex", 2)).toBe(
+      ".plans/issue-1/amendment-ballot-codex-seq-2.json"
+    );
+    const prepared = prepareBallotBatch({
+      kind: "amendment-ballot-batch",
+      issue: 1,
+      issueSessionId: `issue-1:${sha("a")}`,
+      round: 2,
+      activeRoster: ["codex", "claude"],
+      boundInputs: [
+        {
+          kind: "amendment-request",
+          agent: "cursor",
+          commitSha: sha("b"),
+          path: ".signals/issue-1/implementation-ready-cursor.json"
+        },
+        {
+          kind: "selected-plan",
+          agent: "codex",
+          commitSha: sha("c"),
+          path: ".plans/issue-1/plan.md"
+        }
+      ],
+      responses: [
+        {
+          agent: "codex",
+          actionId,
+          responseSha256: digest,
+          rationale: "Necessary.",
+          disposition: "approve"
+        },
+        {
+          agent: "claude",
+          actionId,
+          responseSha256: digest,
+          rationale: "Necessary.",
+          disposition: "approve"
+        }
+      ]
+    });
+    expect(prepared.paths).toEqual([
+      ".plans/issue-1/amendment-ballot-codex-seq-2.json",
+      ".plans/issue-1/amendment-ballot-claude-seq-2.json"
+    ]);
+    expect(prepared.files[0]?.content).toContain('"artifact": "plan-amendment-ballot"');
+  });
 });

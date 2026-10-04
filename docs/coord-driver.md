@@ -391,6 +391,28 @@ re-resolves the approved file map from the pinned plan evidence and rewrites
 paths, the changed action digest invalidates stale hook correlation and the
 coordinator still applies the lifecycle idle gate before injecting it.
 
+### Plan-amendment detour
+
+During `R4.implement` or `R6.revise`, an authorized agent may publish a
+`plan-amendment-request` at the same required path as the ready signal instead
+of claiming completion. The coordinator validates bindings, exact additive paths,
+and the coordinator-supplied `scopeHash`, then suspends in-flight implement/revise
+work and opens an all-active-agent amendment ballot (`R4.amend-ballot`). Ballot
+round identity is the monotonic amendment sequence, not a revision round.
+
+Unanimous private approval plus published coordinator evidence on
+`issue-<n>/coordinator-evidence` authorizes only the requested paths. The
+effective approved map becomes the selected pinned plan extraction plus
+applicable published amendments bound to the same selected-plan identity.
+Any `revise` disposition resumes the saved step and revision round without
+growing the map and reissues the requester with rejection reasons.
+
+Pending amendment ballots and unpublished batches are cancelled on owner drop or
+plan reselection; previously published approvals remain applicable only when the
+selected-plan identity is unchanged. Restart preserves pending requests, accepted
+responses, publication outbox rows, and approved-amendment history; each request
+identity is applied at most once.
+
 ## Agent completion contract
 
 An agent may push any number of intermediate commits. Only `complete` expresses

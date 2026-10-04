@@ -135,6 +135,23 @@ or
 No subtitle on that same line (e.g. `# Comparison — issue 12` fails). Cite every
 bound implementation pin SHA from the current `action.md`.
 
+## Plan-amendment requests during implementation or revision
+
+When the selected plan omitted a necessary file, an implementer or reviser may
+publish a `plan-amendment-request` JSON artifact at the **same path** as the
+ready signal for that action (`.signals/issue-<n>/implementation-ready-<agent>.json`
+or the revision-ready path). This is mutually exclusive with claiming completion:
+a request never satisfies implementation or revision readiness.
+
+The action scaffold supplies `scopeHash`, `inputSetHash`, and `actionId`; you
+author only the explanation and `additionalPaths` entries (exact repository file
+paths with a nonblank necessity reason each). Do not treat publishing a request
+as approval to change product files outside the current effective map.
+
+While an amendment ballot is active, finish only the ballot judgment action.
+After unanimous approval and coordinator publication, resumed work uses the
+extended effective file map. A rejected request confers no authority.
+
 ## Implementation discipline
 
 Keep the work within the issue and make the smallest change that fully solves

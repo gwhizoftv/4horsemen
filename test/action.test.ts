@@ -181,6 +181,25 @@ describe("advisory action sections", () => {
     expect(raw).not.toContain("## Changed paths for the bound pins");
   });
 
+  it("renders scope binding separately from product inputs", () => {
+    const raw = renderAction({
+      ...order("/external/coord"),
+      scopeEvidence: [
+        {
+          kind: "amendment-request",
+          agent: "claude",
+          commitSha: "4".repeat(40),
+          path: ".signals/issue-1/implementation-ready-claude.json"
+        }
+      ]
+    });
+    expect(raw).toContain("## Scope binding");
+    expect(raw).toContain("bound separately from product inputs");
+    expect(raw).toContain(
+      `- amendment-request from claude: \`${"4".repeat(40)}\` at \`.signals/issue-1/implementation-ready-claude.json\``
+    );
+  });
+
   it("names configured context paths without inlining their contents", () => {
     const raw = renderAction({ ...order("/external/coord"), contextPaths: ["docs/repo-map.md", "docs/coord-driver.md"] });
     expect(raw).toContain("## Repo context");

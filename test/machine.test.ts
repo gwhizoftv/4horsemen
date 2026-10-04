@@ -67,7 +67,9 @@ const publishedBallotBatchFixture = (input: {
         ? `.plans/issue-1/ballot-${agent}.json`
         : input.kind === "comparison-ballot-batch"
           ? `.code-reviews/issue-1/ballot-${agent}.json`
-          : `.code-reviews/issue-1/consensus-ballot-${agent}-round-${round ?? 1}.json`
+          : input.kind === "amendment-ballot-batch"
+            ? `.plans/issue-1/amendment-ballot-${agent}-seq-${round ?? 1}.json`
+            : `.code-reviews/issue-1/consensus-ballot-${agent}-round-${round ?? 1}.json`
     ),
     branch: "issue-1/coordinator-evidence",
     parentSha: gitSha("a"),
@@ -375,6 +377,116 @@ describe("pure workflow machine", () => {
         ]
       })
     ).toEqual([{ type: "retry-verification", agent: "claude", outstanding: ["fetch failed"] }]);
+  });
+
+  it("admits a valid amendment request and resumes after unanimous approval", () => {
+    const base = initialCursors(start, now);
+    const actionId = actionIdFor("cursor");
+    const cursors = cursorsStateSchema.parse({
+      ...base,
+      issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
+      derived: {
+        planSelection: {
+          kind: "plan-selection",
+          algorithm: "plurality-active-roster-v1",
+          inputSetHash: "a".repeat(64),
+          activeRoster: roster,
+          inputs: [
+            {
+              kind: "plan",
+              agent: "codex",
+              submissionSha: gitSha("plan"),
+              path: ".plans/issue-1/plan.md"
+            }
+          ],
+          decisionId: `plan-selection:${"a".repeat(64)}`,
+          supersedes: null,
+          decidedAt: now,
+          selectedAgents: ["codex"]
+        },
+        implementationSelection: null,
+        consensus: null
+      },
+      agents: {
+        ...base.agents,
+        cursor: {
+          ...base.agents.cursor,
+          actionId,
+          stepId: "R4.implement",
+          evidenceId: "implementation-pinned",
+          submissionMode: "git",
+          status: "verifying"
+        }
+      }
+    });
+    expect(
+      decide({
+        start,
+        cursors,
+        observations: [
+          {
+            agent: "cursor",
+            actionId,
+            submissionSha: gitSha("req"),
+            status: "amendment-request",
+            outstanding: [],
+            amendmentRequest: {
+              scopeHash: "b".repeat(64),
+              explanation: "Need test file.",
+              additionalPaths: [{ path: "test/product.test.ts", reason: "coverage" }],
+              requestPath: ".signals/issue-1/implementation-ready-cursor.json"
+            }
+          }
+        ]
+      })
+    ).toEqual([
+      expect.objectContaining({
+        type: "admit-amendment-request",
+        agent: "cursor",
+        submissionSha: gitSha("req")
+      })
+    ]);
+
+    const onBallot = cursorsStateSchema.parse({
+      ...cursors,
+      issueCursor: { stepId: "R4.amend-ballot", gateId: "gate-4-implementations", round: 1 },
+      amendments: {
+        sequence: 2,
+        pending: {
+          sequence: 1,
+          requestAgent: "cursor",
+          requestSha: gitSha("req"),
+          requestPath: ".signals/issue-1/implementation-ready-cursor.json",
+          requestIdentity: "c".repeat(64),
+          actionId,
+          scopeHash: "b".repeat(64),
+          explanation: "Need test file.",
+          additionalPaths: [{ path: "test/product.test.ts", reason: "coverage" }],
+          selectedPlans: [{ agent: "codex", commitSha: gitSha("plan"), path: ".plans/issue-1/plan.md" }],
+          selectedPlanInputSetHash: "d".repeat(64),
+          savedSourceStep: "R4.implement",
+          savedSourceRound: null,
+          activeRoster: roster
+        },
+        approved: []
+      },
+      acceptedResponses: roster.map((agent) =>
+        acceptedResponseFixture({
+          stepId: "R4.amend-ballot",
+          agent,
+          round: 1,
+          disposition: "approve"
+        })
+      ),
+      ballotBatches: [
+        publishedBallotBatchFixture({
+          kind: "amendment-ballot-batch",
+          activeRoster: roster,
+          round: 1
+        })
+      ]
+    });
+    expect(decide({ start, cursors: onBallot })).toEqual([{ type: "resume-amendment-detour", approved: true }]);
   });
 
   it("processes an in-flight satisfied observation before repeating an owner question", () => {

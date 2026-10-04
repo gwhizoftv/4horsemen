@@ -23,8 +23,10 @@ import {
   deterministicWinner,
   githubRepositoryFromOrigin,
   NUDGE_RETRY_MS,
+  deriveBoundInputs,
   resolveApprovedPaths,
   resolveChangeScope,
+  selectedPlanInputSetHash,
   CHANGE_SCOPE_PATH_LIMIT
 } from "../src/runLoop.js";
 import {
@@ -1200,6 +1202,79 @@ describe("effectful run loop", () => {
     expect(approved).toEqual(["scripts/setup_claude.sh", "scripts/setup_codex.sh", "src/product.ts"]);
     const order = buildOrder(paths, readStartState(paths), cursors, "codex", "R4.implement", null, undefined, [], approved);
     expect(order.approvedPaths).toEqual(approved);
+  });
+
+  it("unions approved amendment paths into the effective map", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const baseCursors = cursorsStateSchema.parse({
+      ...readCursorsState(paths),
+      accepted: [
+        {
+          stepId: "R2.plan",
+          agent: "codex",
+          round: null,
+          submissionSha: "a".repeat(40),
+          path: ".plans/issue-1/plan.md",
+          acceptedAt: "2026-08-11T12:00:00.000Z",
+          approvedPaths: ["src/product.ts"]
+        }
+      ],
+      derived: {
+        planSelection: {
+          kind: "plan-selection",
+          algorithm: "plurality-active-roster-v1",
+          inputSetHash: "b".repeat(64),
+          activeRoster: ["codex"],
+          inputs: [
+            {
+              kind: "plan",
+              agent: "codex",
+              submissionSha: "a".repeat(40),
+              path: ".plans/issue-1/plan.md"
+            }
+          ],
+          decisionId: `plan-selection:${"b".repeat(64)}`,
+          supersedes: null,
+          decidedAt: "2026-08-11T12:00:00.000Z",
+          selectedAgents: ["codex"]
+        },
+        implementationSelection: null,
+        consensus: null
+      }
+    });
+    const planHash = selectedPlanInputSetHash(
+      deriveBoundInputs(start, baseCursors, "R4.implement", null)
+    );
+    const cursors = cursorsStateSchema.parse({
+      ...baseCursors,
+      amendments: {
+        sequence: 2,
+        pending: null,
+        approved: [
+          {
+            sequence: 1,
+            requestIdentity: "c".repeat(64),
+            requestAgent: "codex",
+            requestSha: "d".repeat(40),
+            requestPath: ".signals/issue-1/implementation-ready-codex.json",
+            publicationSha: "e".repeat(40),
+            batchId: "10000000-0000-4000-8000-000000000001",
+            addedPaths: ["test/product.test.ts"],
+            selectedPlanInputSetHash: planHash,
+            approvedAt: "2026-08-11T12:00:00.000Z"
+          }
+        ]
+      }
+    });
+    const plan = `# Plan\n## Exact File Map\n\`src/product.ts\`\n`;
+    const approved = await resolveApprovedPaths(
+      { readBlob: async () => plan },
+      cursors,
+      "R4.implement",
+      start
+    );
+    expect(approved).toEqual(["src/product.ts", "test/product.test.ts"]);
   });
 
   it("refreshes in-flight approved paths and reinjects only after positive idle evidence", async () => {

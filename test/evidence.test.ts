@@ -437,7 +437,7 @@ Implement it.
     });
     const result = await evaluateEvidence(action, sha("e"), mirror(blob));
     expect(result.status).toBe("rejected");
-    expect(result.outstanding.join(" ")).toContain("do not match the selected plan file map");
+    expect(result.outstanding.join(" ")).toContain("do not match the effective approved file map");
   });
 
   it("does not treat a file map entry as a prefix of a sibling path", async () => {
@@ -690,5 +690,64 @@ Implement it.
         mirror(JSON.stringify(artifact), { changedPaths: async () => ["src/product.ts"] })
       )
     ).toMatchObject({ status: "satisfied", productPin: artifact.revisedBranchHead });
+  });
+
+  it("treats a plan-amendment-request as non-completion and validates exact paths", async () => {
+    const inputs = [{ agent: "codex", commitSha: sha("2"), path: ".plans/issue-1/plan.md", kind: "selected-plan" }];
+    const action = order({
+      stepId: "R4.implement",
+      evidenceId: "implementation-pinned",
+      requiredPath: ".signals/issue-1/implementation-ready-codex.json",
+      inputs,
+      approvedPaths: ["src/product.ts"],
+      scopeHash: "c".repeat(64)
+    });
+    const request = JSON.stringify({
+      protocolVersion: 1,
+      artifact: "plan-amendment-request",
+      issue: 1,
+      issueSessionId: action.issueSessionId,
+      agent: "codex",
+      actionId: action.actionId,
+      inputSetHash: computeInputSetHash(inputs),
+      scopeHash: "c".repeat(64),
+      explanation: "Need the test file.",
+      additionalPaths: [{ path: "test/product.test.ts", reason: "covers behavior" }]
+    });
+    const admitted = await evaluateEvidence(action, sha("e"), mirror(request));
+    expect(admitted.status).toBe("amendment-request");
+    expect(admitted.amendmentRequest?.additionalPaths[0]?.path).toBe("test/product.test.ts");
+
+    const duplicate = JSON.stringify({
+      ...JSON.parse(request),
+      additionalPaths: [{ path: "src/product.ts", reason: "already covered" }]
+    });
+    const rejectedDup = await evaluateEvidence(action, sha("f"), mirror(duplicate));
+    expect(rejectedDup.status).toBe("rejected");
+    expect(rejectedDup.outstanding.join(" ")).toContain("already covered");
+  });
+
+  it("rejects out-of-map product changes before amendment approval", async () => {
+    const inputs = [{ agent: "codex", commitSha: sha("2"), path: ".plans/issue-1/plan.md", kind: "selected-plan" }];
+    const action = order({
+      stepId: "R4.implement",
+      evidenceId: "implementation-pinned",
+      requiredPath: ".signals/issue-1/implementation-ready-codex.json",
+      inputs,
+      approvedPaths: ["src/product.ts"]
+    });
+    const blob = JSON.stringify({
+      protocolVersion: 1,
+      artifact: "implementation-ready",
+      issue: 1,
+      issueSessionId: action.issueSessionId,
+      agent: "codex",
+      inputSetHash: computeInputSetHash(inputs),
+      implementationCommitSha: sha("d"),
+      approvedPaths: ["src/product.ts"]
+    });
+    const result = await evaluateEvidence(action, sha("e"), mirror(blob, { changedPaths: async () => ["test/product.test.ts"] }));
+    expect(result.status).toBe("rejected");
+    expect(result.outstanding.join(" ")).toContain("outside the approved file map");
   });
 });
