@@ -163,7 +163,7 @@ const parseArgs = (args: readonly string[], booleans: readonly string[] = []): P
  * absorbing the next flag.
  */
 const booleanFlags: Record<string, readonly string[]> = {
-  resume: ["reset-nudge-budget"],
+  resume: ["reset-nudge-budget", "run"],
   install: ["write-product", "vendor", "bootstrap-coordination", "dry-run"],
   uninstall: ["delete-clones", "wipe-runtime", "delete-coordination", "force", "dry-run"],
   "wipe-issue": ["force", "dry-run", "delete-evidence"],
@@ -236,7 +236,8 @@ Usage:
   coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
   coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
   coord pause|resume|restart-action|abandon --issue <issue> [--product <path> | --coord-root <path>]
-  coord resume --issue <issue> --hold <id> [--reset-nudge-budget] [--product <path> | --coord-root <path>]
+  coord resume --issue <issue> [--agent <agent> | --hold <id>] [--reset-nudge-budget] [--run]
+               [--product <path> | --coord-root <path>]
   coord attach <issue> [--product <path> | --coord-root <path>]
   coord detach <issue> [--product <path> | --coord-root <path>] [--dry-run]
   coord detach manual [--product <path> | --config <path> --coord-root <path>] [--dry-run]
@@ -255,6 +256,12 @@ From an agent clone, \`coord next --issue N\` resolves the runtime via
 coord.workspaceConfig and the caller via consensus.agentId (or --agent / COORD_AGENT).
 Use \`-v\` / \`--verbose\` on \`coord N\`, start, or run for tick-level nudge logs.
 Phase changes (R1.join → R2.plan, …) always print.
+Pauses and holds keep the coordinator waiting without advancing work; Ctrl-C stops it.
+Plain \`coord resume\` clears only manual pause. \`--agent\` releases exactly one hold
+for that agent; if ambiguous, use \`--hold\`. Nudge-loop release still requires
+\`--reset-nudge-budget\`. Resume is state-only unless \`--run\` is supplied:
+use \`coord resume --issue N --agent claude --run\` only for a stopped coordinator,
+and omit \`--run\` beside a live runner (it does not detect a second runner).
 \`coord --version\` prints the package version (pre-1.0: \`0.0.N\`, advanced by CI on merge to main).
 \`coord status\` prints the chosen agent, final pin, published branch, evidence
 branch/tip and publication state, and PR URL. It never exposes ballot choices,
@@ -881,6 +888,20 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
   };
 
+  const assertIssueCanRun = async (paths: IssueRuntimePaths): Promise<void> => {
+    const workspace = workspaceLocationFromConfig(readStartState(paths).configPath);
+    const manualWorkspaceRoot =
+      workspace.layout === "nested" && resolve(paths.coordRoot) === resolve(workspace.coordRoot)
+        ? workspace.workspaceRoot
+        : paths.coordRoot;
+    await assertNoManualSession(manualWorkspaceRoot);
+  };
+
+  const runIssue = async (paths: IssueRuntimePaths): Promise<number> => {
+    await makeRunLoop(paths).run();
+    return detachCompletedIssue(paths, io);
+  };
+
   const assertNoAutomatedSession = async (resolution: StartResolution): Promise<void> => {
     const sessions = new Map<string, number>();
     const currentIdentity = workspaceUiIdentity(resolution.runtimeRoot);
@@ -1051,8 +1072,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       await assertNoManualSession(resolution.runtimeRoot);
       const existing = existingIssueRuntime(resolution, issue);
       const paths = existing ?? (await startIssue(issue, resolution));
-      await makeRunLoop(paths).run();
-      return await detachCompletedIssue(paths, io);
+      return await runIssue(paths);
     }
 
     if (command === "manual") {
@@ -1415,14 +1435,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (parsed.positionals.length !== 0) throw new Error("run takes no positional arguments.");
       verboseState.enabled = flagIsSet(parsed, "verbose");
       const paths = existingContext(parsed, io);
-      const workspace = workspaceLocationFromConfig(readStartState(paths).configPath);
-      const manualWorkspaceRoot =
-        workspace.layout === "nested" && resolve(paths.coordRoot) === resolve(workspace.coordRoot)
-          ? workspace.workspaceRoot
-          : paths.coordRoot;
-      await assertNoManualSession(manualWorkspaceRoot);
-      await makeRunLoop(paths).run();
-      return await detachCompletedIssue(paths, io);
+      await assertIssueCanRun(paths);
+      return await runIssue(paths);
     }
 
     if (command === "status") {
@@ -1581,15 +1595,31 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "pause" || command === "resume") {
-      allowedFlags(parsed, ["issue", "coord-root", "product", ...(command === "resume" ? ["hold", "reset-nudge-budget"] : [])]);
+      allowedFlags(parsed, ["issue", "coord-root", "product", ...(command === "resume" ? ["agent", "hold", "reset-nudge-budget", "run"] : [])]);
       if (parsed.positionals.length !== 0) throw new Error(`${command} takes no positional arguments.`);
       const paths = existingContext(parsed, io);
       const paused = command === "pause";
-      const now = new Date().toISOString();
-      const holdId = parsed.flags.has("hold") ? requireFlag(parsed, "hold") : null;
+      const requestedHold = parsed.flags.has("hold") ? requireFlag(parsed, "hold") : null;
+      const requestedAgent = parsed.flags.has("agent") ? requireFlag(parsed, "agent") : null;
+      if (requestedHold !== null && requestedAgent !== null) throw new Error("--agent and --hold are mutually exclusive.");
       const resetBudget = flagIsSet(parsed, "reset-nudge-budget");
-      if (resetBudget && holdId === null) throw new Error("--reset-nudge-budget requires --hold.");
+      if (resetBudget && requestedHold === null && requestedAgent === null) {
+        throw new Error("--reset-nudge-budget requires --hold or --agent.");
+      }
+      const run = flagIsSet(parsed, "run");
+      if (run) await assertIssueCanRun(paths);
+      const now = new Date().toISOString();
       const result = mutateCursorsState(paths, (current) => {
+        let holdId = requestedHold;
+        if (requestedAgent !== null) {
+          if (!current.activeRoster.includes(requestedAgent)) throw new Error(`Agent ${requestedAgent} is not active.`);
+          const holds = current.holds.filter((hold) => hold.agent === requestedAgent);
+          if (holds.length !== 1) {
+            throw new Error(`Agent ${requestedAgent} has ${holds.length} active holds; --agent requires exactly one. ` +
+              `Use --hold <id> to select one. Hold IDs: ${holds.map((hold) => hold.id).join(", ") || "(none)"}.`);
+          }
+          holdId = holds[0]!.id;
+        }
         const next = holdId === null ? setPaused(current, paused, now) : releaseHold(current, holdId, resetBudget, now);
         if (holdId !== null) appendJournal(paths, { type: "hold-released", details: {
           hold: holdId, resetNudgeBudget: resetBudget, eventId: `release:${holdId}`
@@ -1599,6 +1629,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       });
       io.stdout(`${result.state.paused ? "Paused" : "Resumed"} issue ${readStartState(paths).issue}.` +
         (result.state.holds.length > 0 ? ` ${result.state.holds.length} active hold(s); use coord status for scoped recovery.` : "") + "\n");
+      if (run) return await runIssue(paths);
+      if (!paused) io.stdout("A running coordinator continues after all pauses are released; add --run only if it was stopped.\n");
       return 0;
     }
 

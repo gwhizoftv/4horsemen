@@ -178,6 +178,26 @@ coord start 42 --config /path/to/config.json --coord-root /path/to/runtime
 coord run --issue 42 --coord-root /path/to/runtime
 ```
 
+The coordinator now waits through manual pauses and safety holds instead of
+exiting. Inspect the affected agent and fix the underlying problem, then release
+its hold from another shell with `coord resume --issue 42 --agent claude`.
+The agent selector requires exactly one hold; use `--hold ID` if ambiguous.
+Plain `coord resume --issue 42` clears only manual pause, not safety holds.
+Nudge-loop holds still require `--reset-nudge-budget`.
+
+If the coordinator was stopped, release and restart in one command:
+
+```sh
+coord resume --issue 42 --agent claude --run --product /path/to/app
+```
+
+Omit `--run` beside a live coordinator: it is an explicit restart request, not
+automatic detection of another runner. Ctrl-C stops the foreground coordinator
+without clearing holds or agent work. Rejoining preserves unfinished work in
+clones already on their exact issue/agent branch; dirty off-branch clones still
+refuse checkout. Waiting does not authorize automatic hold release or reset any
+delivery/resource budgets.
+
 See `config.product.example.json` for declared verification/check commands and
 [`docs/coord-driver.md`](docs/coord-driver.md) for profiles, owner controls,
 tmux behavior, recovery, finalization, and runtime topology.

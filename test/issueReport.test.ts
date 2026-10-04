@@ -113,12 +113,21 @@ describe("issue report", () => {
     const text = renderIssueReport(start("owner-only"), cursors);
     expect(text).toContain("Manual pause: active");
     expect(text).toContain("cause unknown, reset unknown, retry owner: owner");
-    expect(text).toContain("coord resume --issue 1 --hold hold-id --reset-nudge-budget");
+    expect(text).toContain("coord resume --issue 1 --agent cursor --reset-nudge-budget");
+    expect(text).toContain("coord resume --issue 1 clears only this pause");
+    expect(text).toContain("add --run to resume only if the coordinator was stopped");
+    expect(text).toContain("Hold hold-id:");
     expect(text).not.toContain("quota exhausted");
+    cursors.holds.push({ ...cursors.holds[0]!, id: "another-hold" });
+    const ambiguous = renderIssueReport(start("owner-only"), cursors);
+    expect(ambiguous).not.toContain("--agent cursor");
+    expect(ambiguous).toContain("--hold hold-id --reset-nudge-budget");
+    expect(ambiguous).toContain("--hold another-hold --reset-nudge-budget");
   });
   it("separates cause, exact recheck time, blocked windows and redacted detail from owner release", () => {
     const cursors = complete();
     cursors.completed = false; cursors.paused = true;
+    cursors.activeRoster = ["codex"];
     const window = { source: "codex-app-server" as const, limitId: "codex", window: "secondary" as const,
       usedPercent: 100, windowDurationMins: 10_080, resetsAt: "2026-08-20T00:00:00.000Z" };
     const evidence = { vendor: "codex" as const, failureClass: "usage-window" as const, classConfidence: "confirmed" as const,
@@ -137,7 +146,7 @@ describe("issue report", () => {
     cursors.actionSafety = { codex: { ...safety, resource: { ...safety.resource, nextAt: null, terminal: "no exact provider deadline" } } };
     text = renderIssueReport(start("owner-only"), cursors);
     expect(text).toContain("stopped (no exact provider deadline); owner release required.");
-    expect(text).toContain("coord resume --issue 1 --hold exact");
+    expect(text).toContain("coord resume --issue 1 --agent codex");
   });
 
   it("names the pin, published branch, and that the owner merges", () => {
