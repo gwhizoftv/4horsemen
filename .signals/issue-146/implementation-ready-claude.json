@@ -1,0 +1,22 @@
+{
+  "protocolVersion": 1,
+  "issue": 146,
+  "issueSessionId": "issue-146:a792b19e8757c734c1c572b1c3fc1675a78d8bfc",
+  "agent": "claude",
+  "inputSetHash": "c512ce9f406051b729149f114109c91e04c88c6421ab0e2865af20d267ec453c",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "c798f46594cf1192311ce3de044f6b555c2768ee",
+  "approvedPaths": [
+    "README.md",
+    "docs/coord-driver.md",
+    "package.json",
+    "src/cli.ts",
+    "src/issueReport.ts",
+    "src/prepareAgentBranch.ts",
+    "src/runLoop.ts",
+    "test/cli.test.ts",
+    "test/issueReport.test.ts",
+    "test/prepareAgentBranch.test.ts",
+    "test/runLoop.test.ts"
+  ]
+}
