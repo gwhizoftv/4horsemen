@@ -61,8 +61,10 @@ import {
 import { decide } from "./machine.js";
 import {
   appendJournal,
+  bindOwnerGuidance,
   cursorsStateSchema,
   emptyResourceObservation,
+  ownerGuidanceFor,
   readConfig,
   readCursorsState,
   readJournal,
@@ -791,6 +793,7 @@ export const buildOrder = (
     contextPaths: [...start.contextPaths],
     changeScope,
     ...(materialized === undefined ? {} : { materialized }),
+    ownerGuidance: ownerGuidanceFor(cursors, stepId, round),
     activeRoster: [...cursors.activeRoster],
     eligibleChoices
   };
@@ -1420,6 +1423,28 @@ export class CoordinatorRunLoop {
   ): Promise<CursorsState> {
     const cursor = cursors.agents[agent];
     if (cursor === undefined) throw new Error(`Unknown agent ${agent}.`);
+    let working = cursors;
+    if (bindOwnerGuidance(working, stepId, round, this.now()) !== working) {
+      working = this.mutate(working, (current) => {
+        const next = bindOwnerGuidance(current, stepId, round, this.now());
+        if (next === current) return current;
+        const bound = next.ownerGuidance?.bound;
+        appendJournal(
+          this.paths,
+          {
+            type: "owner-guidance-bound",
+            details: {
+              stepId,
+              round,
+              entryIds: bound?.entries.map((entry) => entry.id) ?? []
+            }
+          },
+          this.now()
+        );
+        return next;
+      });
+    }
+    cursors = working;
     const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, stepId);
     const boundInputs = deriveBoundInputs(start, cursors, stepId, round);
     const changeScope = await resolveChangeScope(this.mirror, start, boundInputs);
@@ -2912,7 +2937,17 @@ export class CoordinatorRunLoop {
       const report = cursors.paused ? renderIssueReport(start, cursors).trimEnd() : null;
       if (report !== null && report !== lastPausedReport) this.log(report);
       lastPausedReport = report;
-      await this.sleep(start.pollIntervalMs);
+      await Promise.race([
+        this.sleep(start.pollIntervalMs),
+        new Promise<void>((resolve) => {
+          if (signal === undefined) return;
+          if (signal.aborted) {
+            resolve();
+            return;
+          }
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        })
+      ]);
     }
   }
 }

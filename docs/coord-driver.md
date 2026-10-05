@@ -498,6 +498,37 @@ onboarded `--product`. Product resolution uses the same flat/nested and legacy
 runtime lookup as `coord N`, so owner controls cannot accidentally target the
 outer root of a nested product. `COORD_ISSUE` may replace `--issue`.
 
+### Interactive foreground mode
+
+When `coord <issue>`, `coord run`, or `coord resume --run` owns a TTY stdin,
+the foreground runner also accepts single-key owner controls without leaving
+the log stream. Non-TTY / redirected / scripted runs stay noninteractive.
+
+| Key | Action |
+| --- | --- |
+| `s` | Print `coord status` snapshot |
+| `p` / Space | Toggle **manual** pause (does not release safety holds) |
+| `a` | `coord attach` — bring owner agent Terminal tabs forward |
+| `d` | Numbered drop menu over the active roster |
+| `r` | Numbered hold-release menu (never resets nudge budget; use CLI `--reset-nudge-budget`) |
+| `/` then `/steer <text>` | Queue durable owner guidance for the next prepared step |
+| `?` / `h` | Hotkey cheatsheet |
+| `q` / Ctrl-C | Stop only this foreground runner; tmux sessions and agent panes stay up |
+
+Owner questions (ballot split / revision limit) show a numbered prompt using
+the live `ownerQuestion` id so a stale answer from another shell is rejected.
+
+Queued `/steer` text is stored in `cursors.json` as `ownerGuidance.pending`,
+journaled as `owner-guidance-queued`, and **bound once** at the first
+`prepare-action` for a `(stepId, round)` into `ownerGuidance.bound`
+(`owner-guidance-bound`). Every agent ordered for that step (including
+reissues/rewrites/restarts) renders the same advisory `## Owner guidance`
+section; text queued after binding waits for the next different step. Guidance
+is advisory only and cannot expand file maps or change evidence rules.
+
+Typing into an agent's own tmux pane is unaffected: raw mode applies only to
+the coordinator process stdin.
+
 ```bash
 coord drop cursor --product /path/to/app --issue 42
 coord pause --product /path/to/app --issue 42

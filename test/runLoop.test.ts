@@ -31,6 +31,7 @@ import {
   cursorsStateSchema,
   appendJournal,
   dropAgent,
+  enqueueOwnerGuidance,
   initializeOperationalState,
   mutateCursorsState,
   readCursorsState,
@@ -318,6 +319,24 @@ describe("runner waiting and initialization", () => {
     await loop.run();
     expect(sleeps).toBe(2);
     expect(ticks).toBe(2);
+  });
+
+  it("returns promptly when the abort signal fires during poll sleep", async () => {
+    const { paths } = fixture();
+    mutateCursorsState(paths, (current) => setPaused(current, true));
+    const controller = new AbortController();
+    let sleepStarted = false;
+    await new CoordinatorRunLoop(paths, {
+      tmux: null,
+      log: () => undefined,
+      sleep: () =>
+        new Promise(() => {
+          sleepStarted = true;
+          queueMicrotask(() => controller.abort());
+        })
+    }).run(controller.signal);
+    expect(sleepStarted).toBe(true);
+    expect(controller.signal.aborted).toBe(true);
   });
 
   it.each([true, false])("reobserves initialization conflicts with paused=%s without hiding other errors", async (pauseOnConflict) => {
@@ -1025,6 +1044,37 @@ const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], fina
 };
 
 describe("effectful run loop", () => {
+  it("binds queued owner guidance once for every agent of the prepared step", async () => {
+    const { paths } = fixture();
+    const now = "2026-10-05T12:00:00.000Z";
+    mutateCursorsState(paths, (current) =>
+      enqueueOwnerGuidance(
+        current,
+        { id: "10000000-0000-4000-8000-000000000077", text: "prefer existing helpers", enqueuedAt: now },
+        now
+      )
+    );
+    await new CoordinatorRunLoop(paths, { tmux: null, log: () => undefined }).runTick();
+    const after = readCursorsState(paths);
+    expect(after.ownerGuidance?.bound?.stepId).toBe("R1.join");
+    expect(after.ownerGuidance?.pending).toEqual([]);
+    for (const agent of after.activeRoster) {
+      const raw = readFileSync(agentRuntimePaths(paths, agent).action, "utf8");
+      expect(raw).toContain("## Owner guidance");
+      expect(raw).toContain("- prefer existing helpers");
+    }
+    mutateCursorsState(paths, (current) =>
+      enqueueOwnerGuidance(
+        current,
+        { id: "10000000-0000-4000-8000-000000000078", text: "after bind", enqueuedAt: now },
+        now
+      )
+    );
+    const rewritten = buildOrder(paths, readStartState(paths), readCursorsState(paths), "claude", "R1.join", null);
+    expect(rewritten.ownerGuidance).toEqual(["prefer existing helpers"]);
+    expect(readCursorsState(paths).ownerGuidance?.pending).toHaveLength(1);
+  });
+
   it("derives an explicit GitHub PR target from supported origin forms", () => {
     expect(githubRepositoryFromOrigin("https://github.com/example/project.git")).toBe("example/project");
     expect(githubRepositoryFromOrigin("git@github.com:example/project.git")).toBe("example/project");

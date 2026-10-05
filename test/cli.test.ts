@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-
+import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -578,6 +578,33 @@ describe("CLI", () => {
     expect(output.join("")).toContain("Issue 1:");
     expect(output.join("")).toContain("Final pin (PR head):");
     expect(output.join("")).toContain("Policy: owner-only");
+  });
+
+  it("passes an AbortSignal to run and skips interactive mode without a TTY", async () => {
+    const fixture = setup();
+    expect(
+      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        processRunner: resolvableStartGit,
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    let seenSignal: AbortSignal | undefined;
+    expect(
+      await runCli(["run", "--issue", "1", "--coord-root", fixture.runtime], {
+        makeRunLoop: () => ({
+          initializeEffects: async () => undefined,
+          runTick: async () => readCursorsState(issueRuntimePaths(fixture.runtime, 1)),
+          run: async (signal) => {
+            seenSignal = signal;
+          }
+        }),
+        terminal: {
+          input: Object.assign(new PassThrough(), { isTTY: false }),
+          output: new PassThrough()
+        }
+      })
+    ).toBe(0);
+    expect(seenSignal).toBeInstanceOf(AbortSignal);
   });
 
   it("resumes only the selected hold, audits budget resets, and reports remaining pauses", async () => {

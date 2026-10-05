@@ -5,12 +5,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
   appendJournal,
+  bindOwnerGuidance,
   consensusDerivedSchema,
   cursorsStateSchema,
   dropAgent,
+  enqueueOwnerGuidance,
   implementationSelectionDerivedSchema,
   initializeOperationalState,
   mutateCursorsState,
+  ownerGuidanceFor,
   planSelectionDerivedSchema,
   readCursorsState,
   readJournal,
@@ -162,6 +165,31 @@ describe("operational state", () => {
     expect(() => cursorsStateSchema.parse({ ...held, holds: [{ ...resource, resetsAt: null }] })).toThrow();
     const owner = releaseHold(held, resource.id, false, now);
     expect(owner.actionSafety.codex?.resource).toEqual(held.actionSafety.codex?.resource);
+  });
+
+  it("defaults ownerGuidance and binds pending entries once per step key", () => {
+    const { paths } = initialize();
+    const cursors = readCursorsState(paths);
+    const legacy = { ...cursors };
+    delete legacy.ownerGuidance;
+    expect(cursorsStateSchema.parse(legacy).ownerGuidance).toEqual({ pending: [], bound: null });
+    const now = "2026-10-05T12:00:00.000Z";
+    const entry = { id: "10000000-0000-4000-8000-000000000099", text: "keep Go 1.22 compatibility", enqueuedAt: now };
+    const queued = enqueueOwnerGuidance(cursors, entry, now);
+    expect(queued.ownerGuidance?.pending).toHaveLength(1);
+    const bound = bindOwnerGuidance(queued, "R2.plan", null, now);
+    expect(bound.ownerGuidance?.pending).toEqual([]);
+    expect(bound.ownerGuidance?.bound).toMatchObject({ stepId: "R2.plan", round: null, entries: [entry] });
+    expect(bindOwnerGuidance(bound, "R2.plan", null, now)).toBe(bound);
+    const after = enqueueOwnerGuidance(bound, { ...entry, id: "10000000-0000-4000-8000-000000000098", text: "later" }, now);
+    expect(after.ownerGuidance?.pending).toHaveLength(1);
+    expect(ownerGuidanceFor(after, "R2.plan", null)).toEqual([entry.text]);
+    const next = bindOwnerGuidance(after, "R3.plan-ballot", null, now);
+    expect(ownerGuidanceFor(next, "R2.plan", null)).toEqual([]);
+    expect(ownerGuidanceFor(next, "R3.plan-ballot", null)).toEqual(["later"]);
+    expect(() => enqueueOwnerGuidance(cursors, { ...entry, text: "" }, now)).toThrow();
+    expect(() => enqueueOwnerGuidance(cursors, { ...entry, text: "line\nbreak" }, now)).toThrow();
+    expect(() => enqueueOwnerGuidance(cursors, { ...entry, text: "x".repeat(2001) }, now)).toThrow();
   });
 
   it("accepts a codexQuota binding only as an absolute home on the codex agent", () => {

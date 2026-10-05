@@ -348,6 +348,11 @@ export type InternalOrder = {
   changeScope?: readonly ChangeScopeEntry[];
   /** Optional for the same reason as `changeScope`: rendering copes without it. */
   materialized?: MaterializedInputs;
+  /**
+   * Advisory owner `/steer` lines bound for this step. Optional for the same
+   * reason as `contextPaths`: rendering omits the section when absent/empty.
+   */
+  ownerGuidance?: readonly string[];
   activeRoster: readonly string[];
   eligibleChoices: readonly string[];
 };

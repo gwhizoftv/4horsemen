@@ -60,6 +60,16 @@ normal R2 evidence. Ballot steps use private response files; the coordinator
 batches accepted responses onto `issue-N/coordinator-evidence` before deriving
 the next decision. The product `-final` PR stays ballot-free.
 
+### Interactive controls while `coord N` is running
+
+When stdin is a TTY, the foreground runner accepts hotkeys without opening
+another shell: `s` status, `p`/Space pause, `a` attach, `d` drop menu, `r`
+hold-release menu, `/steer <text>` to queue turn-boundary guidance, `?`/`h`
+help, and `q` to stop only the coordinator process (agent tmux panes stay up —
+unlike `coord detach`). Non-TTY runs are unchanged. You can still type directly
+into each agent's Terminal/tmux pane; coordinator raw mode does not capture
+those TTYs. See [Owner controls](docs/coord-driver.md#owner-controls).
+
 ## Owner-driven manual mode
 
 For independent tasks assigned directly in agent chats, launch the installed

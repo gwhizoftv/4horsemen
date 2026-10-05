@@ -617,6 +617,45 @@ export const amendmentDecisionSchema = pendingAmendmentSchema.extend({
   decidedAt: timestampSchema
 }).strict();
 
+/** Cap pending `/steer` entries so a stuck TTY cannot grow cursors without bound. */
+export const OWNER_GUIDANCE_PENDING_CAP = 32;
+export const OWNER_GUIDANCE_TEXT_MAX = 2000;
+
+const ownerGuidanceTextSchema = z
+  .string()
+  .min(1)
+  .max(OWNER_GUIDANCE_TEXT_MAX)
+  .refine((text) => {
+    for (let i = 0; i < text.length; i += 1) {
+      if (text.charCodeAt(i) < 0x20) return false;
+    }
+    return true;
+  }, "Owner guidance must be a single line without control characters.");
+export const ownerGuidanceEntrySchema = z
+  .object({
+    id: z.string().uuid(),
+    text: ownerGuidanceTextSchema,
+    enqueuedAt: timestampSchema
+  })
+  .strict();
+
+export const ownerGuidanceBoundSchema = z
+  .object({
+    stepId: stepIdSchema,
+    round: z.number().int().min(1).nullable(),
+    boundAt: timestampSchema,
+    entries: z.array(ownerGuidanceEntrySchema)
+  })
+  .strict();
+
+export const ownerGuidanceStateSchema = z
+  .object({
+    pending: z.array(ownerGuidanceEntrySchema).max(OWNER_GUIDANCE_PENDING_CAP).default([]),
+    bound: ownerGuidanceBoundSchema.nullable().default(null)
+  })
+  .strict()
+  .default({ pending: [], bound: null });
+
 export const cursorsStateSchema = z
   .object({
     formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
@@ -654,6 +693,7 @@ export const cursorsStateSchema = z
       })
       .strict()
       .nullable(),
+    ownerGuidance: ownerGuidanceStateSchema,
     publication: z
       .object({
         status: z.enum(["not-required", "pending", "completed", "failed"]),
@@ -704,6 +744,8 @@ const journalEventTypeSchema = z.enum([
   "gate-advanced",
   "owner-question",
   "owner-answer",
+  "owner-guidance-queued",
+  "owner-guidance-bound",
   "agent-dropped",
   "paused",
   "resumed",
@@ -760,12 +802,15 @@ export type PlanSelectionDerived = z.infer<typeof planSelectionDerivedSchema>;
 export type ImplementationSelectionDerived = z.infer<typeof implementationSelectionDerivedSchema>;
 export type ConsensusDerived = z.infer<typeof consensusDerivedSchema>;
 export type DerivedState = z.infer<typeof derivedStateSchema>;
-// Preserve source compatibility for clients constructing pre-amendment state;
-// durable reads still validate and fill the new defaults with the schema.
+// Preserve source compatibility for clients constructing pre-amendment /
+// pre-guidance state; durable reads still validate and fill defaults.
 type AmendmentStateKeys = "amendmentSequence" | "pendingAmendment" | "amendments" | "amendmentRetirements";
-export type CursorsState = Omit<z.infer<typeof cursorsStateSchema>, AmendmentStateKeys> &
-  Partial<Pick<z.infer<typeof cursorsStateSchema>, AmendmentStateKeys>>;
+type OwnerGuidanceStateKeys = "ownerGuidance";
+export type CursorsState = Omit<z.infer<typeof cursorsStateSchema>, AmendmentStateKeys | OwnerGuidanceStateKeys> &
+  Partial<Pick<z.infer<typeof cursorsStateSchema>, AmendmentStateKeys | OwnerGuidanceStateKeys>>;
 export type JournalEvent = z.infer<typeof journalEventSchema>;
+export type OwnerGuidanceEntry = z.infer<typeof ownerGuidanceEntrySchema>;
+export type OwnerGuidanceState = z.infer<typeof ownerGuidanceStateSchema>;
 
 /**
  * A Zod `.default()` is only optional on the *input* side; `z.infer` reports the
@@ -1201,6 +1246,68 @@ export const replaceCursor = (
 
 export const setPaused = (cursors: CursorsState, paused: boolean, now = new Date().toISOString()): CursorsState =>
   cursorsStateSchema.parse({ ...cursors, manualPaused: paused, paused: paused || cursors.holds.length > 0, updatedAt: now });
+
+const guidanceOf = (cursors: CursorsState): OwnerGuidanceState =>
+  cursors.ownerGuidance ?? { pending: [], bound: null };
+
+/** Append one validated `/steer` entry to the pending queue. */
+export const enqueueOwnerGuidance = (
+  cursors: CursorsState,
+  entry: OwnerGuidanceEntry,
+  now = new Date().toISOString()
+): CursorsState => {
+  const guidance = guidanceOf(cursors);
+  if (guidance.pending.length >= OWNER_GUIDANCE_PENDING_CAP) {
+    throw new Error(`Owner guidance queue is full (${OWNER_GUIDANCE_PENDING_CAP} pending entries).`);
+  }
+  const parsed = ownerGuidanceEntrySchema.parse(entry);
+  return cursorsStateSchema.parse({
+    ...cursors,
+    ownerGuidance: { pending: [...guidance.pending, parsed], bound: guidance.bound },
+    updatedAt: now
+  });
+};
+
+/**
+ * Bind pending guidance to a workflow step once. Same `(stepId, round)` is a
+ * no-op so every agent ordered for that step shares one snapshot; a different
+ * key replaces bound and moves current pending into the new snapshot.
+ */
+export const bindOwnerGuidance = (
+  cursors: CursorsState,
+  stepId: WorkflowStepId,
+  round: number | null,
+  now = new Date().toISOString()
+): CursorsState => {
+  const guidance = guidanceOf(cursors);
+  if (guidance.bound !== null && guidance.bound.stepId === stepId && guidance.bound.round === round) {
+    return cursors;
+  }
+  return cursorsStateSchema.parse({
+    ...cursors,
+    ownerGuidance: {
+      pending: [],
+      bound: {
+        stepId,
+        round,
+        boundAt: now,
+        entries: [...guidance.pending]
+      }
+    },
+    updatedAt: now
+  });
+};
+
+/** Texts from the bound snapshot when the key matches; otherwise empty. */
+export const ownerGuidanceFor = (
+  cursors: CursorsState,
+  stepId: WorkflowStepId,
+  round: number | null
+): readonly string[] => {
+  const bound = guidanceOf(cursors).bound;
+  if (bound === null || bound.stepId !== stepId || bound.round !== round) return [];
+  return bound.entries.map((entry) => entry.text);
+};
 
 /** Scoped owner recovery never releases another hold or a manual pause. */
 export const releaseHold = (cursors: CursorsState, id: string, resetBudget: boolean, now: string): CursorsState => {

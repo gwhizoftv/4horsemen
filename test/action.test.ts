@@ -189,6 +189,28 @@ describe("advisory action sections", () => {
     const raw = renderAction(order("/external/coord"));
     expect(raw).not.toContain("## Repo context");
     expect(raw).not.toContain("## Changed paths for the bound pins");
+    expect(raw).not.toContain("## Owner guidance");
+  });
+
+  it("renders advisory owner guidance bullets without changing front matter", () => {
+    const git = renderAction({
+      ...order("/external/coord"),
+      ownerGuidance: ["keep Go 1.22 compatibility", "prefer existing helpers"]
+    });
+    expect(git).toContain("## Owner guidance");
+    expect(git).toContain("Advisory owner steering");
+    expect(git).toContain("- keep Go 1.22 compatibility");
+    expect(git).toContain("- prefer existing helpers");
+    expect(parseAction(git).actionId).toBe("b2337d85-6617-4e9f-8ace-901453764aa4");
+    const response = renderAction({
+      ...order("/external/coord"),
+      submissionMode: "response",
+      requiredPath: "",
+      responsePath: "/external/coord/issue-1/agents/codex/responses/b2337d85-6617-4e9f-8ace-901453764aa4.json",
+      ownerGuidance: ["one line"]
+    });
+    expect(response).toContain("## Owner guidance");
+    expect(response).toContain("- one line");
   });
 
   it("names configured context paths without inlining their contents", () => {
