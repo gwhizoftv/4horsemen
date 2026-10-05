@@ -26,12 +26,21 @@ bytes are, and `git show <sha>:<path>` for that same content is refused once the
 section is present. If the action says not every bound input could be exported,
 the pinned read stays available for the ones that are missing.
 
-During an automated issue, `git status` and `git diff` against this clone are
-refused by `.coord/bin/git`, which coordination installs and puts on your PATH.
-Coordination checked this clone out and already resolved what changed, and both
-readings are in your action. The refusal applies to this clone only: git against
-any other repository, and every command in owner-driven manual mode, is
-untouched. Do not try to work around it — report it if it blocks real work.
+During an automated issue, do not run `git status` or `git diff` against this
+clone, and do not read bound content with `git show <sha>:<path>`. These are
+instructions you must follow, whether or not anything stops you. Coordination
+checked this clone out and already resolved what changed, and both readings are
+in your action. Coordination enforces the rule in two ways. A shell-tool guard
+hook refuses these commands before your harness runs them. The
+`.coord/bin/git` shim refuses them when your shell's PATH reaches it. The guard
+reads the literal command text only, so a script, a dynamically built command,
+or input typed into an already-open terminal is not checked. Avoiding the read
+is your responsibility. The rule applies to this clone only: git against any
+other repository, and every command in owner-driven manual mode, is untouched.
+Do not try to work around a refusal; report it if it blocks real work. The
+participation action asks for one expected-refused probe and
+`coord containment-probe`. That probe is the only authorized exception, and you
+repeat it only after your CLI restarts.
 
 Commit and push only when the current action's `submissionMode` is `git` (or the
 action text requires a pushed commit SHA). Response-mode ballot actions must not

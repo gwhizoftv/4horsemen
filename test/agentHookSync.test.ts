@@ -8,6 +8,7 @@ import {
   inspectAgentLifecycleHooks,
   removeAgentLifecycleHooks,
   removeAntigravityStatusLine,
+  renderShellGuardHookCommand,
   syncAgentLifecycleHooks,
   syncAntigravityStatusLine
 } from "../src/agentHookSync.js";
@@ -42,10 +43,24 @@ describe("agent lifecycle hook synchronization", () => {
       const { clone, cliEntry } = fixture();
       const path = agentLifecycleHookPath(clone, agent)!;
       mkdirSync(dirname(path), { recursive: true });
+      // Owner entries sit on the same tool-hook events the shell guard uses.
       const existing =
         agent === "antigravity"
-          ? { "third-party": { Stop: [{ command: "echo keep" }] } }
-          : { hooks: { ThirdParty: [{ command: "echo keep" }] }, custom: true };
+          ? {
+              "third-party": {
+                Stop: [{ command: "echo keep" }],
+                PreToolUse: [{ matcher: "run_command", hooks: [{ type: "command", command: "echo keep-tool" }] }]
+              }
+            }
+          : agent === "cursor"
+            ? { hooks: { ThirdParty: [{ command: "echo keep" }], beforeShellExecution: [{ command: "echo keep-tool" }] } }
+            : {
+                hooks: {
+                  ThirdParty: [{ command: "echo keep" }],
+                  PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo keep-tool" }] }]
+                },
+                custom: true
+              };
       writeFileSync(path, `${JSON.stringify(existing, null, 2)}\n`);
       const effects = effectOptions(() => undefined, false);
       expect(syncAgentLifecycleHooks({ clone, agent, cliEntry, options: effects }).changed).toBe(true);
@@ -60,8 +75,49 @@ describe("agent lifecycle hook synchronization", () => {
       expect(removeAgentLifecycleHooks({ clone, agent, options: removal }).changed).toBe(true);
       expect(readFileSync(path, "utf8")).not.toContain(AGENT_LIFECYCLE_HOOK_MARKER);
       expect(JSON.stringify(json(path))).toContain("echo keep");
+      expect(JSON.stringify(json(path))).toContain("echo keep-tool");
+    });
+
+    it(`installs the ${agent} shell guard in the vendor's pre-execution shape`, () => {
+      const { clone, cliEntry } = fixture();
+      syncAgentLifecycleHooks({ clone, agent, cliEntry, options: effectOptions(() => undefined, false) });
+      const document = json(agentLifecycleHookPath(clone, agent)!);
+      const guard = renderShellGuardHookCommand(cliEntry, clone, agent);
+      if (agent === "cursor") {
+        expect((document.hooks as Record<string, unknown>).beforeShellExecution).toEqual([{ command: guard }]);
+      } else {
+        const events =
+          agent === "antigravity"
+            ? (document["coord-agent-lifecycle"] as Record<string, unknown>)
+            : (document.hooks as Record<string, unknown>);
+        expect(events.PreToolUse).toEqual([
+          {
+            matcher: agent === "antigravity" ? "run_command" : "Bash",
+            hooks: [{ type: "command", command: guard, timeout: 10 }]
+          }
+        ]);
+      }
+      expect(guard).toContain(AGENT_LIFECYCLE_HOOK_MARKER);
     });
   }
+
+  it("answers a payload without git from the shell prefilter, never starting the guard", () => {
+    const { clone } = fixture();
+    // An entry that cannot run proves the prefilter alone produced the answer.
+    const missingCli = join(clone, "no-such-cli.js");
+    const run = (vendor: "claude" | "cursor" | "antigravity", payload: string) =>
+      spawnSync("/bin/sh", ["-c", renderShellGuardHookCommand(missingCli, clone, vendor)], {
+        input: payload,
+        encoding: "utf8"
+      });
+    expect(run("claude", JSON.stringify({ tool_input: { command: "ls -la" } }))).toMatchObject({ status: 0, stdout: "" });
+    expect(run("cursor", JSON.stringify({ command: "ls" })).stdout).toBe('{"permission":"allow"}\n');
+    expect(run("antigravity", JSON.stringify({ toolCall: { args: { CommandLine: "ls" } } })).stdout).toBe(
+      '{"decision":"allow"}\n'
+    );
+    // A git payload reaches the guard; the missing entry fails, which the vendor treats as no decision.
+    expect(run("claude", JSON.stringify({ tool_input: { command: "git status" } })).status).not.toBe(0);
+  });
 
   it("installs all managed Cursor lifecycle and analytics hooks", () => {
     const { clone, cliEntry } = fixture();
@@ -72,6 +128,7 @@ describe("agent lifecycle hook synchronization", () => {
     expect(Object.keys(hooks).sort()).toEqual(
       [
         "afterAgentResponse",
+        "beforeShellExecution",
         "beforeSubmitPrompt",
         "postToolUse",
         "postToolUseFailure",

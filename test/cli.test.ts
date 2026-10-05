@@ -1537,6 +1537,23 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     expect(errors.join("")).toContain("agent-event");
   });
 
+  it("answers allow when the blocking git-guard itself fails", async () => {
+    for (const [vendor, expected] of [
+      ["cursor", '{"permission":"allow"}\n'],
+      ["claude", ""]
+    ] as const) {
+      const output: string[] = [];
+      const errors: string[] = [];
+      expect(
+        await runCli(["git-guard", "--vendor", vendor, "--clone", "/nonexistent-clone"], {
+          io: { stdin: () => "not-json", stdout: (message) => output.push(message), stderr: (message) => errors.push(message) }
+        })
+      ).toBe(0);
+      expect(output.join("")).toBe(expected);
+      expect(errors.join("")).toContain("git-guard");
+    }
+  });
+
   it("drops an oversized status-line payload before parsing and still answers the tee", async () => {
     const output: string[] = [];
     const errors: string[] = [];

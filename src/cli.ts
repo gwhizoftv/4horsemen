@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clearCompletion, readAction } from "./action.js";
-import { handleAgentEvent, lifecycleVendorSchema } from "./agentEvent.js";
+import { handleAgentEvent, lifecycleVendorSchema, type LifecycleVendor } from "./agentEvent.js";
+import { runContainmentProbe, runShellGuard, SHELL_GUARD_ALLOW } from "./shellGuard.js";
 import { buildAnalytics, renderAnalytics } from "./analytics.js";
 import { initializeAgentLifecycle, readAgentLifecycle } from "./agentLifecycle.js";
 import { clearAgentResponse } from "./ballotResponse.js";
@@ -168,7 +169,8 @@ const booleanFlags: Record<string, readonly string[]> = {
   uninstall: ["delete-clones", "wipe-runtime", "delete-coordination", "force", "dry-run"],
   "wipe-issue": ["force", "dry-run", "delete-evidence"],
   "reset-clones": ["force", "dry-run"],
-  detach: ["dry-run"]
+  detach: ["dry-run"],
+  "containment-probe": ["refusal-ran"]
 };
 
 const flagIsSet = (parsed: ParsedArgs, name: string): boolean => parsed.flags.get(name) === "true";
@@ -248,6 +250,10 @@ Called by the agent-clone hooks, not by operators:
   coord hook-verify --clone <path> --phase <precommit|prepush>
   coord hook-scope --clone <path>
   coord agent-event --vendor <codex|claude|cursor|antigravity> [--clone <path>] [--event <name>]
+  coord git-guard --vendor <codex|claude|cursor|antigravity> --clone <path>
+
+Run by an agent through its own shell tool:
+  coord containment-probe [--clone <path>] [--issue <n>] [--refusal-ran]
 
 Happy path: bootstrap once, onboard a product once, create GitHub issue N, then run
 \`coord N\` from that onboarded product. Agents author plans on issue-N/<agent>.
@@ -1239,6 +1245,41 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         io.stderr(`coord agent-event: ${error instanceof Error ? error.message : String(error)}\n`);
       }
       io.stdout(`${response}\n`);
+      return 0;
+    }
+
+    if (command === "git-guard") {
+      allowedFlags(parsed, ["vendor", "clone"]);
+      if (parsed.positionals.length !== 0) throw new Error("git-guard takes no positional arguments.");
+      // A blocking hook, kept apart from the fail-open agent-event receiver.
+      // Its own failure still answers "allow": a vendor treats a crashed hook
+      // that way anyway, and the shim stays behind it as the second layer.
+      let vendor: LifecycleVendor | null = null;
+      try {
+        vendor = lifecycleVendorSchema.parse(requireFlag(parsed, "vendor"));
+        const clone = resolve(io.cwd, requireFlag(parsed, "clone"));
+        const input = io.stdin();
+        if (Buffer.byteLength(input, "utf8") > AGENT_EVENT_MAX_BYTES) throw new Error("payload exceeds the git-guard bound");
+        const result = runShellGuard({ vendor, clone, raw: JSON.parse(input) as unknown, env: io.env });
+        if (result.recordError !== undefined) io.stderr(`coord git-guard: deny not recorded: ${result.recordError}\n`);
+        if (result.output !== "") io.stdout(`${result.output}\n`);
+      } catch (error) {
+        io.stderr(`coord git-guard: ${error instanceof Error ? error.message : String(error)}\n`);
+        if (vendor !== null && SHELL_GUARD_ALLOW[vendor] !== "") io.stdout(`${SHELL_GUARD_ALLOW[vendor]}\n`);
+      }
+      return 0;
+    }
+
+    if (command === "containment-probe") {
+      allowedFlags(parsed, ["clone", "issue", "refusal-ran"]);
+      if (parsed.positionals.length !== 0) throw new Error("containment-probe takes no positional arguments.");
+      const result = runContainmentProbe({
+        clone: parsed.flags.has("clone") ? resolve(io.cwd, requireFlag(parsed, "clone")) : io.cwd,
+        env: io.env,
+        ...(parsed.flags.has("issue") ? { issue: parseIssue(requireFlag(parsed, "issue")) } : {}),
+        refusalRan: flagIsSet(parsed, "refusal-ran")
+      });
+      io.stdout(`${result.lines.join("\n")}\n`);
       return 0;
     }
 

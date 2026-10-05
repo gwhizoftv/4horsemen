@@ -196,7 +196,26 @@ describe("issue report", () => {
       backgroundActive: true
     };
     expect(renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle)).toContain(
-      "Agent cursor: none / queued / healthy, pending=2, background-active"
+      "Agent cursor: none / queued / healthy, pending=2, background-active, containment hook=unverified shim=unverified"
+    );
+  });
+
+  it("shows Git containment measured in the agent's current session", () => {
+    const lifecycle = initialAgentLifecycle(["cursor"], "2026-08-13T00:00:00.000Z");
+    lifecycle.agents.cursor = {
+      ...lifecycle.agents.cursor!,
+      sessionId: "s1",
+      containment: {
+        hookDenial: { sessionId: "s1", vendorVersion: "1.7", policyRevision: "abc", at: "2026-08-13T00:00:01.000Z" },
+        refusalRan: null,
+        probe: {
+          sessionId: "s1", shim: "bypassed", resolvedGit: "/usr/bin/git", issueEnv: true, delegateEnv: false,
+          policyRevision: "abc", at: "2026-08-13T00:00:02.000Z"
+        }
+      }
+    };
+    expect(renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle)).toContain(
+      "containment hook=active shim=bypassed"
     );
   });
 });

@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { atomicWriteJson } from "./state.js";
 import type { EffectOptions } from "./setupWorkspace.js";
 import type { LifecycleVendor } from "./agentEvent.js";
+import { SHELL_GUARD_ALLOW } from "./shellGuard.js";
 
 export const AGENT_LIFECYCLE_HOOK_MARKER = "coord-managed-agent-lifecycle-v1";
 const ANTIGRAVITY_HOOK_NAME = "coord-agent-lifecycle";
@@ -37,6 +38,28 @@ export const renderAgentLifecycleHookCommand = (
   `COORD_AGENT_LIFECYCLE_HOOK=${AGENT_LIFECYCLE_HOOK_MARKER} /usr/bin/env node ${shellQuote(
     resolve(cliEntry)
   )} agent-event --vendor ${vendor} --clone ${shellQuote(resolve(clone))} --event ${shellQuote(event)}`;
+
+/**
+ * The pre-execution shell guard. A `/bin/sh` prefilter answers "allow" for any
+ * payload that does not mention git, so ordinary commands never wait on Node.
+ */
+export const renderShellGuardHookCommand = (cliEntry: string, clone: string, vendor: LifecycleVendor): string => {
+  const guard = `/usr/bin/env node ${shellQuote(resolve(cliEntry))} git-guard --vendor ${vendor} --clone ${shellQuote(
+    resolve(clone)
+  )}`;
+  const allow = SHELL_GUARD_ALLOW[vendor];
+  const script = `p=$(cat); case "$p" in *git*) printf '%s' "$p" | ${guard} ;; *) ${
+    allow === "" ? ":" : `printf '%s\\n' ${shellQuote(allow)}`
+  } ;; esac`;
+  return `COORD_AGENT_LIFECYCLE_HOOK=${AGENT_LIFECYCLE_HOOK_MARKER} /bin/sh -c ${shellQuote(script)}`;
+};
+
+/** Vendor hook event and matcher that see a shell command before it runs. */
+const NESTED_GUARD_EVENT = "PreToolUse";
+const NESTED_GUARD_MATCHER = "Bash";
+const CURSOR_GUARD_EVENT = "beforeShellExecution";
+const ANTIGRAVITY_GUARD_MATCHER = "run_command";
+const GUARD_TIMEOUT_SECONDS = 10;
 
 export type JsonObject = Record<string, unknown>;
 export const isObject = (value: unknown): value is JsonObject =>
@@ -123,6 +146,22 @@ const plannedDocument = (input: {
         }
       ];
     }
+    hooks[NESTED_GUARD_EVENT] = [
+      ...eventArray(hooks, NESTED_GUARD_EVENT, input.path).flatMap((entry) => {
+        const cleaned = withoutManagedNestedHandlers(entry);
+        return cleaned.value === null ? [] : [cleaned.value];
+      }),
+      {
+        matcher: NESTED_GUARD_MATCHER,
+        hooks: [
+          {
+            type: "command",
+            command: renderShellGuardHookCommand(input.cliEntry, input.clone, input.vendor),
+            timeout: GUARD_TIMEOUT_SECONDS
+          }
+        ]
+      }
+    ];
     return { ...input.existing, hooks };
   }
 
@@ -137,6 +176,12 @@ const plannedDocument = (input: {
         { command: renderAgentLifecycleHookCommand(input.cliEntry, input.clone, input.vendor, event) }
       ];
     }
+    hooks[CURSOR_GUARD_EVENT] = [
+      ...eventArray(hooks, CURSOR_GUARD_EVENT, input.path).filter(
+        (entry) => commandOf(entry)?.includes(AGENT_LIFECYCLE_HOOK_MARKER) !== true
+      ),
+      { command: renderShellGuardHookCommand(input.cliEntry, input.clone, input.vendor) }
+    ];
     return { ...input.existing, version: input.existing.version ?? 1, hooks };
   }
 
@@ -145,18 +190,33 @@ const plannedDocument = (input: {
   if (prior !== undefined && !JSON.stringify(prior).includes(AGENT_LIFECYCLE_HOOK_MARKER)) {
     throw new Error(`Cannot install lifecycle hooks: ${input.path} already defines '${ANTIGRAVITY_HOOK_NAME}'.`);
   }
-  document[ANTIGRAVITY_HOOK_NAME] = Object.fromEntries(
-    antigravityEvents.map((event) => [
-      event,
-      [
-        {
-          type: "command",
-          command: renderAgentLifecycleHookCommand(input.cliEntry, input.clone, input.vendor, event),
-          timeout: 5
-        }
-      ]
-    ])
-  );
+  document[ANTIGRAVITY_HOOK_NAME] = {
+    ...Object.fromEntries(
+      antigravityEvents.map((event) => [
+        event,
+        [
+          {
+            type: "command",
+            command: renderAgentLifecycleHookCommand(input.cliEntry, input.clone, input.vendor, event),
+            timeout: 5
+          }
+        ]
+      ])
+    ),
+    // Tool hooks are matcher groups, unlike the flat lifecycle handlers above.
+    PreToolUse: [
+      {
+        matcher: ANTIGRAVITY_GUARD_MATCHER,
+        hooks: [
+          {
+            type: "command",
+            command: renderShellGuardHookCommand(input.cliEntry, input.clone, input.vendor),
+            timeout: GUARD_TIMEOUT_SECONDS
+          }
+        ]
+      }
+    ]
+  };
   return document;
 };
 
@@ -202,7 +262,8 @@ export const removeAgentLifecycleHooks = (input: {
   let found = false;
   if (vendor === "codex" || vendor === "claude" || vendor === "cursor") {
     const hooks = { ...hooksObject(existing, path) };
-    const events = vendor === "cursor" ? cursorEvents : nestedEvents[vendor];
+    const events =
+      vendor === "cursor" ? [...cursorEvents, CURSOR_GUARD_EVENT] : [...nestedEvents[vendor], NESTED_GUARD_EVENT];
     for (const event of events) {
       const values = eventArray(hooks, event, path);
       const kept = values.flatMap((entry) => {

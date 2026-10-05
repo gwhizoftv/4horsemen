@@ -127,11 +127,19 @@ if [[ ! -x "$REAL_GIT" ]]; then
   exit 127
 fi
 
-delegate() { exec env COORD_GIT_DELEGATE=1 "$REAL_GIT" "$@"; }
+# Check mode: the shell-tool guard (src/shellGuard.ts) asks this same policy
+# for a verdict on a command the agent has only proposed. Every path that would
+# run git exits 0 instead; refusals keep their exit 2 and message.
+if [[ "${COORD_GIT_POLICY_CHECK:-}" == 1 ]]; then
+  delegate() { exit 0; }
+else
+  delegate() { exec env COORD_GIT_DELEGATE=1 "$REAL_GIT" "$@"; }
+fi
 
 # Anything git itself spawned (hooks, and coordination's own subprocesses) is
 # already inside a delegated call and must never be second-guessed.
 if [[ "${COORD_GIT_DELEGATE:-}" == 1 ]]; then
+  [[ "${COORD_GIT_POLICY_CHECK:-}" == 1 ]] && exit 0
   exec "$REAL_GIT" "$@"
 fi
 

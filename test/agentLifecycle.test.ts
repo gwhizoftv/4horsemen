@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  agentLifecycleStateSchema,
   applyLifecycleObservation,
+  containmentCoverage,
   decideLifecycleNudge,
   initialAgentLifecycle,
   initializeAgentLifecycle,
@@ -27,6 +29,31 @@ const actionId = "11111111-1111-4111-8111-111111111111";
 const digest = "a".repeat(64);
 
 const entry = () => initialAgentLifecycle(["codex"], now).agents.codex!;
+
+describe("containment coverage", () => {
+  const probe = { shim: "active" as const, resolvedGit: "/c/.coord/bin/git", issueEnv: true, delegateEnv: false };
+  it("adopts lifecycle files written before containment evidence existed", () => {
+    const legacy = initialAgentLifecycle(["codex"], now) as unknown as { agents: Record<string, Record<string, unknown>> };
+    delete legacy.agents.codex!.containment;
+    const parsed = agentLifecycleStateSchema.parse(legacy);
+    expect(containmentCoverage(parsed.agents.codex!)).toEqual({ hook: "unverified", shim: "unverified" });
+  });
+
+  it("does not credit a deny issued under a different shim policy", () => {
+    const base = { ...entry(), sessionId: "s1" };
+    const covered = (denialRevision: string) =>
+      containmentCoverage({
+        ...base,
+        containment: {
+          hookDenial: { sessionId: "s1", vendorVersion: null, policyRevision: denialRevision, at: now },
+          refusalRan: null,
+          probe: { ...probe, sessionId: "s1", policyRevision: "rev-2", at: later }
+        }
+      });
+    expect(covered("rev-2")).toEqual({ hook: "active", shim: "active" });
+    expect(covered("rev-1")).toEqual({ hook: "inactive", shim: "active" });
+  });
+});
 
 describe("agent lifecycle policy", () => {
   it("correlates an exact prompt and never treats injection as acceptance", () => {
