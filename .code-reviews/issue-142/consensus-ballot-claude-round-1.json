@@ -1,0 +1,14 @@
+{
+  "actionId": "622ed723-9dad-4c91-8c3f-e8b365031077",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "c6b5bce425220c9985c11818b445aba71e05d216a018e0a05ff648a77818e260",
+  "issue": 142,
+  "issueSessionId": "issue-142:6fbbe84be880ce28d41da4d34255247557a5a592",
+  "protocolVersion": 2,
+  "rationale": "Revision 7c9ddade removes the unconditional per-action probe note from buildOrder (the comparison's F4), emits empty allow output for Claude/Codex, lexes $(...)/backtick spans as opaque words, and marks missing session identity in status, while keeping the sandbox-safe clone-local probe mailbox and subshell-scoped cd; the issue-142 test files (shellGuard, agentHookSync, agentLifecycle, issueReport, runLoop) pass at 179/179, and the one remaining gap I found, git calls after an if/while keyword at shellGuard.ts:218, fails open behind the protocol instruction and is no regression from the unguarded baseline, so it belongs in a follow-up rather than blocking this change.",
+  "responseSha256": "45ecde7ae59848216d78866c312bb2fc07a6ee7d659957f9d311182a0bcea6ce",
+  "revisionCommitSha": "7c9ddade7da47c99b47783795c9a207d49a62226",
+  "round": 1
+}
