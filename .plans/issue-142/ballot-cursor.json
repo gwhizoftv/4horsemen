@@ -1,0 +1,46 @@
+{
+  "actionId": "b4aca700-a5e0-4db4-8c72-a670f990c870",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "fb2fda415ca0c975f06caa05e3bfdfafe59e0d3304b2d64f0b7b2c5ac49f4f7c",
+  "issue": 142,
+  "issueSessionId": "issue-142:6fbbe84be880ce28d41da4d34255247557a5a592",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "b284c84240aefef1f56b23153fec83697fe540d3",
+      "path": ".plans/issue-142/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "59c72ee1faaef063b17cbb1692379073b0e950b8",
+      "path": ".plans/issue-142/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "c7466372b4fe2f7f268df795e1ebff4018f16ba9",
+      "path": ".plans/issue-142/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude alone matches the owner-updated four-vendor shell-tool guard scope with one shim policy and real tool-shell verification, while Cursor's pane probe and Codex's observe-only map do not enforce the measured bypass.",
+  "responseSha256": "b6511a6182bb9db0a9971a0aeeea5efff919e36500cbf283cbf99a01874bf4d8",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "fb61bb06bda0df7feb0e781d6b538f5061c8349a",
+      "path": ".plans/issue-142/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "e38c8532690cd1633f7e8f3a3f14651e229cddfd",
+      "path": ".plans/issue-142/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "4eeee6fbb16b903b17a4e67799ef6af5aef31a40",
+      "path": ".plans/issue-142/review.md"
+    }
+  ]
+}
