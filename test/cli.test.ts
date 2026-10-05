@@ -3,11 +3,13 @@ import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync,
 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeAction } from "../src/action.js";
 import { automationDigestMaterial, runCli, type CliRunLoop } from "../src/cli.js";
 import { agentRuntimePaths, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
+import type { TerminalInput, TerminalOutput } from "../src/interactive.js";
 import {
   cursorsStateSchema,
   readConfig,
@@ -194,6 +196,70 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
 };
 
 describe("CLI version", () => {
+  it.each(["run", "resume"])("routes %s foreground controls through shared state without another tick or quit teardown", async (command) => {
+    const f = setup();
+    await runCli(["start", "1", "--config", f.configPath, "--coord-root", f.runtime], {
+      processRunner: successfulStartGit, makeRunLoop: fakeLoop, io: { stdout: () => undefined }
+    });
+    const paths = issueRuntimePaths(f.runtime, 1);
+    const input: TerminalInput = new PassThrough(), output: TerminalOutput = new PassThrough();
+    input.isTTY = output.isTTY = true;
+    input.setRawMode = (raw) => { input.isRaw = raw; };
+    let printed = "";
+    output.on("data", (chunk) => { printed += String(chunk); });
+    const errors: string[] = [];
+    const send = async (key: string) => { input.emit("data", key); await new Promise<void>((resolve) => setImmediate(resolve)); };
+    let ticks = 0, runs = 0;
+    const code = await runCli([command, ...(command === "resume" ? ["--run"] : []), "--issue", "1", "--coord-root", f.runtime], {
+      terminal: { input, output }, io: { stdout: (text) => { printed += text; }, stderr: (text) => errors.push(text) },
+      makeRunLoop: () => ({ initializeEffects: async () => {}, runTick: async () => { ticks++; return readCursorsState(paths); },
+        run: async (signal) => {
+          runs++;
+          await send("s"); await send("p");
+          expect(readCursorsState(paths).manualPaused).toBe(true);
+          // External resume uses the same operation while this runner stays live.
+          await runCli(["resume", "--issue", "1", "--coord-root", f.runtime], { io: { stdout: () => undefined } });
+          await send("p");
+          expect(readCursorsState(paths).manualPaused).toBe(true);
+          await send("/"); await send("steer keep existing helpers"); await send("\r");
+          expect(readCursorsState(paths).ownerGuidance!.pending[0]!.text).toBe("keep existing helpers");
+          await send("d"); await send("3"); await send("\r"); await send("y");
+          expect(readCursorsState(paths).activeRoster).toEqual(["codex", "claude"]);
+          // Simulate a last slow tick completing concurrently with quit. Normal
+          // completion cleanup would try to reset these deliberately dummy clones.
+          writeCursorsState(paths, { ...readCursorsState(paths), completed: true });
+          await send("q");
+          expect(signal?.aborted).toBe(true);
+        } })
+    });
+    expect(code).toBe(0);
+    expect(errors).toEqual([]);
+    expect(runs).toBe(1); expect(ticks).toBe(0);
+    expect(printed).toContain("Active step: R1.join");
+    expect(printed).toContain("Active roster: codex, claude, cursor");
+    expect(printed).not.toContain("Clone readiness");
+    expect(input.isRaw).toBe(false);
+    expect(input.listenerCount("data")).toBe(0);
+  });
+
+  it("restores the foreground terminal if the runner throws", async () => {
+    const f = setup();
+    await runCli(["start", "1", "--profile", "solo", "--config", f.configPath, "--coord-root", f.runtime], {
+      processRunner: successfulStartGit, makeRunLoop: fakeLoop, io: { stdout: () => undefined }
+    });
+    const input: TerminalInput = new PassThrough(), output: TerminalOutput = new PassThrough();
+    input.isTTY = output.isTTY = true;
+    input.setRawMode = (raw) => { input.isRaw = raw; };
+    const errors: string[] = [];
+    expect(await runCli(["run", "--issue", "1", "--coord-root", f.runtime], {
+      terminal: { input, output }, io: { stderr: (text) => errors.push(text) },
+      makeRunLoop: (paths) => ({ ...fakeLoop(paths), run: async () => { throw new Error("runner failed"); } })
+    })).toBe(2);
+    expect(errors.join("")).toContain("runner failed");
+    expect(input.isRaw).toBe(false);
+    expect(input.listenerCount("data")).toBe(0);
+  });
+
   it.each(["codex", "claude", "cursor", "antigravity"])("git-guard %s returns its allow response on malformed or oversized input", async (vendor) => {
     for (const input of ["{broken", "x".repeat(1024 * 1024 + 1), '{"tool_input":{"command":"echo ok"},"command":"echo ok"}']) {
       const output: string[] = [], errors: string[] = [];
@@ -1434,9 +1500,11 @@ describe("CLI", () => {
     expect(readCursorsState(paths)).toMatchObject({
       issueCursor: { stepId: "R6.revise", round: 3 },
       ownerQuestion: null,
+      ownerGuidance: { generation: 1 },
       lastOwnerAnswer: { questionId, answer: "revise" }
     });
     expect(await runCli(args, { makeRunLoop: fakeLoop })).toBe(0);
+    expect(readCursorsState(paths).ownerGuidance!.generation).toBe(1);
 
     const limitQuestion = "10000000-0000-4000-8000-000000000002";
     const atLimit = readCursorsState(paths);

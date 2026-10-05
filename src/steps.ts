@@ -345,6 +345,8 @@ export type InternalOrder = {
    * its absence rather than making callers supply an empty list.
    */
   contextPaths?: readonly string[];
+  /** Frozen advisory text for this workflow cohort, never the live queue. */
+  ownerGuidance?: readonly string[];
   changeScope?: readonly ChangeScopeEntry[];
   /** Optional for the same reason as `changeScope`: rendering copes without it. */
   materialized?: MaterializedInputs;

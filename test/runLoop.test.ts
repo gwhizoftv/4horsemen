@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readAction, writeAction } from "../src/action.js";
 import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
 import { git, repoRoot } from "./support/workspaceFixture.js";
@@ -47,6 +47,7 @@ import { parseClaudeRateLimits, parseCodexRateLimits } from "../src/resourceEvid
 import { resourceBindingPaths } from "../src/paths.js";
 import type { RunLoopDependencies } from "../src/runLoop.js";
 import { writeAgentResponse } from "../src/ballotResponse.js";
+import { queueOwnerGuidance } from "../src/ownerControls.js";
 import type { ConsensusBallotResponse } from "../src/protocol.js";
 import type { AcceptedResponse, BallotBatch } from "../src/state.js";
 import { createHash } from "node:crypto";
@@ -247,6 +248,78 @@ const quotaFixture = (results: CodexQuotaResult[], during?: () => void, validate
 };
 
 describe("runner waiting and initialization", () => {
+  it("freezes advice before the first recipient and keeps it across partial preparation, restart and reissue", async () => {
+    const { paths } = fixture();
+    queueOwnerGuidance(paths, "Cohort advice");
+    const mirror = new BareMirror(paths.mirror, "/origin.git", async () => ({ exitCode: 0, stdout: Buffer.alloc(0), stderr: "" }));
+    let count = 0;
+    const loop = new CoordinatorRunLoop(paths, { mirror, tmux: null, log: () => undefined, actionId: () => {
+      if (++count === 2) queueOwnerGuidance(paths, "Next cohort only");
+      return `10000000-0000-4000-8000-${String(count).padStart(12, "0")}`;
+    } });
+    await loop.runTick(); // concurrent advice invalidates the second preparation's CAS
+    expect(readCursorsState(paths).agents.codex!.actionId).toBeNull();
+    const restarted = new CoordinatorRunLoop(paths, { mirror, tmux: null, log: () => undefined });
+    await restarted.runTick();
+    for (const agent of ["claude", "codex"]) {
+      const text = readFileSync(agentRuntimePaths(paths, agent).action, "utf8");
+      expect(text).toContain('- "Cohort advice"');
+      expect(text).not.toContain("Next cohort only");
+    }
+    const actionId = readCursorsState(paths).agents.codex!.actionId;
+    writeFileSync(agentRuntimePaths(paths, "codex").complete, "malformed\n");
+    await restarted.runTick();
+    expect(readCursorsState(paths).agents.codex!.actionId).toBe(actionId);
+    expect(readFileSync(agentRuntimePaths(paths, "codex").action, "utf8")).toContain('- "Cohort advice"');
+    expect(readCursorsState(paths).ownerGuidance!.pending.map((entry) => entry.text)).toEqual(["Next cohort only"]);
+    expect(readJournal(paths).filter((entry) => entry.type === "owner-guidance-bound")).toHaveLength(1);
+    expect(readJournal(paths).filter((entry) => entry.type === "owner-guidance-queued")).toHaveLength(2);
+    mutateCursorsState(paths, (current) => cursorsStateSchema.parse({ ...current,
+      accepted: current.activeRoster.map((agent) => ({ stepId: "R1.join", agent, round: null,
+        submissionSha: "c".repeat(40), path: `.signals/issue-1/participation-ready-${agent}.json`, acceptedAt: current.updatedAt })),
+      agents: Object.fromEntries(current.activeRoster.map((agent) => [agent,
+        { ...current.agents[agent], status: "waiting-peer", actionId: null, submissionSha: null, outstanding: [] }]))
+    }));
+    await restarted.runTick();
+    expect(readCursorsState(paths).issueCursor.stepId).toBe("R2.plan");
+    for (const agent of ["claude", "codex"]) {
+      const text = readFileSync(agentRuntimePaths(paths, agent).action, "utf8");
+      expect(text).toContain('- "Next cohort only"');
+      expect(text).not.toContain('- "Cohort advice"');
+    }
+    expect(readCursorsState(paths).ownerGuidance!.pending).toEqual([]);
+  });
+
+  it("does not tick after an abort during slow initialization", async () => {
+    const { paths } = fixture();
+    const controller = new AbortController();
+    const mirror = new BareMirror(paths.mirror, "/origin.git", async () => ({ exitCode: 0, stdout: Buffer.alloc(0), stderr: "" }));
+    const loop = new CoordinatorRunLoop(paths, { mirror, tmux: null, log: () => undefined });
+    loop.initializeEffects = async () => { controller.abort(); };
+    const tick = vi.spyOn(loop, "runTick");
+    await loop.run(controller.signal);
+    expect(tick).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("cancels poll waiting immediately with injected sleep=%s and never starts another tick", async (injected) => {
+    vi.useFakeTimers();
+    try {
+      const { paths } = fixture();
+      mutateCursorsState(paths, (current) => setPaused(current, true));
+      const controller = new AbortController();
+      const loop = new CoordinatorRunLoop(paths, { tmux: null, log: () => undefined,
+        ...(injected ? { sleep: () => new Promise<void>(() => {}) } : {}) });
+      const tick = vi.spyOn(loop, "runTick");
+      const running = loop.run(controller.signal);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(injected ? 0 : 1);
+      controller.abort();
+      await running;
+      expect(vi.getTimerCount()).toBe(0);
+      expect(tick).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each(["manual", "hold"])("waits through a %s pause and continues in the same runner after release", async (kind) => {
     const f = safetyFixture("claude");
     await f.tick();

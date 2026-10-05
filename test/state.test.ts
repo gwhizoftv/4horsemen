@@ -5,6 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
   appendJournal,
+  enqueueOwnerGuidance,
+  bindOwnerGuidance,
+  ownerGuidanceFor,
+  resetOwnerGuidance,
+  suspendOwnerGuidance,
   consensusDerivedSchema,
   cursorsStateSchema,
   dropAgent,
@@ -70,6 +75,55 @@ const initialize = () => {
 };
 
 describe("operational state", () => {
+  it("defaults old guidance state and freezes each cohort without draining later advice on reissue", () => {
+    const { paths, cursors } = initialize();
+    const legacy = { ...cursors };
+    delete legacy.ownerGuidance;
+    let state = cursorsStateSchema.parse(legacy);
+    expect(state.ownerGuidance).toEqual({ pending: [], bound: null, suspended: null, generation: 0 });
+    const entry = { id: "10000000-0000-4000-8000-000000000001", text: "First advice", enqueuedAt: state.updatedAt };
+    writeCursorsState(paths, enqueueOwnerGuidance(state, entry));
+    state = cursorsStateSchema.parse(bindOwnerGuidance(readCursorsState(paths), "R6.ballot", 1, state.updatedAt));
+    writeCursorsState(paths, enqueueOwnerGuidance(state, { ...entry, id: "10000000-0000-4000-8000-000000000002", text: "Next advice" }));
+    const restarted = readCursorsState(paths);
+    expect(bindOwnerGuidance(restarted, "R6.ballot", 1, state.updatedAt)).toBe(restarted);
+    expect(ownerGuidanceFor(restarted, "R6.ballot", 1)).toEqual(["First advice"]);
+    expect(restarted.ownerGuidance!.pending).toHaveLength(1);
+    const retry = bindOwnerGuidance(resetOwnerGuidance(restarted), "R6.ballot", 1, state.updatedAt);
+    expect(ownerGuidanceFor(retry, "R6.ballot", 1)).toEqual(["Next advice"]);
+    expect(ownerGuidanceFor(retry, "R6.ballot", 2)).toEqual([]);
+    expect(retry.ownerGuidance!.pending).toEqual([]);
+  });
+
+  it("preserves pending advice across legacy in-flight work and restores interrupted amendment work", () => {
+    const { cursors } = initialize();
+    const entry = { id: "10000000-0000-4000-8000-000000000001", text: "Product advice", enqueuedAt: cursors.updatedAt };
+    const queued = enqueueOwnerGuidance(cursors, entry);
+    const inFlight = bindOwnerGuidance({ ...queued, agents: { ...queued.agents,
+      codex: { ...queued.agents.codex!, stepId: "R4.implement", actionId: entry.id } } }, "R4.implement", null, cursors.updatedAt);
+    expect(ownerGuidanceFor(inFlight, "R4.implement", null)).toEqual([]);
+    expect(inFlight.ownerGuidance!.pending).toHaveLength(1);
+    const product = bindOwnerGuidance(queued, "R4.implement", null, cursors.updatedAt);
+    const ballot = bindOwnerGuidance(suspendOwnerGuidance(product), "R4.amend-ballot", 1, cursors.updatedAt);
+    expect(ownerGuidanceFor(ballot, "R4.amend-ballot", 1)).toEqual([]);
+    const resumed = bindOwnerGuidance(resetOwnerGuidance(ballot), "R4.implement", null, cursors.updatedAt);
+    expect(ownerGuidanceFor(resumed, "R4.implement", null)).toEqual(["Product advice"]);
+    expect(resumed.ownerGuidance!.suspended).toBeNull();
+  });
+
+  it("rejects blank, multiline, control, oversized and overflowing guidance without changing state", () => {
+    const { cursors } = initialize();
+    const entry = { id: "10000000-0000-4000-8000-000000000001", text: "Advice", enqueuedAt: cursors.updatedAt };
+    for (const text of [" ", "\nadvice", "advice\n", "a\tb", "a\x1bb", "a".repeat(2001)]) {
+      expect(() => enqueueOwnerGuidance(cursors, { ...entry, text })).toThrow();
+    }
+    let full = cursors;
+    for (let i = 0; i < 32; i++) full = enqueueOwnerGuidance(full, { ...entry, id: `10000000-0000-4000-8000-${String(i).padStart(12, "0")}` });
+    expect(() => enqueueOwnerGuidance(full, { ...entry, id: "20000000-0000-4000-8000-000000000001" })).toThrow(/full/);
+    expect(() => enqueueOwnerGuidance({ ...cursors, completed: true }, entry)).toThrow(/completed/);
+    expect(cursors.ownerGuidance!.pending).toEqual([]);
+  });
+
   it("defaults old format-4 amendment state and durably cancels a pending proposal on drop", () => {
     const { paths, start, cursors } = initialize();
     const legacy = { ...cursors };

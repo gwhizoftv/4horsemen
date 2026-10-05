@@ -185,6 +185,24 @@ The agent selector requires exactly one hold; use `--hold ID` if ambiguous.
 Plain `coord resume --issue 42` clears only manual pause, not safety holds.
 Nudge-loop holds still require `--reset-nudge-budget`.
 
+Foreground `coord 42`, `coord run`, and `coord resume --run` offer owner controls
+when both stdin and stdout are TTYs: `s` shows status (step, roster, pins, PR and
+holds), `p`/Space toggles **manual** pause, `a` reopens agent windows, `d` selects
+an agent to drop, `r` selects a hold to release, and `?`/`h` shows help. Numbered
+menus use Enter; dropping or abandoning requires a separate `y` confirmation.
+Pending owner questions appear inline with only the permitted answers—no UUID
+copy/paste. Esc leaves a menu or edit. `q` (outside an edit) or Ctrl-C stops only
+the foreground runner, leaving agent windows, tmux and runtime intact. Use
+`coord detach` for teardown. Agent panes still accept direct typing.
+
+Press `/`, type `steer <text>`, then Enter to queue advisory owner guidance for
+the next action cohort. It persists across restart and appears in an **Owner
+guidance** section for every agent receiving that cohort; it never changes an
+in-flight action or overrides the approved scope or protocol. Guidance is one
+line, at most 2,000 characters, with up to 32 entries pending. It is not an
+external `coord steer` command. Non-TTY runs retain log-only behavior and do not
+read input. Hold-budget resets remain explicit CLI operations.
+
 If the coordinator was stopped, release and restart in one command:
 
 ```sh

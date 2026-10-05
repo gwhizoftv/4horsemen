@@ -542,6 +542,54 @@ pending work without changing a gate. `answer` consumes one typed pending
 question, is idempotent for the same answer, and cannot create round 4.
 `abandon` stops the workflow while retaining its audit state.
 
+### Foreground interactive controls
+
+`coord N`, `coord run`, and `coord resume --run` enable a lightweight prompt only
+when **both** input and output are TTYs. Redirected/non-TTY runs remain log-only:
+no raw mode, key reader, or prompt. Existing owner CLI commands remain usable
+from another shell; the prompt uses their same locked state mutations and does
+not start a second tick loop. Logs clear and redraw the current edit.
+
+| Key | Operation |
+| --- | --- |
+| `s` | Snapshot of active step/round, roster, pins, publication/PR, holds and queued guidance count |
+| `p` / Space | Toggle manual pause, never release holds |
+| `a` | Reopen missing agent Terminal clients using the existing attach flow |
+| `d` | Numbered active-agent menu; Enter selects, a separate `y` confirms |
+| `r` | Numbered hold menu; release the selected ID after inspecting the agent |
+| `?` / `h` | Help |
+| `/` | Begin a `/steer <text>` line; Enter queues, Backspace edits, Esc cancels |
+| `q` | Quit outside an edit, stopping only the foreground runner |
+
+Owner questions appear as numbered menus with only `allowedAnswers`. Select a
+number and press Enter; abandon also requires `y`. The captured question ID is
+validated under the same lock as external `coord answer`, so stale selections
+cannot answer a replacement question. Esc returns to hotkeys; `s` redisplays a
+pending question. Menus likewise capture agent/hold identities and revalidate
+them when applied. Nudge-loop budget reset remains CLI-only via
+`coord resume --hold ID --reset-nudge-budget`. No control silently releases
+other holds. Pasted text does not execute hotkeys or confirmations; to paste
+guidance, press `/` first. In an edit, `q` is ordinary text.
+
+`/steer` queues a nonblank single line (maximum 2,000 characters; 32 pending
+entries) in `cursors.json` and journals it. At the first actual order preparation
+for the next cohort, all pending entries bind atomically to that step, round and
+cohort generation. Every recipient, reissue and restart of that cohort sees the
+same snapshot, even when more advice is queued between agents. Advice entered
+after the snapshot waits for the following cohort; a same-round owner retry is
+a new cohort. Skipped/normalized steps do not consume the queue. Amendment
+ballots have their own snapshot and preserve the interrupted product cohort's
+advice for resumed work. Existing pre-feature in-flight work is not retrofitted.
+Git and response actions render this as advisory **Owner guidance**; it cannot
+expand the file map, alter pins or paths, or override checks or evidence rules.
+There is no external `coord steer` command or in-flight prompt injection.
+
+Quit, Ctrl-C, EOF and termination restore terminal settings and stop waiting;
+an already-running workflow effect may finish before the runner exits. They do
+not call `detach`, kill tmux, close agent clients, or wipe state, even if that
+last tick completes the issue. Normal un-interrupted completion retains its
+existing cleanup behavior. Direct typing into agent panes is unchanged.
+
 ### Delivery safety and unknown holds
 
 All vendors (including Antigravity) share a durable delivery budget for each
