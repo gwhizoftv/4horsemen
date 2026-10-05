@@ -5,7 +5,7 @@
   "agent": "cursor",
   "inputSetHash": "faab0437e9e79c8e3bb32ec416fac8f23e888cbc93a829b783115fec52f8cca9",
   "artifact": "implementation-ready",
-  "implementationCommitSha": "ae4c5402898011c37e4b27f276cc955cbaf52a64",
+  "implementationCommitSha": "181ea79ca43a7f799e9635dbc5435ea50eaddb2b",
   "scopeHash": "8a31db2db1f26647ab6906173a9f5cac237bd917d2bf1491bca03d4117a89d05",
   "approvedPaths": [
     "R3.plan-ballot",
