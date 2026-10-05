@@ -1,0 +1,29 @@
+{
+  "actionId": "bf389dbd-ba05-416a-9132-5ab088aef14f",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "6940cdb27af69c2e2332f3d605f83625fd790634",
+      "path": ".signals/issue-154/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "6990dfbc8b26b78375dfc2e1b879b51c2f9d46e1",
+      "path": ".signals/issue-154/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "181ea79ca43a7f799e9635dbc5435ea50eaddb2b",
+      "path": ".signals/issue-154/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "347272cefa89e2d6068aa0a21f6662c2992134babaf3174966629d2de7ec68cb",
+  "issue": 154,
+  "issueSessionId": "issue-154:ed813ca97a3646654b0769f4c31849703d43ec5e",
+  "protocolVersion": 2,
+  "rationale": "Codex's implementation is the most complete: its guidance generation covers owner retry, whole-cohort resets and amendment suspend/restore plus an in-flight upgrade guard, and its terminal layer has cancellable polling, confirmed drops, bracketed-paste safety, output-TTY gating and signal exit codes, leaving only small fixes (pause journal semantics and the test-time default terminal), whereas claude's lacks amendment continuity and cursor's has stale-retry binding, timer/listener leaks and an exploitable paste-to-drop path.",
+  "responseSha256": "e69ff62c7add063cd9b770550c2572413d00ea820508c472294af666be7f795a"
+}

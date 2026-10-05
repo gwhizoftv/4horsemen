@@ -1,0 +1,29 @@
+{
+  "actionId": "11fda4c5-06a8-4ebf-a72d-e2a7469d1355",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "6940cdb27af69c2e2332f3d605f83625fd790634",
+      "path": ".signals/issue-154/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "6990dfbc8b26b78375dfc2e1b879b51c2f9d46e1",
+      "path": ".signals/issue-154/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "181ea79ca43a7f799e9635dbc5435ea50eaddb2b",
+      "path": ".signals/issue-154/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "347272cefa89e2d6068aa0a21f6662c2992134babaf3174966629d2de7ec68cb",
+  "issue": 154,
+  "issueSessionId": "issue-154:ed813ca97a3646654b0769f4c31849703d43ec5e",
+  "protocolVersion": 2,
+  "rationale": "Claude alone pairs bind-once guidance with same-step cohort rebind via startOwnerGuidanceBatch and abortableSleep, avoiding Cursor's quit-timer and retry-rebind failures and Codex's multi-site guidance model plus JSON-quoted bullets.",
+  "responseSha256": "7ef67e23085c3661d409b29c86df003ae65c4f37a145a267dbf3ad27affccc66"
+}

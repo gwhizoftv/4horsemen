@@ -1,0 +1,29 @@
+{
+  "actionId": "22a1de47-7b9e-47a2-8bde-0500f92c609a",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "6940cdb27af69c2e2332f3d605f83625fd790634",
+      "path": ".signals/issue-154/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "6990dfbc8b26b78375dfc2e1b879b51c2f9d46e1",
+      "path": ".signals/issue-154/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "181ea79ca43a7f799e9635dbc5435ea50eaddb2b",
+      "path": ".signals/issue-154/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "347272cefa89e2d6068aa0a21f6662c2992134babaf3174966629d2de7ec68cb",
+  "issue": 154,
+  "issueSessionId": "issue-154:ed813ca97a3646654b0769f4c31849703d43ec5e",
+  "protocolVersion": 2,
+  "rationale": "Codex 6990dfbc8b26b78375dfc2e1b879b51c2f9d46e1 stays within scope and passes the full checks while avoiding the reproduced peer failures in pasted destructive input, foreground shutdown, same-round guidance delivery, and legacy partial-cohort binding, with focused regression coverage for those boundaries.",
+  "responseSha256": "ccbad3c90700ab346df57670b1d22c174fd316b57cca172f4b20a5900e95de41"
+}
