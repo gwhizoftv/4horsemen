@@ -695,7 +695,14 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         status: () => {
           const start = readStartState(paths);
           const cursors = readCursorsState(paths);
-          io.stdout(renderIssueReport(start, cursors, readAgentLifecycle(paths)));
+          const step = cursors.issueCursor;
+          const report = [
+            renderIssueReport(start, cursors, readAgentLifecycle(paths)).trimEnd(),
+            `Active step: ${step.stepId}${step.round === null ? "" : ` round ${step.round}`}`,
+            `Active roster: ${cursors.activeRoster.join(", ")}` +
+              (cursors.droppedAgents.length > 0 ? ` (dropped: ${cursors.droppedAgents.join(", ")})` : "")
+          ].join("\n");
+          logSink(report);
         },
         togglePause: () => {
           const current = readCursorsState(paths);

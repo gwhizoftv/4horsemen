@@ -607,6 +607,60 @@ describe("CLI", () => {
     expect(seenSignal).toBeInstanceOf(AbortSignal);
   });
 
+  it("appends active step and roster to interactive status without changing shared report rendering", async () => {
+    const fixture = setup();
+    expect(
+      await runCli(["start", "1", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+        processRunner: resolvableStartGit,
+        makeRunLoop: fakeLoop,
+        io: { stdout: () => undefined }
+      })
+    ).toBe(0);
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const before = readCursorsState(paths);
+    writeCursorsState(
+      paths,
+      cursorsStateSchema.parse({
+        ...before,
+        paused: true,
+        manualPaused: true,
+        droppedAgents: ["cursor"],
+        activeRoster: before.activeRoster.filter((agent) => agent !== "cursor")
+      })
+    );
+    const rawModes: boolean[] = [];
+    const input = Object.assign(new PassThrough(), {
+      isTTY: true,
+      setRawMode(mode: boolean) {
+        rawModes.push(mode);
+      }
+    });
+    const written: string[] = [];
+    const output = new PassThrough();
+    output.on("data", (chunk) => written.push(String(chunk)));
+    const code = await runCli(["run", "--issue", "1", "--coord-root", fixture.runtime], {
+      makeRunLoop: () => ({
+        ...fakeLoop(paths),
+        run: async (signal) => {
+          input.emit("keypress", "s", { name: "s", sequence: "s" });
+          await new Promise((resolve) => setImmediate(resolve));
+          await new Promise((resolve) => setImmediate(resolve));
+          input.emit("keypress", "q", { name: "q", sequence: "q" });
+          expect(signal?.aborted).toBe(true);
+        }
+      }),
+      terminal: { input, output },
+      io: { stdout: () => undefined }
+    });
+    expect(code).toBe(0);
+    const text = written.join("");
+    expect(text).toContain("Active step: R1.join");
+    expect(text).toContain(`Active roster: ${before.activeRoster.filter((agent) => agent !== "cursor").join(", ")}`);
+    expect(text).toContain("(dropped: cursor)");
+    expect(text).toMatch(/Issue 1: paused/);
+    expect(rawModes).toEqual([true, false]);
+  });
+
   it("resumes only the selected hold, audits budget resets, and reports remaining pauses", async () => {
     const fixture = setup();
     expect(await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
