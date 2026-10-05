@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeAction } from "../src/action.js";
 import { automationDigestMaterial, runCli, type CliRunLoop } from "../src/cli.js";
 import { agentRuntimePaths, issueRuntimePaths } from "../src/paths.js";
@@ -196,6 +196,32 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
 };
 
 describe("CLI version", () => {
+  it("never touches the default terminal under Vitest, even when both host streams are TTYs", async () => {
+    const f = setup();
+    await runCli(["start", "1", "--profile", "solo", "--config", f.configPath, "--coord-root", f.runtime], {
+      processRunner: successfulStartGit, makeRunLoop: fakeLoop, io: { stdout: () => undefined }
+    });
+    const input: TerminalInput = new PassThrough(), output: PassThrough & TerminalOutput = new PassThrough();
+    input.isTTY = output.isTTY = true;
+    input.setRawMode = vi.fn();
+    const run = vi.fn(async (_signal?: AbortSignal) => { expect(_signal).toBeInstanceOf(AbortSignal); });
+    // Substitute streams at the process boundary so a regression cannot touch
+    // the real developer terminal; deliberately do not inject dependencies.terminal.
+    const stdin = vi.spyOn(process, "stdin", "get").mockReturnValue(input as typeof process.stdin);
+    const stdout = vi.spyOn(process, "stdout", "get").mockReturnValue(output as unknown as typeof process.stdout);
+    let code: number;
+    try {
+      code = await runCli(["run", "--issue", "1", "--coord-root", f.runtime], {
+        io: { stdout: () => undefined }, makeRunLoop: (paths) => ({ ...fakeLoop(paths), run })
+      });
+    } finally { stdin.mockRestore(); stdout.mockRestore(); }
+    expect(code).toBe(0);
+    expect(run).toHaveBeenCalledOnce();
+    expect(input.setRawMode).not.toHaveBeenCalled();
+    expect(input.listenerCount("data")).toBe(0);
+    expect(output.readableLength).toBe(0);
+  });
+
   it.each(["run", "resume"])("routes %s foreground controls through shared state without another tick or quit teardown", async (command) => {
     const f = setup();
     await runCli(["start", "1", "--config", f.configPath, "--coord-root", f.runtime], {
@@ -666,6 +692,12 @@ describe("CLI", () => {
     expect(await runCli(["resume", ...args], { io })).toBe(0);
     expect(readCursorsState(paths).paused).toBe(true);
     expect(output.join("")).toContain("1 active hold");
+    // Journal pause/resume describes effective workflow state for analytics,
+    // not the manual flag changing underneath an independent safety hold.
+    expect(readJournal(paths).filter((event) => event.type === "resumed")).toHaveLength(0);
+    expect(await runCli(["pause", ...args], { io })).toBe(0);
+    expect(await runCli(["resume", ...args], { io })).toBe(0);
+    expect(readJournal(paths).filter((event) => event.type === "paused" || event.type === "resumed")).toHaveLength(0);
     expect(await runCli(["restart-action", ...args], { io })).toBe(2);
     expect(await runCli(["resume", ...args, "--reset-nudge-budget"], { io })).toBe(2);
     expect(await runCli(["resume", ...args, "--hold", id], { io })).toBe(2);
@@ -675,6 +707,7 @@ describe("CLI", () => {
       expect.objectContaining({ details: expect.objectContaining({ hold: id, resetNudgeBudget: true }) })
     ]);
     expect(readJournal(paths).filter((event) => event.type === "resumed")).toHaveLength(1);
+    expect(readJournal(paths).slice(-2).map((event) => event.type)).toEqual(["hold-released", "resumed"]);
   });
 
   it("resolves scoped agent recovery under the lock and runs only on explicit request", async () => {

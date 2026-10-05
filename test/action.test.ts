@@ -42,8 +42,8 @@ describe("agent actions", () => {
     expect(original).not.toContain("## Owner guidance");
     expect(guided.split("---")[1]).toBe(original.split("---")[1]);
     expect(guided).toContain("## Owner guidance");
-    expect(guided).toContain('- "Prefer existing helpers"');
-    expect(guided).toContain('- "## Not a heading"');
+    expect(guided).toContain("- Prefer existing helpers");
+    expect(guided).toContain("- ## Not a heading");
     expect(guided).toContain("Advisory context only");
     expect(guided).toContain("approved");
     expect(parseAction(guided).submissionMode).toBe(mode);

@@ -365,7 +365,9 @@ export const setOwnerPause = (
         if (holdId !== null) appendJournal(paths, { type: "hold-released", details: {
           hold: holdId, resetNudgeBudget: resetBudget, eventId: `release:${holdId}`
         } }, now);
-        if (current.manualPaused !== next.manualPaused) appendJournal(paths, { type: next.manualPaused ? "paused" : "resumed", details: {} }, now);
+        // These events measure effective paused time in analytics; a manual
+        // toggle beneath a hold must not report that the workflow resumed.
+        if (current.paused !== next.paused) appendJournal(paths, { type: next.paused ? "paused" : "resumed", details: {} }, now);
         return next;
       }).state;
 };

@@ -2612,9 +2612,11 @@ export class CoordinatorRunLoop {
     for (const decision of decisions) {
       if (next.paused || next.abandoned) return next;
       if (decision.type === "prepare-action") {
-        const bound = bindOwnerGuidance(next, decision.stepId, decision.round, this.now());
-        if (bound !== next) {
-          next = this.mutate(next, () => {
+        if (bindOwnerGuidance(next, decision.stepId, decision.round, this.now()) !== next) {
+          next = this.mutate(next, (current) => {
+            // The revision CAS rejects concurrent owner changes; derive the
+            // snapshot from the locked state as well, rather than a prior copy.
+            const bound = bindOwnerGuidance(current, decision.stepId, decision.round, this.now());
             const snapshot = bound.ownerGuidance!.bound!;
             const event = appendJournal(this.paths, { type: "owner-guidance-bound", details: {
               stepId: snapshot.stepId, round: snapshot.round, generation: snapshot.generation,

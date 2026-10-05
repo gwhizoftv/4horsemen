@@ -682,9 +682,14 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     let stopCode = 0;
     let session: InteractiveSession | null = null;
     const stdout = io.stdout, stderr = io.stderr;
+    // Like sessionExists, test defaults must not operate on the host UI.
+    // An explicitly injected terminal still exercises the interactive path.
+    const terminal = dependencies.terminal ?? (process.env.VITEST !== undefined ? null : {
+      input: process.stdin, output: process.stdout
+    });
     try {
-      session = startInteractiveSession({
-        ...(dependencies.terminal ?? { input: process.stdin, output: process.stdout }),
+      session = terminal === null ? null : startInteractiveSession({
+        ...terminal,
         signal: controller.signal,
         stop: (reason) => {
           stopCode = reason === "interrupt" ? 130 : reason === "terminate" ? 143 : reason === "error" ? 1 : 0;

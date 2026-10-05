@@ -263,14 +263,14 @@ describe("runner waiting and initialization", () => {
     await restarted.runTick();
     for (const agent of ["claude", "codex"]) {
       const text = readFileSync(agentRuntimePaths(paths, agent).action, "utf8");
-      expect(text).toContain('- "Cohort advice"');
+      expect(text).toContain("- Cohort advice");
       expect(text).not.toContain("Next cohort only");
     }
     const actionId = readCursorsState(paths).agents.codex!.actionId;
     writeFileSync(agentRuntimePaths(paths, "codex").complete, "malformed\n");
     await restarted.runTick();
     expect(readCursorsState(paths).agents.codex!.actionId).toBe(actionId);
-    expect(readFileSync(agentRuntimePaths(paths, "codex").action, "utf8")).toContain('- "Cohort advice"');
+    expect(readFileSync(agentRuntimePaths(paths, "codex").action, "utf8")).toContain("- Cohort advice");
     expect(readCursorsState(paths).ownerGuidance!.pending.map((entry) => entry.text)).toEqual(["Next cohort only"]);
     expect(readJournal(paths).filter((entry) => entry.type === "owner-guidance-bound")).toHaveLength(1);
     expect(readJournal(paths).filter((entry) => entry.type === "owner-guidance-queued")).toHaveLength(2);
@@ -284,8 +284,8 @@ describe("runner waiting and initialization", () => {
     expect(readCursorsState(paths).issueCursor.stepId).toBe("R2.plan");
     for (const agent of ["claude", "codex"]) {
       const text = readFileSync(agentRuntimePaths(paths, agent).action, "utf8");
-      expect(text).toContain('- "Next cohort only"');
-      expect(text).not.toContain('- "Cohort advice"');
+      expect(text).toContain("- Next cohort only");
+      expect(text).not.toContain("- Cohort advice");
     }
     expect(readCursorsState(paths).ownerGuidance!.pending).toEqual([]);
   });
