@@ -17,6 +17,10 @@ import {
   writeCursorsState
 } from "../src/state.js";
 import { DOCTOR_CODES } from "../src/doctor.js";
+import { observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
+import { syncAgentLifecycleHooks } from "../src/agentHookSync.js";
+import { effectOptions, writeGitWrapper } from "../src/setupWorkspace.js";
+import { ingestContainmentProbe } from "../src/shellGuard.js";
 import { renderGitHubIssueSnapshot } from "../src/githubIssue.js";
 import { ensureBuilt, git as fixtureGit, makeProduct, repoRoot, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
 import { createHash } from "node:crypto";
@@ -190,6 +194,77 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
 };
 
 describe("CLI version", () => {
+  it.each(["codex", "claude", "cursor", "antigravity"])("git-guard %s returns its allow response on malformed or oversized input", async (vendor) => {
+    for (const input of ["{broken", "x".repeat(1024 * 1024 + 1)]) {
+      const output: string[] = [], errors: string[] = [];
+      expect(await runCli(["git-guard", "--vendor", vendor, "--clone", "/missing"], {
+        io: { stdin: () => input, stdout: (text) => output.push(text), stderr: (text) => errors.push(text) }
+      })).toBe(0);
+      expect(JSON.parse(output.join(""))).toEqual(vendor === "cursor" ? { permission: "allow" } : vendor === "antigravity" ? { decision: "allow" } : {});
+      expect(errors.join("")).toContain("coord git-guard:");
+    }
+  });
+
+  it("records actual-tool probe observations separately from emitted denials and detects changed policy", async () => {
+    const f = setup();
+    // Runtime is outside the clones, with its config beside it as installed.
+    mkdirSync(f.runtime);
+    const configPath = join(f.runtime, "config.json");
+    const config = JSON.parse(readFileSync(f.configPath, "utf8")) as { agents: { root: string }[] };
+    for (const agent of config.agents) agent.root = join(f.root, agent.root);
+    writeFileSync(configPath, JSON.stringify(config));
+    expect(await runCli(["start", "1", "--profile", "solo", "--config", configPath, "--coord-root", f.runtime], {
+      makeRunLoop: fakeLoop, processRunner: successfulStartGit, io: { stdout: () => undefined }
+    })).toBe(0);
+    const clone = join(f.root, "clone-codex");
+    fixtureGit(clone, "init", "-q");
+    fixtureGit(clone, "config", "consensus.agentId", "codex");
+    fixtureGit(clone, "config", "coord.workspaceConfig", configPath);
+    const options = effectOptions(() => undefined, false);
+    writeGitWrapper({ installRoot: repoRoot, clone, options });
+    syncAgentLifecycleHooks({ clone, agent: "codex", cliEntry: join(repoRoot, "dist/main.js"), options });
+    const paths = issueRuntimePaths(f.runtime, 1);
+    observeAgentLifecycle(paths, "codex", { kind: "session-start", eventName: "SessionStart", sessionId: "tool-session" });
+    const env = { ...process.env, COORD_ISSUE: "1", COORD_GIT_DELEGATE: "" };
+    const output: string[] = [];
+    const io = { cwd: clone, env, stdout: (text: string) => output.push(text), stdin: () => JSON.stringify({
+      tool_input: { command: "git status --porcelain" }, cwd: clone, session_id: "tool-session"
+    }) };
+    expect(await runCli(["git-guard", "--vendor", "codex", "--clone", clone], { io })).toBe(0);
+    expect(output.join("")).toContain('"deny"');
+    expect(readAgentLifecycle(paths).agents.codex?.containment?.probe).toBeNull();
+    const probe = async (resolved: string, result: string, overrides: NodeJS.ProcessEnv = {}) => {
+      output.length = 0;
+      const before = readFileSync(paths.agentLifecycle, "utf8");
+      expect(await runCli(["containment-probe", "--resolved-git", resolved, "--tool-result", result,
+        "--vendor-version", "test-version", "--issue", "1"], { io: { ...io, env: { ...env, ...overrides } } })).toBe(0);
+      expect(readFileSync(paths.agentLifecycle, "utf8")).toBe(before);
+      ingestContainmentProbe(paths, clone, "codex");
+      expect(readAgentLifecycle(paths).agents.codex?.containment?.probe?.toolResult).toBe(result);
+      const revision = readAgentLifecycle(paths).stateRevision;
+      ingestContainmentProbe(paths, clone, "codex");
+      expect(readAgentLifecycle(paths).stateRevision).toBe(revision);
+      return JSON.parse(output.join("")) as { hook: string; shim: string };
+    };
+    expect(await probe(join(clone, ".coord/bin/git"), "executed")).toMatchObject({ hook: "inactive", shim: "bypassed" });
+    expect(await probe(join(clone, ".coord/bin/git"), "shim-refused")).toMatchObject({ hook: "inactive", shim: "active" });
+    expect(await probe("/usr/bin/git", "hook-denied")).toMatchObject({ hook: "active", shim: "bypassed" });
+    expect(await probe(join(clone, ".coord/bin/git"), "unknown", { COORD_ISSUE: "" })).toMatchObject({ hook: "unverified", shim: "bypassed" });
+    const shim = join(clone, ".coord/bin/git");
+    writeFileSync(shim, `${readFileSync(shim, "utf8")}\n# updated policy\n`);
+    expect(await probe("/usr/bin/git", "hook-denied")).toMatchObject({ hook: "unverified" });
+    expect(readJournal(paths)).toContainEqual(expect.objectContaining({ type: "agent-lifecycle",
+      details: expect.objectContaining({ kind: "containment-guard-denied", sessionId: "tool-session" }) }));
+    const journal = JSON.stringify(readJournal(paths));
+    expect(journal).not.toContain("git status --porcelain");
+    observeAgentLifecycle(paths, "codex", { kind: "session-start", eventName: "SessionStart", sessionId: "new-session" });
+    const afterRestart = readFileSync(paths.agentLifecycle, "utf8");
+    ingestContainmentProbe(paths, clone, "codex");
+    expect(readFileSync(paths.agentLifecycle, "utf8")).toBe(afterRestart);
+    writeFileSync(join(clone, ".coord/containment-observation.json"), "x".repeat(16385));
+    ingestContainmentProbe(paths, clone, "codex");
+    expect(readFileSync(paths.agentLifecycle, "utf8")).toBe(afterRestart);
+  });
   it("prints package.json version for --version, -V, and version", async () => {
     // Read the manifest here rather than through `packageVersion`: the CLI prints
     // that helper's return value, so calling it would compare it with itself.

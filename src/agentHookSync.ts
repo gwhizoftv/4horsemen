@@ -39,6 +39,14 @@ export const renderAgentLifecycleHookCommand = (
   )} agent-event --vendor ${vendor} --clone ${shellQuote(resolve(clone))} --event ${shellQuote(event)}`;
 
 export type JsonObject = Record<string, unknown>;
+
+/** No Node startup for plainly unrelated shell requests. Escaped JSON goes to
+ * the decoder too (e.g. g\\u0069t), never to the substring fast path. */
+export const renderShellGuardHookCommand = (cliEntry: string, clone: string, vendor: LifecycleVendor): string => {
+  const allow = vendor === "cursor" ? '{"permission":"allow"}' : vendor === "antigravity" ? '{"decision":"allow"}' : '{}';
+  const script = `payload=$(cat); case "$payload" in *git*|*\\\\*|*\\'*) printf '%s' "$payload" | /usr/bin/env node ${shellQuote(resolve(cliEntry))} git-guard --vendor ${vendor} --clone ${shellQuote(resolve(clone))} ;; *) printf '%s\\n' ${shellQuote(allow)} ;; esac`;
+  return `COORD_AGENT_LIFECYCLE_HOOK=${AGENT_LIFECYCLE_HOOK_MARKER} /bin/sh -c ${shellQuote(script)}`;
+};
 export const isObject = (value: unknown): value is JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -84,15 +92,15 @@ const eventArray = (hooks: JsonObject, event: string, path: string): unknown[] =
 };
 
 const nestedEvents: Record<"codex" | "claude", readonly string[]> = {
-  codex: ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"],
-  claude: ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"]
+  codex: ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "PreToolUse"],
+  claude: ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd", "PreToolUse"]
 };
 
 /** Lifecycle hooks that drive nudge delivery and idle detection. */
 export const cursorLifecycleEvents = ["sessionStart", "beforeSubmitPrompt", "stop", "sessionEnd"] as const;
 /** Analytics hooks: tool counts and optional per-turn token fields on stdin. */
 export const cursorUsageEvents = ["postToolUse", "postToolUseFailure", "afterAgentResponse"] as const;
-export const cursorManagedEvents = [...cursorLifecycleEvents, ...cursorUsageEvents] as const;
+export const cursorManagedEvents = [...cursorLifecycleEvents, ...cursorUsageEvents, "beforeShellExecution"] as const;
 const cursorEvents = cursorManagedEvents;
 const antigravityEvents = ["PreInvocation", "PostInvocation", "Stop"] as const;
 
@@ -113,11 +121,14 @@ const plannedDocument = (input: {
       hooks[event] = [
         ...existing,
         {
+          ...(event === "PreToolUse" ? { matcher: "Bash" } : {}),
           hooks: [
             {
               type: "command",
-              command: renderAgentLifecycleHookCommand(input.cliEntry, input.clone, input.vendor, event),
-              timeout: 5
+              command: event === "PreToolUse"
+                ? renderShellGuardHookCommand(input.cliEntry, input.clone, input.vendor)
+                : renderAgentLifecycleHookCommand(input.cliEntry, input.clone, input.vendor, event),
+              timeout: event === "PreToolUse" ? 10 : 5
             }
           ]
         }
@@ -134,7 +145,9 @@ const plannedDocument = (input: {
       );
       hooks[event] = [
         ...existing,
-        { command: renderAgentLifecycleHookCommand(input.cliEntry, input.clone, input.vendor, event) }
+        { command: event === "beforeShellExecution"
+          ? renderShellGuardHookCommand(input.cliEntry, input.clone, input.vendor)
+          : renderAgentLifecycleHookCommand(input.cliEntry, input.clone, input.vendor, event) }
       ];
     }
     return { ...input.existing, version: input.existing.version ?? 1, hooks };
@@ -145,18 +158,21 @@ const plannedDocument = (input: {
   if (prior !== undefined && !JSON.stringify(prior).includes(AGENT_LIFECYCLE_HOOK_MARKER)) {
     throw new Error(`Cannot install lifecycle hooks: ${input.path} already defines '${ANTIGRAVITY_HOOK_NAME}'.`);
   }
-  document[ANTIGRAVITY_HOOK_NAME] = Object.fromEntries(
-    antigravityEvents.map((event) => [
-      event,
-      [
-        {
-          type: "command",
-          command: renderAgentLifecycleHookCommand(input.cliEntry, input.clone, input.vendor, event),
-          timeout: 5
-        }
-      ]
-    ])
-  );
+  const hooks = isObject(prior) ? { ...prior } : {};
+  for (const event of antigravityEvents) {
+    hooks[event] = [
+      ...eventArray(hooks, event, input.path).filter((entry) => !commandOf(entry)?.includes(AGENT_LIFECYCLE_HOOK_MARKER)),
+      { type: "command", command: renderAgentLifecycleHookCommand(input.cliEntry, input.clone, input.vendor, event), timeout: 5 }
+    ];
+  }
+  hooks.PreToolUse = [
+    ...eventArray(hooks, "PreToolUse", input.path).flatMap((entry) => {
+      const cleaned = withoutManagedNestedHandlers(entry);
+      return cleaned.value === null ? [] : [cleaned.value];
+    }),
+    { matcher: "run_command", hooks: [{ type: "command", command: renderShellGuardHookCommand(input.cliEntry, input.clone, input.vendor), timeout: 10 }] }
+  ];
+  document[ANTIGRAVITY_HOOK_NAME] = hooks;
   return document;
 };
 
@@ -223,9 +239,20 @@ export const removeAgentLifecycleHooks = (input: {
     if (vendor === "cursor" && Object.keys(next).length === 1 && next.version === 1) next = {};
   } else {
     const value = next[ANTIGRAVITY_HOOK_NAME];
-    if (value !== undefined && JSON.stringify(value).includes(AGENT_LIFECYCLE_HOOK_MARKER)) {
-      found = true;
-      delete next[ANTIGRAVITY_HOOK_NAME];
+    if (isObject(value)) {
+      const hooks = { ...value };
+      for (const event of [...antigravityEvents, "PreToolUse"]) {
+        const kept = eventArray(hooks, event, path).flatMap((entry) => {
+          const cleaned = event === "PreToolUse" ? withoutManagedNestedHandlers(entry)
+            : { found: commandOf(entry)?.includes(AGENT_LIFECYCLE_HOOK_MARKER) === true, value: entry };
+          if (cleaned.found) found = true;
+          return cleaned.value === null || (event !== "PreToolUse" && cleaned.found) ? [] : [cleaned.value];
+        });
+        if (kept.length === 0) delete hooks[event];
+        else hooks[event] = kept;
+      }
+      if (Object.keys(hooks).length === 0) delete next[ANTIGRAVITY_HOOK_NAME];
+      else next[ANTIGRAVITY_HOOK_NAME] = hooks;
     }
   }
   if (!found) return { path, changed: false, kept: false };
@@ -257,6 +284,10 @@ export const inspectAgentLifecycleHooks = (input: {
   }
   try {
     const planned = plannedDocument({ path, clone: input.clone, cliEntry: input.cliEntry, vendor, existing });
+    const named = existing[ANTIGRAVITY_HOOK_NAME];
+    if (existing.disableAllHooks === true || (vendor === "antigravity" && isObject(named) && named.enabled === false)) {
+      return { kind: "modified", path };
+    }
     return JSON.stringify(planned) === JSON.stringify(existing)
       ? { kind: "current", path }
       : { kind: JSON.stringify(existing).includes(AGENT_LIFECYCLE_HOOK_MARKER) ? "modified" : "missing", path };

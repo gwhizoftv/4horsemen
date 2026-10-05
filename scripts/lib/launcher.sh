@@ -127,11 +127,16 @@ if [[ ! -x "$REAL_GIT" ]]; then
   exit 127
 fi
 
-delegate() { exec env COORD_GIT_DELEGATE=1 "$REAL_GIT" "$@"; }
+delegate() {
+  # The native tool guard asks this same policy without executing the command.
+  if [[ "${COORD_GIT_POLICY_CHECK:-}" == 1 ]]; then exit 0; fi
+  exec env COORD_GIT_DELEGATE=1 "$REAL_GIT" "$@"
+}
 
 # Anything git itself spawned (hooks, and coordination's own subprocesses) is
 # already inside a delegated call and must never be second-guessed.
 if [[ "${COORD_GIT_DELEGATE:-}" == 1 ]]; then
+  if [[ "${COORD_GIT_POLICY_CHECK:-}" == 1 ]]; then exit 0; fi
   exec "$REAL_GIT" "$@"
 fi
 

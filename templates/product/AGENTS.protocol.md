@@ -22,16 +22,29 @@ When an action lists a `## Bound input files` section, read those paths directly
 They are exact copies the coordinator took from the same mirror that verifies the
 pins, so fetching a peer branch to read a plan, a review, or an implementation is
 redundant work. The cited SHAs remain the authority; the files are where the
-bytes are, and `git show <sha>:<path>` for that same content is refused once the
-section is present. If the action says not every bound input could be exported,
+bytes are; do not use `git show <sha>:<path>` for that same content once the
+section is present (enforcement coverage is described below). If the action says not every bound input could be exported,
 the pinned read stays available for the ones that are missing.
 
-During an automated issue, `git status` and `git diff` against this clone are
-refused by `.coord/bin/git`, which coordination installs and puts on your PATH.
-Coordination checked this clone out and already resolved what changed, and both
-readings are in your action. The refusal applies to this clone only: git against
-any other repository, and every command in owner-driven manual mode, is
-untouched. Do not try to work around it — report it if it blocks real work.
+During an automated issue, do not run `git status` or `git diff` against this
+clone, or pinned `git show` for exported Bound input files. The action already
+supplies this information. The only exception is the harmless containment probe
+requested by the action. Native shell-tool guards enforce recognized literal
+commands where the harness has been verified; `.coord/bin/git` is the fallback
+where it actually resolves. Installation alone does not prove either layer.
+Other repositories and owner-driven manual mode remain unrestricted.
+
+The guard is bounded static recognition, not a sandbox or shell interpreter:
+scripts, dynamic commands, unsupported shell syntax and subsequent input to an
+already-open terminal are outside its guarantee. Do not use those gaps to work
+around this protocol. Report a refusal that blocks real work.
+
+Measure resolution and an actual tool refusal once per session and again after
+a harness restart or hook/policy configuration change, using the action's
+`coord containment-probe` instructions. Do not repeat for every action. A hook
+emitting deny is not proof the harness enforced it. `coord status` reports
+separate hook/shim evidence; inactive or unverified coverage is a warning, not a
+claim of containment. Doctor checks installation only, not the harness PATH.
 
 Commit and push only when the current action's `submissionMode` is `git` (or the
 action text requires a pushed commit SHA). Response-mode ballot actions must not

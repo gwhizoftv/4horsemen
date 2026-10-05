@@ -80,6 +80,15 @@ export type StepDefinition = {
   task: string;
 };
 
+export const CONTAINMENT_PROBE_NOTE = `\n\nContainment check (once per agent session or hook/policy configuration change, not per action):
+Through your actual harness shell tool in this clone, request only \`git status --porcelain\`.
+This harmless diagnostic is expected to be refused; do not work around it.
+Then, through that same tool, run \`coord containment-probe --issue <current-issue-number> --resolved-git "$(command -v git)" --tool-result <hook-denied|shim-refused|executed|unknown> --vendor-version <actual-cli-version>\`.
+Use hook-denied ONLY if the harness rejected the tool request before execution.
+Use shim-refused ONLY for the coordinator shim's exit 2 refusal message, executed if Git actually ran, or unknown if you cannot tell. Do not invent a version.
+The command queues an agent-reported observation in this clone's ignored .coord directory; the coordinator records it separately from the hook's emitted response. No owner-runtime write grant is needed.
+Missing hooks, session identity, unsupported versions or failed recording leave coverage unverified; report the exact gap and continue.\n`;
+
 export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> = {
   "R1.join": {
     id: "R1.join",
@@ -88,7 +97,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     participants: "all",
     submissionMode: "git",
     requiredPath: (issue, agent) => `.signals/issue-${issue}/participation-ready-${agent}.json`,
-    task: "Publish the participation-readiness artifact for this issue."
+    task: `Publish the participation-readiness artifact for this issue.${CONTAINMENT_PROBE_NOTE}`
   },
   "R2.plan": {
     id: "R2.plan",

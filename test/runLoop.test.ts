@@ -919,6 +919,9 @@ describe("durable delivery safety", () => {
       const after = await f.makeLoop({ mirror }).runTick();
       expect(after.paused).toBe(false);
       expect(after.accepted).toContainEqual(expect.objectContaining({ agent: vendor, stepId: "R1.join", submissionSha: sha }));
+      expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "agent-lifecycle", agent: vendor,
+        details: expect.objectContaining({ kind: "containment-coverage", hook: "unverified", shim: "unverified" }) }));
+      expect(f.messages.join("\n")).toContain(`WARNING: ${vendor} containment hook=unverified shim=unverified`);
       expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({
         type: "verify-result", agent: vendor, actionId, submissionSha: sha, details: { ok: true }
       }));

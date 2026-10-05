@@ -44,10 +44,10 @@ export const extractPromptActionIdentity = (prompt: string): PromptActionIdentit
 
 type JsonObject = Record<string, unknown>;
 
-const object = (value: unknown): JsonObject | null =>
+export const object = (value: unknown): JsonObject | null =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : null;
 
-const stringField = (value: JsonObject, ...names: readonly string[]): string | undefined => {
+export const stringField = (value: JsonObject, ...names: readonly string[]): string | undefined => {
   for (const name of names) {
     const candidate = value[name];
     if (typeof candidate === "string" && candidate !== "") return candidate;
