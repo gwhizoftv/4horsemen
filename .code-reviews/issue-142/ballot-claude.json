@@ -1,0 +1,29 @@
+{
+  "actionId": "fd23bf9f-437c-4957-8da3-9480107e7404",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "64ace635ff399b21a136cf1f8ced9c526346fa45",
+      "path": ".signals/issue-142/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "39d7179cb242b64f791dc4dc2e5aada3e9a23b4f",
+      "path": ".signals/issue-142/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "da473de2bc7a3e5cc65651d28abb3704ce5f12fb",
+      "path": ".signals/issue-142/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "be61db60dce0a43bc82fbad8804b3c9e23b0af6d3a03b652daaa74f1ce3e65ac",
+  "issue": 142,
+  "issueSessionId": "issue-142:6fbbe84be880ce28d41da4d34255247557a5a592",
+  "protocolVersion": 2,
+  "rationale": "Codex 39d7179c is the only implementation whose containment probe records from inside the Codex and Cursor sandboxes (clone-local .coord mailbox ingested by the run loop) and whose static parser scopes cd to subshells and pipelines, while the byte-identical claude 64ace635 and cursor da473de2 pins cannot record probes under those sandboxes and allow '(cd /tmp) && git status' in the clone; codex's remaining defects (unconditional per-action probe note at runLoop.ts:727 and control-keyword git calls at shellGuard.ts:173) are small, fail-safe revisions.",
+  "responseSha256": "fe76196d7fde9c478c7f59680606d28cbc636af4f04fab690fc89767c93b3fd0"
+}

@@ -1,0 +1,29 @@
+{
+  "actionId": "a06396b3-98fd-4a17-ba5c-91b14df920ce",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "64ace635ff399b21a136cf1f8ced9c526346fa45",
+      "path": ".signals/issue-142/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "39d7179cb242b64f791dc4dc2e5aada3e9a23b4f",
+      "path": ".signals/issue-142/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "da473de2bc7a3e5cc65651d28abb3704ce5f12fb",
+      "path": ".signals/issue-142/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "be61db60dce0a43bc82fbad8804b3c9e23b0af6d3a03b652daaa74f1ce3e65ac",
+  "issue": 142,
+  "issueSessionId": "issue-142:6fbbe84be880ce28d41da4d34255247557a5a592",
+  "protocolVersion": 2,
+  "rationale": "Claude and Cursor share the same product tree matching the selected plan; prefer Claude as that implementation, while Codex's inverted non-join probe note and weaker deny/evidence model are selection-blocking.",
+  "responseSha256": "e8cf5b0efe90d3cac175fbe115bc16fa249c1ec438c8e0c987a84e4eacb17ef8"
+}
