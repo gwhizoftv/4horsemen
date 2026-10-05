@@ -1,14 +1,14 @@
 {
-  "actionId": "1aa5fc28-617f-4722-a383-c0b6ffa867ba",
+  "actionId": "9a1aa4c0-3792-49cf-997e-a32597bdb705",
   "agent": "cursor",
   "artifact": "consensus-ballot",
   "disposition": "approve",
-  "inputSetHash": "c6b5bce425220c9985c11818b445aba71e05d216a018e0a05ff648a77818e260",
+  "inputSetHash": "46e721dea2baec6a25ca7140815f589645eb7270bb7d55fba7aae3afcf2c0be8",
   "issue": 142,
   "issueSessionId": "issue-142:6fbbe84be880ce28d41da4d34255247557a5a592",
   "protocolVersion": 2,
-  "rationale": "The revision fixes join-only probing, $(git) false denies, and empty Claude/Codex allow stdout; the remaining agent-reported probe corroboration is an explicit warning-first design that still journals ordinary denials and does not warrant another revise round.",
-  "responseSha256": "6a125d955e9f1a77992466389ea229322f50b779745ec9f83f162bb1110aea5b",
+  "rationale": "Codex revision 7c9ddade still fixes join-only probing, command-substitution false denies, and empty Claude/Codex allow stdout, and the remaining agent-reported probe model remains an acceptable warning-first design for consensus.",
+  "responseSha256": "136414666f0b1e1191fe3c57d2eb1b8fef6ef392fa9a8b04168a8d808bf2a829",
   "revisionCommitSha": "7c9ddade7da47c99b47783795c9a207d49a62226",
   "round": 1
 }

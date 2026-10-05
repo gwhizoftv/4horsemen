@@ -1,14 +1,14 @@
 {
-  "actionId": "e1a16947-4714-446e-99d5-1506b8fac576",
+  "actionId": "88390381-1161-4b51-b675-72512f098272",
   "agent": "codex",
   "artifact": "consensus-ballot",
-  "disposition": "escalate",
-  "inputSetHash": "c6b5bce425220c9985c11818b445aba71e05d216a018e0a05ff648a77818e260",
+  "disposition": "approve",
+  "inputSetHash": "46e721dea2baec6a25ca7140815f589645eb7270bb7d55fba7aae3afcf2c0be8",
   "issue": 142,
   "issueSessionId": "issue-142:6fbbe84be880ce28d41da4d34255247557a5a592",
   "protocolVersion": 2,
-  "rationale": "Revision 7c9ddade7da47c99b47783795c9a207d49a62226 fixes the reproduced defects and passes 710 fast tests plus 2 e2e tests, but the selected plan's four-vendor actual-tool resolution/refusal acceptance evidence remains unperformed and requires owner-assisted live verification before approval.",
-  "responseSha256": "639c3a4a04b40340a35fd2532c962adbb9c1a2e30f700d67ae504ae104321f7c",
+  "rationale": "Revision 7c9ddade7da47c99b47783795c9a207d49a62226 addresses the reproduced defects and passes 710 fast tests plus 2 e2e tests, and the owner explicitly waived the remaining four-vendor live-harness acceptance test without treating unverified runtime coverage as proven containment.",
+  "responseSha256": "09a1aecbc8d025387041b10a5d772ecabdeaee5d7b4f7fdd3233074afd9b51ce",
   "revisionCommitSha": "7c9ddade7da47c99b47783795c9a207d49a62226",
   "round": 1
 }
