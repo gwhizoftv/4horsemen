@@ -1,0 +1,26 @@
+{
+  "actionId": "e7bf8cd0-54ad-4261-85f3-ed803470012d",
+  "agent": "cursor",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "7944d1724ea6bb3dd753a1139875bb02d2a74acae536a93b5466cd97391d80af",
+  "issue": 142,
+  "issueSessionId": "issue-142:6fbbe84be880ce28d41da4d34255247557a5a592",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "b284c84240aefef1f56b23153fec83697fe540d3",
+      "path": ".plans/issue-142/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "src/state.ts owns the closed journalEventTypeSchema, so adding containment-coverage and containment-guard-denied there is required for the selected plan's appendJournal calls and is not new scope.",
+  "request": {
+    "agent": "cursor",
+    "commitSha": "fee1315689290ffd708ae7a644f6c6607bdcce65",
+    "path": ".signals/issue-142/implementation-ready-cursor.json"
+  },
+  "responseSha256": "5540d798906a6791c3f1ed10a900d5f782b4a3c32645d69871a95a0749f4429b",
+  "sequence": 1
+}

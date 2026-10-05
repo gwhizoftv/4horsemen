@@ -1,0 +1,26 @@
+{
+  "actionId": "4004c70a-6956-441a-ac30-579c94130c1f",
+  "agent": "codex",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "7944d1724ea6bb3dd753a1139875bb02d2a74acae536a93b5466cd97391d80af",
+  "issue": 142,
+  "issueSessionId": "issue-142:6fbbe84be880ce28d41da4d34255247557a5a592",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "b284c84240aefef1f56b23153fec83697fe540d3",
+      "path": ".plans/issue-142/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "Adding src/state.ts is necessary because its closed journalEventTypeSchema must accept containment-coverage and containment-guard-denied, the two events already required by the selected plan, without expanding the intended behavior.",
+  "request": {
+    "agent": "cursor",
+    "commitSha": "fee1315689290ffd708ae7a644f6c6607bdcce65",
+    "path": ".signals/issue-142/implementation-ready-cursor.json"
+  },
+  "responseSha256": "a7f77f5e3f1a064e452c1534c92f36e6b69870b11b2b57a0bbfc4537f1e2433a",
+  "sequence": 1
+}

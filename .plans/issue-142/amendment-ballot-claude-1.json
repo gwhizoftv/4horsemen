@@ -1,0 +1,26 @@
+{
+  "actionId": "e180d1bc-b1ce-47bf-9445-6474ee7e02e5",
+  "agent": "claude",
+  "artifact": "amendment-ballot",
+  "disposition": "revise",
+  "inputSetHash": "7944d1724ea6bb3dd753a1139875bb02d2a74acae536a93b5466cd97391d80af",
+  "issue": 142,
+  "issueSessionId": "issue-142:6fbbe84be880ce28d41da4d34255247557a5a592",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "b284c84240aefef1f56b23153fec83697fe540d3",
+      "path": ".plans/issue-142/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "src/state.ts is not necessary to finish the selected plan: the plan only requires containment-coverage and containment-guard-denied journal entries, which fit the existing open-ended 'agent-lifecycle' journal type as details.kind values (journalEventSchema.details is a free-form record and analytics reads only kind 'prompt-submitted'), as implementation 64ace635ff399b21a136cf1f8ced9c526346fa45 does within the approved map with pnpm check passing, so the requested addition widens the file map without being required.",
+  "request": {
+    "agent": "cursor",
+    "commitSha": "fee1315689290ffd708ae7a644f6c6607bdcce65",
+    "path": ".signals/issue-142/implementation-ready-cursor.json"
+  },
+  "responseSha256": "1f785dd88406936b7538bc8f68f9c21c614b4ed47dbf52313a245dd4b672de1c",
+  "sequence": 1
+}
