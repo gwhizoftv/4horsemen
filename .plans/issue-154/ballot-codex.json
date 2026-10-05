@@ -1,0 +1,46 @@
+{
+  "actionId": "b347f3c1-a453-4f74-8178-df4536278f8f",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "8fe427d97184396523f147150cd0138dad7995144b7b3aa06509f3ef3975922b",
+  "issue": 154,
+  "issueSessionId": "issue-154:ed813ca97a3646654b0769f4c31849703d43ec5e",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "19b7ba5ca9d8e1b197497395d1c712eb235928cd",
+      "path": ".plans/issue-154/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "131258cea58ee0c673ed9c4c0634c74deb8bcf09",
+      "path": ".plans/issue-154/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "8c76de93d699e281c92b810d5b1f502d5a2acb45",
+      "path": ".plans/issue-154/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex offers the most complete scoped controls, terminal teardown, status output, and generation-based guidance design using existing helpers and tests, provided implementation addresses the reviewed skipped-transition guidance loss and amendment-resume semantics while avoiding unnecessary CLI expansion.",
+  "responseSha256": "caa37fa874bcb994a5196d175c5465199b3dff5c18fcbbbb016bf9e5338bb79e",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "dccc39dbed969abb969fdffb7ec7551942f023ed",
+      "path": ".plans/issue-154/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a231be40fe67c9af836217f8dc5269979ee98867",
+      "path": ".plans/issue-154/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "2969042a86467c91e74a5b9953d4ebfde1841c4f",
+      "path": ".plans/issue-154/review.md"
+    }
+  ]
+}

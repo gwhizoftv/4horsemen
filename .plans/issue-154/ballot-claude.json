@@ -1,0 +1,46 @@
+{
+  "actionId": "c6469e9d-f797-429a-873b-aeb5c58198ae",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "8fe427d97184396523f147150cd0138dad7995144b7b3aa06509f3ef3975922b",
+  "issue": 154,
+  "issueSessionId": "issue-154:ed813ca97a3646654b0769f4c31849703d43ec5e",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "19b7ba5ca9d8e1b197497395d1c712eb235928cd",
+      "path": ".plans/issue-154/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "131258cea58ee0c673ed9c4c0634c74deb8bcf09",
+      "path": ".plans/issue-154/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "8c76de93d699e281c92b810d5b1f502d5a2acb45",
+      "path": ".plans/issue-154/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude's plan has the most coherent core (a single bind-once durable guidance snapshot read by buildOrder, ownerControls extraction without a second tick loop, AbortSignal quit, and TTY-injected terminal tests), and its reviewed gaps (fresh-batch identity on owner retry, a cancellable poll timer, a stop-intent guard before completion detach, and step/roster in the status snapshot) are localized fixes, whereas Cursor's per-prepare queue clearing breaks cohort consistency and Codex's multi-site promotion can discard guidance on no-action transitions.",
+  "responseSha256": "5489f1c55af441dad8a0b3cc4938deb195014fb6085842ecd90f311f953427dc",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "dccc39dbed969abb969fdffb7ec7551942f023ed",
+      "path": ".plans/issue-154/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a231be40fe67c9af836217f8dc5269979ee98867",
+      "path": ".plans/issue-154/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "2969042a86467c91e74a5b9953d4ebfde1841c4f",
+      "path": ".plans/issue-154/review.md"
+    }
+  ]
+}
