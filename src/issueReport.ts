@@ -1,5 +1,7 @@
 import type { BallotBatch, CursorsState, StartState } from "./state.js";
 import { coordMergesPullRequest } from "./steps.js";
+import { containmentCoverage } from "./agentLifecycle.js";
+import { containmentPolicy } from "./shellGuard.js";
 
 const finalization = (cursors: CursorsState) =>
   [...cursors.accepted].reverse().find((submission) => submission.stepId === "R7.finalize");
@@ -155,8 +157,13 @@ export const renderIssueReport = (
       const queue = entry.pendingInputCount === null ? "" : `, pending=${entry.pendingInputCount}`;
       const background = entry.backgroundActive === true ? ", background-active" : "";
       const alert = entry.degradedCause === null ? "" : `, alert=${entry.degradedCause}`;
+      const coverage = containmentCoverage(entry, containmentPolicy(agent.root, agent.id)?.binding ?? null);
+      const probe = entry.containment?.probe;
       lines.push(
-        `Agent ${agent.id}: ${entry.action?.delivery ?? "none"} / ${entry.execution} / ${entry.health}${queue}${background}${alert}`
+        `Agent ${agent.id}: ${entry.action?.delivery ?? "none"} / ${entry.execution} / ${entry.health}${queue}${background}${alert}` +
+        `, containment hook=${coverage.hook} shim=${coverage.shim}` +
+        (entry.sessionId === null ? " (session identity unavailable)" : "") +
+        (probe ? ` (agent-observed ${probe.at}, session=${probe.sessionId}, vendor=${probe.vendorVersion}, policy=${probe.policyRevision})` : "")
       );
     }
   }

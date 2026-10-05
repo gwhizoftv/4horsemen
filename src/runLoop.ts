@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { clearCompletion, createActionId, readAction, readCompletion, writeAction } from "./action.js";
 import {
   AGENT_OBSERVABILITY_WATCHDOG_MS,
+  containmentCoverage,
   decideLifecycleNudge,
   markActionInjectionDeferred,
   markActionInjected,
@@ -97,6 +98,7 @@ import {
   type MachineDecision,
   type WorkflowStepId
 } from "./steps.js";
+import { containmentPolicy, ingestContainmentProbe } from "./shellGuard.js";
 import { holdRecoveryCommand, renderIssueReport } from "./issueReport.js";
 import { formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
@@ -719,6 +721,8 @@ export const buildOrder = (
   materialized?: MaterializedInputs
 ): InternalOrder => {
   const definition = STEP_DEFINITIONS[stepId];
+  // Join requests the initial probe; durable protocol guidance covers restarts
+  // and configuration changes without repeating it or changing action digests.
   const runtime = agentRuntimePaths(paths, agent);
   const branch = start.branchTemplate.replaceAll("{issue}", String(start.issue)).replaceAll("{agent}", agent);
   const correction = outstanding.length === 0 ? "" : `\n\nCorrect these outstanding items:\n${outstanding.map((item) => `- ${item}`).join("\n")}`;
@@ -1707,6 +1711,16 @@ export class CoordinatorRunLoop {
     if (cursor === undefined || cursor.stepId === null || cursor.actionId === null) return cursors;
     const round = roundForStep(cursor.stepId, cursors.issueCursor.round);
     const path = STEP_DEFINITIONS[cursor.stepId].requiredPath(start.issue, decision.agent, round);
+    if (cursor.stepId === "R1.join") {
+      const clone = start.agents.find((agent) => agent.id === decision.agent)?.root;
+      const policy = clone === undefined ? null : containmentPolicy(clone, decision.agent);
+      const coverage = containmentCoverage(readAgentLifecycle(this.paths).agents[decision.agent], policy?.binding ?? null);
+      appendJournal(this.paths, { type: "agent-lifecycle", agent: decision.agent, actionId: cursor.actionId,
+        details: { kind: "containment-coverage", ...coverage, eventId: `containment-join:${cursor.actionId}` } }, this.now());
+      if (coverage.hook !== "active") this.log(`WARNING: ${decision.agent} containment hook=${coverage.hook} shim=${coverage.shim}. ` +
+        (coverage.shim !== "active" ? "No verified containment layer. " : "Only PATH shim coverage observed. ") +
+        "Check native hook support/trust and run the probes in the actual harness shell tool.\n");
+    }
     const accepted: AcceptedSubmission = {
       stepId: cursor.stepId,
       agent: decision.agent,
@@ -2647,6 +2661,9 @@ export class CoordinatorRunLoop {
     try {
       let cursors = readCursorsState(this.paths);
       if (cursors.abandoned || cursors.completed) return cursors;
+      for (const agent of start.agents) {
+        if (cursors.activeRoster.includes(agent.id)) ingestContainmentProbe(this.paths, agent.root, agent.id);
+      }
       if (cursors.paused) {
         // Observation-only while held: no preparation, delivery, acceptance or publication.
         for (const agent of cursors.activeRoster) {

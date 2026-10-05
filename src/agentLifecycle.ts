@@ -21,6 +21,44 @@ export const AGENT_OBSERVABILITY_WATCHDOG_MS = 45_000;
 
 const timestampSchema = z.string().datetime({ offset: true });
 
+const containmentIdentity = {
+  sessionId: z.string().min(1),
+  policyRevision: z.string().min(1),
+  binding: digestSchema,
+  at: timestampSchema
+};
+export const containmentSchema = z.object({
+  hookDenial: z.object({ ...containmentIdentity, probe: z.boolean() }).nullable(),
+  probe: z.object({
+    ...containmentIdentity,
+    vendorVersion: z.string().min(1).max(256),
+    resolvedGit: z.string().max(4096),
+    issueEnv: z.boolean(),
+    shim: z.enum(["active", "bypassed", "unverified"]),
+    /** An explicit observation of the tool result, NOT merely a deny callback. */
+    toolResult: z.enum(["hook-denied", "shim-refused", "executed", "unknown"])
+  }).nullable()
+});
+export type Containment = z.infer<typeof containmentSchema>;
+
+export const containmentCoverage = (entry: AgentLifecycleEntry | undefined, binding?: string | null): {
+  hook: "active" | "inactive" | "unverified";
+  shim: "active" | "bypassed" | "unverified";
+} => {
+  const probe = entry?.containment?.probe;
+  if (!probe || probe.sessionId !== entry?.sessionId || (binding !== undefined && probe.binding !== binding)) {
+    return { hook: "unverified", shim: "unverified" };
+  }
+  const denial = entry?.containment?.hookDenial;
+  const corroborated = denial?.probe === true && denial.sessionId === probe.sessionId &&
+    denial.binding === probe.binding && denial.policyRevision === probe.policyRevision && denial.at <= probe.at;
+  return {
+    hook: probe.toolResult === "executed" || probe.toolResult === "shim-refused" ? "inactive"
+      : probe.toolResult === "hook-denied" && corroborated && probe.vendorVersion !== "unknown" ? "active" : "unverified",
+    shim: probe.shim
+  };
+};
+
 export const lifecycleActionSchema = z
   .object({
     actionId: z.string().uuid(),
@@ -81,6 +119,7 @@ export const agentLifecycleEntrySchema = z
     lastEventAt: timestampSchema.nullable(),
     lastFailure: lifecycleFailureSchema.nullable().default(null),
     claudeRateLimits: claudeRateLimitsSchema.nullable().default(null),
+    containment: containmentSchema.nullable().default(null),
     updatedAt: timestampSchema
   })
   .strict();
@@ -136,6 +175,7 @@ const emptyEntry = (now: string): AgentLifecycleEntry => ({
   lastEventAt: null,
   lastFailure: null,
   claudeRateLimits: null,
+  containment: null,
   updatedAt: now
 });
 
@@ -216,6 +256,18 @@ const replaceEntry = (
     agents: { ...state.agents, [agent]: { ...entry, updatedAt: now } },
     updatedAt: now
   });
+
+/** Hook telemetry cannot establish a session or accept workflow work. */
+export const recordContainmentEvidence = (
+  paths: IssueRuntimePaths, agent: string, patch: Partial<Containment>, now = new Date().toISOString()
+): AgentLifecycleState => mutateAgentLifecycle(paths, (state) => {
+  const entry = state.agents[agent];
+  const sessionId = patch.probe?.sessionId ?? patch.hookDenial?.sessionId;
+  if (!entry || !sessionId || entry.sessionId !== sessionId) return state;
+  return replaceEntry(state, agent, { ...entry,
+    containment: { hookDenial: null, probe: null, ...entry.containment, ...patch }
+  }, now);
+});
 
 export const orderAgentAction = (
   paths: IssueRuntimePaths,
@@ -603,6 +655,7 @@ export const applyLifecycleObservation = (
   return agentLifecycleEntrySchema.parse({
     ...entry,
     lastFailure,
+    containment: sessionChanged || observation.kind === "session-end" ? null : entry.containment,
     action,
     execution,
     sessionId,

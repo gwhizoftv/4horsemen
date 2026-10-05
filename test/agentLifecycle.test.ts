@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   applyLifecycleObservation,
+  agentLifecycleEntrySchema,
+  containmentCoverage,
   decideLifecycleNudge,
   initialAgentLifecycle,
   initializeAgentLifecycle,
@@ -29,6 +31,30 @@ const digest = "a".repeat(64);
 const entry = () => initialAgentLifecycle(["codex"], now).agents.codex!;
 
 describe("agent lifecycle policy", () => {
+  it("requires a tool-result observation plus a probe denial, and invalidates session/config changes", () => {
+    const current = { ...entry(), sessionId: "s" };
+    expect(containmentCoverage(current)).toEqual({ hook: "unverified", shim: "unverified" });
+    const identity = { sessionId: "s", policyRevision: "policy", binding: digest, at: now };
+    const denial = { ...identity, probe: true };
+    current.containment = { hookDenial: denial, probe: null };
+    expect(containmentCoverage(current).hook).toBe("unverified");
+    current.containment.probe = { ...identity, vendorVersion: "1.2.3", resolvedGit: "/clone/.coord/bin/git",
+      issueEnv: true, shim: "unverified", toolResult: "unknown" };
+    expect(containmentCoverage(current).hook).toBe("unverified");
+    current.containment.probe.toolResult = "executed";
+    expect(containmentCoverage(current).hook).toBe("inactive");
+    current.containment.probe.toolResult = "hook-denied";
+    expect(containmentCoverage(current, digest)).toEqual({ hook: "active", shim: "unverified" });
+    expect(containmentCoverage(current, "b".repeat(64)).hook).toBe("unverified");
+    current.containment.probe.vendorVersion = "unknown";
+    expect(containmentCoverage(current).hook).toBe("unverified");
+    const restarted = applyLifecycleObservation(current, { kind: "session-start", eventName: "SessionStart", sessionId: "next" }, later);
+    expect(restarted.containment).toBeNull();
+    expect(containmentCoverage(restarted).hook).toBe("unverified");
+    expect(applyLifecycleObservation(current, { kind: "session-end", eventName: "SessionEnd" }, later).containment).toBeNull();
+    const legacy = { ...entry(), containment: undefined };
+    expect(agentLifecycleEntrySchema.parse(legacy).containment).toBeNull();
+  });
   it("correlates an exact prompt and never treats injection as acceptance", () => {
     const injected = {
       ...entry(),

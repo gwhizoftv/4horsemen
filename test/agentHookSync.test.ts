@@ -7,6 +7,7 @@ import {
   agentLifecycleHookPath,
   inspectAgentLifecycleHooks,
   removeAgentLifecycleHooks,
+  renderShellGuardHookCommand,
   removeAntigravityStatusLine,
   syncAgentLifecycleHooks,
   syncAntigravityStatusLine
@@ -37,6 +38,55 @@ const fixture = () => {
 const json = (path: string): Record<string, unknown> => JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
 
 describe("agent lifecycle hook synchronization", () => {
+  it("reports explicitly disabled guard definitions without reenabling owner settings", () => {
+    const { clone, cliEntry } = fixture();
+    const options = effectOptions(() => undefined, false);
+    syncAgentLifecycleHooks({ clone, agent: "antigravity", cliEntry, options });
+    const path = agentLifecycleHookPath(clone, "antigravity")!;
+    const document = json(path);
+    (document["coord-agent-lifecycle"] as Record<string, unknown>).enabled = false;
+    writeFileSync(path, JSON.stringify(document));
+    expect(inspectAgentLifecycleHooks({ clone, agent: "antigravity", cliEntry }).kind).toBe("modified");
+    syncAgentLifecycleHooks({ clone, agent: "antigravity", cliEntry, options });
+    expect((json(path)["coord-agent-lifecycle"] as Record<string, unknown>).enabled).toBe(false);
+  });
+  it.each(["codex", "claude", "cursor", "antigravity"] as const)("installs %s guard shape and preserves co-located owner handlers", (agent) => {
+    const { clone, cliEntry } = fixture();
+    const path = agentLifecycleHookPath(clone, agent)!;
+    const options = effectOptions(() => undefined, false);
+    syncAgentLifecycleHooks({ clone, agent, cliEntry, options });
+    const document = json(path);
+    const events = (agent === "antigravity" ? document["coord-agent-lifecycle"] : document.hooks) as Record<string, unknown[]>;
+    const event = agent === "cursor" ? "beforeShellExecution" : "PreToolUse";
+    const group = events[event]![0] as { matcher?: string; hooks?: unknown[]; command?: string };
+    if (agent === "cursor") {
+      expect(group.command).toContain("git-guard"); events[event]!.push({ command: "owner" });
+    } else {
+      expect(group.matcher).toBe(agent === "antigravity" ? "run_command" : "Bash");
+      expect(JSON.stringify(group.hooks)).toContain("git-guard");
+      group.hooks!.push({ type: "command", command: "owner" });
+    }
+    writeFileSync(path, JSON.stringify(document));
+    syncAgentLifecycleHooks({ clone, agent, cliEntry, options });
+    expect(readFileSync(path, "utf8")).toContain('"owner"');
+    expect(syncAgentLifecycleHooks({ clone, agent, cliEntry, options }).changed).toBe(false);
+    removeAgentLifecycleHooks({ clone, agent, options });
+    expect(readFileSync(path, "utf8")).toContain('"owner"');
+    expect(readFileSync(path, "utf8")).not.toContain(AGENT_LIFECYCLE_HOOK_MARKER);
+  });
+
+  it.each(["codex", "claude", "cursor", "antigravity"] as const)("prefilters %s without starting Node and decodes escaped JSON through Node", (vendor) => {
+    const { root, clone } = fixture();
+    const cliEntry = join(root, "test-cli.cjs");
+    writeFileSync(cliEntry, 'process.stdout.write("decoded\\n")');
+    const command = renderShellGuardHookCommand(cliEntry, clone, vendor);
+    const run = (input: string) => spawnSync("/bin/sh", ["-c", command], { input, encoding: "utf8" });
+    const allow = vendor === "cursor" ? '{"permission":"allow"}\n' : vendor === "antigravity" ? '{"decision":"allow"}\n' : "";
+    expect(run('{"command":"echo hello"}').stdout).toBe(allow);
+    expect(run('{"command":"git status"}').stdout).toBe("decoded\n");
+    expect(run('{"command":"g\\u0069t status"}').stdout).toBe("decoded\n");
+    expect(run(JSON.stringify({ command: "g'it' status" })).stdout).toBe("decoded\n");
+  });
   for (const agent of ["codex", "claude", "cursor", "antigravity"] as const) {
     it(`installs and removes only the managed ${agent} definitions`, () => {
       const { clone, cliEntry } = fixture();
@@ -73,6 +123,7 @@ describe("agent lifecycle hook synchronization", () => {
       [
         "afterAgentResponse",
         "beforeSubmitPrompt",
+        "beforeShellExecution",
         "postToolUse",
         "postToolUseFailure",
         "sessionEnd",

@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clearCompletion, readAction } from "./action.js";
 import { handleAgentEvent, lifecycleVendorSchema } from "./agentEvent.js";
+import { guardShellRequest, recordContainmentProbe, shellGuardResponse } from "./shellGuard.js";
 import { buildAnalytics, renderAnalytics } from "./analytics.js";
 import { initializeAgentLifecycle, readAgentLifecycle } from "./agentLifecycle.js";
 import { clearAgentResponse } from "./ballotResponse.js";
@@ -248,6 +249,8 @@ Called by the agent-clone hooks, not by operators:
   coord hook-verify --clone <path> --phase <precommit|prepush>
   coord hook-scope --clone <path>
   coord agent-event --vendor <codex|claude|cursor|antigravity> [--clone <path>] [--event <name>]
+  coord git-guard --vendor <codex|claude|cursor|antigravity> --clone <path>
+  coord containment-probe --resolved-git <tool-shell-command-v-result> [--tool-result hook-denied|shim-refused|executed|unknown] [--vendor-version <version>] [--clone <path>] [--issue <n>]
 
 Happy path: bootstrap once, onboard a product once, create GitHub issue N, then run
 \`coord N\` from that onboarded product. Agents author plans on issue-N/<agent>.
@@ -1206,6 +1209,38 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       });
       (report.exitCode === 0 ? io.stdout : io.stderr)(renderDoctorReport(report));
       return report.exitCode;
+    }
+
+    if (command === "git-guard") {
+      const vendor = lifecycleVendorSchema.safeParse(parsed.flags.get("vendor"));
+      let response = shellGuardResponse(vendor.success ? vendor.data : "codex");
+      try {
+        allowedFlags(parsed, ["vendor", "clone"]);
+        if (!vendor.success || parsed.positionals.length !== 0) throw new Error("invalid git-guard arguments");
+        const payload = io.stdin();
+        if (Buffer.byteLength(payload, "utf8") > AGENT_EVENT_MAX_BYTES) throw new Error("payload exceeds the git-guard bound");
+        response = guardShellRequest({ vendor: vendor.data, clone: resolve(io.cwd, requireFlag(parsed, "clone")),
+          raw: JSON.parse(payload) as unknown, env: io.env, warn: (message) => io.stderr(`coord git-guard: ${message}\n`) });
+      } catch (error) {
+        io.stderr(`coord git-guard: ${error instanceof Error ? error.message : String(error)}\n`);
+      }
+      // Claude/Codex no-objection is empty stdout; the other vendors require
+      // an explicit allow object. Deny responses are JSON for every vendor.
+      if (Object.keys(response).length > 0) io.stdout(`${JSON.stringify(response)}\n`);
+      return 0;
+    }
+
+    if (command === "containment-probe") {
+      allowedFlags(parsed, ["clone", "issue", "resolved-git", "tool-result", "vendor-version"]);
+      if (parsed.positionals.length !== 0) throw new Error("containment-probe takes no positional arguments");
+      const toolResult = parsed.flags.get("tool-result") ?? "unknown";
+      if (toolResult !== "hook-denied" && toolResult !== "shim-refused" && toolResult !== "executed" && toolResult !== "unknown") throw new Error("invalid --tool-result");
+      const result = recordContainmentProbe({ clone: resolve(io.cwd, parsed.flags.get("clone") ?? "."), env: io.env,
+        ...(parsed.flags.has("issue") ? { issue: parseIssue(requireFlag(parsed, "issue")) } : {}),
+        resolvedGit: requireFlag(parsed, "resolved-git"), toolResult,
+        vendorVersion: parsed.flags.get("vendor-version") ?? "unknown" });
+      io.stdout(`${JSON.stringify(result)}\n`);
+      return 0;
     }
 
     if (command === "agent-event") {

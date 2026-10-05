@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { findAgentLanguageViolations } from "../src/agentLanguage.js";
@@ -771,6 +771,26 @@ const shimEnv = (): NodeJS.ProcessEnv => {
 };
 
 describe("generated git shim", () => {
+  it("check mode decides without running an allowed real Git command, including delegate/manual branches", () => {
+    const f = product();
+    const marker = join(f.workspaceRoot, "real-git-ran");
+    const fake = join(f.workspaceRoot, "fake-git");
+    writeFileSync(fake, `#!/bin/sh\nprintf ran > '${marker}'\n`, { mode: 0o700 });
+    const shim = join(f.productRoot, ".coord/bin/git");
+    execFileSync("bash", ["-c", '. "$1"; write_git_wrapper "$2" "$3" "$4"', "_",
+      join(repoRoot, "scripts/lib/launcher.sh"), shim, fake, realpathSync(f.productRoot)]);
+    const check = (args: string[], env: NodeJS.ProcessEnv = {}) => spawnSync(shim, args, {
+      cwd: f.productRoot, encoding: "utf8", env: { ...shimEnv(), COORD_ISSUE: "42", COORD_GIT_POLICY_CHECK: "1", ...env }
+    });
+    expect(check(["status"]).status).toBe(2);
+    for (const result of [check(["log", "-1"]), check(["push"]), check(["-C", f.workspaceRoot, "status"]),
+      check(["status"], { COORD_ISSUE: "" }), check(["status"], { COORD_GIT_DELEGATE: "1" })]) {
+      expect(result.status).toBe(0); expect(result.stdout).toBe("");
+    }
+    expect(existsSync(marker)).toBe(false);
+    expect(check(["log"], { COORD_GIT_POLICY_CHECK: "" }).status).toBe(0);
+    expect(existsSync(marker)).toBe(true);
+  });
   const runGit = (
     clone: string,
     cwd: string,

@@ -56,6 +56,19 @@ const editConfig = (configPath: string, mutate: (config: Record<string, unknown>
 };
 
 describe("coord doctor", () => {
+  it("distinguishes a missing or disabled shim from a removed native guard", () => {
+    const { fixture, clone } = installed();
+    const shim = join(clone, ".coord/bin/git");
+    chmodSync(shim, 0o600);
+    expect(report(fixture).findings.map((item) => item.class)).toContain("gitShim");
+    rmSync(shim);
+    expect(report(fixture).findings.map((item) => item.class)).toContain("gitShim");
+    const hooks = join(clone, ".claude/settings.local.json");
+    const doc = JSON.parse(readFileSync(hooks, "utf8")) as { hooks: Record<string, unknown> };
+    delete doc.hooks.PreToolUse;
+    writeFileSync(hooks, JSON.stringify(doc));
+    expect(report(fixture).findings).toContainEqual(expect.objectContaining({ class: "lifecycleHooks", message: expect.stringContaining("shell guard") }));
+  });
   it("reports nothing on a healthy install", () => {
     const { fixture } = installed();
     const result = report(fixture);

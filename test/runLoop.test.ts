@@ -919,6 +919,9 @@ describe("durable delivery safety", () => {
       const after = await f.makeLoop({ mirror }).runTick();
       expect(after.paused).toBe(false);
       expect(after.accepted).toContainEqual(expect.objectContaining({ agent: vendor, stepId: "R1.join", submissionSha: sha }));
+      expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "agent-lifecycle", agent: vendor,
+        details: expect.objectContaining({ kind: "containment-coverage", hook: "unverified", shim: "unverified" }) }));
+      expect(f.messages.join("\n")).toContain(`WARNING: ${vendor} containment hook=unverified shim=unverified`);
       expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({
         type: "verify-result", agent: vendor, actionId, submissionSha: sha, details: { ok: true }
       }));
@@ -3024,7 +3027,14 @@ describe("coordinator-resolved change scope", () => {
       expect(order.task, stepId).toContain("Do not create that branch");
       // Said once, not twice, on the step that used to carry it inline.
       expect(order.task.split("already checked this clone out").length - 1, stepId).toBe(1);
+      expect(order.task.includes("Containment check"), stepId).toBe(stepId === "R1.join");
     }
+    // A restarted agent still has complete probe instructions in the protocol,
+    // without making action content depend on asynchronous lifecycle evidence.
+    const protocol = readFileSync(join(repoRoot, "templates/product/AGENTS.protocol.md"), "utf8");
+    expect(protocol).toContain("after a restart/configuration change");
+    expect(protocol).toContain("coord containment-probe --issue");
+    expect(protocol).toContain("Do not repeat for every action");
   });
 
   it("carries configured context paths from start state into every order", () => {
