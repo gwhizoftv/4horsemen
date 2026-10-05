@@ -1,0 +1,17 @@
+{
+  "protocolVersion": 1,
+  "issue": 142,
+  "issueSessionId": "issue-142:6fbbe84be880ce28d41da4d34255247557a5a592",
+  "agent": "cursor",
+  "inputSetHash": "dfc0e10aec13920d9b0c24dafc07a726c226bc41070a2c2955e0a19d7197a164",
+  "artifact": "plan-amendment-request",
+  "actionId": "555018a9-4a5b-45b2-908b-9d9da2f83408",
+  "scopeHash": "56e0fe6779ae5626615bcf371c42954d267bbbb1e92c7504bc687575243d9c8a",
+  "explanation": "The selected plan journals containment-coverage on R1.join accept and containment-guard-denied from the shell guard, but journalEventTypeSchema in src/state.ts is a closed enum; without adding those two event types appendJournal rejects the writes and the planned status/warning surfaces cannot persist.",
+  "additionalPaths": [
+    {
+      "path": "src/state.ts",
+      "reason": "journalEventTypeSchema must include containment-coverage and containment-guard-denied so runLoop.accept and shellGuard can appendJournal the evidence the plan requires; no other module owns that enum."
+    }
+  ]
+}
