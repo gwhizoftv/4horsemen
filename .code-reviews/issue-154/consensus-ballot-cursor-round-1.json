@@ -1,0 +1,14 @@
+{
+  "actionId": "ddec63ab-2646-45ec-b22e-56cc68e8d020",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "5e0066ee6acbab80e42dc0866898a1d615beb13985493a1fbd3501490fc9b3e7",
+  "issue": 154,
+  "issueSessionId": "issue-154:ed813ca97a3646654b0769f4c31849703d43ec5e",
+  "protocolVersion": 2,
+  "rationale": "Codex e4473b0 fixes the comparison blockers—plain Owner guidance bullets, bind-under-lock, effective paused journal on hold release, and abortable poll sleep—while keeping cohort-safe generation binding.",
+  "responseSha256": "21b599f71a3cd26c0e12500140fc67ba90a5fddcebdaa1f3c4e7b8bc3ac98922",
+  "revisionCommitSha": "e4473b0cc4fcd1a92affc75a4a808317761a5c4d",
+  "round": 1
+}
