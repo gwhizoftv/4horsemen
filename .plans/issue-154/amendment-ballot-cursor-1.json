@@ -1,0 +1,26 @@
+{
+  "actionId": "0c2f1c59-9d49-462e-953f-1434a80ab192",
+  "agent": "cursor",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "bf26f40d776bdd11faa0af50fd02ec4fcf50db999c570a4e87e13e59e6f0477d",
+  "issue": 154,
+  "issueSessionId": "issue-154:ed813ca97a3646654b0769f4c31849703d43ec5e",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "19b7ba5ca9d8e1b197497395d1c712eb235928cd",
+      "path": ".plans/issue-154/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "Adding src/issueReport.ts and its existing test file is required for the selected plan's s hotkey to show active step/round and roster while paused, which today's renderer cannot do without duplicating status logic in interactive.ts.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "1c27722bfc1a672aeed0438b0468ddc9df4e653f",
+    "path": ".signals/issue-154/implementation-ready-codex.json"
+  },
+  "responseSha256": "f98d2e49028e230d6daddfdabfdf471eae6ffd16c589e74c0629c724b7e68b92",
+  "sequence": 1
+}

@@ -1,0 +1,26 @@
+{
+  "actionId": "4e8111b9-5355-4b11-9419-2a74bffe51a0",
+  "agent": "codex",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "bf26f40d776bdd11faa0af50fd02ec4fcf50db999c570a4e87e13e59e6f0477d",
+  "issue": 154,
+  "issueSessionId": "issue-154:ed813ca97a3646654b0769f4c31849703d43ec5e",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "19b7ba5ca9d8e1b197497395d1c712eb235928cd",
+      "path": ".plans/issue-154/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "Both src/issueReport.ts and test/issueReport.test.ts are necessary to supply and verify the original issue's active-step and active-roster status snapshot during pauses and holds through the existing shared renderer, without duplicating reporting or introducing new behavior beyond that requirement.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "1c27722bfc1a672aeed0438b0468ddc9df4e653f",
+    "path": ".signals/issue-154/implementation-ready-codex.json"
+  },
+  "responseSha256": "bc6ea7cbf9ee1c651bc5b74d0f418fad752ae8dff5e8a556c2a01bcaf9d208d5",
+  "sequence": 1
+}

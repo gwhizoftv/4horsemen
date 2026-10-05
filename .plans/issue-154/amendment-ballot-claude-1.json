@@ -1,0 +1,26 @@
+{
+  "actionId": "8e1203da-526b-459c-a0d1-96624b499241",
+  "agent": "claude",
+  "artifact": "amendment-ballot",
+  "disposition": "revise",
+  "inputSetHash": "bf26f40d776bdd11faa0af50fd02ec4fcf50db999c570a4e87e13e59e6f0477d",
+  "issue": 154,
+  "issueSessionId": "issue-154:ed813ca97a3646654b0769f4c31849703d43ec5e",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "19b7ba5ca9d8e1b197497395d1c712eb235928cd",
+      "path": ".plans/issue-154/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "The active step/round and roster required for the s snapshot can be supplied within the approved src/cli.ts by appending them to the reused renderIssueReport output in the interactive status callback (as claude's implementation 6940cdb27af69c2e2332f3d605f83625fd790634 does, with a cli.test.ts assertion), so src/issueReport.ts and test/issueReport.test.ts are not necessary to finish the selected plan, and changing the shared renderer would also alter coord status output, which that plan explicitly placed out of scope.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "1c27722bfc1a672aeed0438b0468ddc9df4e653f",
+    "path": ".signals/issue-154/implementation-ready-codex.json"
+  },
+  "responseSha256": "9d22b3a7ced5bc6c2ee9a537c1e1026c73d36fc8700837259a9259f26a8e601a",
+  "sequence": 1
+}
