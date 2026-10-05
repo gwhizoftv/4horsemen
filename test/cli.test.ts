@@ -195,13 +195,14 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
 
 describe("CLI version", () => {
   it.each(["codex", "claude", "cursor", "antigravity"])("git-guard %s returns its allow response on malformed or oversized input", async (vendor) => {
-    for (const input of ["{broken", "x".repeat(1024 * 1024 + 1)]) {
+    for (const input of ["{broken", "x".repeat(1024 * 1024 + 1), '{"tool_input":{"command":"echo ok"},"command":"echo ok"}']) {
       const output: string[] = [], errors: string[] = [];
       expect(await runCli(["git-guard", "--vendor", vendor, "--clone", "/missing"], {
         io: { stdin: () => input, stdout: (text) => output.push(text), stderr: (text) => errors.push(text) }
       })).toBe(0);
-      expect(JSON.parse(output.join(""))).toEqual(vendor === "cursor" ? { permission: "allow" } : vendor === "antigravity" ? { decision: "allow" } : {});
-      expect(errors.join("")).toContain("coord git-guard:");
+      expect(output.join("")).toBe(vendor === "cursor" ? '{"permission":"allow"}\n' : vendor === "antigravity" ? '{"decision":"allow"}\n' : "");
+      if (input.includes("echo ok")) expect(errors).toEqual([]);
+      else expect(errors.join("")).toContain("coord git-guard:");
     }
   });
 

@@ -3027,7 +3027,14 @@ describe("coordinator-resolved change scope", () => {
       expect(order.task, stepId).toContain("Do not create that branch");
       // Said once, not twice, on the step that used to carry it inline.
       expect(order.task.split("already checked this clone out").length - 1, stepId).toBe(1);
+      expect(order.task.includes("Containment check"), stepId).toBe(stepId === "R1.join");
     }
+    // A restarted agent still has complete probe instructions in the protocol,
+    // without making action content depend on asynchronous lifecycle evidence.
+    const protocol = readFileSync(join(repoRoot, "templates/product/AGENTS.protocol.md"), "utf8");
+    expect(protocol).toContain("after a restart/configuration change");
+    expect(protocol).toContain("coord containment-probe --issue");
+    expect(protocol).toContain("Do not repeat for every action");
   });
 
   it("carries configured context paths from start state into every order", () => {

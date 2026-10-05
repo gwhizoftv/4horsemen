@@ -29,7 +29,7 @@ the pinned read stays available for the ones that are missing.
 During an automated issue, do not run `git status` or `git diff` against this
 clone, or pinned `git show` for exported Bound input files. The action already
 supplies this information. The only exception is the harmless containment probe
-requested by the action. Native shell-tool guards enforce recognized literal
+described below and requested initially by the join action. Native shell-tool guards enforce recognized literal
 commands where the harness has been verified; `.coord/bin/git` is the fallback
 where it actually resolves. Installation alone does not prove either layer.
 Other repositories and owner-driven manual mode remain unrestricted.
@@ -40,8 +40,22 @@ already-open terminal are outside its guarantee. Do not use those gaps to work
 around this protocol. Report a refusal that blocks real work.
 
 Measure resolution and an actual tool refusal once per session and again after
-a harness restart or hook/policy configuration change, using the action's
-`coord containment-probe` instructions. Do not repeat for every action. A hook
+a harness restart or hook/policy configuration change. The join action supplies
+the initial instructions; after a restart/configuration change, request only
+`git status --porcelain` through the actual harness shell tool, without changing
+PATH or wrapping it in another shell. It is expected to be refused; do not work
+around the refusal. Then, through the same tool, run:
+
+```sh
+coord containment-probe --issue <current-issue-number> --resolved-git "$(command -v git)" --tool-result <hook-denied|shim-refused|executed|unknown> --vendor-version <actual-cli-version>
+```
+
+Use `hook-denied` only for a tool request rejected before execution,
+`shim-refused` only for the coordinator shim's exit-2 refusal, `executed` if Git
+ran, or `unknown` if uncertain. Do not invent a CLI version or run another probe
+merely because coverage remains unknown; report the missing capability/identity
+and continue. The observation is agent-reported, not tamper-proof attestation.
+Do not repeat for every action. A hook
 emitting deny is not proof the harness enforced it. `coord status` reports
 separate hook/shim evidence; inactive or unverified coverage is a warning, not a
 claim of containment. Doctor checks installation only, not the harness PATH.

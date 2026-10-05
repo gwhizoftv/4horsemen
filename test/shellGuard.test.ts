@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { guardShellRequest, shellGuardResponse, staticGitCalls } from "../src/shellGuard.js";
@@ -40,6 +41,10 @@ describe("native shell guard shared policy", () => {
       `git -C '${other}' status`, `cd '${other}' && git status`, "git add file", "git commit -m x",
       "git push", "git show HEAD:README.md", 'echo "git status"', "cat <<'END'\ngit status\nEND\n",
       "cat <<-END\n\tgit status\n\tEND\n", "printf done", "$GIT status", "bash script.sh",
+      "echo $(git status)", "msg=$(git status)", "echo `git status`",
+      'echo "$(git status)"', "echo ${unused:-$(git status)}",
+      "echo $(printf '%s' ')'; git status)", "echo $(echo $(git status))",
+      "echo $(printf x # )\n git status)",
       "git $ARGS", `GIT_DIR='${other}/.git' git status`, "cd '$UNKNOWN'; git status",
       `{ cd '${other}'; git status; }`
     ]) check(command, true);
@@ -47,8 +52,35 @@ describe("native shell guard shared policy", () => {
     check(["bash", "-lc", "git status"], false);
     check(["git", "log", "-1"], true);
     check("cat <<END\ngit status\nEND\ngit diff", false);
+    check("echo $(git status); git diff", false);
+    check("echo `git status`; git diff", false);
+    check("echo $(printf x # )\n git status); git diff", false);
     // Allowed commands were classified, never executed (no staging/commit/push).
     expect(git(clone, "log", "--format=%s")).toBe("initial");
+  });
+
+  it("distinguishes shell-local targeting assignments from exported and command-local values", () => {
+    const f = fixture(), clone = f.productRoot, other = f.workspaceRoot;
+    const environment: NodeJS.ProcessEnv = { ...process.env, COORD_ISSUE: "42" };
+    delete environment.GIT_DIR;
+    delete environment.GIT_WORK_TREE;
+    for (const key of ["GIT_WORK_TREE", "GIT_DIR"] as const) {
+      const own = key === "GIT_DIR" ? join(clone, ".git") : clone;
+      const away = key === "GIT_DIR" ? join(other, ".git") : other;
+      const command = `${key}='${away}'; git status`;
+      expect(staticGitCalls(command, clone, environment)[0]?.env[key]).toBeUndefined();
+      expect(staticGitCalls(command, clone, { ...environment, [key]: own })[0]?.env[key]).toBe(away);
+      expect(staticGitCalls(`${key}='${away}' git status`, clone, environment)[0]?.env[key]).toBe(away);
+      expect(staticGitCalls(`${key}='${away}' env -i git status`, clone, environment)[0]?.env[key]).toBeUndefined();
+      expect(staticGitCalls(`env --ignore-environment git status`, clone, { ...environment, [key]: away })[0]?.env[key]).toBeUndefined();
+      const result = guardShellRequest({ vendor: "codex", clone,
+        raw: payload("codex", command, clone), env: environment });
+      expect(JSON.stringify(result)).toContain('"deny"');
+      // A real shell agrees: an unexported assignment does not redirect Git.
+      expect(execFileSync("/bin/bash", ["-c", `${key}='${away}'; git rev-parse --show-toplevel`], {
+        cwd: clone, env: environment, encoding: "utf8"
+      }).trim()).toBe(realpathSync(clone));
+    }
   });
 
   it("keeps the pinned-read materialization fallback and local HEAD reads", () => {

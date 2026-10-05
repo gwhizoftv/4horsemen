@@ -14,7 +14,7 @@ import { workspaceLocationFromConfig } from "./workspace.js";
 
 // Increment when recognition or response semantics change. Configuration and
 // shim bytes also participate, so an install/reconfiguration invalidates probes.
-const GUARD_REVISION = "shell-guard-v1";
+const GUARD_REVISION = "shell-guard-v2";
 // The tool sandbox can write its clone, not the owner's lifecycle/journal.
 // This bounded, advisory mailbox uses the already-ignored managed directory.
 const probeMailbox = (clone: string) => join(clone, ".coord", "containment-observation.json");
@@ -66,6 +66,35 @@ const lex = (source: string): Word[] => {
   };
   const heredocs: { delimiter: string; tabs: boolean }[] = [];
   let heredoc: boolean | null = null;
+  // Skip dynamic spans as opaque words, including their separators and quotes.
+  // Recognizing a boundary is not permission to interpret commands inside it.
+  const expansionEnd = (start: number, depth = 0): number => {
+    if (depth > 4) return -1;
+    const opener = source[start] === "`" ? "`" : source[start + 1];
+    const closer = opener === "(" ? ")" : opener === "{" ? "}" : "`";
+    let nesting = 1, quoted = "";
+    for (let at = start + (opener === "`" ? 1 : 2); at < source.length; at++) {
+      const char = source[at];
+      if (quoted === "'") { if (char === "'") quoted = ""; continue; }
+      if (char === "\\") { at++; continue; }
+      if (char === "`" && closer === "`") return at;
+      if (char === "`" || (char === "$" && ["(", "{"].includes(source[at + 1] ?? ""))) {
+        at = expansionEnd(at, depth + 1);
+        if (at < 0) return -1;
+        continue;
+      }
+      if (quoted) { if (char === quoted) quoted = ""; continue; }
+      if (char === "'" || char === '"') { quoted = char; continue; }
+      if (char === "#" && /[\s;|&()]/.test(source[at - 1] ?? "")) {
+        while (at < source.length && source[at] !== "\n") at++;
+        continue;
+      }
+      if (source.slice(at, at + 2) === "<<") return -1; // heredoc inside expansion: unsupported
+      if (char === closer && --nesting === 0) return at;
+      if (char === opener) nesting++;
+    }
+    return -1;
+  };
   for (let i = 0; i < source.length; i++) {
     const char = source[i] as string;
     if (quote === "'") {
@@ -79,6 +108,12 @@ const lex = (source: string): Word[] => {
         if (quote === '"' && !['$', '`', '"', "\\"].includes(next)) text += "\\";
         text += next; started = true;
       }
+      continue;
+    }
+    if (char === "`" || (char === "$" && ["(", "{"].includes(source[i + 1] ?? ""))) {
+      const end = expansionEnd(i);
+      if (end < 0) return [];
+      text += source.slice(i, end + 1); started = true; literal = false; i = end;
       continue;
     }
     if (quote === '"') {
@@ -153,7 +188,14 @@ export const staticGitCalls = (command: string | string[], cwd: string, environm
         }
       };
       assignments();
-      if (n === words.length) { if (!isolated) env = local; return; }
+      if (n === words.length) {
+        // Assignment-only segments update already-exported variables, but do
+        // not export new shell locals to a later external Git invocation.
+        if (!isolated) for (const key of ["GIT_DIR", "GIT_WORK_TREE"]) {
+          if (env[key] !== undefined) env[key] = local[key];
+        }
+        return;
+      }
       while (words[n]?.literal && ["env", "command", "exec", "nohup", "time"].includes(basename(words[n]?.text ?? ""))) {
         const wrapper = basename((words[n++] as Word).text);
         while (words[n]?.text.startsWith("-")) {
@@ -162,6 +204,9 @@ export const staticGitCalls = (command: string | string[], cwd: string, environm
           if (wrapper === "env" && (option === "-u" || option === "--unset")) {
             const key = words[n++]?.text;
             if (key === "GIT_DIR" || key === "GIT_WORK_TREE") delete local[key];
+          } else if (wrapper === "env" && (option === "-i" || option === "--ignore-environment")) {
+            delete local.GIT_DIR;
+            delete local.GIT_WORK_TREE;
           } else if (!["-i", "--ignore-environment", "-p"].includes(option)) return;
         }
         assignments();

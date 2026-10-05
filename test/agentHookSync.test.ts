@@ -81,8 +81,8 @@ describe("agent lifecycle hook synchronization", () => {
     writeFileSync(cliEntry, 'process.stdout.write("decoded\\n")');
     const command = renderShellGuardHookCommand(cliEntry, clone, vendor);
     const run = (input: string) => spawnSync("/bin/sh", ["-c", command], { input, encoding: "utf8" });
-    const allow = vendor === "cursor" ? { permission: "allow" } : vendor === "antigravity" ? { decision: "allow" } : {};
-    expect(JSON.parse(run('{"command":"echo hello"}').stdout)).toEqual(allow);
+    const allow = vendor === "cursor" ? '{"permission":"allow"}\n' : vendor === "antigravity" ? '{"decision":"allow"}\n' : "";
+    expect(run('{"command":"echo hello"}').stdout).toBe(allow);
     expect(run('{"command":"git status"}').stdout).toBe("decoded\n");
     expect(run('{"command":"g\\u0069t status"}').stdout).toBe("decoded\n");
     expect(run(JSON.stringify({ command: "g'it' status" })).stdout).toBe("decoded\n");

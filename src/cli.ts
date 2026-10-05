@@ -1224,7 +1224,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       } catch (error) {
         io.stderr(`coord git-guard: ${error instanceof Error ? error.message : String(error)}\n`);
       }
-      io.stdout(`${JSON.stringify(response)}\n`);
+      // Claude/Codex no-objection is empty stdout; the other vendors require
+      // an explicit allow object. Deny responses are JSON for every vendor.
+      if (Object.keys(response).length > 0) io.stdout(`${JSON.stringify(response)}\n`);
       return 0;
     }
 

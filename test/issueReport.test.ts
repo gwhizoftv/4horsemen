@@ -8,7 +8,7 @@ const impl = "e".repeat(40);
 
 it("reports unknown runtime containment rather than inferring it from installation", () => {
   expect(renderIssueReport(start("owner-only"), complete(), initialAgentLifecycle(["cursor"])))
-    .toContain("containment hook=unverified shim=unverified");
+    .toContain("containment hook=unverified shim=unverified (session identity unavailable)");
 });
 
 const start = (policy: StartState["prPolicy"]): StartState =>

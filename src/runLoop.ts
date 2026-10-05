@@ -84,7 +84,6 @@ import {
 } from "./state.js";
 import {
   BRANCH_PREPARED_NOTE,
-  CONTAINMENT_PROBE_NOTE,
   STEP_DEFINITIONS,
   isBallotStep,
   roundForStep,
@@ -722,9 +721,8 @@ export const buildOrder = (
   materialized?: MaterializedInputs
 ): InternalOrder => {
   const definition = STEP_DEFINITIONS[stepId];
-  // Keep the action digest deterministic while telemetry arrives. The note is
-  // conditional on a session/config change, not a request to probe each action.
-  const containmentNote = stepId !== "R1.join" ? CONTAINMENT_PROBE_NOTE : "";
+  // Join requests the initial probe; durable protocol guidance covers restarts
+  // and configuration changes without repeating it or changing action digests.
   const runtime = agentRuntimePaths(paths, agent);
   const branch = start.branchTemplate.replaceAll("{issue}", String(start.issue)).replaceAll("{agent}", agent);
   const correction = outstanding.length === 0 ? "" : `\n\nCorrect these outstanding items:\n${outstanding.map((item) => `- ${item}`).join("\n")}`;
@@ -783,7 +781,7 @@ export const buildOrder = (
     issueSessionId: start.issueSessionId,
     baselineSha: start.baselineSha,
     automationDigest: start.automationDigest,
-    task: `${definition.task}${containmentNote}${BRANCH_PREPARED_NOTE}${binding}${scaffold}${correction}${amendmentNotice}`,
+    task: `${definition.task}${BRANCH_PREPARED_NOTE}${binding}${scaffold}${correction}${amendmentNotice}`,
     inputs,
     approvedPaths,
     scopeHash,

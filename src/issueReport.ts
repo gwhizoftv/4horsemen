@@ -162,6 +162,7 @@ export const renderIssueReport = (
       lines.push(
         `Agent ${agent.id}: ${entry.action?.delivery ?? "none"} / ${entry.execution} / ${entry.health}${queue}${background}${alert}` +
         `, containment hook=${coverage.hook} shim=${coverage.shim}` +
+        (entry.sessionId === null ? " (session identity unavailable)" : "") +
         (probe ? ` (agent-observed ${probe.at}, session=${probe.sessionId}, vendor=${probe.vendorVersion}, policy=${probe.policyRevision})` : "")
       );
     }
