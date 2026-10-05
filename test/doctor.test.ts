@@ -105,6 +105,17 @@ describe("coord doctor", () => {
     expect(findings.map((item) => item.code)).not.toContain(DOCTOR_CODES.hooks);
   });
 
+  it("reports a missing or non-executable git shim", () => {
+    const { fixture, clone } = installed();
+    const shim = join(clone, ".coord", "bin", "git");
+    chmodSync(shim, 0o644);
+    expect(report(fixture).findings).toContainEqual(
+      expect.objectContaining({ class: "gitShim", code: DOCTOR_CODES.gitShim, subject: shim })
+    );
+    rmSync(shim);
+    expect(report(fixture).findings).toContainEqual(expect.objectContaining({ class: "gitShim", message: expect.stringContaining("missing") }));
+  });
+
   it("reports nudge delivery for an agent id with no lifecycle vendor mapping", () => {
     const { fixture, clone, configPath } = installed();
     editConfig(configPath, (config) => {

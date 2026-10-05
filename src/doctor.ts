@@ -5,7 +5,7 @@ import { git, localConfigGet, worktreeRoot } from "./gitExec.js";
 import { canonicalSourceDigest, inspectCloneHooks, readHookManifest } from "./hookSync.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, unresolvableCommands, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
-import { productName } from "./setupWorkspace.js";
+import { GIT_WRAPPER_RELATIVE_PATH, productName } from "./setupWorkspace.js";
 import { readConfig, type CoordinatorConfig } from "./state.js";
 import { resolveWorkspaceLocation } from "./workspace.js";
 import { inspectAgentLifecycleHooks } from "./agentHookSync.js";
@@ -35,7 +35,8 @@ export const DOCTOR_CODES = {
   cloneMissing: 19,
   lifecycleHooks: 20,
   agentsProtocol: 21,
-  resourceTelemetry: 22
+  resourceTelemetry: 22,
+  gitShim: 23
 } as const;
 
 export type DoctorClass = keyof typeof DOCTOR_CODES;
@@ -366,7 +367,7 @@ const checkClone = (input: {
         finding(
           "lifecycleHooks",
           lifecycle.path ?? clone,
-          "Coordinator CLI lifecycle hooks are missing, so prompt acceptance and agent activity are unobservable.",
+          "Coordinator CLI lifecycle and shell-guard hooks are missing, so prompt acceptance and agent activity are unobservable and Git reads are contained only if PATH reaches the shim.",
           "Re-run coord install, then restart this agent CLI so it reloads hooks."
         )
       );
@@ -375,7 +376,7 @@ const checkClone = (input: {
         finding(
           "lifecycleHooks",
           lifecycle.path ?? clone,
-          "Coordinator CLI lifecycle hooks differ from the installed command definitions.",
+          "Coordinator CLI lifecycle or shell-guard hooks differ from the installed command definitions.",
           "Preserve any third-party entries, then re-run coord install to repair only coordinator-managed entries."
         )
       );
@@ -405,6 +406,15 @@ const checkClone = (input: {
     findings.push(finding("launcher", launcher, "The agent launcher is missing.", "Re-run coord install."));
   } else if (!isExecutable(launcher)) {
     findings.push(finding("launcher", launcher, "The agent launcher is not executable.", `chmod +x ${launcher}`));
+  }
+
+  // Static presence only. Whether the agent's own shell reaches the shim, or its
+  // harness honours the shell guard, is measured in that shell (coord status).
+  const shim = join(clone, GIT_WRAPPER_RELATIVE_PATH);
+  if (!existsSync(shim)) {
+    findings.push(finding("gitShim", shim, "The git shim is missing, so the shell guard has no policy to consult.", "Re-run coord install."));
+  } else if (!isExecutable(shim)) {
+    findings.push(finding("gitShim", shim, "The git shim is not executable.", `chmod +x ${shim}`));
   }
 
   return findings;

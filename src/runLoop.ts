@@ -11,7 +11,8 @@ import {
   markInjectedActionAbsent,
   mutateAgentLifecycle,
   orderAgentAction,
-  readAgentLifecycle
+  readAgentLifecycle,
+  containmentCoverage
 } from "./agentLifecycle.js";
 import {
   archiveAcceptedResponse,
@@ -1786,6 +1787,7 @@ export class CoordinatorRunLoop {
       });
     });
     const completion = markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
+    if (accepted.stepId === "R1.join") this.reportContainment(start, decision.agent);
     if (completion.clearedDegraded) {
       // The agent published and pushed, so the earlier watchdog warning is
       // disproven. Retract it explicitly rather than leaving it standing.
@@ -1804,6 +1806,42 @@ export class CoordinatorRunLoop {
       );
     }
     return next;
+  }
+
+  /**
+   * The join action asked the agent to probe containment from its own shell
+   * tool. Journal what it measured, and say loudly when Git reads are not
+   * enforced by the guard: a warning, not a refusal, until every vendor's
+   * guard has been measured.
+   */
+  private reportContainment(start: StartState, agent: string): void {
+    let entry;
+    try {
+      entry = readAgentLifecycle(this.paths).agents[agent];
+    } catch (error) {
+      // Observational only: an unreadable lifecycle file must not stop acceptance.
+      this.log(`WARNING: Issue ${start.issue}: ${agent} Git containment is unknown: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    if (entry === undefined) return;
+    const coverage = containmentCoverage(entry);
+    appendJournal(
+      this.paths,
+      {
+        type: "agent-lifecycle",
+        agent,
+        details: { event: "containment-coverage", kind: "containment-coverage", hook: coverage.hook, shim: coverage.shim }
+      },
+      this.now()
+    );
+    if (coverage.hook === "active") return;
+    const consequence =
+      coverage.shim === "active"
+        ? "only the PATH shim was observed, which a login shell or a direct git path bypasses"
+        : "its git status, git diff, and pinned git show reads are NOT contained";
+    this.log(
+      `WARNING: Issue ${start.issue}: ${agent} Git containment is not verified (hook=${coverage.hook}, shim=${coverage.shim}); ${consequence}.`
+    );
   }
 
   /** Retire runtime orders only; Git work and accepted product pins are untouched. */

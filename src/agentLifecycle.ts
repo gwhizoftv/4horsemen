@@ -64,6 +64,43 @@ export const claudeRateLimitsSchema = z
   })
   .strict();
 
+const sessionRefSchema = z.string().min(1).max(512).nullable();
+
+/**
+ * Per-session evidence that this agent's Git reads are contained. Recorded
+ * from inside the agent's own shell tool and guard hook; never from the
+ * coordinator's process, which cannot see the harness environment.
+ */
+export const containmentEvidenceSchema = z
+  .object({
+    /** The shell-tool guard emitted a deny for a Git read in this clone. */
+    hookDenial: z
+      .object({
+        sessionId: sessionRefSchema,
+        vendorVersion: z.string().min(1).max(200).nullable(),
+        policyRevision: z.string().min(1).max(64),
+        at: timestampSchema
+      })
+      .strict()
+      .nullable(),
+    /** The expected-refusal probe ran anyway: a deny was emitted but not honoured. */
+    refusalRan: z.object({ sessionId: sessionRefSchema, at: timestampSchema }).strict().nullable(),
+    /** What `git` resolves to in the agent's own shell tool. */
+    probe: z
+      .object({
+        sessionId: sessionRefSchema,
+        shim: z.enum(["active", "bypassed"]),
+        resolvedGit: z.string().min(1).max(4096).nullable(),
+        issueEnv: z.boolean(),
+        delegateEnv: z.boolean(),
+        policyRevision: z.string().min(1).max(64).nullable(),
+        at: timestampSchema
+      })
+      .strict()
+      .nullable()
+  })
+  .strict();
+
 export const agentLifecycleEntrySchema = z
   .object({
     action: lifecycleActionSchema.nullable(),
@@ -81,6 +118,7 @@ export const agentLifecycleEntrySchema = z
     lastEventAt: timestampSchema.nullable(),
     lastFailure: lifecycleFailureSchema.nullable().default(null),
     claudeRateLimits: claudeRateLimitsSchema.nullable().default(null),
+    containment: containmentEvidenceSchema.nullable().default(null),
     updatedAt: timestampSchema
   })
   .strict();
@@ -99,6 +137,7 @@ export type AgentLifecycleEntry = z.infer<typeof agentLifecycleEntrySchema>;
 export type AgentLifecycleState = z.infer<typeof agentLifecycleStateSchema>;
 
 export type LifecycleFailure = z.infer<typeof lifecycleFailureSchema>;
+export type ContainmentEvidence = z.infer<typeof containmentEvidenceSchema>;
 
 /** Raw vendor failure fields, sanitized before persistence. */
 export type ObservedFailure = FailureFields & { vendor: "claude" | "cursor"; status?: string };
@@ -136,6 +175,7 @@ const emptyEntry = (now: string): AgentLifecycleEntry => ({
   lastEventAt: null,
   lastFailure: null,
   claudeRateLimits: null,
+  containment: null,
   updatedAt: now
 });
 
@@ -216,6 +256,51 @@ const replaceEntry = (
     agents: { ...state.agents, [agent]: { ...entry, updatedAt: now } },
     updatedAt: now
   });
+
+/** Merge one piece of containment evidence; an agent outside the roster is ignored. */
+export const recordContainmentEvidence = (
+  paths: IssueRuntimePaths,
+  agent: string,
+  patch: Partial<ContainmentEvidence>,
+  now = new Date().toISOString()
+): AgentLifecycleState =>
+  mutateAgentLifecycle(paths, (current) => {
+    const entry = current.agents[agent];
+    if (entry === undefined) return current;
+    const containment = { hookDenial: null, refusalRan: null, probe: null, ...entry.containment, ...patch };
+    return replaceEntry(current, agent, { ...entry, containment }, now);
+  });
+
+export type ContainmentCoverage = {
+  hook: "active" | "inactive" | "unverified";
+  shim: "active" | "bypassed" | "unverified";
+};
+
+// A null side means that hook or lifecycle stream never supplied an identity;
+// it can neither prove nor disprove the same session.
+const sameSession = (left: string | null, right: string | null): boolean =>
+  left === null || right === null || left === right;
+
+/**
+ * Coverage for the agent's current session. Evidence from an earlier session
+ * (a restart) is unverified, never success. The hook counts as active only
+ * when a deny was emitted under the current shim policy and the expected
+ * refusal did not then run anyway.
+ */
+export const containmentCoverage = (entry: AgentLifecycleEntry): ContainmentCoverage => {
+  const probe = entry.containment?.probe ?? null;
+  if (probe === null || probe.sessionId !== entry.sessionId) return { hook: "unverified", shim: "unverified" };
+  const denial = entry.containment?.hookDenial ?? null;
+  const ran = entry.containment?.refusalRan ?? null;
+  const denied =
+    denial !== null &&
+    sameSession(denial.sessionId, probe.sessionId) &&
+    Date.parse(denial.at) <= Date.parse(probe.at) &&
+    (probe.policyRevision === null || probe.policyRevision === denial.policyRevision);
+  const ignored =
+    denied && ran !== null && sameSession(ran.sessionId, probe.sessionId) && Date.parse(ran.at) >= Date.parse(denial.at);
+  return { hook: denied && !ignored ? "active" : "inactive", shim: probe.shim };
+};
 
 export const orderAgentAction = (
   paths: IssueRuntimePaths,

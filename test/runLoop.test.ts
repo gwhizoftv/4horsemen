@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { readAction, writeAction } from "../src/action.js";
 import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
 import { git, repoRoot } from "./support/workspaceFixture.js";
-import { decideLifecycleNudge, initialAgentLifecycle, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
+import { decideLifecycleNudge, initialAgentLifecycle, observeAgentLifecycle, readAgentLifecycle, recordContainmentEvidence } from "../src/agentLifecycle.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentResponsePath, agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
@@ -898,8 +898,11 @@ describe("durable delivery safety", () => {
     }
   );
 
-  it.each(["claude", "codex"].flatMap((vendor) => [420_000, 30 * 60_000].map((delay) => ({ vendor, delay }))))(
-    "validates $vendor completion after $delay ms of quiet work", async ({ vendor, delay }) => {
+  it.each([
+    ...["claude", "codex"].flatMap((vendor) => [420_000, 30 * 60_000].map((delay) => ({ vendor, delay, verified: false }))),
+    { vendor: "claude", delay: 420_000, verified: true }
+  ])(
+    "validates $vendor completion after $delay ms of quiet work (containment verified: $verified)", async ({ vendor, delay, verified }) => {
       const f = safetyFixture(vendor);
       await f.tick(); f.advance(1); f.working();
       const actionId = readCursorsState(f.paths).agents[vendor]!.actionId!;
@@ -916,9 +919,24 @@ describe("durable delivery safety", () => {
         return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
       });
       writeFileSync(agentRuntimePaths(f.paths, vendor).complete, `${sha}\n`);
+      if (verified) {
+        recordContainmentEvidence(f.paths, vendor, {
+          hookDenial: { sessionId: "session", vendorVersion: null, policyRevision: "rev", at: f.now() },
+          probe: { sessionId: "session", shim: "bypassed", resolvedGit: "/usr/bin/git", issueEnv: true, delegateEnv: false,
+            policyRevision: "rev", at: f.now() }
+        }, f.now());
+      }
       const after = await f.makeLoop({ mirror }).runTick();
       expect(after.paused).toBe(false);
       expect(after.accepted).toContainEqual(expect.objectContaining({ agent: vendor, stepId: "R1.join", submissionSha: sha }));
+      // The join is where containment was probed; an unverified agent is named loudly, a verified one is not.
+      expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({
+        type: "agent-lifecycle", agent: vendor,
+        details: expect.objectContaining({ kind: "containment-coverage", hook: verified ? "active" : "unverified" })
+      }));
+      const warning = f.messages.find((message) => message.startsWith(`WARNING: Issue 1: ${vendor} Git containment`));
+      if (verified) expect(warning).toBeUndefined();
+      else expect(warning).toContain("NOT contained");
       expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({
         type: "verify-result", agent: vendor, actionId, submissionSha: sha, details: { ok: true }
       }));

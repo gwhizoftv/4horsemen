@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -910,6 +910,36 @@ describe("generated git shim", () => {
     // Manual mode and the delegate guard are unaffected either way.
     expect(runGit(clone, clone, pinned, { COORD_ISSUE: "" }).status).toBe(0);
     expect(runGit(clone, clone, pinned, { COORD_GIT_DELEGATE: "1" }).status).toBe(0);
+  });
+
+  /**
+   * The shell-tool guard asks the shim for a verdict on a command the agent has
+   * only proposed. Check mode must decide exactly as the shim would, and must
+   * never run git to do it.
+   */
+  it("gives the same verdicts in check mode without running git", () => {
+    const fixture = product();
+    const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
+    const check = (cwd: string, args: readonly string[], env: NodeJS.ProcessEnv = {}) =>
+      spawnSync(join(clone, ".coord", "bin", "git"), args, {
+        cwd,
+        encoding: "utf8",
+        env: { ...shimEnv(), COORD_ISSUE: "42", COORD_GIT_POLICY_CHECK: "1", PWD: cwd, ...env }
+      });
+
+    expect(check(clone, ["status"]).status).toBe(2);
+    expect(check(clone, ["--no-pager", "diff"]).status).toBe(2);
+    for (const [cwd, args, env] of [
+      [clone, ["rev-parse", "HEAD"], {}],
+      [fixture.productRoot, ["status"], {}],
+      [clone, ["status"], { COORD_ISSUE: "" }],
+      [clone, ["rev-parse", "HEAD"], { COORD_GIT_DELEGATE: "1" }]
+    ] as const) {
+      const result = check(cwd, args, env);
+      expect(result.status, args.join(" ")).toBe(0);
+      // Real git would have printed the commit or the status.
+      expect(result.stdout).toBe("");
+    }
   });
 
   /**

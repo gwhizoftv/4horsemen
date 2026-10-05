@@ -65,6 +65,19 @@ export const BUILD_DISCIPLINE_NOTE =
   "Justify every new file, abstraction, and dependency; avoid unrelated cleanup and speculative flexibility. " +
   "Add the fewest focused tests needed, prefer extending an existing test file, and still run every required check.";
 
+/**
+ * Verifies Git containment inside the agent's own shell tool, once per
+ * session: only that process shows which `git` the harness resolves and
+ * whether its shell-tool guard is honoured.
+ */
+export const CONTAINMENT_PROBE_NOTE =
+  "\n\nBefore writing the artifact, verify Git containment for this session. Use your normal shell tool, " +
+  "from this clone's root, with no PATH or login-shell changes:\n" +
+  "1. Run exactly `git status --porcelain; coord containment-probe --refusal-ran`. It is expected to be refused; " +
+  "do not retry it or work around the refusal.\n" +
+  "2. Then run `coord containment-probe` and continue whatever it reports.\n" +
+  "These two commands are the only authorized `git status` in this issue. Repeat them only after your CLI restarts.";
+
 export type StepDefinition = {
   id: WorkflowStepId;
   gateId: GateId;
@@ -88,7 +101,7 @@ export const STEP_DEFINITIONS: Readonly<Record<WorkflowStepId, StepDefinition>> 
     participants: "all",
     submissionMode: "git",
     requiredPath: (issue, agent) => `.signals/issue-${issue}/participation-ready-${agent}.json`,
-    task: "Publish the participation-readiness artifact for this issue."
+    task: `Publish the participation-readiness artifact for this issue.${CONTAINMENT_PROBE_NOTE}`
   },
   "R2.plan": {
     id: "R2.plan",
