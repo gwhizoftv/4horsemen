@@ -61,6 +61,7 @@ import {
 import { decide } from "./machine.js";
 import {
   appendJournal,
+  bindOwnerGuidance,
   cursorsStateSchema,
   emptyResourceObservation,
   readConfig,
@@ -68,6 +69,7 @@ import {
   readJournal,
   readStartState,
   releaseResourceHold,
+  ownerGuidanceFor,
   replaceCursor,
   requireStateMutation,
   StateConflictError,
@@ -186,6 +188,22 @@ export const mergePullRequest: PullRequestMerger = async (input) => {
 
 export { githubRepositoryFromOrigin } from "./githubIssue.js";
 
+/** A poll wait that a foreground stop ends at once, leaving no timer or listener behind. */
+export const abortableSleep = (milliseconds: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolvePromise) => {
+    if (signal?.aborted === true) {
+      resolvePromise();
+      return;
+    }
+    const finish = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolvePromise();
+    };
+    const timer = setTimeout(finish, milliseconds);
+    signal?.addEventListener("abort", finish, { once: true });
+  });
+
 export type RunLoopDependencies = {
   mirror?: BareMirror;
   tmux?: TmuxController | null;
@@ -193,7 +211,8 @@ export type RunLoopDependencies = {
   pullRequestOpener?: PullRequestOpener;
   pullRequestMerger?: PullRequestMerger;
   now?: () => string;
-  sleep?: (milliseconds: number) => Promise<void>;
+  /** Resolves early (and releases its timer) when `signal` aborts. */
+  sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   actionId?: () => string;
   log?: (message: string) => void;
   verbose?: (message: string) => void;
@@ -791,6 +810,7 @@ export const buildOrder = (
     contextPaths: [...start.contextPaths],
     changeScope,
     ...(materialized === undefined ? {} : { materialized }),
+    ownerGuidance: ownerGuidanceFor(cursors, stepId, round),
     activeRoster: [...cursors.activeRoster],
     eligibleChoices
   };
@@ -845,7 +865,7 @@ export class CoordinatorRunLoop {
   private readonly pullRequestOpener: PullRequestOpener;
   private readonly pullRequestMerger: PullRequestMerger;
   private readonly now: () => string;
-  private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly sleep: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   private readonly actionId: () => string;
   private readonly log: (message: string) => void;
   private readonly verbose: (message: string) => void;
@@ -864,7 +884,7 @@ export class CoordinatorRunLoop {
     this.pullRequestOpener = dependencies.pullRequestOpener ?? openDraftPullRequest;
     this.pullRequestMerger = dependencies.pullRequestMerger ?? mergePullRequest;
     this.now = dependencies.now ?? (() => new Date().toISOString());
-    this.sleep = dependencies.sleep ?? ((milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)));
+    this.sleep = dependencies.sleep ?? abortableSleep;
     this.actionId = dependencies.actionId ?? createActionId;
     this.log = dependencies.log ?? ((message) => process.stdout.write(`${message}\n`));
     this.verbose = dependencies.verbose ?? (() => undefined);
@@ -2596,6 +2616,7 @@ export class CoordinatorRunLoop {
       if (next.paused || next.abandoned) return next;
       if (decision.type === "prepare-action") {
         this.logPhase(start.issue, decision.stepId, decision.round);
+        next = this.bindGuidance(next, decision.stepId, decision.round);
         next = await this.prepareAction(start, next, decision.agent, decision.stepId, decision.round);
       } else if (decision.type === "begin-amendment") next = this.beginAmendment(next, decision);
       else if (decision.type === "resolve-amendment") next = this.resolveAmendment(next, decision.approved);
@@ -2654,6 +2675,24 @@ export class CoordinatorRunLoop {
       }
     }
     return next;
+  }
+
+  /**
+   * The first prepared action of a workflow batch snapshots queued owner
+   * guidance; every later order of that batch renders the same snapshot.
+   */
+  private bindGuidance(cursors: CursorsState, stepId: WorkflowStepId, round: number | null): CursorsState {
+    if (bindOwnerGuidance(cursors, stepId, round, this.now()) === cursors) return cursors;
+    return this.mutate(cursors, (current) => {
+      const next = bindOwnerGuidance(current, stepId, round, this.now());
+      const entries = next.ownerGuidance?.bound?.entries ?? [];
+      if (next !== current && entries.length > 0) {
+        appendJournal(this.paths, { type: "owner-guidance-bound", details: {
+          stepId, round, batch: next.ownerGuidance?.batch ?? 0, entries: entries.map((entry) => entry.id)
+        } }, this.now());
+      }
+      return next;
+    });
   }
 
   async runTick(options: { observeOnly?: boolean } = {}): Promise<CursorsState> {
@@ -2912,7 +2951,7 @@ export class CoordinatorRunLoop {
       const report = cursors.paused ? renderIssueReport(start, cursors).trimEnd() : null;
       if (report !== null && report !== lastPausedReport) this.log(report);
       lastPausedReport = report;
-      await this.sleep(start.pollIntervalMs);
+      await this.sleep(start.pollIntervalMs, signal);
     }
   }
 }

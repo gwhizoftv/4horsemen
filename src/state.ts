@@ -617,6 +617,39 @@ export const amendmentDecisionSchema = pendingAmendmentSchema.extend({
   decidedAt: timestampSchema
 }).strict();
 
+/** Bounded so a stuck terminal cannot grow cursors.json without limit. */
+export const MAX_PENDING_OWNER_GUIDANCE = 32;
+export const MAX_OWNER_GUIDANCE_LENGTH = 2000;
+
+const ownerGuidanceEntrySchema = z.object({
+  id: z.string().uuid(),
+  // One line of owner text: rendered as a single bullet, so it cannot open a
+  // heading, fence or front matter inside action.md.
+  text: z.string().min(1).max(MAX_OWNER_GUIDANCE_LENGTH)
+    .refine((text) => text.trim().length > 0, "owner guidance must not be blank")
+    // eslint-disable-next-line no-control-regex
+    .refine((text) => !/[\u0000-\u001f\u007f]/.test(text), "owner guidance must be one line without control characters"),
+  enqueuedAt: timestampSchema
+}).strict();
+
+/**
+ * Advisory owner steering. `pending` waits for the next workflow batch; the
+ * first prepared action of that batch moves it into `bound`, which every
+ * order of the same step, round and batch renders. `batch` changes only when
+ * the owner resets a whole cohort without changing its step label (retry).
+ */
+const ownerGuidanceSchema = z.object({
+  pending: z.array(ownerGuidanceEntrySchema).max(MAX_PENDING_OWNER_GUIDANCE).default([]),
+  batch: z.number().int().nonnegative().default(0),
+  bound: z.object({
+    stepId: stepIdSchema,
+    round: z.number().int().min(1).nullable(),
+    batch: z.number().int().nonnegative(),
+    boundAt: timestampSchema,
+    entries: z.array(ownerGuidanceEntrySchema)
+  }).strict().nullable().default(null)
+}).strict();
+
 export const cursorsStateSchema = z
   .object({
     formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
@@ -654,6 +687,7 @@ export const cursorsStateSchema = z
       })
       .strict()
       .nullable(),
+    ownerGuidance: ownerGuidanceSchema.default({ pending: [], batch: 0, bound: null }),
     publication: z
       .object({
         status: z.enum(["not-required", "pending", "completed", "failed"]),
@@ -722,7 +756,9 @@ const journalEventTypeSchema = z.enum([
   "ballot-batch-invalidated",
   "clone-readiness-refused",
   "amendment-requested",
-  "amendment-decided"
+  "amendment-decided",
+  "owner-guidance-queued",
+  "owner-guidance-bound"
 ]);
 
 export const journalEventSchema = z
@@ -762,7 +798,9 @@ export type ConsensusDerived = z.infer<typeof consensusDerivedSchema>;
 export type DerivedState = z.infer<typeof derivedStateSchema>;
 // Preserve source compatibility for clients constructing pre-amendment state;
 // durable reads still validate and fill the new defaults with the schema.
-type AmendmentStateKeys = "amendmentSequence" | "pendingAmendment" | "amendments" | "amendmentRetirements";
+// Defaulted fields stay optional in the in-memory type so typed fixtures that
+// predate them keep compiling; parsed state always carries them.
+type AmendmentStateKeys = "amendmentSequence" | "pendingAmendment" | "amendments" | "amendmentRetirements" | "ownerGuidance";
 export type CursorsState = Omit<z.infer<typeof cursorsStateSchema>, AmendmentStateKeys> &
   Partial<Pick<z.infer<typeof cursorsStateSchema>, AmendmentStateKeys>>;
 export type JournalEvent = z.infer<typeof journalEventSchema>;
@@ -1226,6 +1264,61 @@ export const releaseHold = (cursors: CursorsState, id: string, resetBudget: bool
       observationChecks: 0, nextObservationAt: null, activityAt: now
     } }
   });
+};
+
+export type OwnerGuidanceEntry = z.infer<typeof ownerGuidanceEntrySchema>;
+type OwnerGuidance = z.infer<typeof ownerGuidanceSchema>;
+
+const guidanceOf = (cursors: CursorsState): OwnerGuidance => cursors.ownerGuidance ?? { pending: [], batch: 0, bound: null };
+
+/** Queue advisory text for the next workflow batch; never touches in-flight actions. */
+export const enqueueOwnerGuidance = (cursors: CursorsState, entry: OwnerGuidanceEntry, now: string): CursorsState => {
+  if (cursors.abandoned || cursors.completed) throw new Error("Cannot queue guidance for a finished workflow.");
+  const guidance = guidanceOf(cursors);
+  if (guidance.pending.length >= MAX_PENDING_OWNER_GUIDANCE) {
+    throw new Error(`At most ${MAX_PENDING_OWNER_GUIDANCE} guidance entries may wait for the next step.`);
+  }
+  return cursorsStateSchema.parse({
+    ...cursors,
+    ownerGuidance: { ...guidance, pending: [...guidance.pending, ownerGuidanceEntrySchema.parse(entry)] },
+    updatedAt: now
+  });
+};
+
+const boundTo = (cursors: CursorsState, stepId: WorkflowStepId, round: number | null): boolean => {
+  const { bound, batch } = guidanceOf(cursors);
+  return bound !== null && bound.stepId === stepId && bound.round === round && bound.batch === batch;
+};
+
+/**
+ * Snapshot pending guidance for one workflow batch. Returns the input object
+ * unchanged when that batch is already bound, so later recipients, reissues
+ * and restarts reuse the first snapshot; a new batch replaces (expires) it.
+ */
+export const bindOwnerGuidance = (
+  cursors: CursorsState,
+  stepId: WorkflowStepId,
+  round: number | null,
+  now: string
+): CursorsState => {
+  if (boundTo(cursors, stepId, round)) return cursors;
+  // Bind even an empty queue: the snapshot fences text queued between this
+  // batch's recipients, which must wait for the next batch.
+  const { pending, batch } = guidanceOf(cursors);
+  return cursorsStateSchema.parse({
+    ...cursors,
+    ownerGuidance: { pending: [], batch, bound: { stepId, round, batch, boundAt: now, entries: pending } },
+    updatedAt: now
+  });
+};
+
+export const ownerGuidanceFor = (cursors: CursorsState, stepId: WorkflowStepId, round: number | null): string[] =>
+  boundTo(cursors, stepId, round) ? (guidanceOf(cursors).bound?.entries ?? []).map((entry) => entry.text) : [];
+
+/** A whole-cohort owner reset starts a new batch even when step and round repeat. */
+export const startOwnerGuidanceBatch = (cursors: CursorsState): CursorsState => {
+  const guidance = guidanceOf(cursors);
+  return cursorsStateSchema.parse({ ...cursors, ownerGuidance: { ...guidance, batch: guidance.batch + 1 } });
 };
 
 /**

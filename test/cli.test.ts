@@ -24,6 +24,8 @@ import { ingestContainmentProbe } from "../src/shellGuard.js";
 import { renderGitHubIssueSnapshot } from "../src/githubIssue.js";
 import { ensureBuilt, git as fixtureGit, makeProduct, repoRoot, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
+import type { InteractiveInput } from "../src/interactive.js";
 import type { AcceptedResponse, BallotBatch } from "../src/state.js";
 
 const roots: string[] = [];
@@ -453,6 +455,81 @@ describe("CLI manual mode", () => {
     expect(output.join("")).toContain("coord manual");
     expect(output.join("")).toContain("coord detach manual");
     expect(output.join("")).toContain("coord analytics --issue");
+  });
+});
+
+/** A foreground terminal double: records raw-mode changes and accepts typed keys. */
+const fakeTerminal = (isTTY: boolean) => {
+  const input = Object.assign(new EventEmitter(), {
+    isTTY,
+    rawModes: [] as boolean[],
+    setRawMode(mode: boolean) { input.rawModes.push(mode); },
+    resume() {},
+    pause() {}
+  });
+  const written: string[] = [];
+  return {
+    input,
+    written,
+    terminal: {
+      input: input as unknown as InteractiveInput,
+      output: { isTTY, write: (chunk: string) => written.push(chunk) },
+      signals: new EventEmitter()
+    },
+    type: (key: string) => input.emit("data", Buffer.from(key))
+  };
+};
+
+describe("CLI foreground interaction", () => {
+  it("passes a stop signal to the runner and leaves a non-TTY terminal alone", async () => {
+    const f = setup();
+    await runCli(["start", "1", "--config", f.configPath, "--coord-root", f.runtime],
+      { processRunner: resolvableStartGit, makeRunLoop: fakeLoop, io: { stdout: () => undefined } });
+    const paths = issueRuntimePaths(f.runtime, 1);
+    const t = fakeTerminal(false);
+    let received: AbortSignal | undefined;
+    expect(await runCli(["run", "--issue", "1", "--coord-root", f.runtime], {
+      makeRunLoop: () => ({ ...fakeLoop(paths), run: async (signal) => { received = signal; } }),
+      terminal: t.terminal,
+      io: { stdout: () => undefined }
+    })).toBe(0);
+    expect(received).toBeInstanceOf(AbortSignal);
+    expect(t.input.rawModes).toEqual([]);
+    expect(t.input.listenerCount("data")).toBe(0);
+  });
+
+  it("applies owner keys through shared controls and stops on q without completion cleanup", async () => {
+    const f = setup();
+    await runCli(["start", "1", "--config", f.configPath, "--coord-root", f.runtime],
+      { processRunner: resolvableStartGit, makeRunLoop: fakeLoop, io: { stdout: () => undefined } });
+    const paths = issueRuntimePaths(f.runtime, 1);
+    const t = fakeTerminal(true);
+    const output: string[] = [];
+    const code = await runCli(["run", "--issue", "1", "--coord-root", f.runtime], {
+      makeRunLoop: () => ({ ...fakeLoop(paths), run: async (signal) => {
+        t.type("p");
+        t.type("/");
+        for (const key of "steer Keep Go 1.22") t.type(key);
+        t.type("\r");
+        t.type("s");
+        // The last tick finishes the workflow just as the owner quits.
+        writeCursorsState(paths, cursorsStateSchema.parse({ ...readCursorsState(paths), completed: true }));
+        t.type("q");
+        expect(signal?.aborted).toBe(true);
+      } }),
+      terminal: t.terminal,
+      io: { stdout: (message) => output.push(message) }
+    });
+    expect(code).toBe(0);
+    const state = readCursorsState(paths);
+    expect(state.manualPaused).toBe(true);
+    expect(state.ownerGuidance?.pending.map((entry) => entry.text)).toEqual(["Keep Go 1.22"]);
+    expect(readJournal(paths).map((event) => event.type)).toEqual(expect.arrayContaining(["paused", "owner-guidance-queued"]));
+    expect(t.written.join("")).toContain("Active step: R1.join");
+    expect(t.written.join("")).toContain("Active roster: codex, claude, cursor");
+    expect(t.input.rawModes).toEqual([true, false]);
+    expect(output.join("")).toContain("Stopped the foreground coordinator for issue 1; agent sessions keep running.");
+    expect(output.join("")).not.toContain("Workflow complete");
   });
 });
 

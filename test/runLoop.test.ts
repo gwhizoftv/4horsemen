@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readAction, writeAction } from "../src/action.js";
 import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
 import { git, repoRoot } from "./support/workspaceFixture.js";
@@ -15,6 +15,7 @@ import {
   worktreeLabelsFor
 } from "../src/materializedInputs.js";
 import {
+  abortableSleep,
   buildOrder,
   computeDerivedInputSetHash,
   computePlanSelectionDerived,
@@ -41,6 +42,7 @@ import {
   writeCursorsState
 } from "../src/state.js";
 import { TmuxController } from "../src/tmux.js";
+import { queueOwnerGuidance } from "../src/ownerControls.js";
 import type { CodexQuotaReader, CodexQuotaResult } from "../src/codexQuota.js";
 import { readBindingRecord } from "../src/codexQuota.js";
 import { parseClaudeRateLimits, parseCodexRateLimits } from "../src/resourceEvidence.js";
@@ -284,6 +286,29 @@ describe("runner waiting and initialization", () => {
     expect(sleeps).toBe(3);
     expect(initializations).toBe(1);
     expect(f.messages.filter((message) => message.startsWith("Issue 1: paused"))).toHaveLength(1);
+  });
+
+  it("stops at a foreground abort without waiting out or leaking the poll timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const wait = abortableSleep(60_000, controller.signal);
+      expect(vi.getTimerCount()).toBe(1);
+      controller.abort();
+      await wait;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+    const { paths } = fixture();
+    const controller = new AbortController();
+    let sleeps = 0;
+    await new CoordinatorRunLoop(paths, { tmux: null, log: () => undefined, sleep: async (_ms, signal) => {
+      sleeps++;
+      expect(signal).toBe(controller.signal);
+      controller.abort();
+    } }).run(controller.signal);
+    expect(sleeps).toBe(1);
   });
 
   it("defers workflow effects when an owner resumes between the initialization check and the tick", async () => {
@@ -1506,6 +1531,31 @@ describe("effectful run loop", () => {
     expect(readFileSync(join(clone, "plan.md"), "utf8")).toBe("unfinished plan\n");
     expect(git(clone, "rev-parse", "HEAD")).toBe(tip);
     expect(git(clone, "ls-files", "-v", "--", "AGENTS.md")).toMatch(/^S /);
+  });
+
+  it("delivers queued guidance to every recipient of the next batch and keeps it fixed across reissue and restart", async () => {
+    const { paths } = fixture();
+    queueOwnerGuidance(paths, "Keep Go 1.22 compatibility");
+    await new CoordinatorRunLoop(paths, { tmux: null, log: () => undefined }).runTick();
+    const claude = agentRuntimePaths(paths, "claude");
+    const codex = agentRuntimePaths(paths, "codex");
+    for (const runtime of [claude, codex]) {
+      expect(readAction(runtime.action).body).toContain("## Owner guidance\n\nAdvisory");
+      expect(readAction(runtime.action).body).toContain("- Keep Go 1.22 compatibility");
+    }
+    const codexAction = readFileSync(codex.action, "utf8");
+    // Guidance queued mid-step waits for the next batch, even through a
+    // reissue of this step and a restarted runner.
+    queueOwnerGuidance(paths, "Prefer small diffs");
+    writeFileSync(claude.complete, "not-a-sha\n");
+    await new CoordinatorRunLoop(paths, { tmux: null, log: () => undefined }).runTick();
+    expect(readCursorsState(paths).agents.claude).toMatchObject({ status: "ordered", attempt: 2 });
+    const reissued = readAction(claude.action).body;
+    expect(reissued).toContain("- Keep Go 1.22 compatibility");
+    expect(reissued).not.toContain("Prefer small diffs");
+    expect(readFileSync(codex.action, "utf8")).toBe(codexAction);
+    expect(readCursorsState(paths).ownerGuidance?.pending.map((entry) => entry.text)).toEqual(["Prefer small diffs"]);
+    expect(readJournal(paths).filter((event) => event.type === "owner-guidance-bound")).toHaveLength(1);
   });
 
   it("clears malformed completion and reissues the same action with a concrete correction", async () => {

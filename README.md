@@ -60,6 +60,37 @@ normal R2 evidence. Ballot steps use private response files; the coordinator
 batches accepted responses onto `issue-N/coordinator-evidence` before deriving
 the next decision. The product `-final` PR stays ballot-free.
 
+### Owner keys while the coordinator runs
+
+When `coord N`, `coord run` or `coord resume --run` runs in a terminal (stdin and
+stdout both TTYs), single keys control the issue without a second shell. Piped,
+redirected or CI runs keep the plain log stream and read no input.
+
+| Key | Effect |
+| --- | --- |
+| `s` | Status snapshot: report, active step, roster, any owner question, queued guidance |
+| `p` / Space | Toggle the manual pause (safety holds are untouched) |
+| `a` | Open the agents' tmux clients in Terminal (same as `coord attach N`) |
+| `d` | Numbered drop menu, then `y` to confirm |
+| `r` | Numbered hold-release menu (nudge-loop holds still need `coord resume --hold ID --reset-nudge-budget`) |
+| `/steer <text>` | Queue advisory guidance for the next workflow step |
+| `?` / `h` | Key help |
+| `q` / Ctrl-C | Stop this foreground runner only |
+
+An owner question (ballot split, revision limit) appears as a numbered menu; a
+question already answered from another shell is reported as stale, never
+re-applied. `q` leaves the tmux sessions, agent windows and runtime state
+running; resume with `coord run --issue N`, and use `coord detach N` only to
+close the issue UI. Agent tmux panes are separate terminals: typing directly into
+an agent CLI still goes to that agent, unchanged, while the coordinator runs.
+
+`/steer` text is stored in the issue state before it is acknowledged. The next
+workflow step's first prepared action binds everything queued so far, and every
+agent's `action.md` for that step shows it under `## Owner guidance`, including
+reissues and restarts. Text queued after that waits for the following step; each
+snapshot applies to one step. Guidance is advisory: it cannot widen the approved
+file map or change required paths, headings or evidence.
+
 ## Owner-driven manual mode
 
 For independent tasks assigned directly in agent chats, launch the installed

@@ -542,6 +542,34 @@ pending work without changing a gate. `answer` consumes one typed pending
 question, is idempotent for the same answer, and cannot create round 4.
 `abandon` stops the workflow while retaining its audit state.
 
+### Interactive foreground runner and owner guidance
+
+The foreground runner (`coord N`, `coord run`, `resume --run`) opens owner keys
+only when stdin and stdout are both TTYs; otherwise it is the plain log stream.
+Keys call the same locked, journaled mutations as `pause`, `resume --hold`,
+`drop` and `answer` (`src/ownerControls.ts`) but never start a tick of their own:
+the single foreground loop observes the change on its next poll. `p` toggles
+`manualPaused` only. `r` releases one displayed hold without a budget reset. An
+inline answer carries the question ID that was displayed, so a question answered
+or replaced elsewhere is stale. `q`, Ctrl-C, input EOF and SIGINT/SIGTERM abort
+the runner's signal, which also ends its poll wait at once; terminal raw mode is
+restored on every exit. A stopped runner never runs completed-issue cleanup,
+even if the last tick completed the workflow, so tmux sessions stay up. The
+coordinator reads only its own terminal; agent tmux panes keep accepting
+direct owner input.
+
+`/steer <text>` appends to `cursors.json` `ownerGuidance.pending` (one line, at
+most 2000 characters, at most 32 waiting) and journals `owner-guidance-queued`.
+The first `prepare-action` of a workflow batch moves the queue into
+`ownerGuidance.bound`, keyed by step, round and batch, and journals
+`owner-guidance-bound`. Every order of that batch renders the snapshot as
+`## Owner guidance` in both Git and response actions: later recipients,
+malformed-completion reissues, approved-path refreshes and restarted runners
+included. A later batch replaces the snapshot, so guidance applies to one step.
+Owner `retry`/`revise` and whole-cohort drop resets start a new batch even when
+the step label repeats. Runtimes without the field load with an empty queue.
+Guidance is advisory and is not read by evidence evaluation.
+
 ### Delivery safety and unknown holds
 
 All vendors (including Antigravity) share a durable delivery budget for each

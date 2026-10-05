@@ -189,6 +189,28 @@ describe("advisory action sections", () => {
     const raw = renderAction(order("/external/coord"));
     expect(raw).not.toContain("## Repo context");
     expect(raw).not.toContain("## Changed paths for the bound pins");
+    expect(raw).not.toContain("## Owner guidance");
+  });
+
+  it("renders bound owner guidance as advisory bullets in Git and response actions", () => {
+    const guidance = ["Keep Go 1.22 compatibility", "Prefer small diffs"];
+    const git = order("/external/coord");
+    const response: InternalOrder = {
+      ...git,
+      stepId: "R3.plan-ballot",
+      evidenceId: "plan-response-accepted",
+      submissionMode: "response",
+      requiredPath: "",
+      responsePath: "/external/coord/issue-1/agents/codex/responses/b2337d85-6617-4e9f-8ace-901453764aa4.json"
+    };
+    for (const base of [git, response]) {
+      const raw = renderAction({ ...base, ownerGuidance: guidance });
+      expect(raw).toContain("## Owner guidance");
+      expect(raw).toContain("- Keep Go 1.22 compatibility\n- Prefer small diffs");
+      expect(raw).toMatch(/does not\s+expand the approved file map/);
+      expect({ ...parseAction(raw), body: "" }).toEqual({ ...parseAction(renderAction(base)), body: "" });
+      expect(renderAction({ ...base, ownerGuidance: [] })).not.toContain("## Owner guidance");
+    }
   });
 
   it("names configured context paths without inlining their contents", () => {

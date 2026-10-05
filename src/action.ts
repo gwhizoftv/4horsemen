@@ -66,6 +66,17 @@ const repoContextSection = (contextPaths: readonly string[] = []): string => {
   );
 };
 
+const ownerGuidanceSection = (guidance: readonly string[] = []): string => {
+  if (guidance.length === 0) return "";
+  return (
+    `\n\n## Owner guidance\n\n` +
+    `Advisory steering the issue owner queued before this step began. It does not ` +
+    `expand the approved file map or change required paths, headings, inputs, ` +
+    `evidence rules or the submission mode; where it conflicts with them, they win.\n\n` +
+    guidance.map((text) => `- ${text}`).join("\n")
+  );
+};
+
 const changeScopeSection = (changeScope: readonly ChangeScopeEntry[] = []): string => {
   const entries = changeScope.filter(
     (entry) => agentPattern.test(entry.agent) && shaPattern.test(entry.commitSha)
@@ -160,7 +171,7 @@ Publish the required artifact at:
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${scopeInputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${scopeInputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}${ownerGuidanceSection(order.ownerGuidance)}
 
 Push the commit containing the artifact to \`${order.branch}\`. Then write that
 exact 40-character lowercase commit SHA as the sole contents of:
@@ -207,7 +218,7 @@ inputs from the files listed below.
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${eligible}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}
+${inputText(order)}${eligible}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}${ownerGuidanceSection(order.ownerGuidance)}
 
 After writing the marker, keep this file. Before waiting for more input, re-read
 it. If \`actionId\` in the front matter has changed, execute the new instructions

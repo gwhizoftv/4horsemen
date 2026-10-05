@@ -5,12 +5,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
   appendJournal,
+  bindOwnerGuidance,
   consensusDerivedSchema,
   cursorsStateSchema,
   dropAgent,
+  enqueueOwnerGuidance,
   implementationSelectionDerivedSchema,
   initializeOperationalState,
   mutateCursorsState,
+  ownerGuidanceFor,
   planSelectionDerivedSchema,
   readCursorsState,
   readJournal,
@@ -19,6 +22,7 @@ import {
   releaseHold,
   releaseResourceHold,
   StateConflictError,
+  startOwnerGuidanceBatch,
   startStateSchema,
   coordinatorConfigSchema,
   writeCursorsState
@@ -98,6 +102,35 @@ describe("operational state", () => {
     expect(after.amendments).toEqual([expect.objectContaining({ ...pending, outcome: "cancelled", evidenceSha: null, ballots: [] })]);
     expect(after.issueCursor).toEqual({ stepId: "R6.revise", gateId: "gate-6-consensus", round: 2 });
     expect(after.agents.codex?.actionId).toBeNull();
+  });
+
+  it("binds queued owner guidance once per workflow batch and expires it at the next", () => {
+    const { cursors } = initialize();
+    const legacy: Record<string, unknown> = { ...cursors };
+    delete legacy.ownerGuidance;
+    expect(cursorsStateSchema.parse(legacy).ownerGuidance).toEqual({ pending: [], batch: 0, bound: null });
+    const now = "2026-10-05T12:00:00.000Z";
+    const entry = (id: number, text: string) => ({ id: `30000000-0000-4000-8000-00000000000${id}`, text, enqueuedAt: now });
+    for (const text of ["", "   ", "two\nlines", "x".repeat(2001)]) {
+      expect(() => enqueueOwnerGuidance(cursors, entry(9, text), now)).toThrow();
+    }
+
+    const queued = enqueueOwnerGuidance(cursors, entry(1, "Keep Go 1.22 compatibility"), now);
+    const bound = bindOwnerGuidance(queued, "R2.plan", null, now);
+    expect(bound.ownerGuidance?.pending).toEqual([]);
+    expect(ownerGuidanceFor(bound, "R2.plan", null)).toEqual(["Keep Go 1.22 compatibility"]);
+    // Later recipients of the same batch reuse the snapshot; newer text waits.
+    const late = enqueueOwnerGuidance(bound, entry(2, "Prefer small diffs"), now);
+    expect(bindOwnerGuidance(late, "R2.plan", null, now)).toBe(late);
+    expect(ownerGuidanceFor(late, "R2.plan", null)).toEqual(["Keep Go 1.22 compatibility"]);
+    // The next step binds the waiting text and expires the old snapshot.
+    const next = bindOwnerGuidance(late, "R3.review", null, now);
+    expect(ownerGuidanceFor(next, "R2.plan", null)).toEqual([]);
+    expect(ownerGuidanceFor(next, "R3.review", null)).toEqual(["Prefer small diffs"]);
+    // An owner retry repeats step and round but is a fresh batch.
+    const retried = startOwnerGuidanceBatch(enqueueOwnerGuidance(next, entry(3, "Re-check the ballot"), now));
+    expect(ownerGuidanceFor(retried, "R3.review", null)).toEqual([]);
+    expect(ownerGuidanceFor(bindOwnerGuidance(retried, "R3.review", null, now), "R3.review", null)).toEqual(["Re-check the ballot"]);
   });
 
   it("keeps manual and independent holds separate and requires an explicit breaker reset", () => {
