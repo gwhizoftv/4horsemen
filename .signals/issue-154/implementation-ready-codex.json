@@ -1,0 +1,21 @@
+{
+  "protocolVersion": 1,
+  "issue": 154,
+  "issueSessionId": "issue-154:ed813ca97a3646654b0769f4c31849703d43ec5e",
+  "agent": "codex",
+  "inputSetHash": "faab0437e9e79c8e3bb32ec416fac8f23e888cbc93a829b783115fec52f8cca9",
+  "artifact": "plan-amendment-request",
+  "actionId": "e4f6f8b4-eed3-4e65-a840-434b187fb6fa",
+  "scopeHash": "8a31db2db1f26647ab6906173a9f5cac237bd917d2bf1491bca03d4117a89d05",
+  "explanation": "The selected plan reuses renderIssueReport for the s hotkey but explicitly excludes its source file from changes; inspection confirms that the current renderer replaces the active step with paused during a pause or hold and never prints activeRoster, so it cannot supply the active-step and roster snapshot required by issue 154. These two existing files are needed to correct the shared report and extend its existing regression coverage, rather than duplicate reporting in the interactive adapter; this omission was also identified in the plan reviews and adds no new command or feature.",
+  "additionalPaths": [
+    {
+      "path": "src/issueReport.ts",
+      "reason": "Extend the existing renderIssueReport output with the active workflow step/round and active roster, retaining those fields while paused or held, so the interactive s control and external coord status share the snapshot required by the issue. Preserve existing pins, PR, hold details, and private-ballot exclusions."
+    },
+    {
+      "path": "test/issueReport.test.ts",
+      "reason": "Extend the existing report fixtures and pause/hold tests with a focused regression asserting that the active step/round and remaining roster are visible after an agent is dropped and the issue is paused, while retaining existing report and private-ballot safeguards."
+    }
+  ]
+}
