@@ -617,6 +617,34 @@ export const amendmentDecisionSchema = pendingAmendmentSchema.extend({
   decidedAt: timestampSchema
 }).strict();
 
+export const guidanceEntrySchema = z.object({
+  id: z.string().uuid(),
+  text: z.string().refine(
+    (text) => !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(text), "Guidance must be one line without control characters."
+  ).pipe(z.string().trim().min(1).max(2000)),
+  enqueuedAt: timestampSchema
+}).strict();
+
+const boundGuidanceSchema = z.object({
+  stepId: stepIdSchema,
+  round: z.number().int().positive().nullable(),
+  generation: z.number().int().nonnegative(),
+  boundAt: timestampSchema,
+  entries: z.array(guidanceEntrySchema)
+}).strict();
+
+const ownerGuidanceSchema = z.object({
+  pending: z.array(guidanceEntrySchema).max(32),
+  generation: z.number().int().nonnegative().default(0),
+  bound: boundGuidanceSchema.nullable(),
+  // An amendment interrupts work; its ballot must not erase that work's advice.
+  suspended: boundGuidanceSchema.nullable().default(null)
+}).strict();
+
+const emptyOwnerGuidance = (): z.infer<typeof ownerGuidanceSchema> => ({
+  pending: [], generation: 0, bound: null, suspended: null
+});
+
 export const cursorsStateSchema = z
   .object({
     formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
@@ -631,6 +659,7 @@ export const cursorsStateSchema = z
     activeRoster: z.array(agentIdSchema).min(1),
     droppedAgents: z.array(agentIdSchema),
     derived: derivedStateSchema,
+    ownerGuidance: ownerGuidanceSchema.default(emptyOwnerGuidance),
     amendmentSequence: z.number().int().nonnegative().default(0),
     pendingAmendment: pendingAmendmentSchema.nullable().default(null),
     amendments: z.array(amendmentDecisionSchema).default([]),
@@ -704,6 +733,8 @@ const journalEventTypeSchema = z.enum([
   "gate-advanced",
   "owner-question",
   "owner-answer",
+  "owner-guidance-queued",
+  "owner-guidance-bound",
   "agent-dropped",
   "paused",
   "resumed",
@@ -762,10 +793,63 @@ export type ConsensusDerived = z.infer<typeof consensusDerivedSchema>;
 export type DerivedState = z.infer<typeof derivedStateSchema>;
 // Preserve source compatibility for clients constructing pre-amendment state;
 // durable reads still validate and fill the new defaults with the schema.
-type AmendmentStateKeys = "amendmentSequence" | "pendingAmendment" | "amendments" | "amendmentRetirements";
+type AmendmentStateKeys = "amendmentSequence" | "pendingAmendment" | "amendments" | "amendmentRetirements" | "ownerGuidance";
 export type CursorsState = Omit<z.infer<typeof cursorsStateSchema>, AmendmentStateKeys> &
   Partial<Pick<z.infer<typeof cursorsStateSchema>, AmendmentStateKeys>>;
 export type JournalEvent = z.infer<typeof journalEventSchema>;
+
+export const enqueueOwnerGuidance = (
+  cursors: CursorsState, entry: z.infer<typeof guidanceEntrySchema>
+): CursorsState => {
+  if (cursors.completed || cursors.abandoned) throw new Error("Cannot steer a completed or abandoned issue.");
+  const guidance = cursors.ownerGuidance ?? emptyOwnerGuidance();
+  const parsed = guidanceEntrySchema.parse(entry);
+  if (guidance.pending.some((value) => value.id === parsed.id)) return cursors;
+  if (guidance.pending.length >= 32) throw new Error("Owner guidance queue is full (32 entries).");
+  return { ...cursors, ownerGuidance: { ...guidance, pending: [...guidance.pending, parsed] }, updatedAt: parsed.enqueuedAt };
+};
+
+/** Retire a cohort identity without consuming advice before an actual order exists. */
+export const resetOwnerGuidance = (cursors: CursorsState): CursorsState => {
+  const guidance = cursors.ownerGuidance ?? emptyOwnerGuidance();
+  return { ...cursors, ownerGuidance: { ...guidance, generation: guidance.generation + 1 } };
+};
+
+export const bindOwnerGuidance = (
+  cursors: CursorsState, stepId: WorkflowStepId, round: number | null, now: string
+): CursorsState => {
+  const guidance = cursors.ownerGuidance ?? emptyOwnerGuidance();
+  const matches = (bound: z.infer<typeof boundGuidanceSchema> | null): boolean =>
+    bound !== null && bound.stepId === stepId && bound.round === round;
+  if (matches(guidance.bound) && guidance.bound!.generation === guidance.generation) return cursors;
+  // Upgrading an issue with an existing in-flight cohort must not inject queued
+  // text into just the remaining recipients. Its first snapshot is empty.
+  const inFlight = guidance.bound === null && guidance.generation === 0 && (
+    Object.values(cursors.agents).some((cursor) => cursor.stepId === stepId && cursor.actionId !== null) ||
+    cursors.accepted.some((value) => value.stepId === stepId && value.round === round) ||
+    cursors.acceptedResponses.some((value) => value.stepId === stepId && value.round === round)
+  );
+  const restored = matches(guidance.suspended) ? guidance.suspended!.entries : [];
+  return { ...cursors, ownerGuidance: {
+    ...guidance,
+    pending: inFlight ? guidance.pending : [],
+    bound: { stepId, round, generation: guidance.generation, boundAt: now,
+      entries: inFlight ? [] : [...restored, ...guidance.pending] },
+    suspended: stepId === "R4.amend-ballot" ? guidance.suspended : null
+  }, updatedAt: now };
+};
+
+export const ownerGuidanceFor = (cursors: CursorsState, stepId: WorkflowStepId, round: number | null): string[] => {
+  const guidance = cursors.ownerGuidance;
+  const bound = guidance?.bound;
+  return bound != null && bound.stepId === stepId && bound.round === round && bound.generation === guidance?.generation
+    ? bound.entries.map((entry) => entry.text) : [];
+};
+
+export const suspendOwnerGuidance = (cursors: CursorsState): CursorsState => {
+  const next = resetOwnerGuidance(cursors);
+  return { ...next, ownerGuidance: { ...next.ownerGuidance!, suspended: cursors.ownerGuidance?.bound ?? null } };
+};
 
 /**
  * A Zod `.default()` is only optional on the *input* side; `z.infer` reports the

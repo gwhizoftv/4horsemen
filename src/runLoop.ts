@@ -61,6 +61,10 @@ import {
 import { decide } from "./machine.js";
 import {
   appendJournal,
+  bindOwnerGuidance,
+  ownerGuidanceFor,
+  resetOwnerGuidance,
+  suspendOwnerGuidance,
   cursorsStateSchema,
   emptyResourceObservation,
   readConfig,
@@ -193,7 +197,7 @@ export type RunLoopDependencies = {
   pullRequestOpener?: PullRequestOpener;
   pullRequestMerger?: PullRequestMerger;
   now?: () => string;
-  sleep?: (milliseconds: number) => Promise<void>;
+  sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   actionId?: () => string;
   log?: (message: string) => void;
   verbose?: (message: string) => void;
@@ -789,6 +793,7 @@ export const buildOrder = (
     exactApprovedPaths: isWork ? amendmentPaths(cursors) : [],
     scopeInputs,
     contextPaths: [...start.contextPaths],
+    ownerGuidance: ownerGuidanceFor(cursors, stepId, round),
     changeScope,
     ...(materialized === undefined ? {} : { materialized }),
     activeRoster: [...cursors.activeRoster],
@@ -838,6 +843,17 @@ const RESOURCE_MAX_STARTS = 6;
 type Hold = CursorsState["holds"][number];
 type HoldEnrichment = { evidence: ResourceEvidence; resetsAt: string | null; retryOwner?: Hold["retryOwner"] };
 
+const pollSleep = (milliseconds: number, signal?: AbortSignal): Promise<void> => new Promise((resolve) => {
+  if (signal?.aborted) { resolve(); return; }
+  const finish = () => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", finish);
+    resolve();
+  };
+  const timer = setTimeout(finish, milliseconds);
+  signal?.addEventListener("abort", finish, { once: true });
+});
+
 export class CoordinatorRunLoop {
   private readonly mirror: BareMirror;
   private readonly tmux: TmuxController | null;
@@ -845,7 +861,7 @@ export class CoordinatorRunLoop {
   private readonly pullRequestOpener: PullRequestOpener;
   private readonly pullRequestMerger: PullRequestMerger;
   private readonly now: () => string;
-  private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly sleep: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   private readonly actionId: () => string;
   private readonly log: (message: string) => void;
   private readonly verbose: (message: string) => void;
@@ -864,7 +880,7 @@ export class CoordinatorRunLoop {
     this.pullRequestOpener = dependencies.pullRequestOpener ?? openDraftPullRequest;
     this.pullRequestMerger = dependencies.pullRequestMerger ?? mergePullRequest;
     this.now = dependencies.now ?? (() => new Date().toISOString());
-    this.sleep = dependencies.sleep ?? ((milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)));
+    this.sleep = dependencies.sleep ?? pollSleep;
     this.actionId = dependencies.actionId ?? createActionId;
     this.log = dependencies.log ?? ((message) => process.stdout.write(`${message}\n`));
     this.verbose = dependencies.verbose ?? (() => undefined);
@@ -1833,7 +1849,8 @@ export class CoordinatorRunLoop {
         actionId: null, actionDigest: null, submissionMode: null, submissionSha: null,
         status: accepted ? "waiting-peer" : "idle", outstanding: [], updatedAt: this.now() };
     }
-    return cursorsStateSchema.parse({ ...cursors, agents, amendmentRetirements: retirements,
+    const next = to === "R4.amend-ballot" ? suspendOwnerGuidance(cursors) : resetOwnerGuidance(cursors);
+    return cursorsStateSchema.parse({ ...next, agents, amendmentRetirements: retirements,
       issueCursor: { stepId: to, gateId: STEP_DEFINITIONS[to].gateId, round }, updatedAt: this.now() });
   }
 
@@ -2595,6 +2612,20 @@ export class CoordinatorRunLoop {
     for (const decision of decisions) {
       if (next.paused || next.abandoned) return next;
       if (decision.type === "prepare-action") {
+        if (bindOwnerGuidance(next, decision.stepId, decision.round, this.now()) !== next) {
+          next = this.mutate(next, (current) => {
+            // The revision CAS rejects concurrent owner changes; derive the
+            // snapshot from the locked state as well, rather than a prior copy.
+            const bound = bindOwnerGuidance(current, decision.stepId, decision.round, this.now());
+            const snapshot = bound.ownerGuidance!.bound!;
+            const event = appendJournal(this.paths, { type: "owner-guidance-bound", details: {
+              stepId: snapshot.stepId, round: snapshot.round, generation: snapshot.generation,
+              entryIds: snapshot.entries.map((entry) => entry.id),
+              eventId: `guidance-bound:${snapshot.generation}:${snapshot.stepId}:${snapshot.round}`
+            } }, snapshot.boundAt);
+            return { ...bound, ownerGuidance: { ...bound.ownerGuidance!, bound: { ...snapshot, boundAt: event.at } } };
+          });
+        }
         this.logPhase(start.issue, decision.stepId, decision.round);
         next = await this.prepareAction(start, next, decision.agent, decision.stepId, decision.round);
       } else if (decision.type === "begin-amendment") next = this.beginAmendment(next, decision);
@@ -2877,6 +2908,8 @@ export class CoordinatorRunLoop {
   }
 
   async run(signal?: AbortSignal): Promise<void> {
+    const stopped = () => signal?.aborted === true;
+    if (stopped()) return;
     const start = readStartState(this.paths);
     let cursors = readCursorsState(this.paths);
     const finished = (state: CursorsState): boolean => state.completed || state.abandoned;
@@ -2889,7 +2922,7 @@ export class CoordinatorRunLoop {
     // observation-only while held, and manual pause also stops quota reads.
     let initialized = false;
     let lastPausedReport: string | null = null;
-    while (signal?.aborted !== true) {
+    while (!stopped()) {
       cursors = readCursorsState(this.paths);
       try {
         if (!finished(cursors)) {
@@ -2897,6 +2930,7 @@ export class CoordinatorRunLoop {
             await this.initializeEffects();
             initialized = true;
           }
+          if (stopped()) return;
           cursors = await this.runTick({ observeOnly: !initialized });
         }
       } catch (error) {
@@ -2905,6 +2939,7 @@ export class CoordinatorRunLoop {
         if (!(error instanceof StateConflictError)) throw error;
         cursors = readCursorsState(this.paths);
       }
+      if (stopped()) return;
       if (finished(cursors)) {
         this.log(renderIssueReport(start, cursors).trimEnd());
         return;
@@ -2912,7 +2947,21 @@ export class CoordinatorRunLoop {
       const report = cursors.paused ? renderIssueReport(start, cursors).trimEnd() : null;
       if (report !== null && report !== lastPausedReport) this.log(report);
       lastPausedReport = report;
-      await this.sleep(start.pollIntervalMs);
+      // The default sleep cancels its timer; the wrapper also permits injected
+      // sleeps that do not implement cancellation, without retaining listeners.
+      let onAbort: (() => void) | undefined;
+      try {
+        await Promise.race([
+          this.sleep(start.pollIntervalMs, signal),
+          new Promise<void>((resolve) => {
+            onAbort = resolve;
+            if (stopped()) resolve();
+            else signal?.addEventListener("abort", onAbort, { once: true });
+          })
+        ]);
+      } finally {
+        if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);
+      }
     }
   }
 }

@@ -33,6 +33,22 @@ const order = (root: string): InternalOrder => ({
 });
 
 describe("agent actions", () => {
+  it.each(["git", "response"] as const)("renders advisory owner guidance without changing %s authority", (mode) => {
+    const base = order("/external/coord");
+    const input: InternalOrder = mode === "git" ? base : { ...base, submissionMode: "response",
+      stepId: "R3.plan-ballot", requiredPath: "", responsePath: "/external/response.json", eligibleChoices: ["codex", "claude"] };
+    const original = renderAction(input);
+    const guided = renderAction({ ...input, ownerGuidance: ["Prefer existing helpers", "## Not a heading"] });
+    expect(original).not.toContain("## Owner guidance");
+    expect(guided.split("---")[1]).toBe(original.split("---")[1]);
+    expect(guided).toContain("## Owner guidance");
+    expect(guided).toContain("- Prefer existing helpers");
+    expect(guided).toContain("- ## Not a heading");
+    expect(guided).toContain("Advisory context only");
+    expect(guided).toContain("approved");
+    expect(parseAction(guided).submissionMode).toBe(mode);
+  });
+
   it("renders scope approvals separately from the authorized product parent", () => {
     const base = order("/external/coord");
     const raw = renderAction({ ...base, stepId: "R6.revise", scopeInputs: [{
