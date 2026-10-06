@@ -1,0 +1,30 @@
+{
+  "protocolVersion": 1,
+  "issue": 158,
+  "issueSessionId": "issue-158:26ff2c00ce9015e8e4e25e14cc5823864f494ac0",
+  "agent": "codex",
+  "inputSetHash": "4b1381226601ab97263b24ce3407d7019480299e356319a618087af55ad4f515",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "b76f4ed44679df78d107d1de66142a6983dc8f20",
+  "scopeHash": "f280b77fcd8b5746e2e834a4ddaa9f294f821c50d6add35c898487d481795103",
+  "approvedPaths": [
+    "CONTRIBUTING.md",
+    "Cargo.toml",
+    "README.md",
+    "SECURITY.md",
+    "consensus.agentId",
+    "coord.workspaceConfig",
+    "docs/",
+    "docs/analytics.md",
+    "docs/coord-driver.md",
+    "docs/images/",
+    "docs/images/coord-banner.jpg",
+    "docs/images/coord-workflow.jpg",
+    "docs/readiness-policy.md",
+    "docs/repo-map.md",
+    "docs/setup-workspace.md",
+    "docs/vendor-quota.md",
+    "github.com/user-attachments/...",
+    "go.mod"
+  ]
+}
