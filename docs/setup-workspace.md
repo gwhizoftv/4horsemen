@@ -492,7 +492,11 @@ baseline through the approved product pin at finalization. Both rename paths are
 included, and NUL-delimited paths preserve tabs/newlines. First pushes compare to
 the merge base with the configured remote/base; missing history fails closed.
 Deleting evidence in the last commit cannot hide earlier product changes.
-The documentation profile and critical paths are snapshotted at issue start.
+Finalization uses the documentation profile and critical paths snapshotted at
+issue start. Hooks, like their existing product `verify` commands, use the live
+workspace declaration. A mid-issue configuration change can therefore change
+local checks without changing the frozen final gate; the shared classifier does
+not imply a shared configuration snapshot.
 
 Coordination-only changes under `.plans/`, `.signals/`, `.code-reviews/`,
 `.amendments/`, and `.escalations/` launch no product suite. Identity, branch,

@@ -119,9 +119,9 @@ export const documentationProfileSchema = z.object({
 }).strict();
 
 /**
- * Path fragments the pre-push scope filter compares against. They cross a
- * line-oriented boundary into the hooks, so whitespace is rejected here rather
- * than producing an ambiguous token the hook would silently mis-split.
+ * Critical path fragments, also exposed by the legacy hook-scope interface.
+ * That compatibility interface is line-oriented, so whitespace is rejected
+ * rather than producing an ambiguous token an older hook would mis-split.
  */
 const pathTokenSchema = z
   .string()

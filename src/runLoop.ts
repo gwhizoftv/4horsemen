@@ -33,7 +33,7 @@ import {
 import { computeInputSetHash, evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
 import { inspectRangeChanges, selectVerification } from "./changeClassification.js";
-import { ingestVerificationMeasurements, verificationMeasurement } from "./verificationLog.js";
+import { createVerificationIngestor, verificationMeasurement } from "./verificationLog.js";
 import { BareMirror, GitCommandError, hermeticGitEnv, isTransientGitFailure } from "./mirror.js";
 import {
   materializeBoundInputs,
@@ -873,6 +873,7 @@ export class CoordinatorRunLoop {
   private loggedPhaseKey: string | null = null;
   /** Local probes are advisory; restarting may probe again without changing workflow state. */
   private readonly paneObservations = new Map<string, { identity: string; nextAt: number; available: boolean }>();
+  private readonly ingestVerificationMeasurements = createVerificationIngestor();
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
@@ -2395,19 +2396,24 @@ export class CoordinatorRunLoop {
         this.authority(cursors);
         const argv = check.argv.map((argument) => argument.replaceAll("{worktree}", target));
         const checkStartedAt = this.now();
+        const record = (exitCode: number, error?: string) => {
+          const measurement = verificationMeasurement({ trigger: "coordinator", phase: "finalization",
+            inputIdentity: selected.inputIdentity, classification: selected.kind, reason: selected.reason,
+            command: { name: check.name, argv }, startedAt: checkStartedAt, completedAt: this.now(),
+            exitCode, skipReason: null, ...(error === undefined ? {} : { error }) });
+          this.authority(cursors);
+          appendJournal(this.paths, { type: "verification-run", agent: order.agent, actionId: order.actionId,
+            details: measurement }, measurement.completedAt);
+          return measurement;
+        };
         let result: Awaited<ReturnType<ProcessRunner>>;
         try { result = await this.processRunner(argv, target); }
-        catch (error) { result = { exitCode: 1, stdout: "", stderr: String(error) }; }
-        const checkCompletedAt = this.now();
-        const checkStartedMs = Date.parse(checkStartedAt);
-        const checkCompletedMs = Date.parse(checkCompletedAt);
-        const durationMs =
-          Number.isFinite(checkStartedMs) &&
-          Number.isFinite(checkCompletedMs) &&
-          checkCompletedMs >= checkStartedMs
-            ? checkCompletedMs - checkStartedMs
-            : null;
-        this.authority(cursors);
+        catch (error) {
+          record(1, String(error));
+          // A coordinator launch failure is not a rejected agent submission.
+          throw error;
+        }
+        const measurement = record(result.exitCode);
         checkResults.push({ name: check.name, argv, exitCode: result.exitCode });
         appendJournal(
           this.paths,
@@ -2415,15 +2421,10 @@ export class CoordinatorRunLoop {
             type: "final-check",
             agent: order.agent,
             actionId: order.actionId,
-            details: { tier: "checks", name: check.name, argv, exitCode: result.exitCode, durationMs }
+            details: { tier: "checks", name: check.name, argv, exitCode: result.exitCode, durationMs: measurement.durationMs }
           },
-          checkCompletedAt
+          measurement.completedAt
         );
-        appendJournal(this.paths, { type: "verification-run", agent: order.agent, actionId: order.actionId,
-          details: verificationMeasurement({ trigger: "coordinator", phase: "finalization",
-            inputIdentity: selected.inputIdentity, classification: selected.kind, reason: selected.reason,
-            command: { name: check.name, argv }, startedAt: checkStartedAt, completedAt: checkCompletedAt,
-            exitCode: result.exitCode, skipReason: null }) }, checkCompletedAt);
         if (result.exitCode !== 0) {
           return {
             ...observation,
@@ -2713,7 +2714,7 @@ export class CoordinatorRunLoop {
       for (const agent of start.agents) {
         if (cursors.activeRoster.includes(agent.id)) {
           ingestContainmentProbe(this.paths, agent.root, agent.id);
-          ingestVerificationMeasurements(this.paths, agent.root, agent.id);
+          this.ingestVerificationMeasurements(this.paths, agent.root, agent.id, start, this.now());
         }
       }
       if (cursors.paused) {

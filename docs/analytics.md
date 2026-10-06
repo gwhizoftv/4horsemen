@@ -7,10 +7,19 @@ artifact validation (`verify-result`). Each records trigger, phase, input identi
 (index tree or commit range), selected class/reason, command, start/end time,
 duration, exit code, and skip/cache reason. There is no receipt reuse/cache yet.
 Hook observations are advisory, written to ignored clone-local
-`.coord/verification/<eventId>.json` files and ingested idempotently into the
+`.coord/verification/<measurementId>.json` files and ingested idempotently into the
 matching issue session's journal. Invalid/stale observations do not affect gates;
-telemetry failures do not authorize skipping verification. Manual-branch hooks
-keep unattributed local records. Manually invoked commands are not instrumented.
+telemetry failures do not authorize skipping verification. Manual branches and
+hooks unable to read a matching issue session report unavailable attribution and
+do not queue records; they are not included in issue runner totals. Manually
+invoked commands are not instrumented.
+
+Ingestion drains at most 128 directory entries per agent/tick, discarding invalid,
+stale, oversized, and unbound records rather than re-reading them forever. The
+coordinator timestamps journal ingestion itself; runner timestamps remain advisory
+details, with reversed/inconsistent intervals and excessive future skew rejected.
+Replay IDs are loaded once per coordinator owner from the journal and retained in
+memory, avoiding a full-journal scan per measurement; restart restores that set.
 
 `coord analytics` reports recorded runner counts by phase, skips, aggregate
 runner time, and non-overlapping verification wait (the union of recorded runner

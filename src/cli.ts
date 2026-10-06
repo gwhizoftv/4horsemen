@@ -1106,7 +1106,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const phase = verifyPhaseSchema.parse(requireFlag(parsed, "phase"));
       const { config, configPath } = resolveWorkspaceConfig(clone);
       const changes = phase === "precommit" ? inspectStagedChanges(clone)
-        : inspectOutgoingChanges(clone, io.stdin(), localConfigGet(clone, "consensus.remoteName") ?? "origin", config.baseBranch);
+        : inspectOutgoingChanges(clone, io.stdin(), localConfigGet(clone, "consensus.remoteName") ?? "origin",
+          localConfigGet(clone, "consensus.sharedBranch") ?? "main");
       const result = runVerifyPhase({ clone, config, phase, changes, log: io.stdout,
         record: hookVerificationRecorder(clone, configPath, io.stderr) });
       if (result.ok) return 0;

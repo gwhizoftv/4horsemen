@@ -264,6 +264,39 @@ describe("declared verification in the hooks", () => {
     stageWork(clone, "claude/docs-fail", "README.md");
     expect(tryGit(clone, "commit", "-m", "Claude: docs").exitCode).not.toBe(0);
   });
+
+  it("allows a complete docs profile without product verify, but still blocks product work", () => {
+    const { clone } = installed(null, "plain", {
+      documentation: { paths: ["README.md"], verify: passingVerify, checks: declaredChecks }
+    });
+    stageWork(clone, "claude/docs-only", "README.md");
+    expect(tryGit(clone, "commit", "-m", "Claude: docs").exitCode).toBe(0);
+    expect(tryGit(clone, "push", "origin", "claude/docs-only").exitCode).toBe(0);
+    writeFileSync(join(clone, "source.ts"), "product\n");
+    git(clone, "add", "source.ts");
+    const product = tryGit(clone, "commit", "-m", "Claude: product");
+    expect(product.exitCode).not.toBe(0);
+    expect(product.stdout + product.stderr).toContain("declares no `verify`");
+  });
+
+  it("uses the hook identity's shared branch for a docs-only first push", () => {
+    const { clone, fixture } = installed({ precommit: [], prepush: [{ name: "product-fails", argv: ["false"] }] }, "plain", {
+      documentation: { paths: ["README.md"], verify: passingVerify, checks: declaredChecks }
+    });
+    // Develop has product changes absent from config.baseBranch (main).
+    git(fixture.productRoot, "checkout", "-qb", "develop");
+    writeFileSync(join(fixture.productRoot, "source.ts"), "base product\n");
+    git(fixture.productRoot, "add", "source.ts");
+    git(fixture.productRoot, "commit", "-qm", "develop baseline");
+    git(fixture.productRoot, "push", "origin", "develop");
+    git(clone, "fetch", "origin");
+    git(clone, "config", "consensus.sharedBranch", "develop");
+    git(clone, "checkout", "-qb", "claude/develop-docs", "origin/develop");
+    writeFileSync(join(clone, "README.md"), "docs only relative to develop\n");
+    git(clone, "add", "README.md");
+    git(clone, "commit", "-qm", "Claude: docs");
+    expect(tryGit(clone, "push", "origin", "claude/develop-docs").exitCode).toBe(0);
+  });
 });
 
 describe("vendored delivery", () => {

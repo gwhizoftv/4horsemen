@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, opendirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 import { git, localConfigGet } from "./gitExec.js";
 import { assertNoSymlink, issueRuntimePaths, type IssueRuntimePaths } from "./paths.js";
-import { appendJournal, atomicWriteJson, checkCommandSchema, readStartState } from "./state.js";
+import { appendJournal, atomicWriteJson, checkCommandSchema, readJournal, readStartState, type StartState } from "./state.js";
 import { workspaceLocationFromConfig } from "./workspace.js";
 
 /** Advisory observations, never verification receipts or gate authority. */
 export const verificationMeasurementSchema = z.object({
-  eventId: z.uuid(),
+  measurementId: z.uuid(),
   trigger: z.enum(["hook", "coordinator"]),
   phase: z.enum(["precommit", "prepush", "finalization"]),
   inputIdentity: z.string().min(1),
@@ -27,10 +27,10 @@ export const verificationMeasurementSchema = z.object({
 export type VerificationMeasurement = z.infer<typeof verificationMeasurementSchema>;
 
 export const verificationMeasurement = (
-  input: Omit<VerificationMeasurement, "eventId" | "durationMs" | "cacheReason">
+  input: Omit<VerificationMeasurement, "measurementId" | "durationMs" | "cacheReason">
 ): VerificationMeasurement => {
   const duration = Date.parse(input.completedAt) - Date.parse(input.startedAt);
-  return { ...input, eventId: randomUUID(), cacheReason: "not implemented",
+  return { ...input, measurementId: randomUUID(), cacheReason: "not implemented",
     durationMs: Number.isFinite(duration) && duration >= 0 ? duration : null };
 };
 
@@ -42,7 +42,7 @@ const envelopeSchema = z.object({
 }).strict();
 
 /** Bind automated observations to the actual branch/session, not a possibly
- * stale COORD_ISSUE environment. Manual hooks keep local, unattributed records. */
+ * stale COORD_ISSUE environment. Unattributable observations are not queued. */
 export const hookVerificationRecorder = (clone: string, configPath: string, warn: (message: string) => void) => {
   let issueSessionId: string | null = null;
   let agent: string | null = null;
@@ -56,35 +56,69 @@ export const hookVerificationRecorder = (clone: string, configPath: string, warn
     }
   } catch { /* Manual branches and legacy installs have no active runtime. */ }
   return (measurement: VerificationMeasurement): void => {
+    if (issueSessionId === null) {
+      warn("coord: verification measurement not recorded: no readable matching issue session (checks are unchanged).\n");
+      return;
+    }
     try {
-      const path = join(mailbox(clone), `${measurement.eventId}.json`);
+      const path = join(mailbox(clone), `${measurement.measurementId}.json`);
       assertNoSymlink(clone, path);
       atomicWriteJson(clone, path, envelopeSchema.parse({ issueSessionId, agent, measurement }));
     } catch (error) { warn(`coord: verification measurement unavailable: ${String(error)}\n`); }
   };
 };
 
-/** Idempotent ingestion reuses journal eventId deduplication. Invalid, stale,
- * oversized or symlinked observations cannot affect any workflow decision. */
-export const ingestVerificationMeasurements = (paths: IssueRuntimePaths, clone: string, agent: string): void => {
-  const root = mailbox(clone);
-  if (!existsSync(root)) return;
-  try {
-    assertNoSymlink(clone, root);
-    const start = readStartState(paths);
-    for (const name of readdirSync(root)) {
-      if (!/^[0-9a-f-]{36}\.json$/.test(name)) continue;
-      const path = join(root, name);
+/** One ingestor per coordinator owner. Seed replay protection once from the
+ * journal, then maintain it in memory; restart rebuilds it before draining.
+ * measurementId deliberately does not invoke appendJournal's per-event scan.
+ * Append before unlink so a crash cannot silently discard an observed runner. */
+export const createVerificationIngestor = () => {
+  let journalKey = "";
+  let seen: Set<string> | undefined;
+  return (paths: IssueRuntimePaths, clone: string, agent: string, start: StartState, now: string): void => {
+    const root = mailbox(clone);
+    if (!existsSync(root)) return;
+    try {
+      assertNoSymlink(clone, root);
+      const key = `${paths.journal}:${start.issueSessionId}:${start.createdAt}:${statSync(paths.journal).ino}`;
+      if (key !== journalKey) { journalKey = key; seen = undefined; }
+      const directory = opendirSync(root);
       try {
-        assertNoSymlink(clone, path);
-        const stat = statSync(path);
-        if (!stat.isFile() || stat.size > 65536) continue;
-        const row = envelopeSchema.parse(JSON.parse(readFileSync(path, "utf8")));
-        if (row.agent !== agent || row.issueSessionId !== start.issueSessionId || row.measurement.trigger !== "hook") continue;
-        appendJournal(paths, { type: "verification-run", agent,
-          details: { ...row.measurement, source: "advisory hook observation" } }, row.measurement.completedAt);
-        unlinkSync(path);
-      } catch { /* A malformed record must not prevent other observations. */ }
-    }
-  } catch { /* Advisory telemetry must not stop the workflow. */ }
+        // Bound directory traversal as well as file reads per agent/tick.
+        for (let count = 0; count < 128; count++) {
+          const entry = directory.readSync();
+          if (entry === null) break;
+          if (!/^[0-9a-f-]{36}\.json$/.test(entry.name)) continue;
+          const path = join(root, entry.name);
+          try {
+            if (entry.isSymbolicLink()) { unlinkSync(path); continue; }
+            assertNoSymlink(clone, path);
+            const stat = statSync(path);
+            if (!stat.isFile()) continue;
+            if (stat.size > 65536) { unlinkSync(path); continue; }
+            let row: z.infer<typeof envelopeSchema>;
+            try { row = envelopeSchema.parse(JSON.parse(readFileSync(path, "utf8"))); }
+            catch { unlinkSync(path); continue; }
+            const measurement = row.measurement;
+            const from = Date.parse(measurement.startedAt), to = Date.parse(measurement.completedAt);
+            if (row.agent !== agent || row.issueSessionId !== start.issueSessionId || measurement.trigger !== "hook" ||
+              entry.name !== `${measurement.measurementId}.json` || measurement.phase === "finalization" ||
+              from < Date.parse(start.createdAt) - 60_000 || from > to || to > Date.parse(now) + 60_000 ||
+              measurement.durationMs !== to - from) {
+              unlinkSync(path);
+              continue;
+            }
+            seen ??= new Set(readJournal(paths).filter((event) => event.type === "verification-run")
+              .map((event) => event.details.measurementId).filter((id): id is string => typeof id === "string"));
+            if (!seen.has(measurement.measurementId)) {
+              appendJournal(paths, { type: "verification-run", agent,
+                details: { ...measurement, source: "advisory hook observation" } }, now);
+              seen.add(measurement.measurementId);
+            }
+            unlinkSync(path);
+          } catch { /* Retry write failures; one bad record cannot stop the tick. */ }
+        }
+      } finally { directory.closeSync(); }
+    } catch { /* Advisory telemetry must not stop the workflow. */ }
+  };
 };

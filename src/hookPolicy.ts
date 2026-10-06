@@ -148,7 +148,7 @@ export const runVerifyPhase = (input: {
   const selected = selectVerification(input.changes ?? { changes: null, identity: "unknown" }, input.config, input.phase,
     // The evidence exemption does not require a product verification declaration.
     input.config.verify?.[input.phase] ?? []);
-  if (selected.kind !== "coordination") verifyCommands(input.config, input.phase);
+  if (selected.kind === "product") verifyCommands(input.config, input.phase);
   const { commands } = selected;
   const record = (command: CheckCommand | null, startedAt: string, exitCode: number, error?: string) => {
     input.record?.(verificationMeasurement({ trigger: "hook", phase: input.phase,
@@ -178,9 +178,8 @@ export const runVerifyPhase = (input: {
 };
 
 /**
- * The pre-push scope filter, as line-oriented output the hook can read without
- * a JSON parser. An empty declaration means no narrowing is declared, so every
- * push is in scope — absence must never quietly shrink what gets gated.
+ * Legacy hook-scope wire format, retained for already-installed hook bodies.
+ * Current hooks use selectVerification; do not reintroduce this older filter.
  */
 export const renderHookScope = (config: CoordinatorConfig): string => {
   const lines = [

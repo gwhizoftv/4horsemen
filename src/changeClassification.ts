@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { inspectCommitRange, parseNameStatusRecordsZ, type GitNameStatusChange } from "./pinValidation.js";
-import type { CoordinatorConfig } from "./state.js";
+import type { CheckCommand, CoordinatorConfig } from "./state.js";
 
 export type ChangeClass = "coordination" | "documentation" | "product";
 export type ChangeInput = { changes: GitNameStatusChange[] | null; identity: string; reason?: string };
@@ -85,9 +85,11 @@ export const selectVerification = (
   input: ChangeInput,
   policy: Policy,
   phase: "precommit" | "prepush" | "finalization",
-  productCommands: readonly import("./state.js").CheckCommand[]
+  productCommands: readonly CheckCommand[]
 ) => {
   const classification = classifyChanges(input, policy);
+  // The classifier requires a docs profile, but its return type does not carry
+  // that narrowing. Keep the missing-profile fallback conservative.
   const commands = classification.kind === "coordination" ? []
     : classification.kind === "documentation" && policy.documentation !== undefined
       ? phase === "finalization" ? policy.documentation.checks : policy.documentation.verify[phase]
