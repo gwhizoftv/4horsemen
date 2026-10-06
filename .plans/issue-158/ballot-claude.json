@@ -1,0 +1,56 @@
+{
+  "actionId": "f60d52bd-40f1-430d-ba10-6be9b06c21cb",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "b6100aa248b4e9ca7095a75c0f0269bc139392e91605fb85447f213266f3f18c",
+  "issue": 158,
+  "issueSessionId": "issue-158:26ff2c00ce9015e8e4e25e14cc5823864f494ac0",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "9600e6a6da17cb31f7d347498203978eb580ab22",
+      "path": ".plans/issue-158/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "7d960d66c03aa5e40a411c7e2a73a414628c8df5",
+      "path": ".plans/issue-158/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ffbd4c5e3a72384f09864201b475ab8786ad5b96",
+      "path": ".plans/issue-158/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "7505af067f6b4e672ed94585899d723569dc73bb",
+      "path": ".plans/issue-158/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "It is the only plan that follows the owner's issue comments (commit the supplied banner and flowchart JPEGs, no Mermaid), relocates both README-only passages, and corrects the license; every review selected it, and its remaining defects (keep the Requirements heading, reconcile the stale hold paragraph, tighten incidental paths) are fixable within its file map.",
+  "responseSha256": "cde3644af0e7ce4ab23c21f895a2e855bfca711c0134e6cd9cdcf7300608382e",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "49fe8a8704c7453c05f99e8c0247806e7937dfaf",
+      "path": ".plans/issue-158/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "21ff0a33f396c3570bb1e3108507495e5b264c74",
+      "path": ".plans/issue-158/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "0ba16b7975a4d30fc96a138a74ddc7e5e1568fc1",
+      "path": ".plans/issue-158/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "ea29042984adce68678c49d23a77b320a1ec1595",
+      "path": ".plans/issue-158/review.md"
+    }
+  ]
+}
