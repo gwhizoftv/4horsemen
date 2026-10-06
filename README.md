@@ -1,305 +1,170 @@
-# coordination
+<p align="center">
+  <img src="docs/images/coord-banner.jpg" width="100%" alt="Open Source LLM Coordinator: four coding agents collaborating around a shared software project">
+</p>
 
-`coordination` is the standalone owner-side workflow driver. It gives each
-agent one concrete action, verifies the exact pushed commit named by the agent,
-and advances only when the required origin-backed evidence passes. It never
-merges a pull request.
+# coord
 
-## Happy path
+**Multi-agent consensus engine and workflow driver for autonomous software development.**
 
-Install coordination once, onboard each product once, and then drive work from
-GitHub issues. Install Node 26, pnpm 11 and Git first. The public install path
-needs no GitHub CLI authentication to coordination:
+![Claude Code](https://img.shields.io/badge/agent-Claude_Code-d97757) ![Codex](https://img.shields.io/badge/agent-Codex-10a37f) ![Cursor](https://img.shields.io/badge/agent-Cursor-555555) ![Antigravity](https://img.shields.io/badge/agent-Antigravity-4285f4) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+Instead of trusting a single model with a change, give a team of coding agents
+the same GitHub issue. `coord` runs Claude Code, Codex, Cursor, and Antigravity
+in separate Git clones, coordinates their plans and peer reviews, and verifies
+the exact commits they submit before publishing a pull request. You choose the
+agents, the project's checks, and when to intervene.
+
+## How it works
+
+<p align="center">
+  <img src="docs/images/coord-workflow.jpg" width="100%" alt="Workflow overview: a GitHub issue enters independent planning, plan review and voting, implementation, peer code review and revision, then toolchain verification and pull request publication">
+</p>
+
+The artwork is an overview; the default **consensus** profile works as follows:
+
+1. **Start with an issue.** `coord N` snapshots the issue's title and body from
+   the product's GitHub origin and launches the configured agents.
+2. **Plan independently.** Each agent proposes a plan, reviews its peers'
+   plans, and votes on the design to implement.
+3. **Implement and compare.** Every active agent implements the selected plan
+   in its own clone. Peers review the implementations and ballot on a choice.
+4. **Revise toward agreement.** One selected reviser addresses the feedback;
+   peers ballot on the revision, for up to three rounds. Escalations and the
+   revision limit require an owner decision rather than silent advancement.
+5. **Verify the result.** Finalization removes current-issue coordination
+   artifacts and runs every configured check on a clean detached worktree at
+   the exact cleanup commit. A failed check blocks PR publication.
+6. **Publish a pull request.** The default `coord-open-unmerged` policy opens
+   an unmerged draft for owner review. The explicit `coord-merged` policy can
+   mark it ready and merge it.
+
+Use **solo** for one agent, **reviewed** for peer plan selection followed by one
+implementer, or **consensus** for the full review loop. See
+[workflow profiles](docs/coord-driver.md#profiles) for details.
+
+## Why coord
+
+- **Review before and after coding.** In consensus mode, peers challenge both
+  design plans and concrete implementations.
+- **Independent perspectives.** Multiple coding agents propose and compare
+  solutions instead of relying on a single model's self-review.
+- **Keep your working tree yours.** Default onboarding leaves the product's
+  tracked files untouched. Agents use sibling clones; runtime state stays
+  outside them. Other developers need no coordination hooks or tooling.
+- **Verify more than a completion claim.** Origin-backed commit evidence and
+  your project's configured tests and linters gate progress and publication.
+- **Stay in control.** Inspect status, pause or resume, reopen agent windows,
+  queue steering guidance, and recover holds through the
+  [owner controls](docs/coord-driver.md#owner-controls).
+
+Separate clones keep agent work out of your checkout; they are not a universal
+security sandbox. Peer agreement and passing checks still need your judgment.
+
+## Requirements
+
+- **Node 26, pnpm 11, and Git** to install and run the driver.
+- **GitHub CLI (`gh`)**, authenticated for your product's issue and PR operations.
+- **tmux** and the coding-agent harnesses you select, installed and authenticated.
+- **Your product's tools**, such as Go, Cargo, or the declared Python test tools.
+
+The driver uses Node/pnpm regardless of your product's language. Public
+bootstrap needs no GitHub CLI authentication; product operations do.
+
+## Quick start
+
+Install once per machine, onboard once per product, then run an issue whenever
+you have work to delegate. Your product must have a GitHub `origin` remote.
+
+### 1. Install
 
 ```sh
-# Once per machine, once the upstream repository is publicly accessible.
 curl -fsSL https://raw.githubusercontent.com/gwhizoftv/coordination/main/scripts/bootstrap.sh | sh
-# Add ~/.local/bin to PATH if the script prints that hint.
+```
 
-# Once per product (example: one installed Codex harness).
-# Authenticate gh for your product repository before issue/PR operations.
+This installs under `~/.local/share/coordination` and links `~/.local/bin/coord`;
+add `~/.local/bin` to your PATH if prompted. To inspect the script first or
+install from a private fork, see [bootstrap options](docs/setup-workspace.md#bootstrap-once).
+
+### 2. Onboard your repository
+
+```sh
+coord onboard /path/to/app
+```
+
+The default is all four agents and the consensus profile. Onboarding creates
+the agent clones, proposes checks for the product, and runs `coord doctor`.
+Install all four harnesses, or use this alternative for a one-agent start:
+
+```sh
 coord onboard /path/to/app --agents codex --profile solo
+```
 
-# Each unit of work.
+### 3. Run a GitHub issue
+
+```sh
 cd /path/to/app
 gh issue create --title "Describe the work" --body "Acceptance criteria…"
 coord 42
 ```
 
-Bootstrap installs a complete checkout under `~/.local/share/coordination` and
-links `~/.local/bin/coord`. To inspect the script before running it instead:
+Replace `42` with the issue number just created, or use an existing issue and
+skip `gh issue create`. No owner-authored plan file is needed. Keep the
+coordinator running while the agents work; press `?` for interactive help.
 
-```sh
-git clone https://github.com/gwhizoftv/coordination.git coordination-src
-# Review coordination-src/scripts/bootstrap.sh first.
-sh coordination-src/scripts/bootstrap.sh --source "$PWD/coordination-src"
-```
+For work assigned directly in agent chats without an issue, use
+[`coord manual`](docs/coord-driver.md#owner-driven-manual-lifecycle).
+[Explicit start/run commands](docs/coord-driver.md#starting-and-running) and
+[hold recovery](docs/coord-driver.md#delivery-safety-and-unknown-holds) are in the
+operator guide; stopping the coordinator does not stop its agent harnesses.
 
-`--source` (or `COORD_SOURCE`) accepts a Git URL or local clone. For a private
-fork, authenticate Git, clone it, then pass `--source <local-clone>`.
-Anonymous clone/raw access requires a public upstream; these preparation docs
-do not mean that the release gates in [issue #139](https://github.com/gwhizoftv/coordination/issues/139)
-have passed. Before publication the owner must audit content/history, verify
-private security reporting, and neutralize the tracked machine-specific runtime
-instruction in `AGENTS.md` from an owner checkout (not an agent's protected
-overlay). After the authorized visibility change, verify the anonymous cold
-install and sample-product doctor run before announcing the release.
+## Supported languages
 
-`coord onboard` defaults to four agents (`claude,codex,cursor,antigravity`),
-the consensus profile, sibling agent clones, and
-`<parent-of-product>/coord-runtime`. A fresh runtime uses
-`coord-runtime/config.json`. It runs `coord doctor` before registering the
-workspace for `coord N`.
+| Product | Detection / setup |
+| --- | --- |
+| Go | `go.mod`: automatically proposes Go checks |
+| Rust | `Cargo.toml`: automatically proposes Cargo checks |
+| Node | `package.json`: pnpm, yarn, or npm selected by lockfile; uses existing scripts |
+| Make | Recognized `Makefile` targets supply checks |
+| Python | Explicit commands via `coord install --declare`; no auto-detection yet |
 
-At start, `coord N` reads issue N from the GitHub repository configured as the
-product origin, snapshots its title and body, binds that snapshot and the
-workspace config into the automation digest, launches the agents, and runs the
-driver. The owner does not create a plan file first. Each agent authors and
-publishes `.plans/issue-N/plan.md` later on its own `issue-N/<agent>` branch as
-normal R2 evidence. Ballot steps use private response files; the coordinator
-batches accepted responses onto `issue-N/coordinator-evidence` before deriving
-the next decision. The product `-final` PR stays ballot-free.
+Review the proposed policy: a language marker alone does not guarantee usable
+checks, and installation refuses missing finalization checks. Other languages
+work through explicit command declarations. See
+[product languages and declarations](docs/setup-workspace.md#product-languages)
+for detection precedence, tool requirements, and a complete Python example.
 
-## Owner-driven manual mode
+## Platforms
 
-For independent tasks assigned directly in agent chats, launch the installed
-harnesses without creating a GitHub issue:
+On macOS, the owner UI opens Terminal.app windows for the agents. Other
+platforms use tmux without that integration; native Windows is not promised.
 
-```sh
-cd /path/to/onboarded/product
-coord manual
+## Documentation
 
-# Later, close only this product's manual UI.
-coord detach manual
-```
-
-`coord manual` resolves the registered workspace (or accepts `--product`, or
-the explicit `--config` plus `--coord-root` pair), validates every configured
-launcher, creates or repairs one tmux window per agent, opens only missing macOS
-Terminal windows, and returns immediately. Repeating it reuses healthy panes,
-respawns dead panes, and does not duplicate open Terminal clients. The manual
-session and titles always use `coord-manual-<workspace-group>` so products are
-isolated.
-
-Manual mode does not read a GitHub issue, initialize a mirror, create an
-`issue-*` runtime directory, write coordinator state or `action.md`, run the
-state machine, nudge agents, perform consensus/finalization, publish a branch,
-or open a PR. The owner's chat is the only task authority. Each agent uses its
-own `<agent>/<name>` scratch branch unless the owner explicitly supplies an
-issue branch; all installed hook, verification, commit-prefix, no-main, and
-no-force rules remain active.
-
-Manual and automated issue sessions are mutually exclusive for one workspace
-because they share agent clones. Detach the active mode before starting the
-other. `coord uninstall` also closes this workspace's exact manual tmux and
-Terminal identities even when no issue runtime has ever existed.
-
-## Product isolation
-
-> Coordination constrains **agents and the owner control plane**. It does not
-> constrain the product's other developers.
-
-Onboard leaves the product's tracked tree byte-for-byte unchanged. Hooks,
-launchers, identities, and ignore rules live only in the agent clones; policy
-and runtime state live under the external coord root. The selected workspace is
-recorded only in the onboarded product worktree's local Git config. A fresh
-human clone gets no coordination hooks, locator, Node requirement, or new Git
-obligations.
-
-Multiple products may share an outer coord root. The first product keeps the
-flat layout; later products use `workspaces/<project>/`, including separate
-mirrors and issue-number namespaces. Existing nested installs remain
-discoverable. See [`docs/setup-workspace.md`](docs/setup-workspace.md).
-
-## Requirements
-
-- Node 26 and pnpm 11 to run coordination, regardless of the product language
-- Git for bootstrap and product repositories
-- GitHub CLI (`gh`), authenticated for product issue/PR operations, not for
-  installing coordination from a public URL
-- tmux for interactive agent launch and delivery
-- the configured agent harnesses (Claude, Codex, Cursor, or Antigravity)
-- the product's declared tools (for example Go, Cargo, or Python test tools)
-
-The owner UI opens Terminal.app windows on macOS. Other platforms use tmux
-without that Terminal integration; native Windows operation is not promised.
-Install every harness selected by your configuration, or select only one as in
-the example above; the unqualified onboarding default selects all four.
-
-Bootstrap accepts `--root`, `COORD_INSTALL_ROOT`, and `--no-path`. It clones or
-cleanly fast-forwards a complete install checkout, performs the locked build,
-and refuses dirty or unrelated paths rather than resetting them.
-
-## Product languages
-
-Go (`go.mod`) and Rust (`Cargo.toml`) verification policies are proposed
-automatically, as are Node (pnpm/yarn/npm) scripts and recognized Makefile
-targets. **Python has no auto-detection yet**: use `coord install --declare`
-with explicit checks. Any language works when its verification commands can be
-expressed as argument arrays and its tools are installed on the agent machine.
-Node/pnpm run the driver; they do not have to be the product's toolchain.
-
-See [Product languages](docs/setup-workspace.md#product-languages) for detection
-precedence, Go/Rust commands and a complete Python declaration. Agent coding
-quality is independent of coordination's command execution and evidence gates.
-
-## License
-
-MIT is the planned license, but the owner has deferred adding `LICENSE` to a
-follow-up. Licensing and public release remain incomplete until that file lands.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for human contribution guidance and
-[SECURITY.md](SECURITY.md) for private vulnerability reporting. Distribution
-remains through GitHub; the package is not published to npm.
-
-## Advanced install and explicit operation
-
-`coord install` retains the complete explicit surface for custom policy,
-vendoring, product writes, clone roots, or dry runs:
-
-```sh
-coord install \
-  --product /path/to/app \
-  --coord-root /path/to/coord-runtime \
-  --agents claude,codex \
-  --profile reviewed \
-  --declare /path/to/workspace-declaration.json
-
-coord doctor --coord-root /path/to/coord-runtime --product /path/to/app
-```
-
-Explicit start/run forms remain available for automation and recovery:
-
-```sh
-coord start 42 --product /path/to/app
-coord run --issue 42 --product /path/to/app
-
-# Manual configs can still supply both paths explicitly.
-coord start 42 --config /path/to/config.json --coord-root /path/to/runtime
-coord run --issue 42 --coord-root /path/to/runtime
-```
-
-The coordinator now waits through manual pauses and safety holds instead of
-exiting. Inspect the affected agent and fix the underlying problem, then release
-its hold from another shell with `coord resume --issue 42 --agent claude`.
-The agent selector requires exactly one hold; use `--hold ID` if ambiguous.
-Plain `coord resume --issue 42` clears only manual pause, not safety holds.
-Nudge-loop holds still require `--reset-nudge-budget`.
-
-Foreground `coord 42`, `coord run`, and `coord resume --run` offer owner controls
-when both stdin and stdout are TTYs: `s` shows status (step, roster, pins, PR and
-holds), `p`/Space toggles **manual** pause, `a` reopens agent windows, `d` selects
-an agent to drop, `r` selects a hold to release, and `?`/`h` shows help. Numbered
-menus use Enter; dropping or abandoning requires a separate `y` confirmation.
-Pending owner questions appear inline with only the permitted answers—no UUID
-copy/paste. Esc leaves a menu or edit. `q` (outside an edit) or Ctrl-C stops only
-the foreground runner, leaving agent windows, tmux and runtime intact. Use
-`coord detach` for teardown. Agent panes still accept direct typing.
-
-Press `/`, type `steer <text>`, then Enter to queue advisory owner guidance for
-the next action cohort. It persists across restart and appears in an **Owner
-guidance** section for every agent receiving that cohort; it never changes an
-in-flight action or overrides the approved scope or protocol. Guidance is one
-line, at most 2,000 characters, with up to 32 entries pending. It is not an
-external `coord steer` command. Non-TTY runs retain log-only behavior and do not
-read input. Hold-budget resets remain explicit CLI operations.
-
-If the coordinator was stopped, release and restart in one command:
-
-```sh
-coord resume --issue 42 --agent claude --run --product /path/to/app
-```
-
-Omit `--run` beside a live coordinator: it is an explicit restart request, not
-automatic detection of another runner. Ctrl-C stops the foreground coordinator
-without clearing holds or agent work. Rejoining preserves unfinished work in
-clones already on their exact issue/agent branch; dirty off-branch clones still
-refuse checkout. Waiting does not authorize automatic hold release or reset any
-delivery/resource budgets.
-
-See `config.product.example.json` for declared verification/check commands and
-[`docs/coord-driver.md`](docs/coord-driver.md) for profiles, owner controls,
-tmux behavior, recovery, finalization, and runtime topology.
-
-## Vendor quota evidence and resource holds
-
-Holds carry vendor evidence when it is available. They report the failure
-class (usage window, billing, throttling, context overflow, account,
-cancellation, transport or unknown) separately from deadline confidence. A
-reset time is shown only when the provider supplied an absolute epoch, and it
-is the time of a recheck, not a promise that capacity will be back. Rendered
-clock text such as "resets 3:45pm" is never parsed.
-
-- **Claude.** `StopFailure` fields are kept as sanitized diagnostics
-  (`error`, `error_details`, `last_assistant_message`). `coord install` adds a
-  status-line tee to the clone's `.claude/settings.local.json`. The tee runs
-  your effective status-line command on the original bytes and gives coord a
-  bounded copy of `rate_limits.five_hour`/`seven_day`. It is installed only
-  when precedence is provable. If managed settings or a launcher `--settings`
-  outrank the clone, or the command shape is unsupported, telemetry is
-  disabled and `coord doctor` says why. Uninstall restores the prior value
-  while the tee is still coord's, and your later edits are preserved. A
-  matching exhausted window gives an exact deadline. At that deadline plus 30
-  seconds, coord re-evaluates the hold once without sending a prompt. It then
-  leaves release to you, because a render is not a fresh capacity check.
-  Model-family limits, stale telemetry and spend restrictions keep
-  `reset unknown`. `autoContinueAtUsageLimit` and launcher arguments are never
-  changed.
-- **Codex.** Quota reads happen only with an explicit per-agent binding:
-  `"codexQuota": { "codexHome": "/abs/path", "accountId": "..." }` on the
-  `codex` agent. Each read is one `codex app-server --listen stdio://` helper
-  that runs `account/read` and `account/rateLimits/read` and nothing else. It
-  has a 10 s lifetime and a 256 KiB output cap, and it is always reaped.
-  Reads are triggered only by the initial binding check, by a new hold for
-  that agent, or by an exact deadline plus 30 seconds. Limits:
-  - at most one helper runs per binding, across issues in this coord root;
-  - starts are at least 5 minutes apart;
-  - after a failed read there are two retries (at +5 then +10 minutes);
-  - each action gets six starts in total, and neither restarts nor your
-    acknowledgments replenish them.
-  Automatic release is off unless the binding names the Codex CLI version you
-  validated live: `"validatedVersion": "0.156.1"`. Even then, it needs a
-  fresh read in which every bucket explicitly reports no restriction and every
-  previously blocked window is back below its limit with the same duration.
-  The helper must report that version and the bound home, and the account must
-  be unchanged across the read. It removes only that resource hold. Without a
-  validated version, quota reads only enrich the hold and you release it. A binding shared by two separately managed coord roots
-  cannot be serialized and is unsupported.
-- **Cursor** errors stay unknown and `aborted` is a cancellation. **Antigravity**
-  keeps the vendor-independent protections only.
-
-Manual pause, other holds, the nudge budget, roster, reviews and pins are never
-changed by resource recovery. Whenever evidence is missing, the report says
-`owner release required`.
+| Guide | What you'll find |
+| --- | --- |
+| [Operator & driver guide](docs/coord-driver.md) | Profiles, owner controls, holds, recovery, tmux, and runtime topology |
+| [Workspace setup](docs/setup-workspace.md) | Install options, verification policies, and multi-product setups |
+| [Readiness policy](docs/readiness-policy.md) | Agent delivery readiness, lifecycle hooks, and completion evidence |
+| [Analytics](docs/analytics.md) | Workflow timing, token measurements, and their limitations |
+| [Repository map](docs/repo-map.md) | Source layout and implementation entry points |
+| [Contributing](CONTRIBUTING.md) | Human contribution workflow and development checks |
+| [Security policy](SECURITY.md) | Private vulnerability-reporting guidance |
 
 ## Development
 
+From a checkout of this repository, with Node 26 and pnpm 11:
+
 ```sh
-nvm use 26
 pnpm install --frozen-lockfile
+pnpm check:fast
 pnpm check
-pnpm build
 ./coord --help
 ```
 
-`pnpm check:fast` runs lint, source/test typechecking, and focused tests.
-`pnpm test:e2e` runs the four-agent temporary-origin canary. `pnpm check` runs
-both tiers.
+`check:fast` runs lint, source/test typechecking, and fast tests. `check` adds
+the build and end-to-end suite. See [Contributing](CONTRIBUTING.md) before
+opening a pull request; using coord's own multi-agent workflow is optional.
 
-Pull-capable agents can fetch their current action without seeing internal step,
-gate, evidence, or global cursor state. From an agent clone after onboard:
+## License
 
-```sh
-coord next --issue 42
-```
-
-`coord.workspaceConfig` and `consensus.agentId` supply the runtime and caller.
-Explicit forms remain available:
-
-```sh
-COORD_AGENT=codex coord next --issue 42 --coord-root /path/to/runtime
-```
-
-The action names an absolute `complete` path. After pushing the commit that
-contains the required artifact, the agent writes that exact lowercase 40-hex
-SHA—or `commit <sha>`—to `complete`. Branch-tip movement alone never completes
-an action.
+MIT — see [LICENSE](LICENSE). Distributed through GitHub, not npm.
