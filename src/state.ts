@@ -89,10 +89,28 @@ const evidenceIdSchema = z.enum([
 const ballotStepIdSchema = z.enum(["R3.plan-ballot", "R5.compare-ballot", "R6.ballot", "R4.amend-ballot"]);
 const timestampSchema = z.string().datetime({ offset: true });
 
+/**
+ * Cache metadata is opt-in and fail-closed: a command without `cache` is never
+ * reused, because only the project knows whether a command reads Git history,
+ * commit identity, an external service, or undeclared environment.
+ */
+const checkCacheSchema = z
+  .object({
+    inputs: z.enum(["tree", "tree-excluding-evidence"]),
+    env: z.array(z.string().regex(/^[A-Z_][A-Z0-9_]*$/)).default([]),
+    probes: z.array(z.array(z.string().min(1)).min(1)).default([])
+  })
+  .strict();
+
 export const checkCommandSchema = z
   .object({
     name: z.string().min(1),
-    argv: z.array(z.string()).min(1)
+    argv: z.array(z.string()).min(1),
+    /** Counts against `maxConcurrentExpensive` while it runs. */
+    expensive: z.boolean().optional(),
+    /** Diagnostic re-runs only: a passing retry never turns a failed gate green. */
+    retry: z.number().int().min(0).max(2).optional(),
+    cache: checkCacheSchema.optional()
   })
   .strict();
 
@@ -127,6 +145,48 @@ const pathTokenSchema = z
   .string()
   .min(1)
   .refine((value) => !/\s/.test(value), "workflow-critical entries must not contain whitespace");
+
+/**
+ * Opt-in coordinator-owned verification.
+ *
+ * `local` is today's behavior: the clone hooks run `verify`, and the
+ * coordinator runs `checks` once at the approved pin. `coordinator` moves the
+ * expensive suites to the coordinator, which runs them once per submitted
+ * product pin and hands failures back with their log, while the hooks run only
+ * the cheap `coordinated` lists for a provably active run.
+ */
+export const verificationPolicySchema = z
+  .object({
+    mode: z.enum(["local", "coordinator"]).default("local"),
+    /** Hook lists used only while bound to an active coordinator run. */
+    coordinated: verifyConfigSchema.optional(),
+    candidate: z
+      .object({
+        checks: z.array(checkCommandSchema).min(1),
+        /** Paths these candidate checks are declared to cover; anything else expands to the full gate. */
+        covers: z
+          .object({
+            prefixes: z.array(pathTokenSchema),
+            files: z.array(pathTokenSchema)
+          })
+          .strict(),
+        rules: z
+          .array(
+            z
+              .object({
+                prefixes: z.array(pathTokenSchema),
+                files: z.array(pathTokenSchema),
+                add: z.union([z.literal("all"), z.array(z.string().min(1))])
+              })
+              .strict()
+          )
+          .default([])
+      })
+      .strict()
+      .optional(),
+    maxConcurrentExpensive: z.number().int().min(1).max(8).default(1)
+  })
+  .strict();
 
 /** What a workspace was installed against, so `coord doctor` can report drift. */
 export const installStampSchema = z
@@ -230,6 +290,7 @@ export const coordinatorConfigSchema = z
     pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000),
     toolchain: z.string().min(1).optional(),
     verify: verifyConfigSchema.optional(),
+    verification: verificationPolicySchema.optional(),
     documentation: documentationProfileSchema.optional(),
     workflowCriticalPrefixes: z.array(pathTokenSchema).default([]),
     workflowCriticalFiles: z.array(pathTokenSchema).default([]),
@@ -259,6 +320,52 @@ export const coordinatorConfigSchema = z
     if (new Set(config.contextPaths).size !== config.contextPaths.length) {
       context.addIssue({ code: "custom", message: "context paths must be unique", path: ["contextPaths"] });
     }
+    const checkNames = config.checks.map((check) => check.name);
+    if (new Set(checkNames).size !== checkNames.length) {
+      context.addIssue({ code: "custom", message: "check names must be unique", path: ["checks"] });
+    }
+    const verification = config.verification;
+    if (verification === undefined) return;
+    if (verification.mode === "coordinator") {
+      if (verification.coordinated === undefined) {
+        context.addIssue({
+          code: "custom",
+          message: "coordinator verification requires coordinated hook lists",
+          path: ["verification", "coordinated"]
+        });
+      }
+      if (verification.candidate === undefined) {
+        context.addIssue({
+          code: "custom",
+          message: "coordinator verification requires candidate checks",
+          path: ["verification", "candidate"]
+        });
+      }
+    }
+    const candidate = verification.candidate;
+    if (candidate === undefined) return;
+    const candidateNames = candidate.checks.map((check) => check.name);
+    if (new Set(candidateNames).size !== candidateNames.length) {
+      context.addIssue({
+        code: "custom",
+        message: "candidate check names must be unique",
+        path: ["verification", "candidate", "checks"]
+      });
+    }
+    // A rule may only add a command the full gate already declares; otherwise a
+    // path rule would silently select nothing at all.
+    for (const [index, rule] of candidate.rules.entries()) {
+      if (rule.add === "all") continue;
+      for (const name of rule.add) {
+        if (!checkNames.includes(name)) {
+          context.addIssue({
+            code: "custom",
+            message: `candidate rule adds undeclared check ${JSON.stringify(name)}`,
+            path: ["verification", "candidate", "rules", index, "add"]
+          });
+        }
+      }
+    }
   });
 
 /**
@@ -272,6 +379,7 @@ export const workspaceDeclarationSchema = z
   .object({
     toolchain: z.string().min(1).optional(),
     verify: verifyConfigSchema.optional(),
+    verification: verificationPolicySchema.optional(),
     documentation: documentationProfileSchema.optional(),
     workflowCriticalPrefixes: z.array(pathTokenSchema).optional(),
     workflowCriticalFiles: z.array(pathTokenSchema).optional(),
@@ -345,6 +453,15 @@ export const startStateSchema = z
     agents: z.array(agentConfigSchema).min(1),
     checks: z.array(checkCommandSchema).min(1),
     pollIntervalMs: z.number().int().min(100).max(60_000),
+    /**
+     * Verification policy frozen for this issue session. A `start.json` written
+     * before this field existed parses without it and means local mode, so a
+     * mid-issue `coord install` cannot flip a running issue into coordinator
+     * mode. `verificationDigest` is what receipt keys bind to, so a policy edit
+     * invalidates every cached component rather than silently reusing it.
+     */
+    verification: verificationPolicySchema.optional(),
+    verificationDigest: digestSchema.optional(),
     documentation: documentationProfileSchema.optional(),
     workflowCriticalPrefixes: z.array(pathTokenSchema).optional(),
     workflowCriticalFiles: z.array(pathTokenSchema).optional(),
@@ -509,7 +626,12 @@ export const acceptedSubmissionSchema = z
           .object({
             name: z.string().min(1),
             argv: z.array(z.string()).min(1),
-            exitCode: z.number().int()
+            exitCode: z.number().int(),
+            reused: z.boolean().optional(),
+            joined: z.boolean().optional(),
+            receiptId: z.string().min(1).optional(),
+            logPath: z.string().min(1).optional(),
+            attempts: z.number().int().min(1).optional()
           })
           .strict()
       )
@@ -754,7 +876,10 @@ const journalEventTypeSchema = z.enum([
   "action-restarted",
   "abandoned",
   "final-check",
+  "candidate-check",
   "verification-run",
+  "verification-reused",
+  "verification-joined",
   "publication-pending",
   "publication-failed",
   "pr-created",
@@ -791,6 +916,8 @@ export type AgentConfig = z.infer<typeof agentConfigSchema>;
 export type CheckCommand = z.infer<typeof checkCommandSchema>;
 export type VerifyConfig = z.infer<typeof verifyConfigSchema>;
 export type VerifyPhase = z.infer<typeof verifyPhaseSchema>;
+export type VerificationPolicy = z.infer<typeof verificationPolicySchema>;
+export type CheckCache = z.infer<typeof checkCacheSchema>;
 export type InstallStamp = z.infer<typeof installStampSchema>;
 export type WorkspaceDeclaration = z.infer<typeof workspaceDeclarationSchema>;
 export type StartState = z.infer<typeof startStateSchema>;

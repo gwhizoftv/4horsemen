@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { inspectCloneHooks, readHookManifest, removeCloneHooks, type HookManifest } from "../src/hookSync.js";
 import { install, uninstall } from "../src/install.js";
+import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import { initializeOperationalState, readCursorsState, writeCursorsState, cursorsStateSchema } from "../src/state.js";
+import { workspaceLocationFromConfig } from "../src/workspace.js";
 import {
   declaredChecks,
   ensureBuilt,
@@ -296,6 +299,130 @@ describe("declared verification in the hooks", () => {
     git(clone, "add", "README.md");
     git(clone, "commit", "-qm", "Claude: docs");
     expect(tryGit(clone, "push", "origin", "claude/develop-docs").exitCode).toBe(0);
+  });
+
+  const freezeCoordinatorIssue = (clone: string, configPath: string, options: {
+    completed?: boolean;
+    coordinatedPrecommit?: { name: string; argv: string[] }[];
+  } = {}) => {
+    const { workspaceRoot } = workspaceLocationFromConfig(configPath);
+    const paths = issueRuntimePaths(workspaceRoot, 1);
+    createIssueRuntime(paths, ["claude"]);
+    initializeOperationalState(paths, {
+      issue: 1,
+      issueSessionId: `issue-1:${"a".repeat(40)}`,
+      baselineSha: "a".repeat(40),
+      profile: "solo",
+      originalRoster: ["claude"],
+      branchTemplate: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      maxRevisionRounds: 3,
+      prPolicy: "owner-only",
+      automationDigest: "b".repeat(64),
+      automationDigestScheme: "sha256-length-prefixed-v1",
+      automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }],
+      trustedSourceCommit: "c".repeat(40),
+      origin: "https://example.com/fixture.git",
+      coordRoot: paths.coordRoot,
+      configPath,
+      agents: [{ id: "claude", root: clone, launcher: "start-claude.sh", delivery: "pull" }],
+      checks: declaredChecks,
+      pollIntervalMs: 100,
+      verification: {
+        mode: "coordinator",
+        coordinated: {
+          precommit: options.coordinatedPrecommit ?? [{ name: "bound-marker", argv: ["true"] }],
+          prepush: []
+        },
+        candidate: {
+          checks: [{ name: "candidate", argv: ["true"] }],
+          covers: { prefixes: ["src/"], files: [] },
+          rules: []
+        },
+        maxConcurrentExpensive: 1
+      },
+      verificationDigest: "d".repeat(64)
+    });
+    if (options.completed === true) {
+      writeCursorsState(paths, cursorsStateSchema.parse({ ...readCursorsState(paths), completed: true }));
+    }
+    return paths;
+  };
+
+  it("runs coordinated precommit when bound to an active coordinator issue", () => {
+    const localFails = { precommit: [{ name: "local-fail", argv: ["false"] }], prepush: [] as { name: string; argv: string[] }[] };
+    const { clone, configPath } = installed(localFails, "plain");
+    freezeCoordinatorIssue(clone, configPath, {
+      coordinatedPrecommit: [{ name: "bound-ok", argv: ["true"] }]
+    });
+    stageWork(clone, "issue-1/claude", "source.ts");
+    const committed = tryGit(clone, "commit", "-m", "Claude: work");
+    expect(committed.exitCode).toBe(0);
+    expect(`${committed.stdout}${committed.stderr}`).toMatch(/coordinator-bound issue 1|coordinated checks/);
+  });
+
+  it("falls back to local verify when cursors.json is corrupt", () => {
+    const localFails = { precommit: [{ name: "local-fail", argv: ["false"] }], prepush: [] as { name: string; argv: string[] }[] };
+    const { clone, configPath } = installed(localFails, "plain");
+    const paths = freezeCoordinatorIssue(clone, configPath, {
+      coordinatedPrecommit: [{ name: "bound-ok", argv: ["true"] }]
+    });
+    writeFileSync(paths.cursors, "{not-json");
+    stageWork(clone, "issue-1/claude", "source.ts");
+    const committed = tryGit(clone, "commit", "-m", "Claude: work");
+    expect(committed.exitCode).not.toBe(0);
+    expect(`${committed.stdout}${committed.stderr}`).toMatch(/local verification|local-fail/);
+  });
+
+  it("falls back to local verify when the issue is completed", () => {
+    const localFails = { precommit: [{ name: "local-fail", argv: ["false"] }], prepush: [] as { name: string; argv: string[] }[] };
+    const { clone, configPath } = installed(localFails, "plain");
+    const paths = freezeCoordinatorIssue(clone, configPath, {
+      coordinatedPrecommit: [{ name: "bound-ok", argv: ["true"] }]
+    });
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...readCursorsState(paths), completed: true }));
+    stageWork(clone, "issue-1/claude", "source.ts");
+    const committed = tryGit(clone, "commit", "-m", "Claude: work");
+    expect(committed.exitCode).not.toBe(0);
+    expect(`${committed.stdout}${committed.stderr}`).toMatch(/local verification|local-fail/);
+  });
+
+  it("keeps local verify on a manual branch even when a coordinator issue exists", () => {
+    const localFails = { precommit: [{ name: "local-fail", argv: ["false"] }], prepush: [] as { name: string; argv: string[] }[] };
+    const { clone, configPath } = installed(localFails, "plain");
+    freezeCoordinatorIssue(clone, configPath, {
+      coordinatedPrecommit: [{ name: "bound-ok", argv: ["true"] }]
+    });
+    stageWork(clone, "claude/manual", "source.ts");
+    const committed = tryGit(clone, "commit", "-m", "Claude: work");
+    expect(committed.exitCode).not.toBe(0);
+    expect(`${committed.stdout}${committed.stderr}`).toContain("local-fail");
+  });
+
+  it("keeps local prepush for a multi-ref push and still blocks peer branches", () => {
+    const verify = {
+      precommit: [{ name: "ok", argv: ["true"] }],
+      prepush: [{ name: "push-fail", argv: ["false"] }]
+    };
+    const { clone, configPath } = installed(verify, "plain");
+    freezeCoordinatorIssue(clone, configPath, {
+      coordinatedPrecommit: [{ name: "bound-ok", argv: ["true"] }]
+    });
+    stageWork(clone, "issue-1/claude", "source.ts");
+    expect(tryGit(clone, "commit", "-m", "Claude: work").exitCode).toBe(0);
+    // Both branches are owned by claude, so ownership passes and verify sees two refs.
+    git(clone, "branch", "claude/second");
+    const multi = tryGit(clone, "push", "origin", "issue-1/claude", "claude/second");
+    expect(multi.exitCode).not.toBe(0);
+    expect(`${multi.stdout}${multi.stderr}`).toMatch(/push-fail|local verification|multi-ref/);
+
+    git(clone, "checkout", "-qb", "issue-1/codex");
+    writeFileSync(join(clone, "peer.ts"), "peer\n");
+    git(clone, "add", "peer.ts");
+    // Ownership still blocks a peer issue branch before verify runs.
+    const peer = tryGit(clone, "commit", "-m", "Claude: peer");
+    expect(peer.exitCode).not.toBe(0);
+    expect(`${peer.stdout}${peer.stderr}`).toMatch(/belongs to agent|not you|HOOK BLOCKED/);
   });
 });
 

@@ -10,7 +10,13 @@ import { initializeAgentLifecycle, readAgentLifecycle } from "./agentLifecycle.j
 import { doctor, renderDoctorReport } from "./doctor.js";
 import { fetchGitHubIssue, renderGitHubIssueSnapshot } from "./githubIssue.js";
 import { sha256 } from "./hash.js";
-import { renderHookScope, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
+import {
+  renderHookScope,
+  resolveHookBinding,
+  resolveWorkspaceConfig,
+  runVerifyPhase,
+  WORKSPACE_CONFIG_KEY
+} from "./hookPolicy.js";
 import { inspectOutgoingChanges, inspectStagedChanges } from "./changeClassification.js";
 import { hookVerificationRecorder } from "./verificationLog.js";
 import { install, onboard, packageVersion, uninstall } from "./install.js";
@@ -844,6 +850,16 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         configPath,
         agents: roster,
         checks: config.checks,
+        // Frozen for the issue session: a mid-issue `coord install` must not
+        // change what the hooks bind to or invalidate nothing but the digest.
+        verification: config.verification,
+        verificationDigest: sha256(
+          JSON.stringify({
+            verification: config.verification ?? null,
+            checks: config.checks,
+            documentation: config.documentation ?? null
+          })
+        ),
         documentation: config.documentation,
         workflowCriticalPrefixes: config.workflowCriticalPrefixes,
         workflowCriticalFiles: config.workflowCriticalFiles,
@@ -1105,11 +1121,19 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const clone = resolve(io.cwd, requireFlag(parsed, "clone"));
       const phase = verifyPhaseSchema.parse(requireFlag(parsed, "phase"));
       const { config, configPath } = resolveWorkspaceConfig(clone);
+      // Git supplies the pushed refs once, on stdin; both the classifier and
+      // the binding read that same buffer.
+      const refs = phase === "prepush" ? io.stdin() : "";
       const changes = phase === "precommit" ? inspectStagedChanges(clone)
-        : inspectOutgoingChanges(clone, io.stdin(), localConfigGet(clone, "consensus.remoteName") ?? "origin",
+        : inspectOutgoingChanges(clone, refs, localConfigGet(clone, "consensus.remoteName") ?? "origin",
           localConfigGet(clone, "consensus.sharedBranch") ?? "main");
+      const binding = resolveHookBinding({ clone, configPath, phase, refs });
+      io.stdout(binding.bound
+        ? `coord ${phase}: coordinator-bound issue ${binding.issue} — coordinated checks\n`
+        : `coord ${phase}: local verification — ${binding.reason}\n`);
       const result = runVerifyPhase({ clone, config, phase, changes, log: io.stdout,
-        record: hookVerificationRecorder(clone, configPath, io.stderr) });
+        record: hookVerificationRecorder(clone, configPath, io.stderr),
+        ...(binding.bound ? { bound: binding.commands } : {}) });
       if (result.ok) return 0;
       io.stderr(
         `HOOK BLOCKED: declared ${phase} check '${result.failed.name}' failed with exit ${result.exitCode}.\n` +

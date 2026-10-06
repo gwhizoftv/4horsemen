@@ -350,11 +350,29 @@ export type InternalOrder = {
   changeScope?: readonly ChangeScopeEntry[];
   /** Optional for the same reason as `changeScope`: rendering copes without it. */
   materialized?: MaterializedInputs;
+  /** Absent means local mode, so every existing order construction site stays valid. */
+  verificationMode?: "local" | "coordinator";
+  /**
+   * What the coordinator already ran against each bound product pin, so every
+   * reviewer reads one execution's results instead of re-running the suites.
+   */
+  candidateResults?: readonly { agent: string; commitSha: string; results: readonly CheckResult[] }[];
   activeRoster: readonly string[];
   eligibleChoices: readonly string[];
 };
 
-export type CheckResult = { name: string; argv: readonly string[]; exitCode: number };
+export type CheckResult = {
+  name: string;
+  argv: readonly string[];
+  exitCode: number;
+  /** Satisfied from a stored receipt for an identical input identity. */
+  reused?: boolean;
+  /** Satisfied from a receipt another runner wrote while this one waited. */
+  joined?: boolean;
+  receiptId?: string;
+  logPath?: string;
+  attempts?: number;
+};
 
 export type EvidenceObservation = {
   agent: string;

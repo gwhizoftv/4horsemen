@@ -1,10 +1,20 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
-import { localConfigGet } from "./gitExec.js";
-import { readConfig, type CheckCommand, type CoordinatorConfig, type VerifyPhase } from "./state.js";
+import { git, localConfigGet } from "./gitExec.js";
+import { issueRuntimePaths } from "./paths.js";
+import {
+  readConfig,
+  readCursorsState,
+  readStartState,
+  type CheckCommand,
+  type CoordinatorConfig,
+  type VerifyConfig,
+  type VerifyPhase
+} from "./state.js";
 import { selectVerification, type ChangeInput } from "./changeClassification.js";
 import { verificationMeasurement, type VerificationMeasurement } from "./verificationLog.js";
+import { workspaceLocationFromConfig } from "./workspace.js";
 
 /**
  * The bridge between the shell hook bodies and the workspace config.
@@ -72,6 +82,74 @@ export const verifyCommands = (config: CoordinatorConfig, phase: VerifyPhase): r
   return config.verify[phase];
 };
 
+export type HookBinding =
+  | { bound: true; issue: number; commands: VerifyConfig }
+  | { bound: false; reason: string };
+
+/** The branch this hook invocation is actually about, from Git, never from HEAD guesses. */
+const hookBranch = (input: { clone: string; phase: VerifyPhase; refs?: string }): { branch: string } | { reason: string } => {
+  if (input.phase === "precommit") {
+    const head = git(input.clone, "symbolic-ref", "--quiet", "--short", "HEAD");
+    if (head.exitCode !== 0) return { reason: "HEAD is detached" };
+    const branch = head.stdout.trim();
+    return branch === "" ? { reason: "HEAD names no branch" } : { branch };
+  }
+  const lines = (input.refs ?? "").split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  if (lines.length === 0) return { reason: "no outgoing refs were supplied" };
+  // One push can update several branches; a single issue's coordinated list
+  // cannot speak for all of them, so the local lists run instead.
+  if (lines.length > 1) return { reason: "multi-ref push" };
+  const fields = (lines[0] as string).split(/\s+/);
+  const matched = /^refs\/heads\/(.+)$/.exec(fields[2] ?? "");
+  if (fields.length !== 4 || matched?.[1] === undefined) return { reason: "unrecognized outgoing ref line" };
+  return { branch: matched[1] };
+};
+
+/**
+ * Whether this clone's hooks may run the coordinated (cheap) lists instead of
+ * the local ones.
+ *
+ * Binding requires a provably active coordinator run that owns this exact
+ * clone on this exact branch. Every failure — a missing runtime, a corrupt
+ * state file, a completed issue, a manual branch, a multi-ref push, any
+ * exception at all — falls back to the local lists with a printed reason. A
+ * missing runtime never means "skip the checks".
+ */
+export const resolveHookBinding = (input: {
+  clone: string;
+  configPath: string;
+  phase: VerifyPhase;
+  refs?: string;
+}): HookBinding => {
+  try {
+    const agent = localConfigGet(input.clone, "consensus.agentId");
+    if (agent === null) return { bound: false, reason: "this clone declares no consensus.agentId" };
+    const branch = hookBranch(input);
+    if (!("branch" in branch)) return { bound: false, reason: branch.reason };
+    const matched = /^issue-(\d+)\/([a-z0-9-]+)$/.exec(branch.branch);
+    if (matched === null) return { bound: false, reason: `${branch.branch} is not an issue branch` };
+    if (matched[2] !== agent) return { bound: false, reason: "the branch agent is not this clone's agent" };
+    const issue = Number(matched[1]);
+    const paths = issueRuntimePaths(workspaceLocationFromConfig(input.configPath).workspaceRoot, issue);
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    if (!start.agents.some((entry) => entry.id === agent && resolve(entry.root) === resolve(input.clone))) {
+      return { bound: false, reason: `issue ${issue} does not run ${agent} from this clone` };
+    }
+    if (start.verification?.mode !== "coordinator") {
+      return { bound: false, reason: `issue ${issue} did not freeze coordinator verification` };
+    }
+    const commands = start.verification.coordinated;
+    if (commands === undefined) return { bound: false, reason: `issue ${issue} declares no coordinated hook lists` };
+    if (cursors.completed) return { bound: false, reason: `issue ${issue} is completed` };
+    if (cursors.abandoned) return { bound: false, reason: `issue ${issue} is abandoned` };
+    if (!cursors.activeRoster.includes(agent)) return { bound: false, reason: `${agent} is not on issue ${issue}'s active roster` };
+    return { bound: true, issue, commands };
+  } catch (error) {
+    return { bound: false, reason: `no readable coordinator run (${error instanceof Error ? error.message : String(error)})` };
+  }
+};
+
 const isExecutableFile = (path: string): boolean => {
   try {
     const stats = statSync(path);
@@ -107,6 +185,9 @@ export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): st
     ...(config.documentation?.verify.precommit ?? []),
     ...(config.documentation?.verify.prepush ?? []),
     ...(config.documentation?.checks ?? []),
+    ...(config.verification?.coordinated?.precommit ?? []),
+    ...(config.verification?.coordinated?.prepush ?? []),
+    ...(config.verification?.candidate?.checks ?? []),
     ...config.checks
   ];
   const missing = new Set<string>();
@@ -143,12 +224,19 @@ export const runVerifyPhase = (input: {
   runner?: VerifyRunner;
   changes?: ChangeInput;
   record?: (measurement: VerificationMeasurement) => void;
+  /**
+   * Coordinated lists for a bound coordinator run. Present only when
+   * `resolveHookBinding` proved the run owns this clone and branch; the
+   * undeclared-`verify` refusal does not apply, because the issue declared
+   * what runs here.
+   */
+  bound?: VerifyConfig;
 }): VerifyRunResult => {
   const runner = input.runner ?? inheritRunner;
   const selected = selectVerification(input.changes ?? { changes: null, identity: "unknown" }, input.config, input.phase,
     // The evidence exemption does not require a product verification declaration.
-    input.config.verify?.[input.phase] ?? []);
-  if (selected.kind === "product") verifyCommands(input.config, input.phase);
+    input.bound?.[input.phase] ?? input.config.verify?.[input.phase] ?? []);
+  if (selected.kind === "product" && input.bound === undefined) verifyCommands(input.config, input.phase);
   const { commands } = selected;
   const record = (command: CheckCommand | null, startedAt: string, exitCode: number, error?: string) => {
     input.record?.(verificationMeasurement({ trigger: "hook", phase: input.phase,

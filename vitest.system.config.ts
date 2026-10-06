@@ -1,12 +1,13 @@
 import { defineConfig } from "vitest/config";
 
+/**
+ * Suites that drive real filesystems, Git clones, installed hooks and child
+ * processes. They are separated from `test:fast` so the pre-commit gate stays
+ * cheap, and `pnpm check` keeps running them before a pin is submitted.
+ */
 export default defineConfig({
   test: {
-    include: ["test/**/*.test.ts"],
-    // Kept a literal array: the verify-config coverage test reads it to prove
-    // every test file belongs to exactly one of the three suites.
-    exclude: [
-      "test/integration.test.ts",
+    include: [
       "test/cli.test.ts",
       "test/install.test.ts",
       "test/workspace.test.ts",

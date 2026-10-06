@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, matchesGlob } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   HookPolicyError,
@@ -10,7 +10,15 @@ import {
   verifyCommands
 } from "../src/hookPolicy.js";
 import { buildWorkspaceConfig, proposeProjectPolicy } from "../src/setupWorkspace.js";
-import { classifyChanges, inspectOutgoingChanges, inspectRangeChanges, inspectStagedChanges, selectVerification } from "../src/changeClassification.js";
+import {
+  classifyChanges,
+  inspectOutgoingChanges,
+  inspectRangeChanges,
+  inspectStagedChanges,
+  selectCandidateVerification,
+  selectVerification,
+  type CandidatePolicy
+} from "../src/changeClassification.js";
 import { renderAgentsProtocolBlock } from "../src/agentsProtocol.js";
 import { applyManagedBlock, ManagedBlockError, removeManagedBlock } from "../src/productIgnore.js";
 import { coordinatorConfigSchema, workspaceDeclarationSchema, type CoordinatorConfig } from "../src/state.js";
@@ -25,6 +33,9 @@ const config = (overrides: Record<string, unknown> = {}): CoordinatorConfig =>
     checks: [{ name: "test", argv: ["go", "test", "./..."] }],
     ...overrides
   });
+
+const exampleConfig = (): CoordinatorConfig =>
+  coordinatorConfigSchema.parse(JSON.parse(readFileSync(join(repoRoot, "config.example.json"), "utf8")));
 
 describe("declared verification", () => {
   it("runs argument vectors from any ecosystem, in declared order", () => {
@@ -248,6 +259,143 @@ describe("shipped examples", () => {
     const example = JSON.parse(readFileSync(join(repoRoot, "config.product.example.json"), "utf8")) as unknown;
     expect(coordinatorConfigSchema.safeParse(example).success).toBe(true);
   });
+
+  it("ships a coordinator-mode verification policy this driver can actually freeze", () => {
+    const example = exampleConfig();
+    expect(example.verification?.mode).toBe("coordinator");
+    // The hooks keep only the cheap list; the suites move to the coordinator.
+    expect(example.verification?.coordinated?.precommit.map((check) => check.name)).toEqual(["check:fast"]);
+    expect(example.verification?.coordinated?.prepush).toEqual([]);
+    expect(example.verification?.candidate?.covers.prefixes).toEqual(["src/", "test/"]);
+    expect(example.verification?.maxConcurrentExpensive).toBe(1);
+    // Every expensive command is also cacheable, or the limiter just serializes
+    // work that would have been reused for free.
+    for (const check of example.checks) {
+      if (check.expensive === true) expect(check.cache, check.name).toBeDefined();
+    }
+  });
+
+  /**
+   * The coordinator gate runs `checks`, so that list has to be the same work
+   * `pnpm check` runs — minus `install`, which the gate performs by
+   * materializing the worktree rather than as a declared component.
+   */
+  it("composes checks from the same scripts the check script runs", () => {
+    const scripts = (JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as
+      { scripts: Record<string, string> }).scripts;
+    const expand = (script: string): string[] =>
+      script.split("&&").flatMap((part) => {
+        const match = /^\s*pnpm (?:run )?([\w:.-]+)\s*$/.exec(part);
+        if (match === null) return [part.trim()];
+        const name = match[1] as string;
+        const nested = scripts[name];
+        return nested !== undefined && nested.split("&&").every((segment) => /^\s*pnpm (?:run )?[\w:.-]+\s*$/.test(segment))
+          ? expand(nested)
+          : [name];
+      });
+    expect(expand(scripts.check as string)).toEqual(
+      exampleConfig().checks.map((check) => check.name).filter((name) => name !== "install")
+    );
+    expect(scripts.test).toContain("pnpm test:system");
+  });
+
+  /**
+   * A file in no suite is never run; a file in two is run twice and reported
+   * as both fast and expensive. Both make the candidate gate's selection lie.
+   */
+  it("assigns every test file to exactly one vitest suite", () => {
+    const globsFrom = (file: string, key: "include" | "exclude"): string[] => {
+      const match = new RegExp(`${key}:\\s*\\[([^\\]]*)\\]`).exec(readFileSync(join(repoRoot, file), "utf8"));
+      return match === null ? [] : [...(match[1] as string).matchAll(/"([^"]+)"/g)].map((entry) => entry[1] as string);
+    };
+    const suites = {
+      fast: { include: globsFrom("vitest.config.ts", "include"), exclude: globsFrom("vitest.config.ts", "exclude") },
+      system: { include: globsFrom("vitest.system.config.ts", "include"), exclude: [] as string[] },
+      e2e: { include: globsFrom("vitest.e2e.config.ts", "include"), exclude: [] as string[] }
+    };
+    const walk = (directory: string, prefix: string): string[] =>
+      readdirSync(join(repoRoot, directory), { withFileTypes: true }).flatMap((entry) =>
+        entry.isDirectory()
+          ? walk(join(directory, entry.name), `${prefix}${entry.name}/`)
+          : entry.name.endsWith(".test.ts") ? [`${prefix}${entry.name}`] : []);
+    const files = walk("test", "test/");
+    expect(files.length).toBeGreaterThan(30);
+    for (const file of files) {
+      const owners = Object.entries(suites).filter(([, suite]) =>
+        suite.include.some((glob) => matchesGlob(file, glob)) &&
+        !suite.exclude.some((glob) => matchesGlob(file, glob)));
+      expect(owners.map(([name]) => name), file).toHaveLength(1);
+    }
+    // The system list is a literal, so a file deleted from the tree must not
+    // linger in it either.
+    for (const glob of [...suites.system.include, ...suites.e2e.include]) {
+      expect(files, glob).toContain(glob);
+    }
+  });
+});
+
+describe("candidate verification selection", () => {
+  const start = (): CandidatePolicy => {
+    const example = exampleConfig();
+    return {
+      checks: example.checks,
+      verification: example.verification,
+      workflowCriticalPrefixes: example.workflowCriticalPrefixes,
+      workflowCriticalFiles: example.workflowCriticalFiles,
+      ...(example.documentation === undefined ? {} : { documentation: example.documentation })
+    };
+  };
+  const changed = (...paths: string[]) =>
+    ({ identity: "candidate-input", changes: paths.map((path) => ({ status: "M", paths: [Buffer.from(path)] })) });
+  const names = (selection: ReturnType<typeof selectCandidateVerification>) => selection.commands.map((command) => command.name);
+  const everything = ["install", "build", "lint", "typecheck", "test:fast", "test:system", "test:e2e"];
+  const declared = ["install", "lint", "typecheck", "test:fast", "test:system"];
+
+  it("runs the documentation checks for an allowlisted doc, and nothing for evidence", () => {
+    expect(names(selectCandidateVerification(changed("README.md"), start()))).toEqual(["install", "check:docs"]);
+    const evidence = selectCandidateVerification(changed(".signals/issue-1/ready.json"), start());
+    expect(evidence).toMatchObject({ kind: "coordination", commands: [], expanded: false });
+  });
+
+  it("runs only the declared candidate set for a covered product path", () => {
+    const selection = selectCandidateVerification(changed("src/runLoop.ts", "test/runLoop.test.ts"), start());
+    expect(names(selection)).toEqual(declared);
+    expect(selection.expanded).toBe(false);
+  });
+
+  it("adds exactly what a matching rule names, including across both sides of a rename", () => {
+    expect(names(selectCandidateVerification(changed("githooks/pre-push"), start()))).toEqual([...declared, "test:e2e"]);
+    const renamed = selectCandidateVerification(
+      { identity: "rename", changes: [{ status: "R100", paths: [Buffer.from("src/a.ts"), Buffer.from("githooks/a")] }] },
+      start()
+    );
+    expect(names(renamed)).toEqual([...declared, "test:e2e"]);
+    expect(renamed.expanded).toBe(true);
+  });
+
+  it.each([
+    ["a rule that demands everything", changed("pnpm-lock.yaml")],
+    ["a path no rule claims and covers omits", changed("tools/x")],
+    ["a path mixed with a covered one", changed("src/runLoop.ts", "tools/x")],
+    ["an undecodable path", { identity: "encoding", changes: [{ status: "M", paths: [Buffer.from([255])] }] }],
+    ["an indeterminate range", { identity: "missing", changes: null }]
+  ])("expands to the full gate for %s", (_label, input) => {
+    const selection = selectCandidateVerification(input, start());
+    expect(names(selection)).toEqual(everything);
+    expect(selection.expanded).toBe(true);
+    expect(selection.reason).not.toBe("");
+  });
+
+  it("expands to the full gate when the issue froze no candidate policy", () => {
+    const local = start();
+    const selection = selectCandidateVerification(changed("src/runLoop.ts"), { ...local, verification: undefined });
+    expect(names(selection)).toEqual(everything);
+    expect(selection.reason).toBe("no candidate policy is declared");
+  });
+
+  it("keeps the input identity of what it classified, so receipts cannot be mis-keyed", () => {
+    expect(selectCandidateVerification(changed("src/runLoop.ts"), start()).inputIdentity).toBe("candidate-input");
+  });
 });
 
 describe("shared change classification", () => {
@@ -378,6 +526,28 @@ describe("workspace declaration", () => {
     ]) {
       expect(workspaceDeclarationSchema.safeParse(forbidden).success, JSON.stringify(forbidden)).toBe(false);
     }
+  });
+
+  it("preserves verification through buildWorkspaceConfig and refuses incomplete coordinator mode", () => {
+    const verification = exampleConfig().verification;
+    const result = buildWorkspaceConfig({
+      project: "fixture", origin: "https://example.com/fixture.git", baseBranch: "main",
+      agents: ["codex"], profile: "solo", cloneRoot: "/clones", workspaceDir: "/runtime", completesRoot: "/completes",
+      declared: workspaceDeclarationSchema.parse({ verification, checks: exampleConfig().checks }),
+      proposal: { toolchain: "node", checks: [{ name: "product", argv: ["false"] }], workflowCriticalFiles: [], workflowCriticalPrefixes: [] }
+    }, undefined);
+    expect(result.verification).toEqual(verification);
+    expect(coordinatorConfigSchema.safeParse({ ...result, verification: { mode: "coordinator" } }).success).toBe(false);
+    expect(coordinatorConfigSchema.safeParse({
+      ...result,
+      verification: {
+        ...verification,
+        candidate: {
+          ...verification!.candidate!,
+          rules: [{ prefixes: [], files: ["mystery.ts"], add: ["missing-check"] }]
+        }
+      }
+    }).success).toBe(false);
   });
 });
 

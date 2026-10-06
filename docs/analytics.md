@@ -29,6 +29,31 @@ An absence of records means unobserved coverage, not proof that no tests ran.
 Existing `final-check` events remain available for old readers; they are not
 counted again in the new totals. Failed and retried runners count individually.
 
+## Coordinator-owned verification fields (#170)
+
+Coordinator-mode runs add three journal event types and four report fields.
+`candidate-check` records one pre-acceptance gate per submitted product pin;
+`verification-reused` and `verification-joined` record a component satisfied
+from a receipt, carrying the `originalDurationMs` that receipt measured.
+Measurements now also carry `attempt`, `queueWaitMs`, `logPath`, `receiptId`,
+and a real `cacheReason` string instead of the former `"not implemented"`
+literal, which still parses.
+
+`coord analytics` reports:
+
+- `byTrigger` — `{ runners, runnerMs }` for `hook`, `candidate` and `final`.
+  Trigger `hook` counts as hook; otherwise phase `candidate` and phase
+  `finalization` pick the bucket. This is where moved work actually shows up.
+- `reused` / `joined` — components satisfied from a receipt this runner found,
+  and from one another runner wrote while this one waited.
+- `avoidedMs` — runner time those receipts made unnecessary. It is a saving
+  against the measured original, not a projection.
+- `queueWaitMs` — time spent queued behind `maxConcurrentExpensive`.
+
+Critical-path intervals start at `startedAt − queueWaitMs`, so a component that
+waited for an expensive slot charges the issue for the wait it really caused
+rather than looking free.
+
 The historical analysis below describes the older, pre-instrumentation baseline.
 
 Preparation for issue **#89** ("Increase speed and efficiency, reduce token

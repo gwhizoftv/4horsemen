@@ -453,6 +453,79 @@ product's obvious ecosystem (cargo, go, pnpm/npm/yarn, make) and writes it into
 the config for review. That detection happens once, in the installer, and is
 recorded. Hooks never sniff.
 
+### Coordinator-owned verification
+
+`verification` is optional and opt-in. Without it, and for every `start.json`
+written before it existed, the workspace is in `local` mode: the clone hooks run
+`verify`, and the coordinator runs `checks` once at the approved pin.
+
+```jsonc
+"verification": {
+  "mode": "coordinator",
+  // Hook lists used only while bound to an active coordinator run.
+  "coordinated": {
+    "precommit": [{ "name": "check:fast", "argv": ["pnpm", "check:fast"] }],
+    "prepush": []
+  },
+  "candidate": {
+    // Run against every submitted implementation or revision pin.
+    "checks": [
+      { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
+      { "name": "test:fast", "argv": ["pnpm", "test:fast"],
+        "cache": { "inputs": "tree-excluding-evidence",
+                   "probes": [["node", "--version"], ["pnpm", "--version"]] } },
+      { "name": "test:system", "argv": ["pnpm", "test:system"], "expensive": true }
+    ],
+    // Paths these checks are declared to cover. Anything else expands.
+    "covers": { "prefixes": ["src/", "test/"], "files": [] },
+    "rules": [
+      { "prefixes": ["githooks/"], "files": [], "add": ["test:e2e"] },
+      { "prefixes": [], "files": ["pnpm-lock.yaml"], "add": "all" }
+    ]
+  },
+  "maxConcurrentExpensive": 1
+}
+```
+
+`mode: "coordinator"` requires both `coordinated` and `candidate`; every name a
+rule adds must exist in the top-level `checks`; names are unique within `checks`
+and within `candidate.checks`. `coord doctor` resolves the `argv[0]` of the
+coordinated and candidate commands exactly as it already does for `verify`.
+
+**Binding is fail-closed.** A clone's hooks run the `coordinated` lists only
+when every one of these holds: the branch is `issue-<n>/<agent>` with the agent
+equal to this clone's `consensus.agentId`; `start.json` and `cursors.json` for
+that issue are readable; `start.agents` places that agent at this exact clone;
+the issue froze `mode: "coordinator"` with a `coordinated` block; the issue is
+neither completed nor abandoned; and the agent is on the active roster. A
+multi-ref push is never bound, because one issue's list cannot speak for several
+branches. Any other outcome — a missing runtime, a corrupt `cursors.json`, a
+manual `<agent>/<name>` branch, any exception at all — falls back to the local
+`verify` lists and prints the reason. A missing runtime never means "skip".
+
+**Cache metadata is opt-in.** A command with no `cache` is never reused. Only
+declare `cache` for a command whose entire input is the tree plus the declared
+probes and environment. Never cache a command that reads Git history or commit
+identity, contacts an external service, or depends on undeclared environment —
+`install` and `build` stay uncached for exactly this reason. `inputs: "tree"`
+keys on the pin's tree id; `inputs: "tree-excluding-evidence"` ignores
+`.plans/`, `.signals/`, `.code-reviews/`, `.amendments/` and `.escalations/`, so
+an evidence-only commit over identical product bytes reuses the earlier result.
+The receipt key also covers the declared argv, the frozen policy digest, the
+platform, architecture and Node version, each probe's stdout, and each declared
+environment value. Anything that cannot be computed exactly makes the command
+run.
+
+**Retries are diagnostic.** `retry: 1` re-runs a failed command once and
+journals the attempt, but the outcome stays the original failure and no receipt
+is written. A passing retry never turns the gate green.
+
+**Rollout.** Add `test:system` to the live `verify.prepush` before relying on a
+`check:fast` that no longer contains it, so local and manual coverage does not
+shrink. Switch `mode` only between issues: the policy and its digest are
+snapshotted into `start.json` at `coord start`, so a mid-issue `coord install`
+cannot change what a running issue binds to.
+
 ### Scoping verification
 
 ```jsonc

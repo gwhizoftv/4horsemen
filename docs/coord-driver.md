@@ -731,6 +731,56 @@ Manual pause, other holds, the nudge budget, roster, reviews and pins are never
 changed by resource recovery. Whenever evidence is missing, the report says
 `owner release required`.
 
+## Coordinator-owned verification
+
+Opt in with `verification` in the workspace config (see
+[setup-workspace.md](setup-workspace.md)). The policy and a digest of
+`{verification, checks, documentation}` are frozen into `start.json` at `coord
+start`, so a mid-issue `coord install` changes nothing a running issue binds to.
+Without the field, an issue stays in today's local mode.
+
+**The candidate gate.** When an `R4.implement` or `R6.revise` completion is
+otherwise satisfied and pins a product commit, the driver classifies the
+baseline-to-pin range and selects commands with the declared `candidate` policy.
+Selection is fail-closed: an indeterminate range, an unreadable path, a path no
+rule claims that is outside `covers`, or a rule that says `"all"` runs the whole
+`checks` gate instead. The selected commands run in a detached worktree at the
+pin, and the outcome is journaled as one `candidate-check` event.
+
+**Failure goes back to the agent.** A failed candidate check makes the
+submission `rejected`, which the machine turns into `reissue-action`: the agent
+receives a corrected R4/R6 action naming the command, its exit code and the path
+to its log. It is deliberately not `retry-verification`, which would re-evaluate
+the same completion without telling the agent anything.
+
+**Receipts.** A component that exits 0 with declared `cache` metadata writes a
+receipt under `<coordRoot>/verification/receipts/<key>.json`. The key covers the
+input identity (tree id, or an evidence-excluded `ls-tree` digest), the declared
+argv, the frozen policy digest, the platform/arch/Node, each probe's stdout and
+each declared environment value. Receipts are written only for exit-0 runs in a
+coordinator-materialized worktree, are read only from under the coordinator
+root, are schema-validated, and have their key material rehashed on read; any
+problem is a miss with a reason, never a pass. Hooks never read or write them.
+Finalization therefore re-runs only the uncached or missing components — on a
+fresh coordinator root it runs every component of `checks`.
+
+**Joins and the expensive limiter.** Before running a cacheable component the
+driver takes `<coordRoot>/verification/running/<key>.lock`. A live foreign owner
+makes it poll; when the lock frees it re-reads the receipt, journaling
+`verification-joined` on a hit and running the command itself on a miss. A lock
+whose pid is dead on this host, or older than six hours, is stale. Commands
+marked `expensive` additionally take one of `maxConcurrentExpensive` slot locks,
+and the time spent queued is journaled as `queueWaitMs` and counted in the
+analytics critical path.
+
+**Restart.** A cursor still in `verifying` re-reads its completion and runs the
+gate again. Only successful receipts exist, so a failed candidate re-runs and
+fails again rather than being silently accepted.
+
+**Reviewers.** `R5.compare` and the ballot steps render each bound pin's results
+under `## Coordinator check results for the bound pins`, so every reviewer reads
+one execution instead of re-running the suites.
+
 ## Recovery and finalization
 
 On restart, pending completion SHAs are reverified, current actions are reused,

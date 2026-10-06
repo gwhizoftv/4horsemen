@@ -14,6 +14,7 @@ import {
   pruneSupersededWorktrees,
   worktreeLabelsFor
 } from "../src/materializedInputs.js";
+import { decide } from "../src/machine.js";
 import {
   buildOrder,
   computeDerivedInputSetHash,
@@ -2705,6 +2706,237 @@ describe("effectful run loop", () => {
     expect(pushes).toBe(0);
     expect(opens).toBe(0);
     expect(readCursorsState(paths).publication.status).toBe("not-required");
+  });
+});
+
+describe("coordinator candidate verification gate", () => {
+  const candidateSeed = () => {
+    const { root, paths } = fixture();
+    const seed = join(root, "candidate-seed");
+    mkdirSync(seed);
+    git(seed, "init", "-q");
+    mkdirSync(join(seed, "src"), { recursive: true });
+    writeFileSync(join(seed, "src/x.ts"), "product\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "baseline");
+    const baselineSha = git(seed, "rev-parse", "HEAD");
+    writeFileSync(join(seed, "src/x.ts"), "changed\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "implementation");
+    const productPin = git(seed, "rev-parse", "HEAD");
+    mkdirSync(join(seed, ".signals/issue-1"), { recursive: true });
+    writeFileSync(join(seed, ".signals/issue-1/ready.json"), "{}\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "evidence only");
+    const evidencePin = git(seed, "rev-parse", "HEAD");
+    git(root, "clone", "--bare", "-q", seed, paths.mirror);
+    const verification = {
+      mode: "coordinator" as const,
+      coordinated: {
+        precommit: [{ name: "cheap", argv: ["true"] }],
+        prepush: [] as { name: string; argv: string[] }[]
+      },
+      candidate: {
+        checks: [
+          { name: "install", argv: ["fake", "install"] },
+          {
+            name: "test:fast",
+            argv: ["fake", "test:fast"],
+            cache: { inputs: "tree-excluding-evidence" as const, env: [] as string[], probes: [] as string[][] }
+          }
+        ],
+        covers: { prefixes: ["src/", "test/"], files: [] as string[] },
+        rules: [] as { prefixes: string[]; files: string[]; add: "all" | string[] }[]
+      },
+      maxConcurrentExpensive: 1
+    };
+    writeFileSync(paths.start, JSON.stringify({
+      ...readStartState(paths),
+      baselineSha,
+      checks: [
+        { name: "install", argv: ["fake", "install"] },
+        { name: "test:fast", argv: ["fake", "test:fast"],
+          cache: { inputs: "tree-excluding-evidence", env: [], probes: [] } },
+        { name: "build", argv: ["fake", "build"] },
+        { name: "test:e2e", argv: ["fake", "test:e2e"] }
+      ],
+      verification,
+      verificationDigest: "d".repeat(64)
+    }));
+    return { root, paths, seed, baselineSha, productPin, evidencePin };
+  };
+
+  it("rejects a failing candidate with a log path and reissues via decide()", async () => {
+    const { paths, productPin } = candidateSeed();
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    const order = buildOrder(paths, start, cursors, "codex", "R4.implement", null);
+    const observation = {
+      agent: "codex", actionId: order.actionId, submissionSha: productPin,
+      status: "satisfied" as const, outstanding: [] as string[], productPin
+    };
+    const calls: string[][] = [];
+    const failed = await new CoordinatorRunLoop(paths, {
+      tmux: null, mirror: new BareMirror(paths.mirror, "/origin.git"),
+      processRunner: async (argv) => {
+        calls.push([...argv]);
+        return { exitCode: argv.includes("test:fast") ? 7 : 0, stdout: "", stderr: "fast failed" };
+      }
+    }).verifyCandidateChecks(start, order, observation, cursors);
+    expect(failed.status).toBe("rejected");
+    expect(failed.outstanding.join(" ")).toMatch(/candidate check test:fast failed with exit 7 \(log: .*\)/);
+    const logPath = failed.outstanding.join(" ").match(/\(log: ([^)]+)\)/)?.[1];
+    expect(logPath && existsSync(logPath)).toBe(true);
+    expect(readFileSync(logPath!, "utf8")).toContain("fast failed");
+    expect(readJournal(paths).some((event) => event.type === "candidate-check")).toBe(true);
+    const verifying = cursorsStateSchema.parse({
+      ...cursors,
+      issueCursor: { ...cursors.issueCursor, stepId: "R4.implement", gateId: "gate-4-implementations" },
+      agents: {
+        ...cursors.agents,
+        codex: {
+          ...cursors.agents.codex,
+          stepId: "R4.implement",
+          actionId: order.actionId,
+          status: "verifying",
+          outstanding: [],
+          evidenceId: "implementation-pinned"
+        }
+      }
+    });
+    expect(decide({ start, cursors: verifying, observations: [failed] })).toEqual([
+      expect.objectContaining({ type: "reissue-action", agent: "codex" })
+    ]);
+    expect(calls.some((argv) => argv.includes("test:fast"))).toBe(true);
+
+    const restarted = await new CoordinatorRunLoop(paths, {
+      tmux: null, mirror: new BareMirror(paths.mirror, "/origin.git"),
+      processRunner: async (argv) => ({ exitCode: argv.includes("test:fast") ? 7 : 0, stdout: "", stderr: "fast failed" })
+    }).verifyCandidateChecks(readStartState(paths), order, observation, cursors);
+    expect(restarted.status).toBe("rejected");
+  });
+
+  it("attaches checkResults on success and skips the candidate gate in local mode", async () => {
+    const { paths, productPin } = candidateSeed();
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    const order = buildOrder(paths, start, cursors, "codex", "R4.implement", null);
+    const observation = {
+      agent: "codex", actionId: order.actionId, submissionSha: productPin,
+      status: "satisfied" as const, outstanding: [] as string[], productPin
+    };
+    const passed = await new CoordinatorRunLoop(paths, {
+      tmux: null, mirror: new BareMirror(paths.mirror, "/origin.git"),
+      processRunner: async () => ({ exitCode: 0, stdout: "", stderr: "" })
+    }).verifyCandidateChecks(start, order, observation, cursors);
+    expect(passed.status).toBe("satisfied");
+    expect(passed.checkResults?.map((result) => result.name)).toEqual(["install", "test:fast"]);
+
+    writeFileSync(paths.start, JSON.stringify({ ...start, verification: undefined, verificationDigest: undefined }));
+    let calls = 0;
+    const local = await new CoordinatorRunLoop(paths, {
+      tmux: null, mirror: new BareMirror(paths.mirror, "/origin.git"),
+      processRunner: async () => { calls += 1; return { exitCode: 0, stdout: "", stderr: "" }; }
+    }).verifyCandidateChecks(readStartState(paths), order, observation, cursors);
+    expect(local.status).toBe("satisfied");
+    expect(local.checkResults).toBeUndefined();
+    expect(calls).toBe(0);
+  });
+
+  it("reuses a receipt across an evidence-only revise pin and shares results in buildOrder", async () => {
+    const { paths, productPin, evidencePin } = candidateSeed();
+    const start = readStartState(paths);
+    let cursors = readCursorsState(paths);
+    const implementOrder = buildOrder(paths, start, cursors, "codex", "R4.implement", null);
+    const calls: string[][] = [];
+    const first = await new CoordinatorRunLoop(paths, {
+      tmux: null, mirror: new BareMirror(paths.mirror, "/origin.git"),
+      processRunner: async (argv) => { calls.push([...argv]); return { exitCode: 0, stdout: "", stderr: "" }; }
+    }).verifyCandidateChecks(start, implementOrder, {
+      agent: "codex", actionId: implementOrder.actionId, submissionSha: productPin,
+      status: "satisfied", outstanding: [], productPin
+    }, cursors);
+    expect(first.checkResults?.some((result) => result.reused === true)).toBe(false);
+    expect(calls.filter((argv) => argv[0] === "fake").length).toBe(2);
+
+    const reviseOrder = { ...implementOrder, stepId: "R6.revise" as const, actionId: "20000000-0000-4000-8000-000000000001",
+      round: 1 };
+    const second = await new CoordinatorRunLoop(paths, {
+      tmux: null, mirror: new BareMirror(paths.mirror, "/origin.git"),
+      processRunner: async (argv) => { calls.push([...argv]); return { exitCode: 0, stdout: "", stderr: "" }; }
+    }).verifyCandidateChecks(start, reviseOrder, {
+      agent: "codex", actionId: reviseOrder.actionId, submissionSha: evidencePin,
+      status: "satisfied", outstanding: [], productPin: evidencePin
+    }, cursors);
+    expect(second.checkResults?.find((result) => result.name === "test:fast")?.reused).toBe(true);
+    expect(readJournal(paths).some((event) => event.type === "verification-reused")).toBe(true);
+    // install is uncached, so only the cached command is reused.
+    expect(calls.filter((argv) => argv.includes("test:fast")).length).toBe(1);
+
+    cursors = cursorsStateSchema.parse({
+      ...cursors,
+      accepted: [...cursors.accepted, {
+        stepId: "R4.implement", agent: "codex", round: null, submissionSha: productPin,
+        productPin, checkResults: first.checkResults, path: ".signals/issue-1/ready.json",
+        acceptedAt: "2026-08-21T00:00:00.000Z"
+      }]
+    });
+    const compare = buildOrder(paths, start, cursors, "claude", "R5.compare", null);
+    expect(compare.verificationMode).toBe("coordinator");
+    expect(compare.candidateResults).toEqual([
+      expect.objectContaining({ agent: "codex", commitSha: productPin })
+    ]);
+  });
+
+  it("finalization reuses trusted receipts and otherwise runs every declared check", async () => {
+    const { root, paths, seed, evidencePin, baselineSha } = candidateSeed();
+    // Consensus is the reviewed tip; final deletes only this issue's evidence.
+    git(seed, "rm", "-r", ".signals");
+    git(seed, "commit", "-qm", "cleanup");
+    const finalSha = git(seed, "rev-parse", "HEAD");
+    rmSync(paths.mirror, { recursive: true, force: true });
+    git(root, "clone", "--bare", "-q", seed, paths.mirror);
+
+    const start = readStartState(paths);
+    writeFileSync(paths.start, JSON.stringify({ ...start, baselineSha }));
+    const frozen = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    const implementOrder = buildOrder(paths, frozen, cursors, "codex", "R4.implement", null);
+    await new CoordinatorRunLoop(paths, {
+      tmux: null, mirror: new BareMirror(paths.mirror, "/origin.git"),
+      processRunner: async () => ({ exitCode: 0, stdout: "", stderr: "" })
+    }).verifyCandidateChecks(frozen, implementOrder, {
+      agent: "codex", actionId: implementOrder.actionId, submissionSha: evidencePin,
+      status: "satisfied", outstanding: [], productPin: evidencePin
+    }, cursors);
+
+    const finalizeOrder = {
+      ...buildOrder(paths, frozen, cursors, "codex", "R7.finalize", null),
+      inputs: [{ agent: "codex", commitSha: evidencePin, path: ".signals/issue-1/ready.json", kind: "consensus" as const }]
+    };
+    const calls: string[][] = [];
+    const reused = await new CoordinatorRunLoop(paths, {
+      tmux: null, mirror: new BareMirror(paths.mirror, "/origin.git"),
+      processRunner: async (argv) => { calls.push([...argv]); return { exitCode: 0, stdout: "", stderr: "" }; }
+    }).verifyFinalizationChecks(frozen, finalizeOrder, {
+      agent: "codex", actionId: finalizeOrder.actionId, submissionSha: finalSha,
+      status: "satisfied", outstanding: [], productPin: finalSha
+    }, cursors);
+    expect(reused.status).toBe("satisfied");
+    // Cached test:fast is reused; uncached install/build/e2e still run.
+    expect(calls.filter((argv) => argv.includes("test:fast")).length).toBe(0);
+    expect(calls.filter((argv) => argv.includes("build")).length).toBe(1);
+
+    rmSync(join(paths.coordRoot, "verification", "receipts"), { recursive: true, force: true });
+    const coldCalls: string[][] = [];
+    await new CoordinatorRunLoop(paths, {
+      tmux: null, mirror: new BareMirror(paths.mirror, "/origin.git"),
+      processRunner: async (argv) => { coldCalls.push([...argv]); return { exitCode: 0, stdout: "", stderr: "" }; }
+    }).verifyFinalizationChecks(frozen, finalizeOrder, {
+      agent: "codex", actionId: finalizeOrder.actionId, submissionSha: finalSha,
+      status: "satisfied", outstanding: [], productPin: finalSha
+    }, cursors);
+    expect(coldCalls.map((argv) => argv[1])).toEqual(["install", "test:fast", "build", "test:e2e"]);
   });
 });
 

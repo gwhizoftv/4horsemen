@@ -51,6 +51,78 @@ describe("verification instructions", () => {
     expect(raw).toContain("do not run a product suite merely to cast a ballot");
     expect(raw).toContain("Do not `git add`, `git commit`, or `git push`");
   });
+
+  /**
+   * An implementer in coordinator mode must be told who runs the suite, or it
+   * will run it itself and report a result the coordinator never observed.
+   */
+  it.each(["R4.implement", "R6.revise"] as const)("moves suite ownership to the coordinator for %s", (stepId) => {
+    const raw = renderAction({ ...order("/runtime"), stepId, verificationMode: "coordinator" });
+    expect(raw).toContain("The coordinator runs this issue's declared candidate checks on the product pin you submit");
+    expect(raw).toContain("the path to its log");
+    expect(raw).toContain("do not run the full suite yourself");
+    expect(raw).not.toContain("The hooks own mandatory commit/push checks");
+  });
+
+  it.each(["R3.review", "R5.compare", "R7.finalize"] as const)("tells %s to cite the recorded results", (stepId) => {
+    const raw = renderAction({ ...order("/runtime"), stepId, verificationMode: "coordinator" });
+    expect(raw).toContain("Cite the coordinator's recorded check results for the bound pins");
+    expect(raw).toContain("the coordinator owns the candidate and final suites in this run");
+  });
+
+  /**
+   * Coordinator-owned verification is opt-in, so every existing local-mode run
+   * has to render exactly what it rendered before the mode existed.
+   */
+  it.each(["R2.plan", "R4.implement", "R7.finalize"] as const)("leaves local mode byte-identical for %s", (stepId) => {
+    const base = { ...order("/runtime"), stepId };
+    expect(renderAction({ ...base, verificationMode: "local" })).toBe(renderAction(base));
+  });
+});
+
+describe("coordinator check results", () => {
+  const results = [
+    { agent: "claude", commitSha: "4".repeat(40), results: [
+      { name: "lint", argv: ["pnpm", "lint"], exitCode: 0, logPath: "/runtime/issue-1/verification-logs/a.log" },
+      { name: "test:fast", argv: ["pnpm", "test:fast"], exitCode: 0, reused: true, receiptId: "r1" }
+    ] },
+    { agent: "codex", commitSha: "5".repeat(40), results: [
+      { name: "test:e2e", argv: ["pnpm", "test:e2e"], exitCode: 1, joined: true, reused: true,
+        logPath: "/runtime/issue-1/verification-logs/b b.log" }
+    ] }
+  ];
+
+  it("renders one line per pin and command with JSON-encoded log paths", () => {
+    const raw = renderAction({ ...order("/runtime"), stepId: "R5.compare", candidateResults: results });
+    expect(raw).toContain("## Coordinator check results for the bound pins");
+    expect(raw).toContain(`claude ${"4".repeat(40)}: lint exit 0 (ran) log "/runtime/issue-1/verification-logs/a.log"`);
+    expect(raw).toContain(`claude ${"4".repeat(40)}: test:fast exit 0 (reused) log ""`);
+    // A path with a space has to survive as one token, which is what the
+    // JSON encoding is for.
+    expect(raw).toContain(`codex ${"5".repeat(40)}: test:e2e exit 1 (joined) log "/runtime/issue-1/verification-logs/b b.log"`);
+    expect(raw).toContain("Read them instead of re-running the suites");
+  });
+
+  it("omits the section entirely when nothing was run", () => {
+    expect(renderAction(order("/runtime"))).not.toContain("## Coordinator check results");
+    expect(renderAction({ ...order("/runtime"), candidateResults: [] })).not.toContain("## Coordinator check results");
+  });
+
+  /** The same identity gate the change-scope section applies. */
+  it("drops entries whose agent or pin is not a plain identifier", () => {
+    const raw = renderAction({ ...order("/runtime"), candidateResults: [
+      { agent: "../etc", commitSha: "4".repeat(40), results: [{ name: "lint", argv: [], exitCode: 0 }] },
+      { agent: "codex", commitSha: "not-a-sha", results: [{ name: "lint", argv: [], exitCode: 0 }] }
+    ] });
+    expect(raw).not.toContain("## Coordinator check results");
+  });
+
+  it("renders in response actions too, so ballot voters read the same results", () => {
+    const raw = renderAction({ ...order("/runtime"), submissionMode: "response", stepId: "R5.compare-ballot",
+      requiredPath: "", responsePath: "/runtime/response.json", candidateResults: results });
+    expect(raw).toContain("## Coordinator check results for the bound pins");
+    expect(parseAction(raw).submissionMode).toBe("response");
+  });
 });
 
 describe("agent actions", () => {

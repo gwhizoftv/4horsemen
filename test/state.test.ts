@@ -414,3 +414,84 @@ describe("context paths", () => {
     expect(start.contextPaths).toEqual([]);
   });
 });
+
+describe("frozen verification policy", () => {
+  /**
+   * Coordinator-owned verification is opt-in, so an issue started before the
+   * policy existed — or by a workspace that never declared one — has to keep
+   * running as a local-mode issue rather than failing the strict parse.
+   */
+  it("parses a start state with no policy and reports local mode", () => {
+    const { start } = initialize();
+    expect(start.verification).toBeUndefined();
+    expect(start.verificationDigest).toBeUndefined();
+    const legacy: Record<string, unknown> = { ...start };
+    delete legacy.verification;
+    delete legacy.verificationDigest;
+    const parsed = startStateSchema.safeParse(legacy);
+    expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
+    expect(parsed.success && (parsed.data.verification?.mode ?? "local")).toBe("local");
+  });
+
+  /**
+   * The gate reads the frozen copy, never the live config, so what `coord
+   * start` wrote has to survive the round trip byte for byte.
+   */
+  it("round-trips a frozen coordinator policy and its digest", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "coord-state-"));
+    roots.push(workspace);
+    const root = join(workspace, "coord-runtime");
+    mkdirSync(root, { recursive: true });
+    const paths = issueRuntimePaths(root, 1, join(workspace, "completes"));
+    createIssueRuntime(paths, ["codex"]);
+    const verification = {
+      mode: "coordinator" as const,
+      coordinated: {
+        precommit: [{ name: "lint", argv: ["pnpm", "lint"] }],
+        prepush: [{ name: "lint", argv: ["pnpm", "lint"] }]
+      },
+      candidate: {
+        checks: [
+          { name: "lint", argv: ["pnpm", "lint"] },
+          { name: "test:fast", argv: ["pnpm", "test:fast"], cache: { inputs: "tree-excluding-evidence" as const, env: [], probes: [] } }
+        ],
+        covers: { prefixes: ["src/"], files: ["package.json"] },
+        rules: [{ prefixes: ["githooks/"], files: [], add: ["test:e2e"] }]
+      },
+      maxConcurrentExpensive: 2
+    };
+    initializeOperationalState(paths, {
+      issue: 1,
+      issueSessionId: `issue-1:${"a".repeat(40)}`,
+      baselineSha: "a".repeat(40),
+      profile: "solo",
+      originalRoster: ["codex"],
+      branchTemplate: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      maxRevisionRounds: 3,
+      prPolicy: "owner-only",
+      automationDigest: "b".repeat(64),
+      automationDigestScheme: "sha256-length-prefixed-v1",
+      automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }],
+      trustedSourceCommit: "c".repeat(40),
+      origin: "file:///origin.git",
+      coordRoot: root,
+      configPath: join(root, "config.json"),
+      agents: [{ id: "codex", root: "/clones/codex", launcher: "start-codex.sh", delivery: "pull" }],
+      checks: [
+        { name: "lint", argv: ["pnpm", "lint"] },
+        { name: "test:fast", argv: ["pnpm", "test:fast"], cache: { inputs: "tree-excluding-evidence", env: [], probes: [] } },
+        { name: "test:e2e", argv: ["pnpm", "test:e2e"], expensive: true }
+      ],
+      pollIntervalMs: 1000,
+      verification,
+      verificationDigest: "d".repeat(64)
+    });
+
+    const reread = readStartState(paths);
+    expect(reread.verification).toEqual(verification);
+    expect(reread.verificationDigest).toBe("d".repeat(64));
+    expect(reread.checks[1]?.cache).toEqual({ inputs: "tree-excluding-evidence", env: [], probes: [] });
+    expect(reread.checks[2]?.expensive).toBe(true);
+  });
+});

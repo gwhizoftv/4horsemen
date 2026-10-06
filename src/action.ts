@@ -134,6 +134,32 @@ const boundInputFilesSection = (materialized: MaterializedInputs | undefined): s
   );
 };
 
+/**
+ * What the coordinator already ran against each bound pin.
+ *
+ * Rendered here rather than copied into an agent-authored scaffold: an
+ * agent-authored "tests passed" is untrusted, and every reviewer of a pin must
+ * read the same single execution.
+ */
+const candidateResultsSection = (entries: InternalOrder["candidateResults"] = []): string => {
+  const lines = entries
+    .filter((entry) => agentPattern.test(entry.agent) && shaPattern.test(entry.commitSha))
+    .flatMap((entry) =>
+      entry.results.map((result) => {
+        const disposition = result.joined === true ? "joined" : result.reused === true ? "reused" : "ran";
+        return `${entry.agent} ${entry.commitSha}: ${result.name} exit ${result.exitCode} (${disposition}) log ${encodePath(result.logPath ?? "")}`;
+      })
+    );
+  if (lines.length === 0) return "";
+  return (
+    `\n\n## Coordinator check results for the bound pins\n\n` +
+    `The coordinator ran these against the pins bound above, once per pin. ` +
+    `Read them instead of re-running the suites; a reused or joined line means ` +
+    `an identical input identity already passed. ${PATH_ENCODING_NOTE.replace("relative to the repository root", "absolute")}\n\n` +
+    lines.join("\n")
+  );
+};
+
 const inputText = (order: InternalOrder): string =>
   order.inputs.length === 0
     ? "- No peer commits are required for this action."
@@ -146,12 +172,23 @@ const scopeInputText = (order: InternalOrder): string =>
     "\n\n## Approved file-map amendments\n\nThese bound documents authorize the additional exact paths; they are not product parents.\n\n" +
     order.scopeInputs!.map((input) => `- ${input.kind} from ${input.agent}: \`${input.commitSha}\` at ${encodePath(input.path)}`).join("\n");
 
+/**
+ * Coordinator mode moves the declared suites to the coordinator, so the
+ * sentence an agent reads about its own responsibility has to change with it.
+ * Local mode text is byte-identical to what it has always been.
+ */
 const verificationSection = (order: InternalOrder): string => {
-  const responsibility = order.submissionMode === "response"
-    ? "Validate this response's format and bound inputs. Do not commit or push, and do not run a product suite merely to cast a ballot."
-    : ["R4.implement", "R6.revise", "R7.finalize"].includes(order.stepId)
-      ? "Run focused tests while developing. The hooks own mandatory commit/push checks; do not manually duplicate their full commands immediately before committing."
-      : "Publishing only coordination evidence requires artifact/format/evidence validation, not a manual product suite.";
+  const coordinated = order.verificationMode === "coordinator";
+  const candidateStep = order.stepId === "R4.implement" || order.stepId === "R6.revise";
+  const responsibility = coordinated && candidateStep
+    ? "The coordinator runs this issue's declared candidate checks on the product pin you submit, and returns any failure with the command name and the path to its log. Run focused tests while developing; do not run the full suite yourself. The hooks here run only the coordinated cheap checks for this issue."
+    : coordinated
+      ? "Cite the coordinator's recorded check results for the bound pins instead of re-running those suites; the coordinator owns the candidate and final suites in this run."
+      : order.submissionMode === "response"
+        ? "Validate this response's format and bound inputs. Do not commit or push, and do not run a product suite merely to cast a ballot."
+        : ["R4.implement", "R6.revise", "R7.finalize"].includes(order.stepId)
+          ? "Run focused tests while developing. The hooks own mandatory commit/push checks; do not manually duplicate their full commands immediately before committing."
+          : "Publishing only coordination evidence requires artifact/format/evidence validation, not a manual product suite.";
   return "\n\n## Verification responsibilities\n\n" + responsibility + "\n\n" +
     "Reviewers read existing verification results for unchanged implementations and run additional tests only to investigate a finding; missing results are not a pass. " +
     "Hooks classify the staged index and outgoing ranges: allowlisted documentation uses the declared docs profile; mixed or unknown changes retain product checks. " +
@@ -178,7 +215,7 @@ Publish the required artifact at:
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${scopeInputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}${verificationSection(order)}${ownerGuidanceSection(order.ownerGuidance)}
+${inputText(order)}${scopeInputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}${candidateResultsSection(order.candidateResults)}${verificationSection(order)}${ownerGuidanceSection(order.ownerGuidance)}
 
 Push the commit containing the artifact to \`${order.branch}\`. Then write that
 exact 40-character lowercase commit SHA as the sole contents of:
@@ -225,7 +262,7 @@ inputs from the files listed below.
 
 Use these exact inputs (dropped agents are intentionally omitted):
 
-${inputText(order)}${eligible}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}${verificationSection(order)}${ownerGuidanceSection(order.ownerGuidance)}
+${inputText(order)}${eligible}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}${candidateResultsSection(order.candidateResults)}${verificationSection(order)}${ownerGuidanceSection(order.ownerGuidance)}
 
 After writing the marker, keep this file. Before waiting for more input, re-read
 it. If \`actionId\` in the front matter has changed, execute the new instructions

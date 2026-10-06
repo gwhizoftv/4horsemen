@@ -58,10 +58,51 @@ describe("verification measurements", () => {
     journal.push(journalEventSchema.parse({ formatVersion: 4, sequence: 5, at: start.createdAt, type: "final-check", details: { durationMs: 999 } }));
     const report = buildAnalytics({ start, journal });
     expect(report.verification).toEqual({ recordedRunners: 2, skipped: 1, artifactValidations: 1,
-      aggregateRunnerMs: 25_000, criticalPathWaitMs: 20_000, byPhase: { precommit: 2 } });
+      aggregateRunnerMs: 25_000, criticalPathWaitMs: 20_000, byPhase: { precommit: 2 },
+      byTrigger: { hook: { runners: 2, runnerMs: 25_000 }, candidate: { runners: 0, runnerMs: 0 },
+        final: { runners: 0, runnerMs: 0 } },
+      reused: 0, joined: 0, avoidedMs: 0, queueWaitMs: 0 });
     expect(renderAnalytics(report)).toContain("manual commands are unobserved");
     expect(buildAnalytics({ start, journal: journal.slice(0, 1) }).verification).toMatchObject({ recordedRunners: 0,
       aggregateRunnerMs: null, criticalPathWaitMs: null });
+  });
+
+  it("counts candidate/final runners, reuse/join savings, and queue wait on the critical path", () => {
+    const candidate = verificationMeasurement({
+      trigger: "coordinator", phase: "candidate", inputIdentity: "tree:abc", classification: "product",
+      reason: "candidate", command: { name: "test:fast", argv: ["pnpm", "test:fast"] },
+      exitCode: 0, skipReason: null, queueWaitMs: 2_000,
+      startedAt: "2026-08-21T00:00:10.000Z", completedAt: "2026-08-21T00:00:20.000Z"
+    });
+    const finalRun = verificationMeasurement({
+      trigger: "coordinator", phase: "finalization", inputIdentity: "tree:abc", classification: "product",
+      reason: "final", command: { name: "build", argv: ["pnpm", "build"] },
+      exitCode: 0, skipReason: null,
+      startedAt: "2026-08-21T00:00:20.000Z", completedAt: "2026-08-21T00:00:25.000Z"
+    });
+    const journal: JournalEvent[] = [
+      journalEventSchema.parse({ formatVersion: 4, sequence: 0, at: start.createdAt, type: "started", details: { issue: start.issue } }),
+      journalEventSchema.parse({ formatVersion: 4, sequence: 1, at: candidate.completedAt, type: "verification-run", details: candidate }),
+      journalEventSchema.parse({ formatVersion: 4, sequence: 2, at: finalRun.completedAt, type: "verification-run", details: finalRun }),
+      journalEventSchema.parse({
+        formatVersion: 4, sequence: 3, at: "2026-08-21T00:00:26.000Z", type: "verification-reused",
+        details: { name: "test:fast", originalDurationMs: 9_000, receiptId: "r1" }
+      }),
+      journalEventSchema.parse({
+        formatVersion: 4, sequence: 4, at: "2026-08-21T00:00:27.000Z", type: "verification-joined",
+        details: { name: "lint", originalDurationMs: 1_000, receiptId: "r2" }
+      })
+    ];
+    const report = buildAnalytics({ start, journal });
+    expect(report.verification.byTrigger).toEqual({
+      hook: { runners: 0, runnerMs: 0 },
+      candidate: { runners: 1, runnerMs: 10_000 },
+      final: { runners: 1, runnerMs: 5_000 }
+    });
+    expect(report.verification).toMatchObject({ reused: 1, joined: 1, avoidedMs: 10_000, queueWaitMs: 2_000 });
+    // Critical path starts at startedAt − queueWaitMs for the candidate run.
+    expect(report.verification.criticalPathWaitMs).toBe(17_000);
+    expect(renderAnalytics(report)).toMatch(/reused|avoided|queue/i);
   });
 });
 

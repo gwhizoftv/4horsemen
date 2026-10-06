@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { clearCompletion, createActionId, readAction, readCompletion, writeAction } from "./action.js";
 import {
@@ -32,8 +32,9 @@ import {
 } from "./ballotPublication.js";
 import { computeInputSetHash, evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
-import { inspectRangeChanges, selectVerification } from "./changeClassification.js";
+import { inspectRangeChanges, selectCandidateVerification, selectVerification } from "./changeClassification.js";
 import { createVerificationIngestor, verificationMeasurement } from "./verificationLog.js";
+import { runVerification, type VerificationSelection } from "./verificationRunner.js";
 import { BareMirror, GitCommandError, hermeticGitEnv, isTransientGitFailure } from "./mirror.js";
 import {
   materializeBoundInputs,
@@ -44,7 +45,6 @@ import { renderArtifactScaffold } from "./orderScaffold.js";
 import {
   agentResponsePath,
   agentRuntimePaths,
-  containedPath,
   evidenceWorktreePath,
   resourceBindingPaths,
   type IssueRuntimePaths
@@ -98,6 +98,7 @@ import {
   describeWorkflowStep,
   type BoundInput,
   type ChangeScopeEntry,
+  type CheckResult,
   type MaterializedInputs,
   type EvidenceObservation,
   type InternalOrder,
@@ -743,6 +744,22 @@ export const buildOrder = (
   const lastAmendment = cursors.amendments?.at(-1);
   const amendmentNotice = isWork && lastAmendment !== undefined && lastAmendment.outcome !== "approved"
     ? `\n\nThe last amendment was ${lastAmendment.outcome}; it grants no additional paths. Reasons: ${JSON.stringify(lastAmendment.rationale)}` : "";
+  // Every reviewer of a pin reads the one execution the coordinator already
+  // did against it, which is why these are keyed on the bound pins.
+  const boundPins = new Set(inputs.map((input) => input.commitSha));
+  const candidateResults = cursors.accepted
+    .filter(
+      (submission) =>
+        (submission.stepId === "R4.implement" || submission.stepId === "R6.revise") &&
+        submission.checkResults !== undefined &&
+        submission.productPin !== undefined &&
+        boundPins.has(submission.productPin)
+    )
+    .map((submission) => ({
+      agent: submission.agent,
+      commitSha: submission.productPin as string,
+      results: submission.checkResults as readonly CheckResult[]
+    }));
   const eligibleChoices =
     stepId === "R3.plan-ballot"
       ? planChoices
@@ -798,6 +815,8 @@ export const buildOrder = (
     ownerGuidance: ownerGuidanceFor(cursors, stepId, round),
     changeScope,
     ...(materialized === undefined ? {} : { materialized }),
+    verificationMode: start.verification?.mode ?? "local",
+    candidateResults,
     activeRoster: [...cursors.activeRoster],
     eligibleChoices
   };
@@ -2386,60 +2405,117 @@ export class CoordinatorRunLoop {
       return { ...observation, checkResults: [] };
     }
 
-    const target = containedPath(this.paths.issueRoot, `.verification-${randomUUID()}`);
-    const checkResults: Array<{ name: string; argv: string[]; exitCode: number }> = [];
-    try {
-      this.authority(cursors);
-      await this.mirror.materializeWorktree(target, observation.productPin);
-      this.authority(cursors);
-      for (const check of selected.commands) {
-        this.authority(cursors);
-        const argv = check.argv.map((argument) => argument.replaceAll("{worktree}", target));
-        const checkStartedAt = this.now();
-        const record = (exitCode: number, error?: string) => {
-          const measurement = verificationMeasurement({ trigger: "coordinator", phase: "finalization",
-            inputIdentity: selected.inputIdentity, classification: selected.kind, reason: selected.reason,
-            command: { name: check.name, argv }, startedAt: checkStartedAt, completedAt: this.now(),
-            exitCode, skipReason: null, ...(error === undefined ? {} : { error }) });
-          this.authority(cursors);
-          appendJournal(this.paths, { type: "verification-run", agent: order.agent, actionId: order.actionId,
-            details: measurement }, measurement.completedAt);
-          return measurement;
-        };
-        let result: Awaited<ReturnType<ProcessRunner>>;
-        try { result = await this.processRunner(argv, target); }
-        catch (error) {
-          record(1, String(error));
-          // A coordinator launch failure is not a rejected agent submission.
-          throw error;
-        }
-        const measurement = record(result.exitCode);
-        checkResults.push({ name: check.name, argv, exitCode: result.exitCode });
-        appendJournal(
-          this.paths,
-          {
-            type: "final-check",
-            agent: order.agent,
-            actionId: order.actionId,
-            details: { tier: "checks", name: check.name, argv, exitCode: result.exitCode, durationMs: measurement.durationMs }
-          },
-          measurement.completedAt
-        );
-        if (result.exitCode !== 0) {
-          return {
-            ...observation,
-            status: "rejected",
-            outstanding: [
-              `finalization check (tier: checks) ${check.name} failed with exit ${result.exitCode}: ${result.stderr.trim()}`
-            ]
-          };
-        }
-      }
-    } finally {
-      await this.mirror.removeWorktree(target);
-      rmSync(target, { recursive: true, force: true });
+    // A coordinator launch failure is not a rejected agent submission, so the
+    // runner's launch errors propagate out of here untouched.
+    const run = await this.runVerificationFor(start, order, observation.productPin, selected, "final", "finalization", cursors);
+    this.authority(cursors);
+    for (const record of run.records) {
+      appendJournal(
+        this.paths,
+        {
+          type: "final-check",
+          agent: order.agent,
+          actionId: order.actionId,
+          details: { tier: "checks", name: record.name, argv: record.argv, exitCode: record.exitCode,
+            durationMs: record.durationMs, cacheReason: record.cacheReason, attempt: record.attempt,
+            logPath: record.logPath, receiptId: record.receiptId }
+        },
+        this.now()
+      );
     }
-    return { ...observation, checkResults };
+    if (run.failed !== undefined) {
+      return {
+        ...observation,
+        status: "rejected",
+        outstanding: [
+          `finalization check (tier: checks) ${run.failed.name} failed with exit ${run.failed.exitCode}: ` +
+            `${run.failed.stderr.trim()}${run.failed.note} (log: ${run.failed.logPath ?? "unavailable"})`
+        ]
+      };
+    }
+    return { ...observation, checkResults: run.results };
+  }
+
+  private runVerificationFor(
+    start: StartState,
+    order: InternalOrder,
+    pin: string,
+    selection: VerificationSelection,
+    trigger: "candidate" | "final",
+    phase: "candidate" | "finalization",
+    cursors: CursorsState
+  ): ReturnType<typeof runVerification> {
+    return runVerification({
+      paths: this.paths,
+      start,
+      mirror: this.mirror,
+      processRunner: this.processRunner,
+      now: this.now,
+      checkpoint: () => void this.authority(cursors),
+      agent: order.agent,
+      actionId: order.actionId,
+      trigger,
+      phase,
+      pin,
+      selection,
+      sleep: (milliseconds) => this.sleep(milliseconds)
+    });
+  }
+
+  /**
+   * The coordinator-mode gate on a submitted implementation or revision pin.
+   *
+   * Agents keep running focused tests; this is where the declared suites
+   * actually run, once per pin. A failure is a rejected submission, which the
+   * machine turns into a reissued action naming the command and its log, rather
+   * than a silent re-evaluation of the same completion.
+   */
+  async verifyCandidateChecks(
+    start: StartState,
+    order: InternalOrder,
+    observation: EvidenceObservation,
+    cursors: CursorsState
+  ): Promise<EvidenceObservation> {
+    if (observation.status !== "satisfied" || observation.productPin === undefined) return observation;
+    if (order.stepId !== "R4.implement" && order.stepId !== "R6.revise") return observation;
+    if (start.verification?.mode !== "coordinator") return observation;
+
+    const pin = observation.productPin;
+    const selected = selectCandidateVerification(inspectRangeChanges(this.mirror.path, start.baselineSha, pin), start);
+    this.authority(cursors);
+    const run = selected.commands.length === 0
+      ? { ok: true, results: [], records: [], failed: undefined }
+      : await this.runVerificationFor(start, order, pin, selected, "candidate", "candidate", cursors);
+    this.authority(cursors);
+
+    const outstanding = run.failed === undefined
+      ? []
+      : [
+          `candidate check ${run.failed.name} failed with exit ${run.failed.exitCode}` +
+            `${run.failed.note} (log: ${run.failed.logPath ?? "unavailable"})`
+        ];
+    appendJournal(
+      this.paths,
+      {
+        type: "candidate-check",
+        agent: order.agent,
+        actionId: order.actionId,
+        details: {
+          pin,
+          classification: selected.kind,
+          reason: selected.reason,
+          expanded: selected.expanded,
+          commands: run.results.map((result) => ({
+            name: result.name, exitCode: result.exitCode, reused: result.reused === true,
+            joined: result.joined === true, receiptId: result.receiptId ?? null, logPath: result.logPath ?? null
+          })),
+          outcome: run.failed === undefined ? "satisfied" : "rejected"
+        }
+      },
+      this.now()
+    );
+    if (run.failed !== undefined) return { ...observation, status: "rejected", outstanding };
+    return { ...observation, checkResults: run.results };
   }
 
   private async publishAcceptedFinalization(start: StartState, cursors: CursorsState): Promise<CursorsState> {
@@ -2874,6 +2950,8 @@ export class CoordinatorRunLoop {
       );
       this.authority(cursors);
       observation = await this.verifyFinalizationChecks(start, order, observation, cursors);
+      this.authority(cursors);
+      observation = await this.verifyCandidateChecks(start, order, observation, cursors);
       this.authority(cursors);
       observations.push(observation);
       }

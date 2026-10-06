@@ -198,6 +198,10 @@ Reviewers read existing verification results for unchanged implementations and
 run additional tests only to investigate a finding; missing results are not a
 pass. Response-mode ballots still do not commit or push.
 
+In a coordinator-mode run, coord owns the candidate and final suites: it runs
+them once per submitted pin and returns failures with their log, so cite coord's
+recorded results instead of re-running those suites.
+
 Hooks classify the staged index and outgoing push ranges. Explicitly allowlisted
 documentation uses the declared documentation profile; unknown or mixed changes
 retain product checks. The coordinator owns final checks at the approved pin,
