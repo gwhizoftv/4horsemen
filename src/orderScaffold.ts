@@ -85,7 +85,9 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
         artifact: "finalization",
         consensusSha: ctx.inputs[0]?.commitSha ?? PLACEHOLDER_SHA,
         finalSha: PLACEHOLDER_SHA,
-        checks: [{ argv: ["<exact check argv from workspace config>"], exitCode: 0 }]
+        // The coordinator runs the final profile independently at finalSha.
+        // Do not prompt an agent to fabricate a successful coordinator result.
+        checks: []
       };
     default:
       return null;

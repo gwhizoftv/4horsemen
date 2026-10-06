@@ -23,7 +23,8 @@ import {
   digestSchema,
   gitShaSchema,
   issueSchema,
-  issueSessionIdSchema
+  issueSessionIdSchema,
+  repositoryPathSchema
 } from "./protocol.js";
 import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.js";
 import { resourceEvidenceSchema } from "./resourceEvidence.js";
@@ -109,6 +110,13 @@ export const verifyConfigSchema = z
   .strict();
 
 export const verifyPhaseSchema = z.enum(["precommit", "prepush"]);
+
+/** Opt-in prose/image allowlist; never infer documentation from an extension. */
+export const documentationProfileSchema = z.object({
+  paths: z.array(repositoryPathSchema).min(1),
+  verify: verifyConfigSchema,
+  checks: z.array(checkCommandSchema).min(1)
+}).strict();
 
 /**
  * Path fragments the pre-push scope filter compares against. They cross a
@@ -222,6 +230,7 @@ export const coordinatorConfigSchema = z
     pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000),
     toolchain: z.string().min(1).optional(),
     verify: verifyConfigSchema.optional(),
+    documentation: documentationProfileSchema.optional(),
     workflowCriticalPrefixes: z.array(pathTokenSchema).default([]),
     workflowCriticalFiles: z.array(pathTokenSchema).default([]),
     /**
@@ -263,6 +272,7 @@ export const workspaceDeclarationSchema = z
   .object({
     toolchain: z.string().min(1).optional(),
     verify: verifyConfigSchema.optional(),
+    documentation: documentationProfileSchema.optional(),
     workflowCriticalPrefixes: z.array(pathTokenSchema).optional(),
     workflowCriticalFiles: z.array(pathTokenSchema).optional(),
     checks: z.array(checkCommandSchema).min(1).optional(),
@@ -335,6 +345,9 @@ export const startStateSchema = z
     agents: z.array(agentConfigSchema).min(1),
     checks: z.array(checkCommandSchema).min(1),
     pollIntervalMs: z.number().int().min(100).max(60_000),
+    documentation: documentationProfileSchema.optional(),
+    workflowCriticalPrefixes: z.array(pathTokenSchema).optional(),
+    workflowCriticalFiles: z.array(pathTokenSchema).optional(),
     /**
      * Advisory reading named in every action. Defaulted rather than required so
      * a start.json written before this field existed still parses under the
@@ -741,6 +754,7 @@ const journalEventTypeSchema = z.enum([
   "action-restarted",
   "abandoned",
   "final-check",
+  "verification-run",
   "publication-pending",
   "publication-failed",
   "pr-created",
@@ -859,10 +873,12 @@ export const suspendOwnerGuidance = (cursors: CursorsState): CursorsState => {
  */
 export type StartStateInput = Omit<
   StartState,
-  "formatVersion" | "createdAt" | "contextPaths" | "completesRoot"
+  "formatVersion" | "createdAt" | "contextPaths" | "completesRoot" | "workflowCriticalPrefixes" | "workflowCriticalFiles"
 > & {
   createdAt?: string;
   contextPaths?: readonly string[];
+  workflowCriticalPrefixes?: readonly string[];
+  workflowCriticalFiles?: readonly string[];
   /**
    * Omitted by callers: it is taken from the `IssueRuntimePaths` the state is
    * written with, so `start.json` cannot record a mailbox other than the one

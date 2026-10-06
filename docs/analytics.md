@@ -1,5 +1,27 @@
 # Coordination analytics — what we can measure today, and what we cannot
 
+## Verification measurements (#162)
+
+`verification-run` records runner invocations and explicit skips separately from
+artifact validation (`verify-result`). Each records trigger, phase, input identity
+(index tree or commit range), selected class/reason, command, start/end time,
+duration, exit code, and skip/cache reason. There is no receipt reuse/cache yet.
+Hook observations are advisory, written to ignored clone-local
+`.coord/verification/<eventId>.json` files and ingested idempotently into the
+matching issue session's journal. Invalid/stale observations do not affect gates;
+telemetry failures do not authorize skipping verification. Manual-branch hooks
+keep unattributed local records. Manually invoked commands are not instrumented.
+
+`coord analytics` reports recorded runner counts by phase, skips, aggregate
+runner time, and non-overlapping verification wait (the union of recorded runner
+intervals, so concurrent agents are not double-counted). These are observed costs,
+not a reconstructed causal critical path or an invented issue-wide testing total.
+An absence of records means unobserved coverage, not proof that no tests ran.
+Existing `final-check` events remain available for old readers; they are not
+counted again in the new totals. Failed and retried runners count individually.
+
+The historical analysis below describes the older, pre-instrumentation baseline.
+
 Preparation for issue **#89** ("Increase speed and efficiency, reduce token
 usage, tool calling"). Issue 89 asks whether we can push work into the
 coordinator, consolidate messaging, and add context files to cut token count and

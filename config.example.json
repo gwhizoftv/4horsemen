@@ -50,6 +50,21 @@
   "digestPaths": [],
   "contextPaths": ["docs/repo-map.md"],
   "pollIntervalMs": 1000,
+  "verify": {
+    "precommit": [{ "name": "check:fast", "argv": ["pnpm", "check:fast"] }],
+    "prepush": [{ "name": "test:e2e", "argv": ["pnpm", "test:e2e"] }]
+  },
+  "documentation": {
+    "paths": ["README.md", "CONTRIBUTING.md", "SECURITY.md", "docs/setup-workspace.md", "docs/analytics.md"],
+    "verify": {
+      "precommit": [{ "name": "check:docs", "argv": ["pnpm", "check:docs"] }],
+      "prepush": [{ "name": "check:docs", "argv": ["pnpm", "check:docs"] }]
+    },
+    "checks": [
+      { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
+      { "name": "check:docs", "argv": ["pnpm", "check:docs"] }
+    ]
+  },
   "checks": [
     { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
     { "name": "check", "argv": ["pnpm", "check"] }

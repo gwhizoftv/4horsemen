@@ -3,6 +3,8 @@ import { existsSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { localConfigGet } from "./gitExec.js";
 import { readConfig, type CheckCommand, type CoordinatorConfig, type VerifyPhase } from "./state.js";
+import { selectVerification, type ChangeInput } from "./changeClassification.js";
+import { verificationMeasurement, type VerificationMeasurement } from "./verificationLog.js";
 
 /**
  * The bridge between the shell hook bodies and the workspace config.
@@ -102,6 +104,9 @@ export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): st
   const commands = [
     ...(config.verify?.precommit ?? []),
     ...(config.verify?.prepush ?? []),
+    ...(config.documentation?.verify.precommit ?? []),
+    ...(config.documentation?.verify.prepush ?? []),
+    ...(config.documentation?.checks ?? []),
     ...config.checks
   ];
   const missing = new Set<string>();
@@ -136,16 +141,37 @@ export const runVerifyPhase = (input: {
   phase: VerifyPhase;
   log: (message: string) => void;
   runner?: VerifyRunner;
+  changes?: ChangeInput;
+  record?: (measurement: VerificationMeasurement) => void;
 }): VerifyRunResult => {
   const runner = input.runner ?? inheritRunner;
-  const commands = verifyCommands(input.config, input.phase);
+  const selected = selectVerification(input.changes ?? { changes: null, identity: "unknown" }, input.config, input.phase,
+    // The evidence exemption does not require a product verification declaration.
+    input.config.verify?.[input.phase] ?? []);
+  if (selected.kind !== "coordination") verifyCommands(input.config, input.phase);
+  const { commands } = selected;
+  const record = (command: CheckCommand | null, startedAt: string, exitCode: number, error?: string) => {
+    input.record?.(verificationMeasurement({ trigger: "hook", phase: input.phase,
+      inputIdentity: selected.inputIdentity, classification: selected.kind, reason: selected.reason,
+      command, startedAt, completedAt: new Date().toISOString(), exitCode,
+      skipReason: command === null ? selected.kind === "coordination" ? "coordination evidence only" : "explicit empty profile" : null,
+      ...(error === undefined ? {} : { error }) }));
+  };
   if (commands.length === 0) {
-    input.log(`coord ${input.phase}: no commands declared for this project (explicit empty verify).\n`);
+    input.log(`coord ${input.phase}: skipping declared checks — ${selected.reason} (no commands).\n`);
+    record(null, new Date().toISOString(), 0);
     return { ok: true };
   }
   for (const command of commands) {
     input.log(`coord ${input.phase}: ${command.name} — ${command.argv.join(" ")}\n`);
-    const exitCode = runner(command, input.clone);
+    const startedAt = new Date().toISOString();
+    let exitCode: number;
+    try { exitCode = runner(command, input.clone); }
+    catch (error) {
+      record(command, startedAt, 1, String(error));
+      throw error;
+    }
+    record(command, startedAt, exitCode);
     if (exitCode !== 0) return { ok: false, failed: command, exitCode };
   }
   return { ok: true };

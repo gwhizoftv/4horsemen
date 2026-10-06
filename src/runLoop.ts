@@ -32,6 +32,8 @@ import {
 } from "./ballotPublication.js";
 import { computeInputSetHash, evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
+import { inspectRangeChanges, selectVerification } from "./changeClassification.js";
+import { ingestVerificationMeasurements, verificationMeasurement } from "./verificationLog.js";
 import { BareMirror, GitCommandError, hermeticGitEnv, isTransientGitFailure } from "./mirror.js";
 import {
   materializeBoundInputs,
@@ -2369,17 +2371,33 @@ export class CoordinatorRunLoop {
     const verified = verifyFinalization({ root: this.mirror.path, issue: start.issue, consensusSha, finalSha: observation.productPin });
     if (!verified.ok) return { ...observation, status: "rejected", outstanding: [verified.details] };
 
+    // Evidence cleanup is the final commit, not the full issue change. Always
+    // classify from the frozen issue baseline, never the cleanup's parent.
+    const selected = selectVerification(inspectRangeChanges(this.mirror.path, start.baselineSha, observation.productPin),
+      start, "finalization", start.checks);
+    if (selected.commands.length === 0) {
+      const at = this.now();
+      this.authority(cursors);
+      appendJournal(this.paths, { type: "verification-run", agent: order.agent, actionId: order.actionId,
+        details: verificationMeasurement({ trigger: "coordinator", phase: "finalization",
+          inputIdentity: selected.inputIdentity, classification: selected.kind, reason: selected.reason,
+          command: null, startedAt: at, completedAt: at, exitCode: 0, skipReason: selected.reason }) }, at);
+      return { ...observation, checkResults: [] };
+    }
+
     const target = containedPath(this.paths.issueRoot, `.verification-${randomUUID()}`);
     const checkResults: Array<{ name: string; argv: string[]; exitCode: number }> = [];
     try {
       this.authority(cursors);
       await this.mirror.materializeWorktree(target, observation.productPin);
       this.authority(cursors);
-      for (const check of start.checks) {
+      for (const check of selected.commands) {
         this.authority(cursors);
         const argv = check.argv.map((argument) => argument.replaceAll("{worktree}", target));
         const checkStartedAt = this.now();
-        const result = await this.processRunner(argv, target);
+        let result: Awaited<ReturnType<ProcessRunner>>;
+        try { result = await this.processRunner(argv, target); }
+        catch (error) { result = { exitCode: 1, stdout: "", stderr: String(error) }; }
         const checkCompletedAt = this.now();
         const checkStartedMs = Date.parse(checkStartedAt);
         const checkCompletedMs = Date.parse(checkCompletedAt);
@@ -2397,15 +2415,15 @@ export class CoordinatorRunLoop {
             type: "final-check",
             agent: order.agent,
             actionId: order.actionId,
-            // The tier is recorded because two different suites can fail the
-            // same project: the agent's own clone runs the declared `verify`
-            // before a commit exists, and this runs the declared `checks`
-            // hermetically at the approved commit. Only the second one reaches
-            // the journal, and saying so is what makes the distinction legible.
             details: { tier: "checks", name: check.name, argv, exitCode: result.exitCode, durationMs }
           },
           checkCompletedAt
         );
+        appendJournal(this.paths, { type: "verification-run", agent: order.agent, actionId: order.actionId,
+          details: verificationMeasurement({ trigger: "coordinator", phase: "finalization",
+            inputIdentity: selected.inputIdentity, classification: selected.kind, reason: selected.reason,
+            command: { name: check.name, argv }, startedAt: checkStartedAt, completedAt: checkCompletedAt,
+            exitCode: result.exitCode, skipReason: null }) }, checkCompletedAt);
         if (result.exitCode !== 0) {
           return {
             ...observation,
@@ -2693,7 +2711,10 @@ export class CoordinatorRunLoop {
       let cursors = readCursorsState(this.paths);
       if (cursors.abandoned || cursors.completed) return cursors;
       for (const agent of start.agents) {
-        if (cursors.activeRoster.includes(agent.id)) ingestContainmentProbe(this.paths, agent.root, agent.id);
+        if (cursors.activeRoster.includes(agent.id)) {
+          ingestContainmentProbe(this.paths, agent.root, agent.id);
+          ingestVerificationMeasurements(this.paths, agent.root, agent.id);
+        }
       }
       if (cursors.paused) {
         // Observation-only while held: no preparation, delivery, acceptance or publication.

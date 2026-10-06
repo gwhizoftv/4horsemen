@@ -26,45 +26,7 @@ status=0
 # absent today.
 push_refs="$(cat)"
 
-# Which paths make a push able to change what the workflow does is a project
-# fact, not a coordination one, so it is declared in the workspace config. An
-# empty declaration means no narrowing was declared: every push is in scope.
-workflow_critical_prefixes=()
-workflow_critical_files=()
-scope_declared=false
-
-if scope="$(coord_scope)"; then
-  while IFS=$'\t' read -r kind value; do
-    [[ -n "$value" ]] || continue
-    case "$kind" in
-      prefix) workflow_critical_prefixes+=("$value"); scope_declared=true ;;
-      file) workflow_critical_files+=("$value"); scope_declared=true ;;
-    esac
-  done <<< "$scope"
-else
-  exit 1
-fi
-
-is_workflow_critical() {
-  local path="$1" prefix file
-
-  $scope_declared || return 0
-
-  for prefix in "${workflow_critical_prefixes[@]}"; do
-    [[ "$path" == "$prefix"* ]] && return 0
-  done
-
-  for file in "${workflow_critical_files[@]}"; do
-    [[ "$path" == "$file" ]] && return 0
-  done
-
-  return 1
-}
-
 refs=0
-push_local_sha=""
-push_remote_sha=""
-push_ref=""
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   # A here-string on an empty buffer still yields one empty line; skip it rather
@@ -116,66 +78,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
 
   refs=$((refs + 1))
-  push_local_sha="$local_sha"
-  push_remote_sha="$remote_sha"
-  push_ref="$remote_ref"
 done <<< "$push_refs"
 
-# 4) Decide whether this push can affect the declared workflow-critical paths.
-# Only the pre-push verification is scoped here; pre-commit stays unconditional.
-run_verify=false
-scope_reason=""
-
-if [[ $status -ne 0 ]]; then
-  scope_reason="push already rejected"
-elif [[ $refs -eq 0 ]]; then
-  scope_reason="no refs to push"
-elif [[ $refs -gt 1 ]]; then
-  run_verify=true
-  scope_reason="$refs refs pushed at once; the changed-path set is ambiguous"
-else
-  base=""
-  if [[ "$push_remote_sha" != "$ZERO" ]]; then
-    base="$push_remote_sha"
-  else
-    # A new remote branch has no previous state to diff against. Derive the
-    # base deterministically from the shared branch instead of exempting the
-    # push, which would let the first push of any branch skip verification.
-    base="$(git merge-base "$push_local_sha" "refs/remotes/$REMOTE_NAME/$SHARED_BRANCH" 2>/dev/null || true)"
-  fi
-
-  if [[ -z "$base" ]]; then
-    run_verify=true
-    scope_reason="no deterministic comparison base for ${push_ref:-the pushed ref}"
-  elif ! changed="$(git diff --name-only "$base" "$push_local_sha" 2>/dev/null)"; then
-    run_verify=true
-    scope_reason="could not list the changed paths of ${push_ref:-the pushed ref}"
-  else
-    changed_count=0
-    while IFS= read -r path; do
-      [[ -n "$path" ]] || continue
-      changed_count=$((changed_count + 1))
-      if is_workflow_critical "$path"; then
-        run_verify=true
-        scope_reason="workflow-critical path $path"
-        break
-      fi
-    done <<< "$changed"
-
-    if [[ "$run_verify" == false ]]; then
-      scope_reason="no workflow-critical paths among $changed_count changed file(s)"
-    fi
-  fi
-fi
-
-if [[ "$run_verify" == true ]]; then
-  echo "$AGENT_LABEL hook: declared pre-push checks required — $scope_reason."
-else
-  echo "$AGENT_LABEL hook: declared pre-push checks skipped — $scope_reason."
-fi
-
-if [[ $status -eq 0 && "$run_verify" == true ]]; then
-  coord_verify prepush || status=1
+# 4) Shared policy inspects every actual outgoing range, with both rename
+# paths. Missing history and unknown paths retain the product checks. Keep
+# stdin buffered until all integrity gates above have inspected it.
+if [[ $status -eq 0 && $refs -gt 0 ]]; then
+  coord_verify prepush <<< "$push_refs" || status=1
 fi
 
 [[ $status -eq 0 ]] && echo "$AGENT_LABEL: pre-push checks passed."

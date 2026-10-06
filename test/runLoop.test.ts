@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -51,6 +51,7 @@ import { queueOwnerGuidance } from "../src/ownerControls.js";
 import type { ConsensusBallotResponse } from "../src/protocol.js";
 import type { AcceptedResponse, BallotBatch } from "../src/state.js";
 import { createHash } from "node:crypto";
+import { hookVerificationRecorder, ingestVerificationMeasurements, verificationMeasurement } from "../src/verificationLog.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -2566,6 +2567,55 @@ describe("effectful run loop", () => {
     expect(readJournal(paths).at(-1)?.type).toBe("publication-failed");
   });
 
+  it.each(["README.md", "source.ts", "missing-history"])("selects the final profile from the entire pinned issue range: %s", async (change) => {
+    const { root, paths } = fixture();
+    const seed = join(root, "profile-seed");
+    mkdirSync(seed);
+    git(seed, "init", "-q");
+    writeFileSync(join(seed, "README.md"), "initial docs\n");
+    writeFileSync(join(seed, "source.ts"), "initial product\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "baseline");
+    const baselineSha = git(seed, "rev-parse", "HEAD");
+    mkdirSync(join(seed, ".signals/issue-1"), { recursive: true });
+    writeFileSync(join(seed, ".signals/issue-1/ready.json"), "{}\n");
+    writeFileSync(join(seed, change === "missing-history" ? "README.md" : change), "changed\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "implementation and evidence");
+    const consensusSha = git(seed, "rev-parse", "HEAD");
+    rmSync(join(seed, ".signals"), { recursive: true });
+    git(seed, "add", "-u");
+    git(seed, "commit", "-qm", "only evidence cleanup");
+    const finalSha = git(seed, "rev-parse", "HEAD");
+    git(root, "clone", "--bare", "-q", seed, paths.mirror);
+    writeFileSync(paths.start, JSON.stringify({ ...readStartState(paths),
+      baselineSha: change === "missing-history" ? "f".repeat(40) : baselineSha,
+      documentation: { paths: ["README.md"], verify: { precommit: [], prepush: [] },
+        checks: [{ name: "docs", argv: ["docs-check"] }] }
+    }));
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    const order = { ...buildOrder(paths, start, cursors, "codex", "R7.finalize", null),
+      inputs: [{ agent: "codex", commitSha: consensusSha, path: ".signals/issue-1/ready.json", kind: "consensus" }] };
+    const observation = { agent: "codex", actionId: order.actionId, submissionSha: finalSha,
+      status: "satisfied" as const, outstanding: [], productPin: finalSha };
+    const calls: string[][] = [];
+    const dependencies = { tmux: null, mirror: new BareMirror(paths.mirror, seed),
+      processRunner: async (argv: readonly string[]) => { calls.push([...argv]); return { exitCode: 1, stdout: "", stderr: "failed" }; } };
+    const failed = await new CoordinatorRunLoop(paths, dependencies).verifyFinalizationChecks(start, order, observation, cursors);
+    expect(failed.status).toBe("rejected");
+    expect(readCursorsState(paths).publication.status).toBe("not-required");
+    // A restart cannot turn a failure or an advisory record into successful verification.
+    const retried = await new CoordinatorRunLoop(paths, dependencies).verifyFinalizationChecks(readStartState(paths), order, observation, cursors);
+    expect(retried.status).toBe("rejected");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual(change === "README.md" ? ["docs-check"] : start.checks[0]!.argv);
+    const passed = await new CoordinatorRunLoop(paths, { ...dependencies,
+      processRunner: async () => ({ exitCode: 0, stdout: "", stderr: "" }) }).verifyFinalizationChecks(start, order, observation, cursors);
+    expect(passed.status).toBe("satisfied");
+    expect(readJournal(paths).filter((event) => event.type === "verification-run").map((event) => event.details.exitCode)).toEqual([1, 1, 0]);
+  });
+
   it("keeps failed final checks in verification and performs no publication effect", async () => {
     const { root, paths } = fixture({ prPolicy: "coord-open-unmerged", origin: "https://github.com/example/project.git" });
     const seed = join(root, "final-seed");
@@ -2638,6 +2688,39 @@ describe("effectful run loop", () => {
     expect(pushes).toBe(0);
     expect(opens).toBe(0);
     expect(readCursorsState(paths).publication.status).toBe("not-required");
+  });
+});
+
+describe("advisory verification ingestion", () => {
+  it("records hook invocations once, ignores stale sessions, and changes no gates", () => {
+    const { root, paths } = fixture();
+    const clone = join(root, "measurement-clone");
+    mkdirSync(clone);
+    git(clone, "init", "-q", "--initial-branch=issue-1/codex");
+    git(clone, "config", "consensus.agentId", "codex");
+    writeFileSync(paths.start, JSON.stringify({ ...readStartState(paths),
+      agents: [{ id: "codex", root: clone, launcher: "start-codex.sh", delivery: "pull" }] }));
+    writeFileSync(join(root, "config.json"), JSON.stringify({ project: "fixture", origin: "/origin.git",
+      agents: readStartState(paths).agents, branch: "issue-{issue}/{agent}", checks: [{ name: "test", argv: ["true"] }] }));
+    const warnings: string[] = [];
+    const record = hookVerificationRecorder(clone, join(root, "config.json"), (message) => warnings.push(message));
+    const measurement = verificationMeasurement({ trigger: "hook", phase: "precommit", inputIdentity: "index:abc",
+      classification: "coordination", reason: "evidence only", command: null, exitCode: 0,
+      skipReason: "coordination evidence only", startedAt: "2026-08-21T00:00:00.000Z", completedAt: "2026-08-21T00:00:00.000Z" });
+    record(measurement);
+    expect(warnings).toEqual([]);
+    const mailbox = join(clone, ".coord/verification");
+    const recordPath = join(mailbox, readdirSync(mailbox)[0]!);
+    const bytes = readFileSync(recordPath, "utf8");
+    const before = readCursorsState(paths);
+    ingestVerificationMeasurements(paths, clone, "codex");
+    expect(existsSync(recordPath)).toBe(false);
+    writeFileSync(recordPath, bytes);
+    ingestVerificationMeasurements(paths, clone, "codex");
+    writeFileSync(recordPath, bytes.replace(readStartState(paths).issueSessionId, "stale-session"));
+    ingestVerificationMeasurements(paths, clone, "codex");
+    expect(readJournal(paths).filter((event) => event.type === "verification-run")).toHaveLength(1);
+    expect(readCursorsState(paths)).toEqual(before);
   });
 });
 

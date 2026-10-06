@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildAnalytics, renderAnalytics } from "../src/analytics.js";
 import { journalEventSchema, startStateSchema, type JournalEvent } from "../src/state.js";
+import { verificationMeasurement } from "../src/verificationLog.js";
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "support", "fixtures");
 const roots: string[] = [];
@@ -38,6 +39,30 @@ const start = startStateSchema.parse({
   checks: [{ name: "true", argv: ["true"] }],
   pollIntervalMs: 1000,
   createdAt: "2026-08-21T00:00:00.000Z"
+});
+
+describe("verification measurements", () => {
+  it("separates skips and artifact validation, sums runners, and unions concurrent wait", () => {
+    const journal: JournalEvent[] = [journalEventSchema.parse({ formatVersion: 4, sequence: 0,
+      at: start.createdAt, type: "started", details: { issue: start.issue } })];
+    for (const [index, from, to] of [[0, 0, 10], [1, 5, 20], [2, 30, 30]]) {
+      const measurement = verificationMeasurement({ trigger: "hook", phase: "precommit", inputIdentity: "index:tree",
+        classification: index === 2 ? "coordination" : "product", reason: "test", command: index === 2 ? null : { name: "test", argv: ["true"] },
+        exitCode: index === 1 ? 1 : 0, skipReason: index === 2 ? "evidence only" : null,
+        startedAt: new Date(Date.parse(start.createdAt) + from! * 1000).toISOString(),
+        completedAt: new Date(Date.parse(start.createdAt) + to! * 1000).toISOString() });
+      journal.push(journalEventSchema.parse({ formatVersion: 4, sequence: index! + 1, at: measurement.completedAt,
+        type: "verification-run", details: { ...measurement, source: "advisory hook observation" } }));
+    }
+    journal.push(journalEventSchema.parse({ formatVersion: 4, sequence: 4, at: start.createdAt, type: "verify-result", details: {} }));
+    journal.push(journalEventSchema.parse({ formatVersion: 4, sequence: 5, at: start.createdAt, type: "final-check", details: { durationMs: 999 } }));
+    const report = buildAnalytics({ start, journal });
+    expect(report.verification).toEqual({ recordedRunners: 2, skipped: 1, artifactValidations: 1,
+      aggregateRunnerMs: 25_000, criticalPathWaitMs: 20_000, byPhase: { precommit: 2 } });
+    expect(renderAnalytics(report)).toContain("manual commands are unobserved");
+    expect(buildAnalytics({ start, journal: journal.slice(0, 1) }).verification).toMatchObject({ recordedRunners: 0,
+      aggregateRunnerMs: null, criticalPathWaitMs: null });
+  });
 });
 
 const readJournalFixture = (): JournalEvent[] =>
