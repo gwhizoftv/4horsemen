@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/coord-banner.jpg" width="880" alt="Open Source LLM Coordinator: four coding agents collaborating around a shared software project">
+  <img src="docs/images/coord-banner.jpg" width="100%" alt="Open Source LLM Coordinator: four coding agents collaborating around a shared software project">
 </p>
 
 # coord
