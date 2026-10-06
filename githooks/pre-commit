@@ -45,29 +45,8 @@ else
   exit 1
 fi
 
-# 3) A commit that only moves coordination evidence changes no product code, so
-# the project's own checks have nothing to say about it. An undecidable staged
-# set fails closed and runs them.
-staged="$(git diff --cached --name-only 2>/dev/null)"
-run_checks=true
-
-if [[ -n "$staged" ]]; then
-  run_checks=false
-  while IFS= read -r path; do
-    [[ -n "$path" ]] || continue
-    if [[ ! "$path" =~ ^\.(signals|plans|code-reviews|amendments|escalations)/ ]]; then
-      run_checks=true
-      break
-    fi
-  done <<< "$staged"
-fi
-
-if [[ "$run_checks" == false ]]; then
-  echo "$AGENT_LABEL hook: skipping declared checks for a coordination-only commit."
-  exit 0
-fi
-
-# 4) Run what this project declared, whatever language it is written in.
+# 3) Shared policy inspects the actual staged index with NUL-safe paths. Only
+# coordination evidence and explicitly allowlisted documentation narrow checks.
 coord_verify precommit || exit 1
 
 exit 0

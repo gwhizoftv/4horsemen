@@ -32,6 +32,27 @@ const order = (root: string): InternalOrder => ({
   eligibleChoices: []
 });
 
+describe("verification instructions", () => {
+  it.each(["R1.join", "R2.plan", "R3.review", "R4.implement", "R5.compare", "R6.revise", "R7.finalize"] as const)(
+    "states check ownership for %s", (stepId) => {
+      const raw = renderAction({ ...order("/runtime"), stepId });
+      expect(raw).toContain("## Verification responsibilities");
+      expect(raw).toContain("coordinator validates artifacts, pins, and evidence");
+      expect(raw).toContain("do not claim coordinator-owned checks");
+      expect(raw).toContain("Evidence-only signals and amendment requests do not need product tests");
+      if (["R4.implement", "R6.revise", "R7.finalize"].includes(stepId)) {
+        expect(raw).toContain("hooks own mandatory commit/push checks");
+      } else expect(raw).toContain("not a manual product suite");
+    });
+
+  it("preserves response-only ballots without product suite instructions", () => {
+    const raw = renderAction({ ...order("/runtime"), submissionMode: "response", stepId: "R6.ballot",
+      requiredPath: "", responsePath: "/runtime/response.json" });
+    expect(raw).toContain("do not run a product suite merely to cast a ballot");
+    expect(raw).toContain("Do not `git add`, `git commit`, or `git push`");
+  });
+});
+
 describe("agent actions", () => {
   it.each(["git", "response"] as const)("renders advisory owner guidance without changing %s authority", (mode) => {
     const base = order("/external/coord");

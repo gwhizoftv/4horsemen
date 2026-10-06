@@ -119,9 +119,18 @@ Passing the clone’s commit/push hooks is not enough for final acceptance. The
 coordinator may run a stricter check list on the approved commit before the PR.
 In plans, name real commands; do not guess them from tracked hook files.
 
-In this repository, `verify.precommit` is `pnpm check:fast` (lint, typecheck,
-fast tests — no Vite build). Full `pnpm check` (build + check:fast + e2e) is
-what the coordinator runs on an approved commit. Run `pnpm check:fast` before commits.
+In this repository, product `verify.precommit` is `pnpm check:fast` (lint,
+typecheck, fast tests — no Vite build). The hook owns that mandatory check;
+do not manually duplicate it immediately before committing. Run focused tests
+while developing. Publishing only coordination evidence (plans, reviews,
+signals, amendments, escalations) needs artifact/format/evidence validation,
+not a manual product suite. Reviewers read existing verification results for
+unchanged implementations and run additional tests only to investigate findings.
+Allowlisted documentation uses the project's declared documentation profile;
+mixed or unknown changes use product checks. The coordinator owns final checks
+at the approved pin, classified against the frozen issue baseline, not the last
+cleanup commit. Full product `pnpm check` includes build, check:fast, and e2e.
+Never claim coordinator checks as checks you ran. Response ballots do not commit.
 Neither suite requires `package.json` to be ahead of `origin/main`: the pre-1.0
 `0.0.N` advance is checked only on the PR into `main`, so do not plan a version
 bump for ordinary commits on an issue branch.

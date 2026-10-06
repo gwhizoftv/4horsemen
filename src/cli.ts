@@ -11,6 +11,8 @@ import { doctor, renderDoctorReport } from "./doctor.js";
 import { fetchGitHubIssue, renderGitHubIssueSnapshot } from "./githubIssue.js";
 import { sha256 } from "./hash.js";
 import { renderHookScope, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
+import { inspectOutgoingChanges, inspectStagedChanges } from "./changeClassification.js";
+import { hookVerificationRecorder } from "./verificationLog.js";
 import { install, onboard, packageVersion, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
@@ -842,6 +844,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         configPath,
         agents: roster,
         checks: config.checks,
+        documentation: config.documentation,
+        workflowCriticalPrefixes: config.workflowCriticalPrefixes,
+        workflowCriticalFiles: config.workflowCriticalFiles,
         pollIntervalMs: config.pollIntervalMs,
         contextPaths: config.contextPaths
       });
@@ -1099,8 +1104,12 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (parsed.positionals.length !== 0) throw new Error("hook-verify takes no positional arguments.");
       const clone = resolve(io.cwd, requireFlag(parsed, "clone"));
       const phase = verifyPhaseSchema.parse(requireFlag(parsed, "phase"));
-      const { config } = resolveWorkspaceConfig(clone);
-      const result = runVerifyPhase({ clone, config, phase, log: io.stdout });
+      const { config, configPath } = resolveWorkspaceConfig(clone);
+      const changes = phase === "precommit" ? inspectStagedChanges(clone)
+        : inspectOutgoingChanges(clone, io.stdin(), localConfigGet(clone, "consensus.remoteName") ?? "origin",
+          localConfigGet(clone, "consensus.sharedBranch") ?? "main");
+      const result = runVerifyPhase({ clone, config, phase, changes, log: io.stdout,
+        record: hookVerificationRecorder(clone, configPath, io.stderr) });
       if (result.ok) return 0;
       io.stderr(
         `HOOK BLOCKED: declared ${phase} check '${result.failed.name}' failed with exit ${result.exitCode}.\n` +

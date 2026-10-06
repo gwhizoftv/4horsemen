@@ -14,6 +14,7 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "bump-version": "pnpm build && node dist/bumpVersion.js",
     "check:fast": "pnpm lint && pnpm typecheck && pnpm test:fast",
+    "check:docs": "vitest run --config vitest.config.ts test/verify-config.test.ts test/action.test.ts test/agentLanguage.test.ts -t 'shipped examples|verification instructions|agent-facing language'",
     "check": "pnpm build && pnpm check:fast && pnpm test:e2e"
   },
   "dependencies": { "zod": "^4.4.3" },

@@ -32,6 +32,8 @@ import {
 } from "./ballotPublication.js";
 import { computeInputSetHash, evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
+import { inspectRangeChanges, selectVerification } from "./changeClassification.js";
+import { createVerificationIngestor, verificationMeasurement } from "./verificationLog.js";
 import { BareMirror, GitCommandError, hermeticGitEnv, isTransientGitFailure } from "./mirror.js";
 import {
   materializeBoundInputs,
@@ -871,6 +873,7 @@ export class CoordinatorRunLoop {
   private loggedPhaseKey: string | null = null;
   /** Local probes are advisory; restarting may probe again without changing workflow state. */
   private readonly paneObservations = new Map<string, { identity: string; nextAt: number; available: boolean }>();
+  private readonly ingestVerificationMeasurements = createVerificationIngestor();
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
@@ -2369,27 +2372,48 @@ export class CoordinatorRunLoop {
     const verified = verifyFinalization({ root: this.mirror.path, issue: start.issue, consensusSha, finalSha: observation.productPin });
     if (!verified.ok) return { ...observation, status: "rejected", outstanding: [verified.details] };
 
+    // Evidence cleanup is the final commit, not the full issue change. Always
+    // classify from the frozen issue baseline, never the cleanup's parent.
+    const selected = selectVerification(inspectRangeChanges(this.mirror.path, start.baselineSha, observation.productPin),
+      start, "finalization", start.checks);
+    if (selected.commands.length === 0) {
+      const at = this.now();
+      this.authority(cursors);
+      appendJournal(this.paths, { type: "verification-run", agent: order.agent, actionId: order.actionId,
+        details: verificationMeasurement({ trigger: "coordinator", phase: "finalization",
+          inputIdentity: selected.inputIdentity, classification: selected.kind, reason: selected.reason,
+          command: null, startedAt: at, completedAt: at, exitCode: 0, skipReason: selected.reason }) }, at);
+      return { ...observation, checkResults: [] };
+    }
+
     const target = containedPath(this.paths.issueRoot, `.verification-${randomUUID()}`);
     const checkResults: Array<{ name: string; argv: string[]; exitCode: number }> = [];
     try {
       this.authority(cursors);
       await this.mirror.materializeWorktree(target, observation.productPin);
       this.authority(cursors);
-      for (const check of start.checks) {
+      for (const check of selected.commands) {
         this.authority(cursors);
         const argv = check.argv.map((argument) => argument.replaceAll("{worktree}", target));
         const checkStartedAt = this.now();
-        const result = await this.processRunner(argv, target);
-        const checkCompletedAt = this.now();
-        const checkStartedMs = Date.parse(checkStartedAt);
-        const checkCompletedMs = Date.parse(checkCompletedAt);
-        const durationMs =
-          Number.isFinite(checkStartedMs) &&
-          Number.isFinite(checkCompletedMs) &&
-          checkCompletedMs >= checkStartedMs
-            ? checkCompletedMs - checkStartedMs
-            : null;
-        this.authority(cursors);
+        const record = (exitCode: number, error?: string) => {
+          const measurement = verificationMeasurement({ trigger: "coordinator", phase: "finalization",
+            inputIdentity: selected.inputIdentity, classification: selected.kind, reason: selected.reason,
+            command: { name: check.name, argv }, startedAt: checkStartedAt, completedAt: this.now(),
+            exitCode, skipReason: null, ...(error === undefined ? {} : { error }) });
+          this.authority(cursors);
+          appendJournal(this.paths, { type: "verification-run", agent: order.agent, actionId: order.actionId,
+            details: measurement }, measurement.completedAt);
+          return measurement;
+        };
+        let result: Awaited<ReturnType<ProcessRunner>>;
+        try { result = await this.processRunner(argv, target); }
+        catch (error) {
+          record(1, String(error));
+          // A coordinator launch failure is not a rejected agent submission.
+          throw error;
+        }
+        const measurement = record(result.exitCode);
         checkResults.push({ name: check.name, argv, exitCode: result.exitCode });
         appendJournal(
           this.paths,
@@ -2397,14 +2421,9 @@ export class CoordinatorRunLoop {
             type: "final-check",
             agent: order.agent,
             actionId: order.actionId,
-            // The tier is recorded because two different suites can fail the
-            // same project: the agent's own clone runs the declared `verify`
-            // before a commit exists, and this runs the declared `checks`
-            // hermetically at the approved commit. Only the second one reaches
-            // the journal, and saying so is what makes the distinction legible.
-            details: { tier: "checks", name: check.name, argv, exitCode: result.exitCode, durationMs }
+            details: { tier: "checks", name: check.name, argv, exitCode: result.exitCode, durationMs: measurement.durationMs }
           },
-          checkCompletedAt
+          measurement.completedAt
         );
         if (result.exitCode !== 0) {
           return {
@@ -2693,7 +2712,10 @@ export class CoordinatorRunLoop {
       let cursors = readCursorsState(this.paths);
       if (cursors.abandoned || cursors.completed) return cursors;
       for (const agent of start.agents) {
-        if (cursors.activeRoster.includes(agent.id)) ingestContainmentProbe(this.paths, agent.root, agent.id);
+        if (cursors.activeRoster.includes(agent.id)) {
+          ingestContainmentProbe(this.paths, agent.root, agent.id);
+          this.ingestVerificationMeasurements(this.paths, agent.root, agent.id, start, this.now());
+        }
       }
       if (cursors.paused) {
         // Observation-only while held: no preparation, delivery, acceptance or publication.

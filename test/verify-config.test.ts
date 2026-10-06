@@ -9,10 +9,12 @@ import {
   unresolvableCommands,
   verifyCommands
 } from "../src/hookPolicy.js";
-import { proposeProjectPolicy } from "../src/setupWorkspace.js";
+import { buildWorkspaceConfig, proposeProjectPolicy } from "../src/setupWorkspace.js";
+import { classifyChanges, inspectOutgoingChanges, inspectRangeChanges, inspectStagedChanges, selectVerification } from "../src/changeClassification.js";
+import { renderAgentsProtocolBlock } from "../src/agentsProtocol.js";
 import { applyManagedBlock, ManagedBlockError, removeManagedBlock } from "../src/productIgnore.js";
 import { coordinatorConfigSchema, workspaceDeclarationSchema, type CoordinatorConfig } from "../src/state.js";
-import { repoRoot } from "./support/workspaceFixture.js";
+import { git, makeProduct, repoRoot } from "./support/workspaceFixture.js";
 
 const config = (overrides: Record<string, unknown> = {}): CoordinatorConfig =>
   coordinatorConfigSchema.parse({
@@ -201,6 +203,26 @@ describe("installer proposals", () => {
 });
 
 describe("shipped examples", () => {
+  it("aligns tracked and refreshed verification instructions with evidence exemptions", () => {
+    const tracked = readFileSync(join(repoRoot, "AGENTS.md"), "utf8").split("<!-- coordination protocol")[0]!;
+    const protocol = renderAgentsProtocolBlock(repoRoot);
+    for (const content of [tracked, protocol, tracked + protocol]) {
+      expect(content).not.toContain("Run `pnpm check:fast` before commits");
+      expect(content).toMatch(/not a manual product\s+suite/);
+      expect(content).toMatch(/hook owns (?:that|its) mandatory check/);
+      expect(content).toMatch(/investigate (?:a finding|findings)/);
+    }
+  });
+
+  it("declares a focused docs profile, not a Markdown-wide exemption", () => {
+    const example = coordinatorConfigSchema.parse(JSON.parse(readFileSync(join(repoRoot, "config.example.json"), "utf8")));
+    expect(example.documentation?.paths).toContain("README.md");
+    expect(example.documentation?.paths).not.toContain("templates/product/AGENTS.protocol.md");
+    expect(example.documentation?.checks.at(-1)?.argv).toEqual(["pnpm", "check:docs"]);
+    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { scripts: Record<string, string> };
+    expect(pkg.scripts["check:docs"]).toContain("shipped examples|verification instructions");
+    expect(pkg.scripts["check:docs"]).not.toContain("check:fast");
+  });
   it("ships release-preparation docs without machine-specific paths or private-install wording", () => {
     // The owner deferred LICENSE; this change prepares, but does not complete, the release.
     for (const file of ["CONTRIBUTING.md", "SECURITY.md"]) {
@@ -225,6 +247,92 @@ describe("shipped examples", () => {
   it("keeps config.product.example.json parseable by the driver's own schema", () => {
     const example = JSON.parse(readFileSync(join(repoRoot, "config.product.example.json"), "utf8")) as unknown;
     expect(coordinatorConfigSchema.safeParse(example).success).toBe(true);
+  });
+});
+
+describe("shared change classification", () => {
+  const docs = {
+    paths: ["README.md", "docs/tab\tand\nnewline.md", "docs/picture.png"],
+    verify: { precommit: [{ name: "docs", argv: ["true"] }], prepush: [{ name: "docs", argv: ["true"] }] },
+    checks: [{ name: "docs-final", argv: ["true"] }]
+  };
+  const policy = config({ documentation: docs });
+  const changed = (...paths: string[]) => ({ identity: "test-input", changes: paths.map((path) => ({ status: "M", paths: [Buffer.from(path)] })) });
+
+  it.each([".plans/issue-1/plan.md", ".code-reviews/issue-1/comparison.md", ".signals/issue-1/ready.json",
+    ".amendments/issue-1/a.json", ".escalations/issue-1/e.md"])("skips evidence %s without a product runner", (path) => {
+    const measurements: unknown[] = [];
+    expect(runVerifyPhase({ clone: "/unused", config: policy, phase: "precommit", changes: changed(path),
+      log: () => {}, record: (row) => measurements.push(row), runner: () => { throw new Error("must not run"); } })).toEqual({ ok: true });
+    expect(measurements).toEqual([expect.objectContaining({ command: null, classification: "coordination", exitCode: 0 })]);
+  });
+
+  it("selects documentation consistently in every phase, retaining product fallback", () => {
+    for (const phase of ["precommit", "prepush", "finalization"] as const) {
+      const product = [{ name: "product", argv: ["false"] }];
+      expect(selectVerification(changed("README.md", ".signals/issue-1/ready.json"), policy, phase, product).commands)
+        .toEqual(phase === "finalization" ? docs.checks : docs.verify[phase]);
+      expect(selectVerification(changed("README.md", "src/main.ts"), policy, phase, product).commands).toEqual(product);
+      expect(selectVerification({ changes: null, identity: "missing" }, policy, phase, product).commands).toEqual(product);
+      expect(selectVerification(changed("README.md"), config(), phase, product).commands).toEqual(product);
+    }
+  });
+
+  it.each(["src/main.ts", "test/docs.test.ts", "githooks/pre-commit", "templates/product/AGENTS.protocol.md",
+    "package.json", "pnpm-lock.yaml", "vitest.config.ts", "unknown.md", "evil\n.signals/a"])("keeps %s in product checks", (path) => {
+    expect(classifyChanges(changed(path), policy).kind).toBe("product");
+  });
+
+  it("includes both rename sides, exact unusual names, and fails closed on malformed/type changes", () => {
+    expect(classifyChanges(changed("docs/tab\tand\nnewline.md"), policy).kind).toBe("documentation");
+    expect(classifyChanges({ identity: "rename", changes: [{ status: "R100", paths: [Buffer.from("src/x"), Buffer.from("README.md")] }] }, policy).kind).toBe("product");
+    for (const status of ["U", "T", "?", " ", "R100"]) {
+      expect(classifyChanges({ identity: "bad", changes: [{ status, paths: [Buffer.from("README.md")] }] }, policy).kind).toBe("product");
+    }
+    expect(classifyChanges({ identity: "empty", changes: [] }, policy).kind).toBe("product");
+    expect(classifyChanges({ identity: "encoding", changes: [{ status: "M", paths: [Buffer.from([255])] }] }, policy).kind).toBe("product");
+    expect(classifyChanges(changed("README.md"), config({ documentation: docs, workflowCriticalFiles: ["README.md"] })).kind).toBe("product");
+    expect(classifyChanges(changed("docs/picture.png"), config({ documentation: docs, workflowCriticalPrefixes: ["docs/"] })).kind).toBe("product");
+  });
+
+  it("inspects index and actual push refs, not unstaged work or HEAD alone", () => {
+    const fixture = makeProduct("plain");
+    const root = fixture.productRoot;
+    try {
+      git(root, "fetch", "origin");
+      const base = git(root, "rev-parse", "HEAD");
+      mkdirSync(join(root, "docs"));
+      writeFileSync(join(root, "README.md"), "updated\n");
+      writeFileSync(join(root, "docs/tab\tand\nnewline.md"), "unusual docs name\n");
+      git(root, "add", "README.md", "docs/tab\tand\nnewline.md");
+      writeFileSync(join(root, "source.ts"), "unstaged product\n");
+      expect(classifyChanges(inspectStagedChanges(root), policy).kind).toBe("documentation");
+      git(root, "commit", "-qm", "docs");
+      const docPin = git(root, "rev-parse", "HEAD");
+      const refs = `refs/heads/manual ${docPin} refs/heads/manual ${"0".repeat(40)}\n`;
+      expect(classifyChanges(inspectOutgoingChanges(root, refs, "origin", "main"), policy).kind).toBe("documentation");
+      expect(classifyChanges(inspectOutgoingChanges(root, refs, "missing", "main"), policy).kind).toBe("product");
+      expect(classifyChanges(inspectRangeChanges(root, "f".repeat(40), docPin), policy).kind).toBe("product");
+      git(root, "add", "source.ts");
+      git(root, "commit", "-qm", "product");
+      // A later HEAD is irrelevant when Git supplies the earlier outgoing pin.
+      expect(classifyChanges(inspectOutgoingChanges(root, refs, "origin", "main"), policy).kind).toBe("documentation");
+      const productPin = git(root, "rev-parse", "HEAD");
+      const mixed = `${refs}refs/heads/other ${productPin} refs/heads/other ${base}\n`;
+      expect(classifyChanges(inspectOutgoingChanges(root, mixed, "origin", "main"), policy).kind).toBe("product");
+      expect(classifyChanges(inspectOutgoingChanges(root, "malformed", "origin", "main"), policy).kind).toBe("product");
+      git(root, "mv", "source.ts", "docs/picture.png");
+      expect(classifyChanges(inspectStagedChanges(root), policy).kind).toBe("product");
+    } finally { fixture.cleanup(); }
+  });
+
+  it("preserves an explicit docs profile through installation configuration", () => {
+    const result = buildWorkspaceConfig({ project: "fixture", origin: "https://example.com/fixture.git", baseBranch: "main",
+      agents: ["codex"], profile: "solo", cloneRoot: "/clones", workspaceDir: "/runtime", completesRoot: "/completes",
+      declared: workspaceDeclarationSchema.parse({ documentation: docs }),
+      proposal: { toolchain: "node", checks: [{ name: "product", argv: ["false"] }], workflowCriticalFiles: [], workflowCriticalPrefixes: [] }
+    }, undefined);
+    expect(result.documentation).toEqual(docs);
   });
 });
 

@@ -26,11 +26,11 @@ afterEach(() => {
 type Installed = { fixture: ProductFixture; clone: string; configPath: string };
 
 /** `verify: null` installs a workspace that declares no verification at all. */
-const installed = (verify: unknown = passingVerify, kind: "go" | "plain" = "go"): Installed => {
+const installed = (verify: unknown = passingVerify, kind: "go" | "plain" = "go", extra: Record<string, unknown> = {}): Installed => {
   ensureBuilt();
   const fixture = makeProduct(kind);
   fixtures.push(fixture);
-  const declaration: Record<string, unknown> = { checks: declaredChecks };
+  const declaration: Record<string, unknown> = { checks: declaredChecks, ...extra };
   if (verify !== null) declaration.verify = verify;
   const result = install({
     installRoot: repoRoot,
@@ -219,18 +219,83 @@ describe("declared verification in the hooks", () => {
     expect(tryGit(clone, "commit", "-m", "Claude: work").exitCode).toBe(0);
   });
 
-  it("skips declared checks for a commit that only moves coordination evidence", () => {
+  it.each([".plans/issue-1/plan.md", ".code-reviews/issue-1/comparison.md", ".signals/issue-1/ready.json"])("skips checks for %s with product edits unstaged", (path) => {
     // The declared command is one that always fails, so a commit that succeeds
     // proves the evidence-only path really did skip it. Evidence commits change
     // no product code, so the project's own checks have nothing to say.
-    const { clone } = installed(failingPrecommit);
+    const { clone } = installed({ ...failingPrecommit, prepush: [{ name: "must-fail-push", argv: ["false"] }] });
     git(clone, "checkout", "-q", "-b", "issue-1/claude");
-    const plans = join(clone, ".plans", "issue-1");
-    mkdirSync(plans, { recursive: true });
-    writeFileSync(join(plans, "plan.md"), "# plan\n");
-    git(clone, "add", "-A");
+    mkdirSync(join(clone, path, ".."), { recursive: true });
+    writeFileSync(join(clone, path), "# evidence\n");
+    git(clone, "add", path);
+    writeFileSync(join(clone, "cmd/main.go"), "unstaged product\n");
 
     expect(tryGit(clone, "commit", "-m", "Claude: publish plan").exitCode).toBe(0);
+    expect(tryGit(clone, "push", "origin", "issue-1/claude").exitCode).toBe(0);
+  });
+
+  it("runs the docs profile on a manual branch, but product checks for mixed work and renames", () => {
+    const { clone, configPath } = installed(failingPrecommit, "plain", {
+      documentation: { paths: ["README.md", "docs/renamed.md"], verify: passingVerify, checks: declaredChecks }
+    });
+    expect(JSON.parse(readFileSync(configPath, "utf8")).documentation.paths).toContain("README.md");
+    git(clone, "checkout", "-q", "-b", "claude/docs");
+    writeFileSync(join(clone, "README.md"), "updated docs\n");
+    git(clone, "add", "README.md");
+    expect(tryGit(clone, "commit", "-m", "Claude: docs").exitCode).toBe(0);
+    expect(tryGit(clone, "push", "origin", "claude/docs").exitCode).toBe(0);
+    writeFileSync(join(clone, "README.md"), "more docs\n");
+    writeFileSync(join(clone, "source.ts"), "product\n");
+    git(clone, "add", "README.md", "source.ts");
+    const mixed = tryGit(clone, "commit", "-m", "Claude: mixed");
+    expect(mixed.exitCode).not.toBe(0);
+    expect(mixed.stdout + mixed.stderr).toContain("must-fail");
+    // Even with no source edit, moving prose into a behavioral template is product work.
+    git(clone, "reset", "-q", "HEAD", "source.ts");
+    mkdirSync(join(clone, "templates/product"), { recursive: true });
+    git(clone, "mv", "README.md", "templates/product/AGENTS.protocol.md");
+    expect(tryGit(clone, "commit", "-m", "Claude: rename").exitCode).not.toBe(0);
+  });
+
+  it("blocks documentation publication when the declared docs command fails", () => {
+    const { clone } = installed(passingVerify, "plain", {
+      documentation: { paths: ["README.md"], verify: failingPrecommit, checks: declaredChecks }
+    });
+    stageWork(clone, "claude/docs-fail", "README.md");
+    expect(tryGit(clone, "commit", "-m", "Claude: docs").exitCode).not.toBe(0);
+  });
+
+  it("allows a complete docs profile without product verify, but still blocks product work", () => {
+    const { clone } = installed(null, "plain", {
+      documentation: { paths: ["README.md"], verify: passingVerify, checks: declaredChecks }
+    });
+    stageWork(clone, "claude/docs-only", "README.md");
+    expect(tryGit(clone, "commit", "-m", "Claude: docs").exitCode).toBe(0);
+    expect(tryGit(clone, "push", "origin", "claude/docs-only").exitCode).toBe(0);
+    writeFileSync(join(clone, "source.ts"), "product\n");
+    git(clone, "add", "source.ts");
+    const product = tryGit(clone, "commit", "-m", "Claude: product");
+    expect(product.exitCode).not.toBe(0);
+    expect(product.stdout + product.stderr).toContain("declares no `verify`");
+  });
+
+  it("uses the hook identity's shared branch for a docs-only first push", () => {
+    const { clone, fixture } = installed({ precommit: [], prepush: [{ name: "product-fails", argv: ["false"] }] }, "plain", {
+      documentation: { paths: ["README.md"], verify: passingVerify, checks: declaredChecks }
+    });
+    // Develop has product changes absent from config.baseBranch (main).
+    git(fixture.productRoot, "checkout", "-qb", "develop");
+    writeFileSync(join(fixture.productRoot, "source.ts"), "base product\n");
+    git(fixture.productRoot, "add", "source.ts");
+    git(fixture.productRoot, "commit", "-qm", "develop baseline");
+    git(fixture.productRoot, "push", "origin", "develop");
+    git(clone, "fetch", "origin");
+    git(clone, "config", "consensus.sharedBranch", "develop");
+    git(clone, "checkout", "-qb", "claude/develop-docs", "origin/develop");
+    writeFileSync(join(clone, "README.md"), "docs only relative to develop\n");
+    git(clone, "add", "README.md");
+    git(clone, "commit", "-qm", "Claude: docs");
+    expect(tryGit(clone, "push", "origin", "claude/develop-docs").exitCode).toBe(0);
   });
 });
 

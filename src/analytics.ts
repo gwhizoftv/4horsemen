@@ -1,5 +1,6 @@
 import type { JournalEvent, StartState } from "./state.js";
 import { readCursorHookUsage } from "./cursorHookUsage.js";
+import { verificationMeasurementSchema } from "./verificationLog.js";
 import {
   readTranscript,
   type AnalyticsCoverage,
@@ -94,6 +95,15 @@ export type AnalyticsReport = {
   /** Coordinator evidence publication: ballot-batch-pending → published (retries do not add agent turns). */
   evidencePublicationLatency: IntervalAnalytics;
   finalChecks: FinalCheckAnalytics[];
+  verification: {
+    recordedRunners: number;
+    skipped: number;
+    artifactValidations: number;
+    aggregateRunnerMs: number | null;
+    /** Union of recorded runner intervals, not summed concurrent waits. */
+    criticalPathWaitMs: number | null;
+    byPhase: Record<string, number>;
+  };
   usage: {
     agents: AgentUsageAnalytics[];
     tokenTotal: TokenUsage | null;
@@ -446,6 +456,33 @@ const deriveFinalChecks = (journal: readonly JournalEvent[]): FinalCheckAnalytic
       };
     });
 
+const deriveVerification = (journal: readonly JournalEvent[]): AnalyticsReport["verification"] => {
+  const measurements = journal.filter((event) => event.type === "verification-run")
+    .flatMap((event) => {
+      const parsed = verificationMeasurementSchema.strip().safeParse(event.details);
+      return parsed.success ? [parsed.data] : [];
+    });
+  const runners = measurements.filter((row) => row.command !== null);
+  const intervals = runners.map((row) => [Date.parse(row.startedAt), Date.parse(row.completedAt)] as const)
+    .sort((a, b) => a[0] - b[0]);
+  const valid = measurements.length > 0 && runners.every((row) => row.durationMs !== null) && intervals.every(([from, to]) => to >= from);
+  let end = -Infinity, wait = 0;
+  for (const [from, to] of intervals) {
+    wait += Math.max(0, to - Math.max(from, end));
+    end = Math.max(end, to);
+  }
+  const byPhase: Record<string, number> = {};
+  for (const row of runners) byPhase[row.phase] = (byPhase[row.phase] ?? 0) + 1;
+  return {
+    recordedRunners: runners.length,
+    skipped: measurements.length - runners.length,
+    artifactValidations: journal.filter((event) => event.type === "verify-result").length,
+    aggregateRunnerMs: valid ? runners.reduce((sum, row) => sum + row.durationMs!, 0) : null,
+    criticalPathWaitMs: valid ? wait : null,
+    byPhase
+  };
+};
+
 const usageVendorForAgent = (agent: string, journal: readonly JournalEvent[]): UsageVendor | null => {
   if (agent === "cursor") return "cursor";
   for (const event of [...journal].reverse()) {
@@ -741,6 +778,7 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
     responseLatency: deriveResponseLatency(roster, input.journal),
     evidencePublicationLatency: deriveEvidencePublicationLatency(input.journal),
     finalChecks: deriveFinalChecks(input.journal),
+    verification: deriveVerification(input.journal),
     usage
   };
 };
@@ -787,6 +825,11 @@ export const renderAnalytics = (report: AnalyticsReport): string => {
           (check) =>
             `- ${check.name ?? "unknown"}${check.tier === null ? "" : ` (${check.tier})`}: exit=${check.exitCode ?? "unavailable"} duration=${formatOptionalDuration(check.durationMs)}`
         )),
+    "",
+    "Recorded verification (hook observations are advisory; manual commands are unobserved)",
+    `Runners=${report.verification.recordedRunners} skipped=${report.verification.skipped} artifact validations=${report.verification.artifactValidations}`,
+    `Aggregate runner time=${formatOptionalDuration(report.verification.aggregateRunnerMs)}; non-overlapping verification wait=${formatOptionalDuration(report.verification.criticalPathWaitMs)}`,
+    ...Object.entries(report.verification.byPhase).map(([phase, count]) => `- ${phase}: ${count} runner(s)`),
     "",
     "Phase count",
     `${report.phaseCount}`,

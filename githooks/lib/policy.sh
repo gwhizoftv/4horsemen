@@ -43,17 +43,17 @@ coord_cli_entry() {
 #
 # Runs the declared commands for one phase in this clone. Any non-zero exit —
 # a failing check, an undeclared `verify`, an unresolvable install — blocks.
+# Prepush receives the buffered outgoing ref list on stdin; precommit inspects
+# Git's index. Classification and measurement live in the same CLI as coord.
 coord_verify() {
   local phase="$1" entry
   entry="$(coord_cli_entry)" || return 1
   node "$entry" hook-verify --clone "$(git rev-parse --show-toplevel)" --phase "$phase"
 }
 
-# coord_scope
+# coord_scope (legacy installed-hook compatibility only)
 #
-# Emits the declared pre-push scope filter as `prefix\t<value>` and
-# `file\t<value>` lines. Empty output means the project declared no narrowing,
-# and the caller must treat every push as in scope.
+# Current hooks use coord_verify's shared classifier, not this older filter.
 coord_scope() {
   local entry
   entry="$(coord_cli_entry)" || return 1

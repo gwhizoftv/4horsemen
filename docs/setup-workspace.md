@@ -453,18 +453,63 @@ product's obvious ecosystem (cargo, go, pnpm/npm/yarn, make) and writes it into
 the config for review. That detection happens once, in the installer, and is
 recorded. Hooks never sniff.
 
-### Scoping the pre-push checks
+### Scoping verification
 
 ```jsonc
 "workflowCriticalPrefixes": ["cmd/", "internal/", "pkg/"],
 "workflowCriticalFiles": ["go.mod", "go.sum"]
 ```
 
-The pre-push hook runs `verify.prepush` when a push touches these, and whenever
-the changed-path set cannot be determined. Declaring neither list means no
-narrowing was declared, so every push is in scope — absence never quietly
-shrinks what gets gated. Two projects can legitimately declare different lists
-without either editing a hook body.
+Critical paths always retain product checks, even if also listed as documentation.
+Unknown paths and indeterminate diffs run product checks too: critical-path lists
+are no longer an implicit exemption for every other path. To narrow prose/image
+verification, explicitly declare exact repository-relative paths and commands:
+
+```json
+"documentation": {
+  "paths": ["README.md", "docs/guide.md", "docs/diagram.png"],
+  "verify": {
+    "precommit": [{ "name": "docs", "argv": ["pnpm", "check:docs"] }],
+    "prepush": [{ "name": "docs", "argv": ["pnpm", "check:docs"] }]
+  },
+  "checks": [
+    { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
+    { "name": "docs", "argv": ["pnpm", "check:docs"] }
+  ]
+}
+```
+
+No profile is inferred from `*.md`: executable templates such as
+`templates/product/AGENTS.protocol.md` are product behavior, not prose.
+The example config declares this repository's small `pnpm check:docs` profile,
+which retains README/docs content and verification-instruction assertions without
+running onboarding or the full suite. Review and install the declaration to opt
+in; updating the example does not change an existing runtime's config.
+
+The shared selector inspects only the staged index at commit time (unstaged edits
+do not count), every actual outgoing ref range at push time, and the frozen issue
+baseline through the approved product pin at finalization. Both rename paths are
+included, and NUL-delimited paths preserve tabs/newlines. First pushes compare to
+the merge base with the configured remote/base; missing history fails closed.
+Deleting evidence in the last commit cannot hide earlier product changes.
+Finalization uses the documentation profile and critical paths snapshotted at
+issue start. Hooks, like their existing product `verify` commands, use the live
+workspace declaration. A mid-issue configuration change can therefore change
+local checks without changing the frozen final gate; the shared classifier does
+not imply a shared configuration snapshot.
+
+Coordination-only changes under `.plans/`, `.signals/`, `.code-reviews/`,
+`.amendments/`, and `.escalations/` launch no product suite. Identity, branch,
+commit-message, no-rewrite, artifact, and pin gates remain intact. The same
+classification applies on manual agent scratch branches. Mixed docs/product
+changes use product checks; without a docs profile even a README uses them.
+
+Agents validate evidence format rather than manually running a product suite to
+publish a plan or review. Hooks own mandatory local checks; do not duplicate the
+full hook command immediately before committing. Review unchanged implementations
+using existing verification results, adding tests only to investigate findings.
+Coordinator-owned final checks are not results an agent should claim to have run.
+Response-mode ballots continue to avoid commits and pushes entirely.
 
 ## Workspace layouts and issue input
 
