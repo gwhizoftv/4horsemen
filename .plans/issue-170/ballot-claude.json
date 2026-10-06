@@ -1,0 +1,46 @@
+{
+  "actionId": "577d9c88-651d-4ef4-be0c-a4d5b7cf9b56",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "8d1c9ee846889b259c932a227c46f06e7346d510645ae031edb75fed4e2fcef3",
+  "issue": 170,
+  "issueSessionId": "issue-170:6f5b4bc0bb97feeb1711fe3d8f38c327460f5827",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "ea34313c0c72fcd64ffba6f8449d81844216dac5",
+      "path": ".plans/issue-170/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "4645758dd1bdbba9e4924b34d4b53c12bd26da8c",
+      "path": ".plans/issue-170/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "a0fcb8cb423a157eadf4ba40cc1de8b282cf2314",
+      "path": ".plans/issue-170/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "The claude plan is the most mechanically complete and corrects the owner map against the code (rejected→reissue-action instead of retry-verification, stdin-derived hook binding with no githooks edits, declared-argv receipt keys, no orderScaffold/install churn) while keeping synchronous execution, and codex's valid findings (post-run input validation, canonical check identity instead of name dedupe, liveness-only lock reclaim, manual coverage preservation) are small corrections within its file map, whereas cursor's plan has a blocking retry-verification failure path and codex's plan is underspecified and adds an unrequested async job subsystem.",
+  "responseSha256": "18eb296e9de150a95197ccbbc2cce8edc405e1c7fd678b3724c09d78d069bcf2",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "bd31e9aa170c1e8e1cf0771e24656a560d10284b",
+      "path": ".plans/issue-170/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "8408e149edd1a82a2f91f46891e1fa6f3890b492",
+      "path": ".plans/issue-170/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "bdfa05473e55396c29c6b87f9a2d7fa3bf52c281",
+      "path": ".plans/issue-170/review.md"
+    }
+  ]
+}
