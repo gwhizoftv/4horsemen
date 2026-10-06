@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { clearCompletion, createActionId, readAction, readCompletion, writeAction } from "./action.js";
 import {
@@ -32,7 +32,8 @@ import {
 } from "./ballotPublication.js";
 import { computeInputSetHash, evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
-import { inspectRangeChanges, selectVerification } from "./changeClassification.js";
+import { inspectRangeChanges, selectCandidateVerification, selectVerification } from "./changeClassification.js";
+import { runVerification, type RunVerificationResult } from "./verificationRunner.js";
 import { createVerificationIngestor, verificationMeasurement } from "./verificationLog.js";
 import { BareMirror, GitCommandError, hermeticGitEnv, isTransientGitFailure } from "./mirror.js";
 import {
@@ -44,7 +45,6 @@ import { renderArtifactScaffold } from "./orderScaffold.js";
 import {
   agentResponsePath,
   agentRuntimePaths,
-  containedPath,
   evidenceWorktreePath,
   resourceBindingPaths,
   type IssueRuntimePaths
@@ -80,6 +80,7 @@ import {
   type AcceptedResponse,
   type AcceptedSubmission,
   type BallotBatch,
+  type CheckCommand,
   type ConsensusDerived,
   type CursorsState,
   type DerivedInputCitation,
@@ -97,6 +98,7 @@ import {
   coordMergesPullRequest,
   describeWorkflowStep,
   type BoundInput,
+  type CandidateResults,
   type ChangeScopeEntry,
   type MaterializedInputs,
   type EvidenceObservation,
@@ -733,6 +735,7 @@ export const buildOrder = (
   const branch = start.branchTemplate.replaceAll("{issue}", String(start.issue)).replaceAll("{agent}", agent);
   const correction = outstanding.length === 0 ? "" : `\n\nCorrect these outstanding items:\n${outstanding.map((item) => `- ${item}`).join("\n")}`;
   const inputs = deriveBoundInputs(start, cursors, stepId, round);
+  const candidateResults = candidateResultsFor(cursors, inputs);
   const planChoices = acceptedAt(cursors, "R2.plan").map((submission) => submission.agent);
   const implementationChoices = acceptedAt(cursors, "R4.implement").map((submission) => submission.agent);
   const approvedPaths =
@@ -798,10 +801,21 @@ export const buildOrder = (
     ownerGuidance: ownerGuidanceFor(cursors, stepId, round),
     changeScope,
     ...(materialized === undefined ? {} : { materialized }),
+    ...(start.verification?.mode === "coordinator" ? { verificationMode: "coordinator" as const } : {}),
+    ...(candidateResults.length === 0 ? {} : { candidateResults }),
     activeRoster: [...cursors.activeRoster],
     eligibleChoices
   };
 };
+
+/** Coordinator results already recorded for each bound product pin, so every
+ * reader of this action receives the same execution's results. */
+const candidateResultsFor = (cursors: CursorsState, inputs: readonly BoundInput[]): CandidateResults[] =>
+  cursors.accepted.flatMap((submission) =>
+    (submission.stepId === "R4.implement" || submission.stepId === "R6.revise") && submission.checkResults !== undefined &&
+    submission.productPin !== undefined && inputs.some((input) => input.commitSha === submission.productPin)
+      ? [{ agent: submission.agent, commitSha: submission.productPin, results: submission.checkResults }]
+      : []);
 
 /**
  * The operator-facing sentence for each refusal code. Every code in
@@ -2376,70 +2390,85 @@ export class CoordinatorRunLoop {
     // classify from the frozen issue baseline, never the cleanup's parent.
     const selected = selectVerification(inspectRangeChanges(this.mirror.path, start.baselineSha, observation.productPin),
       start, "finalization", start.checks);
-    if (selected.commands.length === 0) {
+    const checked = await this.runGateVerification(start, order, cursors, "finalization", observation.productPin, selected,
+      selected.commands);
+    if (!checked.ok) {
+      return {
+        ...observation,
+        status: "rejected",
+        outstanding: [
+          `finalization check (tier: checks) ${checked.failed.name} failed with exit ${checked.failed.exitCode}: ${checked.stderr.trim()}` +
+            ` (log: ${checked.failed.logPath})${checked.retryNote === null ? "" : `; ${checked.retryNote}`}`
+        ]
+      };
+    }
+    return { ...observation, checkResults: checked.results };
+  }
+
+  /**
+   * Coordinator-mode gate for every implementation/revision product pin. A
+   * failure is a rejected observation, so the agent receives a reissued action
+   * naming the command and its log; only success receipts are ever reused, so
+   * a failed pin fails again after a restart.
+   */
+  async verifyCandidateChecks(
+    start: StartState,
+    order: InternalOrder,
+    observation: EvidenceObservation,
+    cursors: CursorsState
+  ): Promise<EvidenceObservation> {
+    if (observation.status !== "satisfied" || observation.productPin === undefined ||
+      (order.stepId !== "R4.implement" && order.stepId !== "R6.revise") || start.verification?.mode !== "coordinator") {
+      return observation;
+    }
+    const pin = observation.productPin;
+    const selected = selectCandidateVerification(inspectRangeChanges(this.mirror.path, start.baselineSha, pin), start);
+    const verified = await this.runGateVerification(start, order, cursors, "candidate", pin, selected, selected.commands);
+    this.authority(cursors);
+    appendJournal(this.paths, { type: "candidate-check", agent: order.agent, actionId: order.actionId, details: {
+      pin, classification: selected.kind, reason: selected.reason, expanded: selected.expanded,
+      outcome: verified.ok ? "passed" : "failed",
+      commands: verified.results.map((result) => ({ name: result.name, exitCode: result.exitCode, reused: result.reused === true,
+        joined: result.joined === true, receiptId: result.receiptId ?? null, logPath: result.logPath ?? null }))
+    } }, this.now());
+    if (!verified.ok) {
+      return {
+        ...observation,
+        status: "rejected",
+        outstanding: [
+          `candidate check ${verified.failed.name} failed with exit ${verified.failed.exitCode} (log: ${verified.failed.logPath})` +
+            `${verified.retryNote === null ? "" : `; ${verified.retryNote}`}`
+        ]
+      };
+    }
+    return { ...observation, checkResults: verified.results };
+  }
+
+  private async runGateVerification(
+    start: StartState,
+    order: InternalOrder,
+    cursors: CursorsState,
+    phase: "candidate" | "finalization",
+    pin: string,
+    classification: { kind: "coordination" | "documentation" | "product"; reason: string; inputIdentity: string },
+    commands: readonly CheckCommand[]
+  ): Promise<RunVerificationResult> {
+    if (commands.length === 0) {
       const at = this.now();
       this.authority(cursors);
       appendJournal(this.paths, { type: "verification-run", agent: order.agent, actionId: order.actionId,
-        details: verificationMeasurement({ trigger: "coordinator", phase: "finalization",
-          inputIdentity: selected.inputIdentity, classification: selected.kind, reason: selected.reason,
-          command: null, startedAt: at, completedAt: at, exitCode: 0, skipReason: selected.reason }) }, at);
-      return { ...observation, checkResults: [] };
+        details: verificationMeasurement({ trigger: "coordinator", phase,
+          inputIdentity: classification.inputIdentity, classification: classification.kind, reason: classification.reason,
+          command: null, startedAt: at, completedAt: at, exitCode: 0, skipReason: classification.reason,
+          cacheReason: "not cached: nothing selected" }) }, at);
+      return { ok: true, results: [] };
     }
-
-    const target = containedPath(this.paths.issueRoot, `.verification-${randomUUID()}`);
-    const checkResults: Array<{ name: string; argv: string[]; exitCode: number }> = [];
-    try {
-      this.authority(cursors);
-      await this.mirror.materializeWorktree(target, observation.productPin);
-      this.authority(cursors);
-      for (const check of selected.commands) {
-        this.authority(cursors);
-        const argv = check.argv.map((argument) => argument.replaceAll("{worktree}", target));
-        const checkStartedAt = this.now();
-        const record = (exitCode: number, error?: string) => {
-          const measurement = verificationMeasurement({ trigger: "coordinator", phase: "finalization",
-            inputIdentity: selected.inputIdentity, classification: selected.kind, reason: selected.reason,
-            command: { name: check.name, argv }, startedAt: checkStartedAt, completedAt: this.now(),
-            exitCode, skipReason: null, ...(error === undefined ? {} : { error }) });
-          this.authority(cursors);
-          appendJournal(this.paths, { type: "verification-run", agent: order.agent, actionId: order.actionId,
-            details: measurement }, measurement.completedAt);
-          return measurement;
-        };
-        let result: Awaited<ReturnType<ProcessRunner>>;
-        try { result = await this.processRunner(argv, target); }
-        catch (error) {
-          record(1, String(error));
-          // A coordinator launch failure is not a rejected agent submission.
-          throw error;
-        }
-        const measurement = record(result.exitCode);
-        checkResults.push({ name: check.name, argv, exitCode: result.exitCode });
-        appendJournal(
-          this.paths,
-          {
-            type: "final-check",
-            agent: order.agent,
-            actionId: order.actionId,
-            details: { tier: "checks", name: check.name, argv, exitCode: result.exitCode, durationMs: measurement.durationMs }
-          },
-          measurement.completedAt
-        );
-        if (result.exitCode !== 0) {
-          return {
-            ...observation,
-            status: "rejected",
-            outstanding: [
-              `finalization check (tier: checks) ${check.name} failed with exit ${result.exitCode}: ${result.stderr.trim()}`
-            ]
-          };
-        }
-      }
-    } finally {
-      await this.mirror.removeWorktree(target);
-      rmSync(target, { recursive: true, force: true });
-    }
-    return { ...observation, checkResults };
+    return runVerification({
+      paths: this.paths, start, mirror: this.mirror, processRunner: this.processRunner, now: () => this.now(),
+      checkpoint: () => { this.authority(cursors); },
+      journal: (type, details, at) => appendJournal(this.paths, { type, agent: order.agent, actionId: order.actionId, details }, at),
+      phase, pin, classification, commands
+    });
   }
 
   private async publishAcceptedFinalization(start: StartState, cursors: CursorsState): Promise<CursorsState> {
@@ -2874,6 +2903,8 @@ export class CoordinatorRunLoop {
       );
       this.authority(cursors);
       observation = await this.verifyFinalizationChecks(start, order, observation, cursors);
+      this.authority(cursors);
+      observation = await this.verifyCandidateChecks(start, order, observation, cursors);
       this.authority(cursors);
       observations.push(observation);
       }

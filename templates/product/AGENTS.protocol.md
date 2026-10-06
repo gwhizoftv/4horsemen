@@ -204,6 +204,12 @@ retain product checks. The coordinator owns final checks at the approved pin,
 classified from the frozen issue baseline, never just the last cleanup commit.
 Report only checks you actually ran; do not claim coordinator-owned checks.
 
+When an issue runs in coordinator verification mode, coord owns the candidate
+and final suites: it checks every implementation and revision pin, returns a
+failure with its command and log, and lists each pin's results in later
+actions. Cite coord's recorded results instead of re-running those suites; the
+hooks then run only the coordinated cheap checks.
+
 Do not modify the product `githooks/` tree as the way to satisfy checks. Follow
 the named commands in the action or plan.
 

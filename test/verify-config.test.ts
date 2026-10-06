@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, matchesGlob } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   HookPolicyError,
@@ -10,11 +10,22 @@ import {
   verifyCommands
 } from "../src/hookPolicy.js";
 import { buildWorkspaceConfig, proposeProjectPolicy } from "../src/setupWorkspace.js";
-import { classifyChanges, inspectOutgoingChanges, inspectRangeChanges, inspectStagedChanges, selectVerification } from "../src/changeClassification.js";
+import {
+  classifyChanges,
+  inspectOutgoingChanges,
+  inspectRangeChanges,
+  inspectStagedChanges,
+  isCoordinationEvidencePath,
+  selectCandidateVerification,
+  selectVerification
+} from "../src/changeClassification.js";
 import { renderAgentsProtocolBlock } from "../src/agentsProtocol.js";
 import { applyManagedBlock, ManagedBlockError, removeManagedBlock } from "../src/productIgnore.js";
 import { coordinatorConfigSchema, workspaceDeclarationSchema, type CoordinatorConfig } from "../src/state.js";
 import { git, makeProduct, repoRoot } from "./support/workspaceFixture.js";
+import fastConfig from "../vitest.config.js";
+import systemConfig from "../vitest.system.config.js";
+import e2eConfig from "../vitest.e2e.config.js";
 
 const config = (overrides: Record<string, unknown> = {}): CoordinatorConfig =>
   coordinatorConfigSchema.parse({
@@ -147,7 +158,8 @@ describe("installer proposals", () => {
     const own = proposeProjectPolicy(repoRoot);
     expect(own.toolchain).toBe("pnpm");
     expect(own.verify?.precommit[0]?.argv).toEqual(["pnpm", "run", "check:fast"]);
-    expect(own.verify?.prepush[0]?.argv).toEqual(["pnpm", "run", "test:e2e"]);
+    // The split-out system tier stays mandatory local coverage before a push.
+    expect(own.verify?.prepush.map((command) => command.argv)).toEqual([["pnpm", "run", "test:system"], ["pnpm", "run", "test:e2e"]]);
 
     // A directory with no recognisable ecosystem gets no proposal at all, so the
     // installer refuses rather than inventing checks nobody declared.
@@ -244,6 +256,33 @@ describe("shipped examples", () => {
     }
   });
 
+  it("declares coordinator verification whose final components equal pnpm check, over a disjoint test partition", () => {
+    const example = coordinatorConfigSchema.parse(JSON.parse(readFileSync(join(repoRoot, "config.example.json"), "utf8")));
+    expect(example.verification?.mode).toBe("coordinator");
+    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { scripts: Record<string, string> };
+    const leaves = (script: string): string[] => pkg.scripts[script]!.startsWith("pnpm ")
+      ? pkg.scripts[script]!.split(" && ").flatMap((step) => leaves(step.replace(/^pnpm (?:run )?/, "")))
+      : [script];
+    expect(example.checks.map((check) => check.name).filter((name) => name !== "install").sort()).toEqual(leaves("check").sort());
+
+    const tests = readdirSync(join(repoRoot, "test")).filter((file) => file.endsWith(".test.ts")).map((file) => `test/${file}`);
+    const suites = [fastConfig, systemConfig, e2eConfig].map((config) => config.test!);
+    for (const file of tests) {
+      const owners = suites.filter((suite) => (suite.include ?? []).some((glob) => matchesGlob(file, glob)) &&
+        !(suite.exclude ?? []).some((glob) => matchesGlob(file, glob)));
+      expect(owners, file).toHaveLength(1);
+    }
+
+    // Caching across evidence-only commits is sound only if no cached check reads evidence paths.
+    const tsconfigs = ["tsconfig.json", "test/tsconfig.json"].flatMap((file) =>
+      (JSON.parse(readFileSync(join(repoRoot, file), "utf8")) as { include: string[] }).include);
+    const roots = [...tsconfigs, ...suites.flatMap((suite) => suite.include ?? []), ...pkg.scripts.lint!.split(" ").slice(1)];
+    for (const root of roots) {
+      const normalized = root.replace(/^(?:\.\.?\/)+/, "");
+      expect(isCoordinationEvidencePath(normalized) || normalized.startsWith("."), root).toBe(false);
+    }
+  });
+
   it("keeps config.product.example.json parseable by the driver's own schema", () => {
     const example = JSON.parse(readFileSync(join(repoRoot, "config.product.example.json"), "utf8")) as unknown;
     expect(coordinatorConfigSchema.safeParse(example).success).toBe(true);
@@ -326,6 +365,40 @@ describe("shared change classification", () => {
     } finally { fixture.cleanup(); }
   });
 
+  it("selects candidate checks from declared coverage, pulling risk rules forward and expanding to the full gate", () => {
+    const command = (name: string) => ({ name, argv: [name] });
+    const start = {
+      checks: ["install", "lint", "test:fast", "build", "test:e2e"].map(command),
+      documentation: docs,
+      verification: {
+        mode: "coordinator" as const,
+        maxConcurrentExpensive: 1,
+        candidate: {
+          checks: ["install", "lint", "test:fast"].map(command),
+          covers: { prefixes: ["src/", "test/"], files: [] },
+          rules: [
+            { prefixes: ["githooks/"], files: [], add: ["test:e2e"] },
+            { prefixes: [], files: ["pnpm-lock.yaml"], add: "all" as const }
+          ]
+        }
+      }
+    };
+    const names = (input: Parameters<typeof selectCandidateVerification>[0]) =>
+      selectCandidateVerification(input, start).commands.map((check) => check.name);
+    const full = start.checks.map((check) => check.name);
+    expect(names(changed(".signals/issue-1/ready.json"))).toEqual([]);
+    expect(names(changed("README.md"))).toEqual(["docs-final"]);
+    expect(names(changed("src/x.ts", ".plans/issue-1/plan.md"))).toEqual(["install", "lint", "test:fast"]);
+    expect(names(changed("githooks/pre-push"))).toEqual(["install", "lint", "test:fast", "test:e2e"]);
+    expect(names(changed("pnpm-lock.yaml"))).toEqual(full);
+    expect(names(changed("tools/x"))).toEqual(full);
+    expect(names({ identity: "rename", changes: [{ status: "R100", paths: [Buffer.from("src/a.ts"), Buffer.from("githooks/a")] }] }))
+      .toEqual(["install", "lint", "test:fast", "test:e2e"]);
+    expect(names({ identity: "encoding", changes: [{ status: "M", paths: [Buffer.from([255])] }] })).toEqual(full);
+    expect(selectCandidateVerification({ identity: "missing", changes: null }, start)).toMatchObject({ expanded: true });
+    expect(names({ identity: "missing", changes: null })).toEqual(full);
+  });
+
   it("preserves an explicit docs profile through installation configuration", () => {
     const result = buildWorkspaceConfig({ project: "fixture", origin: "https://example.com/fixture.git", baseBranch: "main",
       agents: ["codex"], profile: "solo", cloneRoot: "/clones", workspaceDir: "/runtime", completesRoot: "/completes",
@@ -377,6 +450,28 @@ describe("workspace declaration", () => {
       { coordination: { installRoot: "/elsewhere" } }
     ]) {
       expect(workspaceDeclarationSchema.safeParse(forbidden).success, JSON.stringify(forbidden)).toBe(false);
+    }
+  });
+
+  it("carries coordinator verification through installation and refuses ambiguous command identities", () => {
+    const verification = {
+      mode: "coordinator",
+      coordinated: { precommit: [{ name: "lint", argv: ["make", "lint"] }], prepush: [] },
+      candidate: { checks: [{ name: "test", argv: ["make", "test"] }], covers: { prefixes: ["src/"] },
+        rules: [{ prefixes: ["hooks/"], add: ["e2e"] }] }
+    };
+    const checks = [{ name: "test", argv: ["make", "test"] }, { name: "e2e", argv: ["make", "e2e"] }];
+    const build = (declared: Record<string, unknown>) => buildWorkspaceConfig({ project: "fixture",
+      origin: "https://example.com/fixture.git", baseBranch: "main", agents: ["codex"], profile: "solo", cloneRoot: "/clones",
+      workspaceDir: "/runtime", completesRoot: "/completes", declared: workspaceDeclarationSchema.parse(declared),
+      proposal: { toolchain: "make", checks, workflowCriticalFiles: [], workflowCriticalPrefixes: [] } }, undefined);
+    expect(build({ checks, verification }).verification).toMatchObject({ mode: "coordinator", maxConcurrentExpensive: 1 });
+    for (const invalid of [
+      { ...verification, candidate: undefined },
+      { ...verification, candidate: { ...verification.candidate, rules: [{ files: ["x"], add: ["undeclared"] }] } },
+      { ...verification, candidate: { ...verification.candidate, checks: [{ name: "test", argv: ["make", "quick-test"] }] } }
+    ]) {
+      expect(() => build({ checks, verification: invalid }), JSON.stringify(invalid)).toThrow();
     }
   });
 });

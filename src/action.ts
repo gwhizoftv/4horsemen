@@ -146,13 +146,34 @@ const scopeInputText = (order: InternalOrder): string =>
     "\n\n## Approved file-map amendments\n\nThese bound documents authorize the additional exact paths; they are not product parents.\n\n" +
     order.scopeInputs!.map((input) => `- ${input.kind} from ${input.agent}: \`${input.commitSha}\` at ${encodePath(input.path)}`).join("\n");
 
+const coordinatorVerificationNote = (order: InternalOrder): string =>
+  order.verificationMode !== "coordinator" ? ""
+    : ["R4.implement", "R6.revise"].includes(order.stepId)
+      ? "\n\nThis issue runs in coordinator verification mode: coord runs the declared candidate checks on your submitted product pin " +
+        "and returns any failure with its command and log. Run focused tests while developing; do not run the full suite yourself. " +
+        "The commit hooks run only the coordinated cheap checks."
+      : "\n\nThis issue runs in coordinator verification mode: cite coord's recorded check results for the bound pins instead of re-running those suites.";
+
+const candidateResultsSection = (results: InternalOrder["candidateResults"] = []): string => {
+  const lines = results.filter((entry) => agentPattern.test(entry.agent) && shaPattern.test(entry.commitSha))
+    .flatMap((entry) => entry.results.map((result) =>
+      `- ${entry.agent} \`${entry.commitSha}\`: ${result.name} exit ${result.exitCode} ` +
+      `(${result.reused === true ? "reused" : result.joined === true ? "joined" : "ran"})` +
+      (result.logPath === undefined ? "" : ` log ${encodePath(result.logPath)}`)));
+  if (lines.length === 0) return "";
+  return "\n\n## Coordinator check results for the bound pins\n\n" +
+    "Recorded by coord at each pin; every reader of this action receives the same results. " +
+    `${PATH_ENCODING_NOTE}\n\n` + lines.join("\n");
+};
+
 const verificationSection = (order: InternalOrder): string => {
   const responsibility = order.submissionMode === "response"
     ? "Validate this response's format and bound inputs. Do not commit or push, and do not run a product suite merely to cast a ballot."
     : ["R4.implement", "R6.revise", "R7.finalize"].includes(order.stepId)
       ? "Run focused tests while developing. The hooks own mandatory commit/push checks; do not manually duplicate their full commands immediately before committing."
       : "Publishing only coordination evidence requires artifact/format/evidence validation, not a manual product suite.";
-  return "\n\n## Verification responsibilities\n\n" + responsibility + "\n\n" +
+  return candidateResultsSection(order.candidateResults) + "\n\n## Verification responsibilities\n\n" + responsibility +
+    coordinatorVerificationNote(order) + "\n\n" +
     "Reviewers read existing verification results for unchanged implementations and run additional tests only to investigate a finding; missing results are not a pass. " +
     "Hooks classify the staged index and outgoing ranges: allowlisted documentation uses the declared docs profile; mixed or unknown changes retain product checks. " +
     "The coordinator validates artifacts, pins, and evidence, and owns final checks at the approved pin against the frozen issue baseline. " +

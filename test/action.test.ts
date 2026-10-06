@@ -45,6 +45,24 @@ describe("verification instructions", () => {
       } else expect(raw).toContain("not a manual product suite");
     });
 
+  it("states coordinator-owned suites only in coordinator mode and renders each bound pin's recorded results", () => {
+    const local = renderAction({ ...order("/runtime"), stepId: "R4.implement" });
+    const coordinated = renderAction({ ...order("/runtime"), stepId: "R4.implement", verificationMode: "coordinator" });
+    expect(local).not.toContain("coordinator verification mode");
+    expect(coordinated).toContain("coord runs the declared candidate checks on your submitted product pin");
+    expect(coordinated.replace(/\n\nThis issue runs in coordinator verification mode:[^\n]*/, "")).toBe(local);
+    expect(renderAction({ ...order("/runtime"), stepId: "R5.compare", verificationMode: "coordinator" }))
+      .toContain("cite coord's recorded check results");
+
+    const raw = renderAction({ ...order("/runtime"), stepId: "R5.compare", candidateResults: [{ agent: "claude", commitSha: "3".repeat(40),
+      results: [{ name: "lint", argv: ["pnpm", "lint"], exitCode: 0, reused: true, logPath: "/runtime/issue-1/verification-logs/a\tb.log" },
+        { name: "test:fast", argv: ["pnpm", "test:fast"], exitCode: 0 }] }] });
+    expect(raw).toContain("## Coordinator check results for the bound pins");
+    expect(raw).toContain(`- claude \`${"3".repeat(40)}\`: lint exit 0 (reused) log "/runtime/issue-1/verification-logs/a\\tb.log"`);
+    expect(raw).toContain(`- claude \`${"3".repeat(40)}\`: test:fast exit 0 (ran)`);
+    expect(renderAction(order("/runtime"))).not.toContain("Coordinator check results");
+  });
+
   it("preserves response-only ballots without product suite instructions", () => {
     const raw = renderAction({ ...order("/runtime"), submissionMode: "response", stepId: "R6.ballot",
       requiredPath: "", responsePath: "/runtime/response.json" });

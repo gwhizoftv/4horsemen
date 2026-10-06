@@ -244,6 +244,18 @@ describe("operational state", () => {
     expect(readJournal(paths).at(-1)?.sequence).toBe(1);
   });
 
+  it("freezes a verification policy at start, and still parses a start.json written without one", () => {
+    const { paths } = initialize();
+    const legacy = readStartState(paths);
+    expect(legacy.verification).toBeUndefined();
+    expect(legacy.verificationDigest).toBeUndefined();
+    const verification = { mode: "coordinator" as const, maxConcurrentExpensive: 2,
+      coordinated: { precommit: [], prepush: [] },
+      candidate: { checks: [{ name: "check", argv: ["pnpm", "check"] }], covers: { prefixes: ["src/"], files: [] }, rules: [] } };
+    writeFileSync(paths.start, JSON.stringify({ ...legacy, verification, verificationDigest: "d".repeat(64) }));
+    expect(readStartState(paths)).toMatchObject({ verification, verificationDigest: "d".repeat(64) });
+  });
+
   it("persists pause and drop state but refuses a zero-agent workflow", () => {
     const { paths, cursors } = initialize();
     let next = setPaused(cursors, true, "2026-08-11T10:01:00.000Z");

@@ -494,7 +494,7 @@ the merge base with the configured remote/base; missing history fails closed.
 Deleting evidence in the last commit cannot hide earlier product changes.
 Finalization uses the documentation profile and critical paths snapshotted at
 issue start. Hooks, like their existing product `verify` commands, use the live
-workspace declaration. A mid-issue configuration change can therefore change
+workspace declaration (outside coordinator verification mode, below). A mid-issue configuration change can therefore change
 local checks without changing the frozen final gate; the shared classifier does
 not imply a shared configuration snapshot.
 
@@ -510,6 +510,69 @@ full hook command immediately before committing. Review unchanged implementation
 using existing verification results, adding tests only to investigate findings.
 Coordinator-owned final checks are not results an agent should claim to have run.
 Response-mode ballots continue to avoid commits and pushes entirely.
+
+### Coordinator verification mode
+
+`verification` is an opt-in declaration. Absent, or `"mode": "local"`, keeps the
+behavior above. `"mode": "coordinator"` moves the mandatory suites of automated
+runs into coord (see `config.example.json`):
+
+```jsonc
+"verification": {
+  "mode": "coordinator",
+  "coordinated": { "precommit": [/* cheap checks */], "prepush": [] },
+  "candidate": {
+    "checks": [/* run at every implementation/revision pin */],
+    "covers": { "prefixes": ["src/", "test/"], "files": [] },
+    "rules": [
+      { "prefixes": ["githooks/"], "add": ["test:e2e"] },
+      { "files": ["package.json", "pnpm-lock.yaml"], "add": "all" }
+    ]
+  },
+  "maxConcurrentExpensive": 1
+}
+```
+
+- **Binding.** Hooks use `coordinated` only when the committed branch, or the
+  single pushed branch, is this agent's `issue-<n>/<agent>` branch and that
+  issue's `start.json` freezes coordinator mode for this clone, and the run is
+  neither completed nor abandoned with the agent still on its active roster.
+  Manual branches, multi-ref pushes, detached HEAD and missing, unreadable or
+  mismatched runtime state all run the local `verify` lists and print why. An
+  absent runtime never means "skip". Integrity gates are unchanged.
+- **Candidate selection.** Coord classifies the frozen baseline through the
+  submitted product pin with the shared classifier. Evidence-only changes run
+  nothing; allowlisted documentation runs the docs checks. Product changes run
+  `candidate.checks`, plus the final `checks` that matching rules name. A rule
+  adding `"all"`, a path outside `covers` and every rule, an undecodable name,
+  or missing history runs the full `checks`. Both rename paths count.
+- **Names.** A check name identifies one command: a candidate check sharing a
+  name with a final check must have the same `argv`, and rules may only add
+  declared final checks.
+- **Caching.** A command with `cache` may be satisfied by a coordinator receipt
+  for equivalent inputs. `inputs: "tree"` keys on the pin's tree;
+  `"tree-excluding-evidence"` ignores only coordination evidence paths and is
+  appropriate only for commands that never read them. `probes` (argv run in the
+  worktree, for example `["node", "--version"]`) and `env` (names whose value
+  digests are keyed) declare toolchain and environment inputs. Never cache a
+  command that reads Git history, commit identity, external services or
+  undeclared environment; setup commands such as `install` and `build` stay
+  uncached so they always run.
+- **Retries.** `retry` (0–2) re-runs a failed command for diagnosis only. The
+  original failure remains the outcome.
+- **Expensive commands.** `expensive` commands share `maxConcurrentExpensive`
+  slots across every issue runner in the workspace.
+
+The policy and its digest are frozen into `start.json`, so changing the
+declaration affects only issues started afterwards. Switch modes between
+issues.
+
+The fast suite (`test:fast`) excludes the filesystem/process suites now in
+`test:system`; `pnpm check` still runs both. An existing workspace whose local
+`verify.prepush` is only `test:e2e` should add `test:system` (as the example
+does) before relying on the narrower `check:fast`, so manual branches keep
+their coverage. New Node proposals include `test:system` when the product
+declares it.
 
 ## Workspace layouts and issue input
 

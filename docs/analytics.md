@@ -5,7 +5,7 @@
 `verification-run` records runner invocations and explicit skips separately from
 artifact validation (`verify-result`). Each records trigger, phase, input identity
 (index tree or commit range), selected class/reason, command, start/end time,
-duration, exit code, and skip/cache reason. There is no receipt reuse/cache yet.
+duration, exit code, and skip/cache reason.
 Hook observations are advisory, written to ignored clone-local
 `.coord/verification/<measurementId>.json` files and ingested idempotently into the
 matching issue session's journal. Invalid/stale observations do not affect gates;
@@ -28,6 +28,16 @@ not a reconstructed causal critical path or an invented issue-wide testing total
 An absence of records means unobserved coverage, not proof that no tests ran.
 Existing `final-check` events remain available for old readers; they are not
 counted again in the new totals. Failed and retried runners count individually.
+
+Coordinator verification (#170) adds the `candidate` phase, an explicit
+`cacheReason` (why a command ran: no cache declaration, receipt miss, …), the
+attempt number, log path, receipt id and limiter `queueWaitMs` to each
+`verification-run`. `verification-reused` and `verification-joined` record
+commands satisfied without running, with the original run's duration, and
+`candidate-check` records each gate outcome. The report adds runner counts and
+time by trigger (`hook`, `candidate`, `final`), reused and joined counts, time
+avoided (the original durations those results replaced) and total limiter queue
+wait; queue wait is part of the non-overlapping verification wait.
 
 The historical analysis below describes the older, pre-instrumentation baseline.
 

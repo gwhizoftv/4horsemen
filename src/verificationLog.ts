@@ -11,7 +11,7 @@ import { workspaceLocationFromConfig } from "./workspace.js";
 export const verificationMeasurementSchema = z.object({
   measurementId: z.uuid(),
   trigger: z.enum(["hook", "coordinator"]),
-  phase: z.enum(["precommit", "prepush", "finalization"]),
+  phase: z.enum(["precommit", "prepush", "candidate", "finalization"]),
   inputIdentity: z.string().min(1),
   classification: z.enum(["coordination", "documentation", "product"]),
   reason: z.string(),
@@ -21,16 +21,21 @@ export const verificationMeasurementSchema = z.object({
   durationMs: z.number().int().nonnegative().nullable(),
   exitCode: z.number().int(),
   skipReason: z.string().nullable(),
-  cacheReason: z.literal("not implemented"),
+  /** Earlier records carry "not implemented"; coordinator runs say why they ran. */
+  cacheReason: z.string().min(1),
+  attempt: z.number().int().min(1).optional(),
+  queueWaitMs: z.number().int().nonnegative().optional(),
+  logPath: z.string().min(1).optional(),
+  receiptId: z.string().min(1).optional(),
   error: z.string().optional()
 }).strict();
 export type VerificationMeasurement = z.infer<typeof verificationMeasurementSchema>;
 
 export const verificationMeasurement = (
-  input: Omit<VerificationMeasurement, "measurementId" | "durationMs" | "cacheReason">
+  input: Omit<VerificationMeasurement, "measurementId" | "durationMs" | "cacheReason"> & { cacheReason?: string }
 ): VerificationMeasurement => {
   const duration = Date.parse(input.completedAt) - Date.parse(input.startedAt);
-  return { ...input, measurementId: randomUUID(), cacheReason: "not implemented",
+  return { ...input, measurementId: randomUUID(), cacheReason: input.cacheReason ?? "not cached: hook",
     durationMs: Number.isFinite(duration) && duration >= 0 ? duration : null };
 };
 
@@ -102,7 +107,7 @@ export const createVerificationIngestor = () => {
             const measurement = row.measurement;
             const from = Date.parse(measurement.startedAt), to = Date.parse(measurement.completedAt);
             if (row.agent !== agent || row.issueSessionId !== start.issueSessionId || measurement.trigger !== "hook" ||
-              entry.name !== `${measurement.measurementId}.json` || measurement.phase === "finalization" ||
+              entry.name !== `${measurement.measurementId}.json` || measurement.phase === "finalization" || measurement.phase === "candidate" ||
               from < Date.parse(start.createdAt) - 60_000 || from > to || to > Date.parse(now) + 60_000 ||
               measurement.durationMs !== to - from) {
               unlinkSync(path);

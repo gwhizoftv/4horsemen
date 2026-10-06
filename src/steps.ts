@@ -352,9 +352,26 @@ export type InternalOrder = {
   materialized?: MaterializedInputs;
   activeRoster: readonly string[];
   eligibleChoices: readonly string[];
+  /** Optional: orders built before coordinator verification render as local mode. */
+  verificationMode?: "local" | "coordinator";
+  candidateResults?: readonly CandidateResults[];
 };
 
-export type CheckResult = { name: string; argv: readonly string[]; exitCode: number };
+export type CheckResult = {
+  name: string;
+  argv: readonly string[];
+  exitCode: number;
+  /** Satisfied by a trusted coordinator receipt for equivalent inputs. */
+  reused?: boolean;
+  /** Satisfied by another runner's execution this request waited for. */
+  joined?: boolean;
+  receiptId?: string;
+  logPath?: string;
+  attempts?: number;
+};
+
+/** Coordinator results for one bound product pin, rendered for every reader. */
+export type CandidateResults = { agent: string; commitSha: string; results: readonly CheckResult[] };
 
 export type EvidenceObservation = {
   agent: string;

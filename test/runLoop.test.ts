@@ -2708,6 +2708,130 @@ describe("effectful run loop", () => {
   });
 });
 
+describe("coordinator verification gates", () => {
+  const cached = { inputs: "tree-excluding-evidence" as const, env: [], probes: [["probe"]] };
+  const gateFixture = (mode: "coordinator" | "local") => {
+    const { root, paths } = fixture();
+    const seed = join(root, "gate-seed");
+    mkdirSync(join(seed, "src"), { recursive: true });
+    git(seed, "init", "-q");
+    writeFileSync(join(seed, "src/a.ts"), "baseline\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "baseline");
+    const baselineSha = git(seed, "rev-parse", "HEAD");
+    mkdirSync(join(seed, ".signals/issue-1"), { recursive: true });
+    writeFileSync(join(seed, "src/a.ts"), "implementation\n");
+    writeFileSync(join(seed, ".signals/issue-1/implementation-ready-codex.json"), "{}\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "implementation");
+    const implementationPin = git(seed, "rev-parse", "HEAD");
+    writeFileSync(join(seed, ".signals/issue-1/revision-ready-codex.json"), "{}\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "evidence only");
+    const consensusSha = git(seed, "rev-parse", "HEAD");
+    rmSync(join(seed, ".signals"), { recursive: true });
+    git(seed, "add", "-u");
+    git(seed, "commit", "-qm", "evidence cleanup");
+    const finalSha = git(seed, "rev-parse", "HEAD");
+    git(root, "clone", "--bare", "-q", seed, paths.mirror);
+    const checks = [
+      { name: "install", argv: ["install"] },
+      { name: "lint", argv: ["lint"], cache: cached },
+      { name: "build", argv: ["build"] },
+      { name: "e2e", argv: ["e2e"], cache: cached, expensive: true }
+    ];
+    writeFileSync(paths.start, JSON.stringify({ ...readStartState(paths), baselineSha, checks,
+      ...(mode === "local" ? {} : {
+        verificationDigest: "d".repeat(64),
+        verification: { mode: "coordinator", maxConcurrentExpensive: 1,
+          coordinated: { precommit: [], prepush: [] },
+          candidate: { checks: checks.slice(0, 2), covers: { prefixes: ["src/"], files: [] }, rules: [] } }
+      }) }));
+    const calls: string[] = [];
+    let failing: string | null = null;
+    const processRunner = async (argv: readonly string[]) => {
+      calls.push(argv[0]!);
+      if (argv[0] === "probe") return { exitCode: 0, stdout: "probe 1.0\n", stderr: "" };
+      return argv[0] === failing ? { exitCode: 1, stdout: "", stderr: `${argv[0]} broke` } : { exitCode: 0, stdout: "ok", stderr: "" };
+    };
+    const loop = () => new CoordinatorRunLoop(paths, { tmux: null, mirror: new BareMirror(paths.mirror, seed), processRunner });
+    const observe = (stepId: "R4.implement" | "R6.revise", productPin: string) => {
+      const order = buildOrder(paths, readStartState(paths), readCursorsState(paths), "codex", stepId, stepId === "R6.revise" ? 1 : null);
+      return { order, observation: { agent: "codex", actionId: order.actionId, submissionSha: productPin,
+        status: "satisfied" as const, outstanding: [], productPin } };
+    };
+    return { paths, calls, loop, observe, implementationPin, consensusSha, finalSha, fail: (name: string | null) => { failing = name; } };
+  };
+
+  it("rejects a failing candidate with its command and log, and fails again after a restart", async () => {
+    const gate = gateFixture("coordinator");
+    gate.fail("lint");
+    const { order, observation } = gate.observe("R4.implement", gate.implementationPin);
+    const rejected = await gate.loop().verifyCandidateChecks(readStartState(gate.paths), order, observation, readCursorsState(gate.paths));
+    expect(rejected.status).toBe("rejected");
+    const logPath = /\(log: (.+?)\)/.exec(rejected.outstanding[0]!)?.[1];
+    expect(rejected.outstanding[0]).toContain("candidate check lint failed with exit 1");
+    expect(readFileSync(logPath!, "utf8")).toContain("lint broke");
+    expect(readJournal(gate.paths).filter((event) => event.type === "candidate-check").at(-1)?.details).toMatchObject({ outcome: "failed" });
+    // No receipt exists for a failure: a restarted coordinator runs it again and fails again.
+    const restarted = await gate.loop().verifyCandidateChecks(readStartState(gate.paths), order, observation, readCursorsState(gate.paths));
+    expect(restarted.status).toBe("rejected");
+    expect(gate.calls.filter((call) => call === "lint")).toHaveLength(2);
+  });
+
+  it("shares one execution across equivalent pins and finalization runs only what no receipt covers", async () => {
+    const gate = gateFixture("coordinator");
+    const implemented = gate.observe("R4.implement", gate.implementationPin);
+    const passed = await gate.loop().verifyCandidateChecks(readStartState(gate.paths), implemented.order, implemented.observation,
+      readCursorsState(gate.paths));
+    expect(passed.status).toBe("satisfied");
+    expect(passed.checkResults?.map((result) => [result.name, result.receiptId === undefined])).toEqual([["install", true], ["lint", false]]);
+    expect(gate.calls.filter((call) => call !== "probe")).toEqual(["install", "lint"]);
+
+    // A revision pin differing only by coordination evidence reuses the lint receipt.
+    gate.calls.length = 0;
+    const revised = gate.observe("R6.revise", gate.consensusSha);
+    const reused = await gate.loop().verifyCandidateChecks(readStartState(gate.paths), revised.order, revised.observation,
+      readCursorsState(gate.paths));
+    expect(reused.checkResults?.find((result) => result.name === "lint")).toMatchObject({ reused: true });
+    expect(gate.calls.filter((call) => call !== "probe")).toEqual(["install"]);
+    expect(readJournal(gate.paths).filter((event) => event.type === "verification-reused")).toHaveLength(1);
+
+    const finalOrder = { ...buildOrder(gate.paths, readStartState(gate.paths), readCursorsState(gate.paths), "codex", "R7.finalize", null),
+      inputs: [{ agent: "codex", commitSha: gate.consensusSha, path: ".signals/issue-1/revision-ready-codex.json", kind: "consensus" }] };
+    const finalObservation = { agent: "codex", actionId: finalOrder.actionId, submissionSha: gate.finalSha,
+      status: "satisfied" as const, outstanding: [], productPin: gate.finalSha };
+    gate.calls.length = 0;
+    const final = await gate.loop().verifyFinalizationChecks(readStartState(gate.paths), finalOrder, finalObservation,
+      readCursorsState(gate.paths));
+    expect(final.status).toBe("satisfied");
+    expect(gate.calls.filter((call) => call !== "probe")).toEqual(["install", "build", "e2e"]);
+    expect(readJournal(gate.paths).filter((event) => event.type === "final-check").map((event) => event.details.name))
+      .toEqual(["install", "build", "e2e"]);
+
+    // Without receipts the full declared gate runs.
+    rmSync(join(gate.paths.coordRoot, "verification"), { recursive: true });
+    gate.calls.length = 0;
+    await gate.loop().verifyFinalizationChecks(readStartState(gate.paths), finalOrder, finalObservation, readCursorsState(gate.paths));
+    expect(gate.calls.filter((call) => call !== "probe")).toEqual(["install", "lint", "build", "e2e"]);
+  });
+
+  it("leaves local-mode submissions to the hooks and binds recorded results into later actions", async () => {
+    const gate = gateFixture("local");
+    const { order, observation } = gate.observe("R4.implement", gate.implementationPin);
+    expect(await gate.loop().verifyCandidateChecks(readStartState(gate.paths), order, observation, readCursorsState(gate.paths)))
+      .toBe(observation);
+    expect(gate.calls).toEqual([]);
+
+    const result = { name: "lint", argv: ["lint"], exitCode: 0, reused: true, receiptId: "f".repeat(64), logPath: "/logs/lint.log" };
+    const cursors = { ...readCursorsState(gate.paths), accepted: [{ stepId: "R4.implement" as const, agent: "codex", round: null,
+      submissionSha: "e".repeat(40), productPin: gate.implementationPin, path: ".signals/issue-1/implementation-ready-codex.json",
+      acceptedAt: new Date().toISOString(), checkResults: [result] }] };
+    const compare = buildOrder(gate.paths, readStartState(gate.paths), cursors, "claude", "R5.compare", null);
+    expect(compare.candidateResults).toEqual([{ agent: "codex", commitSha: gate.implementationPin, results: [result] }]);
+  });
+});
+
 describe("advisory verification ingestion", () => {
   const measurementFixture = () => {
     const { root, paths } = fixture();

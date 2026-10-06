@@ -1,11 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { inspectCommitRange, parseNameStatusRecordsZ, type GitNameStatusChange } from "./pinValidation.js";
-import type { CheckCommand, CoordinatorConfig } from "./state.js";
+import type { CheckCommand, CoordinatorConfig, StartState } from "./state.js";
 
 export type ChangeClass = "coordination" | "documentation" | "product";
 export type ChangeInput = { changes: GitNameStatusChange[] | null; identity: string; reason?: string };
 type Policy = Partial<Pick<CoordinatorConfig, "documentation" | "workflowCriticalFiles" | "workflowCriticalPrefixes">>;
 export type ClassifiedChanges = { kind: ChangeClass; reason: string; inputIdentity: string };
+
+/** Coordination evidence is never product input; shared by the classifier and receipts. */
+export const isCoordinationEvidencePath = (path: string): boolean =>
+  /^\.(?:signals|plans|code-reviews|amendments|escalations)\//.test(path);
 
 /** Both names in a rename participate. Evidence cannot conceal a product path. */
 export const classifyChanges = (input: ChangeInput, policy: Policy): ClassifiedChanges => {
@@ -22,7 +26,7 @@ export const classifyChanges = (input: ChangeInput, policy: Policy): ClassifiedC
     for (const bytes of change.paths) {
       const path = bytes.toString("utf8");
       if (!Buffer.from(path).equals(bytes) || path === "") return result("product", "unrecognized path encoding");
-      if (/^\.(?:signals|plans|code-reviews|amendments|escalations)\//.test(path)) continue;
+      if (isCoordinationEvidencePath(path)) continue;
       if (policy.workflowCriticalFiles?.includes(path) || policy.workflowCriticalPrefixes?.some((prefix) => path.startsWith(prefix)) ||
         !policy.documentation?.paths.includes(path)) return result("product", `product or unknown path ${JSON.stringify(path)}`);
       docs = true;
@@ -95,4 +99,43 @@ export const selectVerification = (
       ? phase === "finalization" ? policy.documentation.checks : policy.documentation.verify[phase]
       : productCommands;
   return { ...classification, commands };
+};
+
+type CandidatePolicy = Pick<StartState, "checks" | "documentation" | "verification" | "workflowCriticalFiles" | "workflowCriticalPrefixes">;
+export type CandidateSelection = ClassifiedChanges & { commands: CheckCommand[]; expanded: boolean };
+
+const matchesPath = (match: { prefixes: readonly string[]; files: readonly string[] }, path: string): boolean =>
+  match.files.includes(path) || match.prefixes.some((prefix) => path.startsWith(prefix));
+
+/** Candidate checks for one implementation/revision pin. Indeterminate input,
+ * undecodable names, "all" rules and paths outside `covers` and every rule run
+ * the full final gate; risk rules pull named final checks forward. */
+export const selectCandidateVerification = (input: ChangeInput, start: CandidatePolicy): CandidateSelection => {
+  const classification = classifyChanges(input, start);
+  const full = (reason: string): CandidateSelection =>
+    ({ ...classification, reason, commands: [...start.checks], expanded: true });
+  if (classification.kind === "coordination") return { ...classification, commands: [], expanded: false };
+  if (classification.kind === "documentation" && start.documentation !== undefined) {
+    return { ...classification, commands: [...start.documentation.checks], expanded: false };
+  }
+  const candidate = start.verification?.candidate;
+  if (candidate === undefined) return full("no candidate policy declared");
+  if (input.changes === null) return full(classification.reason);
+  const added = new Set<string>();
+  for (const change of input.changes) {
+    for (const bytes of change.paths) {
+      const path = bytes.toString("utf8");
+      if (!Buffer.from(path).equals(bytes) || path === "") return full("unrecognized path encoding");
+      if (isCoordinationEvidencePath(path)) continue;
+      const rules = candidate.rules.filter((rule) => matchesPath(rule, path));
+      for (const rule of rules) {
+        if (rule.add === "all") return full(`full coverage rule for ${JSON.stringify(path)}`);
+        for (const name of rule.add) added.add(name);
+      }
+      if (rules.length === 0 && !matchesPath(candidate.covers, path)) return full(`unclassified path ${JSON.stringify(path)}`);
+    }
+  }
+  const names = new Set(candidate.checks.map((check) => check.name));
+  const commands = [...candidate.checks, ...start.checks.filter((check) => added.has(check.name) && !names.has(check.name))];
+  return { ...classification, commands, expanded: false };
 };
