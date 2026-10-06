@@ -16,6 +16,7 @@ import {
   readCursorsState,
   readJournal,
   readStartState,
+  verificationPolicyDigest,
   writeCursorsState
 } from "../src/state.js";
 import { DOCTOR_CODES } from "../src/doctor.js";
@@ -196,6 +197,21 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
 };
 
 describe("CLI version", () => {
+  it("freezes the explicit coordinated verification declaration when starting", async () => {
+    const f = setup();
+    const config = readConfig(f.configPath);
+    const declared = { ...config, verification: { mode: "coordinator", coordinated: { precommit: [], prepush: [] },
+      candidate: { checks: config.checks, covers: { prefixes: ["src/"] } } } };
+    writeFileSync(f.configPath, JSON.stringify(declared));
+    expect(await runCli(["start", "1", "--profile", "solo", "--config", f.configPath, "--coord-root", f.runtime], {
+      processRunner: successfulStartGit, makeRunLoop: fakeLoop, io: { stdout: () => undefined }
+    })).toBe(0);
+    const paths = issueRuntimePaths(f.runtime, 1), snapshot = readStartState(paths);
+    expect(snapshot.verification).toEqual(readConfig(f.configPath).verification);
+    expect(snapshot.verificationDigest).toBe(verificationPolicyDigest(readConfig(f.configPath)));
+    writeFileSync(f.configPath, JSON.stringify(config));
+    expect(readStartState(paths).verification).toEqual(snapshot.verification);
+  });
   it("never touches the default terminal under Vitest, even when both host streams are TTYs", async () => {
     const f = setup();
     await runCli(["start", "1", "--profile", "solo", "--config", f.configPath, "--coord-root", f.runtime], {

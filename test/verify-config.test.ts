@@ -10,7 +10,7 @@ import {
   verifyCommands
 } from "../src/hookPolicy.js";
 import { buildWorkspaceConfig, proposeProjectPolicy } from "../src/setupWorkspace.js";
-import { classifyChanges, inspectOutgoingChanges, inspectRangeChanges, inspectStagedChanges, selectVerification } from "../src/changeClassification.js";
+import { classifyChanges, inspectOutgoingChanges, inspectRangeChanges, inspectStagedChanges, selectVerification, selectCandidateVerification } from "../src/changeClassification.js";
 import { renderAgentsProtocolBlock } from "../src/agentsProtocol.js";
 import { applyManagedBlock, ManagedBlockError, removeManagedBlock } from "../src/productIgnore.js";
 import { coordinatorConfigSchema, workspaceDeclarationSchema, type CoordinatorConfig } from "../src/state.js";
@@ -203,6 +203,25 @@ describe("installer proposals", () => {
 });
 
 describe("shipped examples", () => {
+  it("partitions all tests and preserves the legacy manual check:fast coverage", () => {
+    const fast = readFileSync(join(repoRoot, "vitest.config.ts"), "utf8");
+    const system = readFileSync(join(repoRoot, "vitest.system.config.ts"), "utf8");
+    const e2e = readFileSync(join(repoRoot, "vitest.e2e.config.ts"), "utf8");
+    const named = (raw: string) => [...raw.matchAll(/"(test\/[^"*]+\.test\.ts)"/g)].map((match) => match[1]!);
+    const excluded = named(fast), systemFiles = named(system), e2eFiles = named(e2e);
+    const files = readdirSync(join(repoRoot, "test"), { recursive: true }).map(String)
+      .filter((name) => name.endsWith(".test.ts")).map((name) => `test/${name}`);
+    for (const file of files) expect(Number(!excluded.includes(file)) + Number(systemFiles.includes(file)) + Number(e2eFiles.includes(file)), file).toBe(1);
+    for (const file of [...excluded, ...systemFiles, ...e2eFiles]) expect(files).toContain(file);
+    const scripts = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).scripts;
+    // Existing manual installs invoke these exact names. No owner migration is
+    // needed to continue running a failing system test before a manual commit.
+    expect(scripts["check:fast"]).toContain("pnpm test:system");
+    expect(scripts["check:fast"]).toContain("pnpm test:fast");
+    expect(scripts.check).toContain("pnpm check:fast");
+    expect(scripts.check).toContain("pnpm test:e2e");
+    expect(scripts.test).toContain("pnpm test:system");
+  });
   it("aligns tracked and refreshed verification instructions with evidence exemptions", () => {
     const tracked = readFileSync(join(repoRoot, "AGENTS.md"), "utf8").split("<!-- coordination protocol")[0]!;
     const protocol = renderAgentsProtocolBlock(repoRoot);
@@ -247,6 +266,33 @@ describe("shipped examples", () => {
   it("keeps config.product.example.json parseable by the driver's own schema", () => {
     const example = JSON.parse(readFileSync(join(repoRoot, "config.product.example.json"), "utf8")) as unknown;
     expect(coordinatorConfigSchema.safeParse(example).success).toBe(true);
+  });
+});
+
+describe("coordinated candidate selection", () => {
+  const fast = { name: "unit", argv: ["unit"] }, full = { name: "system", argv: ["system"] };
+  const policy = () => config({ checks: [fast, full], verification: { mode: "coordinator",
+    coordinated: { precommit: [], prepush: [] }, candidate: { checks: [fast], covers: { prefixes: ["src/"] },
+      rules: [{ prefixes: ["githooks/", "templates/", "test/support/"], add: ["system"] },
+        { files: ["pnpm-lock.yaml", "package.json", "vitest.config.ts"], add: "all" }] } } });
+  it.each([
+    ["src/a.ts", ["unit"]], ["githooks/pre-push", ["unit", "system"]], ["templates/a", ["unit", "system"]],
+    ["test/support/data", ["unit", "system"]], ["pnpm-lock.yaml", ["unit", "system"]],
+    ["unknown\tand\nname", ["unit", "system"]], [".signals/issue-1/ready.json", []]
+  ])("selects %s using explicit coverage and conservative fallback", (path, names) => {
+    expect(selectCandidateVerification({ identity: "range", changes: [{ status: "M", paths: [Buffer.from(path as string)] }] }, policy()).commands.map((check) => check.name)).toEqual(names);
+  });
+  it("unions rename endpoints and expands missing history, malformed and non-UTF8 records", () => {
+    for (const changes of [null, [], [{ status: "R100", paths: [Buffer.from("src/a"), Buffer.from("githooks/a")] }],
+      [{ status: "M", paths: [Buffer.from([255])] }], [{ status: "U", paths: [Buffer.from("src/a")] }]]) {
+      expect(selectCandidateVerification({ identity: "range", changes }, policy()).commands).toHaveLength(2);
+    }
+  });
+  it("rejects conflicting check identities and incomplete coordinator policies", () => {
+    const valid = policy();
+    expect(() => config({ ...valid, checks: [{ name: "unit", argv: ["different"] }] })).toThrow();
+    expect(() => config({ verification: { mode: "coordinator" } })).toThrow();
+    expect(() => config({ ...valid, checks: [fast] })).toThrow("undeclared final check");
   });
 });
 

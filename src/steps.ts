@@ -314,6 +314,8 @@ export type MaterializedInputs = {
 };
 
 export type InternalOrder = {
+  verificationMode?: "local" | "coordinator";
+  candidateResults?: readonly { agent: string; commitSha: string; results: readonly CheckResult[] }[];
   actionId: string;
   issue: number;
   agent: string;
@@ -354,7 +356,10 @@ export type InternalOrder = {
   eligibleChoices: readonly string[];
 };
 
-export type CheckResult = { name: string; argv: readonly string[]; exitCode: number };
+export type CheckResult = {
+  name: string; argv: readonly string[]; exitCode: number;
+  reused?: boolean; joined?: boolean; receiptId?: string; logPath?: string; attempts?: number;
+};
 
 export type EvidenceObservation = {
   agent: string;

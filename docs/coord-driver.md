@@ -741,8 +741,9 @@ start under format 4).
 Finalization binds the accepted consensus/product pin to a separate cleanup
 pin. From consensus to cleanup, only deletion of the current issue's
 `.plans/**`, `.signals/**`, and `.code-reviews/**` files is allowed. The driver
-then materializes a clean detached worktree at the cleanup pin and runs every
-configured argv check. Any verifier or check failure blocks PR creation. After
+then materializes a clean detached worktree at the cleanup pin and satisfies every
+configured argv check, running it unless a trusted receipt proves equivalent
+declared inputs. Any verifier or check failure blocks PR creation. After
 accepted R7 the driver pushes `issue-<n>/<chosen-agent>-final` at the cleanup
 pin and opens a PR. Ballot evidence stays on `issue-<n>/coordinator-evidence`;
 the product PR head is the ballot-free `finalSha`. `coord-open-unmerged` (and
@@ -750,3 +751,50 @@ legacy `owner-only`) leaves that PR as a draft for the owner to merge.
 `coord-merged` marks it ready and merges it. Publication failures never discard
 accepted finalization. `coord status` and a completed `coord N` print the
 chosen agent, final pin, published branch, evidence branch/tip, and PR URL.
+
+## Candidate verification and trusted receipts
+
+With the explicit frozen coordinator mode, validated implementation/revision
+product pins must pass the candidate gate before becoming eligible for review
+or selection. Evidence-only work launches no suite; documentation uses its
+declared profile and mixed/unknown changes retain product checks. Selection
+always compares the frozen issue baseline to the product pin, not a signal or
+cleanup commit. Failures produce a reissued implementation/revision action with
+the failed command and full log; they are not silent evidence-verification retries.
+All reviewers see coordinator-owned results for their exact bound pins.
+
+Candidate and final checks share one runner and owner-side receipt store under
+the workspace runtime's `verification/receipts`. Jobs use detached immutable
+worktrees; logs live under each issue's `verification-logs`. A receipt binds
+repository, declared argv (before worktree substitution), input-policy version,
+commit/tree or explicitly projected tree, frozen policy, platform/architecture,
+runtime/toolchain probes, dependency content, preparation commands and relevant
+environment digests. Only exit-zero runs with unchanged declared inputs produce
+receipts. Agent signals and advisory hook measurements cannot grant a cache hit.
+Tracked input mutation by preparation or a check rejects the candidate/final
+gate; dirty execution inputs are never attributed to the original pin.
+
+Final checks remain the explicit configured commands; the runner does not guess
+components of an aggregate `pnpm check`. A split atomic profile can reuse each
+equivalent result independently and execute missing requirements. Without a
+trusted equivalent-input receipt, the command runs in full. Exact-commit caching
+does not reuse a changed cleanup commit; projected modes require a per-check
+declaration proving excluded evidence and Git identity irrelevant. Cold runs
+still execute all final requirements. Failed or interrupted runs never satisfy
+publication, including after restart.
+
+Per-key locks let consumers join successful work across runners, and expensive
+slots bound simultaneous mandatory suites. Locks are never reclaimed solely
+because of age, and release compares ownership. A dead coordinator might leave
+a live child process; such an interrupted lock fails closed with its path for
+owner recovery. Stop/confirm all orphaned suites before removing that exact
+interrupted lock and restarting; do not wipe receipts or the issue to recover.
+Live or uncertain owners retain exclusion. Normally each workspace has one
+coordinator runner; concurrency support is not permission to run two owners
+mutating the same issue.
+
+Execution remains awaited within a tick, as final verification was before.
+Authority checks run between commands and during lock waits, but a long suite
+delays other agents' tick observations; use the queue/execution measurements
+before deciding whether background jobs are warranted. No performance claim or
+onboarding-timeout diagnosis follows merely from introducing a limiter.

@@ -300,6 +300,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     ...(toolchain === undefined ? {} : { toolchain }),
     ...(verify === undefined ? {} : { verify }),
     ...(declared.documentation === undefined ? {} : { documentation: declared.documentation }),
+    ...(declared.verification === undefined ? {} : { verification: declared.verification }),
     workflowCriticalPrefixes: declared.workflowCriticalPrefixes ?? input.proposal.workflowCriticalPrefixes,
     workflowCriticalFiles: declared.workflowCriticalFiles ?? input.proposal.workflowCriticalFiles,
     completesRoot: input.completesRoot,

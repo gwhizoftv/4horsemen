@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { clearCompletion, createActionId, readAction, readCompletion, writeAction } from "./action.js";
 import {
@@ -44,7 +44,6 @@ import { renderArtifactScaffold } from "./orderScaffold.js";
 import {
   agentResponsePath,
   agentRuntimePaths,
-  containedPath,
   evidenceWorktreePath,
   resourceBindingPaths,
   type IssueRuntimePaths
@@ -110,6 +109,8 @@ import { formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIs
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import { harnessPromptReadiness, TmuxController } from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
+import { selectCandidateVerification } from "./changeClassification.js";
+import { runVerification } from "./verificationRunner.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
 export type ProcessRunner = (argv: readonly string[], cwd: string) => Promise<ProcessResult>;
@@ -771,6 +772,11 @@ export const buildOrder = (
         : `\n\nUse protocolVersion 1. Bound values below are authoritative; do not invent alternate digests or citations.`;
   return {
     actionId,
+    verificationMode: start.verification?.mode ?? "local",
+    candidateResults: cursors.accepted.filter((entry) =>
+      ["R4.implement", "R6.revise"].includes(entry.stepId) && entry.productPin !== undefined &&
+      entry.checkResults !== undefined && inputs.some((bound) => bound.commitSha === entry.productPin))
+      .map((entry) => ({ agent: entry.agent, commitSha: entry.productPin!, results: entry.checkResults! })),
     issue: start.issue,
     agent,
     stepId,
@@ -2386,60 +2392,40 @@ export class CoordinatorRunLoop {
       return { ...observation, checkResults: [] };
     }
 
-    const target = containedPath(this.paths.issueRoot, `.verification-${randomUUID()}`);
-    const checkResults: Array<{ name: string; argv: string[]; exitCode: number }> = [];
-    try {
-      this.authority(cursors);
-      await this.mirror.materializeWorktree(target, observation.productPin);
-      this.authority(cursors);
-      for (const check of selected.commands) {
-        this.authority(cursors);
-        const argv = check.argv.map((argument) => argument.replaceAll("{worktree}", target));
-        const checkStartedAt = this.now();
-        const record = (exitCode: number, error?: string) => {
-          const measurement = verificationMeasurement({ trigger: "coordinator", phase: "finalization",
-            inputIdentity: selected.inputIdentity, classification: selected.kind, reason: selected.reason,
-            command: { name: check.name, argv }, startedAt: checkStartedAt, completedAt: this.now(),
-            exitCode, skipReason: null, ...(error === undefined ? {} : { error }) });
-          this.authority(cursors);
-          appendJournal(this.paths, { type: "verification-run", agent: order.agent, actionId: order.actionId,
-            details: measurement }, measurement.completedAt);
-          return measurement;
-        };
-        let result: Awaited<ReturnType<ProcessRunner>>;
-        try { result = await this.processRunner(argv, target); }
-        catch (error) {
-          record(1, String(error));
-          // A coordinator launch failure is not a rejected agent submission.
-          throw error;
-        }
-        const measurement = record(result.exitCode);
-        checkResults.push({ name: check.name, argv, exitCode: result.exitCode });
-        appendJournal(
-          this.paths,
-          {
-            type: "final-check",
-            agent: order.agent,
-            actionId: order.actionId,
-            details: { tier: "checks", name: check.name, argv, exitCode: result.exitCode, durationMs: measurement.durationMs }
-          },
-          measurement.completedAt
-        );
-        if (result.exitCode !== 0) {
-          return {
-            ...observation,
-            status: "rejected",
-            outstanding: [
-              `finalization check (tier: checks) ${check.name} failed with exit ${result.exitCode}: ${result.stderr.trim()}`
-            ]
-          };
-        }
-      }
-    } finally {
-      await this.mirror.removeWorktree(target);
-      rmSync(target, { recursive: true, force: true });
-    }
-    return { ...observation, checkResults };
+    return this.runSelectedVerification(start, order, observation, cursors, selected, "finalization");
+  }
+
+  private async runSelectedVerification(
+    start: StartState, order: InternalOrder, observation: EvidenceObservation, cursors: CursorsState,
+    selection: Parameters<typeof runVerification>[0]["selection"], phase: "candidate" | "finalization"
+  ): Promise<EvidenceObservation> {
+    const checked = await runVerification({ paths: this.paths, start, mirror: this.mirror,
+      processRunner: this.processRunner, now: this.now, checkpoint: () => this.authority(cursors),
+      journal: (type, details, at) => {
+        // Execution observations remain true even if owner controls changed
+        // during the process. Receipts/acceptance still require fresh authority.
+        appendJournal(this.paths, { type, agent: order.agent, actionId: order.actionId, details }, at);
+      }, phase, pin: observation.productPin!, selection });
+    this.authority(cursors);
+    if (phase === "candidate") appendJournal(this.paths, { type: "candidate-check", agent: order.agent,
+      actionId: order.actionId, details: { pin: observation.productPin, classification: selection.kind,
+        reason: selection.reason, results: checked.results, ok: checked.ok } }, this.now());
+    if (!checked.ok) return { ...observation, status: "rejected", outstanding: [
+      `${phase} check (tier: checks) ${checked.failed!.name} failed with exit ${checked.failed!.exitCode}` +
+      ` (log: ${checked.failed!.logPath ?? "execution inputs changed before command"})` +
+      ((checked.failed!.attempts ?? 1) > 1 ? "; diagnostic retries do not replace the original failure" : "")
+    ] };
+    return { ...observation, checkResults: checked.results };
+  }
+
+  async verifyCandidateChecks(
+    start: StartState, order: InternalOrder, observation: EvidenceObservation, cursors: CursorsState
+  ): Promise<EvidenceObservation> {
+    if (observation.status !== "satisfied" || observation.productPin === undefined ||
+      !["R4.implement", "R6.revise"].includes(order.stepId) || start.verification?.mode !== "coordinator") return observation;
+    const selected = selectCandidateVerification(
+      inspectRangeChanges(this.mirror.path, start.baselineSha, observation.productPin), start);
+    return this.runSelectedVerification(start, order, observation, cursors, selected, "candidate");
   }
 
   private async publishAcceptedFinalization(start: StartState, cursors: CursorsState): Promise<CursorsState> {
@@ -2874,6 +2860,7 @@ export class CoordinatorRunLoop {
       );
       this.authority(cursors);
       observation = await this.verifyFinalizationChecks(start, order, observation, cursors);
+      observation = await this.verifyCandidateChecks(start, order, observation, cursors);
       this.authority(cursors);
       observations.push(observation);
       }

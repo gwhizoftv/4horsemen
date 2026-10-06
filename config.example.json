@@ -9,7 +9,10 @@
       "delivery": "nudge",
       "harnessProcess": "claude",
       "nudgePrelude": [],
-      "nudgeSubmit": ["Escape", "Enter"],
+      "nudgeSubmit": [
+        "Escape",
+        "Enter"
+      ],
       "terminalProfile": "Pro"
     },
     {
@@ -18,8 +21,13 @@
       "launcher": "start-codex.sh",
       "delivery": "pull",
       "harnessProcess": "codex",
-      "nudgePrelude": ["i"],
-      "nudgeSubmit": ["C-j", "C-m"],
+      "nudgePrelude": [
+        "i"
+      ],
+      "nudgeSubmit": [
+        "C-j",
+        "C-m"
+      ],
       "terminalProfile": "Grass"
     },
     {
@@ -28,7 +36,9 @@
       "launcher": "start-cursor.sh",
       "delivery": "pull",
       "nudgePrelude": [],
-      "nudgeSubmit": ["Enter"],
+      "nudgeSubmit": [
+        "Enter"
+      ],
       "terminalProfile": "Ocean"
     },
     {
@@ -37,7 +47,9 @@
       "launcher": "start-antigravity.sh",
       "delivery": "pull",
       "nudgePrelude": [],
-      "nudgeSubmit": ["Enter"],
+      "nudgeSubmit": [
+        "Enter"
+      ],
       "terminalProfile": "Red Sands"
     }
   ],
@@ -48,25 +60,306 @@
   "maxRevisionRounds": 3,
   "prPolicy": "coord-open-unmerged",
   "digestPaths": [],
-  "contextPaths": ["docs/repo-map.md"],
+  "contextPaths": [
+    "docs/repo-map.md"
+  ],
   "pollIntervalMs": 1000,
   "verify": {
-    "precommit": [{ "name": "check:fast", "argv": ["pnpm", "check:fast"] }],
-    "prepush": [{ "name": "test:e2e", "argv": ["pnpm", "test:e2e"] }]
+    "precommit": [
+      {
+        "name": "check:fast",
+        "argv": [
+          "pnpm",
+          "check:fast"
+        ]
+      }
+    ],
+    "prepush": [
+      {
+        "name": "test:e2e",
+        "argv": [
+          "pnpm",
+          "test:e2e"
+        ]
+      }
+    ]
   },
   "documentation": {
-    "paths": ["README.md", "CONTRIBUTING.md", "SECURITY.md", "docs/setup-workspace.md", "docs/analytics.md"],
+    "paths": [
+      "README.md",
+      "CONTRIBUTING.md",
+      "SECURITY.md",
+      "docs/setup-workspace.md",
+      "docs/analytics.md"
+    ],
     "verify": {
-      "precommit": [{ "name": "check:docs", "argv": ["pnpm", "check:docs"] }],
-      "prepush": [{ "name": "check:docs", "argv": ["pnpm", "check:docs"] }]
+      "precommit": [
+        {
+          "name": "check:docs",
+          "argv": [
+            "pnpm",
+            "check:docs"
+          ]
+        }
+      ],
+      "prepush": [
+        {
+          "name": "check:docs",
+          "argv": [
+            "pnpm",
+            "check:docs"
+          ]
+        }
+      ]
     },
     "checks": [
-      { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
-      { "name": "check:docs", "argv": ["pnpm", "check:docs"] }
+      {
+        "name": "install",
+        "argv": [
+          "pnpm",
+          "install",
+          "--frozen-lockfile"
+        ]
+      },
+      {
+        "name": "check:docs",
+        "argv": [
+          "pnpm",
+          "check:docs"
+        ]
+      }
     ]
   },
   "checks": [
-    { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
-    { "name": "check", "argv": ["pnpm", "check"] }
-  ]
+    {
+      "name": "install",
+      "argv": [
+        "pnpm",
+        "install",
+        "--frozen-lockfile"
+      ],
+      "expensive": true
+    },
+    {
+      "name": "lint",
+      "argv": [
+        "pnpm",
+        "lint"
+      ],
+      "cache": {
+        "inputs": "commit",
+        "env": [
+          "CI",
+          "NODE_ENV",
+          "NODE_OPTIONS",
+          "TZ",
+          "LANG"
+        ],
+        "probes": [
+          [
+            "node",
+            "--version"
+          ],
+          [
+            "pnpm",
+            "--version"
+          ]
+        ],
+        "dependencies": [
+          "node_modules"
+        ]
+      }
+    },
+    {
+      "name": "typecheck",
+      "argv": [
+        "pnpm",
+        "typecheck"
+      ],
+      "cache": {
+        "inputs": "commit",
+        "env": [
+          "CI",
+          "NODE_ENV",
+          "NODE_OPTIONS",
+          "TZ",
+          "LANG"
+        ],
+        "probes": [
+          [
+            "node",
+            "--version"
+          ],
+          [
+            "pnpm",
+            "--version"
+          ]
+        ],
+        "dependencies": [
+          "node_modules"
+        ]
+      }
+    },
+    {
+      "name": "test:fast",
+      "argv": [
+        "pnpm",
+        "test:fast"
+      ]
+    },
+    {
+      "name": "test:system",
+      "argv": [
+        "pnpm",
+        "test:system"
+      ],
+      "expensive": true
+    },
+    {
+      "name": "build",
+      "argv": [
+        "pnpm",
+        "build"
+      ]
+    },
+    {
+      "name": "test:e2e",
+      "argv": [
+        "pnpm",
+        "test:e2e"
+      ],
+      "expensive": true
+    }
+  ],
+  "verification": {
+    "mode": "coordinator",
+    "coordinated": {
+      "precommit": [],
+      "prepush": []
+    },
+    "candidate": {
+      "checks": [
+        {
+          "name": "install",
+          "argv": [
+            "pnpm",
+            "install",
+            "--frozen-lockfile"
+          ],
+          "expensive": true
+        },
+        {
+          "name": "lint",
+          "argv": [
+            "pnpm",
+            "lint"
+          ],
+          "cache": {
+            "inputs": "commit",
+            "env": [
+              "CI",
+              "NODE_ENV",
+              "NODE_OPTIONS",
+              "TZ",
+              "LANG"
+            ],
+            "probes": [
+              [
+                "node",
+                "--version"
+              ],
+              [
+                "pnpm",
+                "--version"
+              ]
+            ],
+            "dependencies": [
+              "node_modules"
+            ]
+          }
+        },
+        {
+          "name": "typecheck",
+          "argv": [
+            "pnpm",
+            "typecheck"
+          ],
+          "cache": {
+            "inputs": "commit",
+            "env": [
+              "CI",
+              "NODE_ENV",
+              "NODE_OPTIONS",
+              "TZ",
+              "LANG"
+            ],
+            "probes": [
+              [
+                "node",
+                "--version"
+              ],
+              [
+                "pnpm",
+                "--version"
+              ]
+            ],
+            "dependencies": [
+              "node_modules"
+            ]
+          }
+        },
+        {
+          "name": "test:fast",
+          "argv": [
+            "pnpm",
+            "test:fast"
+          ]
+        },
+        {
+          "name": "test:system",
+          "argv": [
+            "pnpm",
+            "test:system"
+          ],
+          "expensive": true
+        }
+      ],
+      "covers": {
+        "prefixes": [
+          "src/",
+          "test/"
+        ],
+        "files": []
+      },
+      "rules": [
+        {
+          "prefixes": [
+            "githooks/",
+            "templates/",
+            "scripts/"
+          ],
+          "files": [],
+          "add": [
+            "test:e2e"
+          ]
+        },
+        {
+          "prefixes": [],
+          "files": [
+            "package.json",
+            "pnpm-lock.yaml",
+            "pnpm-workspace.yaml",
+            "tsconfig.json",
+            "test/tsconfig.json",
+            "eslint.config.mjs",
+            "vitest.config.ts",
+            "vitest.system.config.ts",
+            "vitest.e2e.config.ts"
+          ],
+          "add": "all"
+        }
+      ]
+    },
+    "maxConcurrentExpensive": 1
+  }
 }

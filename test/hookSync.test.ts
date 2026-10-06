@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { inspectCloneHooks, readHookManifest, removeCloneHooks, type HookManifest } from "../src/hookSync.js";
 import { install, uninstall } from "../src/install.js";
+import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import { initializeOperationalState, readConfig, readCursorsState, writeCursorsState, verificationPolicyDigest } from "../src/state.js";
+import { workspaceLocationFromConfig } from "../src/workspace.js";
 import {
   declaredChecks,
   ensureBuilt,
@@ -189,6 +192,45 @@ describe("agent-clone hook wiring", () => {
 });
 
 describe("declared verification in the hooks", () => {
+  it("uses cheap hooks only for the actual active frozen issue and preserves manual/multi-ref fallback", () => {
+    const { fixture, clone, configPath } = installed({ precommit: [{ name: "local", argv: ["false"] }],
+      prepush: [{ name: "local", argv: ["false"] }] }, "go", {
+      verification: { mode: "coordinator", coordinated: { precommit: [], prepush: [] },
+        candidate: { checks: declaredChecks, covers: { prefixes: ["cmd/"] } } }
+    });
+    const config = readConfig(configPath);
+    const paths = issueRuntimePaths(workspaceLocationFromConfig(configPath).workspaceRoot, 1);
+    createIssueRuntime(paths, ["claude"]);
+    const baselineSha = git(clone, "rev-parse", "HEAD");
+    initializeOperationalState(paths, { issue: 1, issueSessionId: `issue-1:${baselineSha}`, baselineSha,
+      profile: "solo", originalRoster: ["claude"], branchTemplate: config.branch, baseBranch: config.baseBranch,
+      maxRevisionRounds: 3, prPolicy: config.prPolicy, automationDigest: "a".repeat(64),
+      automationDigestScheme: "sha256-length-prefixed-v1", automationDigestSources: [{ id: "config", sha256: "a".repeat(64) }],
+      trustedSourceCommit: baselineSha, origin: config.origin, coordRoot: paths.coordRoot, configPath,
+      agents: [{ ...config.agents[0]!, root: clone }], checks: config.checks, pollIntervalMs: 100,
+      verification: config.verification, verificationDigest: verificationPolicyDigest(config),
+      workflowCriticalFiles: config.workflowCriticalFiles, workflowCriticalPrefixes: config.workflowCriticalPrefixes
+    });
+    stageWork(clone);
+    const commit = tryGit(clone, "commit", "-m", "Claude: automated check binding");
+    expect(commit.exitCode, commit.stderr + commit.stdout).toBe(0);
+    const push = tryGit(clone, "push", "origin", "HEAD:issue-1/claude");
+    expect(push.exitCode, push.stderr + push.stdout).toBe(0);
+    const multiple = tryGit(clone, "push", "origin", "HEAD:claude/a", "HEAD:claude/b");
+    expect(multiple.exitCode).not.toBe(0);
+    expect(multiple.stdout + multiple.stderr).toContain("multi-ref push");
+    expect(tryGit(clone, "push", "origin", "HEAD:issue-1/codex").exitCode).not.toBe(0);
+    git(clone, "checkout", "-qb", "claude/manual");
+    writeFileSync(join(clone, "cmd", "feature.go"), "package main\n// manual\n");
+    git(clone, "add", "cmd/feature.go");
+    expect(tryGit(clone, "commit", "-m", "Claude: manual still checked").exitCode).not.toBe(0);
+    git(clone, "checkout", "issue-1/claude");
+    writeCursorsState(paths, { ...readCursorsState(paths), completed: true });
+    expect(tryGit(clone, "commit", "-m", "Claude: completed issue still checked").exitCode).not.toBe(0);
+    writeFileSync(paths.cursors, "broken");
+    expect(tryGit(clone, "commit", "-m", "Claude: broken runtime still checked").exitCode).not.toBe(0);
+    expect(fixture.originPath).toBe(config.origin);
+  });
   it("blocks a commit when a declared precommit command fails, in a non-Node product", () => {
     const { clone } = installed(failingPrecommit);
     expect(existsSync(join(clone, "go.mod"))).toBe(true);

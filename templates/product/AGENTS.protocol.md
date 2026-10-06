@@ -190,6 +190,13 @@ single `basedOn` product parent; scope approvals are separate evidence.
 
 ## Checks that actually run
 
+In an explicitly declared coordinator-mode issue, coord owns candidate suites
+at the submitted implementation/revision pin and the final checks. Bound hooks
+retain integrity rules and the declared cheap checks. Cite coordinator results
+and logs rather than rerunning mandatory candidate suites; keep focused tests
+while developing. Missing/broken issue bindings and manual branches retain the
+local verification policy. Never claim a missing result as a pass.
+
 Publishing only coordination evidence (plans, reviews, signals, amendments,
 escalations) requires artifact/format/evidence validation, not a manual product
 suite. For product commits the hook owns its mandatory check; do not manually

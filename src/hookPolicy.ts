@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
-import { localConfigGet } from "./gitExec.js";
-import { readConfig, type CheckCommand, type CoordinatorConfig, type VerifyPhase } from "./state.js";
+import { git, localConfigGet } from "./gitExec.js";
+import { readConfig, readStartState, readCursorsState, verificationPolicyDigest, type CheckCommand, type CoordinatorConfig, type VerifyConfig, type VerifyPhase } from "./state.js";
+import { issueRuntimePaths } from "./paths.js";
+import { workspaceLocationFromConfig } from "./workspace.js";
 import { selectVerification, type ChangeInput } from "./changeClassification.js";
 import { verificationMeasurement, type VerificationMeasurement } from "./verificationLog.js";
 
@@ -29,6 +31,49 @@ export class HookPolicyError extends Error {
 }
 
 export type ResolvedWorkspace = { configPath: string; config: CoordinatorConfig };
+
+/** Only readable matching owner state can authorize cheaper automated hooks.
+ * Prepush binds the destination ref, never the unrelated current HEAD. */
+export const resolveHookBinding = (input: {
+  clone: string; configPath: string; phase: VerifyPhase; refs?: string;
+}): { bound: true; issue: number; commands: VerifyConfig } | { bound: false; reason: string } => {
+  try {
+    const config = readConfig(input.configPath);
+    let branch: string;
+    if (input.phase === "prepush") {
+      const lines = (input.refs ?? "").trim().split("\n");
+      if (lines.length !== 1) return { bound: false, reason: "multi-ref push" };
+      const fields = lines[0]!.trim().split(/\s+/);
+      if (fields.length !== 4 || !/^[0-9a-f]{40}$/.test(fields[1]!) || /^0+$/.test(fields[1]!) ||
+        !/^[0-9a-f]{40}$/.test(fields[3]!) || !fields[2]!.startsWith("refs/heads/")) {
+        return { bound: false, reason: "invalid outgoing refs" };
+      }
+      branch = fields[2]!.slice("refs/heads/".length);
+    } else {
+      const result = git(input.clone, "symbolic-ref", "--quiet", "--short", "HEAD");
+      if (result.exitCode !== 0) return { bound: false, reason: "no current branch" };
+      branch = result.stdout.trim();
+    }
+    const match = /^issue-([1-9][0-9]*)\/([a-z0-9-]+)$/.exec(branch);
+    const agent = localConfigGet(input.clone, "consensus.agentId");
+    if (match === null || match[2] !== agent) return { bound: false, reason: "manual or unowned branch" };
+    const issue = Number(match[1]);
+    const paths = issueRuntimePaths(workspaceLocationFromConfig(input.configPath).workspaceRoot, issue);
+    const start = readStartState(paths), cursors = readCursorsState(paths);
+    const configured = start.agents.find((entry) => entry.id === agent);
+    const origin = git(input.clone, "remote", "get-url", localConfigGet(input.clone, "consensus.remoteName") ?? "origin");
+    if (configured === undefined || realpathSync(configured.root) !== realpathSync(input.clone) ||
+      start.issue !== issue || origin.exitCode !== 0 || origin.stdout.trim() !== start.origin || config.origin !== start.origin ||
+      cursors.completed || cursors.abandoned || !cursors.activeRoster.includes(agent!) ||
+      start.verification?.mode !== "coordinator" || start.verification.coordinated === undefined ||
+      start.verificationDigest !== verificationPolicyDigest(start) || start.verificationDigest !== verificationPolicyDigest(config)) {
+      return { bound: false, reason: "no matching active frozen coordinator policy" };
+    }
+    return { bound: true, issue, commands: start.verification.coordinated };
+  } catch (error) {
+    return { bound: false, reason: `unreadable coordinator binding: ${String(error)}` };
+  }
+};
 
 /** Locate and parse the workspace config a clone was installed against. */
 export const resolveWorkspaceConfig = (clone: string): ResolvedWorkspace => {
@@ -107,6 +152,9 @@ export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): st
     ...(config.documentation?.verify.precommit ?? []),
     ...(config.documentation?.verify.prepush ?? []),
     ...(config.documentation?.checks ?? []),
+    ...(config.verification?.coordinated?.precommit ?? []),
+    ...(config.verification?.coordinated?.prepush ?? []),
+    ...(config.verification?.candidate?.checks ?? []),
     ...config.checks
   ];
   const missing = new Set<string>();
@@ -143,12 +191,13 @@ export const runVerifyPhase = (input: {
   runner?: VerifyRunner;
   changes?: ChangeInput;
   record?: (measurement: VerificationMeasurement) => void;
+  bound?: VerifyConfig;
 }): VerifyRunResult => {
   const runner = input.runner ?? inheritRunner;
   const selected = selectVerification(input.changes ?? { changes: null, identity: "unknown" }, input.config, input.phase,
     // The evidence exemption does not require a product verification declaration.
-    input.config.verify?.[input.phase] ?? []);
-  if (selected.kind === "product") verifyCommands(input.config, input.phase);
+    input.bound?.[input.phase] ?? input.config.verify?.[input.phase] ?? []);
+  if (selected.kind === "product" && input.bound === undefined) verifyCommands(input.config, input.phase);
   const { commands } = selected;
   const record = (command: CheckCommand | null, startedAt: string, exitCode: number, error?: string) => {
     input.record?.(verificationMeasurement({ trigger: "hook", phase: input.phase,

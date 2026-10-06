@@ -33,6 +33,17 @@ const order = (root: string): InternalOrder => ({
 });
 
 describe("verification instructions", () => {
+  it("renders only coordinator-owned results bound by the order, with pin and log", () => {
+    const raw = renderAction({ ...order("/runtime"), stepId: "R4.implement", verificationMode: "coordinator",
+      candidateResults: [{ agent: "claude", commitSha: "3".repeat(40), results: [
+        { name: "unit", argv: ["unit"], exitCode: 0, joined: true, logPath: "/runtime/log with spaces.txt" }
+      ] }] });
+    expect(raw).toContain("Coord owns candidate checks");
+    expect(raw).toContain("## Coordinator check results for the bound pins");
+    expect(raw).toContain(`claude ${"3".repeat(40)}: "unit" exit 0 (joined)`);
+    expect(raw).toContain('"/runtime/log with spaces.txt"');
+    expect(renderAction(order("/runtime"))).not.toContain("Coord owns candidate checks");
+  });
   it.each(["R1.join", "R2.plan", "R3.review", "R4.implement", "R5.compare", "R6.revise", "R7.finalize"] as const)(
     "states check ownership for %s", (stepId) => {
       const raw = renderAction({ ...order("/runtime"), stepId });

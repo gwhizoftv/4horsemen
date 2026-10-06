@@ -524,6 +524,23 @@ legacy provenance and a count of skipped unknown event kinds, and never writes
 or migrates state. The normal start/cursors/journal readers remain strict, so
 run/resume of the same legacy files still fails closed.
 
+## Coordinator verification measurements
+
+`verification-run` records every executed candidate/final command and toolchain
+probe with phase, pin, argv, timestamps, duration, exit status, selection/cache
+reason, attempt, queue wait and log path. `candidate-check` records the gate
+outcome. `verification-reused` and `verification-joined` describe consumption of
+a trusted result; they are not extra suite executions. Hook measurements remain
+advisory, and artifact validation is counted separately from actual runners.
+
+Verification analytics report hook/candidate/final counts and durations,
+reused/joined counts, estimated avoided runner time from the original durations,
+and queue wait. Aggregate execution time counts the actual attempts, including
+failures and diagnostic retries. Critical-path verification wait is the union
+of execution and queued/joined intervals, not their sum across consumers.
+Estimated avoided time is not a measured end-to-end speedup. Older journals and
+the old cache reason remain readable; missing measurements are still unknown.
+
 ## 6. Deferred from Phase 1
 
 The following may be evaluated later only when the metrics justify them:

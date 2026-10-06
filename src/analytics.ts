@@ -103,6 +103,11 @@ export type AnalyticsReport = {
     /** Union of recorded runner intervals, not summed concurrent waits. */
     criticalPathWaitMs: number | null;
     byPhase: Record<string, number>;
+    byTrigger: Record<"hook" | "candidate" | "final", { runners: number; runnerMs: number }>;
+    reused: number;
+    joined: number;
+    avoidedMs: number;
+    queueWaitMs: number;
   };
   usage: {
     agents: AgentUsageAnalytics[];
@@ -463,7 +468,12 @@ const deriveVerification = (journal: readonly JournalEvent[]): AnalyticsReport["
       return parsed.success ? [parsed.data] : [];
     });
   const runners = measurements.filter((row) => row.command !== null);
-  const intervals = runners.map((row) => [Date.parse(row.startedAt), Date.parse(row.completedAt)] as const)
+  const reused = journal.filter((event) => event.type === "verification-reused" || event.type === "verification-joined");
+  const reuseIntervals = reused.flatMap((event) => {
+    const from = Date.parse(String(event.details.startedAt)), to = Date.parse(String(event.details.completedAt));
+    return Number.isFinite(from) && Number.isFinite(to) && to >= from ? [[from, to] as const] : [];
+  });
+  const intervals = [...runners.map((row) => [Date.parse(row.startedAt) - (row.queueWaitMs ?? 0), Date.parse(row.completedAt)] as const), ...reuseIntervals]
     .sort((a, b) => a[0] - b[0]);
   const valid = measurements.length > 0 && runners.every((row) => row.durationMs !== null) && intervals.every(([from, to]) => to >= from);
   let end = -Infinity, wait = 0;
@@ -472,14 +482,24 @@ const deriveVerification = (journal: readonly JournalEvent[]): AnalyticsReport["
     end = Math.max(end, to);
   }
   const byPhase: Record<string, number> = {};
-  for (const row of runners) byPhase[row.phase] = (byPhase[row.phase] ?? 0) + 1;
+  const byTrigger = { hook: { runners: 0, runnerMs: 0 }, candidate: { runners: 0, runnerMs: 0 }, final: { runners: 0, runnerMs: 0 } };
+  for (const row of runners) {
+    byPhase[row.phase] = (byPhase[row.phase] ?? 0) + 1;
+    const group = byTrigger[row.trigger === "hook" ? "hook" : row.phase === "candidate" ? "candidate" : "final"];
+    group.runners++; group.runnerMs += row.durationMs ?? 0;
+  }
   return {
     recordedRunners: runners.length,
     skipped: measurements.length - runners.length,
     artifactValidations: journal.filter((event) => event.type === "verify-result").length,
     aggregateRunnerMs: valid ? runners.reduce((sum, row) => sum + row.durationMs!, 0) : null,
     criticalPathWaitMs: valid ? wait : null,
-    byPhase
+    byPhase, byTrigger,
+    reused: reused.filter((event) => event.type === "verification-reused").length,
+    joined: reused.filter((event) => event.type === "verification-joined").length,
+    avoidedMs: reused.reduce((sum, event) => sum + (nonnegativeInteger(event.details.originalDurationMs) ?? 0), 0),
+    queueWaitMs: runners.reduce((sum, row) => sum + (row.queueWaitMs ?? 0), 0) +
+      reused.reduce((sum, event) => sum + (nonnegativeInteger(event.details.queueWaitMs) ?? 0), 0)
   };
 };
 
@@ -829,6 +849,7 @@ export const renderAnalytics = (report: AnalyticsReport): string => {
     "Recorded verification (hook observations are advisory; manual commands are unobserved)",
     `Runners=${report.verification.recordedRunners} skipped=${report.verification.skipped} artifact validations=${report.verification.artifactValidations}`,
     `Aggregate runner time=${formatOptionalDuration(report.verification.aggregateRunnerMs)}; non-overlapping verification wait=${formatOptionalDuration(report.verification.criticalPathWaitMs)}`,
+    `Reused=${report.verification.reused} joined=${report.verification.joined}; estimated avoided runner time=${formatOptionalDuration(report.verification.avoidedMs)}; queue wait=${formatOptionalDuration(report.verification.queueWaitMs)}`,
     ...Object.entries(report.verification.byPhase).map(([phase, count]) => `- ${phase}: ${count} runner(s)`),
     "",
     "Phase count",

@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { z } from "zod";
+import { sha256 } from "./hash.js";
 import {
   actionIdSchema,
   artifactCitationSchema,
@@ -92,7 +93,17 @@ const timestampSchema = z.string().datetime({ offset: true });
 export const checkCommandSchema = z
   .object({
     name: z.string().min(1),
-    argv: z.array(z.string()).min(1)
+    argv: z.array(z.string()).min(1),
+    expensive: z.boolean().optional(),
+    retry: z.number().int().min(0).max(2).optional(),
+    cache: z.object({
+      // Declaring tree modes asserts independence from Git identity/history.
+      inputs: z.enum(["commit", "tree", "tree-excluding-evidence"]).default("commit"),
+      env: z.array(z.string().regex(/^[A-Z_][A-Z0-9_]*$/)).default([]),
+      probes: z.array(z.array(z.string()).min(1)).default([]),
+      // Explicitly [] asserts no untracked dependency/generated inputs.
+      dependencies: z.array(repositoryPathSchema).optional()
+    }).strict().optional()
   })
   .strict();
 
@@ -127,6 +138,59 @@ const pathTokenSchema = z
   .string()
   .min(1)
   .refine((value) => !/\s/.test(value), "workflow-critical entries must not contain whitespace");
+
+const checkPathsSchema = z.object({
+  prefixes: z.array(pathTokenSchema).default([]),
+  files: z.array(repositoryPathSchema).default([])
+}).strict();
+
+export const verificationPolicySchema = z.object({
+  mode: z.enum(["local", "coordinator"]).default("local"),
+  coordinated: verifyConfigSchema.optional(),
+  candidate: z.object({
+    checks: z.array(checkCommandSchema).min(1),
+    covers: checkPathsSchema,
+    rules: z.array(checkPathsSchema.extend({ add: z.union([z.literal("all"), z.array(z.string()).min(1)]) })).default([])
+  }).strict().optional(),
+  maxConcurrentExpensive: z.number().int().min(1).max(8).default(1)
+}).strict().superRefine((policy, context) => {
+  if (policy.mode === "coordinator" && (policy.coordinated === undefined || policy.candidate === undefined)) {
+    context.addIssue({ code: "custom", message: "coordinator mode requires coordinated hooks and candidate checks" });
+  }
+});
+
+const validateVerification = (config: {
+  verification?: z.infer<typeof verificationPolicySchema>;
+  checks?: z.infer<typeof checkCommandSchema>[];
+}, context: z.RefinementCtx): void => {
+  const candidate = config.verification?.candidate;
+  if (candidate === undefined) return;
+  const final = config.checks ?? [];
+  for (const list of [candidate.checks, final]) {
+    if (new Set(list.map((check) => check.name)).size !== list.length) {
+      context.addIssue({ code: "custom", message: "verification check names must be unique" });
+    }
+  }
+  for (const check of candidate.checks) {
+    const other = final.find((entry) => entry.name === check.name);
+    if (other !== undefined && JSON.stringify(other) !== JSON.stringify(check)) {
+      context.addIssue({ code: "custom", message: `conflicting verification check identity: ${check.name}` });
+    }
+  }
+  for (const rule of candidate.rules) {
+    if (rule.add !== "all" && rule.add.some((name) => !final.some((check) => check.name === name))) {
+      context.addIssue({ code: "custom", message: "verification rule names an undeclared final check" });
+    }
+  }
+};
+
+export const verificationPolicyDigest = (policy: {
+  verification?: unknown; checks: unknown; documentation?: unknown;
+  workflowCriticalPrefixes?: unknown; workflowCriticalFiles?: unknown;
+}): string => sha256(JSON.stringify({
+  verification: policy.verification, checks: policy.checks, documentation: policy.documentation,
+  workflowCriticalPrefixes: policy.workflowCriticalPrefixes ?? [], workflowCriticalFiles: policy.workflowCriticalFiles ?? []
+}));
 
 /** What a workspace was installed against, so `coord doctor` can report drift. */
 export const installStampSchema = z
@@ -231,6 +295,7 @@ export const coordinatorConfigSchema = z
     toolchain: z.string().min(1).optional(),
     verify: verifyConfigSchema.optional(),
     documentation: documentationProfileSchema.optional(),
+    verification: verificationPolicySchema.optional(),
     workflowCriticalPrefixes: z.array(pathTokenSchema).default([]),
     workflowCriticalFiles: z.array(pathTokenSchema).default([]),
     /**
@@ -244,6 +309,7 @@ export const coordinatorConfigSchema = z
   })
   .strict()
   .superRefine((config, context) => {
+    validateVerification(config, context);
     const ids = config.agents.map((agent) => agent.id);
     for (const [index, agent] of config.agents.entries()) {
       if (agent.codexQuota !== undefined && agent.id !== "codex") {
@@ -273,6 +339,7 @@ export const workspaceDeclarationSchema = z
     toolchain: z.string().min(1).optional(),
     verify: verifyConfigSchema.optional(),
     documentation: documentationProfileSchema.optional(),
+    verification: verificationPolicySchema.optional(),
     workflowCriticalPrefixes: z.array(pathTokenSchema).optional(),
     workflowCriticalFiles: z.array(pathTokenSchema).optional(),
     checks: z.array(checkCommandSchema).min(1).optional(),
@@ -346,6 +413,8 @@ export const startStateSchema = z
     checks: z.array(checkCommandSchema).min(1),
     pollIntervalMs: z.number().int().min(100).max(60_000),
     documentation: documentationProfileSchema.optional(),
+    verification: verificationPolicySchema.optional(),
+    verificationDigest: digestSchema.optional(),
     workflowCriticalPrefixes: z.array(pathTokenSchema).optional(),
     workflowCriticalFiles: z.array(pathTokenSchema).optional(),
     /**
@@ -356,7 +425,7 @@ export const startStateSchema = z
     contextPaths: z.array(z.string().min(1)).default([]),
     createdAt: timestampSchema
   })
-  .strict();
+  .strict().superRefine(validateVerification);
 
 export const startStateHeaderSchema = z.object({
   formatVersion: z.union([z.literal(2), z.literal(3), z.literal(RUNTIME_FORMAT_VERSION)]),
@@ -509,7 +578,12 @@ export const acceptedSubmissionSchema = z
           .object({
             name: z.string().min(1),
             argv: z.array(z.string()).min(1),
-            exitCode: z.number().int()
+            exitCode: z.number().int(),
+            reused: z.boolean().optional(),
+            joined: z.boolean().optional(),
+            receiptId: digestSchema.optional(),
+            logPath: z.string().optional(),
+            attempts: z.number().int().min(1).optional()
           })
           .strict()
       )
@@ -755,6 +829,9 @@ const journalEventTypeSchema = z.enum([
   "abandoned",
   "final-check",
   "verification-run",
+  "candidate-check",
+  "verification-reused",
+  "verification-joined",
   "publication-pending",
   "publication-failed",
   "pr-created",

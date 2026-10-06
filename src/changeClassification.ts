@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { inspectCommitRange, parseNameStatusRecordsZ, type GitNameStatusChange } from "./pinValidation.js";
-import type { CheckCommand, CoordinatorConfig } from "./state.js";
+import type { CheckCommand, CoordinatorConfig, StartState } from "./state.js";
 
 export type ChangeClass = "coordination" | "documentation" | "product";
 export type ChangeInput = { changes: GitNameStatusChange[] | null; identity: string; reason?: string };
 type Policy = Partial<Pick<CoordinatorConfig, "documentation" | "workflowCriticalFiles" | "workflowCriticalPrefixes">>;
+export const isCoordinationEvidencePath = (path: string): boolean => /^\.(?:signals|plans|code-reviews|amendments|escalations)\//.test(path);
 export type ClassifiedChanges = { kind: ChangeClass; reason: string; inputIdentity: string };
 
 /** Both names in a rename participate. Evidence cannot conceal a product path. */
@@ -22,7 +23,7 @@ export const classifyChanges = (input: ChangeInput, policy: Policy): ClassifiedC
     for (const bytes of change.paths) {
       const path = bytes.toString("utf8");
       if (!Buffer.from(path).equals(bytes) || path === "") return result("product", "unrecognized path encoding");
-      if (/^\.(?:signals|plans|code-reviews|amendments|escalations)\//.test(path)) continue;
+      if (isCoordinationEvidencePath(path)) continue;
       if (policy.workflowCriticalFiles?.includes(path) || policy.workflowCriticalPrefixes?.some((prefix) => path.startsWith(prefix)) ||
         !policy.documentation?.paths.includes(path)) return result("product", `product or unknown path ${JSON.stringify(path)}`);
       docs = true;
@@ -95,4 +96,41 @@ export const selectVerification = (
       ? phase === "finalization" ? policy.documentation.checks : policy.documentation.verify[phase]
       : productCommands;
   return { ...classification, commands };
+};
+
+/** Candidate narrowing is an explicit coverage declaration, never inferred from
+ * imports. The final gate still uses the entire frozen baseline-to-pin range. */
+export const selectCandidateVerification = (input: ChangeInput,
+  start: Pick<StartState, "checks" | "documentation" | "verification" | "workflowCriticalFiles" | "workflowCriticalPrefixes">) => {
+  const classification = classifyChanges(input, start);
+  const result = (commands: readonly CheckCommand[], reason: string, expanded = false) =>
+    ({ ...classification, commands, reason, expanded });
+  if (classification.kind === "coordination") return result([], classification.reason);
+  if (classification.kind === "documentation" && start.documentation !== undefined) {
+    return result(start.documentation.checks, classification.reason);
+  }
+  const candidate = start.verification?.candidate;
+  const full = (reason: string) => result(start.checks, reason, true);
+  if (candidate === undefined || input.changes === null || input.changes.length === 0) return full("unknown candidate scope");
+  const matches = (path: string, rule: { files: string[]; prefixes: string[] }) =>
+    rule.files.includes(path) || rule.prefixes.some((prefix) => path.startsWith(prefix));
+  const added = new Set<string>();
+  for (const change of input.changes) {
+    if (!/^(?:[ADM]|[RC][0-9]{1,3})$/.test(change.status) ||
+      change.paths.length !== (/^[RC]/.test(change.status) ? 2 : 1)) return full("indeterminate change status");
+    for (const bytes of change.paths) {
+      const path = bytes.toString("utf8");
+      if (path === "" || !Buffer.from(path).equals(bytes)) return full("unrecognized path encoding");
+      if (isCoordinationEvidencePath(path)) continue;
+      const rules = candidate.rules.filter((rule) => matches(path, rule));
+      if (rules.some((rule) => rule.add === "all")) return full(`full-coverage rule: ${JSON.stringify(path)}`);
+      if (rules.length === 0 && !matches(path, candidate.covers)) return full(`unclassified path: ${JSON.stringify(path)}`);
+      for (const rule of rules) if (rule.add !== "all") for (const name of rule.add) added.add(name);
+    }
+  }
+  const commands = [...candidate.checks];
+  for (const check of start.checks) {
+    if (added.has(check.name) && !commands.some((entry) => JSON.stringify(entry) === JSON.stringify(check))) commands.push(check);
+  }
+  return result(commands, "declared candidate coverage and risk rules", added.size > 0);
 };

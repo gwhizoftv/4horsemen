@@ -147,6 +147,15 @@ const scopeInputText = (order: InternalOrder): string =>
     order.scopeInputs!.map((input) => `- ${input.kind} from ${input.agent}: \`${input.commitSha}\` at ${encodePath(input.path)}`).join("\n");
 
 const verificationSection = (order: InternalOrder): string => {
+  const results = (order.candidateResults?.length ?? 0) === 0 ? "" :
+    "\n\n## Coordinator check results for the bound pins\n\n" + order.candidateResults!.flatMap((entry) =>
+      entry.results.map((result) => `- ${entry.agent} ${entry.commitSha}: ${JSON.stringify(result.name)} exit ${result.exitCode}` +
+        ` (${result.joined ? "joined" : result.reused ? "reused" : "ran"}) log ${JSON.stringify(result.logPath ?? "unavailable")}`)).join("\n");
+  const coordinated = order.verificationMode === "coordinator"
+    ? "\n\nCoord owns candidate checks at submitted implementation/revision pins and returns failures with command logs. " +
+      "Run focused tests while developing; do not duplicate the full candidate suite. Bound hooks use declared cheap checks. " +
+      "Reviewers use the coordinator results below; missing results are not a pass."
+    : "";
   const responsibility = order.submissionMode === "response"
     ? "Validate this response's format and bound inputs. Do not commit or push, and do not run a product suite merely to cast a ballot."
     : ["R4.implement", "R6.revise", "R7.finalize"].includes(order.stepId)
@@ -156,7 +165,7 @@ const verificationSection = (order: InternalOrder): string => {
     "Reviewers read existing verification results for unchanged implementations and run additional tests only to investigate a finding; missing results are not a pass. " +
     "Hooks classify the staged index and outgoing ranges: allowlisted documentation uses the declared docs profile; mixed or unknown changes retain product checks. " +
     "The coordinator validates artifacts, pins, and evidence, and owns final checks at the approved pin against the frozen issue baseline. " +
-    "Report only checks you actually ran; do not claim coordinator-owned checks. Evidence-only signals and amendment requests do not need product tests.";
+    "Report only checks you actually ran; do not claim coordinator-owned checks. Evidence-only signals and amendment requests do not need product tests." + coordinated + results;
 };
 
 const renderGitAction = (order: InternalOrder): string => {

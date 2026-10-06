@@ -42,6 +42,21 @@ const start = startStateSchema.parse({
 });
 
 describe("verification measurements", () => {
+  it("counts one candidate execution separately from reuse and joined queue time", () => {
+    const at = (seconds: number) => new Date(Date.parse(start.createdAt) + seconds * 1000).toISOString();
+    const measurement = verificationMeasurement({ trigger: "coordinator", phase: "candidate", inputIdentity: "pin",
+      classification: "product", reason: "candidate", command: { name: "unit", argv: ["unit"] },
+      startedAt: at(5), completedAt: at(15), exitCode: 0, skipReason: null, queueWaitMs: 5000, cacheReason: "miss" });
+    const journal = [
+      { type: "started", details: { issue: start.issue } },
+      { type: "verification-run", details: measurement },
+      { type: "verification-joined", details: { startedAt: at(2), completedAt: at(15), queueWaitMs: 13000, originalDurationMs: 10000 } },
+      { type: "verification-reused", details: { startedAt: at(20), completedAt: at(20), queueWaitMs: 0, originalDurationMs: 10000 } }
+    ].map((row, sequence) => journalEventSchema.parse({ ...row, formatVersion: 4, sequence, at: at(20) }));
+    expect(buildAnalytics({ start, journal }).verification).toMatchObject({ recordedRunners: 1,
+      aggregateRunnerMs: 10000, criticalPathWaitMs: 15000, reused: 1, joined: 1, queueWaitMs: 18000,
+      byTrigger: { candidate: { runners: 1, runnerMs: 10000 } } });
+  });
   it("separates skips and artifact validation, sums runners, and unions concurrent wait", () => {
     const journal: JournalEvent[] = [journalEventSchema.parse({ formatVersion: 4, sequence: 0,
       at: start.createdAt, type: "started", details: { issue: start.issue } })];
@@ -57,7 +72,7 @@ describe("verification measurements", () => {
     journal.push(journalEventSchema.parse({ formatVersion: 4, sequence: 4, at: start.createdAt, type: "verify-result", details: {} }));
     journal.push(journalEventSchema.parse({ formatVersion: 4, sequence: 5, at: start.createdAt, type: "final-check", details: { durationMs: 999 } }));
     const report = buildAnalytics({ start, journal });
-    expect(report.verification).toEqual({ recordedRunners: 2, skipped: 1, artifactValidations: 1,
+    expect(report.verification).toMatchObject({ recordedRunners: 2, skipped: 1, artifactValidations: 1,
       aggregateRunnerMs: 25_000, criticalPathWaitMs: 20_000, byPhase: { precommit: 2 } });
     expect(renderAnalytics(report)).toContain("manual commands are unobserved");
     expect(buildAnalytics({ start, journal: journal.slice(0, 1) }).verification).toMatchObject({ recordedRunners: 0,

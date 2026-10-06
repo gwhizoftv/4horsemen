@@ -26,6 +26,7 @@ import {
   StateConflictError,
   startStateSchema,
   coordinatorConfigSchema,
+  verificationPolicyDigest,
   writeCursorsState
 } from "../src/state.js";
 
@@ -75,6 +76,16 @@ const initialize = () => {
 };
 
 describe("operational state", () => {
+  it("keeps old runs local and round-trips the frozen coordinated policy", () => {
+    const { paths, start } = initialize();
+    expect(readStartState(paths).verification).toBeUndefined();
+    const next = startStateSchema.parse({ ...start, verification: { mode: "coordinator",
+      coordinated: { precommit: [], prepush: [] }, candidate: { checks: start.checks, covers: { prefixes: ["src/"] } } } });
+    next.verificationDigest = verificationPolicyDigest(next);
+    writeFileSync(paths.start, JSON.stringify(next));
+    expect(readStartState(paths)).toEqual(next);
+    expect(verificationPolicyDigest({ ...next, checks: [{ name: "other", argv: ["other"] }] })).not.toBe(next.verificationDigest);
+  });
   it("defaults old guidance state and freezes each cohort without draining later advice on reissue", () => {
     const { paths, cursors } = initialize();
     const legacy = { ...cursors };

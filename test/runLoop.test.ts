@@ -8,6 +8,8 @@ import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
 import { git, repoRoot } from "./support/workspaceFixture.js";
 import { decideLifecycleNudge, initialAgentLifecycle, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { BareMirror } from "../src/mirror.js";
+import { decide } from "../src/machine.js";
+import { verificationPolicyDigest, verificationPolicySchema } from "../src/state.js";
 import { agentResponsePath, agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
   materializeBoundInputs,
@@ -173,6 +175,54 @@ const fixture = (options: { prPolicy?: "owner-only" | "coord-open-unmerged" | "c
   });
   return { root, paths };
 };
+
+describe("coordinator candidate gate", () => {
+  it.each(["R4.implement", "R6.revise"] as const)("rejects a failed %s with logs before review, including after restart", async (stepId) => {
+    const { root, paths } = fixture();
+    const seed = join(root, "candidate-seed"); mkdirSync(seed);
+    git(seed, "init", "-q"); writeFileSync(join(seed, "source.ts"), "before");
+    git(seed, "add", "."); git(seed, "commit", "-qm", "baseline");
+    const baselineSha = git(seed, "rev-parse", "HEAD");
+    writeFileSync(join(seed, "source.ts"), "after"); git(seed, "add", "."); git(seed, "commit", "-qm", "candidate");
+    const pin = git(seed, "rev-parse", "HEAD");
+    git(root, "clone", "--bare", "-q", seed, paths.mirror);
+    const start = { ...readStartState(paths), baselineSha,
+      verification: verificationPolicySchema.parse({ mode: "coordinator", coordinated: { precommit: [], prepush: [] },
+        candidate: { checks: [{ name: "unit", argv: ["unit"] }], covers: { files: ["source.ts"] } } }) };
+    start.verificationDigest = verificationPolicyDigest(start);
+    const cursors = readCursorsState(paths);
+    const order = buildOrder(paths, start, cursors, "codex", stepId, stepId === "R6.revise" ? 1 : null);
+    const observation = { agent: "codex", actionId: order.actionId, submissionSha: pin,
+      status: "satisfied" as const, outstanding: [], productPin: pin };
+    let calls = 0;
+    const dependencies = { tmux: null, mirror: new BareMirror(paths.mirror, seed),
+      processRunner: async () => { calls++; return { exitCode: 9, stdout: "", stderr: "candidate failure" }; } };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const failed = await new CoordinatorRunLoop(paths, dependencies).verifyCandidateChecks(start, order, observation, cursors);
+      expect(failed.status).toBe("rejected");
+      expect(failed.outstanding[0]).toContain("unit failed with exit 9 (log:");
+      expect(decide({ start, cursors: { ...cursors, agents: { ...cursors.agents,
+        codex: { ...cursors.agents.codex!, actionId: order.actionId } } }, observations: [failed] }))
+        .toContainEqual(expect.objectContaining({ type: "reissue-action", agent: "codex" }));
+    }
+    expect(calls).toBe(2);
+    const passed = await new CoordinatorRunLoop(paths, { ...dependencies,
+      processRunner: async () => ({ exitCode: 0, stdout: "ok", stderr: "" }) }).verifyCandidateChecks(start, order, observation, cursors);
+    expect(passed.status).toBe("satisfied");
+    expect(passed.checkResults?.[0]).toMatchObject({ name: "unit", exitCode: 0 });
+    const accepted = { stepId, agent: "codex", round: null, submissionSha: pin, productPin: pin,
+      path: ".signals/issue-1/ready.json", acceptedAt: new Date().toISOString(),
+      checkResults: passed.checkResults!.map((row) => ({ ...row, argv: [...row.argv] })) };
+    const review = buildOrder(paths, start, { ...cursors, accepted: [accepted] }, "claude",
+      stepId === "R4.implement" ? "R5.compare" : "R6.ballot", stepId === "R6.revise" ? 1 : null);
+    expect(review.candidateResults).toHaveLength(stepId === "R4.implement" ? 1 : 0);
+    const legacy = await new CoordinatorRunLoop(paths, dependencies).verifyCandidateChecks({ ...start, verification: undefined }, order, observation, cursors);
+    expect(legacy).toEqual(observation);
+    expect(calls).toBe(2);
+    expect(readJournal(paths).filter((event) => event.type === "candidate-check")).toHaveLength(3);
+    expect(readCursorsState(paths).publication.status).toBe("not-required");
+  });
+});
 
 const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {}) => {
   const { paths } = fixture();

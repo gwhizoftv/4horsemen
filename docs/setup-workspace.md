@@ -593,6 +593,59 @@ change that is not a deletion under the current issue's coordination paths. A
 maintainer on the base branch never sees them, and a merge-ready pull request
 contains none of them.
 
+## Declaring coordinator-owned verification
+
+The optional `verification` declaration is opt-in and frozen at issue start.
+Use `mode: "coordinator"`, `coordinated: { precommit: [], prepush: [] }` (or
+explicit cheap commands), and `candidate: { checks, covers, rules }`.
+`covers` declares prefixes/files served by the candidate list. Rules add named
+final checks or `"all"`; both rename endpoints participate. Unknown paths,
+unreadable history, and malformed names expand to all final checks. Declare
+dependency/build/test configuration paths with `add: "all"`, and filesystem
+consumers such as hooks/templates/fixtures with explicit integration checks.
+Check names must be unique, and a shared candidate/final name must identify
+exactly the same command and metadata. See `config.example.json` for a complete
+declaration. No live configuration is changed by updating the product.
+
+The original `verify` lists remain the manual/fallback policy. The default
+`check:fast` aggregate deliberately still includes `test:system`, preserving
+old manual installations; `test:fast` itself now selects the cheaper tier.
+Coordinator candidate lists use individual lint/typecheck/fast/system commands,
+not that compatibility aggregate. `pnpm check` and `pnpm test` include every
+tier. Empty coordinated hook lists do not disable ownership, commit-prefix,
+shared/peer-branch, or history-rewrite gates.
+
+Hook binding validates the actual issue branch (the destination ref on push),
+agent, clone path, repository, active readable owner runtime and frozen policy
+digest. Multi-ref pushes are unbound. Missing/corrupt/finished/mismatched state
+falls back to local checks; an undeclared local policy still fails closed.
+Change the mode only between issues, never by weakening the live frozen policy.
+
+Each check may declare `expensive: true` and diagnostic `retry: 0..2`.
+`maxConcurrentExpensive` defaults to one; the strictest currently running
+declaration bounds overlapping workspace runs. The example serializes dependency installs as well as
+system/E2E suites. No automatic retry occurs by default, and a green diagnostic
+retry never replaces the original failure.
+
+Caching is off unless `cache` declares all inputs: `inputs` defaults to `commit`,
+`env` names relevant environment variables, `probes` records toolchain identity,
+and `dependencies` lists untracked dependency/generated files or directories to
+fingerprint (`[]` explicitly asserts there are none). Missing dependency
+declarations, absent probes, failed probes or unsafe/unreadable dependency
+paths disable reuse. The coordinator hashes file contents, modes and symlink
+targets inside these directories; escaping symlinks/cycles are not cacheable.
+Include outputs read by the check, not just a package-manager lockfile.
+
+`tree` explicitly asserts independence from commit identity/history;
+`tree-excluding-evidence` additionally asserts that coordination evidence is
+irrelevant to this particular check. Both are opt-in, not inferred from file
+extensions or command names. Commands using external services or undeclared
+inputs must remain uncached. The shipped example caches only lint/typecheck at
+exact commits with a complete installed-dependency fingerprint; test suites and
+build stay uncached until their additional inputs are audited. Do not declare
+all environment variables irrelevant merely to improve hit rates. Raw declared
+environment values are not stored in receipts and are redacted from logs.
+
 ## Migrating off `scripts/setup_*.sh`
 
 The setup scripts no longer create clones, write launchers, write ignore rules,
