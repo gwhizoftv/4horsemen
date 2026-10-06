@@ -431,6 +431,20 @@ A transient mirror fetch error preserves `complete`, emits no missing-artifact
 verdict, and retries with the normal polling cadence. An absent agent is waited
 for indefinitely unless the owner explicitly drops it.
 
+Pull-capable agents can fetch their current action without seeing internal step,
+gate, evidence, or global cursor state. From an agent clone after onboard:
+
+```sh
+coord next --issue 42
+```
+
+`coord.workspaceConfig` and `consensus.agentId` supply the runtime and caller.
+Explicit forms remain available:
+
+```sh
+COORD_AGENT=codex coord next --issue 42 --coord-root /path/to/runtime
+```
+
 ## Profiles
 
 - `solo`: one configured agent; plan, implementation, and finalization use solo
@@ -663,10 +677,61 @@ owner releases it. A new lifecycle callback or completion bytes alone are not
 automatic hold-clearance authority. Native completion-based recovery belongs to
 #140; this PR prioritizes bounded, owner-visible stopping over unattended recovery.
 
-These holds mean **unknown cause and unknown reset**, not confirmed quota
-exhaustion. There is no automatic recovery, vendor API polling, statusline
-installation or local-clock deadline parsing in this change. Vendor-specific
-evidence and conservative recovery are tracked separately in issue #140.
+Without vendor evidence, these holds mean **unknown cause and unknown reset**,
+not confirmed quota exhaustion, and rendered clock text is never parsed. The
+vendor evidence and narrow resource-hold recovery added by issue #140 are
+described in [Vendor quota evidence and resource holds](#vendor-quota-evidence-and-resource-holds).
+
+### Vendor quota evidence and resource holds
+
+Holds carry vendor evidence when it is available. They report the failure
+class (usage window, billing, throttling, context overflow, account,
+cancellation, transport or unknown) separately from deadline confidence. A
+reset time is shown only when the provider supplied an absolute epoch, and it
+is the time of a recheck, not a promise that capacity will be back. Rendered
+clock text such as "resets 3:45pm" is never parsed.
+
+- **Claude.** `StopFailure` fields are kept as sanitized diagnostics
+  (`error`, `error_details`, `last_assistant_message`). `coord install` adds a
+  status-line tee to the clone's `.claude/settings.local.json`. The tee runs
+  your effective status-line command on the original bytes and gives coord a
+  bounded copy of `rate_limits.five_hour`/`seven_day`. It is installed only
+  when precedence is provable. If managed settings or a launcher `--settings`
+  outrank the clone, or the command shape is unsupported, telemetry is
+  disabled and `coord doctor` says why. Uninstall restores the prior value
+  while the tee is still coord's, and your later edits are preserved. A
+  matching exhausted window gives an exact deadline. At that deadline plus 30
+  seconds, coord re-evaluates the hold once without sending a prompt. It then
+  leaves release to you, because a render is not a fresh capacity check.
+  Model-family limits, stale telemetry and spend restrictions keep
+  `reset unknown`. `autoContinueAtUsageLimit` and launcher arguments are never
+  changed.
+- **Codex.** Quota reads happen only with an explicit per-agent binding:
+  `"codexQuota": { "codexHome": "/abs/path", "accountId": "..." }` on the
+  `codex` agent. Each read is one `codex app-server --listen stdio://` helper
+  that runs `account/read` and `account/rateLimits/read` and nothing else. It
+  has a 10 s lifetime and a 256 KiB output cap, and it is always reaped.
+  Reads are triggered only by the initial binding check, by a new hold for
+  that agent, or by an exact deadline plus 30 seconds. Limits:
+  - at most one helper runs per binding, across issues in this coord root;
+  - starts are at least 5 minutes apart;
+  - after a failed read there are two retries (at +5 then +10 minutes);
+  - each action gets six starts in total, and neither restarts nor your
+    acknowledgments replenish them.
+  Automatic release is off unless the binding names the Codex CLI version you
+  validated live: `"validatedVersion": "0.156.1"`. Even then, it needs a
+  fresh read in which every bucket explicitly reports no restriction and every
+  previously blocked window is back below its limit with the same duration.
+  The helper must report that version and the bound home, and the account must
+  be unchanged across the read. It removes only that resource hold. Without a
+  validated version, quota reads only enrich the hold and you release it. A binding shared by two separately managed coord roots
+  cannot be serialized and is unsupported.
+- **Cursor** errors stay unknown and `aborted` is a cancellation. **Antigravity**
+  keeps the vendor-independent protections only.
+
+Manual pause, other holds, the nudge budget, roster, reviews and pins are never
+changed by resource recovery. Whenever evidence is missing, the report says
+`owner release required`.
 
 ## Recovery and finalization
 
