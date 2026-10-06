@@ -1,0 +1,34 @@
+{
+  "actionId": "d2f89aa7-5c3d-4cff-a6ae-430ddd6c048c",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "a907f2fc2f5ac5aedd7cf2ef8b295acfe61ffb04",
+      "path": ".signals/issue-158/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "083a7d3189003733302049c1f317df9d0c84a2fa",
+      "path": ".signals/issue-158/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "b76f4ed44679df78d107d1de66142a6983dc8f20",
+      "path": ".signals/issue-158/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "73fd76fe0bdd4b10bf8b562f6b8533fcac7fa6a9",
+      "path": ".signals/issue-158/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "0a7882e65c4f4ec0730c388017861cc31b3ab540644ac29e56c4ee6a621c90fa",
+  "issue": 158,
+  "issueSessionId": "issue-158:26ff2c00ce9015e8e4e25e14cc5823864f494ac0",
+  "protocolVersion": 2,
+  "rationale": "Codex preserves both supplied assets and the four-file scope while providing the clearest consensus, cleanup-pin, draft-PR, isolation-limit, and beginner guidance, avoiding redundant or historical operator prose, and passing link, asset, GitHub rendering, and existing-suite checks.",
+  "responseSha256": "b1322494670ec5e790fd2880c2e7c2b9a655df5b72edfb89a4bd90b2749da409"
+}

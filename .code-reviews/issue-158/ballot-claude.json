@@ -1,0 +1,34 @@
+{
+  "actionId": "76152f18-3c26-4d29-b240-d17b53d77202",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "a907f2fc2f5ac5aedd7cf2ef8b295acfe61ffb04",
+      "path": ".signals/issue-158/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "083a7d3189003733302049c1f317df9d0c84a2fa",
+      "path": ".signals/issue-158/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "b76f4ed44679df78d107d1de66142a6983dc8f20",
+      "path": ".signals/issue-158/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "73fd76fe0bdd4b10bf8b562f6b8533fcac7fa6a9",
+      "path": ".signals/issue-158/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "0a7882e65c4f4ec0730c388017861cc31b3ab540644ac29e56c4ee6a621c90fa",
+  "issue": 158,
+  "issueSessionId": "issue-158:26ff2c00ce9015e8e4e25e14cc5823864f494ac0",
+  "protocolVersion": 2,
+  "rationale": "Codex's pin is the only one with no comparison findings: it uses both owner images without Mermaid, states profile participants, PR policy and isolation limits most accurately, moves only the coord next passage without duplicating the complete contract, and is the only one to remove the stale #126/#140 PR wording next to the relocated vendor-quota section.",
+  "responseSha256": "58f3bd1582d20cb34ed694a712adcec580a661816564b1954bb73f3b47c67861"
+}
