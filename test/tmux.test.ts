@@ -102,6 +102,104 @@ describe("Claude usage-wait veto", () => {
   });
 });
 
+describe("Codex idle recovery", () => {
+  const actionId = "11111111-1111-4111-8111-111111111111";
+  const pane = (draft = "Ask Codex to do anything"): string =>
+    `• ${COORD_IDLE_SENTINEL}\n› ${draft}\n? for shortcuts\nContext 71% left · Vim: Insert`;
+
+  it("recognizes only the observed idle layout with an empty composer", () => {
+    for (const draft of ["", "Ask Codex to do anything"]) {
+      expect(harnessPromptReadiness(pane(draft), "codex", actionId)).toEqual({ ready: true, reason: "idle-sentinel" });
+    }
+    for (const text of [pane("owner draft"), pane(`owner ${actionId}`), pane() + "\n› second composer",
+      pane() + "\n  2. Continue without server", pane() + "\n• new transcript", pane() + `\n${actionId}`,
+      `• ${COORD_IDLE_SENTINEL}`, pane() + "\nunknown footer"]) {
+      expect(harnessPromptReadiness(text, "codex", actionId)).toEqual({ ready: true, reason: "vendor-prompt" });
+    }
+    expect(harnessPromptReadiness(pane().replace("• ", "\x1b[32m• ") + "\x1b[0m", "codex", actionId).reason)
+      .toBe("idle-sentinel");
+    expect(harnessPromptReadiness(`trust this folder\n${pane()}`, "codex").ready).toBe(false);
+  });
+
+  it("vetoes live Working chrome without mistaking quoted prose for a turn", () => {
+    for (const prefix of ["• ", "⠹ ", "  "]) {
+      expect(harnessPromptReadiness(`${prefix}Working (2m 27s • esc to interrupt)\n${pane()}`, "codex"))
+        .toEqual({ ready: false, reason: "codex-turn-chrome" });
+    }
+    for (const quoted of ["- `Working (2m 27s • esc to interrupt)`", "> Working (2m 27s • esc to interrupt)"]) {
+      expect(harnessPromptReadiness(`${quoted}\n${pane()}`, "codex").reason).toBe("idle-sentinel");
+    }
+  });
+
+  it.each([0, 1, 2, 3, 4, 5])("checks every send boundary while allowing its own wrapped draft (blocked capture %s)", async (blockedCapture) => {
+    let captures = 0;
+    let reservations = 0;
+    let draft = "Ask Codex to do anything";
+    let mode = "Normal";
+    const keys: string[] = [];
+    const controller = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return ok("0\tcodex\t0\t0");
+      if (args[0] === "capture-pane") {
+        captures++;
+        return ok(pane(blockedCapture === captures ? draft + " owner edit" : draft).replace("Vim: Insert", `Vim: ${mode}`));
+      }
+      if (args[0] === "send-keys") {
+        keys.push(args.at(-1)!);
+        if (args.at(-1) === "i") mode = "Insert";
+        if (args.includes("-l")) draft = args.at(-1)!.match(/.{1,57}/g)!.join("\n  ");
+      }
+      return ok();
+    }, undefined, undefined, undefined, noopSleep);
+    const result = await controller.nudge(1, { id: "codex", root: "/clone", launcher: "codex", delivery: "both",
+      harnessProcess: "codex" }, "/runtime/action.md", () => undefined, actionId, "a".repeat(64),
+    () => { reservations++; }, true);
+    if (blockedCapture === 0) {
+      expect(result).toMatchObject({ status: "sent", detail: "idle-sentinel" });
+      expect(keys).toHaveLength(4);
+      expect(keys[0]).toBe("i");
+      expect(keys.slice(-2)).toEqual(["C-j", "C-m"]);
+    } else {
+      expect(result).toMatchObject({ status: "busy", reason: "no-idle-sentinel",
+        stage: blockedCapture <= 2 ? "prompt" : "mid-send" });
+      expect(keys).toHaveLength(Math.max(0, blockedCapture - 2));
+    }
+    expect(reservations).toBe(blockedCapture === 1 || blockedCapture === 2 ? 0 : 1);
+  });
+
+  it("does not type a vim i into an already empty INSERT composer", async () => {
+    const keys: string[] = [];
+    let draft = "";
+    const controller = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return ok("0\tcodex\t0\t0");
+      if (args[0] === "capture-pane") return ok(pane(draft));
+      if (args[0] === "send-keys") {
+        keys.push(args.at(-1)!);
+        if (args.includes("-l")) draft = args.at(-1)!;
+      }
+      return ok();
+    }, undefined, undefined, undefined, noopSleep);
+    expect(await controller.nudge(1, { id: "codex", root: "/clone", launcher: "codex", delivery: "both" },
+      "/a", () => undefined, actionId, "a".repeat(64), () => undefined, true)).toMatchObject({ status: "sent" });
+    expect(keys).toHaveLength(3);
+    expect(keys).not.toContain("i");
+    expect(keys.slice(-2)).toEqual(["C-j", "C-m"]);
+  });
+
+  it("recaptures turn chrome even for ordinary sends", async () => {
+    let captures = 0;
+    let keys = 0;
+    const controller = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return ok("0\tcodex\t0\t0");
+      if (args[0] === "capture-pane") return ok(++captures === 1 ? pane() : `• Working (1s • esc to interrupt)\n${pane()}`);
+      if (args[0] === "send-keys") keys++;
+      return ok();
+    }, undefined, undefined, undefined, noopSleep);
+    expect(await controller.nudge(1, { id: "codex", root: "/clone", launcher: "codex", delivery: "both" }, "/a"))
+      .toMatchObject({ status: "busy", reason: "codex-turn-chrome", stage: "prompt" });
+    expect(keys).toBe(0);
+  });
+});
+
 describe("tmux boundary", () => {
   it("keeps flat session names stable and namespaces nested workspaces", () => {
     const runner: TmuxRunner = async () => ok();
@@ -266,18 +364,22 @@ describe("tmux boundary", () => {
       "display-message",
       "capture-pane",
       "display-message",
+      "capture-pane",
       "send-keys",
       "display-message",
+      "capture-pane",
       "send-keys",
       "display-message",
+      "capture-pane",
       "send-keys",
       "display-message",
+      "capture-pane",
       "send-keys"
     ]);
-    expect(calls[3]?.args.slice(-1)).toEqual(["i"]);
-    expect(calls[5]?.args[1]).toBe("-l");
-    expect(calls[7]?.args.slice(-1)).toEqual(["C-j"]);
-    expect(calls[9]?.args.slice(-1)).toEqual(["C-m"]);
+    expect(calls[4]?.args.slice(-1)).toEqual(["i"]);
+    expect(calls[7]?.args[1]).toBe("-l");
+    expect(calls[10]?.args.slice(-1)).toEqual(["C-j"]);
+    expect(calls[13]?.args.slice(-1)).toEqual(["C-m"]);
   });
 
   it("honors explicit empty prelude over Codex defaults", async () => {
@@ -305,15 +407,18 @@ describe("tmux boundary", () => {
       "display-message",
       "capture-pane",
       "display-message",
+      "capture-pane",
       "send-keys",
       "display-message",
+      "capture-pane",
       "send-keys",
       "display-message",
+      "capture-pane",
       "send-keys"
     ]);
-    expect(calls[3]?.args[1]).toBe("-l");
-    expect(calls[5]?.args.slice(-1)).toEqual(["C-j"]);
-    expect(calls[7]?.args.slice(-1)).toEqual(["C-m"]);
+    expect(calls[4]?.args[1]).toBe("-l");
+    expect(calls[7]?.args.slice(-1)).toEqual(["C-j"]);
+    expect(calls[10]?.args.slice(-1)).toEqual(["C-m"]);
   });
 
   it("builds one attach command per agent window with terminal profiles", () => {

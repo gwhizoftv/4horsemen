@@ -12,7 +12,7 @@ can carry.
 
 ## The three rules
 
-**Scrape is a veto, never an authorization.** A pane that looks busy always
+**Scrape always vetoes unsafe typing; it never authorizes a duplicate.** A pane that looks busy always
 blocks typing, whatever the hooks say. Keystrokes sent into a running turn are
 appended to that turn's input or cancel it, so a false stall is recoverable and
 a false send is not. Hooks reporting `execution: "idle"` never override a
@@ -36,10 +36,30 @@ already raised against it by an older coordinator.
 
 Agents print `COORD-IDLE: waiting for the next coordinator action file` when
 they finish an action and find no new one. It can confirm a pane that no vendor
-pattern matched; it can never clear a blocker. Every blocking check runs first,
+pattern matched; it never clears a pane veto. Every blocking pane check runs first,
 and the sentinel counts only when it appears *after* the current action id in
 the captured buffer — the 40-line capture keeps the sentinel from the previous
 action on screen long after it stopped being true.
+
+For Codex only, a stale lifecycle `working` record may be overruled before an
+exactly matching action's first send: it must still be `ordered`, never injected
+or accepted, unfinished, with zero reserved or completed send attempts and no
+pending input or background work. The recovery requires a current idle sentinel
+and the observed empty Codex composer (`›` or `› Ask Codex to do anything`). The
+sentinel may have Codex's leading `•`; only recognized shortcut/context/Vim
+footer lines may follow the composer. Draft text, unknown chrome and prompts
+fail closed. Other agents keep their existing lifecycle gates.
+
+Codex pane readiness and lifecycle evidence are checked again before every
+key. During recovery, the composer may contain only the exact nudge this attempt
+has typed (allowing terminal wrapping); the coordinator's own draft and send
+reservation do not invalidate its idle proof. The vim `i` prelude is skipped
+when the current footer already reports INSERT. New lifecycle evidence cancels the
+attempt. If a submit key produces a correlated prompt acceptance, remaining
+fallback keys are skipped. A refusal after any earlier key keeps the durable
+reservation and creates a delivery-uncertain hold. No idle state or Stop event is
+synthesized. Successful recovery journals `lifecycleOverride: "working"` and
+names the missing Stop report and hook inspection in the operator log.
 
 ## Lost delivery is retried only on positive proof
 
@@ -72,6 +92,9 @@ Prompt readiness (`PromptBlockedReason`):
 | --- | --- |
 | `trust-dialog` | the harness is on its trust-this-folder prompt |
 | `claude-no-prompt` | no idle prompt is visible |
+| `codex-turn-chrome` | Codex shows a live `Working (... esc to interrupt)` line |
+| `no-idle-sentinel` | first-send recovery lacks a current sentinel and safe composer |
+| `lifecycle-changed` | lifecycle evidence changed during delivery |
 | `cursor-turn-chrome` | a turn is in flight |
 | `antigravity-turn-chrome` | a turn is in flight |
 | `antigravity-verify-overlay` | the account-verify overlay is up and discards keys |
@@ -79,8 +102,10 @@ Prompt readiness (`PromptBlockedReason`):
 
 In-flight status words (`Thinking`, `Working`, `Generating`, `Running`) match
 only at the start of a line, after whitespace or a spinner glyph, and only with
-a trailing ellipsis. Agents on this workflow write those words inside plans and
-reviews; a quoted or bulleted line is prose and must not read as chrome.
+a trailing ellipsis or elapsed timer. Codex additionally recognizes its observed
+`• Working (... esc to interrupt)` line among the last eight nonempty lines.
+Agents write those words inside plans and reviews; quoted or backticked prose
+does not match this live status shape.
 
 Lifecycle wait (`NudgeWaitCode`): `unmatched-action`, `workflow-complete`,
 `pending-input`, `background-active`, `unknown`, `queued`, `working`,

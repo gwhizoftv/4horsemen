@@ -838,6 +838,9 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "trust-dialog": "the harness is waiting on its trust-this-folder prompt",
   "claude-no-prompt": "no idle prompt is visible in the pane",
   "claude-usage-wait": "Claude is waiting for a usage limit; coordinator input is blocked",
+  "codex-turn-chrome": "the pane shows in-flight turn chrome",
+  "no-idle-sentinel": "lifecycle hooks report the agent mid-turn without a current idle sentinel and an empty composer",
+  "lifecycle-changed": "lifecycle evidence changed while preparing the send",
   "cursor-turn-chrome": "the pane shows in-flight turn chrome",
   "antigravity-turn-chrome": "the pane shows in-flight turn chrome",
   "antigravity-verify-overlay": "the account-verify overlay is up and discards keystrokes",
@@ -1086,7 +1089,11 @@ export class CoordinatorRunLoop {
     if (safety.reserved) return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends}`);
     // A reissue cannot interrupt ongoing/background work either.
     const entry = readAgentLifecycle(this.paths).agents[agent];
-    if (entry?.execution === "working" || entry?.backgroundActive === true || (entry?.pendingInputCount ?? 0) > 0) return cursors;
+    const staleWorking = agent === "codex" && entry?.execution === "working" && safety.sends === 0 &&
+      entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest &&
+      entry.action.delivery === "ordered" && entry.action.injectedAt === null &&
+      entry.action.acceptedAt === null && entry.action.workflowCompleteAt === null;
+    if ((entry?.execution === "working" && !staleWorking) || entry?.backgroundActive === true || (entry?.pendingInputCount ?? 0) > 0) return cursors;
     if (safety.sends >= 4) return this.hold(cursors, agent, "nudge-loop", `${actionId}:budget:${safety.lastSendAt}`);
     const delay = NUDGE_REPEAT_DELAYS_MS[safety.sends - 1] ?? 0;
     if (safety.lastSendAt !== null && Date.parse(this.now()) - Date.parse(safety.lastSendAt) < delay) return cursors;
@@ -1098,11 +1105,25 @@ export class CoordinatorRunLoop {
         ...current.actionSafety, [agent]: { ...safety, sends: safety.sends + 1, lastSendAt: sentAt, reserved: true }
       } }));
     };
+    // Lifecycle hooks can write without changing cursor authority. Check the
+    // relevant observation again after each asynchronous pane read. Our own
+    // cursor reservation is deliberately excluded from this snapshot.
+    const snapshot = (value: typeof entry): string => JSON.stringify([
+      value?.sessionId, value?.turnId, value?.lastEvent, value?.lastEventAt,
+      value?.execution, value?.pendingInputCount, value?.backgroundActive, value?.action
+    ]);
+    const observed = snapshot(entry);
+    const deliveryState = (): "ready" | "accepted" | "changed" => {
+      const latest = readAgentLifecycle(this.paths).agents[agent];
+      if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
+        latest.action.delivery === "accepted" && latest.action.acceptedAt !== entry?.action?.acceptedAt) return "accepted";
+      return snapshot(latest) === observed ? "ready" : "changed";
+    };
     // An exception or lost authority after any key is ambiguous: leave the durable charge intact.
     let result;
     try {
       result = await this.tmux.nudge(start.issue, config, agentRuntimePaths(this.paths, agent).action,
-        () => this.authority(cursors), actionId, actionDigest, reserve);
+        () => this.authority(cursors), actionId, actionDigest, reserve, staleWorking, deliveryState);
     } catch (error) {
       this.authority(cursors);
       if (error instanceof StateConflictError) throw error;
@@ -1119,9 +1140,11 @@ export class CoordinatorRunLoop {
     }
     if (result.status === "sent") {
       markActionInjected(this.paths, agent, actionId, actionDigest, sentAt);
+      if (staleWorking) this.log(`Issue ${start.issue}: delivered ${agent}'s first nudge using its idle sentinel; lifecycle hooks still reported working. Its Stop hook has not reported; inspect Codex /hooks and hook routing.`);
       return this.mutate(cursors, (current) => {
         appendJournal(this.paths, { type: "nudged", agent, actionId,
-          details: { actionDigest, readiness: result.detail ?? "vendor-prompt", [reason]: true } }, this.now());
+          details: { actionDigest, readiness: result.detail ?? "vendor-prompt", [reason]: true,
+            ...(staleWorking ? { lifecycleOverride: "working" } : {}) } }, this.now());
         return { ...current, actionSafety: { ...current.actionSafety, [agent]: {
           ...current.actionSafety[agent]!, reserved: false, lastSendAt: this.now()
         } } };
@@ -1684,6 +1707,10 @@ export class CoordinatorRunLoop {
       if (entry.action?.delivery !== "ordered" || entry.action.retryableInjectionAt === null) {
         const decision = decideLifecycleNudge(entry, actionId, actionDigest);
         if (decision.kind === "wait") {
+          if (agent === "codex" && decision.code === "working" && entry.action?.delivery === "ordered" &&
+            entry.action.injectedAt === null && cursors.actionSafety[agent]?.sends === 0) {
+            return this.deliver(start, cursors, agent, actionId, actionDigest, reason);
+          }
           const injected = entry.action;
           const observedAfterInjection =
             injected !== null &&

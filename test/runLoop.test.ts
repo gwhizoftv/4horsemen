@@ -40,7 +40,7 @@ import {
   releaseHold,
   writeCursorsState
 } from "../src/state.js";
-import { TmuxController } from "../src/tmux.js";
+import { COORD_IDLE_SENTINEL, TmuxController } from "../src/tmux.js";
 import type { CodexQuotaReader, CodexQuotaResult } from "../src/codexQuota.js";
 import { readBindingRecord } from "../src/codexQuota.js";
 import { parseClaudeRateLimits, parseCodexRateLimits } from "../src/resourceEvidence.js";
@@ -186,7 +186,8 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
   writeCursorsState(paths, cursorsStateSchema.parse({ ...current, activeRoster: [vendor], agents: { [vendor]: current.agents.codex } }));
   writeFileSync(paths.agentLifecycle, JSON.stringify(initialAgentLifecycle([vendor], now())));
   const ui = { foreground: "harness", busy: false, dead: false, text: "❯ Antigravity Gemini >", failSubmit: false,
-    failInspect: false, failCapture: false, waitAtCapture: Infinity, sends: 0, inspections: 0, captures: 0 };
+    failInspect: false, failCapture: false, waitAtCapture: Infinity, sends: 0, inspections: 0, captures: 0,
+    keys: [] as string[], onCapture: null as (() => void) | null, onKey: null as ((key: string) => void) | null };
   const messages: string[] = [];
   const tmux = new TmuxController(async (args) => {
     if (args[0] === "display-message") {
@@ -196,10 +197,18 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
     }
     if (args[0] === "capture-pane") {
       ui.captures++;
+      ui.onCapture?.();
       if (ui.failCapture) throw new Error("capture unavailable");
       return { exitCode: 0, stdout: ui.captures >= ui.waitAtCapture ? "Usage limit reset · continuing automatically\n❯" : ui.text, stderr: "" };
     }
-    if (args[0] === "send-keys" && args.includes("-l")) ui.sends++;
+    if (args[0] === "send-keys") {
+      ui.keys.push(args.at(-1)!);
+      if (args.includes("-l")) {
+        ui.sends++;
+        if (ui.text.includes(COORD_IDLE_SENTINEL)) ui.text = ui.text.replace(/^›.*$/m, `› ${args.at(-1)!}`);
+      }
+      ui.onKey?.(args.at(-1)!);
+    }
     if (args[0] === "send-keys" && !args.includes("-l") && ui.sends > 0 && ui.failSubmit) throw new Error("connection lost");
     return { exitCode: 0, stdout: "", stderr: "" };
   }, undefined, undefined, undefined, async () => undefined);
@@ -714,6 +723,86 @@ describe("vendor resource evidence and recovery", () => {
     for (let i = 0; i < 200; i++) { f.advance(600_000); await f.tick(); }
     expect(f.reads).toHaveLength(1);
     expect(readCursorsState(f.paths).actionSafety.codex?.resource.terminal).toMatch(/not proved reaped/);
+  });
+});
+
+describe("Codex missing-Stop recovery", () => {
+  const idlePane = `• ${COORD_IDLE_SENTINEL}\n› Ask Codex to do anything\n? for shortcuts\nContext 71% left · Vim: Insert`;
+  const stale = (f: ReturnType<typeof safetyFixture>) => observeAgentLifecycle(f.paths, "codex", {
+    kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session", turnId: "old-turn"
+  }, f.now());
+
+  it("recovers a never-sent action across restarts without fabricating idle or sending twice", async () => {
+    const f = safetyFixture(); stale(f);
+    await f.tick();
+    expect(f.ui.sends).toBe(0);
+    expect(readCursorsState(f.paths).actionSafety.codex?.sends).toBe(0);
+    expect(readJournal(f.paths).some((event) => event.type === "nudge-deferred" && event.details.code === "no-idle-sentinel")).toBe(true);
+    for (const text of [idlePane.replace("Ask Codex to do anything", "owner draft"),
+      `• Working (2m 27s • esc to interrupt)\n${idlePane}`, idlePane + "\n2. Continue without server"]) {
+      f.ui.text = text; f.advance(1_000); await f.tick();
+      expect(f.ui.sends).toBe(0);
+    }
+    f.ui.text = idlePane; f.advance(1_000);
+    const delivered = await f.tick();
+    expect(f.ui.sends).toBe(1);
+    expect(delivered.holds).toEqual([]);
+    expect(delivered.actionSafety.codex).toMatchObject({ sends: 1, reserved: false });
+    expect(readAgentLifecycle(f.paths).agents.codex).toMatchObject({ execution: "working", idleEpoch: 0,
+      lastEvent: "UserPromptSubmit", action: { delivery: "injected" } });
+    expect(readJournal(f.paths).find((event) => event.type === "nudged")?.details)
+      .toMatchObject({ readiness: "idle-sentinel", lifecycleOverride: "working" });
+    expect(f.messages.join("\n")).toContain("Stop hook has not reported");
+    f.ui.text = idlePane; f.advance(60_000); await f.tick();
+    expect(f.ui.sends).toBe(1);
+  });
+
+  it.each(["pending", "background", "prior-send"])("keeps %s as a veto despite an idle sentinel", async (blocker) => {
+    const f = safetyFixture();
+    if (blocker === "prior-send") {
+      await f.tick(); f.working();
+      observeAgentLifecycle(f.paths, "codex", { kind: "status", eventName: "status", sessionId: "replacement",
+        execution: "working" }, f.now());
+    } else {
+      stale(f);
+      observeAgentLifecycle(f.paths, "codex", { kind: "working", eventName: "working", sessionId: "session",
+        ...(blocker === "pending" ? { pendingInputCount: 1 } : { backgroundActive: true }) }, f.now());
+    }
+    const sends = f.ui.sends;
+    f.ui.text = idlePane; f.advance(60_000); await f.tick();
+    expect(f.ui.sends).toBe(sends);
+    expect(readAgentLifecycle(f.paths).agents.codex?.action?.delivery).toBe("ordered");
+  });
+
+  it.each([2, 3])("rejects a new lifecycle observation at capture %s, preserving a partial-send reservation", async (capture) => {
+    const f = safetyFixture(); stale(f); f.ui.text = idlePane;
+    f.ui.onCapture = () => {
+      if (f.ui.captures !== capture) return;
+      f.advance(1);
+      observeAgentLifecycle(f.paths, "codex", { kind: "working", eventName: "new-work", sessionId: "session",
+        turnId: "owner-turn", pendingInputCount: 1 }, f.now());
+    };
+    const after = await f.tick();
+    expect(f.ui.keys).not.toContain("C-j");
+    expect(f.ui.sends).toBe(capture === 2 ? 0 : 1);
+    expect(after.actionSafety.codex).toMatchObject({ sends: capture === 2 ? 0 : 1, reserved: capture === 3 });
+    expect(after.holds.map((hold) => hold.reason)).toEqual(capture === 2 ? [] : ["delivery-uncertain"]);
+  });
+
+  it("stops fallback submit keys when its own first submit is accepted", async () => {
+    const f = safetyFixture(); stale(f); f.ui.text = idlePane;
+    f.ui.onKey = (key) => {
+      if (key !== "C-j") return;
+      f.advance(1); f.working();
+      f.ui.text = `• Working (1s • esc to interrupt)\n${idlePane}`;
+    };
+    const after = await f.tick();
+    expect(f.ui.sends).toBe(1);
+    expect(f.ui.keys).toContain("C-j");
+    expect(f.ui.keys).not.toContain("C-m");
+    expect(after.holds).toEqual([]);
+    expect(after.actionSafety.codex?.reserved).toBe(false);
+    expect(readAgentLifecycle(f.paths).agents.codex?.action?.delivery).toBe("accepted");
   });
 });
 

@@ -72,6 +72,9 @@ export type PromptBlockedReason =
   | "trust-dialog"
   | "claude-no-prompt"
   | "claude-usage-wait"
+  | "codex-turn-chrome"
+  | "no-idle-sentinel"
+  | "lifecycle-changed"
   | "cursor-turn-chrome"
   | "antigravity-turn-chrome"
   | "antigravity-verify-overlay"
@@ -103,8 +106,36 @@ const STATUS_SUFFIX = String.raw`(?:\.\.\.|\u2026|\s+for\s+\d|\s*\(\d)`;
 const inFlightStatusLine = (plain: string, words: string): boolean =>
   new RegExp(String.raw`^${SPINNER_PREFIX}(?:${words})${STATUS_SUFFIX}`, "im").test(plain);
 
-/** True when the sentinel is the last thing the pane rendered. */
-const sentinelAtTail = (plain: string): boolean => {
+/**
+ * Recognize the observed Codex idle layout, including its empty composer.
+ * During injection only our exact draft may replace the empty composer.
+ * Strip wrapping whitespace for that comparison, then remove our draft so
+ * its action UUID does not make the preceding sentinel look stale.
+ */
+const codexIdlePane = (plain: string, draft = ""): string | null => {
+  const lines = plain.split("\n").map((line) => line.trim()).filter(Boolean);
+  const sentinel = lines.map((line) => line.replace(/^•\s*/, "")).lastIndexOf(COORD_IDLE_SENTINEL);
+  if (sentinel < 0 || !lines[sentinel + 1]?.startsWith("›")) return null;
+  const tail = lines.slice(sentinel + 1);
+  const footer = (line: string): boolean =>
+    /^(?:\? for shortcuts(?:\s+\d+% context left)?|(?:Context \d+% left|\d+% context left)(?:\s*·\s*Vim: (?:Insert|Normal))?)$/.test(line);
+  const footerIndex = tail.findIndex(footer);
+  const composerEnd = footerIndex < 0 ? tail.length : footerIndex;
+  if (!tail.slice(composerEnd).every(footer)) return null;
+  const composer = tail.slice(0, composerEnd);
+  const content = composer[0]!.slice(1).trim();
+  if (draft === "") {
+    if (composer.length !== 1 || !["", "Ask Codex to do anything"].includes(content)) return null;
+  } else {
+    const compact = (text: string): string => text.replace(/\s/g, "");
+    if (compact([content, ...composer.slice(1)].join("")) !== compact(draft)) return null;
+  }
+  return [...lines.slice(0, sentinel + 1), "›", ...tail.slice(composerEnd)].join("\n");
+};
+
+/** True when only recognized idle chrome follows the final sentinel. */
+const sentinelAtTail = (plain: string, agentId: string): boolean => {
+  if (agentId === "codex") return codexIdlePane(plain) !== null;
   const lines = plain.split("\n").map((line) => line.trim()).filter((line) => line !== "");
   return lines[lines.length - 1] === COORD_IDLE_SENTINEL;
 };
@@ -149,7 +180,7 @@ export const harnessPromptReadiness = (
   const plain = stripAnsi(paneText);
   // A sentinel older than the current action is stale scrollback, not evidence.
   const sentinel =
-    sentinelAtTail(plain) && (actionId === undefined || idleSentinelAfterAction(plain, actionId));
+    sentinelAtTail(plain, agentId) && (actionId === undefined || idleSentinelAfterAction(plain, actionId));
   const ready = (): PromptReadiness => ({ ready: true, reason: sentinel ? "idle-sentinel" : "vendor-prompt" });
   if (/trust this folder/i.test(plain)) return { ready: false, reason: "trust-dialog" };
   switch (agentId) {
@@ -177,9 +208,13 @@ export const harnessPromptReadiness = (
       return sentinel
         ? { ready: true, reason: "idle-sentinel" }
         : { ready: false, reason: "antigravity-no-prompt" };
-    case "codex":
-      // Codex accepts keys once the process is up; avoid blocking on transient UI.
+    case "codex": {
+      const tail = plain.split("\n").filter((line) => line.trim() !== "").slice(-8).join("\n");
+      if (/^[\s•\u2800-\u28ff]*Working \([^\n]*esc to interrupt\)\s*$/im.test(tail)) {
+        return { ready: false, reason: "codex-turn-chrome" };
+      }
       return ready();
+    }
     default:
       return ready();
   }
@@ -873,7 +908,9 @@ export class TmuxController {
     assertAuthority: () => void = () => undefined,
     actionId?: string,
     actionDigest?: string,
-    reserveSend: () => void = () => undefined
+    reserveSend: () => void = () => undefined,
+    requireIdleSentinel = false,
+    deliveryState: () => "ready" | "accepted" | "changed" = () => "ready"
   ): Promise<NudgeOutcome> {
     if (agent.delivery !== "nudge" && agent.delivery !== "both") {
       return { status: "disabled", reason: "delivery-disabled", stage: "config" };
@@ -887,6 +924,9 @@ export class TmuxController {
     assertAuthority();
     const readiness = harnessPromptReadiness(paneText, agent.id, actionId);
     if (!readiness.ready) return { status: "busy", reason: readiness.reason, stage: "prompt" };
+    if (requireIdleSentinel && readiness.reason !== "idle-sentinel") {
+      return { status: "busy", reason: "no-idle-sentinel", stage: "prompt" };
+    }
     if (agent.id === "antigravity") {
       await this.sleep(NUDGE_BEFORE_ANTIGRAVITY_MS);
       assertAuthority();
@@ -900,15 +940,45 @@ export class TmuxController {
     // reaches the input widget. Prelude/submit keys come from agent config.
     const { prelude: preludeKeys, submit: submitKeys } = resolveNudgeKeys(agent, paneText);
     let began = false;
+    let typedDraft = false;
+    let submitted = false;
+    let accepted = false;
+    const success = (): NudgeOutcome => ({ status: "sent", reason: "sent", stage: "complete",
+      ...(readiness.reason === "idle-sentinel" ? { detail: "idle-sentinel" } : {}) });
     const send = async (args: readonly string[], fail: string): Promise<NudgeOutcome> => {
       const gate = await this.injectionGate(target, agent, assertAuthority);
       if (gate.status !== "ok") {
         return { status: gate.status, reason: gate.reason, stage: began ? "mid-send" : "gate", ...(gate.detail === undefined ? {} : { detail: gate.detail }) };
       }
-      if (agent.id === "claude") {
-        const latest = await this.capturePane(target);
-        assertAuthority();
-        if (claudeUsageWait(stripAnsi(latest))) return { status: "busy", reason: "claude-usage-wait", stage: began ? "mid-send" : "prompt" };
+      const stage = began ? "mid-send" : "prompt";
+      const latest = agent.id === "claude" || agent.id === "codex" || requireIdleSentinel
+        ? await this.capturePane(target) : null;
+      assertAuthority();
+      const state = deliveryState();
+      // A correlated prompt hook after a submit proves the nudge arrived. Do
+      // not send a fallback Enter into the turn that our first key started.
+      if (submitted && state === "accepted") { accepted = true; return success(); }
+      if (state !== "ready") return { status: "busy", reason: "lifecycle-changed", stage };
+      if (latest !== null) {
+        if (agent.id === "claude" && claudeUsageWait(stripAnsi(latest))) {
+          return { status: "busy", reason: "claude-usage-wait", stage };
+        }
+        if (agent.id === "codex" || requireIdleSentinel) {
+          const current = harnessPromptReadiness(latest, agent.id, actionId);
+          if (!current.ready) return { status: "busy", reason: current.reason, stage };
+          if (requireIdleSentinel) {
+            const idle = agent.id === "codex" ? codexIdlePane(stripAnsi(latest), typedDraft ? text : "") : latest;
+            if (idle === null || harnessPromptReadiness(idle, agent.id, actionId).reason !== "idle-sentinel") {
+              return { status: "busy", reason: "no-idle-sentinel", stage };
+            }
+          }
+        }
+      }
+      // Codex's configured vim prelude would become owner-like draft text if
+      // the empty composer is already in INSERT. Use the freshly read footer.
+      if (requireIdleSentinel && agent.id === "codex" && !typedDraft && !args.includes("-l") &&
+        args.at(-1) === "i" && /(?:Context \d+% left|\d+% context left)\s*·\s*Vim: Insert\s*$/.test(stripAnsi(latest ?? ""))) {
+        return success();
       }
       if (!began) { reserveSend(); began = true; }
       const result = await this.runner(["send-keys", ...args]);
@@ -922,6 +992,7 @@ export class TmuxController {
     }
     const typed = await send(["-l", "-t", target, text], "tmux send-keys text failed: ");
     if (typed.status !== "sent") return typed;
+    typedDraft = true;
     // Autocomplete/multiline handlers need a beat before Escape; then gap before Enter.
     await this.sleep(NUDGE_AFTER_TEXT_MS);
     assertAuthority();
@@ -932,7 +1003,9 @@ export class TmuxController {
       }
       const submit = await send(["-t", target, key], "tmux send-keys submit failed: ");
       if (submit.status !== "sent") return submit;
+      if (accepted) break;
+      submitted = true;
     }
-    return { status: "sent", reason: "sent", stage: "complete", ...(readiness.reason === "idle-sentinel" ? { detail: "idle-sentinel" } : {}) };
+    return success();
   }
 }
