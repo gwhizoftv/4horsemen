@@ -505,6 +505,12 @@ export const agentCursorSchema = z
     attempt: z.number().int().nonnegative(),
     submissionSha: gitShaSchema.nullable(),
     outstanding: z.array(z.string()),
+    /**
+     * The last action whose completion this agent had accepted. Ordering the
+     * next action clears `actionId`, so this is what an agent's `ready`
+     * receipt is matched against. Legacy cursors default to null: no match.
+     */
+    lastAcceptedActionId: z.string().uuid().nullable().default(null),
     updatedAt: timestampSchema
   })
   .strict();
@@ -1083,6 +1089,7 @@ export const initialCursors = (start: StartState, now = new Date().toISOString()
       attempt: 0,
       submissionSha: null,
       outstanding: [],
+      lastAcceptedActionId: null,
       updatedAt: now
     };
   }

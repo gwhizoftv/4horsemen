@@ -1,7 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { clearCompletion, createActionId, readAction, readCompletion, writeAction } from "./action.js";
+import {
+  clearCompletion,
+  clearReadyReceipt,
+  createActionId,
+  readAction,
+  readCompletion,
+  readReadyReceipt,
+  writeAction,
+  type ReadyReceipt
+} from "./action.js";
 import {
   AGENT_OBSERVABILITY_WATCHDOG_MS,
   containmentCoverage,
@@ -12,7 +21,8 @@ import {
   markInjectedActionAbsent,
   mutateAgentLifecycle,
   orderAgentAction,
-  readAgentLifecycle
+  readAgentLifecycle,
+  readyReceiptProvesIdle
 } from "./agentLifecycle.js";
 import {
   archiveAcceptedResponse,
@@ -110,7 +120,7 @@ import { containmentPolicy, ingestContainmentProbe } from "./shellGuard.js";
 import { holdRecoveryCommand, renderIssueReport } from "./issueReport.js";
 import { formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
-import { harnessPromptReadiness, TmuxController, type OverrideLifecycle } from "./tmux.js";
+import { harnessPromptReadiness, TmuxController, type OverrideLifecycle, type StaleOverride } from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
@@ -843,7 +853,9 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "antigravity-verify-overlay": "the account-verify overlay is up and discards keystrokes",
   "antigravity-no-prompt": "no idle prompt is visible in the pane",
   "codex-turn-chrome": "the pane shows in-flight turn chrome",
-  "no-idle-sentinel": "lifecycle hooks report the agent mid-turn and its pane shows no COORD-IDLE line since its last action",
+  "no-idle-sentinel":
+    "lifecycle hooks report the agent mid-turn, and neither a ready receipt for its last accepted action nor a COORD-IDLE line at the end of its pane shows it finished",
+  "composer-draft": "the composer holds text the owner has not sent",
   "lifecycle-changed": "lifecycle hooks reported new activity while the send was being prepared",
   "unmatched-action": "the recorded lifecycle action does not match the current one",
   "workflow-complete": "this agent already published its work for this action",
@@ -1077,6 +1089,17 @@ export class CoordinatorRunLoop {
     return `${actionId}:observation:${entry?.sessionId ?? "none"}:${entry?.lastEventAt ?? "none"}`;
   }
 
+  /** The agent's current `ready` receipt, only when it proves the agent idle for `actionId`. */
+  private readyProof(
+    cursors: CursorsState, agent: string, actionId: string,
+    receipt = readReadyReceipt(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot)
+  ): ReadyReceipt | null {
+    const entry = readAgentLifecycle(this.paths).agents[agent];
+    return receipt !== null && entry !== undefined &&
+      readyReceiptProvesIdle(entry, receipt, cursors.agents[agent]?.lastAcceptedActionId ?? null, actionId, this.now())
+      ? receipt : null;
+  }
+
   /** One reservation path for initial, idle, reissue and lost-delivery sends. */
   private async deliver(
     start: StartState, cursors: CursorsState, agent: string, actionId: string, actionDigest: string,
@@ -1091,23 +1114,34 @@ export class CoordinatorRunLoop {
     const entry = readAgentLifecycle(this.paths).agents[agent];
     // Before the first send there is nothing to duplicate, so a `working`
     // record left by a Stop that never reached this issue may be overruled —
-    // but only by the pane's own current idle sentinel (`requireIdleSentinel`).
-    const staleWorking = entry?.execution === "working" && safety.sends === 0 &&
-      entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest &&
-      entry.action.delivery === "ordered" && entry.action.injectedAt === null;
+    // by the agent's `ready` receipt for its last accepted action, or else by
+    // the pane's own current idle sentinel (`requireIdleSentinel`).
+    const neverSent = safety.sends === 0 && entry?.action?.actionId === actionId &&
+      entry.action.actionDigest === actionDigest && entry.action.delivery === "ordered" && entry.action.injectedAt === null;
+    const runtime = agentRuntimePaths(this.paths, agent);
+    // Whatever receipt is there now, proof or not, is the one a successful first send consumes.
+    const receipt = neverSent ? readReadyReceipt(runtime.ready, this.paths.completesRoot) : null;
+    const ready = receipt === null ? null : this.readyProof(cursors, agent, actionId, receipt);
+    const staleWorking = entry?.execution === "working" && neverSent;
     if ((entry?.execution === "working" && !staleWorking) || entry?.backgroundActive === true ||
       (entry?.pendingInputCount ?? 0) > 0) return cursors;
+    // A receipt also stands in for hooks that were never correlated at all.
+    const overriding = staleWorking || (ready !== null && entry?.execution === "unknown") ? entry!.execution : null;
     // Lifecycle hooks write without touching cursor authority, so the override
     // re-reads them at every key until submission starts.
     const lifecycleSnapshot = (value: typeof entry): string => JSON.stringify([value?.sessionId, value?.turnId,
-      value?.lastEventAt, value?.execution, value?.pendingInputCount, value?.backgroundActive]);
+      value?.lastEventAt, value?.hookReceipt?.sequence, value?.execution, value?.pendingInputCount, value?.backgroundActive]);
     const observed = lifecycleSnapshot(entry);
-    const staleOverride = staleWorking ? (): OverrideLifecycle => {
-      const latest = readAgentLifecycle(this.paths).agents[agent];
-      if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
-        latest.action.delivery === "accepted") return "accepted";
-      return lifecycleSnapshot(latest) === observed ? "unchanged" : "changed";
-    } : undefined;
+    const staleOverride: StaleOverride | undefined = overriding === null ? undefined : {
+      proof: ready === null ? "idle-sentinel" : "ready-file",
+      lifecycle: (): OverrideLifecycle => {
+        const latest = readAgentLifecycle(this.paths).agents[agent];
+        if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
+          latest.action.delivery === "accepted") return "accepted";
+        if (ready !== null && readReadyReceipt(runtime.ready, this.paths.completesRoot)?.identity !== ready.identity) return "changed";
+        return lifecycleSnapshot(latest) === observed ? "unchanged" : "changed";
+      }
+    };
     if (safety.sends >= 4) return this.hold(cursors, agent, "nudge-loop", `${actionId}:budget:${safety.lastSendAt}`);
     const delay = NUDGE_REPEAT_DELAYS_MS[safety.sends - 1] ?? 0;
     if (safety.lastSendAt !== null && Date.parse(this.now()) - Date.parse(safety.lastSendAt) < delay) return cursors;
@@ -1122,7 +1156,7 @@ export class CoordinatorRunLoop {
     // An exception or lost authority after any key is ambiguous: leave the durable charge intact.
     let result;
     try {
-      result = await this.tmux.nudge(start.issue, config, agentRuntimePaths(this.paths, agent).action,
+      result = await this.tmux.nudge(start.issue, config, runtime.action,
         () => this.authority(cursors), actionId, actionDigest, reserve, staleOverride);
     } catch (error) {
       this.authority(cursors);
@@ -1140,17 +1174,23 @@ export class CoordinatorRunLoop {
     }
     if (result.status === "sent") {
       markActionInjected(this.paths, agent, actionId, actionDigest, sentAt);
-      if (staleWorking) {
+      // A receipt for the accepted action vouches for exactly one next send, needed or not.
+      if (receipt !== null && receipt.actionId === cursors.agents[agent]?.lastAcceptedActionId) {
+        clearReadyReceipt(runtime.ready, this.paths.completesRoot, receipt);
+      }
+      if (overriding !== null) {
+        const hooks = overriding === "working" ? "still report it mid-turn" : "have not been correlated";
+        const proof = ready === null ? "its pane shows COORD-IDLE" : `it wrote a ready receipt for accepted action ${ready.actionId}`;
         this.log(
-          `Issue ${start.issue}: ${agent}'s lifecycle hooks still report it mid-turn, but its pane shows COORD-IDLE; ` +
+          `Issue ${start.issue}: ${agent}'s lifecycle hooks ${hooks}, but ${proof}; ` +
             `delivered action ${actionId}. No Stop event from ${agent} reached this issue — ` +
             `check that its hooks run with COORD_ISSUE=${start.issue}.`
         );
       }
       return this.mutate(cursors, (current) => {
         appendJournal(this.paths, { type: "nudged", agent, actionId,
-          details: { actionDigest, readiness: result.detail ?? "vendor-prompt", [reason]: true,
-            ...(staleWorking ? { lifecycleOverride: "working" } : {}) } }, this.now());
+          details: { actionDigest, readiness: ready !== null && overriding !== null ? "ready-file" : result.detail ?? "vendor-prompt",
+            [reason]: true, ...(overriding === null ? {} : { lifecycleOverride: overriding }) } }, this.now());
         return { ...current, actionSafety: { ...current.actionSafety, [agent]: {
           ...current.actionSafety[agent]!, reserved: false, lastSendAt: this.now()
         } } };
@@ -1712,10 +1752,12 @@ export class CoordinatorRunLoop {
       // send succeeds, only a lifecycle idle transition can authorize more.
       if (entry.action?.delivery !== "ordered" || entry.action.retryableInjectionAt === null) {
         const decision = decideLifecycleNudge(entry, actionId, actionDigest);
-        // A never-sent action against `working` is decided by deliver(), on the pane's idle sentinel.
-        const neverSentWorking = decision.code === "working" &&
-          entry.action?.delivery === "ordered" && entry.action.injectedAt === null;
-        if (decision.kind === "wait" && !neverSentWorking) {
+        // A never-sent action against `working` is decided by deliver(), on the
+        // agent's ready receipt or the pane's idle sentinel; against `unknown`, only on a receipt.
+        const neverSent = entry.action?.delivery === "ordered" && entry.action.injectedAt === null;
+        const deliverDecides = neverSent && (decision.code === "working" ||
+          (decision.code === "unknown" && this.readyProof(cursors, agent, actionId) !== null));
+        if (decision.kind === "wait" && !deliverDecides) {
           const injected = entry.action;
           const observedAfterInjection =
             injected !== null &&
@@ -1865,6 +1907,7 @@ export class CoordinatorRunLoop {
             status: "waiting-peer",
             submissionSha: null,
             outstanding: [],
+            lastAcceptedActionId: cursor.actionId,
             updatedAt: this.now()
           }
         },
@@ -1945,7 +1988,9 @@ export class CoordinatorRunLoop {
         actionId: decision.request.actionId, submissionSha: decision.submissionSha,
         details: { sequence: pending.sequence, scopeHash: decision.request.scopeHash,
           eventId: `amendment-request:${pending.sequence}:${decision.request.actionId}:${decision.submissionSha}` } }, this.now());
-      return this.amendmentTransition(cursorsStateSchema.parse({ ...current,
+      // The request completes the requester's action; peers' retired actions were never accepted.
+      const accepted = replaceCursor(current, decision.agent, { lastAcceptedActionId: decision.request.actionId }, this.now());
+      return this.amendmentTransition(cursorsStateSchema.parse({ ...accepted,
         pendingAmendment: { ...pending, requestedAt: event.at }, amendmentSequence: pending.sequence }), "R4.amend-ballot", pending.sequence);
     });
     return this.retireAmendmentActions(next);
@@ -2113,6 +2158,7 @@ export class CoordinatorRunLoop {
             status: "waiting-peer",
             submissionSha: null,
             outstanding: [],
+            lastAcceptedActionId: cursor.actionId,
             updatedAt: this.now()
           }
         },

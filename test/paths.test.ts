@@ -43,6 +43,8 @@ describe("completion mailbox paths", () => {
     const runtime = agentRuntimePaths(paths, "claude");
 
     expect(runtime.complete).toBe(join(completesRoot, "issue-98", "claude", "complete"));
+    // The idle receipt shares the receipt's drop, so it needs no wider grant.
+    expect(runtime.ready).toBe(join(completesRoot, "issue-98", "claude", "ready"));
     expect(runtime.completeDir).toBe(join(completesRoot, "issue-98", "claude"));
     expect(runtime.action).toBe(join(coordRoot, "issue-98", "agents", "claude", "action.md"));
     expect(runtime.renderLog).toBe(join(coordRoot, "issue-98", "agents", "claude", "render.log"));

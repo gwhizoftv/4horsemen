@@ -454,6 +454,9 @@ describe("agent-facing language", () => {
     const block = renderAgentsProtocolBlock(repoRoot);
     expect(block).toContain(COORD_IDLE_SENTINEL);
     expect(findAgentLanguageViolations(COORD_IDLE_SENTINEL)).toEqual([]);
+    // The durable idle receipt is written first, and the sentinel stays the reply's last line.
+    expect(block).toContain("write `ready <actionId>`");
+    expect(block.indexOf("write `ready <actionId>`")).toBeLessThan(block.indexOf(COORD_IDLE_SENTINEL));
   });
 
   it("reports the leaks issue 88 removed", () => {

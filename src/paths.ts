@@ -106,8 +106,8 @@ export const resolveSafeCoordRoot = (options: SafeCoordRootOptions): string => {
  * The completion mailbox: a third tree that is a sibling of both the agent
  * clones and the coordinator runtime.
  *
- * `complete` is the only runtime file an agent writes. Leaving it beside
- * `action.md` forced every harness to hold a writable grant on the whole coord
+ * `complete` and its `ready` idle receipt are the only mailbox files an agent
+ * writes. Leaving `complete` beside `action.md` forced every harness to hold a writable grant on the whole coord
  * root, which also holds `cursors.json`, `journal.jsonl`, and every peer's
  * order. Codex ran `--sandbox danger-full-access` for exactly that reason. The
  * mailbox is granted per issue and per agent, so a harness can publish its SHA
@@ -321,6 +321,8 @@ export type AgentRuntimePaths = {
   root: string;
   action: string;
   complete: string;
+  /** The agent's `ready <actionId>` idle receipt, beside `complete` in the same grant. */
+  ready: string;
   renderLog: string;
   /**
    * The directory holding `complete`, and the exact path a harness is granted.
@@ -332,6 +334,9 @@ export type AgentRuntimePaths = {
 };
 
 const agentPattern = /^[a-z][a-z0-9-]{0,63}$/;
+
+/** The idle receipt's path, derived from its sibling `complete` so renderer and reader agree. */
+export const readyReceiptPath = (completePath: string): string => resolve(dirname(completePath), "ready");
 const actionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const RESERVED_EVIDENCE_AGENT = "coordinator-evidence";
@@ -342,11 +347,13 @@ export const agentRuntimePaths = (paths: IssueRuntimePaths, agent: string): Agen
   }
   const root = containedPath(paths.agents, agent);
   const completeDir = containedPath(paths.completesIssueRoot, agent);
+  const complete = containedPath(completeDir, "complete");
   return {
     root,
     action: containedPath(root, "action.md"),
     // The receipt leaves the coord root; the order and the log do not.
-    complete: containedPath(completeDir, "complete"),
+    complete,
+    ready: readyReceiptPath(complete),
     renderLog: containedPath(root, "render.log"),
     completeDir,
     responsesDir: containedPath(root, "responses")

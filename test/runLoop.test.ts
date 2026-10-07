@@ -1,12 +1,18 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readAction, writeAction } from "../src/action.js";
 import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
 import { git, repoRoot } from "./support/workspaceFixture.js";
-import { decideLifecycleNudge, initialAgentLifecycle, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
+import {
+  decideLifecycleNudge,
+  initialAgentLifecycle,
+  observeAgentLifecycle,
+  orderAgentAction,
+  readAgentLifecycle
+} from "../src/agentLifecycle.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentResponsePath, agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
@@ -38,9 +44,10 @@ import {
   readStartState,
   setPaused,
   releaseHold,
+  replaceCursor,
   writeCursorsState
 } from "../src/state.js";
-import { TmuxController } from "../src/tmux.js";
+import { COORD_IDLE_SENTINEL, TmuxController } from "../src/tmux.js";
 import type { CodexQuotaReader, CodexQuotaResult } from "../src/codexQuota.js";
 import { readBindingRecord } from "../src/codexQuota.js";
 import { parseClaudeRateLimits, parseCodexRateLimits } from "../src/resourceEvidence.js";
@@ -1302,6 +1309,37 @@ describe("effectful run loop", () => {
     expect(buildOrder(paths, readStartState(paths), replaced, "codex", "R4.implement", null).scopeInputs).toEqual([]);
   });
 
+  it("records an accepted amendment request as the requester's accepted action, and no peer's", () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const now = start.createdAt;
+    const requested = actionIdFor("codex");
+    const current = readCursorsState(paths);
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...current,
+      issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
+      derived: { ...current.derived, planSelection: { kind: "plan-selection", algorithm: "plurality-active-roster-v1",
+        inputSetHash: "e".repeat(64), activeRoster: current.activeRoster,
+        inputs: [{ kind: "plan", agent: "codex", submissionSha: "c".repeat(40), path: ".plans/issue-1/plan.md" }],
+        decisionId: `plan-selection:${"e".repeat(64)}`, supersedes: null, decidedAt: now, selectedAgents: ["codex"] } },
+      accepted: [{ stepId: "R2.plan", agent: "codex", round: null, submissionSha: "c".repeat(40),
+        path: ".plans/issue-1/plan.md", acceptedAt: now }],
+      agents: Object.fromEntries(current.activeRoster.map((agent) => [agent, { ...current.agents[agent]!,
+        stepId: "R4.implement", evidenceId: "implementation-pinned", submissionMode: "git",
+        actionId: actionIdFor(agent), status: "ordered" }])) }));
+    const loop = new CoordinatorRunLoop(paths, { tmux: null }) as unknown as {
+      beginAmendment: (cursors: ReturnType<typeof readCursorsState>, decision: unknown) => ReturnType<typeof readCursorsState>;
+    };
+    const after = loop.beginAmendment(readCursorsState(paths), { type: "begin-amendment", agent: "codex",
+      submissionSha: "d".repeat(40), request: { protocolVersion: 1, artifact: "plan-amendment-request", issue: 1,
+        issueSessionId: start.issueSessionId, agent: "codex", actionId: requested, inputSetHash: "e".repeat(64),
+        scopeHash: "f".repeat(64), explanation: "Necessary regression",
+        additionalPaths: [{ path: "test/product.test.ts", reason: "Regression" }] } });
+    expect(after.issueCursor.stepId).toBe("R4.amend-ballot");
+    expect(after.agents.codex?.lastAcceptedActionId).toBe(requested);
+    // The peer's retired implementation action was never accepted.
+    expect(after.agents.claude?.lastAcceptedActionId).toBeNull();
+  });
+
   it("recovers durable amendment retirements before preparing votes and refuses delayed old markers", async () => {
     const { paths } = fixture();
     const base = readCursorsState(paths);
@@ -1924,6 +1962,86 @@ describe("effectful run loop", () => {
     // After the first send, a stale working record again blocks: no duplicate.
     await loop.runTick();
     expect(literalNudges).toBe(1);
+  });
+
+  it("keeps a ready receipt through acceptance and lets it alone overrule a stale working record once", async () => {
+    const { paths } = fixture();
+    const base = readStartState(paths);
+    writeFileSync(paths.start, `${JSON.stringify({ ...base, agents: base.agents.map((agent) =>
+      agent.id === "claude" ? { ...agent, delivery: "both", harnessProcess: "claude" } : agent) }, null, 2)}\n`);
+    const start = readStartState(paths);
+    const accepted = "ce80f31a-6884-42cf-b0ff-b0fb27fc6cc8";
+    const next = "de80f31a-6884-42cf-b0ff-b0fb27fc6cc8";
+    const runtime = agentRuntimePaths(paths, "claude");
+    const at = (minute: number) => `2026-01-01T00:0${minute}:00.000Z`;
+    const writeReady = (minute: number) => {
+      writeFileSync(runtime.ready, `ready ${accepted}\n`);
+      utimesSync(runtime.ready, new Date(at(minute)), new Date(at(minute)));
+    };
+    // Claude draws its composer box and status line below the transcript, so COORD-IDLE is never the tail.
+    const pane = `⏺ Done.\n\n  ${COORD_IDLE_SENTINEL}\n\n${"─".repeat(40)}\n❯ \n${"─".repeat(40)}\n  Opus · ctx 11%\n  ⏵⏵ auto mode on`;
+    let literal = 0;
+    const messages: string[] = [];
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tclaude\t0\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: pane, stderr: "" };
+      if (args[0] === "send-keys" && args.includes("-l")) literal += 1;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }, undefined, undefined, undefined, async () => undefined);
+    const tick = () => new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) }).runTick();
+
+    // Claude is mid-way through a ballot whose Stop hook will never reach this issue.
+    const current = readCursorsState(paths);
+    const seeded = cursorsStateSchema.parse({ ...current,
+      issueCursor: { stepId: "R3.plan-ballot", gateId: "gate-3-selection", round: null },
+      agents: { ...current.agents, claude: { ...current.agents.claude, stepId: "R3.plan-ballot",
+        evidenceId: "plan-response-accepted", submissionMode: "response", actionId: accepted, status: "ordered" } },
+      accepted: current.activeRoster.map((agent) => ({ stepId: "R2.plan" as const, agent, round: null,
+        submissionSha: "c".repeat(40), path: ".plans/issue-1/plan.md", acceptedAt: at(0) })) });
+    writeCursorsState(paths, seeded);
+    writeAction(paths.coordRoot, runtime.action, buildOrder(paths, start, seeded, "claude", "R3.plan-ballot", null, accepted));
+    const digest = createHash("sha256").update(readFileSync(runtime.action)).digest("hex");
+    orderAgentAction(paths, "claude", accepted, digest, at(0));
+    observeAgentLifecycle(paths, "claude", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "s-1",
+      turnId: "t-1", actionId: accepted, actionDigest: digest }, at(1));
+    // The agent finishes, re-reads an unchanged action and writes its receipt before coordination accepts.
+    writeAgentResponse(agentResponsePath(paths, "claude", accepted), paths.issueRoot,
+      { actionId: accepted, choice: "codex", rationale: "Smallest plan." });
+    writeFileSync(runtime.complete, `response ${accepted}\n`);
+    writeReady(2);
+
+    await tick();
+    expect(readCursorsState(paths).agents.claude).toMatchObject({ status: "waiting-peer", lastAcceptedActionId: accepted });
+    expect(existsSync(runtime.complete)).toBe(false);
+    expect(existsSync(runtime.ready)).toBe(true);
+
+    // The next action is ordered; lifecycle still says working, and no hook will say otherwise.
+    const ordered = readCursorsState(paths);
+    writeCursorsState(paths, replaceCursor(ordered, "claude", { stepId: "R1.join", evidenceId: "join-published",
+      submissionMode: "git", actionId: next, status: "ordered" }));
+    writeAction(paths.coordRoot, runtime.action, buildOrder(paths, start, readCursorsState(paths), "claude", "R1.join", null, next));
+    // A hook that arrives after the receipt was written makes it stale.
+    observeAgentLifecycle(paths, "claude", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "s-1",
+      turnId: "t-1" }, at(3));
+    await tick();
+    expect(literal).toBe(0);
+    expect(readJournal(paths).some((event) => event.type === "nudge-deferred" && event.agent === "claude" &&
+      event.details.code === "no-idle-sentinel")).toBe(true);
+
+    writeReady(4);
+    await tick();
+    expect(literal).toBe(1);
+    expect(existsSync(runtime.ready)).toBe(false);
+    const nudged = readJournal(paths).filter((event) => event.type === "nudged" && event.agent === "claude");
+    expect(nudged).toHaveLength(1);
+    expect(nudged[0]?.details).toMatchObject({ readiness: "ready-file", lifecycleOverride: "working" });
+    expect(messages.join("\n")).toContain(`it wrote a ready receipt for accepted action ${accepted}`);
+    expect(messages.join("\n")).not.toContain("its pane shows COORD-IDLE");
+
+    // Consumed, and the first send is charged: a fresh receipt cannot authorize a duplicate.
+    writeReady(5);
+    await tick();
+    expect(literal).toBe(1);
   });
 
   it("retries an action that a busy pane never injected", async () => {

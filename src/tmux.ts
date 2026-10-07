@@ -78,10 +78,22 @@ export type PromptBlockedReason =
   | "antigravity-no-prompt"
   | "codex-turn-chrome"
   | "no-idle-sentinel"
+  | "composer-draft"
   | "lifecycle-changed";
 
 /** The lifecycle record since an override send began: untouched, showing this nudge accepted, or anything else. */
 export type OverrideLifecycle = "unchanged" | "accepted" | "changed";
+
+/**
+ * A send that overrules a stale lifecycle record. `idle-sentinel` proof must
+ * keep reading COORD-IDLE at every key; `ready-file` proof is the agent's
+ * mailbox receipt, re-validated by `lifecycle`, so the pane needs no sentinel
+ * but still passes every veto.
+ */
+export type StaleOverride = { proof: "idle-sentinel" | "ready-file"; lifecycle: () => OverrideLifecycle };
+
+/** Where Codex's composer region starts: below the last sentinel, or at the last `›` line. */
+type CodexAnchor = "sentinel" | "composer";
 
 export type PromptReadiness =
   | { ready: true; reason: "vendor-prompt" | "idle-sentinel" }
@@ -161,19 +173,34 @@ type PaneLine = { raw: string; plain: string };
  * sentinel only the composer (which may wrap) and known footer lines may
  * follow; anything else — a new transcript item, a dialog — fails closed.
  */
+const paneLines = (paneText: string): PaneLine[] => paneText.split("\n")
+  .map((raw) => ({ raw, plain: stripAnsi(raw).trim() }))
+  .filter((line) => line.plain !== "");
+
 /** Non-blank pane lines below Codex's last rendered sentinel, or null without one. */
 const linesAfterCodexSentinel = (paneText: string): PaneLine[] | null => {
-  const lines = paneText.split("\n")
-    .map((raw) => ({ raw, plain: stripAnsi(raw).trim() }))
-    .filter((line) => line.plain !== "");
+  const lines = paneLines(paneText);
   const sentinel = lines.map((line) => line.plain.replace(/^•\s*/, "")).lastIndexOf(COORD_IDLE_SENTINEL);
   return sentinel < 0 ? null : lines.slice(sentinel + 1);
 };
 
+/**
+ * Without a sentinel, the lines from the `back`-th last `›` line: 1 is the
+ * composer itself, 2 the submitted message above it. Null when there is none.
+ */
+const linesFromCodexPrompt = (paneText: string, back: number): PaneLine[] | null => {
+  const lines = paneLines(paneText);
+  const prompts = lines.flatMap((line, index) => (line.plain.startsWith("›") ? [index] : []));
+  const at = prompts[prompts.length - back];
+  return at === undefined ? null : lines.slice(at);
+};
+
 const compactText = (value: string): string => value.replace(/\s/g, "");
 
-const codexTail = (paneText: string): { composer: PaneLine[]; footer: PaneLine[] } | null => {
-  const after = linesAfterCodexSentinel(paneText);
+const codexTail = (
+  paneText: string, anchor: CodexAnchor = "sentinel"
+): { composer: PaneLine[]; footer: PaneLine[] } | null => {
+  const after = anchor === "sentinel" ? linesAfterCodexSentinel(paneText) : linesFromCodexPrompt(paneText, 1);
   if (after === null) return null;
   const footerAt = after.findIndex((line) => CODEX_FOOTER.test(line.plain));
   const composer = footerAt < 0 ? after : after.slice(0, footerAt);
@@ -183,15 +210,15 @@ const codexTail = (paneText: string): { composer: PaneLine[]; footer: PaneLine[]
     : null;
 };
 
-/** Idle proof: the sentinel above a single, empty composer. */
-const codexSentinelAtTail = (paneText: string): boolean => {
-  const tail = codexTail(paneText);
+/** A single, empty composer above known footer lines; with the sentinel anchor, the idle proof. */
+const codexComposerIdle = (paneText: string, anchor: CodexAnchor = "sentinel"): boolean => {
+  const tail = codexTail(paneText, anchor);
   return tail !== null && tail.composer.length === 1 && codexComposerEmpty(tail.composer[0]!.raw);
 };
 
-/** True when the composer below the sentinel holds exactly `text`, however it wrapped. */
-const codexComposerHolds = (paneText: string, text: string): boolean => {
-  const tail = codexTail(paneText);
+/** True when the composer holds exactly `text`, however it wrapped. */
+const codexComposerHolds = (paneText: string, text: string, anchor: CodexAnchor = "sentinel"): boolean => {
+  const tail = codexTail(paneText, anchor);
   return tail !== null && compactText(tail.composer.map((line) => line.plain).join("").slice(1)) === compactText(text);
 };
 
@@ -202,8 +229,8 @@ const codexComposerHolds = (paneText: string, text: string): boolean => {
  * submit keys would land in that turn. An unrelated Working line with the
  * nudge still in the composer is not proof.
  */
-const codexNudgeSubmitted = (paneText: string, text: string): boolean => {
-  const after = linesAfterCodexSentinel(paneText);
+const codexNudgeSubmitted = (paneText: string, text: string, anchor: CodexAnchor = "sentinel"): boolean => {
+  const after = anchor === "sentinel" ? linesAfterCodexSentinel(paneText) : linesFromCodexPrompt(paneText, 2);
   if (after === null) return false;
   let end = after.length;
   while (end > 0 && CODEX_FOOTER.test(after[end - 1]!.plain)) end -= 1;
@@ -218,8 +245,8 @@ const codexNudgeSubmitted = (paneText: string, text: string): boolean => {
 };
 
 /** Codex's footer names its vim mode; the `i` prelude is only needed to leave NORMAL. */
-const codexVimNormal = (paneText: string): boolean =>
-  codexTail(paneText)?.footer.some((line) => /Vim: Normal/.test(line.plain)) === true;
+const codexVimNormal = (paneText: string, anchor: CodexAnchor = "sentinel"): boolean =>
+  codexTail(paneText, anchor)?.footer.some((line) => /Vim: Normal/.test(line.plain)) === true;
 
 /** Active unquoted terminal lines, not prose discussing a past limit. Fail closed. */
 const claudeUsageWait = (plain: string): boolean => {
@@ -261,7 +288,7 @@ export const harnessPromptReadiness = (
   const plain = stripAnsi(paneText);
   // A sentinel older than the current action is stale scrollback, not evidence.
   const sentinel =
-    (agentId === "codex" ? codexSentinelAtTail(paneText) : sentinelAtTail(plain)) &&
+    (agentId === "codex" ? codexComposerIdle(paneText) : sentinelAtTail(plain)) &&
     (actionId === undefined || idleSentinelAfterAction(plain, actionId));
   const ready = (): PromptReadiness => ({ ready: true, reason: sentinel ? "idle-sentinel" : "vendor-prompt" });
   if (/trust this folder/i.test(plain)) return { ready: false, reason: "trust-dialog" };
@@ -989,10 +1016,10 @@ export class TmuxController {
     actionDigest?: string,
     reserveSend: () => void = () => undefined,
     /**
-     * Present only when this send overrules a stale lifecycle `working`
-     * record; it reports what that lifecycle record has done since.
+     * Present only when this send overrules a stale lifecycle record; it names
+     * the proof and reports what that lifecycle record has done since.
      */
-    staleOverride?: () => OverrideLifecycle
+    staleOverride?: StaleOverride
   ): Promise<NudgeOutcome> {
     if (agent.delivery !== "nudge" && agent.delivery !== "both") {
       return { status: "disabled", reason: "delivery-disabled", stage: "config" };
@@ -1006,8 +1033,14 @@ export class TmuxController {
     assertAuthority();
     const readiness = harnessPromptReadiness(paneText, agent.id, actionId);
     if (!readiness.ready) return { status: "busy", reason: readiness.reason, stage: "prompt" };
-    if (staleOverride !== undefined && readiness.reason !== "idle-sentinel") {
+    // Sentinel proof must be on screen; receipt proof needs no sentinel, so
+    // Codex's composer is located from the bottom instead of below it.
+    const anchor: CodexAnchor = staleOverride?.proof === "ready-file" ? "composer" : "sentinel";
+    if (staleOverride?.proof === "idle-sentinel" && readiness.reason !== "idle-sentinel") {
       return { status: "busy", reason: "no-idle-sentinel", stage: "prompt" };
+    }
+    if (anchor === "composer" && agent.id === "codex" && !codexComposerIdle(paneText, anchor)) {
+      return { status: "busy", reason: "composer-draft", stage: "prompt" };
     }
     if (agent.id === "antigravity") {
       await this.sleep(NUDGE_BEFORE_ANTIGRAVITY_MS);
@@ -1023,7 +1056,7 @@ export class TmuxController {
     const { prelude: resolvedPrelude, submit: submitKeys } = resolveNudgeKeys(agent, paneText);
     // On an override the composer must stay empty until the nudge is typed,
     // and Codex's `i` types itself unless vim is in NORMAL.
-    const preludeKeys = staleOverride !== undefined && agent.id === "codex" && !codexVimNormal(paneText)
+    const preludeKeys = staleOverride !== undefined && agent.id === "codex" && !codexVimNormal(paneText, anchor)
       ? [] : resolvedPrelude;
     let began = false;
     let typedText = false;
@@ -1039,22 +1072,26 @@ export class TmuxController {
         if (claudeUsageWait(stripAnsi(latest))) return { status: "busy", reason: "claude-usage-wait", stage: began ? "mid-send" : "prompt" };
       }
       if (staleOverride !== undefined) {
-        // The sentinel overrules a lifecycle veto, so it must still hold at
+        // The proof overrules a lifecycle veto, so it must still hold at
         // every key: the lifecycle record unchanged, the composer empty until
         // the nudge is typed and holding exactly the nudge after that. Once a
         // submit key is out, proof that the nudge was accepted ends the send.
         const latest = await this.capturePane(target);
         assertAuthority();
-        const lifecycle = staleOverride();
+        const lifecycle = staleOverride.lifecycle();
         if (submitting && (lifecycle === "accepted" ||
-          (agent.id === "codex" && codexNudgeSubmitted(latest, text)))) {
+          (agent.id === "codex" && codexNudgeSubmitted(latest, text, anchor)))) {
           return { status: "sent", reason: "sent", stage: "complete", detail: "accepted" };
         }
         const current = harnessPromptReadiness(latest, agent.id, actionId);
+        // Without a sentinel to lose, the composer itself is what an owner edit changes.
+        const lost = anchor === "sentinel" ? "no-idle-sentinel" : "composer-draft";
         const refused = !current.ready ? current.reason
           : lifecycle !== "unchanged" ? "lifecycle-changed"
-          : !typedText ? (current.reason === "idle-sentinel" ? null : "no-idle-sentinel")
-          : agent.id === "codex" && !codexComposerHolds(latest, text) ? "no-idle-sentinel"
+          : !typedText ? (anchor === "sentinel"
+            ? (current.reason === "idle-sentinel" ? null : lost)
+            : (agent.id === "codex" && !codexComposerIdle(latest, anchor) ? lost : null))
+          : agent.id === "codex" && !codexComposerHolds(latest, text, anchor) ? lost
           : null;
         if (refused !== null) return { status: "busy", reason: refused, stage: began ? "mid-send" : "prompt" };
       }

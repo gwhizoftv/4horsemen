@@ -23,6 +23,7 @@ import {
   setPaused,
   releaseHold,
   releaseResourceHold,
+  replaceCursor,
   StateConflictError,
   startStateSchema,
   coordinatorConfigSchema,
@@ -152,6 +153,19 @@ describe("operational state", () => {
     expect(after.amendments).toEqual([expect.objectContaining({ ...pending, outcome: "cancelled", evidenceSha: null, ballots: [] })]);
     expect(after.issueCursor).toEqual({ stepId: "R6.revise", gateId: "gate-6-consensus", round: 2 });
     expect(after.agents.codex?.actionId).toBeNull();
+  });
+
+  it("defaults a legacy cursor's accepted action to none and keeps it across later cursor updates", () => {
+    const { cursors } = initialize();
+    const legacy: Record<string, unknown> = { ...cursors.agents.claude };
+    delete legacy.lastAcceptedActionId;
+    const parsed = cursorsStateSchema.parse({ ...cursors, agents: { ...cursors.agents, claude: legacy } });
+    expect(parsed.agents.claude?.lastAcceptedActionId).toBeNull();
+    const accepted = replaceCursor(parsed, "claude", { lastAcceptedActionId: "10000000-0000-4000-8000-000000000001" });
+    const reordered = replaceCursor(accepted, "claude", {
+      actionId: "10000000-0000-4000-8000-000000000002", status: "ordered", attempt: 1
+    });
+    expect(reordered.agents.claude?.lastAcceptedActionId).toBe("10000000-0000-4000-8000-000000000001");
   });
 
   it("keeps manual and independent holds separate and requires an explicit breaker reset", () => {

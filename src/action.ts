@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, relative } from "node:path";
-import { assertNoSymlink, containedPath } from "./paths.js";
+import { assertNoSymlink, containedPath, readyReceiptPath } from "./paths.js";
 import { actionIdSchema, gitShaSchema, repositoryPathSchema } from "./protocol.js";
 import type { ChangeScopeEntry, InternalOrder, MaterializedInputs } from "./steps.js";
 
@@ -180,6 +180,23 @@ const verificationSection = (order: InternalOrder): string => {
     "Report only checks you actually ran; do not claim coordinator-owned checks. Evidence-only signals and amendment requests do not need product tests.";
 };
 
+/**
+ * The idle receipt step, shared by both submission modes. A file that is gone
+ * counts as unchanged: accepting the submission removes it, and the next
+ * order may not exist yet. The coordinator only honours a receipt naming the
+ * action it accepted, so that case cannot authorize anything else.
+ */
+const readyInstructions = (order: InternalOrder): string => `
+If it still names this action, or it is gone because coordination already
+accepted your work, write this exact line as the sole contents of
+\`${readyReceiptPath(order.completePath)}\`, then end your reply with the
+idle line from AGENTS.md:
+
+\`\`\`text
+ready ${order.actionId}
+\`\`\`
+`;
+
 const renderGitAction = (order: InternalOrder): string => {
   if (order.requiredPath === "") throw new Error("Git action requires requiredPath.");
   repositoryPathSchema.parse(order.requiredPath);
@@ -209,7 +226,7 @@ exact 40-character lowercase commit SHA as the sole contents of:
 After writing that SHA, keep this file. Before waiting for more input, re-read
 it. If \`actionId\` in the front matter has changed, execute the new instructions
 immediately; do not wait for another coordinator message.
-`;
+${readyInstructions(order)}`;
 };
 
 const renderResponseAction = (order: InternalOrder): string => {
@@ -251,7 +268,7 @@ ${inputText(order)}${eligible}${boundInputFilesSection(order.materialized)}${rep
 After writing the marker, keep this file. Before waiting for more input, re-read
 it. If \`actionId\` in the front matter has changed, execute the new instructions
 immediately; do not wait for another coordinator message.
-`;
+${readyInstructions(order)}`;
 };
 
 export const renderAction = (order: InternalOrder): string => {
@@ -340,6 +357,52 @@ export const readCompletion = (path: string): CompletionParseResult => {
 
 export const clearCompletion = (path: string): void => {
   if (existsSync(path)) unlinkSync(path);
+};
+
+/** Small enough for `ready <uuid>\n`, never a file an agent could stream into. */
+const READY_RECEIPT_MAX_BYTES = 64;
+
+/**
+ * An agent's `ready <actionId>` idle receipt. `writtenAt` is the file's mtime
+ * truncated to whole milliseconds, so ordering against hook receipts never
+ * rounds in the receipt's favour. `identity` pins the exact file that was
+ * read, so cleanup cannot remove a replacement written meanwhile.
+ */
+export type ReadyReceipt = { actionId: string; writtenAt: string; identity: string };
+
+export const parseReadyReceipt = (raw: string): string | null => {
+  const normalized = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+  const match = /^ready (\S+)$/.exec(normalized);
+  const parsed = actionIdSchema.safeParse(match?.[1]);
+  return parsed.success ? parsed.data : null;
+};
+
+/** Missing, malformed, oversized, non-regular, symlinked or racing receipts are no proof. */
+export const readReadyReceipt = (path: string, root: string): ReadyReceipt | null => {
+  try {
+    assertNoSymlink(root, path);
+    const before = lstatSync(path);
+    if (!before.isFile() || before.size > READY_RECEIPT_MAX_BYTES) return null;
+    const raw = readFileSync(path, "utf8");
+    const after = lstatSync(path);
+    const identity = (stat: typeof before) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+    if (identity(before) !== identity(after)) return null;
+    const actionId = parseReadyReceipt(raw);
+    if (actionId === null) return null;
+    return { actionId, writtenAt: new Date(Math.floor(before.mtimeMs)).toISOString(), identity: `${identity(before)}:${raw}` };
+  } catch {
+    return null;
+  }
+};
+
+/** Remove the receipt only if it is still the exact file that was observed. */
+export const clearReadyReceipt = (path: string, root: string, observed: ReadyReceipt): void => {
+  if (readReadyReceipt(path, root)?.identity !== observed.identity) return;
+  try {
+    unlinkSync(path);
+  } catch {
+    // Already gone: nothing to consume.
+  }
 };
 
 export const writeAction = (coordRoot: string, path: string, order: InternalOrder): void => {

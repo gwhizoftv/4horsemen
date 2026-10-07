@@ -120,6 +120,14 @@ export const agentLifecycleEntrySchema = z
     lastFailure: lifecycleFailureSchema.nullable().default(null),
     claudeRateLimits: claudeRateLimitsSchema.nullable().default(null),
     containment: containmentSchema.nullable().default(null),
+    /**
+     * When the last discrete hook arrived, and how many have. Unlike
+     * `lastEventAt` it advances for semantically duplicate hooks too, so a
+     * `ready` receipt is never mistaken for newer than activity that was
+     * deduplicated away. Status renders and telemetry do not count.
+     */
+    hookReceipt: z.object({ at: timestampSchema, sequence: z.number().int().nonnegative() }).strict()
+      .nullable().default(null),
     updatedAt: timestampSchema
   })
   .strict();
@@ -176,6 +184,7 @@ const emptyEntry = (now: string): AgentLifecycleEntry => ({
   lastFailure: null,
   claudeRateLimits: null,
   containment: null,
+  hookReceipt: null,
   updatedAt: now
 });
 
@@ -672,6 +681,35 @@ export const applyLifecycleObservation = (
   });
 };
 
+/** Monotonic even if the wall clock steps backward between hooks. */
+const advanceHookReceipt = (
+  previous: AgentLifecycleEntry["hookReceipt"],
+  now: string
+): NonNullable<AgentLifecycleEntry["hookReceipt"]> => ({
+  at: previous !== null && Date.parse(previous.at) > Date.parse(now) ? previous.at : now,
+  sequence: (previous?.sequence ?? 0) + 1
+});
+
+/**
+ * Whether an agent's `ready <actionId>` receipt proves it idle now: it names
+ * the action coordination last accepted from this agent (never the one being
+ * delivered), it is not future-dated, and it is strictly newer than every
+ * hook that has arrived. A tie is not proof.
+ */
+export const readyReceiptProvesIdle = (
+  entry: AgentLifecycleEntry,
+  receipt: { actionId: string; writtenAt: string },
+  lastAcceptedActionId: string | null,
+  deliveringActionId: string,
+  now: string
+): boolean => {
+  if (lastAcceptedActionId === null || receipt.actionId !== lastAcceptedActionId) return false;
+  if (receipt.actionId === deliveringActionId) return false;
+  const written = Date.parse(receipt.writtenAt);
+  if (!Number.isFinite(written) || written > Date.parse(now)) return false;
+  return [entry.hookReceipt?.at ?? null, entry.lastEventAt].every((at) => at === null || Date.parse(at) < written);
+};
+
 const semanticallyEqual = (left: AgentLifecycleEntry, right: AgentLifecycleEntry): boolean => {
   const normalize = (entry: AgentLifecycleEntry) => ({ ...entry, updatedAt: "", lastEventAt: null });
   return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
@@ -690,14 +728,20 @@ export const observeAgentLifecycleWithResult = (
     const current = state.agents[agent];
     if (current === undefined) throw new Error(`Unknown lifecycle agent ${agent}.`);
     const next = applyLifecycleObservation(current, observation, now);
-    if (next === current) return state;
+    // Receipt is recorded even where the semantic state below is left alone.
+    const hookReceipt = observation.kind === "status" || observation.kind === "telemetry"
+      ? current.hookReceipt
+      : advanceHookReceipt(current.hookReceipt, now);
+    const received = (entry: AgentLifecycleEntry): AgentLifecycleEntry => ({ ...entry, hookReceipt });
+    const unchanged = hookReceipt === current.hookReceipt ? state : replaceEntry(state, agent, received(current), now);
+    if (next === current) return unchanged;
     const expectedAfter = current.action?.injectedAt ?? current.action?.orderedAt ?? null;
     const heartbeatNeeded =
       expectedAfter !== null &&
       (current.lastEventAt === null || Date.parse(current.lastEventAt) < Date.parse(expectedAfter));
-    if (semanticallyEqual(current, next) && !heartbeatNeeded) return state;
+    if (semanticallyEqual(current, next) && !heartbeatNeeded) return unchanged;
     changed = true;
-    return replaceEntry(state, agent, next, now);
+    return replaceEntry(state, agent, received(next), now);
   });
   return { changed, state };
 };

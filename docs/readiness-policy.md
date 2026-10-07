@@ -70,6 +70,39 @@ A refusal before any key costs nothing; after a key, the existing
 `lifecycleOverride: "working"`, and stdout names the missing Stop. Lifecycle state is not rewritten; after that first send, a
 `working` record blocks exactly as before.
 
+**The ready receipt is the other admissible proof.** The sentinel can only
+count when nothing but known chrome follows it, and Claude and Cursor always
+draw their composer box and status line below the transcript, so for them it
+rarely can. Agents therefore also write `ready <actionId>` — the action they
+just completed — to a `ready` file beside `complete`, in the same mailbox
+grant, once a re-read of `action.md` shows no new work (or shows it gone
+because acceptance removed it). For a never-sent action, that receipt
+overrules a stale `working` record, or a lifecycle that was never correlated
+(`unknown`), when every condition holds:
+
+- it is a regular, small, non-symlinked file containing exactly
+  `ready <uuid>` (one optional trailing newline);
+- the UUID is the action coordination last accepted from this agent
+  (`lastAcceptedActionId`, recorded on Git or response acceptance and on an
+  accepted amendment request), never the action being delivered;
+- its mtime is not in the future and is strictly later than both
+  `lastEventAt` and the per-agent `hookReceipt`, which advances for every
+  discrete hook, including semantically duplicate ones that lifecycle
+  deduplicates. Status renders and telemetry are not hooks and do not advance
+  it, so the render that follows the agent's final line cannot spoil the
+  receipt. A tie is not proof.
+
+The receipt replaces only the sentinel requirement. The pane gate, every
+vendor veto and the per-key lifecycle check above still apply, and the
+lifecycle check also stops the send if the receipt file changes. For Codex the
+composer is found from the bottom of the pane instead of below the sentinel:
+it must be empty before the first key and hold exactly the nudge before each
+submit key, or the send stops with `composer-draft`. Receipts survive
+acceptance and any refusal; a successful first send of the next action
+consumes the exact file it observed, and is journalled with
+`readiness: "ready-file"`. Legacy cursors carry no accepted action, so no
+receipt matches until the next acceptance.
+
 ## Lost delivery is retried only on positive proof
 
 A send that was never accepted may be retried when, and only when,
@@ -95,6 +128,14 @@ Pane gate (`GateReason`):
 | `input-off` | the pane has input disabled |
 | `foreground-mismatch` | the foreground process is not the agent's harness (`detail` names it) |
 
+Right after `coord start` opens the windows, the first delivery attempt usually
+reports `foreground-mismatch (bash)`: tmux has started the launcher shell, and
+the harness has not replaced it as the pane's foreground process yet. The
+refusal is correct and costs nothing, because nothing has been typed; the next
+tick delivers once the harness is up. It is unrelated to idle detection. A
+mismatch that persists means the harness failed to start or exited, and is
+never relaxed: a nudge typed into a shell would run as a command.
+
 Prompt readiness (`PromptBlockedReason`):
 
 | Code | What was observed |
@@ -106,7 +147,8 @@ Prompt readiness (`PromptBlockedReason`):
 | `antigravity-verify-overlay` | the account-verify overlay is up and discards keys |
 | `antigravity-no-prompt` | splash or no prompt yet |
 | `codex-turn-chrome` | Codex's `Working (… esc to interrupt)` status line is up |
-| `no-idle-sentinel` | lifecycle reports `working` and the pane shows no current sentinel to overrule it, or the composer no longer holds exactly the nudge |
+| `no-idle-sentinel` | lifecycle reports `working`, no ready receipt proves the agent idle, and the pane shows no current sentinel at its tail to overrule it, or the composer no longer holds exactly the nudge |
+| `composer-draft` | on a ready-receipt override, the Codex composer was not empty before typing or did not hold exactly the nudge before submitting |
 | `lifecycle-changed` | lifecycle hooks reported new activity while an override send was being prepared |
 
 In-flight status words (`Thinking`, `Working`, `Generating`, `Running`) match

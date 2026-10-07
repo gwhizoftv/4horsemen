@@ -770,11 +770,11 @@ describe("tmux boundary", () => {
     const action = "11111111-2222-3333-4444-555555555555";
     // A minimal Codex: typed text lands in the composer; `onCapture` lets a test change the pane between keys.
     const attempt = async (options: {
-      body?: string; vim?: string; submitOnCtrlJ?: boolean;
+      body?: string; draft?: string; vim?: string; submitOnCtrlJ?: boolean; proof?: "idle-sentinel" | "ready-file";
       lifecycle?: (check: number) => "unchanged" | "accepted" | "changed";
       onCapture?: (index: number, pane: { body: string; draft: string }) => void;
     } = {}) => {
-      const pane = { body: options.body ?? `• ${COORD_IDLE_SENTINEL}`, draft: "" };
+      const pane = { body: options.body ?? `• ${COORD_IDLE_SENTINEL}`, draft: options.draft ?? "" };
       const keys: string[] = [];
       let captures = 0;
       const controller = new TmuxController(async (args) => {
@@ -795,7 +795,7 @@ describe("tmux boundary", () => {
       }, null, null, null, noopSleep);
       let checks = 0;
       const outcome = await controller.nudge(1, agent, "/a", undefined, action, undefined, undefined,
-        () => options.lifecycle?.(checks++) ?? "unchanged");
+        { proof: options.proof ?? "idle-sentinel", lifecycle: () => options.lifecycle?.(checks++) ?? "unchanged" });
       return { outcome, keys };
     };
     expect(await attempt({ body: "• done" })).toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "prompt" }, keys: [] });
@@ -827,6 +827,21 @@ describe("tmux boundary", () => {
       .toMatchObject({ outcome: { status: "sent", detail: "idle-sentinel" }, keys: ["-l", "C-j"] });
     expect(await attempt({ lifecycle: (check) => (check === 2 ? "accepted" : "unchanged") }))
       .toMatchObject({ outcome: { status: "sent", detail: "idle-sentinel" }, keys: ["-l", "C-j"] });
+
+    // A ready receipt needs no sentinel on screen; the composer is found from the bottom instead.
+    const receipt = { proof: "ready-file" as const, body: "• done" };
+    expect(await attempt(receipt)).toMatchObject({ outcome: { status: "sent" }, keys: ["-l", "C-j", "C-m"] });
+    expect(await attempt({ ...receipt, vim: "Normal" })).toMatchObject({ outcome: { status: "sent" }, keys: ["i", "-l", "C-j", "C-m"] });
+    // An owner draft already in the composer receives no key at all.
+    expect(await attempt({ ...receipt, draft: "owner draft" }))
+      .toMatchObject({ outcome: { status: "busy", reason: "composer-draft", stage: "prompt" }, keys: [] });
+    expect(await attempt({ ...receipt, onCapture: (index, pane) => { if (index === 2) pane.draft += " and more"; } }))
+      .toMatchObject({ outcome: { status: "busy", reason: "composer-draft", stage: "mid-send" }, keys: ["-l"] });
+    expect(await attempt({ ...receipt, lifecycle: () => "changed" }))
+      .toMatchObject({ outcome: { status: "busy", reason: "lifecycle-changed", stage: "prompt" }, keys: [] });
+    // C-j already submitted it: no fallback C-m into the new turn.
+    expect(await attempt({ ...receipt, submitOnCtrlJ: true }))
+      .toMatchObject({ outcome: { status: "sent" }, keys: ["-l", "C-j"] });
   });
 
   it("reports which pane predicate deferred a delivery", async () => {

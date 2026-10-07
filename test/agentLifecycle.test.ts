@@ -14,7 +14,8 @@ import {
   markObservabilityDegraded,
   observeAgentLifecycleWithResult,
   orderAgentAction,
-  readAgentLifecycle
+  readAgentLifecycle,
+  readyReceiptProvesIdle
 } from "../src/agentLifecycle.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 
@@ -429,5 +430,41 @@ describe("agent lifecycle policy", () => {
     expect(first.changed).toBe(true);
     expect(second.changed).toBe(false);
     expect(second.state.stateRevision).toBe(first.state.stateRevision);
+  });
+
+  it("records every discrete hook's arrival, even a deduplicated one, for ready-receipt freshness", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
+    roots.push(root);
+    const paths = issueRuntimePaths(root, 1);
+    createIssueRuntime(paths, ["claude"]);
+    initializeAgentLifecycle(paths, ["claude"], now);
+    const prompt = { kind: "prompt-submitted" as const, eventName: "UserPromptSubmit", sessionId: "s-1", turnId: "t-1" };
+    const first = observeAgentLifecycleWithResult(paths, "claude", prompt, now);
+    const duplicate = observeAgentLifecycleWithResult(paths, "claude", prompt, later);
+    // Semantics are unchanged, so the journal sees no change, but the arrival is kept.
+    expect(duplicate.changed).toBe(false);
+    expect(duplicate.state.agents.claude).toMatchObject({
+      execution: "working", lastEventAt: first.state.agents.claude?.lastEventAt, hookReceipt: { at: later, sequence: 2 }
+    });
+    const entry = duplicate.state.agents.claude!;
+    const accepted = "10000000-0000-4000-8000-000000000001";
+    const delivering = "10000000-0000-4000-8000-000000000002";
+    const receipt = (writtenAt: string) => ({ actionId: accepted, writtenAt });
+    const afterLater = new Date(Date.parse(later) + 1).toISOString();
+    // Written before the deduplicated hook: no longer proof. A tie is not proof either.
+    expect(readyReceiptProvesIdle(entry, receipt(now), accepted, delivering, afterLater)).toBe(false);
+    expect(readyReceiptProvesIdle(entry, receipt(later), accepted, delivering, afterLater)).toBe(false);
+    expect(readyReceiptProvesIdle(entry, receipt(afterLater), accepted, delivering, afterLater)).toBe(true);
+    // Only for the accepted action, never the one being delivered, never future-dated.
+    expect(readyReceiptProvesIdle(entry, receipt(afterLater), delivering, delivering, afterLater)).toBe(false);
+    expect(readyReceiptProvesIdle(entry, receipt(afterLater), null, delivering, afterLater)).toBe(false);
+    expect(readyReceiptProvesIdle(entry, receipt(afterLater), accepted, delivering, later)).toBe(false);
+
+    // A status-line render or telemetry is not a hook arrival.
+    const telemetry = observeAgentLifecycleWithResult(paths, "claude", {
+      kind: "telemetry", eventName: "status-line", sessionId: "s-1",
+      rateLimits: { fiveHour: null, sevenDay: null }
+    }, afterLater);
+    expect(telemetry.state.agents.claude?.hookReceipt).toEqual({ at: later, sequence: 2 });
   });
 });

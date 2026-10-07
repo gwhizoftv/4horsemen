@@ -1,8 +1,17 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseAction, parseCompletion, readAction, renderAction, writeAction } from "../src/action.js";
+import {
+  clearReadyReceipt,
+  parseAction,
+  parseCompletion,
+  parseReadyReceipt,
+  readAction,
+  readReadyReceipt,
+  renderAction,
+  writeAction
+} from "../src/action.js";
 import type { InternalOrder } from "../src/steps.js";
 
 const roots: string[] = [];
@@ -236,6 +245,60 @@ body
       actionId
     });
     expect(parseCompletion("response not-a-uuid").status).toBe("malformed");
+  });
+
+  it("tells the agent where and when to write its ready receipt in both modes", () => {
+    const actionId = "b2337d85-6617-4e9f-8ace-901453764aa4";
+    const ready = join("/runtime", "completes", "issue-1", "codex", "ready");
+    for (const raw of [
+      renderAction(order("/runtime")),
+      renderAction({ ...order("/runtime"), stepId: "R3.plan-ballot", submissionMode: "response", requiredPath: "",
+        responsePath: `/runtime/issue-1/agents/codex/responses/${actionId}.json` })
+    ]) {
+      expect(raw).toContain(`\`${ready}\``);
+      expect(raw).toContain(`ready ${actionId}`);
+      expect(raw).toContain("or it is gone because coordination already");
+      expect(raw.indexOf(`ready ${actionId}`)).toBeGreaterThan(raw.indexOf("re-read"));
+      expect(raw).not.toContain("nudge");
+    }
+  });
+});
+
+describe("ready receipt", () => {
+  const actionId = "b2337d85-6617-4e9f-8ace-901453764aa4";
+
+  it.each(["", "ready", `ready  ${actionId}`, ` ready ${actionId}`, `ready ${actionId} `, `Ready ${actionId}`,
+    `ready ${actionId}\n\n`, `ready ${actionId}\nextra`, "ready not-a-uuid", `response ${actionId}`])(
+    "rejects malformed receipt %j", (raw) => expect(parseReadyReceipt(raw)).toBeNull());
+
+  it("reads only a small regular file and clears only the exact file it read", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-ready-"));
+    roots.push(root);
+    const path = join(root, "ready");
+    expect(parseReadyReceipt(`ready ${actionId}\n`)).toBe(actionId);
+    expect(readReadyReceipt(path, root)).toBeNull();
+
+    writeFileSync(path, `ready ${actionId}\n`);
+    utimesSync(path, new Date("2026-10-07T10:00:00.500Z"), new Date("2026-10-07T10:00:00.500Z"));
+    const observed = readReadyReceipt(path, root);
+    expect(observed).toMatchObject({ actionId, writtenAt: "2026-10-07T10:00:00.500Z" });
+
+    // A replacement written after the read survives the cleanup of what was read.
+    writeFileSync(path, `ready ${"c2337d85-6617-4e9f-8ace-901453764aa4"}`);
+    clearReadyReceipt(path, root, observed!);
+    expect(existsSync(path)).toBe(true);
+    clearReadyReceipt(path, root, readReadyReceipt(path, root)!);
+    expect(existsSync(path)).toBe(false);
+
+    writeFileSync(path, `ready ${actionId}${" ".repeat(100)}`);
+    expect(readReadyReceipt(path, root)).toBeNull();
+    unlinkSync(path);
+    mkdirSync(path);
+    expect(readReadyReceipt(path, root)).toBeNull();
+    rmSync(path, { recursive: true });
+    writeFileSync(join(root, "elsewhere"), `ready ${actionId}`);
+    symlinkSync(join(root, "elsewhere"), path);
+    expect(readReadyReceipt(path, root)).toBeNull();
   });
 });
 

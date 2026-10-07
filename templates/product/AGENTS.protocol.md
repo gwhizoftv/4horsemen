@@ -75,8 +75,13 @@ your `action.md`. If `actionId` in the front matter has changed, execute the new
 instructions immediately; do not wait for another coordinator message. This
 re-read applies to both Git-mode and response-mode actions.
 
-If that re-read shows the same `actionId` — there is no new work yet — end your
-reply with this exact line, on its own, with nothing after it:
+If that re-read shows the same `actionId`, or `action.md` is gone because
+coordination already accepted your work — there is no new work yet — first
+write `ready <actionId>` (the action you just completed) as the sole contents
+of the `ready` file next to `complete`; your action names its exact path. That
+file is the durable proof that you finished and are waiting, so write it only
+then, never while work is in progress. Then end your reply with this exact
+line, on its own, with nothing after it:
 
 ```
 COORD-IDLE: waiting for the next coordinator action file
