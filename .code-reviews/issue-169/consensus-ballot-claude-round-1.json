@@ -1,0 +1,14 @@
+{
+  "actionId": "51433fdd-4402-4eb3-87d3-b2485643a82b",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "a24409bc0d65a23ee3598a3cdad6838074dd228e6d99e658ab9c630421a3fd4b",
+  "issue": 169,
+  "issueSessionId": "issue-169:cd2798983651198c865cd37c494e8ac38062c109",
+  "protocolVersion": 2,
+  "rationale": "The revision resolves the comparison's remaining finding by keeping identical fully-idle Antigravity status renders deduplicated (no state rewrite, no hook-receipt advance, so an idle redraw mid-send no longer revokes ready) while repeated working/unknown/pending/background reports and session changes still revoke it, with run-loop and lifecycle tests covering both paths and the amendment UUID binding.",
+  "responseSha256": "616dc07ac3c9eb7c141c899c332d638bec4b4508be11d9bdcc825e8a5730f697",
+  "revisionCommitSha": "e30e3755eaca2e35ffd091ca96f1708399a9ca3c",
+  "round": 1
+}

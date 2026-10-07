@@ -1,0 +1,14 @@
+{
+  "actionId": "c6f040b3-d542-41e2-b6ee-0d125e7b45fc",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "a24409bc0d65a23ee3598a3cdad6838074dd228e6d99e658ab9c630421a3fd4b",
+  "issue": 169,
+  "issueSessionId": "issue-169:cd2798983651198c865cd37c494e8ac38062c109",
+  "protocolVersion": 2,
+  "rationale": "Codex revision keeps identity-safe ready consume and never-sent gating, and idle status no longer advances the hook-receipt floor that would stale Claude/Cursor receipts after COORD-IDLE.",
+  "responseSha256": "60566dab7a8bc4c392f6fa9b0d9f9771c187434615fdda414bc43d7065f7a722",
+  "revisionCommitSha": "e30e3755eaca2e35ffd091ca96f1708399a9ca3c",
+  "round": 1
+}
