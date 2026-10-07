@@ -1,0 +1,29 @@
+{
+  "protocolVersion": 1,
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "agent": "codex",
+  "artifact": "plan-amendment-request",
+  "actionId": "75acef6f-8d8f-453b-87aa-db48df6a61ac",
+  "inputSetHash": "8d431c08efcc822e7f0959dd6f557dfd207b3c8b7e9173f31ca66e41568ed881",
+  "scopeHash": "14d2dc2cb4f1915d449da3f97400c4fc7eccf3faa5918f0ea48642adbacdd3d8",
+  "explanation": "The selected plan treats missing Stop callbacks and stale shared app-server state as vendor concerns, but the owner included issue 174. The repository also drops prompt-less Stop events when multiple issues remain active, or routes an unknown session to a sole unrelated issue; stale COORD_ISSUE precedes prompt identity. Pane recovery alone leaves those original failures intact. Add session-correlated hook routing and isolated Codex launch using the installed CLI-supported --no-daemon flag, with focused regression tests in existing files. Keep the selected delivery recovery and its composer/race corrections within the already approved files; do not fabricate idle events, relax sandbox grants, or terminate a shared daemon.",
+  "additionalPaths": [
+    {
+      "path": "src/agentEvent.ts",
+      "reason": "This owns issue resolution for lifecycle callbacks. Resolve prompt-less callbacks through an unambiguous existing session binding, validate explicit/environment identities against prompt and session evidence, and reject ambiguous or unrelated fallback routing so a real Stop reaches its own issue without updating another issue."
+    },
+    {
+      "path": "test/agentEvent.test.ts",
+      "reason": "Extend the existing runtime fixture to reproduce a prompt-bound Codex session with a Stop lacking issue environment while another issue remains active. Cover stale environment, ambiguous session matches and an unknown session with a sole unrelated active issue, asserting no cross-issue lifecycle mutation."
+    },
+    {
+      "path": "scripts/lib/launcher.sh",
+      "reason": "This is the canonical generated Codex launcher. Add --no-daemon to avoid attaching the new issue to a shared server with stale issue environment or an incompatible CLI version, as reported in issue 174. Preserve the existing approval policy, workspace-write sandbox and exact per-issue grants; do not kill shared processes."
+    },
+    {
+      "path": "test/install.test.ts",
+      "reason": "Extend existing generated-launcher execution tests to assert Codex receives --no-daemon while retaining its current issue environment, sandbox and narrowly scoped grants, including manual launch. This verifies the actual shell argv instead of merely matching template text."
+    }
+  ]
+}
