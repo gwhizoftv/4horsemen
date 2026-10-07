@@ -1,0 +1,29 @@
+{
+  "actionId": "80cdfdc9-e407-43ed-bf9c-5211969e021f",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "a92952226156e51a12144a8425c10d5be4b136fd",
+      "path": ".signals/issue-169/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "d6fd390286105a45df6420b062b7b9e817302c5a",
+      "path": ".signals/issue-169/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "86b34cf1f4c5f9fbe318dc4aaed349b6dac601f5",
+      "path": ".signals/issue-169/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "c6e8f72cc87848d96ecd47e0a41b83d0f37aa4059409a32d708de498293e8fb0",
+  "issue": 169,
+  "issueSessionId": "issue-169:cd2798983651198c865cd37c494e8ac38062c109",
+  "protocolVersion": 2,
+  "rationale": "Claude excludes both status and telemetry from the hook-receipt floor, identity-checks ready consumption, and never deletes ready on amendment retirement—the defects that most directly break the handshake in the cursor and (for status) codex pins.",
+  "responseSha256": "508b1f7a5c286290317c081f95c7968859a0567291ded21b9f4483d38d44cb5b"
+}

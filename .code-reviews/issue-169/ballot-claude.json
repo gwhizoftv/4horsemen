@@ -1,0 +1,29 @@
+{
+  "actionId": "00e8c6b1-7fad-40f7-8c51-8004aaa182f1",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "a92952226156e51a12144a8425c10d5be4b136fd",
+      "path": ".signals/issue-169/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "d6fd390286105a45df6420b062b7b9e817302c5a",
+      "path": ".signals/issue-169/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "86b34cf1f4c5f9fbe318dc4aaed349b6dac601f5",
+      "path": ".signals/issue-169/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "c6e8f72cc87848d96ecd47e0a41b83d0f37aa4059409a32d708de498293e8fb0",
+  "issue": 169,
+  "issueSessionId": "issue-169:cd2798983651198c865cd37c494e8ac38062c109",
+  "protocolVersion": 2,
+  "rationale": "Codex's pin is the most complete and best-tested implementation of the selected plan (real acceptance, restart, amendment binding, capture-failure refusal and full sentinel-free Codex composer checks), needing only the fix to stop counting Antigravity status renders as hook arrivals, whereas Cursor's writes hook state into cursors.json and breaks Codex draft and submission safety, and Claude's lets a failed pane capture through.",
+  "responseSha256": "097d476f45e2136e3543abb48a9092ede6fefd6535cdbb183ae2a8473b25503a"
+}
