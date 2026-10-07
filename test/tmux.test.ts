@@ -737,6 +737,40 @@ describe("tmux boundary", () => {
     expect(idleSentinelAfterAction("no sentinel here", action)).toBe(false);
   });
 
+  it("vetoes Codex in-flight turn chrome", () => {
+    const pane = [
+      "• earlier transcript",
+      "• Working (2m 27s • esc to interrupt)",
+      "› Ask Codex to do anything",
+      "? for shortcuts",
+      "Context 71% left"
+    ].join("\n");
+    expect(harnessPromptReadiness(pane, "codex")).toEqual({
+      ready: false,
+      reason: "codex-turn-chrome"
+    });
+  });
+
+  it("recognizes a Codex bullet COORD-IDLE sentinel and fails closed on unknown trailing lines", () => {
+    const action = "11111111-2222-3333-4444-555555555555";
+    const idle = [
+      `• ${COORD_IDLE_SENTINEL}`,
+      "› Ask Codex to do anything",
+      "? for shortcuts",
+      "Context 71% left"
+    ].join("\n");
+    expect(harnessPromptReadiness(idle, "codex", action)).toEqual({
+      ready: true,
+      reason: "idle-sentinel"
+    });
+    expect(
+      harnessPromptReadiness(`${idle}\n  2. No, continue without the server`, "codex", action)
+    ).toEqual({ ready: true, reason: "vendor-prompt" });
+    expect(
+      harnessPromptReadiness(`${idle}\nRead and execute ${action}`, "codex", action)
+    ).toEqual({ ready: true, reason: "vendor-prompt" });
+  });
+
   it("reports which pane predicate deferred a delivery", async () => {
     const gate = async (fields: string) => {
       const controller = new TmuxController(async (args) => {

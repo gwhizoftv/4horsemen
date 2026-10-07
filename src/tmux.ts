@@ -75,7 +75,9 @@ export type PromptBlockedReason =
   | "cursor-turn-chrome"
   | "antigravity-turn-chrome"
   | "antigravity-verify-overlay"
-  | "antigravity-no-prompt";
+  | "antigravity-no-prompt"
+  | "codex-turn-chrome"
+  | "no-idle-sentinel";
 
 export type PromptReadiness =
   | { ready: true; reason: "vendor-prompt" | "idle-sentinel" }
@@ -103,11 +105,51 @@ const STATUS_SUFFIX = String.raw`(?:\.\.\.|\u2026|\s+for\s+\d|\s*\(\d)`;
 const inFlightStatusLine = (plain: string, words: string): boolean =>
   new RegExp(String.raw`^${SPINNER_PREFIX}(?:${words})${STATUS_SUFFIX}`, "im").test(plain);
 
-/** True when the sentinel is the last thing the pane rendered. */
-const sentinelAtTail = (plain: string): boolean => {
-  const lines = plain.split("\n").map((line) => line.trim()).filter((line) => line !== "");
-  return lines[lines.length - 1] === COORD_IDLE_SENTINEL;
+const nonEmptyPaneLines = (plain: string): string[] =>
+  plain.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+
+/** Codex composer / footer chrome allowed after a bullet `COORD-IDLE` transcript line. */
+const codexTrailingAllowlisted = (line: string): boolean =>
+  line.startsWith("›") ||
+  /^\?\s+for shortcuts/.test(line) ||
+  /^Context \d+% left/.test(line) ||
+  /\d+% context left/.test(line);
+
+/**
+ * True when the sentinel proves present-tense idleness at the pane tail.
+ *
+ * Codex prints the sentinel as a bullet transcript item (`• COORD-IDLE: …`)
+ * above the composer and footer, so those trailing lines are allowlisted.
+ * Every other agent still requires an exact last-line match.
+ */
+const sentinelAtTail = (plain: string, agentId?: string): boolean => {
+  const lines = nonEmptyPaneLines(plain);
+  if (agentId !== "codex") return lines[lines.length - 1] === COORD_IDLE_SENTINEL;
+  let sentinelIndex = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i]!.replace(/^•\s*/, "") === COORD_IDLE_SENTINEL) {
+      sentinelIndex = i;
+      break;
+    }
+  }
+  if (sentinelIndex < 0) return false;
+  let composers = 0;
+  for (let i = sentinelIndex + 1; i < lines.length; i += 1) {
+    const line = lines[i]!;
+    if (!codexTrailingAllowlisted(line)) return false;
+    if (line.startsWith("›")) {
+      composers += 1;
+      if (composers > 1) return false;
+    }
+  }
+  return true;
 };
+
+/** Codex in-flight chrome: `• Working (2m 27s • esc to interrupt)`. */
+const codexTurnChrome = (plain: string): boolean =>
+  nonEmptyPaneLines(plain)
+    .slice(-8)
+    .some((line) => /^[\s•\u2800-\u28ff]*Working \(.*esc to interrupt/i.test(line));
 
 /** Active unquoted terminal lines, not prose discussing a past limit. Fail closed. */
 const claudeUsageWait = (plain: string): boolean => {
@@ -149,7 +191,8 @@ export const harnessPromptReadiness = (
   const plain = stripAnsi(paneText);
   // A sentinel older than the current action is stale scrollback, not evidence.
   const sentinel =
-    sentinelAtTail(plain) && (actionId === undefined || idleSentinelAfterAction(plain, actionId));
+    sentinelAtTail(plain, agentId) &&
+    (actionId === undefined || idleSentinelAfterAction(plain, actionId));
   const ready = (): PromptReadiness => ({ ready: true, reason: sentinel ? "idle-sentinel" : "vendor-prompt" });
   if (/trust this folder/i.test(plain)) return { ready: false, reason: "trust-dialog" };
   switch (agentId) {
@@ -178,7 +221,7 @@ export const harnessPromptReadiness = (
         ? { ready: true, reason: "idle-sentinel" }
         : { ready: false, reason: "antigravity-no-prompt" };
     case "codex":
-      // Codex accepts keys once the process is up; avoid blocking on transient UI.
+      if (codexTurnChrome(plain)) return { ready: false, reason: "codex-turn-chrome" };
       return ready();
     default:
       return ready();
@@ -873,7 +916,8 @@ export class TmuxController {
     assertAuthority: () => void = () => undefined,
     actionId?: string,
     actionDigest?: string,
-    reserveSend: () => void = () => undefined
+    reserveSend: () => void = () => undefined,
+    requireIdleSentinel = false
   ): Promise<NudgeOutcome> {
     if (agent.delivery !== "nudge" && agent.delivery !== "both") {
       return { status: "disabled", reason: "delivery-disabled", stage: "config" };
@@ -887,6 +931,9 @@ export class TmuxController {
     assertAuthority();
     const readiness = harnessPromptReadiness(paneText, agent.id, actionId);
     if (!readiness.ready) return { status: "busy", reason: readiness.reason, stage: "prompt" };
+    if (requireIdleSentinel && readiness.reason !== "idle-sentinel") {
+      return { status: "busy", reason: "no-idle-sentinel", stage: "prompt" };
+    }
     if (agent.id === "antigravity") {
       await this.sleep(NUDGE_BEFORE_ANTIGRAVITY_MS);
       assertAuthority();

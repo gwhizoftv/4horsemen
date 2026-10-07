@@ -41,6 +41,20 @@ and the sentinel counts only when it appears *after* the current action id in
 the captured buffer — the 40-line capture keeps the sentinel from the previous
 action on screen long after it stopped being true.
 
+**First-send exception.** Before an action's first successful send
+(`delivery: "ordered"`, `injectedAt: null`) there is nothing to duplicate. A
+lifecycle `execution: "working"` record may therefore be overruled when the
+pane shows a tail `COORD-IDLE` sentinel that passes every scrape veto. That
+send is journalled with `lifecycleOverride: "working"`. Lifecycle state is not
+rewritten to idle; after the first send, duplicate protection is unchanged.
+
+Codex prints the sentinel as a bullet transcript item (`• COORD-IDLE: …`) above
+the composer and footer. Recognition accepts that shape when every later
+non-empty line is on a closed allowlist: at most one `›` composer line, plus
+footer lines matching `? for shortcuts`, `Context N% left`, or `N% context
+left`. Any other trailing line (another transcript bullet, a second composer,
+a numbered modal, an app-server prompt) means no sentinel proof.
+
 ## Lost delivery is retried only on positive proof
 
 A send that was never accepted may be retried when, and only when,
@@ -76,6 +90,8 @@ Prompt readiness (`PromptBlockedReason`):
 | `antigravity-turn-chrome` | a turn is in flight |
 | `antigravity-verify-overlay` | the account-verify overlay is up and discards keys |
 | `antigravity-no-prompt` | splash or no prompt yet |
+| `codex-turn-chrome` | Codex shows in-flight `Working (… esc to interrupt)` chrome |
+| `no-idle-sentinel` | first-send override required a COORD-IDLE sentinel and the pane lacked one |
 
 In-flight status words (`Thinking`, `Working`, `Generating`, `Running`) match
 only at the start of a line, after whitespace or a spinner glyph, and only with

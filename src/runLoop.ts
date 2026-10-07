@@ -842,6 +842,9 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "antigravity-turn-chrome": "the pane shows in-flight turn chrome",
   "antigravity-verify-overlay": "the account-verify overlay is up and discards keystrokes",
   "antigravity-no-prompt": "no idle prompt is visible in the pane",
+  "codex-turn-chrome": "the pane shows in-flight turn chrome",
+  "no-idle-sentinel":
+    "lifecycle hooks report the agent mid-turn and its pane shows no COORD-IDLE line since its last action",
   "unmatched-action": "the recorded lifecycle action does not match the current one",
   "workflow-complete": "this agent already published its work for this action",
   "pending-input": "the agent has queued input of its own",
@@ -1086,7 +1089,16 @@ export class CoordinatorRunLoop {
     if (safety.reserved) return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends}`);
     // A reissue cannot interrupt ongoing/background work either.
     const entry = readAgentLifecycle(this.paths).agents[agent];
-    if (entry?.execution === "working" || entry?.backgroundActive === true || (entry?.pendingInputCount ?? 0) > 0) return cursors;
+    // Before the first send there is nothing to duplicate: a stale `working`
+    // record may be overruled by a fresh COORD-IDLE sentinel (see readiness policy).
+    const staleWorking =
+      entry?.execution === "working" &&
+      entry.action !== null &&
+      entry.action.actionId === actionId &&
+      entry.action.delivery === "ordered" &&
+      entry.action.injectedAt === null;
+    if (entry?.backgroundActive === true || (entry?.pendingInputCount ?? 0) > 0) return cursors;
+    if (entry?.execution === "working" && !staleWorking) return cursors;
     if (safety.sends >= 4) return this.hold(cursors, agent, "nudge-loop", `${actionId}:budget:${safety.lastSendAt}`);
     const delay = NUDGE_REPEAT_DELAYS_MS[safety.sends - 1] ?? 0;
     if (safety.lastSendAt !== null && Date.parse(this.now()) - Date.parse(safety.lastSendAt) < delay) return cursors;
@@ -1102,7 +1114,7 @@ export class CoordinatorRunLoop {
     let result;
     try {
       result = await this.tmux.nudge(start.issue, config, agentRuntimePaths(this.paths, agent).action,
-        () => this.authority(cursors), actionId, actionDigest, reserve);
+        () => this.authority(cursors), actionId, actionDigest, reserve, staleWorking);
     } catch (error) {
       this.authority(cursors);
       if (error instanceof StateConflictError) throw error;
@@ -1119,9 +1131,20 @@ export class CoordinatorRunLoop {
     }
     if (result.status === "sent") {
       markActionInjected(this.paths, agent, actionId, actionDigest, sentAt);
+      if (staleWorking) {
+        this.log(
+          `${agent}: lifecycle still reports mid-turn but the pane printed COORD-IDLE, so the action was delivered; ` +
+            `its Stop hook has not reported — check vendor hook trust (for Codex, /hooks)`
+        );
+      }
       return this.mutate(cursors, (current) => {
         appendJournal(this.paths, { type: "nudged", agent, actionId,
-          details: { actionDigest, readiness: result.detail ?? "vendor-prompt", [reason]: true } }, this.now());
+          details: {
+            actionDigest,
+            readiness: result.detail ?? "vendor-prompt",
+            [reason]: true,
+            ...(staleWorking ? { lifecycleOverride: "working" } : {})
+          } }, this.now());
         return { ...current, actionSafety: { ...current.actionSafety, [agent]: {
           ...current.actionSafety[agent]!, reserved: false, lastSendAt: this.now()
         } } };
@@ -1684,62 +1707,69 @@ export class CoordinatorRunLoop {
       if (entry.action?.delivery !== "ordered" || entry.action.retryableInjectionAt === null) {
         const decision = decideLifecycleNudge(entry, actionId, actionDigest);
         if (decision.kind === "wait") {
-          const injected = entry.action;
-          const observedAfterInjection =
-            injected !== null &&
-            injected !== undefined &&
-            injected.injectedAt !== null &&
-            entry.lastEventAt !== null &&
-            Date.parse(entry.lastEventAt) >= Date.parse(injected.injectedAt);
-          const tmux = this.tmux;
-          // A send that was never accepted and whose delivery delay has elapsed can be
-          // retried, but only on the positive scrape proof below. Elapsed time
-          // and a missing `complete` never authorize a retry on their own.
-          const deliveryDelayElapsed =
-            injected !== null &&
-            injected !== undefined &&
-            injected.injectedAt !== null &&
-            Date.parse(this.now()) - Date.parse(injected.injectedAt) >= this.lostDeliveryDelayMs;
-          const canProveLostInjection =
-            tmux !== null &&
-            injected?.delivery === "injected" &&
-            injected.turnId === null &&
-            (entry.pendingInputCount ?? 0) === 0 &&
-            entry.backgroundActive !== true &&
-            ((entry.execution === "queued" && observedAfterInjection) ||
-              (entry.execution === "unknown" && deliveryDelayElapsed && !observedAfterInjection) ||
-              (entry.execution === "idle" &&
-                decision.code === "idle-transition-already-used" &&
-                deliveryDelayElapsed));
-          if (
-            !canProveLostInjection ||
-            tmux === null ||
-            !(await tmux.actionAbsentAtReadyPrompt(start.issue, config, actionId, () => this.authority(cursors)))
-          ) {
-            return this.journalDeferral(
-              start,
-              cursors,
-              agent,
-              actionId,
-              actionDigest,
-              "lifecycle",
-              decision.code,
-              deferralRationale(decision.code)
+          // Never-sent + stale working: deliver enforces COORD-IDLE; do not defer here.
+          const neverSentWorking =
+            decision.code === "working" &&
+            entry.action?.delivery === "ordered" &&
+            entry.action.injectedAt === null;
+          if (!neverSentWorking) {
+            const injected = entry.action;
+            const observedAfterInjection =
+              injected !== null &&
+              injected !== undefined &&
+              injected.injectedAt !== null &&
+              entry.lastEventAt !== null &&
+              Date.parse(entry.lastEventAt) >= Date.parse(injected.injectedAt);
+            const tmux = this.tmux;
+            // A send that was never accepted and whose delivery delay has elapsed can be
+            // retried, but only on the positive scrape proof below. Elapsed time
+            // and a missing `complete` never authorize a retry on their own.
+            const deliveryDelayElapsed =
+              injected !== null &&
+              injected !== undefined &&
+              injected.injectedAt !== null &&
+              Date.parse(this.now()) - Date.parse(injected.injectedAt) >= this.lostDeliveryDelayMs;
+            const canProveLostInjection =
+              tmux !== null &&
+              injected?.delivery === "injected" &&
+              injected.turnId === null &&
+              (entry.pendingInputCount ?? 0) === 0 &&
+              entry.backgroundActive !== true &&
+              ((entry.execution === "queued" && observedAfterInjection) ||
+                (entry.execution === "unknown" && deliveryDelayElapsed && !observedAfterInjection) ||
+                (entry.execution === "idle" &&
+                  decision.code === "idle-transition-already-used" &&
+                  deliveryDelayElapsed));
+            if (
+              !canProveLostInjection ||
+              tmux === null ||
+              !(await tmux.actionAbsentAtReadyPrompt(start.issue, config, actionId, () => this.authority(cursors)))
+            ) {
+              return this.journalDeferral(
+                start,
+                cursors,
+                agent,
+                actionId,
+                actionDigest,
+                "lifecycle",
+                decision.code,
+                deferralRationale(decision.code)
+              );
+            }
+            this.authority(cursors);
+            markInjectedActionAbsent(this.paths, agent, actionId, actionDigest, this.now());
+            appendJournal(
+              this.paths,
+              {
+                type: "agent-lifecycle",
+                agent,
+                actionId,
+                details: { actionDigest, event: "prompt-ready-action-absent", execution: entry.execution }
+              },
+              this.now()
             );
+            this.verbose(`retrying ${agent}: ready prompt no longer contains action ${actionId}`);
           }
-          this.authority(cursors);
-          markInjectedActionAbsent(this.paths, agent, actionId, actionDigest, this.now());
-          appendJournal(
-            this.paths,
-            {
-              type: "agent-lifecycle",
-              agent,
-              actionId,
-              details: { actionDigest, event: "prompt-ready-action-absent", execution: entry.execution }
-            },
-            this.now()
-          );
-          this.verbose(`retrying ${agent}: ready prompt no longer contains action ${actionId}`);
         }
       }
     }

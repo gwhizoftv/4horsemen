@@ -40,7 +40,7 @@ import {
   releaseHold,
   writeCursorsState
 } from "../src/state.js";
-import { TmuxController } from "../src/tmux.js";
+import { COORD_IDLE_SENTINEL, TmuxController } from "../src/tmux.js";
 import type { CodexQuotaReader, CodexQuotaResult } from "../src/codexQuota.js";
 import { readBindingRecord } from "../src/codexQuota.js";
 import { parseClaudeRateLimits, parseCodexRateLimits } from "../src/resourceEvidence.js";
@@ -1784,6 +1784,83 @@ describe("effectful run loop", () => {
     expect(text).not.toContain("Restart");
     const degraded = readJournal(paths).find((event) => event.type === "agent-observability-degraded");
     expect(degraded).toBeUndefined();
+  });
+
+  it("overrules a never-sent stale working record only with a COORD-IDLE sentinel", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    observeAgentLifecycle(
+      paths,
+      "codex",
+      {
+        kind: "prompt-submitted",
+        eventName: "UserPromptSubmit",
+        sessionId: "session-1",
+        turnId: "turn-1",
+        actionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        actionDigest: "a".repeat(64)
+      },
+      "2026-08-18T00:00:00.000Z"
+    );
+    expect(readAgentLifecycle(paths).agents.codex?.execution).toBe("working");
+
+    let literalNudges = 0;
+    let paneText = "› Ask Codex to do anything\n? for shortcuts\nContext 71% left";
+    const messages: string[] = [];
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: paneText, stderr: "" };
+      if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, {
+      tmux,
+      log: (message) => messages.push(message)
+    });
+
+    await loop.runTick();
+    expect(literalNudges).toBe(0);
+    expect(readAgentLifecycle(paths).agents.codex?.action?.delivery).toBe("ordered");
+    const deferred = readJournal(paths).filter(
+      (event) => event.type === "nudge-deferred" && event.agent === "codex"
+    );
+    expect(deferred.length).toBeGreaterThan(0);
+    expect(["no-idle-sentinel", "working"]).toContain(
+      (deferred.at(-1) as { details?: { code?: string } } | undefined)?.details?.code
+    );
+
+    paneText = [
+      `• ${COORD_IDLE_SENTINEL}`,
+      "› Ask Codex to do anything",
+      "? for shortcuts",
+      "Context 71% left"
+    ].join("\n");
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+    expect(readAgentLifecycle(paths).agents.codex?.action?.delivery).toBe("injected");
+    const nudged = readJournal(paths).filter((event) => event.type === "nudged" && event.agent === "codex");
+    expect(nudged).toHaveLength(1);
+    expect(nudged[0]?.details).toMatchObject({
+      readiness: "idle-sentinel",
+      lifecycleOverride: "working"
+    });
+    expect(messages.join("\n")).toContain("Stop hook has not reported");
+
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
   });
 
   it("does not warn at 45 seconds and nudges once after a positive idle transition", async () => {
