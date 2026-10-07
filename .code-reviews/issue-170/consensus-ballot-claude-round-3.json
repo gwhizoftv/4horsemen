@@ -1,14 +1,14 @@
 {
-  "actionId": "7651453c-ebf2-488f-82f2-97241b8ccae5",
+  "actionId": "9aeac2c3-4366-4455-ad95-a4c367656d8d",
   "agent": "claude",
   "artifact": "consensus-ballot",
   "disposition": "approve",
-  "inputSetHash": "f33d152c5748ea50107695343ee1e98ccdbba246ed02099b5cdf80cba5253e99",
+  "inputSetHash": "ffbaaeea0d08e13fb8a6b5b5d93dfd900e5ea1d023aa60546a1848f67c18a8a2",
   "issue": 170,
   "issueSessionId": "issue-170:6f5b4bc0bb97feeb1711fe3d8f38c327460f5827",
   "protocolVersion": 2,
-  "rationale": "Revision 1fe1bfe6a4e39975a5a4150a7e58aa14e37ceb6f closes both round-2 revise findings with regression tests — dependency identity now hashes the real installed files under node_modules/.pnpm with the worktree path normalized and escaping links refused (two fresh frozen installs hashed identically, lint/typecheck/vitest left it unchanged, a tampered byte changed it), and a cache probe that edits tracked files now fails the gate instead of reusing a receipt — with check:fast (620 fast + 177 system tests) and the push-hook e2e passing at commit and push.",
-  "responseSha256": "b3236e5fd3c72445b5b8fc8fedc7fb4abb651fba9622d48b8770b62e892635af",
+  "rationale": "Revision 1fe1bfe6a4e39975a5a4150a7e58aa14e37ceb6f has a sound mechanism (dependency identity with worktree-path normalization and contained links, probe-mutation guard, tracked-file failures, non-reclaiming locks, retry on join timeout) with passing check:fast and e2e; codex's remaining point is real but confined to the shipped example's declared paths — top-level node_modules/.bin shims and package links are generated from inputs already keyed (lockfile and package.json in the tree, pnpm version probe), whereas declaring all of node_modules would never reuse because .modules.yaml/.pnpm-workspace-state-v1.json carry install timestamps and vitest writes node_modules/.vite — so it belongs in a follow-up that adds those shims/links to the example (or leaves the example uncached) rather than blocking this revision.",
+  "responseSha256": "de8a61ce835c729590d02fb6d99348a550677d0c16a666ce7b180984196c10ca",
   "revisionCommitSha": "1fe1bfe6a4e39975a5a4150a7e58aa14e37ceb6f",
   "round": 3
 }

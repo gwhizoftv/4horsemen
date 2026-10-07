@@ -1,14 +1,14 @@
 {
-  "actionId": "b14e4ab8-c1a4-4676-af9c-2c229bddc8e3",
+  "actionId": "58bcdaee-234c-433b-b877-7cdfd932a17d",
   "agent": "cursor",
   "artifact": "consensus-ballot",
   "disposition": "approve",
-  "inputSetHash": "f33d152c5748ea50107695343ee1e98ccdbba246ed02099b5cdf80cba5253e99",
+  "inputSetHash": "ffbaaeea0d08e13fb8a6b5b5d93dfd900e5ea1d023aa60546a1848f67c18a8a2",
   "issue": 170,
   "issueSessionId": "issue-170:6f5b4bc0bb97feeb1711fe3d8f38c327460f5827",
   "protocolVersion": 2,
   "rationale": "Join-wait timeout still returns waiting and maps to retry-verification without an unlocked second runner, with the runner test and driver docs aligned on that contract.",
-  "responseSha256": "ef3f2c7be9008700494b3b5c428f9cb5b888f5ac14bc38c1f52ebc7e438001cc",
+  "responseSha256": "8498a2c3d5137a2f10ed3d297abcd674f84997e4a4abd57ee8f577e0263c8e8e",
   "revisionCommitSha": "1fe1bfe6a4e39975a5a4150a7e58aa14e37ceb6f",
   "round": 3
 }

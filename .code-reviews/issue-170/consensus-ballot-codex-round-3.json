@@ -1,14 +1,14 @@
 {
-  "actionId": "8f99d47c-6700-4cfe-867b-6f3d9dfce95c",
+  "actionId": "032690f0-d607-443b-8d48-a09cc4ed547c",
   "agent": "codex",
   "artifact": "consensus-ballot",
   "disposition": "revise",
-  "inputSetHash": "f33d152c5748ea50107695343ee1e98ccdbba246ed02099b5cdf80cba5253e99",
+  "inputSetHash": "ffbaaeea0d08e13fb8a6b5b5d93dfd900e5ea1d023aa60546a1848f67c18a8a2",
   "issue": 170,
   "issueSessionId": "issue-170:6f5b4bc0bb97feeb1711fe3d8f38c327460f5827",
   "protocolVersion": 2,
-  "rationale": "At 1fe1bfe6a4e39975a5a4150a7e58aa14e37ceb6f, config.example.json:72-81 and 110-123 must bind all installed executable inputs, but declaring only node_modules/.pnpm omits the top-level node_modules/.bin wrappers and package-resolution links used by pnpm scripts, so changing an eslint wrapper to fail while package-store bytes remain unchanged still reuses a stale success; an in-memory reproduction using the exact pinned runner and dependencyIdentity confirmed that false pass, whereas declaring node_modules detected the same wrapper change and ran the failing check, so cover the complete installed inputs or leave these commands uncached; the probe-mutation guard and package-byte invalidation now work, and existing journal evidence records successful check:fast and prepush e2e for this revision.",
-  "responseSha256": "2223cd9fd5b86fafbe67b420316a29da8c40596cbb1fed7ab77b2413185cd313",
+  "rationale": "This retry binds the unchanged revision 1fe1bfe6a4e39975a5a4150a7e58aa14e37ceb6f: config.example.json:72-81 and 110-123 must bind all installed executable inputs, but declaring only node_modules/.pnpm omits the node_modules/.bin wrappers and top-level package-resolution links used by pnpm scripts, so a changed failing wrapper can reuse stale success; the prior focused in-memory reproduction with this exact runner and dependencyIdentity remains applicable, and declaring node_modules detected the same change, so cover the complete installed inputs or leave these checks uncached; existing successful hook checks do not resolve this cache-key defect, and no product tests were rerun for this unchanged ballot input.",
+  "responseSha256": "324c918e99978c647ba1c18817c5b49cacb6911dfb825416842d87aa8ca7efc6",
   "revisionCommitSha": "1fe1bfe6a4e39975a5a4150a7e58aa14e37ceb6f",
   "round": 3
 }
