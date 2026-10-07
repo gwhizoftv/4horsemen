@@ -410,7 +410,7 @@ describe("agent lifecycle policy", () => {
     expect(decideLifecycleNudge(queued, actionId, "b".repeat(64)).code).toBe("unmatched-action");
   });
 
-  it("does not rewrite lifecycle state for duplicate status-line renders", () => {
+  it("records duplicate activity receipts without inventing semantic activity or counting telemetry", () => {
     const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
     roots.push(root);
     const paths = issueRuntimePaths(root, 1);
@@ -428,6 +428,21 @@ describe("agent lifecycle policy", () => {
     const second = observeAgentLifecycleWithResult(paths, "antigravity", observation, later);
     expect(first.changed).toBe(true);
     expect(second.changed).toBe(false);
-    expect(second.state.stateRevision).toBe(first.state.stateRevision);
+    expect(second.state.agents.antigravity).toMatchObject({ idleEpoch: first.state.agents.antigravity.idleEpoch,
+      lastEventAt: now, hookReceipt: { at: later, sequence: 2 } });
+    const sameTime = observeAgentLifecycleWithResult(paths, "antigravity", observation, later);
+    expect(sameTime.state.agents.antigravity.hookReceipt).toEqual({ at: later, sequence: 3 });
+    const backward = observeAgentLifecycleWithResult(paths, "antigravity", observation, now);
+    expect(backward.state.agents.antigravity.hookReceipt).toEqual({ at: later, sequence: 4 });
+    const telemetry = observeAgentLifecycleWithResult(paths, "antigravity", { kind: "telemetry", eventName: "status-line",
+      sessionId: "agy-1", rateLimits: { fiveHour: null, sevenDay: null } }, later);
+    expect(telemetry.state.agents.antigravity.hookReceipt).toEqual(backward.state.agents.antigravity.hookReceipt);
+    const render = observeAgentLifecycleWithResult(paths, "antigravity", { kind: "telemetry", eventName: "status-line",
+      sessionId: "agy-1", rateLimits: { fiveHour: null, sevenDay: null } }, later);
+    expect(render.changed).toBe(false);
+    expect(render.state.stateRevision).toBe(telemetry.state.stateRevision);
+    expect(agentLifecycleEntrySchema.parse({ ...entry(), hookReceipt: undefined }).hookReceipt).toBeNull();
+    const restarted = observeAgentLifecycleWithResult(paths, "antigravity", { kind: "session-start", eventName: "SessionStart", sessionId: "next" }, later);
+    expect(restarted.state.agents.antigravity.hookReceipt?.sequence).toBe(5);
   });
 });

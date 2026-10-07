@@ -486,6 +486,7 @@ const analyticsCursorsHeaderSchema = z.object({
 
 export const agentCursorSchema = z
   .object({
+    lastAcceptedActionId: z.string().uuid().nullable().default(null),
     stepId: stepIdSchema.nullable(),
     evidenceId: evidenceIdSchema.nullable(),
     actionId: z.string().uuid().nullable(),
@@ -1074,6 +1075,7 @@ export const initialCursors = (start: StartState, now = new Date().toISOString()
   const agents: Record<string, AgentCursor> = {};
   for (const agent of start.originalRoster) {
     agents[agent] = {
+      lastAcceptedActionId: null,
       stepId: null,
       evidenceId: null,
       actionId: null,

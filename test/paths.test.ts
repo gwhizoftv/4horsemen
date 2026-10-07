@@ -43,6 +43,9 @@ describe("completion mailbox paths", () => {
     const runtime = agentRuntimePaths(paths, "claude");
 
     expect(runtime.complete).toBe(join(completesRoot, "issue-98", "claude", "complete"));
+    expect(runtime.ready).toBe(join(runtime.completeDir, "ready"));
+    expect(runtime.ready).not.toBe(agentRuntimePaths(paths, "codex").ready);
+    expect(runtime.ready).not.toBe(agentRuntimePaths(issueRuntimePaths(coordRoot, 99, completesRoot), "claude").ready);
     expect(runtime.completeDir).toBe(join(completesRoot, "issue-98", "claude"));
     expect(runtime.action).toBe(join(coordRoot, "issue-98", "agents", "claude", "action.md"));
     expect(runtime.renderLog).toBe(join(coordRoot, "issue-98", "agents", "claude", "render.log"));

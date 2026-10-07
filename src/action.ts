@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, openSync, readSync, readFileSync, renameSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, relative } from "node:path";
-import { assertNoSymlink, containedPath } from "./paths.js";
+import { assertNoSymlink, containedPath, readyReceiptPath } from "./paths.js";
 import { actionIdSchema, gitShaSchema, repositoryPathSchema } from "./protocol.js";
 import type { ChangeScopeEntry, InternalOrder, MaterializedInputs } from "./steps.js";
 
@@ -180,6 +180,21 @@ const verificationSection = (order: InternalOrder): string => {
     "Report only checks you actually ran; do not claim coordinator-owned checks. Evidence-only signals and amendment requests do not need product tests.";
 };
 
+const readyInstructions = (order: InternalOrder): string => `
+If this file still names the action you just completed, or is missing because
+the coordinator accepted it, write this exact line as the sole contents of
+\`${readyReceiptPath(order.completePath)}\`:
+
+\`ready ${order.actionId}\`
+
+Then end your reply with this exact line, on its own, with nothing after it:
+
+COORD-IDLE: waiting for the next coordinator action file
+
+Do not write ready while executing a replacement action or if the re-read
+failed for a reason other than a missing file.
+`;
+
 const renderGitAction = (order: InternalOrder): string => {
   if (order.requiredPath === "") throw new Error("Git action requires requiredPath.");
   repositoryPathSchema.parse(order.requiredPath);
@@ -209,6 +224,7 @@ exact 40-character lowercase commit SHA as the sole contents of:
 After writing that SHA, keep this file. Before waiting for more input, re-read
 it. If \`actionId\` in the front matter has changed, execute the new instructions
 immediately; do not wait for another coordinator message.
+${readyInstructions(order)}
 `;
 };
 
@@ -251,6 +267,7 @@ ${inputText(order)}${eligible}${boundInputFilesSection(order.materialized)}${rep
 After writing the marker, keep this file. Before waiting for more input, re-read
 it. If \`actionId\` in the front matter has changed, execute the new instructions
 immediately; do not wait for another coordinator message.
+${readyInstructions(order)}
 `;
 };
 
@@ -340,6 +357,46 @@ export const readCompletion = (path: string): CompletionParseResult => {
 
 export const clearCompletion = (path: string): void => {
   if (existsSync(path)) unlinkSync(path);
+};
+
+export type ReadyReceipt = { actionId: string; mtimeMs: number; identity: string };
+
+export const parseReady = (raw: string): string | null => {
+  const match = /^ready ([0-9a-f-]{36})\n?$/i.exec(raw);
+  // `$` also matches before a final newline; forbid a second one explicitly.
+  if (match === null || match[0] !== raw || !actionIdPattern.test(match[1])) return null;
+  return actionIdSchema.safeParse(match[1]).success ? match[1].toLowerCase() : null;
+};
+
+const readyFileIdentity = (stat: Stats): string =>
+  JSON.stringify([stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs]);
+
+/** Advisory input: a disappearing, partial or unsafe receipt is never authority. */
+export const readReady = (path: string, mailboxRoot: string): ReadyReceipt | null => {
+  let handle: number | undefined;
+  try {
+    assertNoSymlink(mailboxRoot, path);
+    handle = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const before = fstatSync(handle);
+    if (!before.isFile() || before.size > 64) return null;
+    const bytes = Buffer.alloc(65);
+    const count = readSync(handle, bytes, 0, bytes.length, 0);
+    const after = fstatSync(handle);
+    if (count !== before.size || count > 64 || readyFileIdentity(before) !== readyFileIdentity(after)) return null;
+    const raw = bytes.subarray(0, count).toString("utf8");
+    const actionId = parseReady(raw);
+    return actionId === null ? null : { actionId, mtimeMs: before.mtimeMs, identity: `${readyFileIdentity(before)}:${raw}` };
+  } catch {
+    return null;
+  } finally {
+    if (handle !== undefined) closeSync(handle);
+  }
+};
+
+/** Do not discard a receipt replaced while delivery was in flight. */
+export const clearReady = (path: string, mailboxRoot: string, observed: ReadyReceipt): void => {
+  if (readReady(path, mailboxRoot)?.identity !== observed.identity) return;
+  try { unlinkSync(path); } catch { /* Send accounting, not deletion, prevents duplicates. */ }
 };
 
 export const writeAction = (coordRoot: string, path: string, order: InternalOrder): void => {

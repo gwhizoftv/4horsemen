@@ -453,6 +453,8 @@ describe("agent-facing language", () => {
     // than silently stop proving that a pane is idle.
     const block = renderAgentsProtocolBlock(repoRoot);
     expect(block).toContain(COORD_IDLE_SENTINEL);
+    expect(block).toContain("write `ready <actionId>`");
+    expect(block).toContain("file is missing because");
     expect(findAgentLanguageViolations(COORD_IDLE_SENTINEL)).toEqual([]);
   });
 

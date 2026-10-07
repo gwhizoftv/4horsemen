@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { clearCompletion, createActionId, readAction, readCompletion, writeAction } from "./action.js";
+import { clearCompletion, clearReady, createActionId, readAction, readCompletion, readReady, writeAction, type ReadyReceipt } from "./action.js";
 import {
   AGENT_OBSERVABILITY_WATCHDOG_MS,
   containmentCoverage,
@@ -12,7 +12,8 @@ import {
   markInjectedActionAbsent,
   mutateAgentLifecycle,
   orderAgentAction,
-  readAgentLifecycle
+  readAgentLifecycle,
+  type AgentLifecycleEntry
 } from "./agentLifecycle.js";
 import {
   archiveAcceptedResponse,
@@ -110,7 +111,7 @@ import { containmentPolicy, ingestContainmentProbe } from "./shellGuard.js";
 import { holdRecoveryCommand, renderIssueReport } from "./issueReport.js";
 import { formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
-import { harnessPromptReadiness, TmuxController, type OverrideLifecycle } from "./tmux.js";
+import { harnessPromptReadiness, TmuxController, type IdleOverride } from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
@@ -843,8 +844,10 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "antigravity-verify-overlay": "the account-verify overlay is up and discards keystrokes",
   "antigravity-no-prompt": "no idle prompt is visible in the pane",
   "codex-turn-chrome": "the pane shows in-flight turn chrome",
-  "no-idle-sentinel": "lifecycle hooks report the agent mid-turn and its pane shows no COORD-IDLE line since its last action",
-  "lifecycle-changed": "lifecycle hooks reported new activity while the send was being prepared",
+  "no-idle-sentinel": "lifecycle hooks report the agent mid-turn without a usable ready file or current terminal idle proof",
+  "codex-composer-not-ready": "the Codex composer is not empty or no longer holds exactly this action's message",
+  "pane-capture-unavailable": "file-backed readiness cannot check pane vetoes without a readable terminal capture",
+  "lifecycle-changed": "lifecycle activity or the ready receipt changed while the send was being prepared",
   "unmatched-action": "the recorded lifecycle action does not match the current one",
   "workflow-complete": "this agent already published its work for this action",
   "pending-input": "the agent has queued input of its own",
@@ -1077,6 +1080,24 @@ export class CoordinatorRunLoop {
     return `${actionId}:observation:${entry?.sessionId ?? "none"}:${entry?.lastEventAt ?? "none"}`;
   }
 
+  /** A receipt proves only readiness for a never-sent action, never completion. */
+  private readyForNextAction(
+    cursors: CursorsState, agent: string, actionId: string, actionDigest: string, entry: AgentLifecycleEntry | undefined
+  ): ReadyReceipt | null {
+    const safety = cursors.actionSafety[agent];
+    if (safety?.actionId !== actionId || safety.sends !== 0 || safety.reserved || entry === undefined ||
+      entry.action?.actionId !== actionId || entry.action.actionDigest !== actionDigest ||
+      entry.action.delivery !== "ordered" || entry.action.injectedAt !== null || entry.action.workflowCompleteAt !== null ||
+      entry.execution === "queued" || entry.backgroundActive === true || (entry.pendingInputCount ?? 0) > 0) return null;
+    const receipt = readReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot);
+    if (receipt === null || receipt.actionId !== cursors.agents[agent]?.lastAcceptedActionId || receipt.actionId === actionId) return null;
+    const lastHook = Math.max(Date.parse(entry.hookReceipt?.at ?? "") || 0, Date.parse(entry.lastEventAt ?? "") || 0);
+    // Hook timestamps have millisecond precision; do not infer ordering within
+    // that millisecond from the filesystem's finer-grained timestamp.
+    const writtenAt = Math.floor(receipt.mtimeMs);
+    return writtenAt > lastHook && writtenAt <= Date.parse(this.now()) ? receipt : null;
+  }
+
   /** One reservation path for initial, idle, reissue and lost-delivery sends. */
   private async deliver(
     start: StartState, cursors: CursorsState, agent: string, actionId: string, actionDigest: string,
@@ -1089,9 +1110,10 @@ export class CoordinatorRunLoop {
     if (safety.reserved) return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends}`);
     // A reissue cannot interrupt ongoing/background work either.
     const entry = readAgentLifecycle(this.paths).agents[agent];
+    const receipt = this.readyForNextAction(cursors, agent, actionId, actionDigest, entry);
     // Before the first send there is nothing to duplicate, so a `working`
     // record left by a Stop that never reached this issue may be overruled —
-    // but only by the pane's own current idle sentinel (`requireIdleSentinel`).
+    // but only with current file or terminal idle proof.
     const staleWorking = entry?.execution === "working" && safety.sends === 0 &&
       entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest &&
       entry.action.delivery === "ordered" && entry.action.injectedAt === null;
@@ -1102,11 +1124,17 @@ export class CoordinatorRunLoop {
     const lifecycleSnapshot = (value: typeof entry): string => JSON.stringify([value?.sessionId, value?.turnId,
       value?.lastEventAt, value?.execution, value?.pendingInputCount, value?.backgroundActive]);
     const observed = lifecycleSnapshot(entry);
-    const staleOverride = staleWorking ? (): OverrideLifecycle => {
-      const latest = readAgentLifecycle(this.paths).agents[agent];
-      if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
-        latest.action.delivery === "accepted") return "accepted";
-      return lifecycleSnapshot(latest) === observed ? "unchanged" : "changed";
+    const hookSequence = entry?.hookReceipt?.sequence;
+    const staleOverride: IdleOverride | undefined = receipt !== null || staleWorking ? {
+      source: receipt !== null ? "ready-file" : "idle-sentinel",
+      lifecycle: () => {
+        const latest = readAgentLifecycle(this.paths).agents[agent];
+        if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
+          latest.action.delivery === "accepted") return "accepted";
+        if (receipt !== null && (latest?.hookReceipt?.sequence !== hookSequence ||
+          readReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot)?.identity !== receipt.identity)) return "changed";
+        return lifecycleSnapshot(latest) === observed ? "unchanged" : "changed";
+      }
     } : undefined;
     if (safety.sends >= 4) return this.hold(cursors, agent, "nudge-loop", `${actionId}:budget:${safety.lastSendAt}`);
     const delay = NUDGE_REPEAT_DELAYS_MS[safety.sends - 1] ?? 0;
@@ -1140,7 +1168,10 @@ export class CoordinatorRunLoop {
     }
     if (result.status === "sent") {
       markActionInjected(this.paths, agent, actionId, actionDigest, sentAt);
-      if (staleWorking) {
+      if (receipt !== null) {
+        clearReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot, receipt);
+        this.log(`Issue ${start.issue}: ${agent}'s ready file for its last accepted action confirmed readiness; delivered action ${actionId}.`);
+      } else if (staleWorking) {
         this.log(
           `Issue ${start.issue}: ${agent}'s lifecycle hooks still report it mid-turn, but its pane shows COORD-IDLE; ` +
             `delivered action ${actionId}. No Stop event from ${agent} reached this issue — ` +
@@ -1150,7 +1181,7 @@ export class CoordinatorRunLoop {
       return this.mutate(cursors, (current) => {
         appendJournal(this.paths, { type: "nudged", agent, actionId,
           details: { actionDigest, readiness: result.detail ?? "vendor-prompt", [reason]: true,
-            ...(staleWorking ? { lifecycleOverride: "working" } : {}) } }, this.now());
+            ...(staleOverride !== undefined ? { lifecycleOverride: entry?.execution } : {}) } }, this.now());
         return { ...current, actionSafety: { ...current.actionSafety, [agent]: {
           ...current.actionSafety[agent]!, reserved: false, lastSendAt: this.now()
         } } };
@@ -1712,10 +1743,11 @@ export class CoordinatorRunLoop {
       // send succeeds, only a lifecycle idle transition can authorize more.
       if (entry.action?.delivery !== "ordered" || entry.action.retryableInjectionAt === null) {
         const decision = decideLifecycleNudge(entry, actionId, actionDigest);
-        // A never-sent action against `working` is decided by deliver(), on the pane's idle sentinel.
+        // A never-sent action against `working` is decided by deliver(), on current idle proof.
         const neverSentWorking = decision.code === "working" &&
           entry.action?.delivery === "ordered" && entry.action.injectedAt === null;
-        if (decision.kind === "wait" && !neverSentWorking) {
+        const fileReady = this.readyForNextAction(cursors, agent, actionId, actionDigest, entry) !== null;
+        if (decision.kind === "wait" && !neverSentWorking && !fileReady) {
           const injected = entry.action;
           const observedAfterInjection =
             injected !== null &&
@@ -1859,6 +1891,7 @@ export class CoordinatorRunLoop {
           ...current.agents,
           [decision.agent]: {
             ...cursor,
+            lastAcceptedActionId: cursor.actionId,
             actionId: null,
             submissionMode: null,
             actionDigest: null,
@@ -1946,6 +1979,9 @@ export class CoordinatorRunLoop {
         details: { sequence: pending.sequence, scopeHash: decision.request.scopeHash,
           eventId: `amendment-request:${pending.sequence}:${decision.request.actionId}:${decision.submissionSha}` } }, this.now());
       return this.amendmentTransition(cursorsStateSchema.parse({ ...current,
+        agents: { ...current.agents, [decision.agent]: {
+          ...current.agents[decision.agent], lastAcceptedActionId: decision.request.actionId
+        } },
         pendingAmendment: { ...pending, requestedAt: event.at }, amendmentSequence: pending.sequence }), "R4.amend-ballot", pending.sequence);
     });
     return this.retireAmendmentActions(next);
@@ -2107,6 +2143,7 @@ export class CoordinatorRunLoop {
           ...current.agents,
           [decision.agent]: {
             ...cursor,
+            lastAcceptedActionId: cursor.actionId,
             actionId: null,
             submissionMode: null,
             actionDigest: null,
