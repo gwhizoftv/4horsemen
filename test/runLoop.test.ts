@@ -1103,6 +1103,47 @@ const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], fina
 };
 
 describe("effectful run loop", () => {
+  it.each(["idle", "working", "pending", "background"] as const)(
+    "revalidates ready against duplicate %s status during delivery", async (status) => {
+      const f = safetyFixture("antigravity");
+      const observation = { kind: "status" as const, eventName: "status-line", sessionId: "session",
+        execution: status === "working" ? status : "idle" as const,
+        pendingInputCount: status === "pending" ? 1 : 0, backgroundActive: status === "background" };
+      observeAgentLifecycle(f.paths, "antigravity", observation, f.now());
+      f.advance(10);
+      f.ui.foreground = "bash";
+      await f.tick();
+      const previous = actionIdFor("antigravity", 42);
+      mutateCursorsState(f.paths, (state) => ({ ...state, agents: { ...state.agents,
+        antigravity: { ...state.agents.antigravity, lastAcceptedActionId: previous } } }));
+      f.advance(10);
+      const ready = agentRuntimePaths(f.paths, "antigravity").ready;
+      writeFileSync(ready, `ready ${previous}`);
+      utimesSync(ready, new Date(f.now()), new Date(f.now()));
+      const receipt = readAgentLifecycle(f.paths).agents.antigravity.hookReceipt;
+      f.advance(10);
+      f.ui.foreground = "harness";
+      // Reproduce an idle render between paste and submit, not only before delivery.
+      f.ui.onCapture = () => {
+        if (f.ui.sends > 0) observeAgentLifecycle(f.paths, "antigravity", observation, f.now());
+      };
+      // Newer activity reports must revoke the file before the first key.
+      if (status !== "idle") observeAgentLifecycle(f.paths, "antigravity", observation, f.now());
+      const after = await f.tick();
+      expect(f.ui.sends).toBe(status === "idle" ? 1 : 0);
+      expect(after.holds).toEqual([]);
+      expect(existsSync(ready)).toBe(status !== "idle");
+      if (status === "idle") {
+        expect(readAgentLifecycle(f.paths).agents.antigravity.hookReceipt).toEqual(receipt);
+        expect(after.actionSafety.antigravity.reserved).toBe(false);
+        expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudged",
+          details: expect.objectContaining({ readiness: "ready-file" }) }));
+        await f.tick();
+        expect(f.ui.sends).toBe(1);
+      } else expect(readAgentLifecycle(f.paths).agents.antigravity.hookReceipt!.sequence).toBeGreaterThan(receipt!.sequence);
+    }
+  );
+
   it.each(["hook", "receipt"].flatMap((change) => [false, true].map((afterPaste) => ({ change, afterPaste }))))(
     "revokes $change proof during sending, afterPaste=$afterPaste", async ({ change, afterPaste }) => {
       const f = safetyFixture("claude");
@@ -1418,7 +1459,7 @@ describe("effectful run loop", () => {
     expect(buildOrder(paths, readStartState(paths), replaced, "codex", "R4.implement", null).scopeInputs).toEqual([]);
   });
 
-  it("binds an accepted amendment request, not its retired peers, and preserves its ready receipt", async () => {
+  it.each([true, false])("binds only a matching accepted amendment request (matches=%s) and preserves ready", async (matches) => {
     const { paths } = fixture();
     const start = readStartState(paths);
     const base = readCursorsState(paths);
@@ -1435,7 +1476,7 @@ describe("effectful run loop", () => {
     writeCursorsState(paths, seeded);
     const order = buildOrder(paths, start, seeded, "codex", "R4.implement", null, id);
     const request = { protocolVersion: 1, issue: 1, issueSessionId: start.issueSessionId, agent: "codex",
-      artifact: "plan-amendment-request", actionId: id, inputSetHash: computeInputSetHash(order.inputs), scopeHash: order.scopeHash,
+      artifact: "plan-amendment-request", actionId: matches ? id : actionIdFor("codex", 1), inputSetHash: computeInputSetHash(order.inputs), scopeHash: order.scopeHash,
       explanation: "Regression coverage omitted", additionalPaths: [{ path: "test/product.test.ts", reason: "Regression" }] };
     const runtime = agentRuntimePaths(paths, "codex");
     writeAction(paths.coordRoot, runtime.action, order);
@@ -1448,6 +1489,13 @@ describe("effectful run loop", () => {
       return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
     });
     const after = await new CoordinatorRunLoop(paths, { tmux: null, mirror, log: () => undefined }).runTick();
+    if (!matches) {
+      expect(after.pendingAmendment).toBeNull();
+      expect(after.agents.codex.lastAcceptedActionId).toBeNull();
+      expect(after.agents.codex.outstanding).toContain("amendment request actionId does not match the current action");
+      expect(existsSync(runtime.ready)).toBe(true);
+      return;
+    }
     expect(after.pendingAmendment?.proposal.actionId).toBe(id);
     expect(after.agents.codex.lastAcceptedActionId).toBe(id);
     expect(after.agents.claude.lastAcceptedActionId).toBeNull();

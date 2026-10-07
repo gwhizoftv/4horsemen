@@ -410,7 +410,28 @@ describe("agent lifecycle policy", () => {
     expect(decideLifecycleNudge(queued, actionId, "b".repeat(64)).code).toBe("unmatched-action");
   });
 
-  it("records duplicate activity receipts without inventing semantic activity or counting telemetry", () => {
+  it("deduplicates fully idle status renders even after ordering a new action", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
+    roots.push(root);
+    const paths = issueRuntimePaths(root, 1);
+    createIssueRuntime(paths, ["antigravity"]);
+    initializeAgentLifecycle(paths, ["antigravity"], now);
+    const observation = { kind: "status" as const, eventName: "status-line", sessionId: "agy-1",
+      execution: "idle" as const, pendingInputCount: 0, backgroundActive: false };
+    observeAgentLifecycleWithResult(paths, "antigravity", observation, now);
+    orderAgentAction(paths, "antigravity", actionId, digest, later);
+    const before = readAgentLifecycle(paths);
+    const duplicate = observeAgentLifecycleWithResult(paths, "antigravity", observation, later);
+    expect(duplicate.changed).toBe(false);
+    expect(duplicate.state).toEqual(before);
+    expect(readAgentLifecycle(paths)).toEqual(before);
+    // A new session is not merely another idle render.
+    const replacement = observeAgentLifecycleWithResult(paths, "antigravity", { ...observation, sessionId: "agy-2" }, later);
+    expect(replacement.changed).toBe(true);
+    expect(replacement.state.agents.antigravity.hookReceipt?.sequence).toBe(before.agents.antigravity.hookReceipt!.sequence + 1);
+  });
+
+  it.each(["working", "unknown"] as const)("records duplicate %s receipts without inventing semantic activity or counting telemetry", (execution) => {
     const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
     roots.push(root);
     const paths = issueRuntimePaths(root, 1);
@@ -420,7 +441,7 @@ describe("agent lifecycle policy", () => {
       kind: "status" as const,
       eventName: "status-line",
       sessionId: "agy-1",
-      execution: "idle" as const,
+      execution,
       pendingInputCount: 0,
       backgroundActive: false
     };

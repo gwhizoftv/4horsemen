@@ -45,6 +45,8 @@ The receipt is a delivery hint, not workflow completion. Its UUID must match
 the agent cursor's durable last accepted action (Git, private response, or an
 accepted amendment request), and differ from the next action being delivered.
 An unanswered peer order retired by an amendment is not an accepted action.
+The amendment request's action UUID must equal the current order's UUID;
+validation rejects a different UUID before advancing the accepted identity.
 Acceptance and preparation leave the receipt in place. Only a successful send
 consumes the observed receipt; a replacement file is preserved. The existing
 mailbox directory grant covers this sibling without new permissions.
@@ -56,9 +58,14 @@ millisecond timestamp ties fail closed. A separate per-agent hook receipt
 timestamp/sequence includes duplicate activity callbacks, unlike semantic
 `lastEventAt`. The sequence and file identity are rechecked before each key.
 Status-bar telemetry is deliberately excluded: an idle status render is not
-new activity, and must not invalidate the ready file just written. This
-resolves the selected plan's telemetry concern without losing duplicate
-activity-hook invalidation. Neither field fabricates execution or an idle epoch.
+new activity, and must not invalidate the ready file just written. Identical
+Antigravity status observations explicitly reporting idle, no pending input,
+and no background work also retain semantic deduplication: they neither
+rewrite lifecycle state nor count as a heartbeat after a new order. This
+prevents a harmless redraw between paste and submit from interrupting delivery.
+Do not exclude all status observations: repeated working/unknown reports,
+queue/background activity, session changes and other semantic changes still
+revoke readiness. Neither receipt field fabricates execution or an idle epoch.
 
 A valid file can overrule stale `working` or `unknown` for that first send
 without needing the idle line visible in the pane. It never bypasses process,
