@@ -80,8 +80,6 @@ export type RunVerificationInput = {
 
 const POLL_INTERVAL_MS = 1_000;
 const SLOT_POLL_INTERVAL_MS = 200;
-/** A waiter that has polled this long stops joining and runs the command itself. */
-const JOIN_WAIT_LIMIT_MS = 30 * 60 * 1000;
 
 const defaultSleep = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -223,8 +221,9 @@ export const runVerification = async (input: RunVerificationInput): Promise<Veri
         const lockPath = verificationRoot(input.paths.coordRoot, "running", `${key}.lock`);
         keyLock = acquireLock(lockPath);
         if (keyLock === null) {
-          const until = Date.now() + JOIN_WAIT_LIMIT_MS;
-          while (keyLock === null && Date.now() < until) {
+          // Poll until the live owner releases (or acquireLock reclaims a stale
+          // lock). Never run the same key unlocked beside a live owner.
+          while (keyLock === null) {
             await sleep(POLL_INTERVAL_MS);
             input.checkpoint();
             keyLock = acquireLock(lockPath);
@@ -234,7 +233,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<Veri
           // this runner holds the lock and runs the command itself.
           const joined = readReceipt(input.paths.coordRoot, key);
           if (joined.ok) {
-            if (keyLock !== null) releaseLock(keyLock);
+            releaseLock(keyLock);
             const at = input.now();
             appendJournal(input.paths, {
               type: "verification-joined", agent: input.agent, actionId: input.actionId,
@@ -250,7 +249,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<Veri
           }
           cacheReason = `cacheable, ${joined.reason} after waiting for a concurrent runner`;
         }
-        if (keyLock !== null) held.push(keyLock);
+        held.push(keyLock);
       }
 
       let slot: Lock | null = null;
