@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { inspectCloneHooks, readHookManifest, removeCloneHooks, type HookManifest } from "../src/hookSync.js";
 import { install, uninstall } from "../src/install.js";
+import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import { initializeOperationalState, mutateCursorsState, readConfig } from "../src/state.js";
+import { workspaceLocationFromConfig } from "../src/workspace.js";
 import {
   declaredChecks,
   ensureBuilt,
@@ -296,6 +299,68 @@ describe("declared verification in the hooks", () => {
     git(clone, "add", "README.md");
     git(clone, "commit", "-qm", "Claude: docs");
     expect(tryGit(clone, "push", "origin", "claude/develop-docs").exitCode).toBe(0);
+  });
+});
+
+describe("coordinator verification binding", () => {
+  const localFails = { precommit: [{ name: "must-fail", argv: ["false"] }], prepush: [{ name: "must-fail-push", argv: ["false"] }] };
+  const verification = {
+    mode: "coordinator",
+    coordinated: { precommit: [{ name: "coordinated-ok", argv: ["true"] }], prepush: [] },
+    candidate: { checks: [{ name: "candidate", argv: ["true"] }], covers: { prefixes: ["cmd/"] } }
+  };
+  /** An active issue-1 run for this clone, with the installed policy frozen into start.json. */
+  const activeRun = (clone: string, configPath: string) => {
+    const config = readConfig(configPath);
+    const paths = issueRuntimePaths(workspaceLocationFromConfig(configPath).workspaceRoot, 1);
+    createIssueRuntime(paths, ["claude"]);
+    initializeOperationalState(paths, {
+      issue: 1, issueSessionId: `issue-1:${"a".repeat(40)}`, baselineSha: "a".repeat(40), profile: "solo",
+      originalRoster: ["claude"], branchTemplate: "issue-{issue}/{agent}", baseBranch: "main", maxRevisionRounds: 3,
+      prPolicy: "owner-only", automationDigest: "b".repeat(64), automationDigestScheme: "sha256-length-prefixed-v1",
+      automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }], trustedSourceCommit: "c".repeat(40),
+      origin: config.origin, coordRoot: paths.coordRoot, configPath, checks: config.checks, pollIntervalMs: 1000,
+      agents: [{ id: "claude", root: clone, launcher: "start-claude.sh", delivery: "pull" }],
+      verification: config.verification!, verificationDigest: "d".repeat(64)
+    });
+    return paths;
+  };
+
+  it("runs the coordinated lists only for this agent's active issue branch, keeping integrity gates", () => {
+    const { clone, configPath } = installed(localFails, "go", { verification });
+    activeRun(clone, configPath);
+    stageWork(clone);
+    const committed = tryGit(clone, "commit", "-m", "Claude: work");
+    expect(committed.exitCode, committed.stderr).toBe(0);
+    expect(committed.stdout + committed.stderr).toContain("coordinator-bound issue 1");
+    const pushed = tryGit(clone, "push", "origin", "issue-1/claude");
+    expect(pushed.exitCode, pushed.stderr).toBe(0);
+    // Binding never relaxes ownership: a peer's branch is still refused.
+    const peer = tryGit(clone, "push", "origin", "issue-1/claude:refs/heads/issue-1/codex");
+    expect(peer.exitCode).not.toBe(0);
+    expect(peer.stderr).toContain("belongs to agent 'codex'");
+  });
+
+  it("falls back to the local lists, saying why, for manual branches, multi-ref pushes and unusable runtime state", () => {
+    const { clone, configPath } = installed(localFails, "go", { verification });
+    const paths = activeRun(clone, configPath);
+    const blocked = (result: ReturnType<typeof tryGit>, reason: string) => {
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout + result.stderr).toContain(`local verification — ${reason}`);
+    };
+
+    stageWork(clone, "claude/scratch");
+    blocked(tryGit(clone, "commit", "-m", "Claude: manual"), "branch claude/scratch is not this agent's issue branch");
+    git(clone, "commit", "-qn", "-m", "Claude: manual setup");
+    git(clone, "checkout", "-qb", "issue-1/claude");
+    blocked(tryGit(clone, "push", "origin", "issue-1/claude", "claude/scratch"), "multi-ref push");
+
+    writeFileSync(join(clone, "cmd/more.go"), "package main\n");
+    git(clone, "add", "-A");
+    mutateCursorsState(paths, (cursors) => ({ ...cursors, completed: true }));
+    blocked(tryGit(clone, "commit", "-m", "Claude: late"), "issue 1 is no longer active");
+    writeFileSync(paths.cursors, "{ corrupt");
+    blocked(tryGit(clone, "commit", "-m", "Claude: broken runtime"), "runtime state unavailable");
   });
 });
 

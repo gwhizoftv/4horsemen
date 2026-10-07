@@ -100,9 +100,17 @@ export type AnalyticsReport = {
     skipped: number;
     artifactValidations: number;
     aggregateRunnerMs: number | null;
-    /** Union of recorded runner intervals, not summed concurrent waits. */
+    /** Union of recorded runner intervals, including limiter queue wait, not summed concurrent waits. */
     criticalPathWaitMs: number | null;
     byPhase: Record<string, number>;
+    /** Executed runners and their time by owner: hook, coordinator candidate, or coordinator final gate. */
+    byTrigger: Record<"hook" | "candidate" | "final", { runners: number; runnerMs: number | null }>;
+    /** Commands satisfied by a trusted receipt or by joining another runner's execution. */
+    reused: number;
+    joined: number;
+    /** Original durations of the executions that reused or joined results replaced. */
+    avoidedMs: number;
+    queueWaitMs: number;
   };
   usage: {
     agents: AgentUsageAnalytics[];
@@ -463,7 +471,7 @@ const deriveVerification = (journal: readonly JournalEvent[]): AnalyticsReport["
       return parsed.success ? [parsed.data] : [];
     });
   const runners = measurements.filter((row) => row.command !== null);
-  const intervals = runners.map((row) => [Date.parse(row.startedAt), Date.parse(row.completedAt)] as const)
+  const intervals = runners.map((row) => [Date.parse(row.startedAt) - (row.queueWaitMs ?? 0), Date.parse(row.completedAt)] as const)
     .sort((a, b) => a[0] - b[0]);
   const valid = measurements.length > 0 && runners.every((row) => row.durationMs !== null) && intervals.every(([from, to]) => to >= from);
   let end = -Infinity, wait = 0;
@@ -473,13 +481,27 @@ const deriveVerification = (journal: readonly JournalEvent[]): AnalyticsReport["
   }
   const byPhase: Record<string, number> = {};
   for (const row of runners) byPhase[row.phase] = (byPhase[row.phase] ?? 0) + 1;
+  const byTrigger: AnalyticsReport["verification"]["byTrigger"] = {
+    hook: { runners: 0, runnerMs: 0 }, candidate: { runners: 0, runnerMs: 0 }, final: { runners: 0, runnerMs: 0 }
+  };
+  for (const row of runners) {
+    const bucket = byTrigger[row.trigger === "hook" ? "hook" : row.phase === "candidate" ? "candidate" : "final"];
+    bucket.runners += 1;
+    bucket.runnerMs = bucket.runnerMs === null || row.durationMs === null ? null : bucket.runnerMs + row.durationMs;
+  }
+  const shared = journal.filter((event) => event.type === "verification-reused" || event.type === "verification-joined");
   return {
     recordedRunners: runners.length,
     skipped: measurements.length - runners.length,
     artifactValidations: journal.filter((event) => event.type === "verify-result").length,
     aggregateRunnerMs: valid ? runners.reduce((sum, row) => sum + row.durationMs!, 0) : null,
     criticalPathWaitMs: valid ? wait : null,
-    byPhase
+    byPhase,
+    byTrigger,
+    reused: shared.filter((event) => event.type === "verification-reused").length,
+    joined: shared.filter((event) => event.type === "verification-joined").length,
+    avoidedMs: shared.reduce((sum, event) => sum + (nonnegativeInteger(object(event.details)?.originalDurationMs) ?? 0), 0),
+    queueWaitMs: runners.reduce((sum, row) => sum + (row.queueWaitMs ?? 0), 0)
   };
 };
 
@@ -830,6 +852,10 @@ export const renderAnalytics = (report: AnalyticsReport): string => {
     `Runners=${report.verification.recordedRunners} skipped=${report.verification.skipped} artifact validations=${report.verification.artifactValidations}`,
     `Aggregate runner time=${formatOptionalDuration(report.verification.aggregateRunnerMs)}; non-overlapping verification wait=${formatOptionalDuration(report.verification.criticalPathWaitMs)}`,
     ...Object.entries(report.verification.byPhase).map(([phase, count]) => `- ${phase}: ${count} runner(s)`),
+    ...Object.entries(report.verification.byTrigger).filter(([, entry]) => entry.runners > 0)
+      .map(([trigger, entry]) => `- ${trigger} trigger: ${entry.runners} runner(s), ${formatOptionalDuration(entry.runnerMs)}`),
+    `Reused results=${report.verification.reused}; joined runs=${report.verification.joined}; ` +
+      `time avoided=${formatOptionalDuration(report.verification.avoidedMs)}; limiter queue wait=${formatOptionalDuration(report.verification.queueWaitMs)}`,
     "",
     "Phase count",
     `${report.phaseCount}`,

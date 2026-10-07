@@ -1,11 +1,9 @@
 import { defineConfig } from "vitest/config";
 
+/** Filesystem/process-heavy suites split from the fast tier; `pnpm check` runs both. */
 export default defineConfig({
   test: {
-    include: ["test/**/*.test.ts"],
-    // Filesystem/process-heavy suites run in vitest.system.config.ts; both stay in `pnpm check`.
-    exclude: [
-      "test/integration.test.ts",
+    include: [
       "test/cli.test.ts",
       "test/install.test.ts",
       "test/workspace.test.ts",

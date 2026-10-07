@@ -109,6 +109,47 @@ Start from `config.example.json`:
 Any `{worktree}` token in one check argument is replaced with the verification
 worktree path. Expansion never creates shell text.
 
+### Coordinator-owned verification
+
+With `verification.mode` `"coordinator"` frozen in `start.json`, coord gates every
+implementation and revision product pin before acceptance. It selects candidate
+checks from the frozen baseline through the pin and runs them in a worktree
+materialized from the mirror. A failure rejects the submission: the agent
+receives a reissued action naming the command, exit code and log
+(`<issue-root>/verification-logs/`). A coordinator launch error throws instead,
+and the submission is re-evaluated on a later tick. Success records the results
+on the accepted submission; comparison, ballot and revision actions list each
+bound pin's results under `## Coordinator check results for the bound pins`, so
+every reviewer reads one execution.
+
+Finalization keeps the consensus-to-final pin check and the baseline
+classification, then runs each declared final component. A component with a
+trusted receipt for equivalent inputs is skipped (`verification-reused`); every
+other component runs. With no receipts, the full declared gate runs.
+
+Receipts live in `<coord-root>/verification/receipts/<key>.json`, outside every
+clone. The key is a digest of the origin, the input identity (tree id, or a
+digest of the tree without coordination evidence), the declared argv, the
+frozen policy digest, platform, architecture, Node version, probe outputs,
+declared environment digests and the declared dependency paths' digest. A
+command, or a cache probe, that modifies tracked files fails the gate before
+anything runs or is reused on the changed bytes. A receipt is written only
+after an exit-0 run whose declared dependencies were unchanged afterwards, and
+every read re-validates the schema and the key. Hook records, agent signals, failed, interrupted or dirty runs never become
+receipts.
+
+A per-key lock (`verification/running/`) makes a second runner for the same
+key wait and then reuse the owner's receipt (`verification-joined`). An owner
+that failed or died leaves no receipt, so the waiter runs the command itself.
+A waiter stops after 30 minutes of a live owner holding the key: the submission
+stays in verification (`retry`) and is re-evaluated on a later tick, so a hung
+runner cannot stall this coordinator, and the key never has two live runners.
+`expensive` commands take one of `maxConcurrentExpensive` slots
+(`verification/slots/`). A lock is reclaimed only when its owner is proven gone
+(same host, dead process); age alone never reclaims it. Verification runs
+inside the tick, as finalization always has, with authority re-checked between
+steps; while a suite runs, other agents' completions wait for the next tick.
+
 ## Advisory sections in `action.md`
 
 Two body sections are rendered only when they have content, so a step with

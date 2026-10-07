@@ -1,8 +1,18 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
-import { localConfigGet } from "./gitExec.js";
-import { readConfig, type CheckCommand, type CoordinatorConfig, type VerifyPhase } from "./state.js";
+import { git, localConfigGet } from "./gitExec.js";
+import { issueRuntimePaths } from "./paths.js";
+import {
+  readConfig,
+  readCursorsState,
+  readStartState,
+  type CheckCommand,
+  type CoordinatorConfig,
+  type VerifyConfig,
+  type VerifyPhase
+} from "./state.js";
+import { workspaceLocationFromConfig } from "./workspace.js";
 import { selectVerification, type ChangeInput } from "./changeClassification.js";
 import { verificationMeasurement, type VerificationMeasurement } from "./verificationLog.js";
 
@@ -107,6 +117,9 @@ export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): st
     ...(config.documentation?.verify.precommit ?? []),
     ...(config.documentation?.verify.prepush ?? []),
     ...(config.documentation?.checks ?? []),
+    ...(config.verification?.coordinated?.precommit ?? []),
+    ...(config.verification?.coordinated?.prepush ?? []),
+    ...(config.verification?.candidate?.checks ?? []),
     ...config.checks
   ];
   const missing = new Set<string>();
@@ -115,6 +128,55 @@ export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): st
     if (!resolves(executable, cwd)) missing.add(executable);
   }
   return [...missing].sort();
+};
+
+export type HookBinding = { bound: true; issue: number; commands: VerifyConfig } | { bound: false; reason: string };
+
+/**
+ * Coordinated hook lists apply only to a provably active coordinator run for
+ * this exact clone: the committed or single pushed branch is this agent's
+ * issue branch, that issue's frozen policy is coordinator mode, the run is
+ * neither completed nor abandoned, and the agent is still on the roster. Any
+ * other answer, including unreadable runtime state, keeps the local lists.
+ */
+export const resolveHookBinding = (input: {
+  clone: string;
+  configPath: string;
+  phase: VerifyPhase;
+  /** Pre-push ref lines exactly as Git supplied them on stdin. */
+  refs?: string;
+}): HookBinding => {
+  try {
+    let branch: string;
+    if (input.phase === "precommit") {
+      const head = git(input.clone, "symbolic-ref", "--quiet", "--short", "HEAD");
+      if (head.exitCode !== 0) return { bound: false, reason: "detached HEAD" };
+      branch = head.stdout.trim();
+    } else {
+      const lines = (input.refs ?? "").split("\n").filter((line) => line.trim() !== "");
+      if (lines.length !== 1) return { bound: false, reason: lines.length === 0 ? "no outgoing ref" : "multi-ref push" };
+      const remoteRef = lines[0]!.trim().split(/\s+/)[2] ?? "";
+      if (!remoteRef.startsWith("refs/heads/")) return { bound: false, reason: "outgoing ref is not a branch" };
+      branch = remoteRef.slice("refs/heads/".length);
+    }
+    const agent = localConfigGet(input.clone, "consensus.agentId");
+    const match = /^issue-([1-9][0-9]*)\/([a-z0-9-]+)$/.exec(branch);
+    if (match === null || agent === null || match[2] !== agent) return { bound: false, reason: `branch ${branch} is not this agent's issue branch` };
+    const issue = Number(match[1]);
+    const paths = issueRuntimePaths(workspaceLocationFromConfig(input.configPath).workspaceRoot, issue);
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    if (!start.agents.some((entry) => entry.id === agent && resolve(entry.root) === resolve(input.clone))) {
+      return { bound: false, reason: `issue ${issue} does not run this clone` };
+    }
+    const coordinated = start.verification?.mode === "coordinator" ? start.verification.coordinated : undefined;
+    if (coordinated === undefined) return { bound: false, reason: `issue ${issue} is not in coordinator verification mode` };
+    if (cursors.completed || cursors.abandoned) return { bound: false, reason: `issue ${issue} is no longer active` };
+    if (!cursors.activeRoster.includes(agent)) return { bound: false, reason: `${agent} is not on issue ${issue}'s active roster` };
+    return { bound: true, issue, commands: coordinated };
+  } catch (error) {
+    return { bound: false, reason: `runtime state unavailable (${error instanceof Error ? error.message.split("\n")[0] : String(error)})` };
+  }
 };
 
 export type VerifyRunResult = { ok: true } | { ok: false; failed: CheckCommand; exitCode: number };
@@ -143,12 +205,14 @@ export const runVerifyPhase = (input: {
   runner?: VerifyRunner;
   changes?: ChangeInput;
   record?: (measurement: VerificationMeasurement) => void;
+  /** Coordinated lists from a bound, active coordinator run (see resolveHookBinding). */
+  bound?: VerifyConfig;
 }): VerifyRunResult => {
   const runner = input.runner ?? inheritRunner;
   const selected = selectVerification(input.changes ?? { changes: null, identity: "unknown" }, input.config, input.phase,
     // The evidence exemption does not require a product verification declaration.
-    input.config.verify?.[input.phase] ?? []);
-  if (selected.kind === "product") verifyCommands(input.config, input.phase);
+    input.bound?.[input.phase] ?? input.config.verify?.[input.phase] ?? []);
+  if (selected.kind === "product" && input.bound === undefined) verifyCommands(input.config, input.phase);
   const { commands } = selected;
   const record = (command: CheckCommand | null, startedAt: string, exitCode: number, error?: string) => {
     input.record?.(verificationMeasurement({ trigger: "hook", phase: input.phase,

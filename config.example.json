@@ -54,6 +54,48 @@
     "precommit": [{ "name": "check:fast", "argv": ["pnpm", "check:fast"] }],
     "prepush": [{ "name": "test:e2e", "argv": ["pnpm", "test:e2e"] }]
   },
+  "verification": {
+    "mode": "coordinator",
+    "coordinated": {
+      "precommit": [
+        { "name": "lint", "argv": ["pnpm", "lint"] },
+        { "name": "typecheck", "argv": ["pnpm", "typecheck"] },
+        { "name": "test:fast", "argv": ["pnpm", "test:fast"] }
+      ],
+      "prepush": []
+    },
+    "candidate": {
+      "checks": [
+        { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
+        { "name": "lint", "argv": ["pnpm", "lint"],
+          "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules"],
+            "dependencyExcludes": ["node_modules/.modules.yaml", "node_modules/.pnpm-workspace-state-v1.json", "node_modules/.vite", "node_modules/.vite-temp"] } },
+        { "name": "typecheck", "argv": ["pnpm", "typecheck"],
+          "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules"],
+            "dependencyExcludes": ["node_modules/.modules.yaml", "node_modules/.pnpm-workspace-state-v1.json", "node_modules/.vite", "node_modules/.vite-temp"] } },
+        { "name": "test:fast", "argv": ["pnpm", "test:fast"],
+          "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules"],
+            "dependencyExcludes": ["node_modules/.modules.yaml", "node_modules/.pnpm-workspace-state-v1.json", "node_modules/.vite", "node_modules/.vite-temp"] } },
+        { "name": "test:system", "argv": ["pnpm", "test:system"], "expensive": true,
+          "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules"],
+            "dependencyExcludes": ["node_modules/.modules.yaml", "node_modules/.pnpm-workspace-state-v1.json", "node_modules/.vite", "node_modules/.vite-temp"] } }
+      ],
+      "covers": { "prefixes": ["src/", "test/", "docs/"], "files": ["AGENTS.md", "config.example.json", "config.product.example.json"] },
+      "rules": [
+        { "prefixes": ["githooks/", "templates/", "scripts/"], "add": ["test:e2e"] },
+        {
+          "files": ["package.json", "pnpm-lock.yaml", "tsconfig.json", "test/tsconfig.json", "eslint.config.js",
+            "vitest.config.ts", "vitest.system.config.ts", "vitest.e2e.config.ts"],
+          "add": "all"
+        }
+      ]
+    },
+    "maxConcurrentExpensive": 1
+  },
   "documentation": {
     "paths": ["README.md", "CONTRIBUTING.md", "SECURITY.md", "docs/setup-workspace.md", "docs/analytics.md"],
     "verify": {
@@ -67,6 +109,26 @@
   },
   "checks": [
     { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
-    { "name": "check", "argv": ["pnpm", "check"] }
+    { "name": "lint", "argv": ["pnpm", "lint"],
+      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules"],
+            "dependencyExcludes": ["node_modules/.modules.yaml", "node_modules/.pnpm-workspace-state-v1.json", "node_modules/.vite", "node_modules/.vite-temp"] } },
+    { "name": "typecheck", "argv": ["pnpm", "typecheck"],
+      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules"],
+            "dependencyExcludes": ["node_modules/.modules.yaml", "node_modules/.pnpm-workspace-state-v1.json", "node_modules/.vite", "node_modules/.vite-temp"] } },
+    { "name": "test:fast", "argv": ["pnpm", "test:fast"],
+      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules"],
+            "dependencyExcludes": ["node_modules/.modules.yaml", "node_modules/.pnpm-workspace-state-v1.json", "node_modules/.vite", "node_modules/.vite-temp"] } },
+    { "name": "test:system", "argv": ["pnpm", "test:system"], "expensive": true,
+      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules"],
+            "dependencyExcludes": ["node_modules/.modules.yaml", "node_modules/.pnpm-workspace-state-v1.json", "node_modules/.vite", "node_modules/.vite-temp"] } },
+    { "name": "build", "argv": ["pnpm", "build"] },
+    { "name": "test:e2e", "argv": ["pnpm", "test:e2e"], "expensive": true,
+      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules"],
+            "dependencyExcludes": ["node_modules/.modules.yaml", "node_modules/.pnpm-workspace-state-v1.json", "node_modules/.vite", "node_modules/.vite-temp"] } }
   ]
 }
