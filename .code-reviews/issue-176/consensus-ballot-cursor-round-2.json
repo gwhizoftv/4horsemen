@@ -1,0 +1,14 @@
+{
+  "actionId": "81c83d82-94ca-4347-8200-3307f6ade5bf",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "64a1f6ffa0915da460d4867210d0871faf22ac0a20bef1bdb0c9df392dfa6c9a",
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "protocolVersion": 2,
+  "rationale": "Round-2 pin 2dee29e5 keeps basedOn debb94c6 and fixes the C-j/C-m gap by holding composer and lifecycle vetoes through every submit key and ending early on correlated acceptance or Codex turn proof.",
+  "responseSha256": "9763a52b9e07aca51f786ef1070c6e21e7363cfe5e4e061ee4763960ec307c60",
+  "revisionCommitSha": "2dee29e53e21169f262105ada4273ae40fef697d",
+  "round": 2
+}

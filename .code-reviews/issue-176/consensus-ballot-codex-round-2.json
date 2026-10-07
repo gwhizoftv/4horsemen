@@ -1,0 +1,14 @@
+{
+  "actionId": "36293e8f-7b08-4ae7-8fd4-423a45fdc533",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "64a1f6ffa0915da460d4867210d0871faf22ac0a20bef1bdb0c9df392dfa6c9a",
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "protocolVersion": 2,
+  "rationale": "src/tmux.ts:198,1030 must recognize acceptance only from evidence that this nudge left the composer, but after C-j an unrelated Working line plus the actionId still in the composer returns sent despite lifecycle=changed, because Working itself invalidates codexTail and hence codexComposerHolds; diagnostics reproduced this with both unchanged and owner-edited unsent drafts, causing src/runLoop.ts:1142,1155 to mark injected and release the reservation instead of holding, so require correlated acceptance or verify the submitted transcript and empty composer, and add the unrelated-turn-between-submits regression.",
+  "responseSha256": "6e5c37f08347ff6aa31276a45aa0cf5514807472ad7d5c8b8e7800c55fe07d3d",
+  "revisionCommitSha": "2dee29e53e21169f262105ada4273ae40fef697d",
+  "round": 2
+}
