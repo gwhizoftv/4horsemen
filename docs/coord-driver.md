@@ -139,6 +139,8 @@ receipts.
 A per-key lock (`verification/running/`) makes a second runner for the same
 key wait and then reuse the owner's receipt (`verification-joined`). An owner
 that failed or died leaves no receipt, so the waiter runs the command itself.
+A waiter stops after 30 minutes of a live owner holding the key and runs the
+command itself, so a hung runner cannot stall this coordinator indefinitely.
 `expensive` commands take one of `maxConcurrentExpensive` slots
 (`verification/slots/`). A lock is reclaimed only when its owner is proven gone
 (same host, dead process); age alone never reclaims it. Verification runs

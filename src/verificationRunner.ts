@@ -49,6 +49,8 @@ export type RunVerificationInput = {
   environment?: { platform: string; arch: string; node: string; env: NodeJS.ProcessEnv };
   sleep?: (ms: number) => Promise<void>;
   pollMs?: number;
+  /** How long to wait for another live runner of the same key before running anyway. */
+  joinWaitMs?: number;
 };
 
 export type RunVerificationResult =
@@ -69,6 +71,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
   const { paths, start, checkpoint } = input;
   const sleep = input.sleep ?? defaultSleep;
   const pollMs = input.pollMs ?? 1_000;
+  const joinWaitMs = input.joinWaitMs ?? 30 * 60_000;
   const environment = input.environment ?? { platform: process.platform, arch: process.arch, node: process.version, env: process.env };
   const results: CheckResult[] = [];
   if (input.commands.length === 0) return { ok: true, results };
@@ -84,9 +87,12 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
   };
   /** Claim the per-key running lock, or wait for its live owner and return the
    * receipt that owner wrote. A failed or interrupted owner leaves no receipt,
-   * so the waiter then claims the lock and runs the command itself. */
-  const claim = async (key: string): Promise<{ receipt: Receipt; how: "reused" | "joined" } | null> => {
+   * so the waiter then claims the lock and runs the command itself. A live
+   * owner that never finishes cannot hold this tick past `joinWaitMs`: the
+   * waiter then runs the command itself without the lock. */
+  const claim = async (key: string): Promise<{ receipt: Receipt; how: "reused" | "joined" } | "claimed" | "timed-out"> => {
     const path = runningLockPath(paths.coordRoot, key);
+    const deadline = Date.parse(input.now()) + joinWaitMs;
     for (let polls = 0; ; polls++) {
       checkpoint();
       const token = tryAcquireLock(paths.coordRoot, path);
@@ -94,10 +100,11 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
         held.push([path, token]);
         // The previous owner may have finished between the first read and this claim.
         const after = readReceipt(paths.coordRoot, key);
-        if (after.status !== "hit") return null;
+        if (after.status !== "hit") return "claimed";
         release(path);
         return { receipt: after.receipt, how: polls === 0 ? "reused" : "joined" };
       }
+      if (Date.parse(input.now()) >= deadline) return "timed-out";
       await sleep(pollMs);
       const again = readReceipt(paths.coordRoot, key);
       if (again.status === "hit") return { receipt: again.receipt, how: "joined" };
@@ -160,7 +167,8 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
         if (read.status === "hit") { results.push(satisfiedBy(command, read.receipt, "reused")); continue; }
         cacheReason = `miss: ${read.reason}`;
         const shared = await claim(key);
-        if (shared !== null) { results.push(satisfiedBy(command, shared.receipt, shared.how)); continue; }
+        if (shared === "timed-out") cacheReason = `${cacheReason}; another runner still held the key after the join wait limit`;
+        else if (shared !== "claimed") { results.push(satisfiedBy(command, shared.receipt, shared.how)); continue; }
       }
 
       let queueWaitMs = 0;

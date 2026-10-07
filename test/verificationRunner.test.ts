@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -141,6 +141,22 @@ describe("verification runner", () => {
     expect(ran).toMatchObject({ ok: true, results: [{ name: "lint", receiptId: key }] });
     expect(calls).toEqual(["lint"]);
     expect(readReceipt(paths.coordRoot, key).status).toBe("hit");
+  });
+
+  it("stops waiting for a live owner that never finishes, runs the command itself, and leaves that lock alone", async () => {
+    const { paths, journal, input, material } = setup();
+    const lint = cached("lint");
+    const lock = runningLockPath(paths.coordRoot, receiptKey(material(lint)));
+    mkdirSync(join(paths.coordRoot, "verification/running"), { recursive: true });
+    const owner = JSON.stringify({ pid: process.pid, hostname: hostname(), token: "stuck", startedAt: new Date().toISOString() });
+    writeFileSync(lock, owner);
+    const calls: string[] = [];
+    const result = await runVerification(input([lint], async (argv) => { calls.push(argv[0]!); return ok(); }, { joinWaitMs: 20 }));
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual(["lint"]);
+    expect(journal.find((row) => row.type === "verification-run")?.details.cacheReason)
+      .toContain("another runner still held the key after the join wait limit");
+    expect(readFileSync(lock, "utf8")).toBe(owner);
   });
 
   it("bounds concurrent expensive commands and records the queue wait", async () => {
