@@ -1,29 +1,24 @@
 {
-  "actionId": "086ed239-f1e6-42d5-8011-7c2bd1336602",
+  "actionId": "87f53810-10de-49b1-b80e-5b4f9144425c",
   "agent": "claude",
   "artifact": "comparison-ballot",
   "choice": "claude",
   "implementations": [
     {
       "agent": "claude",
-      "commitSha": "4cd51349bccc088fde3d100daceecd9ce1d8280c",
+      "commitSha": "1fe1bfe6a4e39975a5a4150a7e58aa14e37ceb6f",
       "path": ".signals/issue-170/implementation-ready-claude.json"
     },
     {
-      "agent": "codex",
-      "commitSha": "176db1508f7edd49167663347fa6d365e31284a7",
-      "path": ".signals/issue-170/implementation-ready-codex.json"
-    },
-    {
       "agent": "cursor",
-      "commitSha": "5f79510f6b6082f76e83113d8619a82a6c65bd34",
+      "commitSha": "f0fd12fb598086d13516ecdca5c90156e14a2a85",
       "path": ".signals/issue-170/implementation-ready-cursor.json"
     }
   ],
-  "inputSetHash": "5efc904f0194b7c20a44ec995e184a3f80453bacbd1b8686a2395fe47a08d239",
+  "inputSetHash": "78a91af074f57efa5804511e14197e5b2cd4f065fed1dc6c99024210ab36d04c",
   "issue": 170,
   "issueSessionId": "issue-170:6f5b4bc0bb97feeb1711fe3d8f38c327460f5827",
   "protocolVersion": 2,
-  "rationale": "The claude implementation keeps lock exclusion safe (owner-proven reclaim, token-compared release), withholds receipts when tracked inputs change, rejects same-name command conflicts, preserves existing configs, keeps check:fast cheap and demonstrates proven evidence-excluded reuse, whereas cursor has age-based lock reclaim with unconditional release, unchecked receipt inputs, a dropped-requirement path and a duplicate-name config regression, and codex stalls every later tick on an interrupted lock until manual file removal and misreports tracked-input changes as command failures; its one revision item is bounding the join wait.",
-  "responseSha256": "a7be4a47614927f3578537e8fe71f1ea6eaf8b0440768a91c82d535f32b3c196"
+  "rationale": "claude 1fe1bfe6 carries every fix from three review rounds with regression tests (owner-proven lock reclaim with token release, tracked-file and probe-mutation failures, dependency identity, name-conflict rejection, env digests, waiting instead of unlocked runs, full check:fast coverage), whereas cursor f0fd12fb still has age-based lock reclaim with unconditional release, no tracked-input or dependency checks behind receipts, a dropped-requirement name dedupe, a duplicate-name config regression, an unbounded join wait and a check:fast coverage loss.",
+  "responseSha256": "a822687a56fb56065905ccadeab27661dd06f7abbeb4ad63667fe49a7db0d1e8"
 }
