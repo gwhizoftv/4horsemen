@@ -715,6 +715,14 @@ export const resolveChangeScope = async (
   return scope;
 };
 
+/** Another live runner holds this input's verification: keep the submission and
+ * re-evaluate it on a later tick instead of running the same key unlocked. */
+const waitingObservation = (observation: EvidenceObservation, command: string): EvidenceObservation => ({
+  ...observation,
+  status: "retry",
+  outstanding: [`waiting for another coordinator's verification of ${command} for this input; re-evaluating on a later tick`]
+});
+
 export const buildOrder = (
   paths: IssueRuntimePaths,
   start: StartState,
@@ -2392,13 +2400,14 @@ export class CoordinatorRunLoop {
       start, "finalization", start.checks);
     const checked = await this.runGateVerification(start, order, cursors, "finalization", observation.productPin, selected,
       selected.commands);
-    if (!checked.ok) {
+    if (checked.status === "waiting") return waitingObservation(observation, checked.waitingFor);
+    if (checked.status === "failed") {
       return {
         ...observation,
         status: "rejected",
         outstanding: [
-          `finalization check (tier: checks) ${checked.failed.name} failed with exit ${checked.failed.exitCode}: ${checked.stderr.trim()}` +
-            ` (log: ${checked.failed.logPath})${checked.retryNote === null ? "" : `; ${checked.retryNote}`}`
+          `finalization check (tier: checks) ${checked.failure}: ${checked.stderr.trim()}` +
+            ` (log: ${checked.failed.logPath})${checked.note === null ? "" : `; ${checked.note}`}`
         ]
       };
     }
@@ -2427,17 +2436,18 @@ export class CoordinatorRunLoop {
     this.authority(cursors);
     appendJournal(this.paths, { type: "candidate-check", agent: order.agent, actionId: order.actionId, details: {
       pin, classification: selected.kind, reason: selected.reason, expanded: selected.expanded,
-      outcome: verified.ok ? "passed" : "failed",
+      outcome: verified.status,
       commands: verified.results.map((result) => ({ name: result.name, exitCode: result.exitCode, reused: result.reused === true,
         joined: result.joined === true, receiptId: result.receiptId ?? null, logPath: result.logPath ?? null }))
     } }, this.now());
-    if (!verified.ok) {
+    if (verified.status === "waiting") return waitingObservation(observation, verified.waitingFor);
+    if (verified.status === "failed") {
       return {
         ...observation,
         status: "rejected",
         outstanding: [
-          `candidate check ${verified.failed.name} failed with exit ${verified.failed.exitCode} (log: ${verified.failed.logPath})` +
-            `${verified.retryNote === null ? "" : `; ${verified.retryNote}`}`
+          `candidate check ${verified.failure} (log: ${verified.failed.logPath})` +
+            `${verified.note === null ? "" : `; ${verified.note}`}`
         ]
       };
     }
@@ -2461,7 +2471,7 @@ export class CoordinatorRunLoop {
           inputIdentity: classification.inputIdentity, classification: classification.kind, reason: classification.reason,
           command: null, startedAt: at, completedAt: at, exitCode: 0, skipReason: classification.reason,
           cacheReason: "not cached: nothing selected" }) }, at);
-      return { ok: true, results: [] };
+      return { status: "passed", results: [] };
     }
     return runVerification({
       paths: this.paths, start, mirror: this.mirror, processRunner: this.processRunner, now: () => this.now(),

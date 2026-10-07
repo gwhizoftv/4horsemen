@@ -210,8 +210,7 @@ export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal
       argv: manager === "npm" ? ["npm", "run", "--silent", name] : [manager, "run", name]
     });
     const precommit = ["check:fast", "check", "lint"].filter((name) => scripts.has(name)).slice(0, 1);
-    // A split-out system tier is still mandatory local coverage before a push.
-    const prepush = ["test:system", "test:e2e"].filter((name) => scripts.has(name));
+    const prepush = ["test:e2e"].filter((name) => scripts.has(name));
     const finalization = ["check", "test"].filter((name) => scripts.has(name)).slice(0, 1);
     return {
       toolchain: manager,

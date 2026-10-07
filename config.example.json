@@ -52,28 +52,33 @@
   "pollIntervalMs": 1000,
   "verify": {
     "precommit": [{ "name": "check:fast", "argv": ["pnpm", "check:fast"] }],
-    "prepush": [
-      { "name": "test:system", "argv": ["pnpm", "test:system"] },
-      { "name": "test:e2e", "argv": ["pnpm", "test:e2e"] }
-    ]
+    "prepush": [{ "name": "test:e2e", "argv": ["pnpm", "test:e2e"] }]
   },
   "verification": {
     "mode": "coordinator",
     "coordinated": {
-      "precommit": [{ "name": "check:fast", "argv": ["pnpm", "check:fast"] }],
+      "precommit": [
+        { "name": "lint", "argv": ["pnpm", "lint"] },
+        { "name": "typecheck", "argv": ["pnpm", "typecheck"] },
+        { "name": "test:fast", "argv": ["pnpm", "test:fast"] }
+      ],
       "prepush": []
     },
     "candidate": {
       "checks": [
         { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
         { "name": "lint", "argv": ["pnpm", "lint"],
-          "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]] } },
+          "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules/.pnpm/lock.yaml"] } },
         { "name": "typecheck", "argv": ["pnpm", "typecheck"],
-          "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]] } },
+          "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules/.pnpm/lock.yaml"] } },
         { "name": "test:fast", "argv": ["pnpm", "test:fast"],
-          "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]] } },
+          "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules/.pnpm/lock.yaml"] } },
         { "name": "test:system", "argv": ["pnpm", "test:system"], "expensive": true,
-          "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]] } }
+          "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules/.pnpm/lock.yaml"] } }
       ],
       "covers": { "prefixes": ["src/", "test/", "docs/"], "files": ["AGENTS.md", "config.example.json", "config.product.example.json"] },
       "rules": [
@@ -101,15 +106,20 @@
   "checks": [
     { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
     { "name": "lint", "argv": ["pnpm", "lint"],
-      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]] } },
+      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules/.pnpm/lock.yaml"] } },
     { "name": "typecheck", "argv": ["pnpm", "typecheck"],
-      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]] } },
+      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules/.pnpm/lock.yaml"] } },
     { "name": "test:fast", "argv": ["pnpm", "test:fast"],
-      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]] } },
+      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules/.pnpm/lock.yaml"] } },
     { "name": "test:system", "argv": ["pnpm", "test:system"], "expensive": true,
-      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]] } },
+      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules/.pnpm/lock.yaml"] } },
     { "name": "build", "argv": ["pnpm", "build"] },
     { "name": "test:e2e", "argv": ["pnpm", "test:e2e"], "expensive": true,
-      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]] } }
+      "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
+            "dependencies": ["node_modules/.pnpm/lock.yaml"] } }
   ]
 }

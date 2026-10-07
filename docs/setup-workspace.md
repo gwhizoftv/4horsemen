@@ -554,12 +554,17 @@ runs into coord (see `config.example.json`):
   `"tree-excluding-evidence"` ignores only coordination evidence paths and is
   appropriate only for commands that never read them. `probes` (argv run in the
   worktree, for example `["node", "--version"]`) and `env` (names whose value
-  digests are keyed) declare toolchain and environment inputs. Never cache a
+  digests are keyed) declare toolchain and environment inputs; `dependencies`
+  (worktree paths such as `node_modules/.pnpm/lock.yaml`) declare untracked
+  inputs, hashed when the command runs and re-checked afterwards. Never cache a
   command that reads Git history, commit identity, external services or
   undeclared environment; setup commands such as `install` and `build` stay
   uncached so they always run.
 - **Retries.** `retry` (0–2) re-runs a failed command for diagnosis only. The
   original failure remains the outcome.
+- **Tracked files.** A command that leaves tracked files different from the pin
+  fails the gate, even with exit 0, so every later command, receipt and result
+  describes the pin's own bytes.
 - **Expensive commands.** `expensive` commands share `maxConcurrentExpensive`
   slots across every issue runner in the workspace.
 
@@ -567,12 +572,11 @@ The policy and its digest are frozen into `start.json`, so changing the
 declaration affects only issues started afterwards. Switch modes between
 issues.
 
-The fast suite (`test:fast`) excludes the filesystem/process suites now in
-`test:system`; `pnpm check` still runs both. An existing workspace whose local
-`verify.prepush` is only `test:e2e` should add `test:system` (as the example
-does) before relying on the narrower `check:fast`, so manual branches keep
-their coverage. New Node proposals include `test:system` when the product
-declares it.
+The unit suite (`test:fast`) excludes the filesystem/process suites now in
+`test:system`. `pnpm check:fast` runs both, so existing local `verify` lists
+that name it keep their full coverage; the example's coordinated pre-commit
+list names `lint`, `typecheck` and `test:fast` directly to stay cheap while coord
+owns the system suites.
 
 ## Workspace layouts and issue input
 

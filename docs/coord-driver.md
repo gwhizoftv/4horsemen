@@ -130,17 +130,19 @@ other component runs. With no receipts, the full declared gate runs.
 Receipts live in `<coord-root>/verification/receipts/<key>.json`, outside every
 clone. The key is a digest of the origin, the input identity (tree id, or a
 digest of the tree without coordination evidence), the declared argv, the
-frozen policy digest, platform, architecture, Node version, probe outputs and
-declared environment digests. A receipt is written only after an exit-0 run that
-left tracked files unchanged, and every read re-validates the schema and the
-key. Hook records, agent signals, failed, interrupted or dirty runs never become
+frozen policy digest, platform, architecture, Node version, probe outputs,
+declared environment digests and the declared dependency paths' digest. A
+command that modifies tracked files fails the gate. A receipt is written only
+after an exit-0 run whose declared dependencies were unchanged afterwards, and
+every read re-validates the schema and the key. Hook records, agent signals, failed, interrupted or dirty runs never become
 receipts.
 
 A per-key lock (`verification/running/`) makes a second runner for the same
 key wait and then reuse the owner's receipt (`verification-joined`). An owner
 that failed or died leaves no receipt, so the waiter runs the command itself.
-A waiter stops after 30 minutes of a live owner holding the key and runs the
-command itself, so a hung runner cannot stall this coordinator indefinitely.
+A waiter stops after 30 minutes of a live owner holding the key: the submission
+stays in verification (`retry`) and is re-evaluated on a later tick, so a hung
+runner cannot stall this coordinator, and the key never has two live runners.
 `expensive` commands take one of `maxConcurrentExpensive` slots
 (`verification/slots/`). A lock is reclaimed only when its owner is proven gone
 (same host, dead process); age alone never reclaims it. Verification runs

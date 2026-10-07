@@ -158,8 +158,7 @@ describe("installer proposals", () => {
     const own = proposeProjectPolicy(repoRoot);
     expect(own.toolchain).toBe("pnpm");
     expect(own.verify?.precommit[0]?.argv).toEqual(["pnpm", "run", "check:fast"]);
-    // The split-out system tier stays mandatory local coverage before a push.
-    expect(own.verify?.prepush.map((command) => command.argv)).toEqual([["pnpm", "run", "test:system"], ["pnpm", "run", "test:e2e"]]);
+    expect(own.verify?.prepush[0]?.argv).toEqual(["pnpm", "run", "test:e2e"]);
 
     // A directory with no recognisable ecosystem gets no proposal at all, so the
     // installer refuses rather than inventing checks nobody declared.

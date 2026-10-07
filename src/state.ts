@@ -98,7 +98,12 @@ export const checkCacheSchema = z
   .object({
     inputs: z.enum(["tree", "tree-excluding-evidence"]),
     env: z.array(z.string().regex(/^[A-Z_][A-Z0-9_]*$/)).default([]),
-    probes: z.array(z.array(z.string()).min(1)).default([])
+    probes: z.array(z.array(z.string()).min(1)).default([]),
+    /**
+     * Untracked worktree inputs the command reads, such as installed
+     * dependencies, hashed when the command runs and again afterwards.
+     */
+    dependencies: z.array(repositoryPathSchema).default([])
   })
   .strict();
 

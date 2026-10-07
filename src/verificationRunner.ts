@@ -9,6 +9,7 @@ import type { CheckResult } from "./steps.js";
 import { verificationMeasurement, type VerificationMeasurement } from "./verificationLog.js";
 import {
   computeInputIdentity,
+  dependencyIdentity,
   envDigests,
   readReceipt,
   receiptKey,
@@ -54,8 +55,10 @@ export type RunVerificationInput = {
 };
 
 export type RunVerificationResult =
-  | { ok: true; results: CheckResult[] }
-  | { ok: false; results: CheckResult[]; failed: CheckResult; stderr: string; retryNote: string | null };
+  | { status: "passed"; results: CheckResult[] }
+  | { status: "failed"; results: CheckResult[]; failed: CheckResult; failure: string; stderr: string; note: string | null }
+  /** Another live runner still holds this input's key: re-evaluate later rather than run unlocked. */
+  | { status: "waiting"; results: CheckResult[]; waitingFor: string };
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -74,7 +77,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
   const joinWaitMs = input.joinWaitMs ?? 30 * 60_000;
   const environment = input.environment ?? { platform: process.platform, arch: process.arch, node: process.version, env: process.env };
   const results: CheckResult[] = [];
-  if (input.commands.length === 0) return { ok: true, results };
+  if (input.commands.length === 0) return { status: "passed", results };
 
   const journal: VerificationJournal = (type, details, at) => { checkpoint(); input.journal(type, details, at); };
   const target = containedPath(paths.issueRoot, `.verification-${randomUUID()}`);
@@ -134,10 +137,14 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
       if (probe.exitCode !== 0) return `not cached: probe ${argv.join(" ")} exited ${probe.exitCode}`;
       probeResults.push({ argv: [...argv], stdout: probe.stdout.trim() });
     }
+    // Hashed now, after the commands before this one prepared the worktree.
+    let dependencies: string;
+    try { dependencies = dependencyIdentity(target, command.cache.dependencies); }
+    catch (error) { return `not cached: ${error instanceof Error ? error.message : String(error)}`; }
     return {
       v: 1, origin: start.origin, inputsMode: mode, inputIdentity: identity, argv: [...command.argv],
       policyDigest: start.verificationDigest, platform: environment.platform, arch: environment.arch,
-      node: environment.node, probes: probeResults, env: envDigests(command.cache.env, environment.env)
+      node: environment.node, probes: probeResults, env: envDigests(command.cache.env, environment.env), dependencies
     };
   };
 
@@ -153,6 +160,9 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
     checkpoint();
     await input.mirror.materializeWorktree(target, input.pin);
     checkpoint();
+    // Every command below must leave tracked files as the pin has them, so a
+    // later command, and any receipt it reuses or writes, always sees the pin.
+    if (!trackedInputsClean(target)) throw new Error(`Verification worktree for ${input.pin} does not match its pin.`);
     const logs = containedPath(paths.issueRoot, "verification-logs");
     mkdirSync(logs, { recursive: true, mode: 0o700 });
     assertNoSymlink(paths.issueRoot, logs);
@@ -167,8 +177,8 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
         if (read.status === "hit") { results.push(satisfiedBy(command, read.receipt, "reused")); continue; }
         cacheReason = `miss: ${read.reason}`;
         const shared = await claim(key);
-        if (shared === "timed-out") cacheReason = `${cacheReason}; another runner still held the key after the join wait limit`;
-        else if (shared !== "claimed") { results.push(satisfiedBy(command, shared.receipt, shared.how)); continue; }
+        if (shared === "timed-out") return { status: "waiting", results, waitingFor: command.name };
+        if (shared !== "claimed") { results.push(satisfiedBy(command, shared.receipt, shared.how)); continue; }
       }
 
       let queueWaitMs = 0;
@@ -189,10 +199,9 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
       }
 
       const argv = command.argv.map((argument) => argument.replaceAll("{worktree}", target));
-      const cleanBefore = key !== null && trackedInputsClean(target);
       const attempts = 1 + (command.retry ?? 0);
-      let original: { exitCode: number; stderr: string; logPath: string; measurement: VerificationMeasurement } | null = null;
-      let retryPassed: boolean | null = null;
+      let original: { exitCode: number; stderr: string; logPath: string; measurement: VerificationMeasurement; modified: boolean } | null = null;
+      let retryNote: string | null = null;
       let ran = 0;
       for (let attempt = 1; attempt <= attempts; attempt++) {
         ran = attempt;
@@ -217,45 +226,56 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
           // A coordinator launch failure is not a rejected agent submission.
           throw error;
         }
-        writeFileSync(logPath, `$ ${argv.join(" ")}\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}\nexit ${result.exitCode}\n`,
-          { mode: 0o600 });
+        const modified = !trackedInputsClean(target);
+        writeFileSync(logPath, `$ ${argv.join(" ")}\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}\nexit ${result.exitCode}\n` +
+          (modified ? "coord: this command modified tracked files, so the pin's bytes are not what was checked.\n" : ""), { mode: 0o600 });
         const measurement = record(result.exitCode);
         if (input.phase === "finalization") {
           journal("final-check", { tier: "checks", name: command.name, argv, exitCode: result.exitCode,
             durationMs: measurement.durationMs, logPath, attempt, cacheReason, ...(key === null ? {} : { receiptId: key }) },
           measurement.completedAt);
         }
+        // Never retry in a tree that no longer matches the pin.
         if (original === null) {
-          original = { exitCode: result.exitCode, stderr: result.stderr, logPath, measurement };
-          if (result.exitCode === 0) break;
+          original = { exitCode: result.exitCode, stderr: result.stderr, logPath, measurement, modified };
+          if (result.exitCode === 0 || modified) break;
         } else {
-          retryPassed = result.exitCode === 0;
-          if (retryPassed) break;
+          retryNote = `diagnostic retry ${result.exitCode === 0 && !modified ? "passed" : "also failed"}; the original failure is the outcome`;
+          if (result.exitCode === 0 || modified) break;
         }
       }
       if (slot !== null) release(slot);
       const first = original!;
-      if (first.exitCode !== 0) {
+      if (first.exitCode !== 0 || first.modified) {
         const failed: CheckResult = { name: command.name, argv, exitCode: first.exitCode, logPath: first.logPath, attempts: ran };
         results.push(failed);
-        const retryNote = retryPassed === null ? null
-          : `diagnostic retry ${retryPassed ? "passed" : "also failed"}; the original failure is the outcome`;
-        return { ok: false, results, failed, stderr: first.stderr, retryNote };
+        const failure = first.exitCode !== 0 ? `${command.name} failed with exit ${first.exitCode}`
+          : `${command.name} exited 0 but modified tracked files`;
+        const notes = [first.exitCode !== 0 && first.modified ? "it also modified tracked files" : null, retryNote]
+          .filter((entry): entry is string => entry !== null);
+        return { status: "failed", results, failed, failure, stderr: first.stderr, note: notes.length === 0 ? null : notes.join("; ") };
       }
+      // A receipt certifies the inputs the command actually ran against: the
+      // declared dependencies must still be what the key recorded.
       let receiptId: string | undefined;
-      if (key !== null && typeof material !== "string" && cleanBefore && trackedInputsClean(target)) {
-        writeReceipt(paths.coordRoot, {
-          formatVersion: 1, key, material, name: command.name, exitCode: 0,
-          durationMs: first.measurement.durationMs ?? 0, issue: start.issue, issueSessionId: start.issueSessionId,
-          productPin: input.pin, logPath: first.logPath, completedAt: first.measurement.completedAt
-        });
-        receiptId = key;
+      if (key !== null && typeof material !== "string") {
+        let unchanged = false;
+        try { unchanged = dependencyIdentity(target, command.cache!.dependencies) === material.dependencies; }
+        catch { unchanged = false; }
+        if (unchanged) {
+          writeReceipt(paths.coordRoot, {
+            formatVersion: 1, key, material, name: command.name, exitCode: 0,
+            durationMs: first.measurement.durationMs ?? 0, issue: start.issue, issueSessionId: start.issueSessionId,
+            productPin: input.pin, logPath: first.logPath, completedAt: first.measurement.completedAt
+          });
+          receiptId = key;
+        }
       }
       if (key !== null) release(runningLockPath(paths.coordRoot, key));
       results.push({ name: command.name, argv, exitCode: 0, logPath: first.logPath, attempts: 1,
         ...(receiptId === undefined ? {} : { receiptId }) });
     }
-    return { ok: true, results };
+    return { status: "passed", results };
   } finally {
     for (const [path, token] of held.splice(0)) releaseLock(path, token);
     await input.mirror.removeWorktree(target);

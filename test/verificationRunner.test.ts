@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -17,13 +17,14 @@ import {
 } from "../src/verificationReceipts.js";
 import { runVerification, type RunVerificationInput } from "../src/verificationRunner.js";
 import { git } from "./support/workspaceFixture.js";
+import { sha256 } from "../src/hash.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 const environment = { platform: "test-os", arch: "test-arch", node: "v0", env: { TOKEN: "secret" } };
 const cached = (name: string, extra: Partial<CheckCommand> = {}): CheckCommand =>
-  ({ name, argv: [name], cache: { inputs: "tree-excluding-evidence", env: [], probes: [] }, ...extra });
+  ({ name, argv: [name], cache: { inputs: "tree-excluding-evidence", env: [], probes: [], dependencies: [] }, ...extra });
 
 const setup = () => {
   const root = mkdtempSync(join(tmpdir(), "coord-verify-"));
@@ -59,7 +60,7 @@ const setup = () => {
   const material = (command: CheckCommand, at = pin): ReceiptKeyMaterial => ({ v: 1, origin: start.origin,
     inputsMode: "tree-excluding-evidence", inputIdentity: computeInputIdentity(paths.mirror, at, "tree-excluding-evidence"),
     argv: [...command.argv], policyDigest: start.verificationDigest!, platform: environment.platform, arch: environment.arch,
-    node: environment.node, probes: [], env: [] });
+    node: environment.node, probes: [], env: [], dependencies: sha256("") });
   return { paths, pin, evidencePin, productPin, journal, input, material };
 };
 
@@ -73,6 +74,7 @@ describe("verification receipts", () => {
     for (const changed of [
       { argv: ["lint", "--fix"] }, { policyDigest: "e".repeat(64) }, { platform: "other" }, { arch: "other" }, { node: "v1" },
       { probes: [{ argv: ["node", "--version"], stdout: "v2" }] }, { env: [{ name: "TOKEN", value: "f".repeat(64) }] },
+      { dependencies: "f".repeat(64) },
       { inputIdentity: computeInputIdentity(paths.mirror, productPin, "tree-excluding-evidence") }
     ]) {
       expect(receiptKey({ ...base, ...changed }), JSON.stringify(changed)).not.toBe(key);
@@ -86,7 +88,7 @@ describe("verification receipts", () => {
     const { paths, input, material } = setup();
     const lint = cached("lint");
     const failed = await runVerification(input([lint], async () => ({ exitCode: 2, stdout: "", stderr: "bad" })));
-    expect(failed).toMatchObject({ ok: false, failed: { name: "lint", exitCode: 2 } });
+    expect(failed).toMatchObject({ status: "failed", failure: "lint failed with exit 2", failed: { name: "lint", exitCode: 2 } });
     const key = receiptKey(material(lint));
     expect(readReceipt(paths.coordRoot, key)).toEqual({ status: "miss", reason: "no receipt" });
 
@@ -99,15 +101,43 @@ describe("verification receipts", () => {
     expect(readReceipt(paths.coordRoot, key)).toEqual({ status: "miss", reason: "receipt key material does not match" });
   });
 
-  it("writes no receipt when tracked inputs changed before the cached command ran", async () => {
+  it("fails the command that modifies tracked files, so nothing later runs or reuses against changed bytes", async () => {
     const { paths, input, material } = setup();
     const lint = cached("lint");
+    const calls: string[] = [];
     const result = await runVerification(input([{ name: "mutate", argv: ["mutate"] }, lint], async (argv, cwd) => {
+      calls.push(argv[0]!);
       if (argv[0] === "mutate") writeFileSync(join(cwd, "src/a.ts"), "generated\n");
       return { exitCode: 0, stdout: "", stderr: "" };
     }));
-    expect(result.ok).toBe(true);
+    expect(result).toMatchObject({ status: "failed", failure: "mutate exited 0 but modified tracked files" });
+    if (result.status !== "failed") throw new Error("expected a failure");
+    expect(readFileSync(result.failed.logPath!, "utf8")).toContain("modified tracked files");
+    expect(calls).toEqual(["mutate"]);
     expect(readReceipt(paths.coordRoot, receiptKey(material(lint))).status).toBe("miss");
+  });
+
+  it("keys on the declared dependencies as prepared, and withholds the receipt when the command changed them", async () => {
+    const { paths, input } = setup();
+    const lint = cached("lint", { cache: { inputs: "tree-excluding-evidence", env: [], probes: [], dependencies: ["deps/lock.yaml"] } });
+    const prepare = { name: "prepare", argv: ["prepare"] };
+    let installed = "a";
+    const runner = (lintWrites: boolean): RunVerificationInput["processRunner"] => async (argv, cwd) => {
+      if (argv[0] === "prepare") { mkdirSync(join(cwd, "deps"), { recursive: true }); writeFileSync(join(cwd, "deps/lock.yaml"), installed); }
+      if (argv[0] === "lint" && lintWrites) writeFileSync(join(cwd, "deps/lock.yaml"), "changed by lint");
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    const receipts = () => readdirSync(join(paths.coordRoot, "verification/receipts")).filter((name) => name.endsWith(".json"));
+    expect(await runVerification(input([prepare, lint], runner(true)))).toMatchObject({ status: "passed" });
+    expect(existsSync(join(paths.coordRoot, "verification/receipts"))).toBe(false);
+    const first = await runVerification(input([prepare, lint], runner(false)));
+    expect(first.results.at(-1)?.receiptId).toBeDefined();
+    expect(receipts()).toHaveLength(1);
+    // Different installed dependencies are different inputs: no reuse.
+    installed = "b";
+    const second = await runVerification(input([prepare, lint], runner(false)));
+    expect(second.results.at(-1)).not.toHaveProperty("reused");
+    expect(receipts()).toHaveLength(2);
   });
 });
 
@@ -129,7 +159,7 @@ describe("verification runner", () => {
         rmSync(lock);
       }
     }));
-    expect(joined).toMatchObject({ ok: true, results: [{ name: "lint", joined: true, receiptId: key }] });
+    expect(joined).toMatchObject({ status: "passed", results: [{ name: "lint", joined: true, receiptId: key }] });
     expect(calls).toEqual([]);
     expect(journal.map((row) => row.type)).toEqual(["verification-joined"]);
 
@@ -138,12 +168,12 @@ describe("verification runner", () => {
     const dead = spawnSync("true").pid!;
     writeFileSync(lock, JSON.stringify({ pid: dead, hostname: hostname(), token: "dead", startedAt: new Date(0).toISOString() }));
     const ran = await runVerification(input([lint], async (argv) => { calls.push(argv[0]!); return ok(); }));
-    expect(ran).toMatchObject({ ok: true, results: [{ name: "lint", receiptId: key }] });
+    expect(ran).toMatchObject({ status: "passed", results: [{ name: "lint", receiptId: key }] });
     expect(calls).toEqual(["lint"]);
     expect(readReceipt(paths.coordRoot, key).status).toBe("hit");
   });
 
-  it("stops waiting for a live owner that never finishes, runs the command itself, and leaves that lock alone", async () => {
+  it("stops waiting for a live owner that never finishes without running the same key unlocked", async () => {
     const { paths, journal, input, material } = setup();
     const lint = cached("lint");
     const lock = runningLockPath(paths.coordRoot, receiptKey(material(lint)));
@@ -152,10 +182,9 @@ describe("verification runner", () => {
     writeFileSync(lock, owner);
     const calls: string[] = [];
     const result = await runVerification(input([lint], async (argv) => { calls.push(argv[0]!); return ok(); }, { joinWaitMs: 20 }));
-    expect(result.ok).toBe(true);
-    expect(calls).toEqual(["lint"]);
-    expect(journal.find((row) => row.type === "verification-run")?.details.cacheReason)
-      .toContain("another runner still held the key after the join wait limit");
+    expect(result).toEqual({ status: "waiting", results: [], waitingFor: "lint" });
+    expect(calls).toEqual([]);
+    expect(journal.filter((row) => row.type === "verification-run")).toEqual([]);
     expect(readFileSync(lock, "utf8")).toBe(owner);
   });
 
@@ -185,8 +214,8 @@ describe("verification runner", () => {
     let attempt = 0;
     const result = await runVerification(input([flaky], async () =>
       ({ exitCode: attempt++ === 0 ? 1 : 0, stdout: "", stderr: "first run failed" })));
-    expect(result).toMatchObject({ ok: false, failed: { exitCode: 1, attempts: 2 }, stderr: "first run failed",
-      retryNote: "diagnostic retry passed; the original failure is the outcome" });
+    expect(result).toMatchObject({ status: "failed", failed: { exitCode: 1, attempts: 2 }, stderr: "first run failed",
+      note: "diagnostic retry passed; the original failure is the outcome" });
     expect(journal.filter((row) => row.type === "verification-run").map((row) => [row.details.attempt, row.details.exitCode]))
       .toEqual([[1, 1], [2, 0]]);
     expect(readReceipt(paths.coordRoot, receiptKey(material(flaky))).status).toBe("miss");

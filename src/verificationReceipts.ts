@@ -1,8 +1,21 @@
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  closeSync,
+  existsSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
 import { hostname } from "node:os";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import { isCoordinationEvidencePath } from "./changeClassification.js";
 import { sha256 } from "./hash.js";
@@ -33,7 +46,9 @@ export const receiptKeyMaterialSchema = z.object({
   node: z.string().min(1),
   probes: z.array(z.object({ argv: z.array(z.string()).min(1), stdout: z.string() }).strict()),
   /** Digests, not values: receipts must not copy secrets out of the environment. */
-  env: z.array(z.object({ name: z.string().min(1), value: hex64.nullable() }).strict())
+  env: z.array(z.object({ name: z.string().min(1), value: hex64.nullable() }).strict()),
+  /** Declared untracked inputs (for example installed dependencies) as found when the command ran. */
+  dependencies: hex64
 }).strict();
 export type ReceiptKeyMaterial = z.infer<typeof receiptKeyMaterialSchema>;
 
@@ -57,11 +72,44 @@ export const receiptKey = (material: ReceiptKeyMaterial): string => sha256(JSON.
   v: material.v, origin: material.origin, inputsMode: material.inputsMode, inputIdentity: material.inputIdentity,
   argv: material.argv, policyDigest: material.policyDigest, platform: material.platform, arch: material.arch,
   node: material.node, probes: material.probes.map((probe) => ({ argv: probe.argv, stdout: probe.stdout })),
-  env: material.env.map((entry) => ({ name: entry.name, value: entry.value }))
+  env: material.env.map((entry) => ({ name: entry.name, value: entry.value })),
+  dependencies: material.dependencies
 }));
 
 export const envDigests = (names: readonly string[], env: NodeJS.ProcessEnv = process.env): ReceiptKeyMaterial["env"] =>
   names.map((name) => ({ name, value: env[name] === undefined ? null : sha256(env[name]) }));
+
+/**
+ * Digest of declared untracked inputs in a worktree: names, modes, file bytes
+ * and symlink targets, recursively. A symlink is followed only while it stays
+ * inside the worktree; an escaping or cyclic link, a special file or an
+ * unreadable entry throws, which makes the command uncached rather than keyed
+ * on something unverified.
+ */
+export const dependencyIdentity = (worktree: string, paths: readonly string[]): string => {
+  const root = realpathSync(worktree);
+  const hash = createHash("sha256");
+  const field = (value: string | Buffer) => hash.update(`${Buffer.byteLength(value)}:`).update(value);
+  const walk = (path: string, ancestors: ReadonlySet<string>): void => {
+    const real = realpathSync(path);
+    if (real !== root && !real.startsWith(`${root}/`)) throw new Error(`dependency input ${path} leaves the worktree`);
+    if (ancestors.has(real)) throw new Error(`dependency input ${path} is cyclic`);
+    const stat = lstatSync(path);
+    field(String(stat.mode));
+    if (stat.isSymbolicLink()) { field(readlinkSync(path)); walk(real, ancestors); return; }
+    if (stat.isFile()) { field(readFileSync(path)); return; }
+    if (!stat.isDirectory()) throw new Error(`dependency input ${path} is not a file or directory`);
+    const next = new Set(ancestors).add(real);
+    for (const name of readdirSync(path).sort()) { field(name); walk(join(path, name), next); }
+  };
+  for (const declared of [...paths].sort()) {
+    field(declared);
+    const path = containedPath(root, declared);
+    if (!existsSync(path)) field("missing");
+    else walk(path, new Set());
+  }
+  return hash.digest("hex");
+};
 
 const mirrorGit = (mirrorPath: string, args: readonly string[]) =>
   spawnSync("git", args, { cwd: mirrorPath, encoding: "buffer", env: hermeticGitEnv(), maxBuffer: 256 * 1024 * 1024 });
