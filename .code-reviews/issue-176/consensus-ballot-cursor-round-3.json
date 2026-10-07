@@ -1,0 +1,14 @@
+{
+  "actionId": "e3673167-d175-444d-939f-d69e81029702",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "f159b2c04111225d783b0dcd6b163950ac013ddb76db7aefe177e139b912c2d4",
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "protocolVersion": 2,
+  "rationale": "Round-3 pin ab9527c1 keeps basedOn 2dee29e5 and correctly requires submitted-transcript plus empty-composer proof before ending early, rejecting unrelated Working while the nudge remains unsent.",
+  "responseSha256": "1a2de854dde0beec0c97215631aabb9c4d67ec618d13abbc81cc6ae58a55e805",
+  "revisionCommitSha": "ab9527c103def76cbae8f3181e15c90de37dce15",
+  "round": 3
+}
