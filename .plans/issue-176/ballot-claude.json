@@ -1,0 +1,46 @@
+{
+  "actionId": "e52f2a29-1c40-474a-aeb2-58f7899c4885",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "f13ccf099988b384d441ef7b96d4760f88b7d5af13e6c9e28f19e08003b6e1f6",
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "7fa11abb8c9f49ae44bf9891bd9e9933024bb612",
+      "path": ".plans/issue-176/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "d039ad6d99dded4c7188eb3558d64f8889683046",
+      "path": ".plans/issue-176/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d1bf5b904a25b5372904fbec43faac67df8c0220",
+      "path": ".plans/issue-176/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "The claude plan is the smallest safe basis (first-send-only exception, Codex turn-chrome veto, no fabricated lifecycle state), whereas cursor's order-time idle rewrite types into live turns and codex's plan adds unexecutable timed rereads, a self-rejecting empty-prompt rule and unneeded schema state; its revision must add the agentEvent session_id routing fix and Codex --no-daemon launch evidenced in the reviews, plus codex's draft-protection and send-boundary freshness findings.",
+  "responseSha256": "8b900db96c0e3a41f8e079ab047e53d170329fcc264e4371488e99230b6467dd",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "de7393d8aeb70274af00b9824bba809d3db04c4e",
+      "path": ".plans/issue-176/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "bde5b5abcf720d3c7a69bdd3ecda26cd71fa332a",
+      "path": ".plans/issue-176/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "653be4005fe50561a32c1ecf682ca1a96929cd18",
+      "path": ".plans/issue-176/review.md"
+    }
+  ]
+}

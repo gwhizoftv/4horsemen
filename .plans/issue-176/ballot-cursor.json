@@ -1,0 +1,46 @@
+{
+  "actionId": "8560012c-9dd9-46c5-bb6c-0e4d7f079d5b",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "f13ccf099988b384d441ef7b96d4760f88b7d5af13e6c9e28f19e08003b6e1f6",
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "7fa11abb8c9f49ae44bf9891bd9e9933024bb612",
+      "path": ".plans/issue-176/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "d039ad6d99dded4c7188eb3558d64f8889683046",
+      "path": ".plans/issue-176/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d1bf5b904a25b5372904fbec43faac67df8c0220",
+      "path": ".plans/issue-176/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude's review evidence shows Stop is misrouted via a shared app-server lacking COORD_ISSUE, and only the codex plan's --no-daemon launch addresses that cause (trim scope per reviews; reject cursor idle fabrication).",
+  "responseSha256": "dd323f26ab5dc3ae83b9c25b5d6ec37ed8a2fc968cb173572628d18f2847f23d",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "de7393d8aeb70274af00b9824bba809d3db04c4e",
+      "path": ".plans/issue-176/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "bde5b5abcf720d3c7a69bdd3ecda26cd71fa332a",
+      "path": ".plans/issue-176/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "653be4005fe50561a32c1ecf682ca1a96929cd18",
+      "path": ".plans/issue-176/review.md"
+    }
+  ]
+}

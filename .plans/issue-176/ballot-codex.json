@@ -1,0 +1,46 @@
+{
+  "actionId": "a2d51d5b-1bc7-4619-bdc5-970ccdc39c09",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "f13ccf099988b384d441ef7b96d4760f88b7d5af13e6c9e28f19e08003b6e1f6",
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "7fa11abb8c9f49ae44bf9891bd9e9933024bb612",
+      "path": ".plans/issue-176/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "d039ad6d99dded4c7188eb3558d64f8889683046",
+      "path": ".plans/issue-176/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d1bf5b904a25b5372904fbec43faac67df8c0220",
+      "path": ".plans/issue-176/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude is the smallest viable base, but it must address the composer and race defects and obtain a file-map amendment for session-correlated lifecycle routing and isolated Codex launch before implementation can satisfy issues 174 and 176.",
+  "responseSha256": "4dcb9f2c1ef973c090069cbb9abf87aa61c4fc0895e3d68ac8ee722602d6a978",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "de7393d8aeb70274af00b9824bba809d3db04c4e",
+      "path": ".plans/issue-176/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "bde5b5abcf720d3c7a69bdd3ecda26cd71fa332a",
+      "path": ".plans/issue-176/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "653be4005fe50561a32c1ecf682ca1a96929cd18",
+      "path": ".plans/issue-176/review.md"
+    }
+  ]
+}
