@@ -555,8 +555,12 @@ runs into coord (see `config.example.json`):
   appropriate only for commands that never read them. `probes` (argv run in the
   worktree, for example `["node", "--version"]`) and `env` (names whose value
   digests are keyed) declare toolchain and environment inputs; `dependencies`
-  (worktree paths such as `node_modules/.pnpm/lock.yaml`) declare untracked
-  inputs, hashed when the command runs and re-checked afterwards. Never cache a
+  (worktree paths such as `node_modules/.pnpm`) declare untracked
+  inputs, hashed when the command runs and re-checked afterwards. File bytes and
+  link targets are hashed with the worktree's own path normalized out (package
+  shims embed it); links are recorded, not followed, and must resolve inside the
+  declared paths. Declare the directory holding the real package files rather
+  than a lockfile copy, or leave the command uncached. Never cache a
   command that reads Git history, commit identity, external services or
   undeclared environment; setup commands such as `install` and `build` stay
   uncached so they always run.

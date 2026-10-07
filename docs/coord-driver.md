@@ -132,7 +132,8 @@ clone. The key is a digest of the origin, the input identity (tree id, or a
 digest of the tree without coordination evidence), the declared argv, the
 frozen policy digest, platform, architecture, Node version, probe outputs,
 declared environment digests and the declared dependency paths' digest. A
-command that modifies tracked files fails the gate. A receipt is written only
+command, or a cache probe, that modifies tracked files fails the gate before
+anything runs or is reused on the changed bytes. A receipt is written only
 after an exit-0 run whose declared dependencies were unchanged afterwards, and
 every read re-validates the schema and the key. Hook records, agent signals, failed, interrupted or dirty runs never become
 receipts.

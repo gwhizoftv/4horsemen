@@ -80,33 +80,55 @@ export const envDigests = (names: readonly string[], env: NodeJS.ProcessEnv = pr
   names.map((name) => ({ name, value: env[name] === undefined ? null : sha256(env[name]) }));
 
 /**
- * Digest of declared untracked inputs in a worktree: names, modes, file bytes
- * and symlink targets, recursively. A symlink is followed only while it stays
- * inside the worktree; an escaping or cyclic link, a special file or an
- * unreadable entry throws, which makes the command uncached rather than keyed
- * on something unverified.
+ * Digest of declared untracked inputs in a worktree, such as installed
+ * dependencies: names, modes, file bytes and symlink targets, recursively.
+ * The worktree's own path is normalized out of file bytes and link targets,
+ * because tools such as package-manager shims embed it and each verification
+ * runs in a fresh worktree. Symlinks are recorded, not followed, and must
+ * resolve inside the declared paths, whose contents are hashed in place; an
+ * escaping link, a special file or an unreadable entry throws, which makes the
+ * command uncached rather than keyed on something unverified.
  */
 export const dependencyIdentity = (worktree: string, paths: readonly string[]): string => {
   const root = realpathSync(worktree);
+  const roots = [...new Set([root, worktree])].map((path) => Buffer.from(path)).sort((a, b) => b.length - a.length);
+  const declared = [...paths].sort();
+  const covered = declared.map((path) => containedPath(root, path));
   const hash = createHash("sha256");
   const field = (value: string | Buffer) => hash.update(`${Buffer.byteLength(value)}:`).update(value);
-  const walk = (path: string, ancestors: ReadonlySet<string>): void => {
-    const real = realpathSync(path);
-    if (real !== root && !real.startsWith(`${root}/`)) throw new Error(`dependency input ${path} leaves the worktree`);
-    if (ancestors.has(real)) throw new Error(`dependency input ${path} is cyclic`);
+  const normalized = (bytes: Buffer): Buffer => {
+    let out = bytes;
+    for (const prefix of roots) {
+      const parts: Buffer[] = [];
+      let from = 0;
+      for (let at = out.indexOf(prefix); at >= 0; at = out.indexOf(prefix, from)) {
+        parts.push(out.subarray(from, at), Buffer.from("\0worktree\0"));
+        from = at + prefix.length;
+      }
+      if (from > 0) out = Buffer.concat([...parts, out.subarray(from)]);
+    }
+    return out;
+  };
+  const walk = (path: string): void => {
     const stat = lstatSync(path);
     field(String(stat.mode));
-    if (stat.isSymbolicLink()) { field(readlinkSync(path)); walk(real, ancestors); return; }
-    if (stat.isFile()) { field(readFileSync(path)); return; }
+    if (stat.isSymbolicLink()) {
+      const real = realpathSync(path);
+      if (!covered.some((base) => real === base || real.startsWith(`${base}/`))) {
+        throw new Error(`dependency input ${path} links outside the declared dependency paths`);
+      }
+      field(normalized(Buffer.from(readlinkSync(path))));
+      return;
+    }
+    if (stat.isFile()) { field(normalized(readFileSync(path))); return; }
     if (!stat.isDirectory()) throw new Error(`dependency input ${path} is not a file or directory`);
-    const next = new Set(ancestors).add(real);
-    for (const name of readdirSync(path).sort()) { field(name); walk(join(path, name), next); }
+    for (const name of readdirSync(path).sort()) { field(name); walk(join(path, name)); }
   };
-  for (const declared of [...paths].sort()) {
-    field(declared);
-    const path = containedPath(root, declared);
+  for (const [index, name] of declared.entries()) {
+    field(name);
+    const path = covered[index]!;
     if (!existsSync(path)) field("missing");
-    else walk(path, new Set());
+    else walk(path);
   }
   return hash.digest("hex");
 };

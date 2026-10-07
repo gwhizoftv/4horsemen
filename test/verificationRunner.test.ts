@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import type { CheckCommand, StartState } from "../src/state.js";
 import {
   computeInputIdentity,
+  dependencyIdentity,
   readReceipt,
   receiptKey,
   receiptPath,
@@ -141,7 +142,43 @@ describe("verification receipts", () => {
   });
 });
 
+describe("dependency identity", () => {
+  it("is independent of the worktree's own path, sees content changes, and refuses links outside the declared paths", () => {
+    const make = () => {
+      const root = mkdtempSync(join(tmpdir(), "coord-deps-"));
+      roots.push(root);
+      mkdirSync(join(root, "deps/pkg"), { recursive: true });
+      writeFileSync(join(root, "deps/pkg/index.js"), "module.exports = 1;\n");
+      writeFileSync(join(root, "deps/shim"), `#!/bin/sh\nexec node ${root}/deps/pkg/index.js\n`);
+      symlinkSync("pkg", join(root, "deps/current"));
+      return root;
+    };
+    const [a, b] = [make(), make()];
+    expect(dependencyIdentity(a, ["deps"])).toBe(dependencyIdentity(b, ["deps"]));
+    writeFileSync(join(b, "deps/pkg/index.js"), "module.exports = 2;\n");
+    expect(dependencyIdentity(a, ["deps"])).not.toBe(dependencyIdentity(b, ["deps"]));
+    symlinkSync(join(a, "outside"), join(a, "deps/escape"));
+    writeFileSync(join(a, "outside"), "not declared\n");
+    expect(() => dependencyIdentity(a, ["deps"])).toThrow(/outside the declared dependency paths/);
+  });
+});
+
 describe("verification runner", () => {
+  it("fails, rather than reuses a receipt, when a probe modifies tracked files", async () => {
+    const { input, journal } = setup();
+    const lint = cached("lint", { cache: { inputs: "tree-excluding-evidence", env: [], probes: [["probe"]], dependencies: [] } });
+    const runner = (mutate: boolean): RunVerificationInput["processRunner"] => async (argv, cwd) => {
+      if (argv[0] === "probe" && mutate) writeFileSync(join(cwd, "src/a.ts"), "edited by a probe\n");
+      return { exitCode: 0, stdout: argv[0] === "probe" ? "1.0" : "", stderr: "" };
+    };
+    expect(await runVerification(input([lint], runner(false)))).toMatchObject({ status: "passed", results: [{ receiptId: expect.any(String) }] });
+    journal.length = 0;
+    const result = await runVerification(input([lint], runner(true)));
+    expect(result).toMatchObject({ status: "failed", failure: "probes for lint modified tracked files" });
+    expect(journal.map((row) => row.type)).not.toContain("verification-reused");
+  });
+
+
   it("joins a live owner's execution and never treats a dead owner's lock as success", async () => {
     const { paths, journal, input, material } = setup();
     const lint = cached("lint");

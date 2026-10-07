@@ -69,16 +69,16 @@
         { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
         { "name": "lint", "argv": ["pnpm", "lint"],
           "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
-            "dependencies": ["node_modules/.pnpm/lock.yaml"] } },
+            "dependencies": ["node_modules/.pnpm"] } },
         { "name": "typecheck", "argv": ["pnpm", "typecheck"],
           "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
-            "dependencies": ["node_modules/.pnpm/lock.yaml"] } },
+            "dependencies": ["node_modules/.pnpm"] } },
         { "name": "test:fast", "argv": ["pnpm", "test:fast"],
           "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
-            "dependencies": ["node_modules/.pnpm/lock.yaml"] } },
+            "dependencies": ["node_modules/.pnpm"] } },
         { "name": "test:system", "argv": ["pnpm", "test:system"], "expensive": true,
           "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
-            "dependencies": ["node_modules/.pnpm/lock.yaml"] } }
+            "dependencies": ["node_modules/.pnpm"] } }
       ],
       "covers": { "prefixes": ["src/", "test/", "docs/"], "files": ["AGENTS.md", "config.example.json", "config.product.example.json"] },
       "rules": [
@@ -107,19 +107,19 @@
     { "name": "install", "argv": ["pnpm", "install", "--frozen-lockfile"] },
     { "name": "lint", "argv": ["pnpm", "lint"],
       "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
-            "dependencies": ["node_modules/.pnpm/lock.yaml"] } },
+            "dependencies": ["node_modules/.pnpm"] } },
     { "name": "typecheck", "argv": ["pnpm", "typecheck"],
       "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
-            "dependencies": ["node_modules/.pnpm/lock.yaml"] } },
+            "dependencies": ["node_modules/.pnpm"] } },
     { "name": "test:fast", "argv": ["pnpm", "test:fast"],
       "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
-            "dependencies": ["node_modules/.pnpm/lock.yaml"] } },
+            "dependencies": ["node_modules/.pnpm"] } },
     { "name": "test:system", "argv": ["pnpm", "test:system"], "expensive": true,
       "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
-            "dependencies": ["node_modules/.pnpm/lock.yaml"] } },
+            "dependencies": ["node_modules/.pnpm"] } },
     { "name": "build", "argv": ["pnpm", "build"] },
     { "name": "test:e2e", "argv": ["pnpm", "test:e2e"], "expensive": true,
       "cache": { "inputs": "tree-excluding-evidence", "probes": [["node", "--version"], ["pnpm", "--version"]],
-            "dependencies": ["node_modules/.pnpm/lock.yaml"] } }
+            "dependencies": ["node_modules/.pnpm"] } }
   ]
 }

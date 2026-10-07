@@ -170,6 +170,17 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
     for (const command of input.commands) {
       checkpoint();
       const material = await keyFor(command);
+      // Every command already left tracked files as the pin has them, so a
+      // change here came from this command's probes: never reuse or run on it.
+      if (!trackedInputsClean(target)) {
+        const logPath = containedPath(logs, `${randomUUID()}.log`);
+        const probeList = (command.cache?.probes ?? []).map((argv) => argv.join(" ")).join(", ");
+        writeFileSync(logPath, `coord: probes for ${command.name} (${probeList}) modified tracked files, so the pin's bytes are no longer what would be checked.\n`,
+          { mode: 0o600 });
+        const failed: CheckResult = { name: command.name, argv: [...command.argv], exitCode: 1, logPath };
+        results.push(failed);
+        return { status: "failed", results, failed, failure: `probes for ${command.name} modified tracked files`, stderr: "", note: null };
+      }
       const key = typeof material === "string" ? null : receiptKey(material);
       let cacheReason = typeof material === "string" ? material : "miss: no receipt";
       if (key !== null) {
