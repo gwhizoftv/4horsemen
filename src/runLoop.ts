@@ -110,7 +110,7 @@ import { containmentPolicy, ingestContainmentProbe } from "./shellGuard.js";
 import { holdRecoveryCommand, renderIssueReport } from "./issueReport.js";
 import { formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
-import { harnessPromptReadiness, TmuxController } from "./tmux.js";
+import { harnessPromptReadiness, TmuxController, type OverrideLifecycle } from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
@@ -842,6 +842,9 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "antigravity-turn-chrome": "the pane shows in-flight turn chrome",
   "antigravity-verify-overlay": "the account-verify overlay is up and discards keystrokes",
   "antigravity-no-prompt": "no idle prompt is visible in the pane",
+  "codex-turn-chrome": "the pane shows in-flight turn chrome",
+  "no-idle-sentinel": "lifecycle hooks report the agent mid-turn and its pane shows no COORD-IDLE line since its last action",
+  "lifecycle-changed": "lifecycle hooks reported new activity while the send was being prepared",
   "unmatched-action": "the recorded lifecycle action does not match the current one",
   "workflow-complete": "this agent already published its work for this action",
   "pending-input": "the agent has queued input of its own",
@@ -1086,7 +1089,25 @@ export class CoordinatorRunLoop {
     if (safety.reserved) return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends}`);
     // A reissue cannot interrupt ongoing/background work either.
     const entry = readAgentLifecycle(this.paths).agents[agent];
-    if (entry?.execution === "working" || entry?.backgroundActive === true || (entry?.pendingInputCount ?? 0) > 0) return cursors;
+    // Before the first send there is nothing to duplicate, so a `working`
+    // record left by a Stop that never reached this issue may be overruled —
+    // but only by the pane's own current idle sentinel (`requireIdleSentinel`).
+    const staleWorking = entry?.execution === "working" && safety.sends === 0 &&
+      entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest &&
+      entry.action.delivery === "ordered" && entry.action.injectedAt === null;
+    if ((entry?.execution === "working" && !staleWorking) || entry?.backgroundActive === true ||
+      (entry?.pendingInputCount ?? 0) > 0) return cursors;
+    // Lifecycle hooks write without touching cursor authority, so the override
+    // re-reads them at every key until submission starts.
+    const lifecycleSnapshot = (value: typeof entry): string => JSON.stringify([value?.sessionId, value?.turnId,
+      value?.lastEventAt, value?.execution, value?.pendingInputCount, value?.backgroundActive]);
+    const observed = lifecycleSnapshot(entry);
+    const staleOverride = staleWorking ? (): OverrideLifecycle => {
+      const latest = readAgentLifecycle(this.paths).agents[agent];
+      if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
+        latest.action.delivery === "accepted") return "accepted";
+      return lifecycleSnapshot(latest) === observed ? "unchanged" : "changed";
+    } : undefined;
     if (safety.sends >= 4) return this.hold(cursors, agent, "nudge-loop", `${actionId}:budget:${safety.lastSendAt}`);
     const delay = NUDGE_REPEAT_DELAYS_MS[safety.sends - 1] ?? 0;
     if (safety.lastSendAt !== null && Date.parse(this.now()) - Date.parse(safety.lastSendAt) < delay) return cursors;
@@ -1102,7 +1123,7 @@ export class CoordinatorRunLoop {
     let result;
     try {
       result = await this.tmux.nudge(start.issue, config, agentRuntimePaths(this.paths, agent).action,
-        () => this.authority(cursors), actionId, actionDigest, reserve);
+        () => this.authority(cursors), actionId, actionDigest, reserve, staleOverride);
     } catch (error) {
       this.authority(cursors);
       if (error instanceof StateConflictError) throw error;
@@ -1119,9 +1140,17 @@ export class CoordinatorRunLoop {
     }
     if (result.status === "sent") {
       markActionInjected(this.paths, agent, actionId, actionDigest, sentAt);
+      if (staleWorking) {
+        this.log(
+          `Issue ${start.issue}: ${agent}'s lifecycle hooks still report it mid-turn, but its pane shows COORD-IDLE; ` +
+            `delivered action ${actionId}. No Stop event from ${agent} reached this issue — ` +
+            `check that its hooks run with COORD_ISSUE=${start.issue}.`
+        );
+      }
       return this.mutate(cursors, (current) => {
         appendJournal(this.paths, { type: "nudged", agent, actionId,
-          details: { actionDigest, readiness: result.detail ?? "vendor-prompt", [reason]: true } }, this.now());
+          details: { actionDigest, readiness: result.detail ?? "vendor-prompt", [reason]: true,
+            ...(staleWorking ? { lifecycleOverride: "working" } : {}) } }, this.now());
         return { ...current, actionSafety: { ...current.actionSafety, [agent]: {
           ...current.actionSafety[agent]!, reserved: false, lastSendAt: this.now()
         } } };
@@ -1683,7 +1712,10 @@ export class CoordinatorRunLoop {
       // send succeeds, only a lifecycle idle transition can authorize more.
       if (entry.action?.delivery !== "ordered" || entry.action.retryableInjectionAt === null) {
         const decision = decideLifecycleNudge(entry, actionId, actionDigest);
-        if (decision.kind === "wait") {
+        // A never-sent action against `working` is decided by deliver(), on the pane's idle sentinel.
+        const neverSentWorking = decision.code === "working" &&
+          entry.action?.delivery === "ordered" && entry.action.injectedAt === null;
+        if (decision.kind === "wait" && !neverSentWorking) {
           const injected = entry.action;
           const observedAfterInjection =
             injected !== null &&

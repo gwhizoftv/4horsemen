@@ -1871,6 +1871,61 @@ describe("effectful run loop", () => {
     expect(nudged[1]?.details).toMatchObject({ idle: true, actionDigest: action!.actionDigest });
   });
 
+  it("lets a current COORD-IDLE overrule a stale working record only before the first send", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(paths.start, `${JSON.stringify({ ...start, agents: start.agents.map((agent) =>
+      agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent) }, null, 2)}\n`);
+    // The previous turn's Stop never reached this issue, so lifecycle still says working.
+    observeAgentLifecycle(paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session-1", turnId: "turn-0" });
+    let literalNudges = 0;
+    let body = "• done";
+    let draft = "";
+    // Captures to let pass before a hook reports a new turn; -1 disables the race.
+    let raceAfterCaptures = -1;
+    const messages: string[] = [];
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") {
+        if (raceAfterCaptures >= 0 && raceAfterCaptures-- === 0) {
+          // A hook reports a new turn while the pane still looks idle.
+          observeAgentLifecycle(paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session-1", turnId: "turn-1" });
+        }
+        return { exitCode: 0, stdout: `${body}\n\n› ${draft}\n\n  ? for shortcuts`, stderr: "" };
+      }
+      if (args[0] === "send-keys" && args.includes("-l")) {
+        literalNudges += 1;
+        draft = args.at(-1)!;
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) });
+    await loop.runTick();
+    expect(literalNudges).toBe(0);
+    expect(readAgentLifecycle(paths).agents.codex?.action?.delivery).toBe("ordered");
+    expect(readJournal(paths).some((event) =>
+      event.type === "nudge-deferred" && event.agent === "codex" && event.details.code === "no-idle-sentinel")).toBe(true);
+
+    body = "• done\n\n• COORD-IDLE: waiting for the next coordinator action file";
+    raceAfterCaptures = 1; // after the unfinished-work probe, during the nudge's readiness capture
+    await loop.runTick();
+    expect(literalNudges).toBe(0);
+    expect(readJournal(paths).some((event) =>
+      event.type === "nudge-deferred" && event.agent === "codex" && event.details.code === "lifecycle-changed")).toBe(true);
+
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+    expect(readAgentLifecycle(paths).agents.codex).toMatchObject({ execution: "working", action: { delivery: "injected" } });
+    const nudged = readJournal(paths).filter((event) => event.type === "nudged" && event.agent === "codex");
+    expect(nudged).toHaveLength(1);
+    expect(nudged[0]?.details).toMatchObject({ readiness: "idle-sentinel", lifecycleOverride: "working" });
+    expect(messages.join("\n")).toContain("No Stop event from codex reached this issue");
+
+    // After the first send, a stale working record again blocks: no duplicate.
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+  });
+
   it("retries an action that a busy pane never injected", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);
