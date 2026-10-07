@@ -110,7 +110,7 @@ import { containmentPolicy, ingestContainmentProbe } from "./shellGuard.js";
 import { holdRecoveryCommand, renderIssueReport } from "./issueReport.js";
 import { formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
-import { harnessPromptReadiness, TmuxController } from "./tmux.js";
+import { harnessPromptReadiness, TmuxController, type OverrideLifecycle } from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
@@ -1102,9 +1102,12 @@ export class CoordinatorRunLoop {
     const lifecycleSnapshot = (value: typeof entry): string => JSON.stringify([value?.sessionId, value?.turnId,
       value?.lastEventAt, value?.execution, value?.pendingInputCount, value?.backgroundActive]);
     const observed = lifecycleSnapshot(entry);
-    const staleOverride = staleWorking
-      ? () => lifecycleSnapshot(readAgentLifecycle(this.paths).agents[agent]) === observed
-      : undefined;
+    const staleOverride = staleWorking ? (): OverrideLifecycle => {
+      const latest = readAgentLifecycle(this.paths).agents[agent];
+      if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
+        latest.action.delivery === "accepted") return "accepted";
+      return lifecycleSnapshot(latest) === observed ? "unchanged" : "changed";
+    } : undefined;
     if (safety.sends >= 4) return this.hold(cursors, agent, "nudge-loop", `${actionId}:budget:${safety.lastSendAt}`);
     const delay = NUDGE_REPEAT_DELAYS_MS[safety.sends - 1] ?? 0;
     if (safety.lastSendAt !== null && Date.parse(this.now()) - Date.parse(safety.lastSendAt) < delay) return cursors;

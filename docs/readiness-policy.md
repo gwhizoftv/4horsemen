@@ -54,12 +54,15 @@ the next action forever. While an action has never been sent (no send charged,
 may overrule that `working` record, and only that one. The pane is rechecked at
 every key, with the turn-chrome veto always applied:
 
-- until submission starts, the lifecycle record must be unchanged, or the send
-  stops with `lifecycle-changed`;
+- the lifecycle record must be unchanged, or the send stops with
+  `lifecycle-changed`;
 - until the nudge is typed, the composer must be empty, so Codex's vim `i`
   prelude is sent only from vim NORMAL;
-- before the first submit key, the composer must hold exactly this nudge, so an
-  owner edit is never submitted with it.
+- before every submit key, the composer must hold exactly this nudge, so an
+  owner edit is never submitted with it;
+- once a submit key is out, a correlated prompt hook for this action, or Codex
+  showing the nudge as a running turn, ends the send without the remaining
+  fallback submit keys.
 
 A refusal before any key costs nothing; after a key, the existing
 `delivery-uncertain` hold applies. The send is journalled with

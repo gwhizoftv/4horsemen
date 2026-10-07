@@ -80,6 +80,9 @@ export type PromptBlockedReason =
   | "no-idle-sentinel"
   | "lifecycle-changed";
 
+/** The lifecycle record since an override send began: untouched, showing this nudge accepted, or anything else. */
+export type OverrideLifecycle = "unchanged" | "accepted" | "changed";
+
 export type PromptReadiness =
   | { ready: true; reason: "vendor-prompt" | "idle-sentinel" }
   | { ready: false; reason: PromptBlockedReason };
@@ -184,6 +187,15 @@ const codexComposerHolds = (paneText: string, text: string): boolean => {
   const tail = codexTail(paneText);
   const compact = (value: string): string => value.replace(/\s/g, "");
   return tail !== null && compact(tail.composer.map((line) => line.plain).join("").slice(1)) === compact(text);
+};
+
+/**
+ * After a submit key: the nudge has left the composer and Codex shows the turn
+ * it started, so further fallback submit keys would land in that turn.
+ */
+const codexNudgeSubmitted = (paneText: string, text: string, actionId: string | undefined): boolean => {
+  const plain = stripAnsi(paneText);
+  return actionId !== undefined && plain.includes(actionId) && codexTurnChrome(plain) && !codexComposerHolds(paneText, text);
 };
 
 /** Codex's footer names its vim mode; the `i` prelude is only needed to leave NORMAL. */
@@ -959,9 +971,9 @@ export class TmuxController {
     reserveSend: () => void = () => undefined,
     /**
      * Present only when this send overrules a stale lifecycle `working`
-     * record; it reports whether that lifecycle record is still unchanged.
+     * record; it reports what that lifecycle record has done since.
      */
-    staleOverride?: () => boolean
+    staleOverride?: () => OverrideLifecycle
   ): Promise<NudgeOutcome> {
     if (agent.delivery !== "nudge" && agent.delivery !== "both") {
       return { status: "disabled", reason: "delivery-disabled", stage: "config" };
@@ -1009,16 +1021,21 @@ export class TmuxController {
       }
       if (staleOverride !== undefined) {
         // The sentinel overrules a lifecycle veto, so it must still hold at
-        // every key. Until submission starts the lifecycle record must be
-        // unchanged; before the nudge is typed the composer must be empty, and
-        // before the first submit key it must hold exactly this nudge.
+        // every key: the lifecycle record unchanged, the composer empty until
+        // the nudge is typed and holding exactly the nudge after that. Once a
+        // submit key is out, proof that the nudge was accepted ends the send.
         const latest = await this.capturePane(target);
         assertAuthority();
+        const lifecycle = staleOverride();
+        if (submitting && (lifecycle === "accepted" ||
+          (agent.id === "codex" && codexNudgeSubmitted(latest, text, actionId)))) {
+          return { status: "sent", reason: "sent", stage: "complete", detail: "accepted" };
+        }
         const current = harnessPromptReadiness(latest, agent.id, actionId);
         const refused = !current.ready ? current.reason
-          : !submitting && !staleOverride() ? "lifecycle-changed"
+          : lifecycle !== "unchanged" ? "lifecycle-changed"
           : !typedText ? (current.reason === "idle-sentinel" ? null : "no-idle-sentinel")
-          : !submitting && agent.id === "codex" && !codexComposerHolds(latest, text) ? "no-idle-sentinel"
+          : agent.id === "codex" && !codexComposerHolds(latest, text) ? "no-idle-sentinel"
           : null;
         if (refused !== null) return { status: "busy", reason: refused, stage: began ? "mid-send" : "prompt" };
       }
@@ -1046,6 +1063,7 @@ export class TmuxController {
       }
       const submit = await send(["-t", target, key], "tmux send-keys submit failed: ");
       if (submit.status !== "sent") return submit;
+      if (submit.detail === "accepted") break;
     }
     return { status: "sent", reason: "sent", stage: "complete", ...(readiness.reason === "idle-sentinel" ? { detail: "idle-sentinel" } : {}) };
   }

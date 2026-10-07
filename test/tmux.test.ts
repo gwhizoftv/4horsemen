@@ -770,7 +770,8 @@ describe("tmux boundary", () => {
     const action = "11111111-2222-3333-4444-555555555555";
     // A minimal Codex: typed text lands in the composer; `onCapture` lets a test change the pane between keys.
     const attempt = async (options: {
-      body?: string; vim?: string; unchanged?: () => boolean;
+      body?: string; vim?: string; submitOnCtrlJ?: boolean;
+      lifecycle?: (check: number) => "unchanged" | "accepted" | "changed";
       onCapture?: (index: number, pane: { body: string; draft: string }) => void;
     } = {}) => {
       const pane = { body: options.body ?? `• ${COORD_IDLE_SENTINEL}`, draft: "" };
@@ -784,19 +785,24 @@ describe("tmux boundary", () => {
         }
         if (args[0] === "send-keys") {
           if (args.includes("-l")) pane.draft += args.at(-1)!;
+          if (options.submitOnCtrlJ === true && args.at(-1) === "C-j") {
+            pane.body += `\n\n› ${pane.draft}\n\n• Working (0s • esc to interrupt)`;
+            pane.draft = "";
+          }
           keys.push(args.includes("-l") ? "-l" : args.at(-1)!);
         }
         return ok();
       }, null, null, null, noopSleep);
+      let checks = 0;
       const outcome = await controller.nudge(1, agent, "/a", undefined, action, undefined, undefined,
-        options.unchanged ?? (() => true));
+        () => options.lifecycle?.(checks++) ?? "unchanged");
       return { outcome, keys };
     };
     expect(await attempt({ body: "• done" })).toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "prompt" }, keys: [] });
     // The owner starts a turn, or a lifecycle hook reports activity, before the first key: nothing is typed.
     expect(await attempt({ onCapture: (index, pane) => { if (index === 1) pane.body = "• Working (1s • esc to interrupt)"; } }))
       .toMatchObject({ outcome: { status: "busy", reason: "codex-turn-chrome", stage: "prompt" }, keys: [] });
-    expect(await attempt({ unchanged: () => false }))
+    expect(await attempt({ lifecycle: () => "changed" }))
       .toMatchObject({ outcome: { status: "busy", reason: "lifecycle-changed", stage: "prompt" }, keys: [] });
     // Already in INSERT: no `i` is typed into the composer.
     expect(await attempt()).toMatchObject({ outcome: { status: "sent", detail: "idle-sentinel" }, keys: ["-l", "C-j", "C-m"] });
@@ -806,6 +812,16 @@ describe("tmux boundary", () => {
       .toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "mid-send" }, keys: ["i"] });
     expect(await attempt({ onCapture: (index, pane) => { if (index === 2) pane.draft += " and more"; } }))
       .toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "mid-send" }, keys: ["-l"] });
+    // Between the submit keys the same proof holds: an edit or new lifecycle activity stops C-m.
+    expect(await attempt({ onCapture: (index, pane) => { if (index === 3) pane.draft += " and more"; } }))
+      .toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "mid-send" }, keys: ["-l", "C-j"] });
+    expect(await attempt({ lifecycle: (check) => (check === 2 ? "changed" : "unchanged") }))
+      .toMatchObject({ outcome: { status: "busy", reason: "lifecycle-changed", stage: "mid-send" }, keys: ["-l", "C-j"] });
+    // If C-j already submitted the nudge, its turn or its correlated prompt hook ends the send: no fallback C-m.
+    expect(await attempt({ submitOnCtrlJ: true }))
+      .toMatchObject({ outcome: { status: "sent", detail: "idle-sentinel" }, keys: ["-l", "C-j"] });
+    expect(await attempt({ lifecycle: (check) => (check === 2 ? "accepted" : "unchanged") }))
+      .toMatchObject({ outcome: { status: "sent", detail: "idle-sentinel" }, keys: ["-l", "C-j"] });
   });
 
   it("reports which pane predicate deferred a delivery", async () => {
