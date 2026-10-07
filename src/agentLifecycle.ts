@@ -13,7 +13,7 @@ import {
   type Classification,
   type FailureFields
 } from "./resourceEvidence.js";
-import { acquireExclusiveLock, atomicWriteJson, readStartState } from "./state.js";
+import { acquireExclusiveLock, advanceHookReceipt, atomicWriteJson, readStartState } from "./state.js";
 
 /** Independent from the workflow runtime format: hook traffic is not workflow authority. */
 export const AGENT_LIFECYCLE_FORMAT_VERSION = 1;
@@ -685,6 +685,7 @@ export const observeAgentLifecycleWithResult = (
   observation: LifecycleObservation,
   now = new Date().toISOString()
 ): LifecycleObservationResult => {
+  if (observation.kind !== "telemetry") advanceHookReceipt(paths, agent, now);
   let changed = false;
   const state = mutateAgentLifecycle(paths, (state) => {
     const current = state.agents[agent];

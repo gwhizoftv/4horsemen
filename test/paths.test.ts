@@ -11,6 +11,7 @@ import {
   issueRuntimePaths,
   mailboxClaimPath,
   PathSafetyError,
+  readyReceiptPath,
   removeIssueMailbox,
   resolveSafeCompletesRoot,
   resourceBindingPaths,
@@ -43,6 +44,8 @@ describe("completion mailbox paths", () => {
     const runtime = agentRuntimePaths(paths, "claude");
 
     expect(runtime.complete).toBe(join(completesRoot, "issue-98", "claude", "complete"));
+    expect(runtime.ready).toBe(join(completesRoot, "issue-98", "claude", "ready"));
+    expect(readyReceiptPath(runtime.complete)).toBe(runtime.ready);
     expect(runtime.completeDir).toBe(join(completesRoot, "issue-98", "claude"));
     expect(runtime.action).toBe(join(coordRoot, "issue-98", "agents", "claude", "action.md"));
     expect(runtime.renderLog).toBe(join(coordRoot, "issue-98", "agents", "claude", "render.log"));

@@ -1,8 +1,19 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseAction, parseCompletion, readAction, renderAction, writeAction } from "../src/action.js";
+import {
+  clearReady,
+  isReadyReceiptEligible,
+  parseAction,
+  parseCompletion,
+  parseReady,
+  readAction,
+  readReady,
+  renderAction,
+  writeAction
+} from "../src/action.js";
+import { readyReceiptPath } from "../src/paths.js";
 import type { InternalOrder } from "../src/steps.js";
 
 const roots: string[] = [];
@@ -236,6 +247,71 @@ body
       actionId
     });
     expect(parseCompletion("response not-a-uuid").status).toBe("malformed");
+  });
+
+  it("renders ready-path idle instructions for git and response actions", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-action-ready-"));
+    roots.push(root);
+    const completePath = join(root, "completes", "issue-1", "codex", "complete");
+    const readyPath = readyReceiptPath(completePath);
+    const actionId = "b2337d85-6617-4e9f-8ace-901453764aa4";
+    const gitRaw = renderAction({ ...order(root), completePath });
+    expect(gitRaw).toContain(readyPath);
+    expect(gitRaw).toContain(`ready ${actionId}`);
+    expect(gitRaw).toContain("COORD-IDLE: waiting for the next coordinator action file");
+
+    const responseRaw = renderAction({
+      ...order(root),
+      completePath,
+      submissionMode: "response",
+      stepId: "R3.plan-ballot",
+      requiredPath: "",
+      responsePath: join(root, "responses", "x.json")
+    });
+    expect(responseRaw).toContain(readyPath);
+    expect(responseRaw).toContain(`ready ${actionId}`);
+  });
+
+  it.each([
+    "",
+    "ready",
+    "ready not-a-uuid",
+    "ready a\nready b",
+    `ready ${"a".repeat(36)}\n`
+  ])("rejects malformed ready %j", (raw) => expect(parseReady(raw).status).toBe("malformed"));
+
+  it("accepts ready <uuid> with optional trailing newline and clears only matching receipts", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-action-ready-parse-"));
+    roots.push(root);
+    const drop = join(root, "completes", "issue-1", "codex");
+    mkdirSync(drop, { recursive: true });
+    const actionId = "b2337d85-6617-4e9f-8ace-901453764aa4";
+    const path = join(drop, "ready");
+    writeFileSync(path, `ready ${actionId}\n`);
+    expect(parseReady(`ready ${actionId}`)).toEqual({ status: "valid", actionId });
+    const mailboxRoot = join(root, "completes");
+    expect(readReady(path, mailboxRoot)).toEqual({ status: "valid", actionId });
+    expect(clearReady(path, mailboxRoot, actionId)).toBe(true);
+    expect(readReady(path, mailboxRoot).status).toBe("missing");
+    writeFileSync(path, `ready ${actionId}\n`);
+    expect(clearReady(path, mailboxRoot, "11111111-1111-4111-8111-111111111111")).toBe(false);
+  });
+
+  it("evaluates ready freshness against hook receipt and lifecycle anchors", () => {
+    const accepted = "11111111-1111-4111-8111-111111111111";
+    const delivering = "22222222-2222-4222-8222-222222222222";
+    const base = {
+      readyActionId: accepted,
+      readyMtimeMs: Date.parse("2026-08-18T00:01:00.000Z"),
+      lastAcceptedActionId: accepted,
+      deliveringActionId: delivering,
+      hookReceiptAt: "2026-08-18T00:00:30.000Z",
+      lastEventAt: "2026-08-18T00:00:45.000Z",
+      nowMs: Date.parse("2026-08-18T00:02:00.000Z")
+    };
+    expect(isReadyReceiptEligible(base)).toBe(true);
+    expect(isReadyReceiptEligible({ ...base, readyMtimeMs: Date.parse("2026-08-18T00:00:40.000Z") })).toBe(false);
+    expect(isReadyReceiptEligible({ ...base, readyActionId: delivering })).toBe(false);
   });
 });
 

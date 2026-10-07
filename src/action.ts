@@ -1,9 +1,22 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
 import { dirname, relative } from "node:path";
-import { assertNoSymlink, containedPath } from "./paths.js";
+import { assertNoSymlink, containedPath, readyReceiptPath } from "./paths.js";
 import { actionIdSchema, gitShaSchema, repositoryPathSchema } from "./protocol.js";
 import type { ChangeScopeEntry, InternalOrder, MaterializedInputs } from "./steps.js";
+import { COORD_IDLE_SENTINEL } from "./tmux.js";
+
+export const READY_MAX_BYTES = 512;
 
 export type PublicGitAction = {
   actionId: string;
@@ -166,6 +179,36 @@ const candidateResultsSection = (results: InternalOrder["candidateResults"] = []
     `${PATH_ENCODING_NOTE}\n\n` + lines.join("\n");
 };
 
+const idleReceiptFooter = (completePath: string, actionId: string): string => {
+  const readyPath = readyReceiptPath(completePath);
+  return (
+    `After writing that SHA, keep this file. Before waiting for more input, re-read\n` +
+    `it. If \`actionId\` in the front matter has changed, execute the new instructions\n` +
+    `immediately; do not wait for another coordinator message.\n\n` +
+    `If that re-read shows the same \`actionId\` — or \`action.md\` is missing — write\n` +
+    `this exact one-line marker as the sole contents of:\n\n` +
+    `\`${readyPath}\`\n\n` +
+    `\`\`\`text\nready ${actionId}\n\`\`\`\n\n` +
+    `Then end your reply with this exact line on its own, with nothing after it:\n\n` +
+    `\`${COORD_IDLE_SENTINEL}\`\n`
+  );
+};
+
+const responseIdleReceiptFooter = (completePath: string, actionId: string): string => {
+  const readyPath = readyReceiptPath(completePath);
+  return (
+    `After writing the marker, keep this file. Before waiting for more input, re-read\n` +
+    `it. If \`actionId\` in the front matter has changed, execute the new instructions\n` +
+    `immediately; do not wait for another coordinator message.\n\n` +
+    `If that re-read shows the same \`actionId\` — or \`action.md\` is missing — write\n` +
+    `this exact one-line marker as the sole contents of:\n\n` +
+    `\`${readyPath}\`\n\n` +
+    `\`\`\`text\nready ${actionId}\n\`\`\`\n\n` +
+    `Then end your reply with this exact line on its own, with nothing after it:\n\n` +
+    `\`${COORD_IDLE_SENTINEL}\`\n`
+  );
+};
+
 const verificationSection = (order: InternalOrder): string => {
   const responsibility = order.submissionMode === "response"
     ? "Validate this response's format and bound inputs. Do not commit or push, and do not run a product suite merely to cast a ballot."
@@ -206,10 +249,7 @@ exact 40-character lowercase commit SHA as the sole contents of:
 
 \`${order.completePath}\`
 
-After writing that SHA, keep this file. Before waiting for more input, re-read
-it. If \`actionId\` in the front matter has changed, execute the new instructions
-immediately; do not wait for another coordinator message.
-`;
+${idleReceiptFooter(order.completePath, order.actionId)}`;
 };
 
 const renderResponseAction = (order: InternalOrder): string => {
@@ -248,10 +288,7 @@ Use these exact inputs (dropped agents are intentionally omitted):
 
 ${inputText(order)}${eligible}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}${verificationSection(order)}${ownerGuidanceSection(order.ownerGuidance)}
 
-After writing the marker, keep this file. Before waiting for more input, re-read
-it. If \`actionId\` in the front matter has changed, execute the new instructions
-immediately; do not wait for another coordinator message.
-`;
+${responseIdleReceiptFooter(order.completePath, order.actionId)}`;
 };
 
 export const renderAction = (order: InternalOrder): string => {
@@ -340,6 +377,80 @@ export const readCompletion = (path: string): CompletionParseResult => {
 
 export const clearCompletion = (path: string): void => {
   if (existsSync(path)) unlinkSync(path);
+};
+
+export type ReadyParseResult =
+  | { status: "missing" }
+  | { status: "oversized" }
+  | { status: "not-a-file" }
+  | { status: "symlink" }
+  | { status: "malformed"; message: string }
+  | { status: "valid"; actionId: string };
+
+export const parseReady = (raw: string): ReadyParseResult => {
+  const normalized = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+  if (normalized === "") return { status: "malformed", message: "ready must contain `ready <actionId>`" };
+  if (normalized.includes("\n") || normalized.includes("\r") || normalized !== normalized.trim()) {
+    return { status: "malformed", message: "ready must contain exactly one unpadded line" };
+  }
+  const match = /^ready ([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(normalized);
+  if (match?.[1] === undefined) {
+    return { status: "malformed", message: "ready must contain `ready <actionId>` with a valid action UUID" };
+  }
+  const parsed = actionIdSchema.safeParse(match[1]);
+  if (!parsed.success) {
+    return { status: "malformed", message: "ready marker must use a valid action UUID" };
+  }
+  return { status: "valid", actionId: parsed.data };
+};
+
+export const readReady = (path: string, root: string): ReadyParseResult => {
+  if (!existsSync(path)) return { status: "missing" };
+  try {
+    assertNoSymlink(root, path);
+  } catch {
+    return { status: "symlink" };
+  }
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) return { status: "symlink" };
+  if (!stat.isFile()) return { status: "not-a-file" };
+  if (stat.size > READY_MAX_BYTES) return { status: "oversized" };
+  const raw = readFileSync(path, "utf8");
+  if (Buffer.byteLength(raw, "utf8") > READY_MAX_BYTES) return { status: "oversized" };
+  return parseReady(raw);
+};
+
+export const readyFreshnessAnchorMs = (
+  hookReceiptAt: string | null,
+  lastEventAt: string | null
+): number =>
+  Math.max(hookReceiptAt === null ? 0 : Date.parse(hookReceiptAt), lastEventAt === null ? 0 : Date.parse(lastEventAt));
+
+export const isReadyReceiptEligible = (input: {
+  readyActionId: string;
+  readyMtimeMs: number;
+  lastAcceptedActionId: string | null;
+  deliveringActionId: string;
+  hookReceiptAt: string | null;
+  lastEventAt: string | null;
+  nowMs?: number;
+}): boolean => {
+  const nowMs = input.nowMs ?? Date.now();
+  if (input.lastAcceptedActionId === null) return false;
+  if (input.readyActionId !== input.lastAcceptedActionId) return false;
+  if (input.readyActionId === input.deliveringActionId) return false;
+  const anchor = readyFreshnessAnchorMs(input.hookReceiptAt, input.lastEventAt);
+  if (!Number.isFinite(input.readyMtimeMs) || input.readyMtimeMs <= anchor) return false;
+  if (input.readyMtimeMs > nowMs) return false;
+  return true;
+};
+
+/** Delete `ready` only when it still names the action that authorized the send. */
+export const clearReady = (path: string, root: string, expectedActionId: string): boolean => {
+  const parsed = readReady(path, root);
+  if (parsed.status !== "valid" || parsed.actionId !== expectedActionId) return false;
+  if (existsSync(path)) unlinkSync(path);
+  return true;
 };
 
 export const writeAction = (coordRoot: string, path: string, order: InternalOrder): void => {

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -17,6 +17,7 @@ import {
   readAgentLifecycle
 } from "../src/agentLifecycle.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import { initializeOperationalState, readCursorsState } from "../src/state.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -429,5 +430,57 @@ describe("agent lifecycle policy", () => {
     expect(first.changed).toBe(true);
     expect(second.changed).toBe(false);
     expect(second.state.stateRevision).toBe(first.state.stateRevision);
+  });
+
+  it("advances hook receipt on every observation except telemetry, including duplicates", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "coord-lifecycle-hook-"));
+    roots.push(workspace);
+    const root = join(workspace, "coord-runtime");
+    mkdirSync(root, { recursive: true });
+    const paths = issueRuntimePaths(root, 1, join(workspace, "completes"));
+    createIssueRuntime(paths, ["codex"]);
+    initializeOperationalState(paths, {
+      issue: 1,
+      issueSessionId: `issue-1:${"a".repeat(40)}`,
+      baselineSha: "a".repeat(40),
+      profile: "consensus",
+      originalRoster: ["codex"],
+      branchTemplate: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      maxRevisionRounds: 3,
+      prPolicy: "owner-only",
+      automationDigest: "b".repeat(64),
+      automationDigestScheme: "sha256-length-prefixed-v1",
+      automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }],
+      trustedSourceCommit: "c".repeat(40),
+      origin: "/origin.git",
+      coordRoot: root,
+      configPath: join(root, "config.json"),
+      agents: [{ id: "codex", root: "/tmp/codex", launcher: "start-codex.sh", delivery: "nudge" as const }],
+      checks: [{ name: "check", argv: ["node", "-e", "process.exit(0)"] }],
+      pollIntervalMs: 100
+    });
+    initializeAgentLifecycle(paths, ["codex"], now);
+    const observation = {
+      kind: "status" as const,
+      eventName: "status-line",
+      sessionId: "codex-1",
+      execution: "idle" as const,
+      pendingInputCount: 0,
+      backgroundActive: false
+    };
+    observeAgentLifecycleWithResult(paths, "codex", observation, now);
+    const afterFirst = readCursorsState(paths).agents.codex!;
+    expect(afterFirst.hookReceiptSequence).toBe(1);
+    observeAgentLifecycleWithResult(paths, "codex", observation, later);
+    const afterDuplicate = readCursorsState(paths).agents.codex!;
+    expect(afterDuplicate.hookReceiptSequence).toBe(2);
+    observeAgentLifecycleWithResult(paths, "codex", {
+      kind: "telemetry",
+      eventName: "status-line",
+      sessionId: "codex-1",
+      rateLimits: { fiveHour: null, sevenDay: null }
+    }, later);
+    expect(readCursorsState(paths).agents.codex!.hookReceiptSequence).toBe(2);
   });
 });

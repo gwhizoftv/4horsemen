@@ -765,6 +765,30 @@ describe("tmux boundary", () => {
       .toEqual({ ready: true, reason: "vendor-prompt" });
   });
 
+  it("accepts Codex file-proof readiness without a visible COORD-IDLE sentinel", () => {
+    const action = "11111111-2222-3333-4444-555555555555";
+    const pane = codexPane("• done", "");
+    expect(harnessPromptReadiness(pane, "codex", action, { readyFileProof: true }))
+      .toEqual({ ready: true, reason: "vendor-prompt" });
+    expect(harnessPromptReadiness(codexPane("• Working (2s • esc to interrupt)"), "codex", action, { readyFileProof: true }))
+      .toEqual({ ready: false, reason: "codex-turn-chrome" });
+  });
+
+  it("sends a ready-file override without requiring a visible sentinel", async () => {
+    const agent = { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" as const, harnessProcess: "codex" };
+    const action = "11111111-2222-3333-4444-555555555555";
+    const pane = { body: "• done", draft: "" };
+    const controller = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return ok("0\tcodex\t0\t0\n");
+      if (args[0] === "capture-pane") return ok(codexPane(pane.body, pane.draft));
+      if (args[0] === "send-keys" && args.includes("-l")) pane.draft += args.at(-1)!;
+      return ok();
+    }, null, null, null, noopSleep);
+    const outcome = await controller.nudge(1, agent, "/a", undefined, action, undefined, undefined,
+      () => ({ lifecycle: "unchanged", proof: "ready-file" }), "ready-file");
+    expect(outcome).toMatchObject({ status: "sent", detail: "ready-file" });
+  });
+
   it("sends a sentinel-required nudge only while the idle proof holds at each key", async () => {
     const agent = { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" as const, harnessProcess: "codex" };
     const action = "11111111-2222-3333-4444-555555555555";
@@ -795,7 +819,7 @@ describe("tmux boundary", () => {
       }, null, null, null, noopSleep);
       let checks = 0;
       const outcome = await controller.nudge(1, agent, "/a", undefined, action, undefined, undefined,
-        () => options.lifecycle?.(checks++) ?? "unchanged");
+        () => ({ lifecycle: options.lifecycle?.(checks++) ?? "unchanged", proof: "idle-sentinel" }), "idle-sentinel");
       return { outcome, keys };
     };
     expect(await attempt({ body: "• done" })).toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "prompt" }, keys: [] });

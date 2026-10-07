@@ -1,7 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { clearCompletion, createActionId, readAction, readCompletion, writeAction } from "./action.js";
+import {
+  clearCompletion,
+  clearReady,
+  createActionId,
+  isReadyReceiptEligible,
+  readAction,
+  readCompletion,
+  readReady,
+  writeAction
+} from "./action.js";
 import {
   AGENT_OBSERVABILITY_WATCHDOG_MS,
   containmentCoverage,
@@ -110,7 +119,13 @@ import { containmentPolicy, ingestContainmentProbe } from "./shellGuard.js";
 import { holdRecoveryCommand, renderIssueReport } from "./issueReport.js";
 import { formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
-import { harnessPromptReadiness, TmuxController, type OverrideLifecycle } from "./tmux.js";
+import {
+  harnessPromptReadiness,
+  TmuxController,
+  type OverrideLifecycle,
+  type StaleOverrideProof,
+  type StaleOverrideSnapshot
+} from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
@@ -1077,6 +1092,32 @@ export class CoordinatorRunLoop {
     return `${actionId}:observation:${entry?.sessionId ?? "none"}:${entry?.lastEventAt ?? "none"}`;
   }
 
+  private readyOverrideProof(
+    cursors: CursorsState,
+    agent: string,
+    actionId: string,
+    runtime: ReturnType<typeof agentRuntimePaths>
+  ): { proof: StaleOverrideProof; readyActionId: string } | null {
+    const cursor = cursors.agents[agent];
+    const entry = readAgentLifecycle(this.paths).agents[agent];
+    if (cursor === undefined) return null;
+    const parsed = readReady(runtime.ready, this.paths.completesRoot);
+    if (parsed.status !== "valid") return null;
+    const stat = lstatSync(runtime.ready);
+    if (!isReadyReceiptEligible({
+      readyActionId: parsed.actionId,
+      readyMtimeMs: stat.mtimeMs,
+      lastAcceptedActionId: cursor.lastAcceptedActionId ?? null,
+      deliveringActionId: actionId,
+      hookReceiptAt: cursor.hookReceiptAt ?? null,
+      lastEventAt: entry?.lastEventAt ?? null,
+      nowMs: Date.parse(this.now())
+    })) {
+      return null;
+    }
+    return { proof: "ready-file", readyActionId: parsed.actionId };
+  }
+
   /** One reservation path for initial, idle, reissue and lost-delivery sends. */
   private async deliver(
     start: StartState, cursors: CursorsState, agent: string, actionId: string, actionDigest: string,
@@ -1087,27 +1128,42 @@ export class CoordinatorRunLoop {
     cursors = this.ensureActionSafety(cursors, agent, actionId);
     const safety = cursors.actionSafety[agent]!;
     if (safety.reserved) return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends}`);
+    const runtime = agentRuntimePaths(this.paths, agent);
     // A reissue cannot interrupt ongoing/background work either.
     const entry = readAgentLifecycle(this.paths).agents[agent];
+    const neverSent =
+      safety.sends === 0 &&
+      entry?.action?.actionId === actionId &&
+      entry.action.actionDigest === actionDigest &&
+      entry.action.delivery === "ordered" &&
+      entry.action.injectedAt === null;
     // Before the first send there is nothing to duplicate, so a `working`
     // record left by a Stop that never reached this issue may be overruled —
-    // but only by the pane's own current idle sentinel (`requireIdleSentinel`).
-    const staleWorking = entry?.execution === "working" && safety.sends === 0 &&
-      entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest &&
-      entry.action.delivery === "ordered" && entry.action.injectedAt === null;
-    if ((entry?.execution === "working" && !staleWorking) || entry?.backgroundActive === true ||
+    // by the pane's current idle sentinel or a fresh mailbox `ready` receipt.
+    const staleWorking = entry?.execution === "working" && neverSent;
+    const readyProof = neverSent ? this.readyOverrideProof(cursors, agent, actionId, runtime) : null;
+    const lifecycleOverride = staleWorking || readyProof !== null;
+    if ((entry?.execution === "working" && !lifecycleOverride) || entry?.backgroundActive === true ||
       (entry?.pendingInputCount ?? 0) > 0) return cursors;
     // Lifecycle hooks write without touching cursor authority, so the override
     // re-reads them at every key until submission starts.
     const lifecycleSnapshot = (value: typeof entry): string => JSON.stringify([value?.sessionId, value?.turnId,
       value?.lastEventAt, value?.execution, value?.pendingInputCount, value?.backgroundActive]);
     const observed = lifecycleSnapshot(entry);
-    const staleOverride = staleWorking ? (): OverrideLifecycle => {
+    const overrideProof: StaleOverrideProof | undefined =
+      readyProof?.proof ?? (staleWorking ? "idle-sentinel" : undefined);
+    const staleOverride = overrideProof === undefined ? undefined : (): StaleOverrideSnapshot => {
       const latest = readAgentLifecycle(this.paths).agents[agent];
-      if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
-        latest.action.delivery === "accepted") return "accepted";
-      return lifecycleSnapshot(latest) === observed ? "unchanged" : "changed";
-    } : undefined;
+      const lifecycle: OverrideLifecycle =
+        latest?.action?.actionId === actionId &&
+        latest.action.actionDigest === actionDigest &&
+        latest.action.delivery === "accepted"
+          ? "accepted"
+          : lifecycleSnapshot(latest) === observed
+            ? "unchanged"
+            : "changed";
+      return { lifecycle, proof: overrideProof };
+    };
     if (safety.sends >= 4) return this.hold(cursors, agent, "nudge-loop", `${actionId}:budget:${safety.lastSendAt}`);
     const delay = NUDGE_REPEAT_DELAYS_MS[safety.sends - 1] ?? 0;
     if (safety.lastSendAt !== null && Date.parse(this.now()) - Date.parse(safety.lastSendAt) < delay) return cursors;
@@ -1123,7 +1179,7 @@ export class CoordinatorRunLoop {
     let result;
     try {
       result = await this.tmux.nudge(start.issue, config, agentRuntimePaths(this.paths, agent).action,
-        () => this.authority(cursors), actionId, actionDigest, reserve, staleOverride);
+        () => this.authority(cursors), actionId, actionDigest, reserve, staleOverride, overrideProof);
     } catch (error) {
       this.authority(cursors);
       if (error instanceof StateConflictError) throw error;
@@ -1140,17 +1196,35 @@ export class CoordinatorRunLoop {
     }
     if (result.status === "sent") {
       markActionInjected(this.paths, agent, actionId, actionDigest, sentAt);
-      if (staleWorking) {
-        this.log(
-          `Issue ${start.issue}: ${agent}'s lifecycle hooks still report it mid-turn, but its pane shows COORD-IDLE; ` +
-            `delivered action ${actionId}. No Stop event from ${agent} reached this issue — ` +
-            `check that its hooks run with COORD_ISSUE=${start.issue}.`
-        );
+      // Consume a matching receipt after any successful send (override or ordinary).
+      const lastAccepted = cursors.agents[agent]?.lastAcceptedActionId;
+      if (lastAccepted !== null && lastAccepted !== undefined) {
+        clearReady(runtime.ready, this.paths.completesRoot, lastAccepted);
+      }
+      if (lifecycleOverride) {
+        if (overrideProof === "ready-file") {
+          this.log(
+            `Issue ${start.issue}: ${agent}'s lifecycle hooks still report it mid-turn, but its mailbox ` +
+              `ready receipt matched the last accepted action; delivered action ${actionId}.`
+          );
+        } else {
+          this.log(
+            `Issue ${start.issue}: ${agent}'s lifecycle hooks still report it mid-turn, but its pane shows COORD-IDLE; ` +
+              `delivered action ${actionId}. No Stop event from ${agent} reached this issue — ` +
+              `check that its hooks run with COORD_ISSUE=${start.issue}.`
+          );
+        }
       }
       return this.mutate(cursors, (current) => {
         appendJournal(this.paths, { type: "nudged", agent, actionId,
-          details: { actionDigest, readiness: result.detail ?? "vendor-prompt", [reason]: true,
-            ...(staleWorking ? { lifecycleOverride: "working" } : {}) } }, this.now());
+          details: {
+            actionDigest,
+            readiness: result.detail ?? "vendor-prompt",
+            [reason]: true,
+            ...(lifecycleOverride
+              ? { lifecycleOverride: entry?.execution ?? "working", readinessProof: overrideProof }
+              : {})
+          } }, this.now());
         return { ...current, actionSafety: { ...current.actionSafety, [agent]: {
           ...current.actionSafety[agent]!, reserved: false, lastSendAt: this.now()
         } } };
@@ -1712,10 +1786,14 @@ export class CoordinatorRunLoop {
       // send succeeds, only a lifecycle idle transition can authorize more.
       if (entry.action?.delivery !== "ordered" || entry.action.retryableInjectionAt === null) {
         const decision = decideLifecycleNudge(entry, actionId, actionDigest);
-        // A never-sent action against `working` is decided by deliver(), on the pane's idle sentinel.
-        const neverSentWorking = decision.code === "working" &&
+        // Never-sent `working` still reaches deliver() for sentinel/ready proof.
+        // Never-sent `unknown` may pass only when a fresh ready receipt is present.
+        const neverSent =
           entry.action?.delivery === "ordered" && entry.action.injectedAt === null;
-        if (decision.kind === "wait" && !neverSentWorking) {
+        const readyProof = neverSent ? this.readyOverrideProof(cursors, agent, actionId, runtime) : null;
+        const neverSentWorking = decision.code === "working" && neverSent;
+        const neverSentUnknownReady = decision.code === "unknown" && neverSent && readyProof !== null;
+        if (decision.kind === "wait" && !neverSentWorking && !neverSentUnknownReady) {
           const injected = entry.action;
           const observedAfterInjection =
             injected !== null &&
@@ -1862,6 +1940,7 @@ export class CoordinatorRunLoop {
             actionId: null,
             submissionMode: null,
             actionDigest: null,
+            lastAcceptedActionId: cursor.actionId,
             status: "waiting-peer",
             submissionSha: null,
             outstanding: [],
@@ -1920,6 +1999,7 @@ export class CoordinatorRunLoop {
         if (cursor?.actionId == null || cursor.actionId === retired.actionId) {
           const runtime = agentRuntimePaths(this.paths, retired.agent);
           clearCompletion(runtime.complete);
+          if (existsSync(runtime.ready)) unlinkSync(runtime.ready);
           if (existsSync(runtime.action)) unlinkSync(runtime.action);
         }
         clearAgentResponse(agentResponsePath(this.paths, retired.agent, retired.actionId));
@@ -1940,12 +2020,16 @@ export class CoordinatorRunLoop {
       proposal: decision.request, plans, activeRoster: [...cursors.activeRoster],
       resume: { stepId: source.stepId, round: source.round }, requestedAt: this.now()
     };
+    const requesterActionId = cursors.agents[decision.agent]?.actionId ?? null;
     const next = this.mutate(cursors, (current) => {
       const event = appendJournal(this.paths, { type: "amendment-requested", agent: decision.agent,
         actionId: decision.request.actionId, submissionSha: decision.submissionSha,
         details: { sequence: pending.sequence, scopeHash: decision.request.scopeHash,
           eventId: `amendment-request:${pending.sequence}:${decision.request.actionId}:${decision.submissionSha}` } }, this.now());
-      return this.amendmentTransition(cursorsStateSchema.parse({ ...current,
+      const withRequest = requesterActionId === null ? current : replaceCursor(
+        current, decision.agent, { lastAcceptedActionId: requesterActionId }, event.at
+      );
+      return this.amendmentTransition(cursorsStateSchema.parse({ ...withRequest,
         pendingAmendment: { ...pending, requestedAt: event.at }, amendmentSequence: pending.sequence }), "R4.amend-ballot", pending.sequence);
     });
     return this.retireAmendmentActions(next);
@@ -2110,6 +2194,7 @@ export class CoordinatorRunLoop {
             actionId: null,
             submissionMode: null,
             actionDigest: null,
+            lastAcceptedActionId: cursor.actionId,
             status: "waiting-peer",
             submissionSha: null,
             outstanding: [],
@@ -2802,7 +2887,11 @@ export class CoordinatorRunLoop {
       cursors = this.retireAmendmentActions(cursors);
       const observations: EvidenceObservation[] = [];
 
-      for (const dropped of cursors.droppedAgents) clearCompletion(agentRuntimePaths(this.paths, dropped).complete);
+      for (const dropped of cursors.droppedAgents) {
+        const runtime = agentRuntimePaths(this.paths, dropped);
+        clearCompletion(runtime.complete);
+        if (existsSync(runtime.ready)) unlinkSync(runtime.ready);
+      }
       for (const agent of cursors.activeRoster) {
       if (cursors.paused) return cursors;
       const cursor = cursors.agents[agent];

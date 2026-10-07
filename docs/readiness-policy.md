@@ -51,8 +51,13 @@ Any other line fails closed.
 that never reaches this issue leaves lifecycle at `working`, which would block
 the next action forever. While an action has never been sent (no send charged,
 `delivery: "ordered"`, no injection), a current sentinel that passes every veto
-may overrule that `working` record, and only that one. The pane is rechecked at
-every key, with the turn-chrome veto always applied:
+may overrule that `working` record, and only that one. The same never-sent gate
+also accepts a mailbox `ready <actionId>` file beside `complete` when the marker
+names the issue's last accepted action, its mtime is strictly after the latest
+hook receipt or lifecycle event, and every scrape veto still passes — including
+for Codex, where composer/vim/submit checks run without requiring a visible
+COORD-IDLE line. The coordinator deletes the receipt after a successful send.
+The pane is rechecked at every key, with the turn-chrome veto always applied:
 
 - the lifecycle record must be unchanged, or the send stops with
   `lifecycle-changed`;
@@ -106,7 +111,7 @@ Prompt readiness (`PromptBlockedReason`):
 | `antigravity-verify-overlay` | the account-verify overlay is up and discards keys |
 | `antigravity-no-prompt` | splash or no prompt yet |
 | `codex-turn-chrome` | Codex's `Working (… esc to interrupt)` status line is up |
-| `no-idle-sentinel` | lifecycle reports `working` and the pane shows no current sentinel to overrule it, or the composer no longer holds exactly the nudge |
+| `no-idle-sentinel` | lifecycle reports `working` and neither a current sentinel nor a fresh mailbox `ready` receipt authorizes the override, or the composer no longer holds exactly the nudge |
 | `lifecycle-changed` | lifecycle hooks reported new activity while an override send was being prepared |
 
 In-flight status words (`Thinking`, `Working`, `Generating`, `Running`) match

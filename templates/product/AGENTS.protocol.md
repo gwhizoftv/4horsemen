@@ -75,17 +75,27 @@ your `action.md`. If `actionId` in the front matter has changed, execute the new
 instructions immediately; do not wait for another coordinator message. This
 re-read applies to both Git-mode and response-mode actions.
 
-If that re-read shows the same `actionId` — there is no new work yet — end your
-reply with this exact line, on its own, with nothing after it:
+If that re-read shows the same `actionId`, or `action.md` is already missing
+after acceptance — there is no new work yet — write this exact one-line marker
+as the sole contents of the mailbox `ready` file beside your `complete` receipt
+(the absolute path appears in your action body), naming the `actionId` you just
+completed:
+
+```text
+ready <that actionId>
+```
+
+Then end your reply with this exact line, on its own, with nothing after it:
 
 ```
 COORD-IDLE: waiting for the next coordinator action file
 ```
 
-Coordination reads your terminal to decide whether it is safe to type into it.
-That line is how it can tell an idle window from one that is still rendering.
-Print it only when you are genuinely finished and waiting; never print it while
-work is still in progress.
+Coordination reads your terminal and the mailbox `ready` receipt to decide
+whether it is safe to type into it. The sentinel is secondary confirmation; the
+`ready` file is durable idle evidence when lifecycle hooks lag. Print both only
+when you are genuinely finished and waiting; never print them while work is still
+in progress.
 
 A **plan** (`.plans/issue-<n>/plan.md`) must include every heading below,
 each with a non-empty body:

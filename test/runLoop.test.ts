@@ -36,6 +36,7 @@ import {
   readCursorsState,
   readJournal,
   readStartState,
+  replaceCursor,
   setPaused,
   releaseHold,
   writeCursorsState
@@ -1881,17 +1882,19 @@ describe("effectful run loop", () => {
     let literalNudges = 0;
     let body = "• done";
     let draft = "";
-    // Captures to let pass before a hook reports a new turn; -1 disables the race.
-    let raceAfterCaptures = -1;
+    let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
+    const esc = String.fromCharCode(0x1b);
+    const codexComposer = (value = "") =>
+      `${esc}[1m›${esc}[0m${esc}[48;2;30;158;159m ${value === "" ? `${esc}[2mAsk Codex to do anything${esc}[0m` : value}`;
     const messages: string[] = [];
     const tmux = new TmuxController(async (args) => {
       if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
       if (args[0] === "capture-pane") {
-        if (raceAfterCaptures >= 0 && raceAfterCaptures-- === 0) {
-          // A hook reports a new turn while the pane still looks idle.
-          observeAgentLifecycle(paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session-1", turnId: "turn-1" });
-        }
-        return { exitCode: 0, stdout: `${body}\n\n› ${draft}\n\n  ? for shortcuts`, stderr: "" };
+        return {
+          exitCode: 0,
+          stdout: `${body}\n\n${codexComposer(draft)}\n\n  ? for shortcuts\n  Context 71% left`,
+          stderr: ""
+        };
       }
       if (args[0] === "send-keys" && args.includes("-l")) {
         literalNudges += 1;
@@ -1899,7 +1902,12 @@ describe("effectful run loop", () => {
       }
       return { exitCode: 0, stdout: "", stderr: "" };
     });
-    const loop = new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) });
+    const loop = new CoordinatorRunLoop(paths, {
+      tmux,
+      log: (message) => messages.push(message),
+      now: () => new Date(nowMs).toISOString(),
+      nudgeRetryMs: NUDGE_RETRY_MS
+    });
     await loop.runTick();
     expect(literalNudges).toBe(0);
     expect(readAgentLifecycle(paths).agents.codex?.action?.delivery).toBe("ordered");
@@ -1907,12 +1915,7 @@ describe("effectful run loop", () => {
       event.type === "nudge-deferred" && event.agent === "codex" && event.details.code === "no-idle-sentinel")).toBe(true);
 
     body = "• done\n\n• COORD-IDLE: waiting for the next coordinator action file";
-    raceAfterCaptures = 1; // after the unfinished-work probe, during the nudge's readiness capture
-    await loop.runTick();
-    expect(literalNudges).toBe(0);
-    expect(readJournal(paths).some((event) =>
-      event.type === "nudge-deferred" && event.agent === "codex" && event.details.code === "lifecycle-changed")).toBe(true);
-
+    nowMs += NUDGE_RETRY_MS + 1;
     await loop.runTick();
     expect(literalNudges).toBe(1);
     expect(readAgentLifecycle(paths).agents.codex).toMatchObject({ execution: "working", action: { delivery: "injected" } });
@@ -1922,8 +1925,67 @@ describe("effectful run loop", () => {
     expect(messages.join("\n")).toContain("No Stop event from codex reached this issue");
 
     // After the first send, a stale working record again blocks: no duplicate.
+    nowMs += NUDGE_RETRY_MS + 1;
     await loop.runTick();
     expect(literalNudges).toBe(1);
+  });
+
+  it("delivers once on stale working when a fresh ready receipt matches the last accepted action", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    const acceptedActionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let literalNudges = 0;
+    let draft = "";
+    const esc = String.fromCharCode(0x1b);
+    const codexComposer = (value = "") =>
+      `${esc}[1m›${esc}[0m${esc}[48;2;30;158;159m ${value === "" ? `${esc}[2mAsk Codex to do anything${esc}[0m` : value}`;
+    observeAgentLifecycle(paths, "codex", {
+      kind: "prompt-submitted",
+      eventName: "UserPromptSubmit",
+      sessionId: "session-1",
+      turnId: "turn-0"
+    });
+    writeCursorsState(
+      paths,
+      replaceCursor(readCursorsState(paths), "codex", { lastAcceptedActionId: acceptedActionId })
+    );
+    const runtime = agentRuntimePaths(paths, "codex");
+    writeFileSync(runtime.ready, `ready ${acceptedActionId}\n`);
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") {
+        return {
+          exitCode: 0,
+          stdout: `• done\n\n${codexComposer(draft)}\n\n  ? for shortcuts\n  Context 71% left`,
+          stderr: ""
+        };
+      }
+      if (args[0] === "send-keys" && args.includes("-l")) {
+        literalNudges += 1;
+        draft = args.at(-1)!;
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { tmux });
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+    expect(existsSync(runtime.ready)).toBe(false);
+    const nudged = readJournal(paths).filter((event) => event.type === "nudged" && event.agent === "codex");
+    expect(nudged).toHaveLength(1);
+    expect(nudged[0]?.details).toMatchObject({ readiness: "ready-file", lifecycleOverride: "working" });
   });
 
   it("retries an action that a busy pane never injected", async () => {

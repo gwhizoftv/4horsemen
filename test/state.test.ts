@@ -425,4 +425,14 @@ describe("context paths", () => {
     const { start } = initialize();
     expect(start.contextPaths).toEqual([]);
   });
+
+  it("defaults readiness fields on agent cursors for legacy state files", () => {
+    const { paths } = initialize();
+    const cursors = readCursorsState(paths);
+    expect(cursors.agents.codex).toMatchObject({
+      lastAcceptedActionId: null,
+      hookReceiptAt: null,
+      hookReceiptSequence: 0
+    });
+  });
 });

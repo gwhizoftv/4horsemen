@@ -83,6 +83,13 @@ export type PromptBlockedReason =
 /** The lifecycle record since an override send began: untouched, showing this nudge accepted, or anything else. */
 export type OverrideLifecycle = "unchanged" | "accepted" | "changed";
 
+export type StaleOverrideProof = "idle-sentinel" | "ready-file";
+
+export type StaleOverrideSnapshot = {
+  lifecycle: OverrideLifecycle;
+  proof: StaleOverrideProof;
+};
+
 export type PromptReadiness =
   | { ready: true; reason: "vendor-prompt" | "idle-sentinel" }
   | { ready: false; reason: PromptBlockedReason };
@@ -175,6 +182,26 @@ const compactText = (value: string): string => value.replace(/\s/g, "");
 const codexTail = (paneText: string): { composer: PaneLine[]; footer: PaneLine[] } | null => {
   const after = linesAfterCodexSentinel(paneText);
   if (after === null) return null;
+  return codexTailFromLines(after);
+};
+
+/** Codex composer/footer tail without requiring a visible COORD-IDLE sentinel. */
+const codexFileProofTail = (paneText: string): { composer: PaneLine[]; footer: PaneLine[] } | null => {
+  const lines = paneText.split("\n")
+    .map((raw) => ({ raw, plain: stripAnsi(raw).trim() }))
+    .filter((line) => line.plain !== "");
+  let composerStart = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i]!.plain.startsWith("›")) {
+      composerStart = i;
+      break;
+    }
+  }
+  if (composerStart < 0) return null;
+  return codexTailFromLines(lines.slice(composerStart));
+};
+
+const codexTailFromLines = (after: PaneLine[]): { composer: PaneLine[]; footer: PaneLine[] } | null => {
   const footerAt = after.findIndex((line) => CODEX_FOOTER.test(line.plain));
   const composer = footerAt < 0 ? after : after.slice(0, footerAt);
   const footer = footerAt < 0 ? [] : after.slice(footerAt);
@@ -193,6 +220,16 @@ const codexSentinelAtTail = (paneText: string): boolean => {
 const codexComposerHolds = (paneText: string, text: string): boolean => {
   const tail = codexTail(paneText);
   return tail !== null && compactText(tail.composer.map((line) => line.plain).join("").slice(1)) === compactText(text);
+};
+
+const codexComposerHoldsForFileProof = (paneText: string, text: string): boolean => {
+  const tail = codexFileProofTail(paneText);
+  return tail !== null && compactText(tail.composer.map((line) => line.plain).join("").slice(1)) === compactText(text);
+};
+
+const codexReadyForFileProof = (paneText: string): boolean => {
+  const tail = codexFileProofTail(paneText);
+  return tail !== null && tail.composer.length === 1 && codexComposerEmpty(tail.composer[0]!.raw);
 };
 
 /**
@@ -256,11 +293,14 @@ export const idleSentinelAfterAction = (paneText: string, actionId: string): boo
 export const harnessPromptReadiness = (
   paneText: string,
   agentId: string,
-  actionId?: string
+  actionId?: string,
+  options?: { readyFileProof?: boolean }
 ): PromptReadiness => {
   const plain = stripAnsi(paneText);
+  const readyFileProof = options?.readyFileProof === true;
   // A sentinel older than the current action is stale scrollback, not evidence.
   const sentinel =
+    !readyFileProof &&
     (agentId === "codex" ? codexSentinelAtTail(paneText) : sentinelAtTail(plain)) &&
     (actionId === undefined || idleSentinelAfterAction(plain, actionId));
   const ready = (): PromptReadiness => ({ ready: true, reason: sentinel ? "idle-sentinel" : "vendor-prompt" });
@@ -293,6 +333,7 @@ export const harnessPromptReadiness = (
     case "codex":
       // Codex accepts keys once the process is up; block only on its live turn status.
       if (codexTurnChrome(plain)) return { ready: false, reason: "codex-turn-chrome" };
+      if (readyFileProof && codexReadyForFileProof(paneText)) return { ready: true, reason: "vendor-prompt" };
       return ready();
     default:
       return ready();
@@ -992,7 +1033,9 @@ export class TmuxController {
      * Present only when this send overrules a stale lifecycle `working`
      * record; it reports what that lifecycle record has done since.
      */
-    staleOverride?: () => OverrideLifecycle
+    staleOverride?: () => StaleOverrideSnapshot,
+    /** Proof source for the override; kept separate so readiness checks do not consume lifecycle snapshots. */
+    overrideProof?: StaleOverrideProof
   ): Promise<NudgeOutcome> {
     if (agent.delivery !== "nudge" && agent.delivery !== "both") {
       return { status: "disabled", reason: "delivery-disabled", stage: "config" };
@@ -1004,9 +1047,12 @@ export class TmuxController {
     }
     let paneText = await this.capturePane(target);
     assertAuthority();
-    const readiness = harnessPromptReadiness(paneText, agent.id, actionId);
+    const proof = overrideProof ?? staleOverride?.().proof;
+    const readiness = harnessPromptReadiness(paneText, agent.id, actionId, {
+      readyFileProof: proof === "ready-file"
+    });
     if (!readiness.ready) return { status: "busy", reason: readiness.reason, stage: "prompt" };
-    if (staleOverride !== undefined && readiness.reason !== "idle-sentinel") {
+    if (proof === "idle-sentinel" && readiness.reason !== "idle-sentinel") {
       return { status: "busy", reason: "no-idle-sentinel", stage: "prompt" };
     }
     if (agent.id === "antigravity") {
@@ -1014,7 +1060,9 @@ export class TmuxController {
       assertAuthority();
       paneText = await this.capturePane(target);
       assertAuthority();
-      const recaptured = harnessPromptReadiness(paneText, agent.id, actionId);
+      const recaptured = harnessPromptReadiness(paneText, agent.id, actionId, {
+        readyFileProof: proof === "ready-file"
+      });
       if (!recaptured.ready) return { status: "busy", reason: recaptured.reason, stage: "antigravity-recapture" };
     }
     const text = renderNudgeText(actionPath, actionId, actionDigest);
@@ -1045,16 +1093,25 @@ export class TmuxController {
         // submit key is out, proof that the nudge was accepted ends the send.
         const latest = await this.capturePane(target);
         assertAuthority();
-        const lifecycle = staleOverride();
+        const { lifecycle, proof } = staleOverride();
         if (submitting && (lifecycle === "accepted" ||
           (agent.id === "codex" && codexNudgeSubmitted(latest, text)))) {
           return { status: "sent", reason: "sent", stage: "complete", detail: "accepted" };
         }
-        const current = harnessPromptReadiness(latest, agent.id, actionId);
+        const current = harnessPromptReadiness(latest, agent.id, actionId, {
+          readyFileProof: proof === "ready-file"
+        });
+        const composerMismatch = agent.id === "codex"
+          ? proof === "ready-file"
+            ? !codexComposerHoldsForFileProof(latest, text)
+            : !codexComposerHolds(latest, text)
+          : false;
         const refused = !current.ready ? current.reason
           : lifecycle !== "unchanged" ? "lifecycle-changed"
-          : !typedText ? (current.reason === "idle-sentinel" ? null : "no-idle-sentinel")
-          : agent.id === "codex" && !codexComposerHolds(latest, text) ? "no-idle-sentinel"
+          : !typedText
+            ? proof === "idle-sentinel" && current.reason !== "idle-sentinel" ? "no-idle-sentinel"
+            : null
+          : composerMismatch ? "no-idle-sentinel"
           : null;
         if (refused !== null) return { status: "busy", reason: refused, stage: began ? "mid-send" : "prompt" };
       }
@@ -1084,6 +1141,15 @@ export class TmuxController {
       if (submit.status !== "sent") return submit;
       if (submit.detail === "accepted") break;
     }
-    return { status: "sent", reason: "sent", stage: "complete", ...(readiness.reason === "idle-sentinel" ? { detail: "idle-sentinel" } : {}) };
+    return {
+      status: "sent",
+      reason: "sent",
+      stage: "complete",
+      ...(proof === "ready-file"
+        ? { detail: "ready-file" }
+        : readiness.reason === "idle-sentinel"
+          ? { detail: "idle-sentinel" }
+          : {})
+    };
   }
 }

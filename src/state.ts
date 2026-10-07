@@ -505,6 +505,11 @@ export const agentCursorSchema = z
     attempt: z.number().int().nonnegative(),
     submissionSha: gitShaSchema.nullable(),
     outstanding: z.array(z.string()),
+    /** Last action whose workflow the coordinator accepted; binds a mailbox `ready` receipt. */
+    lastAcceptedActionId: z.string().uuid().nullable().default(null),
+    /** Monotonic hook-receipt clock; duplicate lifecycle events advance this without changing semantics. */
+    hookReceiptAt: timestampSchema.nullable().default(null),
+    hookReceiptSequence: z.number().int().nonnegative().default(0),
     updatedAt: timestampSchema
   })
   .strict();
@@ -1083,6 +1088,9 @@ export const initialCursors = (start: StartState, now = new Date().toISOString()
       attempt: 0,
       submissionSha: null,
       outstanding: [],
+      lastAcceptedActionId: null,
+      hookReceiptAt: null,
+      hookReceiptSequence: 0,
       updatedAt: now
     };
   }
@@ -1416,6 +1424,23 @@ export const replaceCursor = (
     ...cursors,
     agents: { ...cursors.agents, [agent]: { ...current, ...patch, updatedAt: now } },
     updatedAt: now
+  });
+};
+
+/** Every normalized lifecycle observation except telemetry advances the hook-receipt clock. */
+export const advanceHookReceipt = (
+  paths: IssueRuntimePaths,
+  agent: string,
+  now = new Date().toISOString()
+): void => {
+  if (!existsSync(paths.cursors)) return;
+  mutateCursorsState(paths, (current) => {
+    const cursor = current.agents[agent];
+    if (cursor === undefined) return current;
+    return replaceCursor(current, agent, {
+      hookReceiptAt: now,
+      hookReceiptSequence: (cursor.hookReceiptSequence ?? 0) + 1
+    }, now);
   });
 };
 

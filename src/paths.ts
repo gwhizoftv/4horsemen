@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export class PathSafetyError extends Error {
   override readonly name = "PathSafetyError";
@@ -106,12 +106,12 @@ export const resolveSafeCoordRoot = (options: SafeCoordRootOptions): string => {
  * The completion mailbox: a third tree that is a sibling of both the agent
  * clones and the coordinator runtime.
  *
- * `complete` is the only runtime file an agent writes. Leaving it beside
- * `action.md` forced every harness to hold a writable grant on the whole coord
- * root, which also holds `cursors.json`, `journal.jsonl`, and every peer's
+ * Agents write `complete` and optionally `ready` in this drop. Leaving those
+ * beside `action.md` forced every harness to hold a writable grant on the whole
+ * coord root, which also holds `cursors.json`, `journal.jsonl`, and every peer's
  * order. Codex ran `--sandbox danger-full-access` for exactly that reason. The
  * mailbox is granted per issue and per agent, so a harness can publish its SHA
- * without reaching coordinator state or a peer's receipt.
+ * (and idle receipt) without reaching coordinator state or a peer's receipt.
  */
 /**
  * Sibling `completes/`, then one segment identifying the workspace whose
@@ -321,15 +321,21 @@ export type AgentRuntimePaths = {
   root: string;
   action: string;
   complete: string;
+  /** Idle receipt beside `complete`; sole contents `ready <actionId>`. */
+  ready: string;
   renderLog: string;
   /**
-   * The directory holding `complete`, and the exact path a harness is granted.
+   * The directory holding `complete`/`ready`, and the exact path a harness is granted.
    * Separate from `root`: the order is coordinator-owned, the receipt is not.
    */
   completeDir: string;
   /** Agent-writable ballot response directory under the issue runtime. */
   responsesDir: string;
 };
+
+/** Sibling of a completion marker path; one definition for renderer and reader. */
+export const readyReceiptPath = (completePath: string): string =>
+  join(dirname(completePath), "ready");
 
 const agentPattern = /^[a-z][a-z0-9-]{0,63}$/;
 const actionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -342,11 +348,13 @@ export const agentRuntimePaths = (paths: IssueRuntimePaths, agent: string): Agen
   }
   const root = containedPath(paths.agents, agent);
   const completeDir = containedPath(paths.completesIssueRoot, agent);
+  const complete = containedPath(completeDir, "complete");
   return {
     root,
     action: containedPath(root, "action.md"),
-    // The receipt leaves the coord root; the order and the log do not.
-    complete: containedPath(completeDir, "complete"),
+    // Receipts leave the coord root; the order and the log do not.
+    complete,
+    ready: containedPath(completeDir, "ready"),
     renderLog: containedPath(root, "render.log"),
     completeDir,
     responsesDir: containedPath(root, "responses")
