@@ -1,0 +1,46 @@
+{
+  "actionId": "951117d8-7ae0-44c4-848a-114195eac623",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "a1ce468979ee38a540fe304e5d24dc64bf51344280ee4bd7d212193d0055b87b",
+  "issue": 169,
+  "issueSessionId": "issue-169:cd2798983651198c865cd37c494e8ac38062c109",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "6f52fe39843b95fa8a00309a701ff9a5d6993f5f",
+      "path": ".plans/issue-169/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "5ba6d9c400d7d87cbcc6d69f32a49dcf80af5cb9",
+      "path": ".plans/issue-169/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "dc7e33a29aa9dba2b197e9570580d48a15bb1dd9",
+      "path": ".plans/issue-169/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude is the smallest map that unblocks Claude/Cursor where sentinelAtTail never succeeds, while Codex-as-written advances hook-receipt on telemetry and forbids ready when action.md is already unlinked—both would leave the issue's primary agents without a usable receipt.",
+  "responseSha256": "7b9806f5213256af60f521a3efe0412d2a3da9f34762fac87492dd68232bbb8a",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "ed8f2d8e0e55ef959190a997019007b662136def",
+      "path": ".plans/issue-169/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "14a64330a3a008771357479ca8b9671142c813db",
+      "path": ".plans/issue-169/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "231509120cbe7d01491656ff27a53e59a52a1b90",
+      "path": ".plans/issue-169/review.md"
+    }
+  ]
+}

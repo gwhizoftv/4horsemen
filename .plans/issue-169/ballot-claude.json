@@ -1,0 +1,46 @@
+{
+  "actionId": "fdd5fc28-4b4d-4f7c-9c3f-0f51bb978e68",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "a1ce468979ee38a540fe304e5d24dc64bf51344280ee4bd7d212193d0055b87b",
+  "issue": 169,
+  "issueSessionId": "issue-169:cd2798983651198c865cd37c494e8ac38062c109",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "6f52fe39843b95fa8a00309a701ff9a5d6993f5f",
+      "path": ".plans/issue-169/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "5ba6d9c400d7d87cbcc6d69f32a49dcf80af5cb9",
+      "path": ".plans/issue-169/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "dc7e33a29aa9dba2b197e9570580d48a15bb1dd9",
+      "path": ".plans/issue-169/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex's plan is the only one that keeps the receipt through acceptance, binds accepted amendment requests, and decouples the Codex composer checks from the sentinel (which the Claude plan misses and would turn into delivery-uncertain holds), so it is the safest base once it stops counting status-line telemetry as hook arrivals and also writes ready when action.md was already removed.",
+  "responseSha256": "da148cd34e66e7b4f40e6cc8d060f434e771d333ded0b487436ed3c6360cceda",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "ed8f2d8e0e55ef959190a997019007b662136def",
+      "path": ".plans/issue-169/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "14a64330a3a008771357479ca8b9671142c813db",
+      "path": ".plans/issue-169/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "231509120cbe7d01491656ff27a53e59a52a1b90",
+      "path": ".plans/issue-169/review.md"
+    }
+  ]
+}

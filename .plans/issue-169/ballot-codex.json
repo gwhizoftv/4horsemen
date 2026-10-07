@@ -1,0 +1,46 @@
+{
+  "actionId": "0f6ee4cc-0edd-4890-87fe-abefbaeb9d69",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "a1ce468979ee38a540fe304e5d24dc64bf51344280ee4bd7d212193d0055b87b",
+  "issue": 169,
+  "issueSessionId": "issue-169:cd2798983651198c865cd37c494e8ac38062c109",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "6f52fe39843b95fa8a00309a701ff9a5d6993f5f",
+      "path": ".plans/issue-169/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "5ba6d9c400d7d87cbcc6d69f32a49dcf80af5cb9",
+      "path": ".plans/issue-169/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "dc7e33a29aa9dba2b197e9570580d48a15bb1dd9",
+      "path": ".plans/issue-169/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex provides the strongest basis through consume-on-send readiness, durable acceptance binding, duplicate-hook freshness, and sentinel-independent Codex input safeguards, subject to resolving the reviewed missing-action race and telemetry-freshness concern.",
+  "responseSha256": "0cc0f2497d73ffe9d1fc74589722b20fcf8ec027f487877d7b5117fc9bcfbbfe",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "ed8f2d8e0e55ef959190a997019007b662136def",
+      "path": ".plans/issue-169/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "14a64330a3a008771357479ca8b9671142c813db",
+      "path": ".plans/issue-169/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "231509120cbe7d01491656ff27a53e59a52a1b90",
+      "path": ".plans/issue-169/review.md"
+    }
+  ]
+}
