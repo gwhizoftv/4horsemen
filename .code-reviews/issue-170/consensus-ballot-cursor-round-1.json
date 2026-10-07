@@ -1,14 +1,14 @@
 {
-  "actionId": "7c9acf84-bc84-4c86-b50d-f1b1855e81b0",
+  "actionId": "6de8d347-b484-44d0-b398-7abd0c039dbd",
   "agent": "cursor",
   "artifact": "consensus-ballot",
-  "disposition": "approve",
-  "inputSetHash": "a5ea60371717c114e9c2e0fa2791a5d206030effbfcf4cef671e86f1cb8860cf",
+  "disposition": "revise",
+  "inputSetHash": "cd0ba8959491b20924eb5ee921278fb1c26bde21a87478e7e3c5a81246e9c625",
   "issue": 170,
   "issueSessionId": "issue-170:6f5b4bc0bb97feeb1711fe3d8f38c327460f5827",
   "protocolVersion": 2,
-  "rationale": "Revision 735d87e correctly bounds the live-owner join wait at 30 minutes so a hung peer cannot stall the tick forever, without age-reclaiming locks, and covers it with a focused runner test plus docs.",
-  "responseSha256": "99d43f359cf1b4835c2f60575deca637c480937f766cf38a1bccf3454695377d",
-  "revisionCommitSha": "735d87e726be2454c9d1f1c86fb5e745d54b1639",
+  "rationale": "revisedBranchHead 735d87e still runs the same receipt key unlocked after joinWaitMs while a live owner holds the lock; return waiting and retry the pin later instead.",
+  "responseSha256": "875e38356f0c4f4aa78633810f4c0d3400deecfb70731acc9963465e9e23589d",
+  "revisionCommitSha": "0d39e3167b26ea20ff1a0a36ff9adc3c10dbb5da",
   "round": 1
 }
