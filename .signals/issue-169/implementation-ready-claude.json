@@ -1,0 +1,27 @@
+{
+  "protocolVersion": 1,
+  "issue": 169,
+  "issueSessionId": "issue-169:cd2798983651198c865cd37c494e8ac38062c109",
+  "agent": "claude",
+  "inputSetHash": "2fce7d79a882bae434bd788ff44412608478b6fee110facff84b764e2cf1f559",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "a92952226156e51a12144a8425c10d5be4b136fd",
+  "scopeHash": "55adceb89da9065c0d6c3f6a15c7ecd3f5a511cd72c95bc8828f496452095917",
+  "approvedPaths": [
+    "docs/readiness-policy.md",
+    "src/action.ts",
+    "src/agentLifecycle.ts",
+    "src/paths.ts",
+    "src/runLoop.ts",
+    "src/state.ts",
+    "src/tmux.ts",
+    "templates/product/AGENTS.protocol.md",
+    "test/action.test.ts",
+    "test/agentLanguage.test.ts",
+    "test/agentLifecycle.test.ts",
+    "test/paths.test.ts",
+    "test/runLoop.test.ts",
+    "test/state.test.ts",
+    "test/tmux.test.ts"
+  ]
+}
