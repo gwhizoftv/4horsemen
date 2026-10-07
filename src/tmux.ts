@@ -161,13 +161,20 @@ type PaneLine = { raw: string; plain: string };
  * sentinel only the composer (which may wrap) and known footer lines may
  * follow; anything else — a new transcript item, a dialog — fails closed.
  */
-const codexTail = (paneText: string): { composer: PaneLine[]; footer: PaneLine[] } | null => {
+/** Non-blank pane lines below Codex's last rendered sentinel, or null without one. */
+const linesAfterCodexSentinel = (paneText: string): PaneLine[] | null => {
   const lines = paneText.split("\n")
     .map((raw) => ({ raw, plain: stripAnsi(raw).trim() }))
     .filter((line) => line.plain !== "");
   const sentinel = lines.map((line) => line.plain.replace(/^•\s*/, "")).lastIndexOf(COORD_IDLE_SENTINEL);
-  if (sentinel < 0) return null;
-  const after = lines.slice(sentinel + 1);
+  return sentinel < 0 ? null : lines.slice(sentinel + 1);
+};
+
+const compactText = (value: string): string => value.replace(/\s/g, "");
+
+const codexTail = (paneText: string): { composer: PaneLine[]; footer: PaneLine[] } | null => {
+  const after = linesAfterCodexSentinel(paneText);
+  if (after === null) return null;
   const footerAt = after.findIndex((line) => CODEX_FOOTER.test(line.plain));
   const composer = footerAt < 0 ? after : after.slice(0, footerAt);
   const footer = footerAt < 0 ? [] : after.slice(footerAt);
@@ -185,17 +192,29 @@ const codexSentinelAtTail = (paneText: string): boolean => {
 /** True when the composer below the sentinel holds exactly `text`, however it wrapped. */
 const codexComposerHolds = (paneText: string, text: string): boolean => {
   const tail = codexTail(paneText);
-  const compact = (value: string): string => value.replace(/\s/g, "");
-  return tail !== null && compact(tail.composer.map((line) => line.plain).join("").slice(1)) === compact(text);
+  return tail !== null && compactText(tail.composer.map((line) => line.plain).join("").slice(1)) === compactText(text);
 };
 
 /**
- * After a submit key: the nudge has left the composer and Codex shows the turn
- * it started, so further fallback submit keys would land in that turn.
+ * After a submit key, positive proof that this nudge was submitted: below the
+ * sentinel the first transcript message is exactly `text`, a live turn is
+ * running, and the composer above the footer is empty again. Further fallback
+ * submit keys would land in that turn. An unrelated Working line with the
+ * nudge still in the composer is not proof.
  */
-const codexNudgeSubmitted = (paneText: string, text: string, actionId: string | undefined): boolean => {
-  const plain = stripAnsi(paneText);
-  return actionId !== undefined && plain.includes(actionId) && codexTurnChrome(plain) && !codexComposerHolds(paneText, text);
+const codexNudgeSubmitted = (paneText: string, text: string): boolean => {
+  const after = linesAfterCodexSentinel(paneText);
+  if (after === null) return false;
+  let end = after.length;
+  while (end > 0 && CODEX_FOOTER.test(after[end - 1]!.plain)) end -= 1;
+  const composer = after[end - 1];
+  if (composer === undefined || !composer.plain.startsWith("›") || !codexComposerEmpty(composer.raw)) return false;
+  const transcript = after.slice(0, end - 1);
+  if (transcript[0]?.plain.startsWith("›") !== true) return false;
+  const nextItem = transcript.findIndex((line) => line.plain.startsWith("•"));
+  const message = transcript.slice(0, nextItem < 0 ? transcript.length : nextItem);
+  return compactText(message.map((line) => line.plain).join("").slice(1)) === compactText(text) &&
+    codexTurnChrome(transcript.map((line) => line.plain).join("\n"));
 };
 
 /** Codex's footer names its vim mode; the `i` prelude is only needed to leave NORMAL. */
@@ -1028,7 +1047,7 @@ export class TmuxController {
         assertAuthority();
         const lifecycle = staleOverride();
         if (submitting && (lifecycle === "accepted" ||
-          (agent.id === "codex" && codexNudgeSubmitted(latest, text, actionId)))) {
+          (agent.id === "codex" && codexNudgeSubmitted(latest, text)))) {
           return { status: "sent", reason: "sent", stage: "complete", detail: "accepted" };
         }
         const current = harnessPromptReadiness(latest, agent.id, actionId);

@@ -61,8 +61,9 @@ every key, with the turn-chrome veto always applied:
 - before every submit key, the composer must hold exactly this nudge, so an
   owner edit is never submitted with it;
 - once a submit key is out, a correlated prompt hook for this action, or Codex
-  showing the nudge as a running turn, ends the send without the remaining
-  fallback submit keys.
+  showing exactly this nudge as the submitted message of a running turn with
+  an empty composer again, ends the send without the remaining fallback submit
+  keys. An unrelated turn with the nudge still in the composer is not proof.
 
 A refusal before any key costs nothing; after a key, the existing
 `delivery-uncertain` hold applies. The send is journalled with

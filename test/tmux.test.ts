@@ -817,6 +817,11 @@ describe("tmux boundary", () => {
       .toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "mid-send" }, keys: ["-l", "C-j"] });
     expect(await attempt({ lifecycle: (check) => (check === 2 ? "changed" : "unchanged") }))
       .toMatchObject({ outcome: { status: "busy", reason: "lifecycle-changed", stage: "mid-send" }, keys: ["-l", "C-j"] });
+    // An unrelated turn between the submit keys, with the nudge still in the composer, is not acceptance.
+    expect(await attempt({
+      lifecycle: (check) => (check === 2 ? "changed" : "unchanged"),
+      onCapture: (index, pane) => { if (index === 3) pane.body += "\n\n• Working (3s • esc to interrupt)"; }
+    })).toMatchObject({ outcome: { status: "busy", reason: "codex-turn-chrome", stage: "mid-send" }, keys: ["-l", "C-j"] });
     // If C-j already submitted the nudge, its turn or its correlated prompt hook ends the send: no fallback C-m.
     expect(await attempt({ submitOnCtrlJ: true }))
       .toMatchObject({ outcome: { status: "sent", detail: "idle-sentinel" }, keys: ["-l", "C-j"] });
