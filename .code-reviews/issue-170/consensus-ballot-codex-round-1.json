@@ -1,0 +1,14 @@
+{
+  "actionId": "0fafebe2-b38c-479b-b89a-9d3cfaa2056c",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "a5ea60371717c114e9c2e0fa2791a5d206030effbfcf4cef671e86f1cb8860cf",
+  "issue": 170,
+  "issueSessionId": "issue-170:6f5b4bc0bb97feeb1711fe3d8f38c327460f5827",
+  "protocolVersion": 2,
+  "rationale": "At pin 735d87e726be2454c9d1f1c86fb5e745d54b1639, src/verificationRunner.ts:137-140 must bind actual dependency inputs but omits them, so changed installed dependencies reuse stale success; src/verificationRunner.ts:165-171,192,246-256 must reject dirty inputs before receipt reuse and gate success, but preparation mutations still reuse success and exit-0 tracked mutations pass; src/verificationRunner.ts:93-107,169-171 must keep same-key runs exclusive, but a live owner exceeding the join timeout now triggers a second unlocked execution and receipt write (all three defects confirmed by focused in-memory checks); package.json:13-19 must preserve existing manual coverage, but unchanged check:fast/test:e2e workspace policies lose nine system test files, so fix these cases and add regressions before approval.",
+  "responseSha256": "133e6e9a3765ed2bacd0cb648e0405ef394a10cdaebee61db6789aef3399a583",
+  "revisionCommitSha": "735d87e726be2454c9d1f1c86fb5e745d54b1639",
+  "round": 1
+}
