@@ -1,0 +1,29 @@
+{
+  "actionId": "c3376c6b-f1fb-4c4f-aee9-a4f7182aa523",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "5461bac8a5165f2a7fc1c0deee3e7739de52fb98",
+      "path": ".signals/issue-176/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "5aa03e9cdd09627a81b41e9f4baa8ee61cce8dbc",
+      "path": ".signals/issue-176/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "174754e30bd40cb6fd98e6fa12a8fc71374f3eff",
+      "path": ".signals/issue-176/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "805368b713b5f1ac98a76c6e4f8602f73c63d4311f6394754b0c5b2d5dea1dbf",
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "protocolVersion": 2,
+  "rationale": "Codex is the strongest revision base because it rechecks lifecycle and pane state at every send boundary, protects owned drafts and prior-send budgets, but it must adopt the observed rich footer, ANSI-aware placeholder detection, and footer-order-independent INSERT detection before approval.",
+  "responseSha256": "9eac4fcca94636d3ffc4fa6f7a54d7de861d10a93159bb4792a193ed3e1aeae4"
+}

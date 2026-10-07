@@ -1,0 +1,29 @@
+{
+  "actionId": "191be458-501b-431f-bbe9-8cf53005b5f7",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "5461bac8a5165f2a7fc1c0deee3e7739de52fb98",
+      "path": ".signals/issue-176/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "5aa03e9cdd09627a81b41e9f4baa8ee61cce8dbc",
+      "path": ".signals/issue-176/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "174754e30bd40cb6fd98e6fa12a8fc71374f3eff",
+      "path": ".signals/issue-176/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "805368b713b5f1ac98a76c6e4f8602f73c63d4311f6394754b0c5b2d5dea1dbf",
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "protocolVersion": 2,
+  "rationale": "Claude's pin implements the selected first-send COORD-IDLE override while closing owner-draft and mid-send races that Cursor misses and without Codex's heavier lifecycle/vim surface.",
+  "responseSha256": "b0e4846b28bd3a89ae758805524e0d2cc9165224f5ddf5439e9c9a54e34b3420"
+}

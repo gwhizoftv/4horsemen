@@ -1,0 +1,29 @@
+{
+  "actionId": "46c84c3b-c6c5-4e07-96e0-dd589c5b93b4",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "5461bac8a5165f2a7fc1c0deee3e7739de52fb98",
+      "path": ".signals/issue-176/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "5aa03e9cdd09627a81b41e9f4baa8ee61cce8dbc",
+      "path": ".signals/issue-176/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "174754e30bd40cb6fd98e6fa12a8fc71374f3eff",
+      "path": ".signals/issue-176/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "805368b713b5f1ac98a76c6e4f8602f73c63d4311f6394754b0c5b2d5dea1dbf",
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "protocolVersion": 2,
+  "rationale": "Run against the raw live Codex 0.160.1 pane, only the claude pin yields idle-sentinel for both dimmed placeholders while refusing an unsent owner draft and rechecks the pane at every key, whereas cursor's pin types into owner drafts and live turns and codex's footer regex and exact placeholder list never match the real pane, leaving the stall unfixed.",
+  "responseSha256": "a246328b76be467f78ce18c9f8859d0dde6868d02a93fd8992448188ec3bad5a"
+}
