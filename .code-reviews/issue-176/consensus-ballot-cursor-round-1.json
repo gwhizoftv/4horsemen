@@ -1,0 +1,14 @@
+{
+  "actionId": "c498a795-1d2a-4868-9350-a0a51167a139",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "73f7b2c815320273ed5132f421986e6f0e82891e0f014917fc7928fe22a9febb",
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "protocolVersion": 2,
+  "rationale": "Revision debb94c6 keeps basedOn 5461bac8 and correctly hardens the override with lifecycle-changed checks, exact nudge-composer proof before submit, and focused race tests within the approved map.",
+  "responseSha256": "e5b88b7b6bd4b49e3a344d2a618cc1fcb04e948499002042e74c5e14f382eec3",
+  "revisionCommitSha": "debb94c6a0d8aa25e6fe68880356961fc25e32e2",
+  "round": 1
+}

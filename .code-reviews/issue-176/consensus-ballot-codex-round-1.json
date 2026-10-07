@@ -1,0 +1,14 @@
+{
+  "actionId": "12a5df09-9bab-49f9-ad99-ac7d64d8528e",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "73f7b2c815320273ed5132f421986e6f0e82891e0f014917fc7928fe22a9febb",
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "protocolVersion": 2,
+  "rationale": "src/tmux.ts:1019,1021,1043 must preserve lifecycle and exact-draft vetoes before C-m, but submitting=true after C-j bypasses both (diagnostics confirmed an owner edit and a new lifecycle observation still return sent), while successful C-j acceptance that displays Working returns codex-turn-chrome/mid-send and src/runLoop.ts:1135 creates a delivery-uncertain hold; add after-C-j regressions, stop on unrelated changes, and recognize correlated acceptance to finish without fallback keys.",
+  "responseSha256": "e729a631f53ece2abb697b39f9ec96db055609a76f5803c66b7926bf4d84898d",
+  "revisionCommitSha": "debb94c6a0d8aa25e6fe68880356961fc25e32e2",
+  "round": 1
+}
