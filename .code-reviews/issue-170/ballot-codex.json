@@ -1,0 +1,29 @@
+{
+  "actionId": "96d7de1f-ebe9-4f50-b39b-276eb8ca8960",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "4cd51349bccc088fde3d100daceecd9ce1d8280c",
+      "path": ".signals/issue-170/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "176db1508f7edd49167663347fa6d365e31284a7",
+      "path": ".signals/issue-170/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "5f79510f6b6082f76e83113d8619a82a6c65bd34",
+      "path": ".signals/issue-170/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "5efc904f0194b7c20a44ec995e184a3f80453bacbd1b8686a2395fe47a08d239",
+  "issue": 170,
+  "issueSessionId": "issue-170:6f5b4bc0bb97feeb1711fe3d8f38c327460f5827",
+  "protocolVersion": 2,
+  "rationale": "Codex at 176db1508f7edd49167663347fa6d365e31284a7 is the strongest revision base because it rejects dirty or changed dependency inputs, preserves manual verification coverage and receipt logs, and passed the full suite, but its location-sensitive dependency fingerprint must be corrected and regression-tested before approval.",
+  "responseSha256": "2028c429c4a3781617669dd391641e07657629a1f450de2b5bd1f8b5dfa8d0de"
+}

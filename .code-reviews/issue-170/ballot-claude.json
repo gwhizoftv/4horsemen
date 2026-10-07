@@ -1,0 +1,29 @@
+{
+  "actionId": "086ed239-f1e6-42d5-8011-7c2bd1336602",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "4cd51349bccc088fde3d100daceecd9ce1d8280c",
+      "path": ".signals/issue-170/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "176db1508f7edd49167663347fa6d365e31284a7",
+      "path": ".signals/issue-170/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "5f79510f6b6082f76e83113d8619a82a6c65bd34",
+      "path": ".signals/issue-170/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "5efc904f0194b7c20a44ec995e184a3f80453bacbd1b8686a2395fe47a08d239",
+  "issue": 170,
+  "issueSessionId": "issue-170:6f5b4bc0bb97feeb1711fe3d8f38c327460f5827",
+  "protocolVersion": 2,
+  "rationale": "The claude implementation keeps lock exclusion safe (owner-proven reclaim, token-compared release), withholds receipts when tracked inputs change, rejects same-name command conflicts, preserves existing configs, keeps check:fast cheap and demonstrates proven evidence-excluded reuse, whereas cursor has age-based lock reclaim with unconditional release, unchecked receipt inputs, a dropped-requirement path and a duplicate-name config regression, and codex stalls every later tick on an interrupted lock until manual file removal and misreports tracked-input changes as command failures; its one revision item is bounding the join wait.",
+  "responseSha256": "a7be4a47614927f3578537e8fe71f1ea6eaf8b0440768a91c82d535f32b3c196"
+}

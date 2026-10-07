@@ -1,0 +1,29 @@
+{
+  "actionId": "947745cf-11d6-40ae-9441-2e373c150b45",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "4cd51349bccc088fde3d100daceecd9ce1d8280c",
+      "path": ".signals/issue-170/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "176db1508f7edd49167663347fa6d365e31284a7",
+      "path": ".signals/issue-170/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "5f79510f6b6082f76e83113d8619a82a6c65bd34",
+      "path": ".signals/issue-170/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "5efc904f0194b7c20a44ec995e184a3f80453bacbd1b8686a2395fe47a08d239",
+  "issue": 170,
+  "issueSessionId": "issue-170:6f5b4bc0bb97feeb1711fe3d8f38c327460f5827",
+  "protocolVersion": 2,
+  "rationale": "Claude best matches the selected plan with env digests and post-run dirty-tree receipt trust, while cursor stores plaintext env in receipts and codex breaks the cheap/manual suite split plus lock reclaim.",
+  "responseSha256": "92e2b9b9d7144255d7214938907b40d2342e3d1c851a67e982fc3b10665c38f8"
+}
