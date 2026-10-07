@@ -3,18 +3,13 @@
   "agent": "cursor",
   "artifact": "plan-ballot",
   "choice": "claude",
-  "inputSetHash": "8d1c9ee846889b259c932a227c46f06e7346d510645ae031edb75fed4e2fcef3",
+  "inputSetHash": "d8e59a1c15a3c33bf529fdce0ab8addc317a95f79a1d894897716aabc1ae954e",
   "issue": 170,
   "issueSessionId": "issue-170:6f5b4bc0bb97feeb1711fe3d8f38c327460f5827",
   "plans": [
     {
       "agent": "claude",
       "commitSha": "ea34313c0c72fcd64ffba6f8449d81844216dac5",
-      "path": ".plans/issue-170/plan.md"
-    },
-    {
-      "agent": "codex",
-      "commitSha": "4645758dd1bdbba9e4924b34d4b53c12bd26da8c",
       "path": ".plans/issue-170/plan.md"
     },
     {
@@ -30,11 +25,6 @@
     {
       "agent": "claude",
       "commitSha": "bd31e9aa170c1e8e1cf0771e24656a560d10284b",
-      "path": ".plans/issue-170/review.md"
-    },
-    {
-      "agent": "codex",
-      "commitSha": "8408e149edd1a82a2f91f46891e1fa6f3890b492",
       "path": ".plans/issue-170/review.md"
     },
     {
