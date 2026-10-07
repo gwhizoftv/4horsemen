@@ -744,7 +744,8 @@ describe("tmux boundary", () => {
   const codexFooter =
     "  Context 71% left · weekly 96% left · 258K window · 84.6K used · Vim: Insert\n" +
     "  ? for shortcuts                                      ⚠ 1 warning · f2 to view";
-  const codexPane = (body: string, draft = "") => `• Explored\n  └ Read action.md\n\n${body}\n\n${codexComposer(draft)}\n\n${codexFooter}`;
+  const codexPane = (body: string, draft = "", vim = "Insert") =>
+    `• Explored\n  └ Read action.md\n\n${body}\n\n${codexComposer(draft)}\n\n${codexFooter.replace("Vim: Insert", `Vim: ${vim}`)}`;
 
   it("vetoes a live Codex turn and reads its idle sentinel only above an empty composer", () => {
     const action = "11111111-2222-3333-4444-555555555555";
@@ -767,28 +768,44 @@ describe("tmux boundary", () => {
   it("sends a sentinel-required nudge only while the idle proof holds at each key", async () => {
     const agent = { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" as const, harnessProcess: "codex" };
     const action = "11111111-2222-3333-4444-555555555555";
-    const attempt = async (panes: string[]) => {
-      const keys: string[][] = [];
+    // A minimal Codex: typed text lands in the composer; `onCapture` lets a test change the pane between keys.
+    const attempt = async (options: {
+      body?: string; vim?: string; unchanged?: () => boolean;
+      onCapture?: (index: number, pane: { body: string; draft: string }) => void;
+    } = {}) => {
+      const pane = { body: options.body ?? `• ${COORD_IDLE_SENTINEL}`, draft: "" };
+      const keys: string[] = [];
       let captures = 0;
       const controller = new TmuxController(async (args) => {
         if (args[0] === "display-message") return ok("0\tcodex\t0\t0\n");
-        if (args[0] === "capture-pane") return ok(panes[Math.min(captures++, panes.length - 1)]);
-        if (args[0] === "send-keys") keys.push([...args]);
+        if (args[0] === "capture-pane") {
+          options.onCapture?.(captures++, pane);
+          return ok(codexPane(pane.body, pane.draft, options.vim));
+        }
+        if (args[0] === "send-keys") {
+          if (args.includes("-l")) pane.draft += args.at(-1)!;
+          keys.push(args.includes("-l") ? "-l" : args.at(-1)!);
+        }
         return ok();
       }, null, null, null, noopSleep);
-      const outcome = await controller.nudge(1, agent, "/a", undefined, action, undefined, undefined, true);
+      const outcome = await controller.nudge(1, agent, "/a", undefined, action, undefined, undefined,
+        options.unchanged ?? (() => true));
       return { outcome, keys };
     };
-    const idle = codexPane(`• ${COORD_IDLE_SENTINEL}`);
-    const busy = codexPane("• Working (1s • esc to interrupt)");
-    expect((await attempt([codexPane("• done")])).outcome).toMatchObject({ status: "busy", reason: "no-idle-sentinel", stage: "prompt" });
-    // The owner starts a turn between the readiness capture and the first key: nothing is typed.
-    const raced = await attempt([idle, busy]);
-    expect(raced.outcome).toMatchObject({ status: "busy", reason: "codex-turn-chrome", stage: "prompt" });
-    expect(raced.keys).toEqual([]);
-    const sent = await attempt([idle]);
-    expect(sent.outcome).toMatchObject({ status: "sent", detail: "idle-sentinel" });
-    expect(sent.keys.some((args) => args.includes("-l"))).toBe(true);
+    expect(await attempt({ body: "• done" })).toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "prompt" }, keys: [] });
+    // The owner starts a turn, or a lifecycle hook reports activity, before the first key: nothing is typed.
+    expect(await attempt({ onCapture: (index, pane) => { if (index === 1) pane.body = "• Working (1s • esc to interrupt)"; } }))
+      .toMatchObject({ outcome: { status: "busy", reason: "codex-turn-chrome", stage: "prompt" }, keys: [] });
+    expect(await attempt({ unchanged: () => false }))
+      .toMatchObject({ outcome: { status: "busy", reason: "lifecycle-changed", stage: "prompt" }, keys: [] });
+    // Already in INSERT: no `i` is typed into the composer.
+    expect(await attempt()).toMatchObject({ outcome: { status: "sent", detail: "idle-sentinel" }, keys: ["-l", "C-j", "C-m"] });
+    expect(await attempt({ vim: "Normal" })).toMatchObject({ outcome: { status: "sent" }, keys: ["i", "-l", "C-j", "C-m"] });
+    // An owner draft after the prelude, or an edit after the paste, stops the send before it is submitted.
+    expect(await attempt({ vim: "Normal", onCapture: (index, pane) => { if (index === 2) pane.draft = "owner draft"; } }))
+      .toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "mid-send" }, keys: ["i"] });
+    expect(await attempt({ onCapture: (index, pane) => { if (index === 2) pane.draft += " and more"; } }))
+      .toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "mid-send" }, keys: ["-l"] });
   });
 
   it("reports which pane predicate deferred a delivery", async () => {

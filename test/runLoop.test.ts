@@ -1879,12 +1879,24 @@ describe("effectful run loop", () => {
     // The previous turn's Stop never reached this issue, so lifecycle still says working.
     observeAgentLifecycle(paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session-1", turnId: "turn-0" });
     let literalNudges = 0;
-    let paneText = "• done\n\n› \n\n  ? for shortcuts";
+    let body = "• done";
+    let draft = "";
+    // Captures to let pass before a hook reports a new turn; -1 disables the race.
+    let raceAfterCaptures = -1;
     const messages: string[] = [];
     const tmux = new TmuxController(async (args) => {
       if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
-      if (args[0] === "capture-pane") return { exitCode: 0, stdout: paneText, stderr: "" };
-      if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
+      if (args[0] === "capture-pane") {
+        if (raceAfterCaptures >= 0 && raceAfterCaptures-- === 0) {
+          // A hook reports a new turn while the pane still looks idle.
+          observeAgentLifecycle(paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session-1", turnId: "turn-1" });
+        }
+        return { exitCode: 0, stdout: `${body}\n\n› ${draft}\n\n  ? for shortcuts`, stderr: "" };
+      }
+      if (args[0] === "send-keys" && args.includes("-l")) {
+        literalNudges += 1;
+        draft = args.at(-1)!;
+      }
       return { exitCode: 0, stdout: "", stderr: "" };
     });
     const loop = new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) });
@@ -1894,7 +1906,13 @@ describe("effectful run loop", () => {
     expect(readJournal(paths).some((event) =>
       event.type === "nudge-deferred" && event.agent === "codex" && event.details.code === "no-idle-sentinel")).toBe(true);
 
-    paneText = "• done\n\n• COORD-IDLE: waiting for the next coordinator action file\n\n› \n\n  ? for shortcuts";
+    body = "• done\n\n• COORD-IDLE: waiting for the next coordinator action file";
+    raceAfterCaptures = 1; // after the unfinished-work probe, during the nudge's readiness capture
+    await loop.runTick();
+    expect(literalNudges).toBe(0);
+    expect(readJournal(paths).some((event) =>
+      event.type === "nudge-deferred" && event.agent === "codex" && event.details.code === "lifecycle-changed")).toBe(true);
+
     await loop.runTick();
     expect(literalNudges).toBe(1);
     expect(readAgentLifecycle(paths).agents.codex).toMatchObject({ execution: "working", action: { delivery: "injected" } });

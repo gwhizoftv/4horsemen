@@ -844,6 +844,7 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "antigravity-no-prompt": "no idle prompt is visible in the pane",
   "codex-turn-chrome": "the pane shows in-flight turn chrome",
   "no-idle-sentinel": "lifecycle hooks report the agent mid-turn and its pane shows no COORD-IDLE line since its last action",
+  "lifecycle-changed": "lifecycle hooks reported new activity while the send was being prepared",
   "unmatched-action": "the recorded lifecycle action does not match the current one",
   "workflow-complete": "this agent already published its work for this action",
   "pending-input": "the agent has queued input of its own",
@@ -1096,6 +1097,14 @@ export class CoordinatorRunLoop {
       entry.action.delivery === "ordered" && entry.action.injectedAt === null;
     if ((entry?.execution === "working" && !staleWorking) || entry?.backgroundActive === true ||
       (entry?.pendingInputCount ?? 0) > 0) return cursors;
+    // Lifecycle hooks write without touching cursor authority, so the override
+    // re-reads them at every key until submission starts.
+    const lifecycleSnapshot = (value: typeof entry): string => JSON.stringify([value?.sessionId, value?.turnId,
+      value?.lastEventAt, value?.execution, value?.pendingInputCount, value?.backgroundActive]);
+    const observed = lifecycleSnapshot(entry);
+    const staleOverride = staleWorking
+      ? () => lifecycleSnapshot(readAgentLifecycle(this.paths).agents[agent]) === observed
+      : undefined;
     if (safety.sends >= 4) return this.hold(cursors, agent, "nudge-loop", `${actionId}:budget:${safety.lastSendAt}`);
     const delay = NUDGE_REPEAT_DELAYS_MS[safety.sends - 1] ?? 0;
     if (safety.lastSendAt !== null && Date.parse(this.now()) - Date.parse(safety.lastSendAt) < delay) return cursors;
@@ -1111,7 +1120,7 @@ export class CoordinatorRunLoop {
     let result;
     try {
       result = await this.tmux.nudge(start.issue, config, agentRuntimePaths(this.paths, agent).action,
-        () => this.authority(cursors), actionId, actionDigest, reserve, staleWorking);
+        () => this.authority(cursors), actionId, actionDigest, reserve, staleOverride);
     } catch (error) {
       this.authority(cursors);
       if (error instanceof StateConflictError) throw error;

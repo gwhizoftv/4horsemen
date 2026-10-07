@@ -52,9 +52,18 @@ that never reaches this issue leaves lifecycle at `working`, which would block
 the next action forever. While an action has never been sent (no send charged,
 `delivery: "ordered"`, no injection), a current sentinel that passes every veto
 may overrule that `working` record, and only that one. The pane is rechecked at
-every key: the full sentinel proof before the first, the turn-chrome veto after
-it. The send is journalled with `lifecycleOverride: "working"`, and stdout names
-the missing Stop. Lifecycle state is not rewritten; after that first send, a
+every key, with the turn-chrome veto always applied:
+
+- until submission starts, the lifecycle record must be unchanged, or the send
+  stops with `lifecycle-changed`;
+- until the nudge is typed, the composer must be empty, so Codex's vim `i`
+  prelude is sent only from vim NORMAL;
+- before the first submit key, the composer must hold exactly this nudge, so an
+  owner edit is never submitted with it.
+
+A refusal before any key costs nothing; after a key, the existing
+`delivery-uncertain` hold applies. The send is journalled with
+`lifecycleOverride: "working"`, and stdout names the missing Stop. Lifecycle state is not rewritten; after that first send, a
 `working` record blocks exactly as before.
 
 ## Lost delivery is retried only on positive proof
@@ -93,7 +102,8 @@ Prompt readiness (`PromptBlockedReason`):
 | `antigravity-verify-overlay` | the account-verify overlay is up and discards keys |
 | `antigravity-no-prompt` | splash or no prompt yet |
 | `codex-turn-chrome` | Codex's `Working (… esc to interrupt)` status line is up |
-| `no-idle-sentinel` | lifecycle reports `working` and the pane shows no current sentinel to overrule it |
+| `no-idle-sentinel` | lifecycle reports `working` and the pane shows no current sentinel to overrule it, or the composer no longer holds exactly the nudge |
+| `lifecycle-changed` | lifecycle hooks reported new activity while an override send was being prepared |
 
 In-flight status words (`Thinking`, `Working`, `Generating`, `Running`) match
 only at the start of a line, after whitespace or a spinner glyph, and only with
