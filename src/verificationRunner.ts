@@ -139,7 +139,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
     }
     // Hashed now, after the commands before this one prepared the worktree.
     let dependencies: string;
-    try { dependencies = dependencyIdentity(target, command.cache.dependencies); }
+    try { dependencies = dependencyIdentity(target, command.cache.dependencies, command.cache.dependencyExcludes); }
     catch (error) { return `not cached: ${error instanceof Error ? error.message : String(error)}`; }
     return {
       v: 1, origin: start.origin, inputsMode: mode, inputIdentity: identity, argv: [...command.argv],
@@ -271,8 +271,9 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
       let receiptId: string | undefined;
       if (key !== null && typeof material !== "string") {
         let unchanged = false;
-        try { unchanged = dependencyIdentity(target, command.cache!.dependencies) === material.dependencies; }
-        catch { unchanged = false; }
+        try {
+          unchanged = dependencyIdentity(target, command.cache!.dependencies, command.cache!.dependencyExcludes) === material.dependencies;
+        } catch { unchanged = false; }
         if (unchanged) {
           writeReceipt(paths.coordRoot, {
             formatVersion: 1, key, material, name: command.name, exitCode: 0,

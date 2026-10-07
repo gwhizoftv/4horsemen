@@ -25,7 +25,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 const environment = { platform: "test-os", arch: "test-arch", node: "v0", env: { TOKEN: "secret" } };
 const cached = (name: string, extra: Partial<CheckCommand> = {}): CheckCommand =>
-  ({ name, argv: [name], cache: { inputs: "tree-excluding-evidence", env: [], probes: [], dependencies: [] }, ...extra });
+  ({ name, argv: [name], cache: { inputs: "tree-excluding-evidence", env: [], probes: [], dependencies: [], dependencyExcludes: [] }, ...extra });
 
 const setup = () => {
   const root = mkdtempSync(join(tmpdir(), "coord-verify-"));
@@ -120,7 +120,7 @@ describe("verification receipts", () => {
 
   it("keys on the declared dependencies as prepared, and withholds the receipt when the command changed them", async () => {
     const { paths, input } = setup();
-    const lint = cached("lint", { cache: { inputs: "tree-excluding-evidence", env: [], probes: [], dependencies: ["deps/lock.yaml"] } });
+    const lint = cached("lint", { cache: { inputs: "tree-excluding-evidence", env: [], probes: [], dependencies: ["deps/lock.yaml"], dependencyExcludes: [] } });
     const prepare = { name: "prepare", argv: ["prepare"] };
     let installed = "a";
     const runner = (lintWrites: boolean): RunVerificationInput["processRunner"] => async (argv, cwd) => {
@@ -157,6 +157,16 @@ describe("dependency identity", () => {
     expect(dependencyIdentity(a, ["deps"])).toBe(dependencyIdentity(b, ["deps"]));
     writeFileSync(join(b, "deps/pkg/index.js"), "module.exports = 2;\n");
     expect(dependencyIdentity(a, ["deps"])).not.toBe(dependencyIdentity(b, ["deps"]));
+    // An executable shim is an input even when package bytes are unchanged;
+    // declared tool state (timestamps, caches) is not.
+    const shim = dependencyIdentity(b, ["deps"], ["deps/.state"]);
+    writeFileSync(join(b, "deps/shim"), "#!/bin/sh\nexit 1\n");
+    expect(dependencyIdentity(b, ["deps"], ["deps/.state"])).not.toBe(shim);
+    const edited = dependencyIdentity(b, ["deps"], ["deps/.state"]);
+    mkdirSync(join(b, "deps/.state"));
+    writeFileSync(join(b, "deps/.state/stamp"), `${Date.now()}\n`);
+    expect(dependencyIdentity(b, ["deps"], ["deps/.state"])).toBe(edited);
+    expect(dependencyIdentity(b, ["deps"])).not.toBe(edited);
     symlinkSync(join(a, "outside"), join(a, "deps/escape"));
     writeFileSync(join(a, "outside"), "not declared\n");
     expect(() => dependencyIdentity(a, ["deps"])).toThrow(/outside the declared dependency paths/);
@@ -166,7 +176,7 @@ describe("dependency identity", () => {
 describe("verification runner", () => {
   it("fails, rather than reuses a receipt, when a probe modifies tracked files", async () => {
     const { input, journal } = setup();
-    const lint = cached("lint", { cache: { inputs: "tree-excluding-evidence", env: [], probes: [["probe"]], dependencies: [] } });
+    const lint = cached("lint", { cache: { inputs: "tree-excluding-evidence", env: [], probes: [["probe"]], dependencies: [], dependencyExcludes: [] } });
     const runner = (mutate: boolean): RunVerificationInput["processRunner"] => async (argv, cwd) => {
       if (argv[0] === "probe" && mutate) writeFileSync(join(cwd, "src/a.ts"), "edited by a probe\n");
       return { exitCode: 0, stdout: argv[0] === "probe" ? "1.0" : "", stderr: "" };

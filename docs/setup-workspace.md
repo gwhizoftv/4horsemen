@@ -559,8 +559,11 @@ runs into coord (see `config.example.json`):
   inputs, hashed when the command runs and re-checked afterwards. File bytes and
   link targets are hashed with the worktree's own path normalized out (package
   shims embed it); links are recorded, not followed, and must resolve inside the
-  declared paths. Declare the directory holding the real package files rather
-  than a lockfile copy, or leave the command uncached. Never cache a
+  declared paths. Declare everything a command can execute or import (for pnpm,
+  all of `node_modules`, including `.bin` shims and top-level links) and list
+  tool state that changes on every install or run in `dependencyExcludes` (the
+  example excludes `.modules.yaml`, `.pnpm-workspace-state-v1.json`, `.vite`
+  and `.vite-temp`); otherwise leave the command uncached. Never cache a
   command that reads Git history, commit identity, external services or
   undeclared environment; setup commands such as `install` and `build` stay
   uncached so they always run.

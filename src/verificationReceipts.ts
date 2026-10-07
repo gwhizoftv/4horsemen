@@ -89,11 +89,12 @@ export const envDigests = (names: readonly string[], env: NodeJS.ProcessEnv = pr
  * escaping link, a special file or an unreadable entry throws, which makes the
  * command uncached rather than keyed on something unverified.
  */
-export const dependencyIdentity = (worktree: string, paths: readonly string[]): string => {
+export const dependencyIdentity = (worktree: string, paths: readonly string[], excludes: readonly string[] = []): string => {
   const root = realpathSync(worktree);
   const roots = [...new Set([root, worktree])].map((path) => Buffer.from(path)).sort((a, b) => b.length - a.length);
   const declared = [...paths].sort();
   const covered = declared.map((path) => containedPath(root, path));
+  const excluded = new Set(excludes.map((path) => containedPath(root, path)));
   const hash = createHash("sha256");
   const field = (value: string | Buffer) => hash.update(`${Buffer.byteLength(value)}:`).update(value);
   const normalized = (bytes: Buffer): Buffer => {
@@ -122,8 +123,13 @@ export const dependencyIdentity = (worktree: string, paths: readonly string[]): 
     }
     if (stat.isFile()) { field(normalized(readFileSync(path))); return; }
     if (!stat.isDirectory()) throw new Error(`dependency input ${path} is not a file or directory`);
-    for (const name of readdirSync(path).sort()) { field(name); walk(join(path, name)); }
+    for (const name of readdirSync(path).sort()) {
+      if (excluded.has(join(path, name))) continue;
+      field(name);
+      walk(join(path, name));
+    }
   };
+  for (const path of [...excludes].sort()) field(`exclude:${path}`);
   for (const [index, name] of declared.entries()) {
     field(name);
     const path = covered[index]!;

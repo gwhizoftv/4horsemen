@@ -103,7 +103,12 @@ export const checkCacheSchema = z
      * Untracked worktree inputs the command reads, such as installed
      * dependencies, hashed when the command runs and again afterwards.
      */
-    dependencies: z.array(repositoryPathSchema).default([])
+    dependencies: z.array(repositoryPathSchema).default([]),
+    /**
+     * Exact paths inside `dependencies` left out of the digest: tool state that
+     * changes on every install or run (timestamps, caches) and is not an input.
+     */
+    dependencyExcludes: z.array(repositoryPathSchema).default([])
   })
   .strict();
 
