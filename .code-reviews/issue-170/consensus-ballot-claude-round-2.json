@@ -1,14 +1,14 @@
 {
-  "actionId": "0fbe0df4-57db-458d-bc13-ccdf8d892a13",
+  "actionId": "6bbe681e-35d4-49b1-ab66-acad65e1e986",
   "agent": "claude",
   "artifact": "consensus-ballot",
   "disposition": "approve",
-  "inputSetHash": "9cf731f2bee2c4dece6832f27a28218f98bdf7efb7157704227b5b71877e7687",
+  "inputSetHash": "d8288c2aae6567d67ffca028f4c55edfa6ec74ccf443487f8a6a347c3540ce78",
   "issue": 170,
   "issueSessionId": "issue-170:6f5b4bc0bb97feeb1711fe3d8f38c327460f5827",
   "protocolVersion": 2,
-  "rationale": "Revision fa93cded4604868420c92628a6b0193357e8c4d1 addresses all four round-1 revise findings with regression tests — receipts key on declared dependencies and are withheld if a run changes them, any command that modifies tracked files fails with its own log, a join timeout re-evaluates via retry instead of running the key unlocked, and check:fast again covers the system tier — with check:fast (618 fast + 177 system tests) and the push-hook e2e passing at commit and push.",
-  "responseSha256": "7c217f79f426bd8d0698df1d816bfb525a3b3d4b9820c2667c9f72f71390fef8",
-  "revisionCommitSha": "fa93cded4604868420c92628a6b0193357e8c4d1",
+  "rationale": "The round-1 revise finding describes superseded commit 735d87e; the bound revision 0d39e3167b26ea20ff1a0a36ff9adc3c10dbb5da already returns waiting (src/verificationRunner.ts:110,191) which the run loop re-evaluates as retry (src/runLoop.ts:720-722,2403,2443) and never runs a key unlocked while a live owner holds it, proven by the test that asserts status waiting with no command executed and the owner's lock untouched (test/verificationRunner.test.ts:223-233), alongside every earlier fix and passing check:fast and push-hook e2e.",
+  "responseSha256": "df2a37b7560fd0ef718adc7e3178ef0197743ce2ad4678a05439a797b1636ccc",
+  "revisionCommitSha": "0d39e3167b26ea20ff1a0a36ff9adc3c10dbb5da",
   "round": 2
 }

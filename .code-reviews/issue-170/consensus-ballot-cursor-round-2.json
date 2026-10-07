@@ -1,14 +1,14 @@
 {
-  "actionId": "3ed9d53c-9059-4f64-b9e3-f11cbd207321",
+  "actionId": "17b4a403-00ef-412f-ad1f-431a9156f89b",
   "agent": "cursor",
   "artifact": "consensus-ballot",
   "disposition": "approve",
-  "inputSetHash": "9cf731f2bee2c4dece6832f27a28218f98bdf7efb7157704227b5b71877e7687",
+  "inputSetHash": "d8288c2aae6567d67ffca028f4c55edfa6ec74ccf443487f8a6a347c3540ce78",
   "issue": 170,
   "issueSessionId": "issue-170:6f5b4bc0bb97feeb1711fe3d8f38c327460f5827",
   "protocolVersion": 2,
-  "rationale": "Round 2 correctly returns waiting (retry the same pin later) after the join-wait limit instead of running the key unlocked, preserving single-flight while unblocking the tick, with a focused runner test.",
-  "responseSha256": "73280d03cf126f4798c6b6f9d52d74aa94de74ac37623d707393ab39bb16a5ca",
-  "revisionCommitSha": "fa93cded4604868420c92628a6b0193357e8c4d1",
+  "rationale": "Round 2 pin fa93cded returns waiting after joinWaitMs and retries later instead of running the same key unlocked, with a focused runner test.",
+  "responseSha256": "415995a93a0ac70aca39cba1e88ad025bc07e2cb8a072d34d88aa230a43537b9",
+  "revisionCommitSha": "0d39e3167b26ea20ff1a0a36ff9adc3c10dbb5da",
   "round": 2
 }
