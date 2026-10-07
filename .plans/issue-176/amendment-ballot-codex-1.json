@@ -1,0 +1,26 @@
+{
+  "actionId": "0f62d604-bdce-4126-b7de-161983b54129",
+  "agent": "codex",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "99580566e40b174a0c8fdd8a646831f0615d58a0bf00cf291c467604006a2205",
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "7fa11abb8c9f49ae44bf9891bd9e9933024bb612",
+      "path": ".plans/issue-176/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "All four additions are necessary to fix the repository-owned callback routing and stale shared-server reuse behind the stalled delivery reported in issues 176 and 174, which the owner explicitly included, and pair those fixes with existing regression fixtures while preserving the selected plan’s delivery safeguards.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "c0598f56ad8fca36aae49aca177839a80ba53bd9",
+    "path": ".signals/issue-176/implementation-ready-codex.json"
+  },
+  "responseSha256": "8bbd46d98751a25963d53e0f30aa9eb2f121811962e937ceaf1830d2c995e8f5",
+  "sequence": 1
+}

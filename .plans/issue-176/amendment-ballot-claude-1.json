@@ -1,0 +1,26 @@
+{
+  "actionId": "f1cea53b-b6e6-4ec9-bddf-de496e9a3457",
+  "agent": "claude",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "99580566e40b174a0c8fdd8a646831f0615d58a0bf00cf291c467604006a2205",
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "7fa11abb8c9f49ae44bf9891bd9e9933024bb612",
+      "path": ".plans/issue-176/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "The selected plan left the Stop path out of scope only because it assumed the vendor never fired Stop, but runtime evidence shows Codex Stop and SessionStart events are dropped or written into stale issue 106 by agentEvent's environment and sole-active-issue routing while the shared daemon carries COORD_ISSUE=139, so src/agentEvent.ts with its existing-file regression test is needed to fix the original missing-Stop stall the plan targets, and scripts/lib/launcher.sh --no-daemon with its existing install test is the narrow launch fix for the stale or mismatched app-server reported in owner-included issue 174, without adding new files.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "c0598f56ad8fca36aae49aca177839a80ba53bd9",
+    "path": ".signals/issue-176/implementation-ready-codex.json"
+  },
+  "responseSha256": "9d7a28fd7723fa1bcc91325686101cc07acee098e4543b003bc6be0c8954adf9",
+  "sequence": 1
+}

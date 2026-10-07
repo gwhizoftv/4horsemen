@@ -1,0 +1,26 @@
+{
+  "actionId": "351223a9-dc1f-457e-aa1c-218eb0bbebf8",
+  "agent": "cursor",
+  "artifact": "amendment-ballot",
+  "disposition": "revise",
+  "inputSetHash": "99580566e40b174a0c8fdd8a646831f0615d58a0bf00cf291c467604006a2205",
+  "issue": 176,
+  "issueSessionId": "issue-176:6fba7643f3cd7b8dd758c13f3ae2371c0936d75e",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "7fa11abb8c9f49ae44bf9891bd9e9933024bb612",
+      "path": ".plans/issue-176/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "agentEvent routing and --no-daemon expand beyond the selected plan, which deliberately recovers via COORD-IDLE first-send override and leaves Stop misrouting and app-server isolation as vendor/operator concerns.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "c0598f56ad8fca36aae49aca177839a80ba53bd9",
+    "path": ".signals/issue-176/implementation-ready-codex.json"
+  },
+  "responseSha256": "c5f9f5731a2ff346766a2c32b1c3afe708fb403e6e302c9444db8c863b45cd17",
+  "sequence": 1
+}
