@@ -1871,6 +1871,43 @@ describe("effectful run loop", () => {
     expect(nudged[1]?.details).toMatchObject({ idle: true, actionDigest: action!.actionDigest });
   });
 
+  it("lets a current COORD-IDLE overrule a stale working record only before the first send", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(paths.start, `${JSON.stringify({ ...start, agents: start.agents.map((agent) =>
+      agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent) }, null, 2)}\n`);
+    // The previous turn's Stop never reached this issue, so lifecycle still says working.
+    observeAgentLifecycle(paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session-1", turnId: "turn-0" });
+    let literalNudges = 0;
+    let paneText = "• done\n\n› \n\n  ? for shortcuts";
+    const messages: string[] = [];
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: paneText, stderr: "" };
+      if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) });
+    await loop.runTick();
+    expect(literalNudges).toBe(0);
+    expect(readAgentLifecycle(paths).agents.codex?.action?.delivery).toBe("ordered");
+    expect(readJournal(paths).some((event) =>
+      event.type === "nudge-deferred" && event.agent === "codex" && event.details.code === "no-idle-sentinel")).toBe(true);
+
+    paneText = "• done\n\n• COORD-IDLE: waiting for the next coordinator action file\n\n› \n\n  ? for shortcuts";
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+    expect(readAgentLifecycle(paths).agents.codex).toMatchObject({ execution: "working", action: { delivery: "injected" } });
+    const nudged = readJournal(paths).filter((event) => event.type === "nudged" && event.agent === "codex");
+    expect(nudged).toHaveLength(1);
+    expect(nudged[0]?.details).toMatchObject({ readiness: "idle-sentinel", lifecycleOverride: "working" });
+    expect(messages.join("\n")).toContain("No Stop event from codex reached this issue");
+
+    // After the first send, a stale working record again blocks: no duplicate.
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+  });
+
   it("retries an action that a busy pane never injected", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);

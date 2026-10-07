@@ -41,6 +41,22 @@ and the sentinel counts only when it appears *after* the current action id in
 the captured buffer — the 40-line capture keeps the sentinel from the previous
 action on screen long after it stopped being true.
 
+Codex renders the sentinel as an assistant item (`• COORD-IDLE: …`) above its
+composer and footer, so it counts there only when everything below it is the
+single `›` composer — empty or holding just Codex's dimmed placeholder, never an
+unsent draft — and known footer lines (`? for shortcuts`, `Context N% left`).
+Any other line fails closed.
+
+**One exception: a stale `working` record before the first send.** A Stop event
+that never reaches this issue leaves lifecycle at `working`, which would block
+the next action forever. While an action has never been sent (no send charged,
+`delivery: "ordered"`, no injection), a current sentinel that passes every veto
+may overrule that `working` record, and only that one. The pane is rechecked at
+every key: the full sentinel proof before the first, the turn-chrome veto after
+it. The send is journalled with `lifecycleOverride: "working"`, and stdout names
+the missing Stop. Lifecycle state is not rewritten; after that first send, a
+`working` record blocks exactly as before.
+
 ## Lost delivery is retried only on positive proof
 
 A send that was never accepted may be retried when, and only when,
@@ -76,6 +92,8 @@ Prompt readiness (`PromptBlockedReason`):
 | `antigravity-turn-chrome` | a turn is in flight |
 | `antigravity-verify-overlay` | the account-verify overlay is up and discards keys |
 | `antigravity-no-prompt` | splash or no prompt yet |
+| `codex-turn-chrome` | Codex's `Working (… esc to interrupt)` status line is up |
+| `no-idle-sentinel` | lifecycle reports `working` and the pane shows no current sentinel to overrule it |
 
 In-flight status words (`Thinking`, `Working`, `Generating`, `Running`) match
 only at the start of a line, after whitespace or a spinner glyph, and only with

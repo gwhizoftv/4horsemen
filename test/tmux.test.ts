@@ -737,6 +737,60 @@ describe("tmux boundary", () => {
     expect(idleSentinelAfterAction("no sentinel here", action)).toBe(false);
   });
 
+  // Modelled on a live Codex 0.160 capture: dim placeholder composer, two footer lines.
+  const esc = String.fromCharCode(0x1b);
+  const codexComposer = (draft: string) =>
+    `${esc}[1m›${esc}[0m${esc}[48;2;30;158;159m ${draft === "" ? `${esc}[2mAsk Codex to do anything${esc}[0m` : draft}`;
+  const codexFooter =
+    "  Context 71% left · weekly 96% left · 258K window · 84.6K used · Vim: Insert\n" +
+    "  ? for shortcuts                                      ⚠ 1 warning · f2 to view";
+  const codexPane = (body: string, draft = "") => `• Explored\n  └ Read action.md\n\n${body}\n\n${codexComposer(draft)}\n\n${codexFooter}`;
+
+  it("vetoes a live Codex turn and reads its idle sentinel only above an empty composer", () => {
+    const action = "11111111-2222-3333-4444-555555555555";
+    expect(harnessPromptReadiness(codexPane("• Working (2m 27s • esc to interrupt)\n  └ Tip: run ! commands"), "codex", action))
+      .toEqual({ ready: false, reason: "codex-turn-chrome" });
+    // Prose quoting the status line is not chrome.
+    expect(harnessPromptReadiness(codexPane("• I saw `Working (2s • esc to interrupt)` earlier."), "codex", action))
+      .toEqual({ ready: true, reason: "vendor-prompt" });
+    expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}`), "codex", action))
+      .toEqual({ ready: true, reason: "idle-sentinel" });
+    // An unsent owner draft, a dialog line, or the action after the sentinel is not idle proof.
+    expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}`, "Please inspect my changes"), "codex", action))
+      .toEqual({ ready: true, reason: "vendor-prompt" });
+    expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}\n  2. No, continue without the server`), "codex", action))
+      .toEqual({ ready: true, reason: "vendor-prompt" });
+    expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}`, `Read and execute ${action}`), "codex", action))
+      .toEqual({ ready: true, reason: "vendor-prompt" });
+  });
+
+  it("sends a sentinel-required nudge only while the idle proof holds at each key", async () => {
+    const agent = { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" as const, harnessProcess: "codex" };
+    const action = "11111111-2222-3333-4444-555555555555";
+    const attempt = async (panes: string[]) => {
+      const keys: string[][] = [];
+      let captures = 0;
+      const controller = new TmuxController(async (args) => {
+        if (args[0] === "display-message") return ok("0\tcodex\t0\t0\n");
+        if (args[0] === "capture-pane") return ok(panes[Math.min(captures++, panes.length - 1)]);
+        if (args[0] === "send-keys") keys.push([...args]);
+        return ok();
+      }, null, null, null, noopSleep);
+      const outcome = await controller.nudge(1, agent, "/a", undefined, action, undefined, undefined, true);
+      return { outcome, keys };
+    };
+    const idle = codexPane(`• ${COORD_IDLE_SENTINEL}`);
+    const busy = codexPane("• Working (1s • esc to interrupt)");
+    expect((await attempt([codexPane("• done")])).outcome).toMatchObject({ status: "busy", reason: "no-idle-sentinel", stage: "prompt" });
+    // The owner starts a turn between the readiness capture and the first key: nothing is typed.
+    const raced = await attempt([idle, busy]);
+    expect(raced.outcome).toMatchObject({ status: "busy", reason: "codex-turn-chrome", stage: "prompt" });
+    expect(raced.keys).toEqual([]);
+    const sent = await attempt([idle]);
+    expect(sent.outcome).toMatchObject({ status: "sent", detail: "idle-sentinel" });
+    expect(sent.keys.some((args) => args.includes("-l"))).toBe(true);
+  });
+
   it("reports which pane predicate deferred a delivery", async () => {
     const gate = async (fields: string) => {
       const controller = new TmuxController(async (args) => {
