@@ -3663,4 +3663,34 @@ describe("coordinator-resolved change scope", () => {
     expect(order.contextPaths).toEqual(["docs/repo-map.md"]);
     expect(order.changeScope).toEqual([]);
   });
+
+  it("warns when no Stop hook is received after repeated turns", async () => {
+    const f = safetyFixture("codex");
+    await f.tick();
+    f.working();
+    await f.tick();
+    f.working();
+    await f.tick();
+    expect(f.messages.some((msg) => msg.includes("WARNING: No Stop hook received from codex"))).toBe(true);
+  });
+
+  it("logs progress when completion marker is received, verification runs, and branches push", async () => {
+    const { paths } = fixture();
+    const messages: string[] = [];
+    const loop = new CoordinatorRunLoop(paths, { log: (msg) => messages.push(msg) });
+    const cursor = readCursorsState(paths).agents.claude;
+    if (cursor?.actionId) {
+      writeFileSync(agentRuntimePaths(paths, "claude").complete, `response ${cursor.actionId}`);
+      writeFileSync(agentResponsePath(paths, "claude", cursor.actionId), JSON.stringify({
+        protocolVersion: 1,
+        issue: 1,
+        agent: "claude",
+        actionId: cursor.actionId,
+        artifact: "join-response",
+        rationale: "joining"
+      }));
+      await loop.runTick();
+      expect(messages.some((msg) => msg.includes("completion marker received from claude"))).toBe(true);
+    }
+  });
 });

@@ -148,11 +148,11 @@ export const clearOwnerWorkspaceLocator = (productRoot: string): void => {
 
 export const resolveWorkspaceFromProduct = (productOrClone: string): WorkspaceLocation => {
   const root = worktreeRoot(resolve(productOrClone));
-  if (root === null) throw new Error(`${productOrClone} is not a Git worktree; pass --product for an onboarded product.`);
+  if (root === null) throw new Error(`${productOrClone} is not a Git worktree; pass --product for an onboarded repository.`);
   const configured = localConfigGet(root, OWNER_WORKSPACE_CONFIG_KEY);
   if (configured === null) {
     throw new Error(
-      `${root} is not onboarded in this worktree. Run \`coord onboard ${root}\`, or pass --product for an onboarded product.`
+      `${root} is not onboarded in this worktree. Run \`coord onboard ${root}\`, or pass --product for an onboarded repository.`
     );
   }
   if (!isAbsolute(configured) || !existsSync(configured)) {
@@ -163,7 +163,7 @@ export const resolveWorkspaceFromProduct = (productOrClone: string): WorkspaceLo
   const config = readConfig(configured);
   if (config.coordination === undefined || !sameExistingPath(config.coordination.productRoot, root)) {
     throw new Error(
-      `${OWNER_WORKSPACE_CONFIG_KEY} points at a workspace for another product. Re-run \`coord onboard ${root}\`.`
+      `${OWNER_WORKSPACE_CONFIG_KEY} points at a workspace for another repository. Re-run \`coord onboard ${root}\`.`
     );
   }
   return workspaceLocationFromConfig(configured);

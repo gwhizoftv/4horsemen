@@ -15,7 +15,8 @@ const fixture = (tty = true) => {
   let question: OwnerQuestion | null = null;
   const commands = { status: vi.fn(() => "status snapshot"), togglePause: vi.fn(() => "pause toggled"), attach: vi.fn(async () => {}),
     agents: () => ["claude", "codex"], drop: vi.fn(), holds: () => [{ id: "hold-1", agent: "codex", reason: "unobservable" }],
-    releaseHold: vi.fn(), steer: vi.fn(), answer: vi.fn() };
+    releaseHold: vi.fn(), nudge: vi.fn(async () => "reminder result"), unfinishedAgents: () => ["codex"],
+    steer: vi.fn(), answer: vi.fn() };
   const controller = new AbortController();
   const stop = vi.fn(() => controller.abort());
   const session = startInteractiveSession({ input, output, commands, readQuestion: () => question, signal: controller.signal, stop });
@@ -116,5 +117,35 @@ describe("foreground owner terminal", () => {
     expect(f.stop).toHaveBeenCalledTimes(reason === "abort" ? 0 : 1);
     f.session!.close();
     expect(f.input.setRawMode).toHaveBeenCalledTimes(2);
+  });
+
+  it("echoes newline and redraws prompt on empty return (liveness check)", async () => {
+    const f = fixture();
+    await f.send("\r");
+    await f.send("\n");
+    expect(f.printed()).toContain("\n");
+  });
+
+  it("warns on unknown command and displays help", async () => {
+    const f = fixture();
+    await f.send("x");
+    expect(f.printed()).toContain("Unknown command 'x'");
+    expect(f.printed()).toContain("Interactive Controls:");
+  });
+
+  it("routes 'n' key to commands.nudge and prints result", async () => {
+    const f = fixture();
+    await f.send("n");
+    expect(f.commands.nudge).toHaveBeenCalledOnce();
+    expect(f.printed()).toContain("reminder result");
+  });
+
+  it("prints verbose sentence help on '?' and 'h'", async () => {
+    const f = fixture();
+    await f.send("?");
+    expect(f.printed()).toContain("Interactive Controls:");
+    expect(f.printed()).toContain("Show current issue status");
+    await f.send("h");
+    expect(f.printed()).toContain("Toggle manual pause");
   });
 });

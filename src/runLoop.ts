@@ -10,6 +10,7 @@ import {
   markActionInjected,
   markActionWorkflowComplete,
   markInjectedActionAbsent,
+  missingStopWarning,
   mutateAgentLifecycle,
   orderAgentAction,
   readAgentLifecycle,
@@ -902,6 +903,7 @@ export class CoordinatorRunLoop {
   /** Local probes are advisory; restarting may probe again without changing workflow state. */
   private readonly paneObservations = new Map<string, { identity: string; nextAt: number; available: boolean }>();
   private readonly ingestVerificationMeasurements = createVerificationIngestor();
+  private readonly warnedMissingStop = new Map<string, number>();
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
@@ -967,6 +969,57 @@ export class CoordinatorRunLoop {
         this.log(`Could not open Terminal windows (${opened.error}). Attach manually with coord attach ${start.issue}.`);
       }
     }
+  }
+
+  unfinishedAgents(): readonly string[] {
+    const cursors = readCursorsState(this.paths);
+    return cursors.activeRoster.filter((agent) => {
+      const cursor = cursors.agents[agent];
+      return cursor !== undefined && cursor.actionId !== null && cursor.status !== "complete";
+    });
+  }
+
+  async requestReminder(targetAgent?: string): Promise<string> {
+    const cursors = readCursorsState(this.paths);
+    const start = readStartState(this.paths);
+    const candidateAgents = targetAgent !== undefined ? [targetAgent] : cursors.activeRoster;
+    const unfinished = candidateAgents.filter((agent) => {
+      const cursor = cursors.agents[agent];
+      return cursor !== undefined && cursor.actionId !== null && cursor.status !== "complete";
+    });
+    if (unfinished.length === 0) {
+      return targetAgent !== undefined
+        ? `Agent ${targetAgent} has no unfinished action.`
+        : "No active agents with unfinished actions.";
+    }
+    const results: string[] = [];
+    for (const agent of unfinished) {
+      const cursor = cursors.agents[agent]!;
+      const actionId = cursor.actionId!;
+      const runtime = agentRuntimePaths(this.paths, agent);
+      if (!existsSync(runtime.action)) {
+        results.push(`No action file found for ${agent}.`);
+        continue;
+      }
+      this.mutate(readCursorsState(this.paths), (current) => {
+        const safety = current.actionSafety[agent];
+        if (safety !== undefined && safety.actionId === actionId) {
+          return {
+            ...current,
+            actionSafety: {
+              ...current.actionSafety,
+              [agent]: { ...safety, deferrals: [] }
+            }
+          };
+        }
+        return current;
+      });
+      this.paneObservations.delete(agent);
+      const latestCursors = readCursorsState(this.paths);
+      await this.maybeLifecycleNudge(start, latestCursors, agent, actionId, "idle");
+      results.push(`Requested reminder for ${agent} (${actionId}).`);
+    }
+    return results.join("\n");
   }
 
   private authority(cursors: CursorsState, allowCompleted = false): CursorsState {
@@ -2331,9 +2384,11 @@ export class CoordinatorRunLoop {
     try {
       if (reconcile.outcome === "push") {
         await this.mirror.publishBranch(commitSha, branch);
+        this.log(`Issue ${start.issue}: pushed evidence branch ${branch} (${commitSha.slice(0, 7)})`);
         this.authority(next);
       }
       const publishedAt = this.now();
+      this.log(`Issue ${start.issue}: published evidence batch ${batch.kind} (${commitSha.slice(0, 7)}) to ${branch}`);
       return this.mutate(next, (current) => {
         appendJournal(
           this.paths,
@@ -2546,7 +2601,16 @@ export class CoordinatorRunLoop {
       paths: this.paths, start, mirror: this.mirror, processRunner: this.processRunner, now: () => this.now(),
       checkpoint: () => { this.authority(cursors); },
       journal: (type, details, at) => appendJournal(this.paths, { type, agent: order.agent, actionId: order.actionId, details }, at),
-      phase, pin, classification, commands
+      phase, pin, classification, commands,
+      progress: (event) => {
+        if (event.stage === "running" && event.command !== undefined) {
+          this.log(`Issue ${start.issue}: running verification check ${event.command} (${event.index}/${event.total}) for ${order.agent}`);
+        } else if (event.stage === "passed" && event.command !== undefined) {
+          this.log(`Issue ${start.issue}: verification check ${event.command} passed for ${order.agent}`);
+        } else if (event.stage === "failed" && event.command !== undefined) {
+          this.log(`Issue ${start.issue}: verification check ${event.command} failed for ${order.agent}: ${event.result}`);
+        }
+      }
     });
   }
 
@@ -2566,6 +2630,7 @@ export class CoordinatorRunLoop {
         );
       }
       await this.mirror.publishBranch(finalSha, branch);
+      this.log(`Issue ${start.issue}: pushed branch ${branch} (${finalSha.slice(0, 7)})`);
       this.authority(authority, true);
       const draft = !coordMergesPullRequest(start.prPolicy);
       const { title, body } = formatFinalizationPullRequest({
@@ -2585,9 +2650,11 @@ export class CoordinatorRunLoop {
         draft
       });
       openedUrl = result.url;
+      this.log(`Issue ${start.issue}: opened pull request ${result.url}`);
       this.authority(authority, true);
       if (coordMergesPullRequest(start.prPolicy)) {
         await this.pullRequestMerger({ url: result.url });
+        this.log(`Issue ${start.issue}: merged pull request ${result.url}`);
         this.authority(authority, true);
       }
       return this.mutate(authority, (current) => {
@@ -2842,6 +2909,12 @@ export class CoordinatorRunLoop {
       for (const dropped of cursors.droppedAgents) clearCompletion(agentRuntimePaths(this.paths, dropped).complete);
       for (const agent of cursors.activeRoster) {
       if (cursors.paused) return cursors;
+      const lifecycle = readAgentLifecycle(this.paths).agents[agent];
+      const missingStop = lifecycle?.stopObservation?.missingStopTurns ?? 0;
+      if (missingStop >= 2 && this.warnedMissingStop.get(agent) !== missingStop) {
+        this.warnedMissingStop.set(agent, missingStop);
+        this.log(missingStopWarning(agent, missingStop));
+      }
       const cursor = cursors.agents[agent];
       if (cursor === undefined || cursor.actionId === null || cursor.stepId === null) continue;
       const runtime = agentRuntimePaths(this.paths, agent);
@@ -2920,6 +2993,7 @@ export class CoordinatorRunLoop {
         }
 
         const digest = responseDigest(read.bytes);
+        this.log(`Issue ${start.issue}: completion marker received from ${agent} for action ${cursor.actionId}`);
         cursors = this.mutate(cursors, (current) => {
           appendJournal(
             this.paths,
@@ -2956,6 +3030,7 @@ export class CoordinatorRunLoop {
         continue;
       }
 
+      this.log(`Issue ${start.issue}: completion marker received from ${agent} for action ${cursor.actionId}`);
       cursors = this.mutate(cursors, (current) => {
         appendJournal(
           this.paths,

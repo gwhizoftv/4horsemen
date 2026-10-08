@@ -15,14 +15,26 @@ export type InteractiveCommands = {
   agents(): readonly string[];
   drop(agent: string): void;
   holds(): readonly { id: string; agent: string; reason: string }[];
-  releaseHold(id: string): void;
+  releaseHold(id: string, resetBudget?: boolean): void;
+  nudge(agent?: string): Promise<string> | string;
+  unfinishedAgents?(): readonly string[];
   steer(text: string): void;
   answer(id: string, choice: "retry" | "revise" | "abandon"): void;
 };
 export type InteractiveSession = { print(message: string): void; close(): void; settled(): Promise<void> };
 
-type Menu = { kind: "drop" | "hold" | "question"; id?: string; items: { label: string; run(): void; confirm?: boolean }[] };
-const help = "Controls: s status · p/Space manual pause · a attach · d drop · r release hold · /steer <text> · q quit · ?/h help\n";
+type Menu = { kind: "drop" | "hold" | "reminder" | "question"; id?: string; items: { label: string; run(): void; confirm?: boolean }[] };
+const help = `Interactive Controls:
+  s           Show current issue status, active step, roster, and pull request information.
+  p, Space    Toggle manual pause to hold or resume coordinator automation.
+  n           Request an immediate reminder for an agent with an unfinished action.
+  a           Attach or reopen missing Terminal windows for all active agent tmux panes.
+  d           Drop an active agent from the current issue roster.
+  r           Release an active hold on an agent (inspect agent terminal first).
+  /steer <t>  Queue one line of guidance to broadcast to all agents for their next action.
+  q           Quit the foreground coordinator process (agents continue running in tmux).
+  ?, h        Display this help message.
+`;
 
 /** Owns this terminal only; workflow policy stays in the supplied commands. */
 export const startInteractiveSession = (options: {
@@ -145,7 +157,14 @@ export const startInteractiveSession = (options: {
       }
       return;
     }
+    if (value === "\r" || value === "\n") { raw("\n"); draw(); return; }
     if (value === "/") { mode = "line"; buffer = "/"; draw(); return; }
+    if (!["s", "p", " ", "a", "d", "r", "n", "?", "h"].includes(value)) {
+      if (!/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value)) {
+        say(`Unknown command '${value}'. Type '?' or 'h' for help.\n\n${help}`);
+      }
+      return;
+    }
     dispatch(async () => {
       if (value === "s") { say(commands.status()); shownQuestion = null; }
       else if (value === "p" || value === " ") say(commands.togglePause());
@@ -154,12 +173,26 @@ export const startInteractiveSession = (options: {
       else if (value === "d") showMenu({ kind: "drop", items: commands.agents().map((agent) => ({
         label: `Drop ${agent}`, confirm: true, run: () => { commands.drop(agent); say(`Dropped ${agent}.`); }
       })) }, "Select an active agent to drop:");
+      else if (value === "n") {
+        const result = await commands.nudge();
+        say(result);
+      }
       else if (value === "r") {
         const holds = commands.holds();
         if (holds.length === 0) say("No active holds.");
         else showMenu({ kind: "hold", items: holds.map((hold) => ({
-          label: `${hold.agent}: ${hold.reason}`, run: () => { commands.releaseHold(hold.id); say(`Released hold ${hold.id}.`); }
-        })) }, "Inspect the agent before releasing its hold (budget reset remains CLI-only):");
+          label: `${hold.agent}: ${hold.reason}` + (hold.reason === "nudge-loop" ? " (resets 4-send budget)" : ""),
+          confirm: hold.reason === "nudge-loop",
+          run: () => {
+            if (hold.reason === "nudge-loop") {
+              commands.releaseHold(hold.id, true);
+              say(`Released hold ${hold.id} (budget reset).`);
+            } else {
+              commands.releaseHold(hold.id);
+              say(`Released hold ${hold.id}.`);
+            }
+          }
+        })) }, "Inspect the agent before releasing its hold:");
       }
     });
   };

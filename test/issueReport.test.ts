@@ -204,4 +204,62 @@ describe("issue report", () => {
       "Agent cursor: none / queued / healthy, pending=2, background-active"
     );
   });
+
+  it("displays leading status indicators (good vs intervention needed)", () => {
+    const okReport = renderIssueReport(start("coord-open-unmerged"), complete());
+    expect(okReport).toContain("✓ progressing");
+
+    const waitReport = renderIssueReport(start("owner-only"), {
+      ...complete(),
+      manualPaused: true
+    });
+    expect(waitReport).toContain("⚠ intervention needed");
+    expect(waitReport).toContain("⚠ Manual pause: active");
+
+    const actionReport = renderIssueReport(start("owner-only"), {
+      ...complete(),
+      holds: [
+        {
+          id: "h1",
+          agent: "cursor",
+          actionId: "action-id",
+          sessionId: null,
+          reason: "nudge-loop",
+          evidenceId: "e",
+          observedAt: "2026-08-13T00:00:00.000Z",
+          resetsAt: null,
+          confidence: "exact",
+          retryOwner: "owner",
+          evidence: null
+        }
+      ]
+    });
+    expect(actionReport).toContain("⚠ intervention needed");
+  });
+
+  it("clarifies pin and delivery states in human-readable terms", () => {
+    const lifecycle = initialAgentLifecycle(["cursor"], "2026-08-13T00:00:00.000Z");
+    lifecycle.agents.cursor = {
+      ...lifecycle.agents.cursor!,
+      action: {
+        actionId: "11111111-1111-4111-8111-111111111111",
+        actionDigest: "a".repeat(64),
+        delivery: "ordered",
+        orderedAt: "2026-08-13T00:00:00.000Z",
+        injectedAt: null,
+        retryableInjectionAt: null,
+        acceptedAt: null,
+        workflowCompleteAt: null,
+        sessionId: null,
+        turnId: null,
+        lastNudgedIdleEpoch: null
+      },
+      execution: "idle",
+      health: "healthy"
+    };
+    const report = renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle);
+    expect(report).toContain("Implementation commit (pin)");
+    expect(report).toContain("Final pin (PR head)");
+    expect(report).toContain("Agent cursor: action issued / idle / healthy");
+  });
 });

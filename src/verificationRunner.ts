@@ -34,6 +34,15 @@ import {
 export type VerificationJournal = (type: "verification-run" | "final-check" | "verification-reused" | "verification-joined",
   details: Record<string, unknown>, at: string) => void;
 
+export type VerificationProgressEvent = {
+  stage: "preparing" | "waiting" | "running" | "reused" | "passed" | "failed";
+  command?: string;
+  index?: number;
+  total?: number;
+  result?: string;
+  logPath?: string;
+};
+
 export type RunVerificationInput = {
   paths: IssueRuntimePaths;
   start: StartState;
@@ -52,6 +61,7 @@ export type RunVerificationInput = {
   pollMs?: number;
   /** How long to wait for another live runner of the same key before running anyway. */
   joinWaitMs?: number;
+  progress?: (event: VerificationProgressEvent) => void;
 };
 
 export type RunVerificationResult =
@@ -158,6 +168,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
 
   try {
     checkpoint();
+    input.progress?.({ stage: "preparing" });
     await input.mirror.materializeWorktree(target, input.pin);
     checkpoint();
     // Every command below must leave tracked files as the pin has them, so a
@@ -167,7 +178,10 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
     mkdirSync(logs, { recursive: true, mode: 0o700 });
     assertNoSymlink(paths.issueRoot, logs);
 
-    for (const command of input.commands) {
+    for (let i = 0; i < input.commands.length; i++) {
+      const command = input.commands[i]!;
+      const index = i + 1;
+      const total = input.commands.length;
       checkpoint();
       const material = await keyFor(command);
       // Every command already left tracked files as the pin has them, so a
@@ -179,17 +193,28 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
           { mode: 0o600 });
         const failed: CheckResult = { name: command.name, argv: [...command.argv], exitCode: 1, logPath };
         results.push(failed);
-        return { status: "failed", results, failed, failure: `probes for ${command.name} modified tracked files`, stderr: "", note: null };
+        const failure = `probes for ${command.name} modified tracked files`;
+        input.progress?.({ stage: "failed", command: command.name, index, total, result: failure, logPath });
+        return { status: "failed", results, failed, failure, stderr: "", note: null };
       }
       const key = typeof material === "string" ? null : receiptKey(material);
       let cacheReason = typeof material === "string" ? material : "miss: no receipt";
       if (key !== null) {
         const read = readReceipt(paths.coordRoot, key);
-        if (read.status === "hit") { results.push(satisfiedBy(command, read.receipt, "reused")); continue; }
+        if (read.status === "hit") {
+          input.progress?.({ stage: "reused", command: command.name, index, total });
+          results.push(satisfiedBy(command, read.receipt, "reused"));
+          continue;
+        }
         cacheReason = `miss: ${read.reason}`;
+        input.progress?.({ stage: "waiting", command: command.name, index, total });
         const shared = await claim(key);
         if (shared === "timed-out") return { status: "waiting", results, waitingFor: command.name };
-        if (shared !== "claimed") { results.push(satisfiedBy(command, shared.receipt, shared.how)); continue; }
+        if (shared !== "claimed") {
+          input.progress?.({ stage: "reused", command: command.name, index, total });
+          results.push(satisfiedBy(command, shared.receipt, shared.how));
+          continue;
+        }
       }
 
       let queueWaitMs = 0;
@@ -214,6 +239,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
       let original: { exitCode: number; stderr: string; logPath: string; measurement: VerificationMeasurement; modified: boolean } | null = null;
       let retryNote: string | null = null;
       let ran = 0;
+      input.progress?.({ stage: "running", command: command.name, index, total });
       for (let attempt = 1; attempt <= attempts; attempt++) {
         ran = attempt;
         checkpoint();
@@ -264,6 +290,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
           : `${command.name} exited 0 but modified tracked files`;
         const notes = [first.exitCode !== 0 && first.modified ? "it also modified tracked files" : null, retryNote]
           .filter((entry): entry is string => entry !== null);
+        input.progress?.({ stage: "failed", command: command.name, index, total, result: failure, logPath: first.logPath });
         return { status: "failed", results, failed, failure, stderr: first.stderr, note: notes.length === 0 ? null : notes.join("; ") };
       }
       // A receipt certifies the inputs the command actually ran against: the
@@ -286,6 +313,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
       if (key !== null) release(runningLockPath(paths.coordRoot, key));
       results.push({ name: command.name, argv, exitCode: 0, logPath: first.logPath, attempts: 1,
         ...(receiptId === undefined ? {} : { receiptId }) });
+      input.progress?.({ stage: "passed", command: command.name, index, total, result: "exit 0", logPath: first.logPath });
     }
     return { status: "passed", results };
   } finally {

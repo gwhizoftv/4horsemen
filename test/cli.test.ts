@@ -1740,4 +1740,70 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     ).toBe(0);
     expect(JSON.parse(output.join(""))).toEqual({ decision: "allow" });
   });
+
+  it("defaults --coord-root from current worktree when omitted in coord resume", async () => {
+    const { product, declarePath } = installedWorkspace();
+    expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
+    execFileSync(
+      "git",
+      ["config", "--local", "coord.ownerWorkspaceConfig", join(product.coordRoot, "config.json")],
+      { cwd: product.productRoot }
+    );
+    expect(
+      await runCli(["start", "1", "--product", product.productRoot, "--profile", "solo"], {
+        io: { stdout: () => undefined },
+        makeRunLoop: fakeLoop,
+        processRunner: successfulStartGit,
+        startEffects: async () => ({ cleanup: async () => undefined })
+      })
+    ).toBe(0);
+    const output: string[] = [];
+    expect(
+      await runCli(["resume", "--issue", "1"], {
+        io: { cwd: product.productRoot, stdout: (msg) => output.push(msg) }
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Resumed issue 1");
+  });
+
+  it("accepts --repository as an alias for --product", async () => {
+    const { product, declarePath } = installedWorkspace();
+    const out: string[] = [];
+    const code = await runCli([
+      "install",
+      "--repository",
+      product.productRoot,
+      "--coord-root",
+      product.coordRoot,
+      "--agents",
+      "claude",
+      "--profile",
+      "solo",
+      "--declare",
+      declarePath,
+      "--dry-run"
+    ], {
+      io: { stdout: (message) => out.push(message) }
+    });
+    expect(code).toBe(0);
+    expect(out.join("")).toContain("would clone");
+  });
+
+  it("warns at coord start if an agent's hooks are missing or modified", async () => {
+    const { product, declarePath } = installedWorkspace();
+    expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
+    const configPath = join(product.coordRoot, "config.json");
+    const runtime = join(product.coordRoot, "runtime");
+    const hookPath = join(product.workspaceRoot, "myserver-claude", ".claude", "settings.local.json");
+    if (existsSync(hookPath)) rmSync(hookPath);
+    const warnings: string[] = [];
+    expect(
+      await runCli(["start", "1", "--profile", "solo", "--config", configPath, "--coord-root", runtime], {
+        io: { stdout: (msg) => warnings.push(msg) },
+        makeRunLoop: fakeLoop,
+        processRunner: successfulStartGit
+      })
+    ).toBe(0);
+    expect(warnings.join("")).toContain("Warning: Agent lifecycle hooks for claude are missing.");
+  });
 });

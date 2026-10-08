@@ -609,22 +609,26 @@ not start a second tick loop. Logs clear and redraw the current edit.
 | --- | --- |
 | `s` | Snapshot of active step/round, roster, pins, publication/PR, holds and queued guidance count |
 | `p` / Space | Toggle manual pause, never release holds |
+| `n` | Request an immediate reminder for an agent with an unfinished action |
 | `a` | Reopen missing agent Terminal clients using the existing attach flow |
 | `d` | Numbered active-agent menu; Enter selects, a separate `y` confirms |
-| `r` | Numbered hold menu; release the selected ID after inspecting the agent |
-| `?` / `h` | Help |
+| `r` | Numbered hold menu; release the selected ID after inspecting the agent (resets 4-send budget on confirmation for nudge-loop) |
+| `?` / `h` | Full command help |
 | `/` | Begin a `/steer <text>` line; Enter queues, Backspace edits, Esc cancels |
 | `q` | Quit outside an edit, stopping only the foreground runner |
+
+Empty Enter/Return in normal key mode echoes a newline and redraws the prompt as a liveness check.
+Unknown keys print feedback and display the full interactive help.
 
 Owner questions appear as numbered menus with only `allowedAnswers`. Select a
 number and press Enter; abandon also requires `y`. The captured question ID is
 validated under the same lock as external `coord answer`, so stale selections
 cannot answer a replacement question. Esc returns to hotkeys; `s` redisplays a
 pending question. Menus likewise capture agent/hold identities and revalidate
-them when applied. Nudge-loop budget reset remains CLI-only via
-`coord resume --hold ID --reset-nudge-budget`. No control silently releases
-other holds. Pasted text does not execute hotkeys or confirmations; to paste
-guidance, press `/` first. In an edit, `q` is ordinary text.
+them when applied. Releasing a `nudge-loop` hold via `r` prompts for confirmation
+and resets the 4-send budget, matching `coord resume --hold ID --reset-nudge-budget`.
+No control silently releases other holds. Pasted text does not execute hotkeys
+or confirmations; to paste guidance, press `/` first. In an edit, `q` is ordinary text.
 
 `/steer` queues a nonblank single line (maximum 2,000 characters; 32 pending
 entries) in `cursors.json` and journals it. At the first actual order preparation

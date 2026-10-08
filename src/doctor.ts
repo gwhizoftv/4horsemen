@@ -130,6 +130,26 @@ const checkInstallRoot = (config: CoordinatorConfig): DoctorFinding[] => {
   return findings;
 };
 
+export type AgentStartupHooksInspection = {
+  shimExecutable: boolean;
+  lifecycle: { kind: "unsupported" | "missing" | "current" | "modified"; path: string | null };
+};
+
+export const inspectAgentStartupHooks = (input: {
+  clone: string;
+  agent: string;
+  cliEntry: string;
+}): AgentStartupHooksInspection => {
+  const shim = join(input.clone, GIT_WRAPPER_RELATIVE_PATH);
+  const shimExecutable = isExecutable(shim);
+  const lifecycle = inspectAgentLifecycleHooks({
+    clone: input.clone,
+    agent: input.agent,
+    cliEntry: input.cliEntry
+  });
+  return { shimExecutable, lifecycle };
+};
+
 const checkClone = (input: {
   config: CoordinatorConfig;
   configPath: string;
@@ -345,15 +365,16 @@ const checkClone = (input: {
       );
     }
 
-    const shim = join(clone, GIT_WRAPPER_RELATIVE_PATH);
-    if (!isExecutable(shim)) findings.push(finding("gitShim", shim,
-      "Coordinator Git shim is missing or not executable; the native guard also needs it for policy checks.",
-      "Re-run coord install. Runtime coverage must be measured in the actual agent tool; see coord status."));
-    const lifecycle = inspectAgentLifecycleHooks({
+    const inspection = inspectAgentStartupHooks({
       clone,
       agent: input.agent.id,
       cliEntry: stamp.cliEntry
     });
+    const shim = join(clone, GIT_WRAPPER_RELATIVE_PATH);
+    if (!inspection.shimExecutable) findings.push(finding("gitShim", shim,
+      "Coordinator Git shim is missing or not executable; the native guard also needs it for policy checks.",
+      "Re-run coord install. Runtime coverage must be measured in the actual agent tool; see coord status."));
+    const lifecycle = inspection.lifecycle;
     if (
       lifecycle.kind === "unsupported" &&
       (input.agent.delivery === "nudge" || input.agent.delivery === "both")

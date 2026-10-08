@@ -7,10 +7,10 @@ import { handleAgentEvent, lifecycleVendorSchema } from "./agentEvent.js";
 import { guardShellRequest, recordContainmentProbe, shellGuardResponse } from "./shellGuard.js";
 import { buildAnalytics, renderAnalytics } from "./analytics.js";
 import { initializeAgentLifecycle, readAgentLifecycle } from "./agentLifecycle.js";
-import { doctor, renderDoctorReport } from "./doctor.js";
+import { doctor, inspectAgentStartupHooks, renderDoctorReport } from "./doctor.js";
 import { fetchGitHubIssue, renderGitHubIssueSnapshot } from "./githubIssue.js";
 import { sha256 } from "./hash.js";
-import { renderHookScope, resolveHookBinding, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
+import { CLI_ENTRY_KEY, renderHookScope, resolveHookBinding, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { inspectOutgoingChanges, inspectStagedChanges } from "./changeClassification.js";
 import { hookVerificationRecorder } from "./verificationLog.js";
 import { install, onboard, packageVersion, uninstall } from "./install.js";
@@ -82,6 +82,8 @@ export type CliRunLoop = {
   initializeEffects(): Promise<void>;
   runTick(): Promise<CursorsState>;
   run(signal?: AbortSignal): Promise<void>;
+  requestReminder?(agent?: string): Promise<string>;
+  unfinishedAgents?(): readonly string[];
 };
 
 export type CliDependencies = {
@@ -151,6 +153,12 @@ const parseArgs = (args: readonly string[], booleans: readonly string[] = []): P
     flags.set(name, value);
     index += 1;
   }
+  if (flags.has("repository") && flags.has("product")) {
+    throw new Error("Use --repository or --product, not both.");
+  }
+  if (flags.has("repository")) {
+    flags.set("product", flags.get("repository")!);
+  }
   return { positionals, flags };
 };
 
@@ -207,7 +215,9 @@ const context = (parsed: ParsedArgs, io: CliIo): IssueRuntimePaths => {
 
 const allowedFlags = (parsed: ParsedArgs, allowed: readonly string[]): void => {
   for (const flag of parsed.flags.keys()) {
-    if (!allowed.includes(flag)) throw new Error(`Unknown option --${flag}.`);
+    if (!allowed.includes(flag) && !(flag === "repository" && allowed.includes("product"))) {
+      throw new Error(`Unknown option --${flag}.`);
+    }
   }
 };
 
@@ -298,10 +308,95 @@ tracked tree untouched; a fresh human clone receives no coordination hooks or me
 COORD_ISSUE and COORD_AGENT may replace their corresponding owner-control options.
 
 Foreground TTY runs accept s (status), p/Space (manual pause), a (attach),
-d (drop), r (release a selected hold), /steer <text>, ?/h (help), and q (quit).
+n (remind), d (drop), r (release a selected hold), /steer <text>, ?/h (help), and q (quit).
 Quit stops only the foreground runner, unlike coord detach; agent panes still
 accept direct typing. Non-TTY runs do not read interactive input.
 `;
+
+const commandHelp: Record<string, string> = {
+  start: `coord start <issue> [--repository <path>] [--profile <solo|reviewed|consensus>] [-v|--verbose]
+  coord start <issue> --config <path> --coord-root <external-path> [--profile <solo|reviewed|consensus>] [-v|--verbose]
+
+Start coordinator automation for a GitHub issue.
+Options:
+  --repository, --product  Path to the repository worktree (defaults to current worktree).
+  --profile                Workflow profile (solo, reviewed, consensus).
+  --coord-root             Coordination runtime directory path.
+  --config                 Coordination configuration file path.
+  -v, --verbose            Enable verbose tick-level logging.
+`,
+  resume: `coord resume --issue <issue> [--agent <agent> | --hold <id>] [--reset-nudge-budget] [--run]
+             [--repository <path> | --coord-root <path>]
+
+Resume a paused coordinator workflow or release an agent hold.
+Options:
+  --issue                  Issue number.
+  --agent                  Release a hold for this agent.
+  --hold                   Hold ID to release.
+  --reset-nudge-budget     Reset 4-send budget for nudge-loop holds.
+  --run                    Continue running after releasing holds.
+  --repository, --product  Path to the repository (defaults to current worktree).
+  --coord-root             Coordination runtime directory path.
+`,
+  status: `coord status --issue <issue> [--repository <path> | --coord-root <path>]
+
+Display current coordinator status, roster, and issue progress.
+Options:
+  --issue                  Issue number.
+  --repository, --product  Path to the repository (defaults to current worktree).
+  --coord-root             Coordination runtime directory path.
+`,
+  run: `coord run --issue <issue> [--repository <path> | --coord-root <path>] [-v|--verbose]
+
+Run coordinator automation for an existing issue.
+Options:
+  --issue                  Issue number.
+  --repository, --product  Path to the repository (defaults to current worktree).
+  --coord-root             Coordination runtime directory path.
+  -v, --verbose            Enable verbose tick-level logging.
+`,
+  pause: `coord pause --issue <issue> [--repository <path> | --coord-root <path>]
+
+Pause coordinator automation for an issue.
+Options:
+  --issue                  Issue number.
+  --repository, --product  Path to the repository (defaults to current worktree).
+  --coord-root             Coordination runtime directory path.
+`,
+  attach: `coord attach <issue> [--repository <path> | --coord-root <path>]
+
+Attach or reopen missing Terminal windows for agent tmux panes.
+Options:
+  --issue                  Issue number.
+  --repository, --product  Path to the repository (defaults to current worktree).
+  --coord-root             Coordination runtime directory path.
+`,
+  detach: `coord detach <issue> [--repository <path> | --coord-root <path>] [--dry-run]
+
+Close Terminal windows and kill tmux sessions without wiping runtime.
+Options:
+  --issue                  Issue number.
+  --repository, --product  Path to the repository (defaults to current worktree).
+  --coord-root             Coordination runtime directory path.
+  --dry-run                Simulate without killing sessions.
+`,
+  doctor: `coord doctor --coord-root <path> [--repository <path>]
+
+Inspect coordination environment, hooks, and agent health.
+Options:
+  --coord-root             Coordination runtime directory path.
+  --repository, --product  Path to the repository.
+`,
+  onboard: `coord onboard <repository> [--coord-root <path>] [--completes-root <path>] [--agents <a,b,c>] [--profile <p>]
+
+Onboard a repository for coordinator automation.
+Options:
+  --coord-root             Coordination runtime directory path.
+  --completes-root         Coordination completes directory path.
+  --agents                 Comma-separated list of agent IDs.
+  --profile                Workflow profile.
+`
+};
 
 export const automationDigestMaterial = (
   configPath: string,
@@ -427,24 +522,71 @@ const existingIssueRuntime = (resolution: StartResolution, issue: number): Issue
   return null;
 };
 
-/** Resolve existing state either explicitly or through an onboarded product. */
+/** Resolve existing state either explicitly or through an onboarded product/repository. */
 const existingContext = (parsed: ParsedArgs, io: CliIo): IssueRuntimePaths => {
-  if (!parsed.flags.has("product")) return context(parsed, io);
-  if (parsed.flags.has("coord-root")) {
+  if (parsed.flags.has("product") && parsed.flags.has("coord-root")) {
     throw new Error("Use --product or --coord-root for an issue command, not both.");
   }
   const issueValue = parsed.flags.get("issue") ?? io.env.COORD_ISSUE;
   if (issueValue === undefined) throw new Error("--issue or COORD_ISSUE is required.");
   const issue = parseIssue(issueValue);
-  const resolution = resolveStart(
-    { positionals: [], flags: new Map([["product", requireFlag(parsed, "product")]]) },
-    io
-  );
-  const paths = existingIssueRuntime(resolution, issue);
-  if (paths === null) {
-    throw new Error(`No runtime state exists for issue ${issue} and this product. Run coord ${issue}.`);
+
+  if (parsed.flags.has("coord-root")) {
+    return context(parsed, io);
   }
-  return paths;
+
+  const productFlag = parsed.flags.get("product");
+  if (productFlag !== undefined) {
+    const resolution = resolveStart(
+      { positionals: [], flags: new Map([["product", productFlag]]) },
+      io
+    );
+    const paths = existingIssueRuntime(resolution, issue);
+    if (paths === null) {
+      throw new Error(`No runtime state exists for issue ${issue} and this product. Run coord ${issue}.`);
+    }
+    return paths;
+  }
+
+  const cloneRoot = worktreeRoot(io.cwd);
+  if (cloneRoot !== null) {
+    try {
+      const workspace = resolveWorkspaceFromProduct(cloneRoot);
+      const config = readConfig(workspace.configPath);
+      const resolution: StartResolution = {
+        configPath: workspace.configPath,
+        config,
+        runtimeRoot: workspace.workspaceRoot,
+        workspace,
+        profile: workflowProfile(config.profile)
+      };
+      const paths = existingIssueRuntime(resolution, issue);
+      if (paths !== null) return paths;
+    } catch {
+      // not an onboarded owner worktree, try clone config
+    }
+
+    const agentConfigPath = localConfigGet(cloneRoot, WORKSPACE_CONFIG_KEY);
+    if (agentConfigPath !== null && existsSync(agentConfigPath)) {
+      try {
+        const workspace = workspaceLocationFromConfig(agentConfigPath);
+        const config = readConfig(workspace.configPath);
+        const resolution: StartResolution = {
+          configPath: workspace.configPath,
+          config,
+          runtimeRoot: workspace.workspaceRoot,
+          workspace,
+          profile: workflowProfile(config.profile)
+        };
+        const paths = existingIssueRuntime(resolution, issue);
+        if (paths !== null) return paths;
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return context(parsed, io);
 };
 
 /**
@@ -689,6 +831,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     const terminal = dependencies.terminal ?? (process.env.VITEST !== undefined ? null : {
       input: process.stdin, output: process.stdout
     });
+    const runLoop = makeRunLoop(paths);
     try {
       session = terminal === null ? null : startInteractiveSession({
         ...terminal,
@@ -714,13 +857,26 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           agents: () => readCursorsState(paths).activeRoster,
           drop: (agent) => { dropOwnerAgent(paths, agent); },
           holds: () => readCursorsState(paths).holds,
-          releaseHold: (hold) => { setOwnerPause(paths, false, { hold }); },
+          releaseHold: (hold, resetBudget) => { setOwnerPause(paths, false, { hold, resetBudget }); },
+          nudge: async (agent) => {
+            if (typeof runLoop.requestReminder === "function") {
+              return await runLoop.requestReminder(agent);
+            }
+            return "Reminder requested.";
+          },
+          unfinishedAgents: () => {
+            if (typeof runLoop.unfinishedAgents === "function") {
+              return runLoop.unfinishedAgents();
+            }
+            const state = readCursorsState(paths);
+            return state.activeRoster.filter((agent) => state.agents[agent]?.status !== "complete");
+          },
           steer: (text) => { queueOwnerGuidance(paths, text); },
           answer: (id, choice) => { applyOwnerAnswer(paths, id, choice); }
         }
       });
       if (session !== null) { io.stdout = session.print; io.stderr = session.print; }
-      await makeRunLoop(paths).run(controller.signal);
+      await runLoop.run(controller.signal);
     } finally {
       session?.close();
       io.stdout = stdout; io.stderr = stderr;
@@ -768,7 +924,21 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     const agents = resolvedAgents(resolution);
     const roster = profile === "solo" ? agents.slice(0, 1) : agents;
     if (roster.length === 0) throw new Error(`Profile ${profile} requires at least one configured agent.`);
-    for (const agent of roster) resolveAgentLauncher(agent);
+    const cliEntry =
+      resolution.config.coordination?.cliEntry ??
+      localConfigGet(roster[0]?.root ?? "", CLI_ENTRY_KEY) ??
+      "dist/main.js";
+    for (const agent of roster) {
+      resolveAgentLauncher(agent);
+      const inspected = inspectAgentStartupHooks({
+        clone: agent.root,
+        agent: agent.id,
+        cliEntry
+      });
+      if (inspected.lifecycle.kind === "missing" || inspected.lifecycle.kind === "modified") {
+        io.stdout(`Warning: Agent lifecycle hooks for ${agent.id} are ${inspected.lifecycle.kind}.\n`);
+      }
+    }
     const coordRoot = resolveSafeCoordRoot({
       coordRoot: resolution.runtimeRoot,
       agentRoots: agents.map((agent) => agent.root),
@@ -888,12 +1058,22 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     return paths;
   };
   const [command, ...rest] = argv;
-  if (command === undefined || command === "--help" || command === "-h" || command === "help") {
+  if (command === undefined || (command === "help" && rest.length === 0) || (rest.length === 0 && (command === "--help" || command === "-h"))) {
     io.stdout(help);
     return 0;
   }
   if (command === "--version" || command === "-V" || command === "version") {
     io.stdout(`${packageVersion(coordinatorSourceRoot)}\n`);
+    return 0;
+  }
+
+  const helpTarget = command === "help" ? rest[0] : (rest.includes("--help") || rest.includes("-h")) ? command : undefined;
+  if (helpTarget !== undefined) {
+    if (commandHelp[helpTarget] !== undefined) {
+      io.stdout(commandHelp[helpTarget]!);
+      return 0;
+    }
+    io.stdout(help);
     return 0;
   }
 

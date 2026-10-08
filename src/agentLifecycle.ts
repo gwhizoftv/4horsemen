@@ -122,6 +122,12 @@ export const agentLifecycleEntrySchema = z
     lastFailure: lifecycleFailureSchema.nullable().default(null),
     claudeRateLimits: claudeRateLimitsSchema.nullable().default(null),
     containment: containmentSchema.nullable().default(null),
+    stopObservation: z.object({
+      observedTurns: z.number().int().nonnegative().default(0),
+      missingStopTurns: z.number().int().nonnegative().default(0),
+      lastTurnId: z.string().nullable().default(null),
+      hasCurrentStop: z.boolean().default(true)
+    }).default({ observedTurns: 0, missingStopTurns: 0, lastTurnId: null, hasCurrentStop: true }),
     updatedAt: timestampSchema
   })
   .strict();
@@ -179,8 +185,17 @@ const emptyEntry = (now: string): AgentLifecycleEntry => ({
   lastFailure: null,
   claudeRateLimits: null,
   containment: null,
+  stopObservation: {
+    observedTurns: 0,
+    missingStopTurns: 0,
+    lastTurnId: null,
+    hasCurrentStop: true
+  },
   updatedAt: now
 });
+
+export const missingStopWarning = (agent: string, missingTurns: number): string =>
+  `WARNING: No Stop hook received from ${agent} after ${missingTurns} observed turns. Coordinator is relying on terminal inspection.`;
 
 export const initialAgentLifecycle = (
   agents: readonly string[],
@@ -651,6 +666,30 @@ export const applyLifecycleObservation = (
     if ((pendingInputCount ?? 0) > 0 || backgroundActive === true) execution = "queued";
   }
 
+  let stopObservation = sessionChanged
+    ? { observedTurns: 0, missingStopTurns: 0, lastTurnId: null, hasCurrentStop: true }
+    : (entry.stopObservation ?? { observedTurns: 0, missingStopTurns: 0, lastTurnId: null, hasCurrentStop: true });
+
+  if (observation.kind === "prompt-submitted") {
+    if (observation.turnId !== undefined && observation.turnId !== stopObservation.lastTurnId) {
+      const missed = stopObservation.missingStopTurns + 1;
+      stopObservation = {
+        observedTurns: stopObservation.observedTurns + 1,
+        missingStopTurns: missed,
+        lastTurnId: observation.turnId,
+        hasCurrentStop: false
+      };
+    }
+  }
+
+  if (observation.kind === "stopped") {
+    stopObservation = {
+      ...stopObservation,
+      hasCurrentStop: true,
+      missingStopTurns: 0
+    };
+  }
+
   const idleEpoch = positiveIdle(entry, execution);
   const lastFailure = observation.failure === undefined
     ? entry.lastFailure
@@ -671,6 +710,7 @@ export const applyLifecycleObservation = (
     degradedCause: null,
     lastEvent: observation.eventName,
     lastEventAt: now,
+    stopObservation,
     updatedAt: now
   });
 };
