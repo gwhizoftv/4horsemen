@@ -1,0 +1,56 @@
+{
+  "actionId": "3f5e85a7-68fd-44a6-80fd-d259fc1f1caf",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "e9e252f4c98c434086cbb8fad82c285df64fe84fb564be01bb00fccf756e5e01",
+  "issue": 161,
+  "issueSessionId": "issue-161:2a3769ec059e0d7e24373e8708fb1e99c0920421",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "84dc2d37e099af6d8d58d069f33cc694c3f9f28d",
+      "path": ".plans/issue-161/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "e635fae7af6dd6d07b3f3bd7c4ff6e2867149ae3",
+      "path": ".plans/issue-161/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "b35d439ec356cee0158a59b8154b1c893ee2aa16",
+      "path": ".plans/issue-161/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "87653072adc2b4f5e944cc093c2fa73337745813",
+      "path": ".plans/issue-161/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex is the only bound plan that specifies a non-destructive same-action reminder with fresh idle proof while covering scoped reset consent, runtime inference and Stop-specific diagnostics, and its broader file map is explicitly justified by those requirements rather than the unsafe or incomplete mechanisms identified in the peer plans.",
+  "responseSha256": "c0e25d4cdd6f40787f12d782173c85c555e777bc879b4dd151365a9ac17a4964",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "15d72b59c17e2f9b3b698b5283cba70b6842a158",
+      "path": ".plans/issue-161/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "83b17daa37c0ab072205080d9af9604473fef728",
+      "path": ".plans/issue-161/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "24b9763a18263b52e56b6ed6b7d998dc77458999",
+      "path": ".plans/issue-161/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "36443b725467ba8667b6095fb5f769b49d89d98e",
+      "path": ".plans/issue-161/review.md"
+    }
+  ]
+}
