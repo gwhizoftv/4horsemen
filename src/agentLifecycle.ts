@@ -102,6 +102,26 @@ export const claudeRateLimitsSchema = z
   })
   .strict();
 
+/**
+ * Advisory evidence that Stop hooks reach this issue: distinct prompt turns and
+ * completed actions seen in the current session since the last Stop. It never
+ * decides readiness, holds or delivery; it only lets status say what is missing.
+ */
+export const stopObservationSchema = z
+  .object({
+    sessionId: z.string().min(1).nullable(),
+    lastStopAt: timestampSchema.nullable(),
+    unstoppedTurns: z.array(z.string().min(1)).max(8),
+    unstoppedActions: z.array(z.string().uuid()).max(8)
+  })
+  .strict();
+export type StopObservation = z.infer<typeof stopObservationSchema>;
+const emptyStopObservation = (sessionId: string | null): StopObservation => ({
+  sessionId, lastStopAt: null, unstoppedTurns: [], unstoppedActions: []
+});
+const remember = (values: readonly string[], value: string): string[] =>
+  values.includes(value) ? [...values] : [...values, value].slice(-8);
+
 export const agentLifecycleEntrySchema = z
   .object({
     action: lifecycleActionSchema.nullable(),
@@ -122,6 +142,7 @@ export const agentLifecycleEntrySchema = z
     lastFailure: lifecycleFailureSchema.nullable().default(null),
     claudeRateLimits: claudeRateLimitsSchema.nullable().default(null),
     containment: containmentSchema.nullable().default(null),
+    stopObservation: stopObservationSchema.default(emptyStopObservation(null)),
     updatedAt: timestampSchema
   })
   .strict();
@@ -179,6 +200,7 @@ const emptyEntry = (now: string): AgentLifecycleEntry => ({
   lastFailure: null,
   claudeRateLimits: null,
   containment: null,
+  stopObservation: emptyStopObservation(null),
   updatedAt: now
 });
 
@@ -439,6 +461,12 @@ export const markActionWorkflowComplete = (
     const current = current0.agents[agent];
     if (current?.action?.actionId !== actionId) return current0;
     clearedDegraded = current.health === "degraded";
+    // Publication proves the work, not that a Stop hook works. An action with
+    // no current-session Stop since it was sent counts until the next Stop.
+    const observed = current.stopObservation.sessionId === current.sessionId
+      ? current.stopObservation : emptyStopObservation(current.sessionId);
+    const sentAt = current.action.injectedAt ?? current.action.orderedAt;
+    const stoppedDuring = observed.lastStopAt !== null && Date.parse(observed.lastStopAt) >= Date.parse(sentAt);
     return replaceEntry(
       current0,
       agent,
@@ -446,13 +474,60 @@ export const markActionWorkflowComplete = (
         ...current,
         health: clearedDegraded ? "healthy" : current.health,
         degradedCause: clearedDegraded ? null : current.degradedCause,
-        action: { ...current.action, workflowCompleteAt: now }
+        action: { ...current.action, workflowCompleteAt: now },
+        stopObservation: stoppedDuring ? observed
+          : { ...observed, unstoppedActions: remember(observed.unstoppedActions, actionId) }
       },
       now
     );
   });
   return { state, clearedDegraded };
 };
+
+/** How many unstopped turns or completed actions make a missing Stop hook worth saying. */
+export const STOP_WARNING_THRESHOLD = 2;
+
+/**
+ * The owner-facing missing-Stop warning, or null. Turns are counted only from
+ * distinct observed prompt turn IDs; without them, completed actions are
+ * counted and named as actions. Elapsed time never produces a count.
+ */
+export const stopHookWarning = (agent: string, issue: number, entry: AgentLifecycleEntry | undefined): string | null => {
+  const observed = entry?.stopObservation;
+  if (observed === undefined || observed.sessionId !== entry?.sessionId) return null;
+  const fix = `coord is relying on COORD-IDLE in ${agent}'s terminal or its ready file instead, so delivery may be slower. ` +
+    `Check that ${agent}'s Stop hook is installed and trusted (coord doctor) and that it runs with COORD_ISSUE=${issue}.`;
+  if (observed.unstoppedTurns.length >= STOP_WARNING_THRESHOLD) {
+    return `No Stop hook from ${agent} after ${observed.unstoppedTurns.length} observed turns. ${fix}`;
+  }
+  if (observed.unstoppedActions.length >= STOP_WARNING_THRESHOLD) {
+    return `No activity/Stop confirmation from ${agent} after ${observed.unstoppedActions.length} completed actions. ${fix}`;
+  }
+  return null;
+};
+
+/**
+ * An owner reminder re-sends an already delivered action. Once its first key
+ * is reserved, the earlier acknowledgment must not count for the reminder, so
+ * the action returns to "ordered" and only a new prompt hook can accept it.
+ */
+export const reopenActionForReminder = (
+  paths: IssueRuntimePaths,
+  agent: string,
+  actionId: string,
+  actionDigest: string,
+  now = new Date().toISOString()
+): AgentLifecycleState =>
+  mutateAgentLifecycle(paths, (state) => {
+    const current = state.agents[agent];
+    const action = current?.action;
+    if (current === undefined || action === null || action === undefined || action.actionId !== actionId ||
+      action.actionDigest !== actionDigest || action.workflowCompleteAt !== null || action.delivery === "ordered") return state;
+    return replaceEntry(state, agent, { ...current, action: {
+      ...action, delivery: "ordered", injectedAt: null, retryableInjectionAt: null, acceptedAt: null,
+      sessionId: null, turnId: null, lastNudgedIdleEpoch: null
+    } }, now);
+  });
 
 const positiveIdle = (entry: AgentLifecycleEntry, nextExecution: AgentLifecycleEntry["execution"]): number =>
   (nextExecution === "idle" || nextExecution === "failed") &&
@@ -567,6 +642,12 @@ export const applyLifecycleObservation = (
     : entry.retiredSessionIds;
   let pendingInputCount = observation.pendingInputCount ?? entry.pendingInputCount;
   let backgroundActive = observation.backgroundActive ?? entry.backgroundActive;
+  let stopObservation = entry.stopObservation.sessionId === sessionId
+    ? entry.stopObservation : emptyStopObservation(sessionId);
+  if (observation.kind === "prompt-submitted" && observation.turnId !== undefined) {
+    stopObservation = { ...stopObservation, unstoppedTurns: remember(stopObservation.unstoppedTurns, observation.turnId) };
+  }
+  if (observation.kind === "stopped") stopObservation = { ...emptyStopObservation(sessionId), lastStopAt: now };
 
   if (sessionChanged) {
     if (action !== null && action.workflowCompleteAt === null) {
@@ -671,6 +752,7 @@ export const applyLifecycleObservation = (
     degradedCause: null,
     lastEvent: observation.eventName,
     lastEventAt: now,
+    stopObservation,
     updatedAt: now
   });
 };

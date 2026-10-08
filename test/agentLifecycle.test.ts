@@ -12,9 +12,12 @@ import {
   markActionInjected,
   markActionWorkflowComplete,
   markObservabilityDegraded,
+  observeAgentLifecycle,
   observeAgentLifecycleWithResult,
   orderAgentAction,
-  readAgentLifecycle
+  readAgentLifecycle,
+  reopenActionForReminder,
+  stopHookWarning
 } from "../src/agentLifecycle.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 
@@ -380,6 +383,74 @@ describe("agent lifecycle policy", () => {
     });
     // A healthy entry reports no retraction to make.
     expect(markActionWorkflowComplete(paths, "codex", actionId, later).clearedDegraded).toBe(false);
+  });
+
+  it("warns after two distinct prompt turns without a current-session Stop", () => {
+    const at = (second: number) => new Date(Date.parse(now) + second * 1000).toISOString();
+    const prompt = (value: ReturnType<typeof entry>, sessionId: string, turnId: string, second: number) =>
+      applyLifecycleObservation(value, { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId, turnId }, at(second));
+    let current = applyLifecycleObservation(entry(), { kind: "session-start", eventName: "SessionStart", sessionId: "s1" }, at(0));
+    current = prompt(current, "s1", "t1", 1);
+    current = prompt(current, "s1", "t1", 2);
+    expect(stopHookWarning("codex", 7, current)).toBeNull();
+    current = prompt(current, "s1", "t2", 3);
+    expect(stopHookWarning("codex", 7, current)).toContain("No Stop hook from codex after 2 observed turns");
+    expect(stopHookWarning("codex", 7, current)).toContain("COORD_ISSUE=7");
+    // A replacement session starts a new episode; a Stop from the old one cannot clear the new one.
+    current = applyLifecycleObservation(current, { kind: "session-start", eventName: "SessionStart", sessionId: "s2" }, at(4));
+    expect(stopHookWarning("codex", 7, current)).toBeNull();
+    current = prompt(prompt(current, "s2", "t3", 5), "s2", "t4", 6);
+    const stale = applyLifecycleObservation(current, { kind: "stopped", eventName: "Stop", sessionId: "s1", turnId: "t2" }, at(7));
+    expect(stopHookWarning("codex", 7, stale)).toContain("after 2 observed turns");
+    const stopped = applyLifecycleObservation(current, { kind: "stopped", eventName: "Stop", sessionId: "s2", turnId: "t4" }, at(8));
+    expect(stopHookWarning("codex", 7, stopped)).toBeNull();
+    // Older runtime files carry no observation and parse to an empty one.
+    const legacy: Record<string, unknown> = { ...entry() };
+    delete legacy.stopObservation;
+    expect(agentLifecycleEntrySchema.parse(legacy).stopObservation).toEqual(
+      { sessionId: null, lastStopAt: null, unstoppedTurns: [], unstoppedActions: [] });
+  });
+
+  it("counts completed actions without a Stop, but not an action whose turn did stop", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
+    roots.push(root);
+    const paths = issueRuntimePaths(root, 1);
+    createIssueRuntime(paths, ["codex"]);
+    initializeAgentLifecycle(paths, ["codex"], now);
+    const ids = ["11111111-1111-4111-8111-000000000001", "11111111-1111-4111-8111-000000000002",
+      "11111111-1111-4111-8111-000000000003"];
+    const at = (second: number) => new Date(Date.parse(now) + second * 1000).toISOString();
+    for (const [index, id] of ids.slice(0, 2).entries()) {
+      orderAgentAction(paths, "codex", id, digest, at(index * 10));
+      markActionInjected(paths, "codex", id, digest, at(index * 10 + 1));
+      markActionWorkflowComplete(paths, "codex", id, at(index * 10 + 2));
+    }
+    expect(stopHookWarning("codex", 1, readAgentLifecycle(paths).agents.codex))
+      .toContain("No activity/Stop confirmation from codex after 2 completed actions");
+    observeAgentLifecycle(paths, "codex", { kind: "stopped", eventName: "Stop", sessionId: "s1" }, at(30));
+    expect(stopHookWarning("codex", 1, readAgentLifecycle(paths).agents.codex)).toBeNull();
+    orderAgentAction(paths, "codex", ids[2]!, digest, at(29));
+    markActionWorkflowComplete(paths, "codex", ids[2]!, at(31));
+    expect(readAgentLifecycle(paths).agents.codex!.stopObservation.unstoppedActions).toEqual([]);
+  });
+
+  it("reopens an acknowledged action for an owner reminder, never a completed one", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-lifecycle-"));
+    roots.push(root);
+    const paths = issueRuntimePaths(root, 1);
+    createIssueRuntime(paths, ["codex"]);
+    initializeAgentLifecycle(paths, ["codex"], now);
+    orderAgentAction(paths, "codex", actionId, digest, now);
+    markActionInjected(paths, "codex", actionId, digest, now);
+    observeAgentLifecycle(paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "s1",
+      turnId: "t1", actionId, actionDigest: digest }, later);
+    expect(readAgentLifecycle(paths).agents.codex!.action).toMatchObject({ delivery: "accepted", turnId: "t1" });
+    reopenActionForReminder(paths, "codex", actionId, digest, later);
+    expect(readAgentLifecycle(paths).agents.codex).toMatchObject({ execution: "working",
+      action: { delivery: "ordered", acceptedAt: null, injectedAt: null, turnId: null } });
+    markActionWorkflowComplete(paths, "codex", actionId, later);
+    const completed = readAgentLifecycle(paths);
+    expect(reopenActionForReminder(paths, "codex", actionId, digest, later)).toEqual(completed);
   });
 
   it("gives every wait a stable code", () => {

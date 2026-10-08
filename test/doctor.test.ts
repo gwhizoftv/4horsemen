@@ -2,7 +2,8 @@ import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
-import { DOCTOR_CODES, doctor, renderDoctorReport } from "../src/doctor.js";
+import { DOCTOR_CODES, doctor, inspectAgentWiring, renderDoctorReport } from "../src/doctor.js";
+import { readConfig } from "../src/state.js";
 import { install } from "../src/install.js";
 import {
   declaredChecks,
@@ -214,6 +215,27 @@ describe("coord doctor", () => {
     expect(result.findings.length).toBeGreaterThan(1);
     expect(result.exitCode).toBe(Math.min(...result.findings.map((item) => item.code)));
     expect(renderDoctorReport(result)).toContain(`exit ${result.exitCode}`);
+  });
+});
+
+describe("startup agent wiring", () => {
+  it("checks one agent's installed wiring and issue branch without doctor's overlay advice", () => {
+    const { clone, configPath } = installed();
+    const config = readConfig(configPath);
+    const agent = config.agents[0]!;
+    git(clone, "checkout", "-qb", "issue-9/claude");
+    git(clone, "add", "-f", "--", "AGENTS.md");
+    git(clone, "commit", "-qm", "Claude: track agents");
+    writeCloneAgentsProtocol({ clone, installRoot: repoRoot, options: { dryRun: false, log: () => undefined, changes: [] } });
+    expect(inspectAgentWiring({ config, configPath, agent, expectedBranch: "issue-9/claude" })).toEqual([]);
+    expect(inspectAgentWiring({ config, configPath, agent, expectedBranch: "issue-10/claude" }))
+      .toEqual([expect.objectContaining({ class: "startCompatibility", message: expect.stringContaining("not the issue branch 'issue-10/claude'") })]);
+    rmSync(join(clone, ".claude", "settings.local.json"));
+    expect(inspectAgentWiring({ config, configPath, agent, expectedBranch: null }).map((item) => item.class)).toEqual(["lifecycleHooks"]);
+    const unstamped = { ...config };
+    delete unstamped.coordination;
+    expect(inspectAgentWiring({ config: unstamped, configPath, agent, expectedBranch: null }))
+      .toContainEqual(expect.objectContaining({ class: "installRoot", message: expect.stringContaining("hook wiring is unknown") }));
   });
 });
 

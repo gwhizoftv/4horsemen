@@ -13,6 +13,8 @@ import {
   mutateAgentLifecycle,
   orderAgentAction,
   readAgentLifecycle,
+  reopenActionForReminder,
+  stopHookWarning,
   type AgentLifecycleEntry
 } from "./agentLifecycle.js";
 import {
@@ -34,7 +36,8 @@ import {
 import { computeInputSetHash, evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
 import { inspectRangeChanges, selectCandidateVerification, selectVerification } from "./changeClassification.js";
-import { runVerification, type RunVerificationResult } from "./verificationRunner.js";
+import { runVerification, type RunVerificationResult, type VerificationProgress } from "./verificationRunner.js";
+import { inspectAgentWiring } from "./doctor.js";
 import { createVerificationIngestor, verificationMeasurement } from "./verificationLog.js";
 import { BareMirror, GitCommandError, hermeticGitEnv, isTransientGitFailure } from "./mirror.js";
 import {
@@ -83,6 +86,7 @@ import {
   type BallotBatch,
   type CheckCommand,
   type ConsensusDerived,
+  type CoordinatorConfig,
   type CursorsState,
   type DerivedInputCitation,
   type DerivedInputKind,
@@ -97,7 +101,6 @@ import {
   roundForStep,
   type BallotStepId,
   coordMergesPullRequest,
-  describeWorkflowStep,
   type BoundInput,
   type CandidateResults,
   type ChangeScopeEntry,
@@ -108,7 +111,7 @@ import {
   type WorkflowStepId
 } from "./steps.js";
 import { containmentPolicy, ingestContainmentProbe } from "./shellGuard.js";
-import { holdRecoveryCommand, renderIssueReport } from "./issueReport.js";
+import { describeHold, describeStage, ownerCommand, renderIssueReport } from "./issueReport.js";
 import { formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import { harnessPromptReadiness, TmuxController, type IdleOverride } from "./tmux.js";
@@ -832,30 +835,43 @@ const candidateResultsFor = (cursors: CursorsState, inputs: readonly BoundInput[
  * journal line always says what was actually observed.
  */
 const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
-  "pane-dead": "the terminal pane for this agent is gone",
-  "owner-typing": "the pane is in copy mode or the owner is typing in it",
-  "input-off": "the pane has input disabled",
-  "foreground-mismatch": "the foreground process is not this agent's harness",
-  "trust-dialog": "the harness is waiting on its trust-this-folder prompt",
-  "claude-no-prompt": "no idle prompt is visible in the pane",
-  "claude-usage-wait": "Claude is waiting for a usage limit; coordinator input is blocked",
-  "cursor-turn-chrome": "the pane shows in-flight turn chrome",
-  "antigravity-turn-chrome": "the pane shows in-flight turn chrome",
-  "antigravity-verify-overlay": "the account-verify overlay is up and discards keystrokes",
-  "antigravity-no-prompt": "no idle prompt is visible in the pane",
-  "codex-turn-chrome": "the pane shows in-flight turn chrome",
-  "no-idle-sentinel": "lifecycle hooks report the agent mid-turn without a usable ready file or current terminal idle proof",
-  "codex-composer-not-ready": "the Codex composer is not empty or no longer holds exactly this action's message",
-  "pane-capture-unavailable": "file-backed readiness cannot check pane vetoes without a readable terminal capture",
-  "lifecycle-changed": "lifecycle activity or the ready receipt changed while the send was being prepared",
-  "unmatched-action": "the recorded lifecycle action does not match the current one",
+  "pane-dead": "the agent's terminal pane is gone",
+  "owner-typing": "someone is typing in the agent's terminal or it is scrolled back (tmux copy mode); coord will not type over it",
+  "input-off": "the agent's terminal has input disabled",
+  "foreground-mismatch": "the agent's terminal is running a different program than its agent",
+  "trust-dialog": "the agent is asking whether to trust this folder; answer that prompt in its terminal",
+  "claude-no-prompt": "Claude's terminal does not show an empty prompt yet",
+  "claude-usage-wait": "Claude is waiting out a usage limit, so coord will not type into it",
+  "cursor-turn-chrome": "the agent's terminal shows it is still working on a turn",
+  "antigravity-turn-chrome": "the agent's terminal shows it is still working on a turn",
+  "antigravity-verify-overlay": "Antigravity is showing its account-verification overlay, which discards typing",
+  "antigravity-no-prompt": "Antigravity's terminal does not show an empty prompt yet",
+  "codex-turn-chrome": "the agent's terminal shows it is still working on a turn",
+  "no-idle-sentinel": "the agent's hooks still report it mid-turn and its terminal does not end with COORD-IDLE, so coord cannot prove it is idle. " +
+    "If the agent is visibly finished, type into its terminal yourself or press n in the coord terminal after it prints COORD-IDLE",
+  "codex-composer-not-ready": "the Codex input box is not empty or does not hold exactly this action's message",
+  "pane-capture-unavailable": "coord could not read the agent's terminal to check it is safe to type",
+  "lifecycle-changed": "the agent became active while coord was preparing to type, so coord stopped",
+  "unmatched-action": "the agent's hooks are reporting a different action than the current one",
   "workflow-complete": "this agent already published its work for this action",
-  "pending-input": "the agent has queued input of its own",
+  "pending-input": "the agent has its own queued input",
   "background-active": "the agent has background work running",
-  unknown: "no lifecycle signal has been correlated yet",
+  unknown: "coord has not heard from this agent's hooks yet. That is normal right after start; if it lasts, run coord doctor",
   queued: "the agent has accepted work that has not started",
   working: "the agent is mid-turn",
-  "idle-transition-already-used": "this action was already delivered on the current idle transition"
+  "idle-transition-already-used": "coord already sent this action since the agent last became idle"
+};
+
+const verificationProgressText = (event: VerificationProgress): string => {
+  switch (event.kind) {
+    case "preparing": return `preparing a clean checkout of ${event.pin.slice(0, 12)} for checks…`;
+    case "waiting": return event.for === "another-runner"
+      ? `waiting for another coordinator already running ${event.name} on the same inputs…`
+      : `waiting for a free slot to run ${event.name} (expensive checks run one at a time)…`;
+    case "reused": return `${event.name}: reused an earlier passing run on identical inputs (log ${event.logPath}).`;
+    case "started": return `running ${event.name}${event.attempt > 1 ? ` (diagnostic retry ${event.attempt})` : ""}…`;
+    case "finished": return `${event.name} ${event.exitCode === 0 ? "passed" : `failed with exit ${event.exitCode}`} (log ${event.logPath}).`;
+  }
 };
 
 const deferralRationale = (code: string): string =>
@@ -902,6 +918,14 @@ export class CoordinatorRunLoop {
   /** Local probes are advisory; restarting may probe again without changing workflow state. */
   private readonly paneObservations = new Map<string, { identity: string; nextAt: number; available: boolean }>();
   private readonly ingestVerificationMeasurements = createVerificationIngestor();
+  /** Completion receipts already announced, so a re-read on a later tick stays quiet. */
+  private readonly announcedReceipts = new Set<string>();
+  /** Last missing-Stop warning printed per agent; printed again only when it changes. */
+  private readonly stopWarnings = new Map<string, string>();
+  /** Startup wiring diagnostics run once per runner. */
+  private diagnosed = false;
+  /** Owner reminders bound to one action, drained by the next tick. */
+  private readonly reminders = new Map<string, { actionId: string; actionDigest: string; sessionId: string | null }>();
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
@@ -969,6 +993,124 @@ export class CoordinatorRunLoop {
     }
   }
 
+  /**
+   * Owner `n`: remind one agent of its current, unfinished action. The request
+   * is bound to that action, digest and session and is processed by the next
+   * tick through the normal delivery guards; it never types from the caller.
+   */
+  requestReminder(agent: string): string {
+    const start = readStartState(this.paths);
+    const cursors = readCursorsState(this.paths);
+    const config = start.agents.find((candidate) => candidate.id === agent);
+    const cursor = cursors.agents[agent];
+    if (!cursors.activeRoster.includes(agent) || config === undefined) throw new Error(`${agent} is not an active agent.`);
+    if (this.tmux === null || (config.delivery !== "nudge" && config.delivery !== "both")) {
+      throw new Error(`${agent} uses pull delivery, so coord never types into its terminal; ask it to run coord next.`);
+    }
+    if (cursor === undefined || cursor.actionId === null || cursor.status !== "ordered") {
+      throw new Error(`${agent} has no unfinished action to be reminded about.`);
+    }
+    if (cursors.paused) throw new Error("The issue is paused or held; release that first (press s to see why).");
+    const runtime = agentRuntimePaths(this.paths, agent);
+    if (!existsSync(runtime.action)) throw new Error(`${agent}'s action.md is missing; coord rewrites it on its next check.`);
+    const actionDigest = sha256OfFile(runtime.action);
+    const queued = this.reminders.get(agent);
+    if (queued?.actionId === cursor.actionId && queued.actionDigest === actionDigest) {
+      return `A reminder for ${agent} is already requested.`;
+    }
+    this.reminders.set(agent, { actionId: cursor.actionId, actionDigest,
+      sessionId: readAgentLifecycle(this.paths).agents[agent]?.sessionId ?? null });
+    return `Reminder requested for ${agent}. coord sends it at its next check only if ${agent}'s terminal is provably idle, ` +
+      "and prints what happened.";
+  }
+
+  /** Revalidate a queued reminder at execution; stale requests are dropped, never rebound. */
+  private async processReminder(
+    start: StartState, cursors: CursorsState, agent: string,
+    reminder: { actionId: string; actionDigest: string; sessionId: string | null }
+  ): Promise<CursorsState> {
+    this.reminders.delete(agent);
+    const cursor = cursors.agents[agent];
+    const runtime = agentRuntimePaths(this.paths, agent);
+    const current = cursor?.actionId === reminder.actionId && cursor.status === "ordered" && existsSync(runtime.action) &&
+      sha256OfFile(runtime.action) === reminder.actionDigest;
+    const sessionId = readAgentLifecycle(this.paths).agents[agent]?.sessionId ?? null;
+    if (!current || sessionId !== reminder.sessionId) {
+      this.log(`Issue ${start.issue}: dropped the reminder for ${agent} because its ${current ? "session" : "action"} changed since you asked; ` +
+        "press n again if it is still needed.");
+      return cursors;
+    }
+    const note: { text: string | null } = { text: null };
+    const next = await this.deliver(start, cursors, agent, reminder.actionId, reminder.actionDigest, "owner", note);
+    this.log(`Issue ${start.issue}: ${note.text ?? `reminder to ${agent} not sent.`}`);
+    return next;
+  }
+
+  private discardReminders(issue: number, why: string): void {
+    for (const agent of this.reminders.keys()) this.log(`Issue ${issue}: dropped the reminder for ${agent} because ${why}.`);
+    this.reminders.clear();
+  }
+
+  /** Print a missing-Stop warning when it appears or changes kind, not on every poll. */
+  private reportStopWarnings(start: StartState, cursors: CursorsState): void {
+    const lifecycle = readAgentLifecycle(this.paths);
+    for (const agent of cursors.activeRoster) {
+      const warning = stopHookWarning(agent, start.issue, lifecycle.agents[agent]);
+      const key = warning?.replace(/\d+/g, "N") ?? null;
+      if (key === null) { this.stopWarnings.delete(agent); continue; }
+      if (this.stopWarnings.get(agent) === key) continue;
+      this.stopWarnings.set(agent, key);
+      this.log(`[WARN] Issue ${start.issue}: ${warning}`);
+    }
+  }
+
+  /**
+   * Startup/resume wiring check: installed files per active agent, then what
+   * runtime evidence exists. Installation never proves the harness trusts or
+   * runs the hooks, so absent evidence is reported as not yet verified.
+   */
+  private async reportWiring(start: StartState, cursors: CursorsState, initialized: boolean): Promise<void> {
+    this.diagnosed = true;
+    let config: CoordinatorConfig | null = null;
+    try {
+      config = readConfig(start.configPath);
+    } catch (error) {
+      this.log(`[WARN] Issue ${start.issue}: could not read ${start.configPath} to check agent hooks ` +
+        `(${error instanceof Error ? error.message : String(error)}); hook wiring is unknown.`);
+    }
+    let environment: string | null | "unavailable" | undefined;
+    if (initialized && this.tmux !== null) {
+      environment = await this.tmux.issueEnvironment(start.issue).catch(() => "unavailable" as const);
+      if (environment === "unavailable") {
+        this.log(`[WAIT] Issue ${start.issue}: could not read COORD_ISSUE from the tmux session, so hook routing to this issue is unverified.`);
+      } else if (environment !== String(start.issue)) {
+        this.log(`[WARN] Issue ${start.issue}: the tmux session has COORD_ISSUE=${environment ?? "(unset)"}, so agent hooks ` +
+          `report to the wrong issue. Run coord detach ${start.issue}, then coord ${start.issue}.`);
+      }
+    }
+    const lifecycle = readAgentLifecycle(this.paths);
+    for (const agent of start.agents) {
+      if (!cursors.activeRoster.includes(agent.id)) continue;
+      const expectedBranch = initialized
+        ? start.branchTemplate.replaceAll("{issue}", String(start.issue)).replaceAll("{agent}", agent.id) : null;
+      const findings = config === null ? [] : inspectAgentWiring({ config, configPath: start.configPath, agent, expectedBranch });
+      for (const finding of findings) {
+        this.log(`[WARN] Issue ${start.issue}: ${agent.id} setup: ${finding.message} Fix: ${finding.remediation}`);
+      }
+      const sessionId = lifecycle.agents[agent.id]?.sessionId ?? null;
+      if (sessionId !== null) {
+        this.log(`[OK] Issue ${start.issue}: ${agent.id}'s hooks have reported to this issue (session ${sessionId}).`);
+      } else if (agent.delivery === "nudge" || agent.delivery === "both") {
+        this.log(`[WAIT] Issue ${start.issue}: no hook from ${agent.id} has reached this issue yet, so whether ${agent.id} ` +
+          "trusts and runs its hooks is not yet verified" +
+          (environment === String(start.issue)
+            ? ` (the tmux session sets COORD_ISSUE=${start.issue}, but an agent started before that may not have inherited it)` : "") +
+          `. Normal before its first turn; if it lasts, check ${agent.id}'s terminal for a trust prompt, ` +
+          "restart it so it reloads hooks, or run coord doctor.");
+      }
+    }
+  }
+
   private authority(cursors: CursorsState, allowCompleted = false): CursorsState {
     const current = readCursorsState(this.paths);
     if (current.stateRevision !== cursors.stateRevision) {
@@ -1011,13 +1153,24 @@ export class CoordinatorRunLoop {
       return result.state;
     });
     const hold = created as Hold | null;
-    if (hold !== null) {
-      const cause = hold.evidence === null ? "cause/reset unknown" :
-        `${hold.evidence.failureClass}; reset ${hold.resetsAt ?? "unknown"}`;
-      this.log(`Issue ${readStartState(this.paths).issue}: ${agent} held (${reason}; ${cause}). ` +
-        `Inspect the agent, then ${holdRecoveryCommand(this.paths.issue, next, hold)}; add --run only if the coordinator was stopped.`);
-    }
+    if (hold !== null) this.logHold(readStartState(this.paths), next, hold);
     return next;
+  }
+
+  private workFor(agent: string, stepId: WorkflowStepId, round: number | null): string {
+    return `${agent}'s work for ${describeStage(stepId, round)}`;
+  }
+
+  /** Once per completion receipt: the owner sees that coord heard the agent. */
+  private announceReceipt(issue: number, key: string, message: string): void {
+    if (this.announcedReceipts.has(key)) return;
+    this.announcedReceipts.add(key);
+    this.log(`Issue ${issue}: ${message}`);
+  }
+
+  private logHold(start: StartState, cursors: CursorsState, hold: Hold): void {
+    this.log(`Issue ${start.issue}: ${hold.agent} is on hold, so coord stopped sending work. ` +
+      `${describeHold(start, cursors, hold).join(" ")} Add --run to that command only if the coordinator was stopped.`);
   }
 
   /**
@@ -1101,13 +1254,22 @@ export class CoordinatorRunLoop {
   /** One reservation path for initial, idle, reissue and lost-delivery sends. */
   private async deliver(
     start: StartState, cursors: CursorsState, agent: string, actionId: string, actionDigest: string,
-    reason: "initial" | "idle" | "reissue"
+    reason: "initial" | "idle" | "reissue" | "owner",
+    /** Owner reminders only: the outcome sentence to print. */
+    note?: { text: string | null }
   ): Promise<CursorsState> {
+    const tell = (text: string): void => { if (note !== undefined) note.text = text; };
     const config = start.agents.find((candidate) => candidate.id === agent);
-    if (this.tmux === null || config === undefined || !["nudge", "both"].includes(config.delivery)) return cursors;
+    if (this.tmux === null || config === undefined || !["nudge", "both"].includes(config.delivery)) {
+      tell(`${agent} uses pull delivery, so coord never types into its terminal.`);
+      return cursors;
+    }
     cursors = this.ensureActionSafety(cursors, agent, actionId);
     const safety = cursors.actionSafety[agent]!;
-    if (safety.reserved) return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends}`);
+    if (safety.reserved) {
+      tell(`an earlier send to ${agent} was interrupted, so coord put it on hold instead (see coord status).`);
+      return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends}`);
+    }
     // A reissue cannot interrupt ongoing/background work either.
     const entry = readAgentLifecycle(this.paths).agents[agent];
     const receipt = this.readyForNextAction(cursors, agent, actionId, actionDigest, entry);
@@ -1117,28 +1279,52 @@ export class CoordinatorRunLoop {
     const staleWorking = entry?.execution === "working" && safety.sends === 0 &&
       entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest &&
       entry.action.delivery === "ordered" && entry.action.injectedAt === null;
-    if ((entry?.execution === "working" && !staleWorking) || entry?.backgroundActive === true ||
-      (entry?.pendingInputCount ?? 0) > 0) return cursors;
+    // An owner reminder may challenge a stale `working` record for this same,
+    // already sent action, on the same current terminal idle proof. It never
+    // manufactures idle state and keeps every budget, spacing and key check.
+    const ownerStale = reason === "owner" && entry?.execution === "working" &&
+      entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest && entry.action.workflowCompleteAt === null;
+    if (entry?.execution === "working" && !staleWorking && !ownerStale) {
+      tell(`${agent}'s hooks report it mid-turn on a different action; coord does not interrupt it.`);
+      return cursors;
+    }
+    if (entry?.backgroundActive === true || (entry?.pendingInputCount ?? 0) > 0) {
+      tell(`${agent} has ${entry?.backgroundActive === true ? "background work running" : "its own queued input"}; coord does not interrupt it.`);
+      return cursors;
+    }
     // Lifecycle hooks write without touching cursor authority, so the override
     // re-reads them at every key until submission starts.
     const lifecycleSnapshot = (value: typeof entry): string => JSON.stringify([value?.sessionId, value?.turnId,
       value?.lastEventAt, value?.execution, value?.pendingInputCount, value?.backgroundActive]);
     const observed = lifecycleSnapshot(entry);
     const hookSequence = entry?.hookReceipt?.sequence;
-    const staleOverride: IdleOverride | undefined = receipt !== null || staleWorking ? {
+    // Only an acknowledgment newer than this attempt counts: an earlier
+    // acceptance of the same action must not end an owner reminder's send.
+    const priorAcceptedAt = entry?.action?.acceptedAt ?? null;
+    const staleOverride: IdleOverride | undefined = receipt !== null || staleWorking || ownerStale ? {
       source: receipt !== null ? "ready-file" : "idle-sentinel",
       lifecycle: () => {
         const latest = readAgentLifecycle(this.paths).agents[agent];
         if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
-          latest.action.delivery === "accepted") return "accepted";
+          latest.action.delivery === "accepted" && latest.action.acceptedAt !== priorAcceptedAt) return "accepted";
         if (receipt !== null && (latest?.hookReceipt?.sequence !== hookSequence ||
           readReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot)?.identity !== receipt.identity)) return "changed";
         return lifecycleSnapshot(latest) === observed ? "unchanged" : "changed";
       }
     } : undefined;
-    if (safety.sends >= 4) return this.hold(cursors, agent, "nudge-loop", `${actionId}:budget:${safety.lastSendAt}`);
+    if (safety.sends >= 4) {
+      if (reason === "owner") {
+        tell(`coord already sent ${agent} this action 4 times, its limit. Release its reminder-limit hold with r to allow 4 more.`);
+        return cursors;
+      }
+      return this.hold(cursors, agent, "nudge-loop", `${actionId}:budget:${safety.lastSendAt}`);
+    }
     const delay = NUDGE_REPEAT_DELAYS_MS[safety.sends - 1] ?? 0;
-    if (safety.lastSendAt !== null && Date.parse(this.now()) - Date.parse(safety.lastSendAt) < delay) return cursors;
+    if (safety.lastSendAt !== null && Date.parse(this.now()) - Date.parse(safety.lastSendAt) < delay) {
+      tell(`coord sent ${agent} this action less than ${delay / 1000}s ago and waits at least that long between sends; ` +
+        `press n again after ${new Date(Date.parse(safety.lastSendAt) + delay).toISOString()}.`);
+      return cursors;
+    }
     let sentAt = this.now();
     const reserve = (): void => {
       this.authority(cursors);
@@ -1146,6 +1332,8 @@ export class CoordinatorRunLoop {
       cursors = this.mutate(cursors, (current) => ({ ...current, actionSafety: {
         ...current.actionSafety, [agent]: { ...safety, sends: safety.sends + 1, lastSendAt: sentAt, reserved: true }
       } }));
+      // The reminder's first key is reserved: from here only a new prompt hook acknowledges it.
+      if (reason === "owner") reopenActionForReminder(this.paths, agent, actionId, actionDigest, sentAt);
     };
     // An exception or lost authority after any key is ambiguous: leave the durable charge intact.
     let result;
@@ -1155,23 +1343,27 @@ export class CoordinatorRunLoop {
     } catch (error) {
       this.authority(cursors);
       if (error instanceof StateConflictError) throw error;
+      tell(`typing into ${agent}'s terminal failed partway, so coord put it on hold (see coord status).`);
       return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`);
     }
     this.authority(cursors);
     // Native retry ownership remains known even if earlier keys were ambiguous.
     // Leave any reservation charged until explicit owner recovery.
     if (result.status === "busy" && result.reason === "claude-usage-wait") {
+      tell(`${agent} is waiting out a usage limit, so coord put it on hold (see coord status).`);
       return this.hold(cursors, agent, "vendor-wait", this.observationEvidence(agent, actionId));
     }
     if (result.status !== "sent" && result.stage === "mid-send") {
+      tell(`typing into ${agent}'s terminal was interrupted partway, so coord put it on hold (see coord status).`);
       return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`);
     }
     if (result.status === "sent") {
+      tell(`reminder sent to ${agent} (send ${safety.sends + 1} of 4 for this action).`);
       markActionInjected(this.paths, agent, actionId, actionDigest, sentAt);
       if (receipt !== null) {
         clearReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot, receipt);
         this.log(`Issue ${start.issue}: ${agent}'s ready file for its last accepted action confirmed readiness; delivered action ${actionId}.`);
-      } else if (staleWorking) {
+      } else if (staleWorking || ownerStale) {
         this.log(
           `Issue ${start.issue}: ${agent}'s lifecycle hooks still report it mid-turn, but its pane shows COORD-IDLE; ` +
             `delivered action ${actionId}. No Stop event from ${agent} reached this issue — ` +
@@ -1187,8 +1379,12 @@ export class CoordinatorRunLoop {
         } } };
       });
     }
-    if (result.status === "gone") return this.hold(cursors, agent, "harness-gone", this.observationEvidence(agent, actionId));
+    if (result.status === "gone") {
+      tell(`${agent}'s terminal is gone, so coord put it on hold (see coord status).`);
+      return this.hold(cursors, agent, "harness-gone", this.observationEvidence(agent, actionId));
+    }
     if (result.status === "busy") {
+      tell(`reminder to ${agent} not sent: ${deferralRationale(result.reason)} (code ${result.reason}).`);
       if (entry?.action?.retryableInjectionAt === null) markActionInjectionDeferred(this.paths, agent, actionId, actionDigest, this.now());
       return this.journalDeferral(start, cursors, agent, actionId, actionDigest, "scrape", result.reason,
         deferralRationale(result.reason), result.detail);
@@ -1296,10 +1492,7 @@ export class CoordinatorRunLoop {
       return this.setResource(state, agent, { episode });
     });
     const hold = created as Hold | null;
-    if (hold !== null) {
-      this.log(`Issue ${start.issue}: ${agent} held (vendor-failure; ${failure.evidence.failureClass}; reset ${hold.resetsAt ?? "unknown"}). ` +
-        `Inspect the agent, then ${holdRecoveryCommand(this.paths.issue, next, hold)}; add --run only if the coordinator was stopped.`);
-    }
+    if (hold !== null) this.logHold(start, next, hold);
     return next;
   }
 
@@ -1484,7 +1677,7 @@ export class CoordinatorRunLoop {
     const key = `${stepId ?? "complete"}:${round ?? ""}`;
     if (from === undefined && this.loggedPhaseKey === key) return;
     this.loggedPhaseKey = key;
-    const to = describeWorkflowStep(stepId, round);
+    const to = describeStage(stepId, round);
     this.log(from === undefined ? `Issue ${issue}: ${to}` : `Issue ${issue}: ${from} → ${to}`);
   }
 
@@ -1702,10 +1895,10 @@ export class CoordinatorRunLoop {
         ...safety, deferrals: [...safety.deferrals, key]
       } } };
     });
-    const detailText = detail === undefined ? "" : ` (${detail})`;
+    const detailText = detail === undefined ? "" : `, ${detail}`;
     const message = splitBrain
-      ? `Issue ${start.issue}: ${agent} looks idle to its lifecycle hooks but its terminal is not ready to accept typing (${code}${detailText}); ${human}`
-      : `Issue ${start.issue}: delivery to ${agent} deferred: ${code}${detailText}; ${human}`;
+      ? `Issue ${start.issue}: ${agent}'s hooks say it is idle, but its terminal is not ready for typing: ${human} (code ${code}${detailText}).`
+      : `Issue ${start.issue}: waiting to send ${agent} its action: ${human} (code ${code}${detailText}).`;
     if (gateWaiting || splitBrain) this.log(message);
     else this.verbose(message);
     return next;
@@ -1822,9 +2015,10 @@ export class CoordinatorRunLoop {
       const coverage = containmentCoverage(readAgentLifecycle(this.paths).agents[decision.agent], policy?.binding ?? null);
       appendJournal(this.paths, { type: "agent-lifecycle", agent: decision.agent, actionId: cursor.actionId,
         details: { kind: "containment-coverage", ...coverage, eventId: `containment-join:${cursor.actionId}` } }, this.now());
-      if (coverage.hook !== "active") this.log(`WARNING: ${decision.agent} containment hook=${coverage.hook} shim=${coverage.shim}. ` +
-        (coverage.shim !== "active" ? "No verified containment layer. " : "Only PATH shim coverage observed. ") +
-        "Check native hook support/trust and run the probes in the actual harness shell tool.\n");
+      if (coverage.hook !== "active") this.log(`[WARN] ${decision.agent}'s git guard is not confirmed (hook=${coverage.hook} shim=${coverage.shim}): ` +
+        (coverage.shim !== "active" ? "no verified layer stops it from running git commands the protocol forbids. "
+          : "only the PATH shim was observed. ") +
+        `Check that ${decision.agent} trusts this folder and loaded its hooks (coord doctor), and that its join probe ran in its own shell tool.\n`);
     }
     const accepted: AcceptedSubmission = {
       stepId: cursor.stepId,
@@ -1905,6 +2099,9 @@ export class CoordinatorRunLoop {
         updatedAt: this.now()
       });
     });
+    this.log(`Issue ${start.issue}: accepted ${this.workFor(decision.agent, cursor.stepId, round)} ` +
+      `(commit ${decision.submissionSha.slice(0, 12)}` +
+      (decision.productPin === undefined || decision.productPin === decision.submissionSha ? "" : `, product commit ${decision.productPin.slice(0, 12)}`) + ").");
     const completion = markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
     if (completion.clearedDegraded) {
       // The agent published and pushed, so the earlier watchdog warning is
@@ -2051,6 +2248,8 @@ export class CoordinatorRunLoop {
       materialized
     );
     this.verbose(`reissued ${agent} action ${actionId}: ${outstanding.join("; ")}`);
+    this.log(`Issue ${start.issue}: sent ${this.workFor(agent, stepId, round)} back for correction: ${outstanding[0] ?? "see its action.md"}` +
+      (outstanding.length > 1 ? ` (and ${outstanding.length - 1} more; see its action.md)` : "") + ".");
     const next = this.mutate(cursors, (current) => {
       appendJournal(
         this.paths,
@@ -2157,6 +2356,7 @@ export class CoordinatorRunLoop {
         updatedAt: this.now()
       });
     });
+    this.log(`Issue ${start.issue}: accepted ${decision.agent}'s private response for ${describeStage(cursor.stepId, round)}.`);
     const completion = markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
     if (completion.clearedDegraded) {
       appendJournal(
@@ -2330,8 +2530,10 @@ export class CoordinatorRunLoop {
 
     try {
       if (reconcile.outcome === "push") {
+        this.log(`Issue ${start.issue}: pushing ballot evidence (${batch.kind}${batch.round === null ? "" : ` round ${batch.round}`}) to ${branch} on GitHub…`);
         await this.mirror.publishBranch(commitSha, branch);
         this.authority(next);
+        this.log(`Issue ${start.issue}: ballot evidence pushed to ${branch} (commit ${commitSha.slice(0, 12)}).`);
       }
       const publishedAt = this.now();
       return this.mutate(next, (current) => {
@@ -2385,6 +2587,7 @@ export class CoordinatorRunLoop {
   ): CursorsState {
     const failedAt = this.now();
     this.verbose(`ballot batch ${batchId} publication failed${transient ? " (transient)" : ""}: ${error}`);
+    this.log(`Issue ${this.paths.issue}: pushing ballot evidence failed${transient ? "; coord retries on its next check" : ""}: ${error}`);
     return this.mutate(cursors, (current) => {
       appendJournal(
         this.paths,
@@ -2542,12 +2745,21 @@ export class CoordinatorRunLoop {
           cacheReason: "not cached: nothing selected" }) }, at);
       return { status: "passed", results: [] };
     }
-    return runVerification({
+    const label = phase === "finalization" ? "final checks" : "coordinator checks";
+    this.log(`Issue ${start.issue}: running ${label} on ${order.agent}'s commit ${pin.slice(0, 12)} ` +
+      `(${commands.map((command) => command.name).join(", ")})…`);
+    const result = await runVerification({
       paths: this.paths, start, mirror: this.mirror, processRunner: this.processRunner, now: () => this.now(),
       checkpoint: () => { this.authority(cursors); },
       journal: (type, details, at) => appendJournal(this.paths, { type, agent: order.agent, actionId: order.actionId, details }, at),
-      phase, pin, classification, commands
+      phase, pin, classification, commands,
+      progress: (event) => this.log(`Issue ${start.issue}: ${verificationProgressText(event)}`)
     });
+    this.log(`Issue ${start.issue}: ${label} on ${pin.slice(0, 12)} ` +
+      (result.status === "passed" ? "passed."
+        : result.status === "failed" ? `failed: ${result.failure} (log ${result.failed.logPath ?? "unavailable"}).`
+          : `are waiting for another run of ${result.waitingFor}; coord checks again on its next pass.`));
+    return result;
   }
 
   private async publishAcceptedFinalization(start: StartState, cursors: CursorsState): Promise<CursorsState> {
@@ -2565,6 +2777,7 @@ export class CoordinatorRunLoop {
           `GitHub issue snapshot number ${issueSnapshot.number} does not match start issue ${start.issue}.`
         );
       }
+      this.log(`Issue ${start.issue}: pushing the final commit ${finalSha.slice(0, 12)} to ${branch} on GitHub…`);
       await this.mirror.publishBranch(finalSha, branch);
       this.authority(authority, true);
       const draft = !coordMergesPullRequest(start.prPolicy);
@@ -2576,6 +2789,7 @@ export class CoordinatorRunLoop {
         evidenceBranch: cursors.evidence.branch,
         evidenceTip: cursors.evidence.tip
       });
+      this.log(`Issue ${start.issue}: opening ${draft ? "a draft" : "the"} pull request from ${branch}…`);
       const result = await this.pullRequestOpener({
         repository,
         base: start.baseBranch,
@@ -2586,9 +2800,12 @@ export class CoordinatorRunLoop {
       });
       openedUrl = result.url;
       this.authority(authority, true);
+      this.log(`Issue ${start.issue}: opened pull request ${result.url}.`);
       if (coordMergesPullRequest(start.prPolicy)) {
+        this.log(`Issue ${start.issue}: merging pull request ${result.url}…`);
         await this.pullRequestMerger({ url: result.url });
         this.authority(authority, true);
+        this.log(`Issue ${start.issue}: merged pull request ${result.url}.`);
       }
       return this.mutate(authority, (current) => {
         appendJournal(
@@ -2616,7 +2833,8 @@ export class CoordinatorRunLoop {
       const latest = readCursorsState(this.paths);
       if (latest.stateRevision !== authority.stateRevision || latest.paused || latest.abandoned) return latest;
       const message = error instanceof Error ? error.message : String(error);
-      this.log(`Owner action required: finalization publication failed: ${message}`);
+      this.log(`[ACTION] Owner action required: finalization publication failed: ${message.replace(/\.$/, "")}. ` +
+        "coord retries on its next check; see coord status for details.");
       return this.mutate(latest, (current) => {
         appendJournal(
           this.paths,
@@ -2807,7 +3025,8 @@ export class CoordinatorRunLoop {
           });
         }
         this.log(
-          `Owner action required: ${decision.reason}. Answer with: coord answer ${next.ownerQuestion?.id ?? "<question-id>"} <${decision.allowedAnswers.join("|")}>`
+          `[ACTION] Owner action required: ${decision.reason}. Choose in the coord terminal's menu, or run: ` +
+            ownerCommand(start, `coord answer ${next.ownerQuestion?.id ?? "<question-id>"} <${decision.allowedAnswers.join("|")}> --issue ${start.issue}`)
         );
       }
     }
@@ -2825,7 +3044,9 @@ export class CoordinatorRunLoop {
           this.ingestVerificationMeasurements(this.paths, agent.root, agent.id, start, this.now());
         }
       }
+      this.reportStopWarnings(start, cursors);
       if (cursors.paused) {
+        this.discardReminders(start.issue, "the issue is paused or held");
         // Observation-only while held: no preparation, delivery, acceptance or publication.
         for (const agent of cursors.activeRoster) {
           if (!cursors.paused) break;
@@ -2853,14 +3074,22 @@ export class CoordinatorRunLoop {
         cursors = await this.observeUnfinished(start, cursors, agent, cursor.actionId);
         if (cursors.paused) return cursors;
       }
+      const reminder = this.reminders.get(agent);
       if (completion.status === "missing") {
         if (this.tmux !== null) {
           if (cursor.status === "ordered") {
-            cursors = await this.maybeLifecycleNudge(start, cursors, agent, cursor.actionId);
+            cursors = reminder !== undefined
+              ? await this.processReminder(start, cursors, agent, reminder)
+              : await this.maybeLifecycleNudge(start, cursors, agent, cursor.actionId);
             if (cursors.paused) return cursors;
           }
         }
         continue;
+      }
+      // Completion validation takes precedence over a reminder that has not run.
+      if (reminder !== undefined) {
+        this.reminders.delete(agent);
+        this.log(`Issue ${start.issue}: ${agent} already reported completion, so its reminder was not sent.`);
       }
 
       if (completion.status === "malformed") {
@@ -2920,6 +3149,9 @@ export class CoordinatorRunLoop {
         }
 
         const digest = responseDigest(read.bytes);
+        // Never print the choice, disposition or rationale of a private response.
+        this.announceReceipt(start.issue, `${cursor.actionId}:${digest}`,
+          `${agent} submitted its private response for ${describeStage(cursor.stepId, round)}; checking it.`);
         cursors = this.mutate(cursors, (current) => {
           appendJournal(
             this.paths,
@@ -2956,6 +3188,9 @@ export class CoordinatorRunLoop {
         continue;
       }
 
+      this.announceReceipt(start.issue, `${cursor.actionId}:${completion.sha}`,
+        `${agent} reported its work for ${describeStage(cursor.stepId, round)} complete at commit ` +
+          `${completion.sha.slice(0, 12)}; checking it.`);
       cursors = this.mutate(cursors, (current) => {
         appendJournal(
           this.paths,
@@ -3061,6 +3296,12 @@ export class CoordinatorRunLoop {
           if (!initialized && !cursors.paused) {
             await this.initializeEffects();
             initialized = true;
+          }
+          // A held issue still gets the read-only check, without branch expectations.
+          if (!this.diagnosed && (initialized || cursors.paused)) {
+            // Advisory only: a diagnostic failure must never stop the runner.
+            await this.reportWiring(start, cursors, initialized).catch((error: unknown) => this.log(
+              `[WARN] Issue ${start.issue}: could not finish the agent hook check (${error instanceof Error ? error.message : String(error)}).`));
           }
           if (stopped()) return;
           cursors = await this.runTick({ observeOnly: !initialized });

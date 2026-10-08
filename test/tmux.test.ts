@@ -451,6 +451,20 @@ describe("tmux boundary", () => {
     expect(calls.some((args) => args[0] === "new-window" || args[0] === "respawn-pane")).toBe(false);
   });
 
+  it("reads the issue session's COORD_ISSUE without changing it", async () => {
+    const calls: string[][] = [];
+    let reply: TmuxResult = ok("COORD_ISSUE=3\n");
+    const controller = new TmuxController(async (args) => { calls.push([...args]); return reply; }, null, null, null);
+    expect(await controller.issueEnvironment(3)).toBe("3");
+    reply = ok("-COORD_ISSUE\n");
+    expect(await controller.issueEnvironment(3)).toBeNull();
+    reply = { exitCode: 1, stdout: "", stderr: "unknown variable: COORD_ISSUE" };
+    expect(await controller.issueEnvironment(3)).toBeNull();
+    reply = { exitCode: 1, stdout: "", stderr: "no server running" };
+    expect(await controller.issueEnvironment(3)).toBe("unavailable");
+    expect(calls.every((args) => args.join(" ") === "show-environment -t coord-3 COORD_ISSUE")).toBe(true);
+  });
+
   it("creates and repairs manual sessions without exposing COORD_ISSUE", async () => {
     const root = mkdtempSync(join(tmpdir(), "coord-manual-ensure-"));
     roots.push(root);

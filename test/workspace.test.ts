@@ -10,6 +10,7 @@ import {
   nestedConfigPath,
   recordOwnerWorkspace,
   resolveWorkspaceFromProduct,
+  resolveWorkspaceFromWorktree,
   resolveWorkspaceLocation,
   selectWorkspaceLocation,
   listIssueNumbersInWorkspace
@@ -80,7 +81,7 @@ describe("workspace layout", () => {
     }
     // An existing directory remains an ordinary Git discovery failure.
     expect(worktreeRoot(root)).toBeNull();
-    expect(() => resolveWorkspaceFromProduct(root)).toThrow("not a Git worktree");
+    expect(() => resolveWorkspaceFromProduct(root)).toThrow("is not inside a Git repository");
   });
 
   it("distinguishes a missing Git executable from a missing working directory", () => {
@@ -215,6 +216,40 @@ describe("workspace layout", () => {
     for (const path of [subdirectory, alias]) {
       expect(resolveWorkspaceFromProduct(path)).toMatchObject({ configPath, layout: "flat" });
     }
+  });
+
+  it("resolves the current worktree as the owner repository or a registered agent clone only", () => {
+    const product = makeProduct("plain");
+    products.push(product);
+    const configPath = join(product.coordRoot, "config.json");
+    const clone = join(product.workspaceRoot, "clone-claude");
+    mkdirSync(clone);
+    git(clone, "init", "-q");
+    writeFileSync(configPath, `${JSON.stringify({ ...config("myserver", product.productRoot),
+      agents: [{ id: "claude", root: clone, launcher: "start-claude.sh" }] }, null, 2)}\n`);
+    recordOwnerWorkspace(product.productRoot, configPath);
+    const key = "coord.workspaceConfig";
+    const subdirectory = join(product.productRoot, "nested");
+    mkdirSync(subdirectory);
+    expect(resolveWorkspaceFromWorktree(subdirectory, key)).toMatchObject({ configPath });
+
+    git(clone, "config", "--local", key, configPath);
+    git(clone, "config", "--local", "consensus.agentId", "claude");
+    expect(resolveWorkspaceFromWorktree(clone, key)).toMatchObject({ configPath });
+    // A crossed identity, a stale locator or a conflicting owner locator is refused, never guessed.
+    git(clone, "config", "--local", "consensus.agentId", "codex");
+    expect(() => resolveWorkspaceFromWorktree(clone, key)).toThrow("is not the registered clone for agent 'codex'");
+    git(clone, "config", "--local", "consensus.agentId", "claude");
+    const other = join(product.coordRoot, "other.json");
+    writeConfig(other, "other", product.productRoot);
+    git(clone, "config", "--local", OWNER_WORKSPACE_CONFIG_KEY, other);
+    expect(() => resolveWorkspaceFromWorktree(clone, key)).toThrow("both an owner and an agent workspace locator");
+    git(clone, "config", "--local", "--unset", OWNER_WORKSPACE_CONFIG_KEY);
+    git(clone, "config", "--local", key, join(product.coordRoot, "missing.json"));
+    expect(() => resolveWorkspaceFromWorktree(clone, key)).toThrow("points at missing workspace config");
+    const outside = mkdtempSync(join(tmpdir(), "coord-not-a-repo-"));
+    roots.push(outside);
+    expect(() => resolveWorkspaceFromWorktree(outside, key)).toThrow("is not inside a Git repository");
   });
 
   it("keeps same-named products registered in their own canonical worktrees", () => {

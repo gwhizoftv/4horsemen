@@ -238,8 +238,8 @@ resolved from the directory where you invoke `coord`; for example, from a parent
 directory use `--product ./my-product` or an absolute path to that onboarded
 worktree. A typo reports **working directory does not exist**, while a regular
 file reports **working directory is not a directory**. Directory symlinks remain
-supported. An existing non-repository directory still reports **not a Git
-worktree**, and a repository without a valid owner locator still requires
+supported. An existing non-repository directory still reports **is not inside a
+Git repository**, and a repository without a valid owner locator still requires
 onboarding. Correcting a path does not bypass those checks.
 
 If the directory is valid but Git cannot be launched, the error retains the OS
@@ -548,10 +548,20 @@ workflow; no new owner command is required.
 
 ## Owner controls
 
-Every issue command accepts either an explicit workspace `--coord-root` or an
-onboarded `--product`. Product resolution uses the same flat/nested and legacy
-runtime lookup as `coord N`, so owner controls cannot accidentally target the
-outer root of a nested product. `COORD_ISSUE` may replace `--issue`.
+A **repository** is the Git checkout of the project the agents work on;
+`--product <path>` names it (the flag keeps its older name). Every issue command
+accepts an explicit workspace `--coord-root`, an onboarded `--product`, or
+neither: run from inside the onboarded repository (any subdirectory), or from a
+registered agent clone, and coord resolves the runtime from that worktree's
+locator. An agent clone counts only when its `coord.workspaceConfig`,
+`consensus.agentId` and canonical root all match the config; stale, crossed or
+ambiguous locators are refused rather than guessed, and nothing else is scanned.
+Repository resolution uses the same flat/nested and legacy runtime lookup as
+`coord N`, so owner controls cannot accidentally target the outer root of a
+nested repository. `COORD_ISSUE` may replace `--issue`. Every recovery command
+coord prints includes a shell-quoted `--coord-root`, so it also works from any
+other folder. `coord help <command>` (or `coord <command> --help`) explains one
+command — purpose, inputs, side effects and an example — without reading state.
 
 ```bash
 coord drop cursor --product /path/to/app --issue 42
@@ -607,23 +617,45 @@ not start a second tick loop. Logs clear and redraw the current edit.
 
 | Key | Operation |
 | --- | --- |
-| `s` | Snapshot of active step/round, roster, pins, publication/PR, holds and queued guidance count |
+| `s` | Status snapshot between `----` lines: severity, stage, next step for you, roster, commits, publication/PR, holds and each agent's state |
 | `p` / Space | Toggle manual pause, never release holds |
+| `n` | Numbered menu of agents with an unfinished action; Enter queues a reminder for that action (see below) |
+| `r` | Numbered hold menu; release the selected ID after inspecting the agent. A reminder-limit (`nudge-loop`) hold asks a separate `y` to allow 4 more sends |
 | `a` | Reopen missing agent Terminal clients using the existing attach flow |
 | `d` | Numbered active-agent menu; Enter selects, a separate `y` confirms |
-| `r` | Numbered hold menu; release the selected ID after inspecting the agent |
-| `?` / `h` | Help |
+| `?` / `h` | Full help: one sentence per control plus the terms action, turn and hold |
 | `/` | Begin a `/steer <text>` line; Enter queues, Backspace edits, Esc cancels |
+| Enter | Print a fresh prompt on the next line (a liveness check); changes nothing |
 | `q` | Quit outside an edit, stopping only the foreground runner |
+
+Any other printable key prints `Unknown command '<key>'` and the full help. A
+plain multi-character paste outside an edit is reported once as ignored text and
+never runs as hotkeys; press `/` first to paste guidance.
+
+`n` never types from the key press. It queues one reminder bound to the agent's
+current action ID, `action.md` digest and hook session in this runner, and the
+next tick revalidates and executes it through the normal delivery path: same
+send budget and spacing, same per-key pane checks, and an ambiguous send still
+holds. For an action whose lifecycle record is stale `working` (the agent took
+the action but no Stop arrived), the reminder may proceed only on current
+positive idle proof — `COORD-IDLE` at the tail of the pane — and never invents
+idle state. Once its first key is reserved, the earlier acknowledgment no longer
+counts: only a new prompt hook accepts the reminder. The outcome — sent, or not
+sent and why — is printed. A completion receipt that arrives first wins; a
+pause, hold, replaced action or changed session drops the request with a
+message; `n` neither releases a hold nor resets the budget. There is no
+force-advance control: coord moves to the next stage only on accepted work, so
+use `n`, `r`, or `restart-action` (which issues a fresh action) instead.
 
 Owner questions appear as numbered menus with only `allowedAnswers`. Select a
 number and press Enter; abandon also requires `y`. The captured question ID is
 validated under the same lock as external `coord answer`, so stale selections
 cannot answer a replacement question. Esc returns to hotkeys; `s` redisplays a
 pending question. Menus likewise capture agent/hold identities and revalidate
-them when applied. Nudge-loop budget reset remains CLI-only via
-`coord resume --hold ID --reset-nudge-budget`. No control silently releases
-other holds. Pasted text does not execute hotkeys or confirmations; to paste
+them when applied. Releasing a reminder-limit hold with `r` performs the same
+locked operation as `coord resume --hold ID --reset-nudge-budget` only after its
+confirmation; cancelling leaves the hold and budget untouched. No control
+silently releases other holds. Pasted text does not execute hotkeys or confirmations; to paste
 guidance, press `/` first. In an edit, `q` is ordinary text.
 
 `/steer` queues a nonblank single line (maximum 2,000 characters; 32 pending
@@ -644,6 +676,37 @@ an already-running workflow effect may finish before the runner exits. They do
 not call `detach`, kill tmux, close agent clients, or wipe state, even if that
 last tick completes the issue. Normal un-interrupted completion retains its
 existing cleanup behavior. Direct typing into agent panes is unchanged.
+
+### Operator output
+
+Status and log lines use plain words first and keep internal codes in
+parentheses. The first status line carries a severity label that survives
+redirected output: `[OK]` (finished), `[WAIT]` (agents are working; nothing for
+you to do), `[WARN]` (look when convenient) or `[ACTION]` (coord needs you), and
+`Next for you:` says what, if anything, to do. Agent lines separate what coord
+wrote and sent (`action.md published; not yet sent`, `action sent; waiting for
+the agent to acknowledge it`, `agent acknowledged the action`) from what the
+agent's hooks report about its turn (`mid-turn`, `between turns`, …) and from
+validated acceptance (`submission accepted; waiting for other agents`). Unknown
+hook coverage is never shown as `[OK]`.
+
+The runner prints once per transition: a completion receipt (`reported … complete
+at commit …; checking it`, or a private response without its contents), acceptance
+or return for correction, each coordinator check before it runs and its result
+with the log path (reused results are labelled reused), waits for another
+verification run or an expensive-check slot, evidence and final-branch pushes,
+and pull request creation and merge. Tick-level detail stays behind `-v`.
+
+At start or resume, coord checks each active agent's installed wiring (identity,
+coord-managed keys, Git hooks and shim, lifecycle hooks, and the issue branch once
+branches are prepared) and reads the tmux session's `COORD_ISSUE`. Installed files
+and a matching session value do not prove that the agent harness trusts and runs
+its hooks, or that an agent started earlier inherited the value; until a hook from
+the agent reaches this issue, coord reports its hook activity as not yet verified.
+It then warns, once per kind, when no Stop hook arrives after two distinct observed
+prompt turns in the current session, or — where turn IDs are unavailable — after
+two completed actions. These warnings are advisory: they never change readiness,
+holds or delivery.
 
 ### Delivery safety and unknown holds
 
@@ -700,7 +763,8 @@ coord resume --issue N  # separately clear a manual pause, if present
 coord resume --issue N --agent claude --run
 ```
 
-Include `--product PATH` or `--coord-root PATH` as usual. Releasing one hold never
+Run these from the onboarded repository, or include `--product PATH` or
+`--coord-root PATH`; the commands coord prints already carry `--coord-root`. Releasing one hold never
 clears another hold or a manual pause, and is audited. Retired actions cannot be
 released; `restart-action` and `drop` require resolving holds first. Owner release
 acknowledges a hold, not the continuing condition: a fresh local observation of

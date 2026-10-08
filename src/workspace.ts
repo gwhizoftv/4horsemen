@@ -124,7 +124,7 @@ export const recordOwnerWorkspace = (productRoot: string, configPath: string): v
   if (root === null) throw new Error(`${productRoot} is not a Git worktree.`);
   const config = readConfig(resolve(configPath));
   if (config.coordination === undefined || !sameExistingPath(config.coordination.productRoot, root)) {
-    throw new Error(`Workspace config ${configPath} is not installed for product worktree ${root}.`);
+    throw new Error(`Workspace config ${configPath} is not installed for repository ${root}.`);
   }
   localConfigSet(productRoot, OWNER_WORKSPACE_CONFIG_KEY, resolve(configPath));
 };
@@ -148,11 +148,15 @@ export const clearOwnerWorkspaceLocator = (productRoot: string): void => {
 
 export const resolveWorkspaceFromProduct = (productOrClone: string): WorkspaceLocation => {
   const root = worktreeRoot(resolve(productOrClone));
-  if (root === null) throw new Error(`${productOrClone} is not a Git worktree; pass --product for an onboarded product.`);
+  if (root === null) {
+    throw new Error(`${productOrClone} is not inside a Git repository. Run coord from your onboarded repository, ` +
+      "or pass --product <repository-path> (or --coord-root <runtime-path>).");
+  }
   const configured = localConfigGet(root, OWNER_WORKSPACE_CONFIG_KEY);
   if (configured === null) {
     throw new Error(
-      `${root} is not onboarded in this worktree. Run \`coord onboard ${root}\`, or pass --product for an onboarded product.`
+      `${root} is not onboarded in this worktree, so it is not a repository coord knows. Run \`coord onboard ${root}\` once, ` +
+        "or pass --product <repository-path> for a repository that is already onboarded."
     );
   }
   if (!isAbsolute(configured) || !existsSync(configured)) {
@@ -163,8 +167,38 @@ export const resolveWorkspaceFromProduct = (productOrClone: string): WorkspaceLo
   const config = readConfig(configured);
   if (config.coordination === undefined || !sameExistingPath(config.coordination.productRoot, root)) {
     throw new Error(
-      `${OWNER_WORKSPACE_CONFIG_KEY} points at a workspace for another product. Re-run \`coord onboard ${root}\`.`
+      `${OWNER_WORKSPACE_CONFIG_KEY} points at a workspace for another repository. Re-run \`coord onboard ${root}\`.`
     );
   }
   return workspaceLocationFromConfig(configured);
+};
+
+/**
+ * The workspace for the Git worktree containing `path`: the owner's onboarded
+ * repository, or a registered agent clone whose locator, identity and canonical
+ * root all match the config. Stale, crossed or ambiguous locators are refused;
+ * nothing else is scanned or guessed.
+ */
+export const resolveWorkspaceFromWorktree = (path: string, agentLocatorKey: string): WorkspaceLocation => {
+  const root = worktreeRoot(resolve(path));
+  if (root === null) return resolveWorkspaceFromProduct(path);
+  const owner = localConfigGet(root, OWNER_WORKSPACE_CONFIG_KEY);
+  const agentConfig = localConfigGet(root, agentLocatorKey);
+  if (agentConfig === null) return resolveWorkspaceFromProduct(root);
+  if (!isAbsolute(agentConfig) || !existsSync(agentConfig)) {
+    throw new Error(`${agentLocatorKey} in ${root} points at missing workspace config '${agentConfig}'. Re-run coord install.`);
+  }
+  if (owner !== null && !(isAbsolute(owner) && existsSync(owner) && sameExistingPath(owner, agentConfig))) {
+    throw new Error(`${root} has both an owner and an agent workspace locator for different workspaces; ` +
+      "pass --product <repository-path> or --coord-root <runtime-path>.");
+  }
+  const config = readConfig(agentConfig);
+  const agentId = localConfigGet(root, "consensus.agentId");
+  const registered = config.agents.some((agent) =>
+    agent.id === agentId && sameExistingPath(resolve(dirname(agentConfig), agent.root), root));
+  if (!registered) {
+    throw new Error(`${root} is not the registered clone for agent '${agentId ?? "(unset)"}' in ${agentConfig}; ` +
+      "pass --product <repository-path> or --coord-root <runtime-path>.");
+  }
+  return workspaceLocationFromConfig(agentConfig);
 };

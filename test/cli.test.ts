@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -228,6 +228,13 @@ describe("CLI version", () => {
       processRunner: successfulStartGit, makeRunLoop: fakeLoop, io: { stdout: () => undefined }
     });
     const paths = issueRuntimePaths(f.runtime, 1);
+    // codex is typed into and has an unfinished action, so `n` can remind it.
+    const started = readStartState(paths);
+    writeFileSync(paths.start, JSON.stringify({ ...started, agents: started.agents.map((agent) =>
+      agent.id === "codex" ? { ...agent, delivery: "both" } : agent) }));
+    const ordered = readCursorsState(paths);
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...ordered, agents: { ...ordered.agents,
+      codex: { ...ordered.agents.codex!, status: "ordered", actionId: "10000000-0000-4000-8000-000000000009" } } }));
     const input: TerminalInput = new PassThrough(), output: TerminalOutput = new PassThrough();
     input.isTTY = output.isTTY = true;
     input.setRawMode = (raw) => { input.isRaw = raw; };
@@ -235,12 +242,17 @@ describe("CLI version", () => {
     output.on("data", (chunk) => { printed += String(chunk); });
     const errors: string[] = [];
     const send = async (key: string) => { input.emit("data", key); await new Promise<void>((resolve) => setImmediate(resolve)); };
-    let ticks = 0, runs = 0;
+    let ticks = 0, runs = 0, loops = 0;
+    const requestReminder = vi.fn((agent: string) => `Reminder requested for ${agent}.`);
     const code = await runCli([command, ...(command === "resume" ? ["--run"] : []), "--issue", "1", "--coord-root", f.runtime], {
       terminal: { input, output }, io: { stdout: (text) => { printed += text; }, stderr: (text) => errors.push(text) },
-      makeRunLoop: () => ({ initializeEffects: async () => {}, runTick: async () => { ticks++; return readCursorsState(paths); },
+      makeRunLoop: () => { loops++; return { initializeEffects: async () => {}, runTick: async () => { ticks++; return readCursorsState(paths); },
+        requestReminder,
         run: async (signal) => {
           runs++;
+          // The reminder queues in this same runner instance; nothing ticks.
+          await send("n"); await send("1"); await send("\r");
+          expect(requestReminder).toHaveBeenCalledWith("codex");
           await send("s"); await send("p");
           expect(readCursorsState(paths).manualPaused).toBe(true);
           // External resume uses the same operation while this runner stays live.
@@ -256,13 +268,14 @@ describe("CLI version", () => {
           writeCursorsState(paths, { ...readCursorsState(paths), completed: true });
           await send("q");
           expect(signal?.aborted).toBe(true);
-        } })
+        } }; }
     });
     expect(code).toBe(0);
     expect(errors).toEqual([]);
-    expect(runs).toBe(1); expect(ticks).toBe(0);
-    expect(printed).toContain("Active step: R1.join");
-    expect(printed).toContain("Active roster: codex, claude, cursor");
+    expect(runs).toBe(1); expect(ticks).toBe(0); expect(loops).toBe(1);
+    expect(printed).toContain("Reminder requested for codex.");
+    expect(printed).toContain("agents joining (R1.join)");
+    expect(printed).toContain("Active agents: codex, claude, cursor");
     expect(printed).not.toContain("Clone readiness");
     expect(input.isRaw).toBe(false);
     expect(input.listenerCount("data")).toBe(0);
@@ -545,6 +558,27 @@ describe("CLI manual mode", () => {
     expect(output.join("")).toContain("coord manual");
     expect(output.join("")).toContain("coord detach manual");
     expect(output.join("")).toContain("coord analytics --issue");
+    expect(output.join("")).toContain("A repository is the Git checkout of the project");
+  });
+
+  it("explains one command without validating flags, context or state", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "coord-help-"));
+    roots.push(outside);
+    const output: string[] = [];
+    const io = { cwd: outside, stdout: (message: string) => output.push(message), stderr: (message: string) => output.push(message) };
+    expect(await runCli(["resume", "--issue", "not-a-number", "--help"], { io })).toBe(0);
+    expect(output.join("")).toContain("--reset-nudge-budget, which lets\ncoord send that action 4 more times");
+    expect(output.join("")).toContain("Add --run only if no coordinator is running");
+    output.length = 0;
+    expect(await runCli(["help", "restart-action"], { io })).toBe(0);
+    expect(output.join("")).toContain("to merely remind\nan agent of its current action, press n");
+    output.length = 0;
+    expect(await runCli(["42", "-h"], { io })).toBe(0);
+    expect(output.join("")).toContain("Starts GitHub issue <issue>");
+    output.length = 0;
+    expect(await runCli(["help", "hook-verify"], { io })).toBe(0);
+    expect(output.join("")).toContain("No detailed help for 'hook-verify'.");
+    expect(readdirSync(outside)).toEqual([]);
   });
 });
 
@@ -588,7 +622,7 @@ describe("CLI", () => {
       expect(await runCli(["wipe-issue", "392", "--force", ...flags], {
         io: { cwd: product.workspaceRoot, stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) }
       })).toBe(2);
-      expect(stderr.join("")).toContain(flags.length === 0 ? "not a Git worktree" : "working directory does not exist");
+      expect(stderr.join("")).toContain(flags.length === 0 ? "is not inside a Git repository" : "working directory does not exist");
       expect(stderr.join("")).toContain(flags.length === 0 ? product.workspaceRoot : missing);
       expect(stderr.join("")).not.toContain("spawnSync");
       expect(stdout).toEqual([]);
@@ -607,15 +641,18 @@ describe("CLI", () => {
     expect(messages.join("")).toContain("--config and --coord-root");
 
     messages.length = 0;
+    const outside = mkdtempSync(join(tmpdir(), "coord-no-repo-"));
+    roots.push(outside);
     expect(
       await runCli(["run", "--issue", "1"], {
         io: {
+          cwd: outside,
           env: { COORD_ROOT: fixture.runtime },
           stderr: (message) => messages.push(message)
         }
       })
     ).toBe(2);
-    expect(messages.join("")).toContain("--coord-root is required");
+    expect(messages.join("")).toContain("is not inside a Git repository");
   });
 
   it("starts from the exact origin baseline and exposes only the caller action", async () => {
@@ -668,8 +705,8 @@ describe("CLI", () => {
       })
     ).toBe(0);
     expect(output.join("")).toContain("Issue 1:");
-    expect(output.join("")).toContain("Final pin (PR head):");
-    expect(output.join("")).toContain("Policy: owner-only");
+    expect(output.join("")).toContain("Final commit (PR head):");
+    expect(output.join("")).toContain("(policy owner-only)");
   });
 
   it("resumes only the selected hold, audits budget resets, and reports remaining pauses", async () => {
@@ -1669,6 +1706,18 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     ).toBe(0);
     expect(output.join("")).toContain("Issue 89 analytics");
     expect(output.join("")).toContain("Token count");
+
+    // Without --product or --coord-root, the current worktree selects the runtime.
+    const nested = join(product.productRoot, "nested");
+    mkdirSync(nested, { recursive: true });
+    for (const cwd of [nested, join(product.workspaceRoot, "myserver-claude")]) {
+      output.length = 0;
+      expect(await runCli(["status", "--issue", "89"], { io: { cwd, stdout: (message) => output.push(message) } })).toBe(0);
+      expect(output.join("")).toContain("Issue 89:");
+    }
+    const errors: string[] = [];
+    expect(await runCli(["status", "--issue", "89"], { io: { cwd: product.coordRoot, stderr: (message) => errors.push(message) } })).toBe(2);
+    expect(errors.join("")).toContain("pass --product <repository-path> (or --coord-root <runtime-path>)");
   });
 
   it("returns doctor's class-specific exit code", async () => {

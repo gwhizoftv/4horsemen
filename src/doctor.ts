@@ -130,55 +130,24 @@ const checkInstallRoot = (config: CoordinatorConfig): DoctorFinding[] => {
   return findings;
 };
 
-const checkClone = (input: {
-  config: CoordinatorConfig;
-  configPath: string;
-  agent: CoordinatorConfig["agents"][number];
-  installDigest: string | null;
-  home: string | null;
-}): DoctorFinding[] => {
+const identityFindings = (clone: string, agentId: string): DoctorFinding[] => {
   const findings: DoctorFinding[] = [];
-  const clone = cloneOf(input.configPath, input.agent.root);
-  const stamp = input.config.coordination;
-
-  if (!existsSync(clone)) {
-    findings.push(
-      finding("cloneMissing", clone, `Agent clone for '${input.agent.id}' is missing.`, "Re-run coord install to recreate it.")
-    );
-    return findings;
-  }
-
-  // Everything below runs git against the clone. A directory that lost its
-  // .git is precisely the broken install doctor exists to name, so it is
-  // classified here rather than escaping as a raw git error and exit 2.
-  if (worktreeRoot(clone) === null) {
-    findings.push(
-      finding(
-        "cloneMissing",
-        clone,
-        "The agent clone path exists but is not a git worktree, so nothing about its wiring can be verified.",
-        "Restore or remove the directory, then re-run coord install."
-      )
-    );
-    return findings;
-  }
-
   const identity = localConfigGet(clone, "consensus.agentId");
   if (identity === null) {
     findings.push(
       finding(
         "identity",
         clone,
-        `consensus.agentId is unset, but this clone is configured as agent '${input.agent.id}'.`,
+        `consensus.agentId is unset, but this clone is configured as agent '${agentId}'.`,
         "Re-run coord install; hooks fail closed until identity is recorded."
       )
     );
-  } else if (identity !== input.agent.id) {
+  } else if (identity !== agentId) {
     findings.push(
       finding(
         "identity",
         clone,
-        `consensus.agentId is '${identity}' but the config assigns this root to '${input.agent.id}'.`,
+        `consensus.agentId is '${identity}' but the config assigns this root to '${agentId}'.`,
         "Two clones are crossed. Fix the config or re-run coord install with the intended layout."
       )
     );
@@ -188,45 +157,24 @@ const checkClone = (input: {
       finding("identity", clone, "consensus.agentLabel is unset, so the commit-message prefix is unresolved.", "Re-run coord install.")
     );
   }
+  return findings;
+};
+
+/** Keys, hook bodies, shim and lifecycle hooks: what coord itself installed into one clone. */
+const wiringFindings = (input: {
+  config: CoordinatorConfig;
+  configPath: string;
+  agent: CoordinatorConfig["agents"][number];
+  clone: string;
+  installDigest: string | null;
+}): DoctorFinding[] => {
+  const findings: DoctorFinding[] = [];
+  const clone = input.clone;
+  const stamp = input.config.coordination;
   // A vendored clone deliberately has no install root: its hook bodies are
   // copies, and a set key would give post-merge two candidate templates.
   const manifest = readHookManifest(clone);
   const vendored = manifest.kind === "ok" && manifest.manifest.mode === "vendor";
-  // Branch preparation clears skip-worktree to move HEAD and re-sets it after.
-  // A clone found with the bit clear means that restore did not finish, and the
-  // only symptom otherwise is a confusing "uncommitted changes" refusal on the
-  // next start, on a file the agent is forbidden to touch.
-  const protocolState = cloneAgentsProtocolState(clone);
-  if (protocolState.tracked && !protocolState.skipWorktree) {
-    findings.push(
-      finding(
-        "agentsProtocol",
-        clone,
-        "AGENTS.md is tracked but skip-worktree is not set, so the coordination overlay shows as an uncommitted change.",
-        "Re-run coord install, or start/resume the issue so branch preparation re-sets it."
-      )
-    );
-  }
-  const headBranch = git(clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
-  if (
-    /^issue-\d+\//.test(headBranch) &&
-    protocolState.tracked &&
-    protocolState.overlayPresent &&
-    protocolState.skipWorktree
-  ) {
-    const issueMatch = /^issue-(\d+)\//.exec(headBranch);
-    const issueHint = issueMatch?.[1] ?? "<issue>";
-    findings.push(
-      finding(
-        "agentsProtocol",
-        clone,
-        `Agent clone is on ${headBranch} with a managed AGENTS.md protocol overlay (skip-worktree). ` +
-          `Raw git checkout ${input.config.baseBranch} will fail because Git treats the overlay as local changes.`,
-        `Do not run git checkout ${input.config.baseBranch}. Run: coord reset-clones ${issueHint} --product <path> ` +
-          "(or --config <path> --coord-root <path>)."
-      )
-    );
-  }
   const requiredKeys = vendored ? [CLI_ENTRY_KEY, WORKSPACE_CONFIG_KEY] : [INSTALL_ROOT_KEY, CLI_ENTRY_KEY, WORKSPACE_CONFIG_KEY];
   for (const key of requiredKeys) {
     if (localConfigGet(clone, key) === null) {
@@ -386,6 +334,78 @@ const checkClone = (input: {
       );
     }
   }
+  return findings;
+};
+
+const checkClone = (input: {
+  config: CoordinatorConfig;
+  configPath: string;
+  agent: CoordinatorConfig["agents"][number];
+  installDigest: string | null;
+  home: string | null;
+}): DoctorFinding[] => {
+  const findings: DoctorFinding[] = [];
+  const clone = cloneOf(input.configPath, input.agent.root);
+  const stamp = input.config.coordination;
+  if (!existsSync(clone)) {
+    findings.push(
+      finding("cloneMissing", clone, `Agent clone for '${input.agent.id}' is missing.`, "Re-run coord install to recreate it.")
+    );
+    return findings;
+  }
+
+  // Everything below runs git against the clone. A directory that lost its
+  // .git is precisely the broken install doctor exists to name, so it is
+  // classified here rather than escaping as a raw git error and exit 2.
+  if (worktreeRoot(clone) === null) {
+    findings.push(
+      finding(
+        "cloneMissing",
+        clone,
+        "The agent clone path exists but is not a git worktree, so nothing about its wiring can be verified.",
+        "Restore or remove the directory, then re-run coord install."
+      )
+    );
+    return findings;
+  }
+
+  findings.push(...identityFindings(clone, input.agent.id));
+  // Branch preparation clears skip-worktree to move HEAD and re-sets it after.
+  // A clone found with the bit clear means that restore did not finish, and the
+  // only symptom otherwise is a confusing "uncommitted changes" refusal on the
+  // next start, on a file the agent is forbidden to touch.
+  const protocolState = cloneAgentsProtocolState(clone);
+  if (protocolState.tracked && !protocolState.skipWorktree) {
+    findings.push(
+      finding(
+        "agentsProtocol",
+        clone,
+        "AGENTS.md is tracked but skip-worktree is not set, so the coordination overlay shows as an uncommitted change.",
+        "Re-run coord install, or start/resume the issue so branch preparation re-sets it."
+      )
+    );
+  }
+  const headBranch = git(clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+  if (
+    /^issue-\d+\//.test(headBranch) &&
+    protocolState.tracked &&
+    protocolState.overlayPresent &&
+    protocolState.skipWorktree
+  ) {
+    const issueMatch = /^issue-(\d+)\//.exec(headBranch);
+    const issueHint = issueMatch?.[1] ?? "<issue>";
+    findings.push(
+      finding(
+        "agentsProtocol",
+        clone,
+        `Agent clone is on ${headBranch} with a managed AGENTS.md protocol overlay (skip-worktree). ` +
+          `Raw git checkout ${input.config.baseBranch} will fail because Git treats the overlay as local changes.`,
+        `Do not run git checkout ${input.config.baseBranch}. Run: coord reset-clones ${issueHint} --product <repository-path> ` +
+          "(or --config <path> --coord-root <path>)."
+      )
+    );
+  }
+  findings.push(...wiringFindings({ ...input, clone }));
 
   // Resource telemetry is read-only here: no probe, no mutation, no owner command or account id printed.
   if (input.agent.id === "claude" && stamp !== undefined) {
@@ -412,6 +432,39 @@ const checkClone = (input: {
     findings.push(finding("launcher", launcher, "The agent launcher is not executable.", `chmod +x ${launcher}`));
   }
 
+  return findings;
+};
+
+/**
+ * Read-only wiring for one active agent when an issue starts or resumes:
+ * identity, coord-managed keys, Git hooks, shim, lifecycle hooks and the
+ * intended issue branch. Unlike doctor it omits issue-branch overlay advice,
+ * which is normal mid-issue. Installed files never prove the harness trusts or
+ * runs them; a missing install stamp leaves the wiring unknown, not healthy.
+ */
+export const inspectAgentWiring = (input: {
+  config: CoordinatorConfig;
+  configPath: string;
+  agent: CoordinatorConfig["agents"][number];
+  expectedBranch: string | null;
+}): DoctorFinding[] => {
+  const clone = cloneOf(input.configPath, input.agent.root);
+  if (!existsSync(clone) || worktreeRoot(clone) === null) {
+    return [finding("cloneMissing", clone, `Agent clone for '${input.agent.id}' is missing or not a Git worktree.`,
+      "Re-run coord install to recreate it.")];
+  }
+  const findings = [...identityFindings(clone, input.agent.id), ...wiringFindings({ ...input, clone, installDigest: null })];
+  if (input.config.coordination === undefined) {
+    findings.push(finding("installRoot", input.configPath,
+      `The workspace config carries no install stamp, so ${input.agent.id}'s hook wiring is unknown.`,
+      "Re-run coord install (or coord onboard) for this repository."));
+  }
+  const head = git(clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+  if (input.expectedBranch !== null && head !== input.expectedBranch) {
+    findings.push(finding("startCompatibility", clone,
+      `${input.agent.id}'s clone is on '${head}', not the issue branch '${input.expectedBranch}'.`,
+      "Do not switch it by hand; stop the coordinator and resume the issue so branch preparation runs again."));
+  }
   return findings;
 };
 

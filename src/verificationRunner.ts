@@ -34,6 +34,17 @@ import {
 export type VerificationJournal = (type: "verification-run" | "final-check" | "verification-reused" | "verification-joined",
   details: Record<string, unknown>, at: string) => void;
 
+/**
+ * Owner-facing progress, announced before each awaited step and after each
+ * outcome. Observational only: it never changes receipts, locks or results.
+ */
+export type VerificationProgress =
+  | { kind: "preparing"; pin: string }
+  | { kind: "waiting"; name: string; for: "another-runner" | "expensive-slot" }
+  | { kind: "reused"; name: string; how: "reused" | "joined"; logPath: string }
+  | { kind: "started"; name: string; attempt: number }
+  | { kind: "finished"; name: string; attempt: number; exitCode: number; logPath: string };
+
 export type RunVerificationInput = {
   paths: IssueRuntimePaths;
   start: StartState;
@@ -52,6 +63,7 @@ export type RunVerificationInput = {
   pollMs?: number;
   /** How long to wait for another live runner of the same key before running anyway. */
   joinWaitMs?: number;
+  progress?: (event: VerificationProgress) => void;
 };
 
 export type RunVerificationResult =
@@ -76,6 +88,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
   const pollMs = input.pollMs ?? 1_000;
   const joinWaitMs = input.joinWaitMs ?? 30 * 60_000;
   const environment = input.environment ?? { platform: process.platform, arch: process.arch, node: process.version, env: process.env };
+  const progress = input.progress ?? (() => undefined);
   const results: CheckResult[] = [];
   if (input.commands.length === 0) return { status: "passed", results };
 
@@ -93,7 +106,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
    * so the waiter then claims the lock and runs the command itself. A live
    * owner that never finishes cannot hold this tick past `joinWaitMs`: the
    * waiter then runs the command itself without the lock. */
-  const claim = async (key: string): Promise<{ receipt: Receipt; how: "reused" | "joined" } | "claimed" | "timed-out"> => {
+  const claim = async (key: string, name: string): Promise<{ receipt: Receipt; how: "reused" | "joined" } | "claimed" | "timed-out"> => {
     const path = runningLockPath(paths.coordRoot, key);
     const deadline = Date.parse(input.now()) + joinWaitMs;
     for (let polls = 0; ; polls++) {
@@ -108,6 +121,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
         return { receipt: after.receipt, how: polls === 0 ? "reused" : "joined" };
       }
       if (Date.parse(input.now()) >= deadline) return "timed-out";
+      if (polls === 0) progress({ kind: "waiting", name, for: "another-runner" });
       await sleep(pollMs);
       const again = readReceipt(paths.coordRoot, key);
       if (again.status === "hit") return { receipt: again.receipt, how: "joined" };
@@ -153,11 +167,13 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
       phase: input.phase, name: command.name, argv: command.argv, pin: input.pin, receiptId: receipt.key,
       inputIdentity: receipt.material.inputIdentity, originalDurationMs: receipt.durationMs, logPath: receipt.logPath
     }, input.now());
+    progress({ kind: "reused", name: command.name, how, logPath: receipt.logPath });
     return { name: command.name, argv: [...command.argv], exitCode: 0, [how]: true, receiptId: receipt.key, logPath: receipt.logPath };
   };
 
   try {
     checkpoint();
+    progress({ kind: "preparing", pin: input.pin });
     await input.mirror.materializeWorktree(target, input.pin);
     checkpoint();
     // Every command below must leave tracked files as the pin has them, so a
@@ -187,7 +203,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
         const read = readReceipt(paths.coordRoot, key);
         if (read.status === "hit") { results.push(satisfiedBy(command, read.receipt, "reused")); continue; }
         cacheReason = `miss: ${read.reason}`;
-        const shared = await claim(key);
+        const shared = await claim(key, command.name);
         if (shared === "timed-out") return { status: "waiting", results, waitingFor: command.name };
         if (shared !== "claimed") { results.push(satisfiedBy(command, shared.receipt, shared.how)); continue; }
       }
@@ -196,6 +212,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
       let slot: string | null = null;
       if (command.expensive === true) {
         const queuedAt = Date.parse(input.now());
+        let announced = false;
         const slots = Array.from({ length: start.verification?.maxConcurrentExpensive ?? 1 }, (_, index) => slotLockPath(paths.coordRoot, index));
         for (;;) {
           checkpoint();
@@ -204,6 +221,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
             if (token !== null) { held.push([candidate, token]); slot = candidate; break; }
           }
           if (slot !== null) break;
+          if (!announced) { announced = true; progress({ kind: "waiting", name: command.name, for: "expensive-slot" }); }
           await sleep(pollMs);
         }
         queueWaitMs = Math.max(0, Date.parse(input.now()) - queuedAt);
@@ -230,6 +248,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
           return measurement;
         };
         let result: ProcessResult;
+        progress({ kind: "started", name: command.name, attempt });
         try { result = await input.processRunner(argv, target); }
         catch (error) {
           writeFileSync(logPath, `$ ${argv.join(" ")}\n${String(error)}\n`, { mode: 0o600 });
@@ -241,6 +260,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
         writeFileSync(logPath, `$ ${argv.join(" ")}\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}\nexit ${result.exitCode}\n` +
           (modified ? "coord: this command modified tracked files, so the pin's bytes are not what was checked.\n" : ""), { mode: 0o600 });
         const measurement = record(result.exitCode);
+        progress({ kind: "finished", name: command.name, attempt, exitCode: result.exitCode, logPath });
         if (input.phase === "finalization") {
           journal("final-check", { tier: "checks", name: command.name, argv, exitCode: result.exitCode,
             durationMs: measurement.durationMs, logPath, attempt, cacheReason, ...(key === null ? {} : { receiptId: key }) },

@@ -927,6 +927,19 @@ export class TmuxController {
     }
   }
 
+  /**
+   * Read-only: the issue session's COORD_ISSUE, `null` when unset, or
+   * "unavailable" when tmux cannot answer. A match does not prove that an
+   * agent process started before it was set inherited the value.
+   */
+  async issueEnvironment(key: SessionKey): Promise<string | null | "unavailable"> {
+    const read = await this.runner(["show-environment", "-t", this.sessionName(key), "COORD_ISSUE"]);
+    if (read.exitCode !== 0) return read.stderr.includes("unknown variable") ? null : "unavailable";
+    const line = read.stdout.trim();
+    if (line === "-COORD_ISSUE" || line === "") return null;
+    return line.startsWith("COORD_ISSUE=") ? line.slice("COORD_ISSUE=".length) : "unavailable";
+  }
+
   async inspectPane(target: string): Promise<PaneState> {
     const inspected = await this.runner([
       "display-message",

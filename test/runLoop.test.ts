@@ -361,7 +361,7 @@ describe("runner waiting and initialization", () => {
     } }).run();
     expect(sleeps).toBe(3);
     expect(initializations).toBe(1);
-    expect(f.messages.filter((message) => message.startsWith("Issue 1: paused"))).toHaveLength(1);
+    expect(f.messages.filter((message) => message.includes("Issue 1: paused"))).toHaveLength(1);
   });
 
   it("defers workflow effects when an owner resumes between the initialization check and the tick", async () => {
@@ -470,7 +470,7 @@ describe("vendor resource evidence and recovery", () => {
       expect.objectContaining({ details: expect.objectContaining({ outcome: "owner-release-required" }) })
     ]);
     expect(f.messages.at(-1)).toContain("owner release required");
-    expect(f.messages.filter((message) => message.startsWith("Issue 1: paused"))).toHaveLength(2);
+    expect(f.messages.filter((message) => message.includes("Issue 1: paused"))).toHaveLength(2);
     expect(f.ui.sends).toBe(1);
     // An owner release is not re-held by the same failure episode.
     mutateCursorsState(f.paths, (current) => releaseHold(current, held.holds[0]!.id, false, f.now()));
@@ -496,7 +496,7 @@ describe("vendor resource evidence and recovery", () => {
     expect(readFileSync(f.paths.cursors, "utf8")).toBe(cursors);
     expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
     expect(f.ui.sends).toBe(1);
-    expect(f.messages.filter((message) => message.startsWith("Issue 1: paused"))).toHaveLength(1);
+    expect(f.messages.filter((message) => message.includes("Issue 1: paused"))).toHaveLength(1);
     f.advance(7 * 86400_000);
     for (let i = 0; i < 200; i++) await f.tick();
     expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
@@ -999,7 +999,7 @@ describe("durable delivery safety", () => {
       expect(after.accepted).toContainEqual(expect.objectContaining({ agent: vendor, stepId: "R1.join", submissionSha: sha }));
       expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "agent-lifecycle", agent: vendor,
         details: expect.objectContaining({ kind: "containment-coverage", hook: "unverified", shim: "unverified" }) }));
-      expect(f.messages.join("\n")).toContain(`WARNING: ${vendor} containment hook=unverified shim=unverified`);
+      expect(f.messages.join("\n")).toContain(`[WARN] ${vendor}'s git guard is not confirmed (hook=unverified shim=unverified)`);
       expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({
         type: "verify-result", agent: vendor, actionId, submissionSha: sha, details: { ok: true }
       }));
@@ -1711,7 +1711,7 @@ describe("effectful run loop", () => {
       log: (message) => messages.push(message)
     });
     await loop.runTick();
-    expect(messages).toEqual(["Issue 1: R1.join"]);
+    expect(messages).toEqual(["Issue 1: agents joining (R1.join)"]);
 
     const now = "2026-08-11T17:00:00.000Z";
     mutateCursorsState(paths, (current) =>
@@ -1738,7 +1738,7 @@ describe("effectful run loop", () => {
       })
     );
     await loop.runTick();
-    expect(messages).toEqual(["Issue 1: R1.join", "Issue 1: R1.join → R2.plan"]);
+    expect(messages).toEqual(["Issue 1: agents joining (R1.join)", "Issue 1: R1.join → writing plans (R2.plan)"]);
   });
 
   it("reopens missing Terminal windows without disturbing same-branch agent WIP", async () => {
@@ -1857,7 +1857,7 @@ describe("effectful run loop", () => {
       // The action is out and unanswered, so the workflow is blocked on it.
       gateWaiting: true
     });
-    expect(first[0]?.details.human).toBe("the foreground process is not this agent's harness");
+    expect(first[0]?.details.human).toBe("the agent's terminal is running a different program than its agent");
     const printedOnce = messages.filter((message) => message.includes("foreground-mismatch"));
     expect(printedOnce).toHaveLength(1);
     // The durable key suppresses journal and console repeats, including restart.
@@ -1929,7 +1929,7 @@ describe("effectful run loop", () => {
       code: "foreground-mismatch",
       hooks: { execution: "idle", health: "healthy" }
     });
-    expect(messages.some((message) => message.includes("looks idle to its lifecycle hooks"))).toBe(true);
+    expect(messages.some((message) => message.includes("hooks say it is idle, but its terminal is not ready for typing"))).toBe(true);
   });
 
   it("does not turn delayed correlation into a health warning when lifecycle hooks are live", async () => {
@@ -2572,7 +2572,15 @@ describe("effectful run loop", () => {
     writeFileSync(agentRuntimePaths(paths, "claude").complete, `response ${actionId}\n`);
     writeFileSync(agentRuntimePaths(paths, "claude").ready, `ready ${actionId}\n`);
 
-    const after = await new CoordinatorRunLoop(paths, { tmux: null }).runTick();
+    const messages: string[] = [];
+    const after = await new CoordinatorRunLoop(paths, { tmux: null, log: (message) => messages.push(message) }).runTick();
+    const received = messages.findIndex((message) =>
+      message === "Issue 1: claude submitted its private response for voting on the revision (R6.ballot (round 1)); checking it.");
+    const accepted = messages.findIndex((message) =>
+      message === "Issue 1: accepted claude's private response for voting on the revision (R6.ballot (round 1)).");
+    expect(received).toBeGreaterThanOrEqual(0);
+    expect(accepted).toBeGreaterThan(received);
+    expect(messages.join("\n")).not.toMatch(/approve|The revision is ready/);
     expect(after.ownerQuestion?.id).toBe("10000000-0000-4000-8000-000000000001");
     expect(after.acceptedResponses).toContainEqual(
       expect.objectContaining({
@@ -2740,10 +2748,15 @@ describe("effectful run loop", () => {
       stderr: ""
     }));
     let merges = 0;
+    const messages: string[] = [];
     const result = await new CoordinatorRunLoop(paths, {
       tmux: null,
       mirror,
+      log: (message) => messages.push(message),
       pullRequestOpener: async (input) => {
+        // Announced before the awaited effect, not after it.
+        expect(messages.at(-1)).toBe("Issue 1: opening the pull request from issue-1/codex-final…");
+        expect(messages.some((message) => message.startsWith("Issue 1: pushing the final commit"))).toBe(true);
         expect(input.draft).toBe(false);
         expect(input.title).toBe("Issue 1: Improve coordinator PR text");
         expect(input.body).toContain("Closes #1");
@@ -2751,10 +2764,12 @@ describe("effectful run loop", () => {
         return { url: "https://github.com/example/project/pull/3" };
       },
       pullRequestMerger: async (input) => {
+        expect(messages.at(-1)).toBe("Issue 1: merging pull request https://github.com/example/project/pull/3…");
         expect(input.url).toBe("https://github.com/example/project/pull/3");
         merges += 1;
       }
     }).runTick();
+    expect(messages).toContain("Issue 1: merged pull request https://github.com/example/project/pull/3.");
     expect(merges).toBe(1);
     expect(result.publication.status).toBe("completed");
     expect(readJournal(paths).map((event) => event.type)).toEqual(
@@ -2911,15 +2926,21 @@ describe("effectful run loop", () => {
     };
     let opens = 0;
     let checkNowMs = Date.parse("2026-08-21T00:00:00.000Z");
+    const messages: string[] = [];
     const loop = new CoordinatorRunLoop(paths, {
       tmux: null,
       mirror,
+      log: (message) => messages.push(message),
       now: () => {
         const value = new Date(checkNowMs).toISOString();
         checkNowMs += 2500;
         return value;
       },
-      processRunner: async () => ({ exitCode: 1, stdout: "", stderr: "test failed" }),
+      processRunner: async () => {
+        // The owner sees which check is running while it runs.
+        expect(messages.at(-1)).toBe("Issue 1: running check…");
+        return { exitCode: 1, stdout: "", stderr: "test failed" };
+      },
       pullRequestOpener: async () => {
         opens += 1;
         return { url: "https://github.com/example/project/pull/1" };
@@ -2953,6 +2974,9 @@ describe("effectful run loop", () => {
       cursors
     );
     expect(observation.status).toBe("rejected");
+    expect(messages[0]).toBe(`Issue 1: running final checks on codex's commit ${finalSha.slice(0, 12)} (check)…`);
+    expect(messages.some((message) => /^Issue 1: check failed with exit 1 \(log .+\)\.$/.test(message))).toBe(true);
+    expect(messages.at(-1)).toMatch(new RegExp(`^Issue 1: final checks on ${finalSha.slice(0, 12)} failed: check failed with exit 1`));
     expect(observation.outstanding.join(" ")).toContain("finalization check (tier: checks) check failed");
     // Which tier failed must be legible in the journal: the agent's own clone
     // runs the declared `verify` before a commit exists, and only the hermetic
@@ -3662,5 +3686,124 @@ describe("coordinator-resolved change scope", () => {
     const order = buildOrder(paths, start, readCursorsState(paths), "claude", "R2.plan", null);
     expect(order.contextPaths).toEqual(["docs/repo-map.md"]);
     expect(order.changeScope).toEqual([]);
+  });
+});
+
+describe("owner reminders and hook diagnostics", () => {
+  const codexFixture = () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(paths.start, `${JSON.stringify({ ...start, agents: start.agents.map((agent) =>
+      agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent) }, null, 2)}\n`);
+    const pane = { body: "• done", draft: "", sends: 0 };
+    let nowMs = Date.parse("2026-09-22T12:00:00.000Z");
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: `${pane.body}\n\n› ${pane.draft}\n\n  ? for shortcuts`, stderr: "" };
+      if (args[0] === "send-keys" && args.includes("-l")) { pane.sends += 1; pane.draft = args.at(-1)!; }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const messages: string[] = [];
+    const now = () => new Date(nowMs).toISOString();
+    const loop = new CoordinatorRunLoop(paths, { tmux, now, log: (message) => messages.push(message) });
+    const action = () => readAgentLifecycle(paths).agents.codex!.action!;
+    return { paths, pane, loop, messages, now, action, advance: (ms: number) => { nowMs += ms; } };
+  };
+
+  it("re-sends an acknowledged action only on current idle proof, inside the send budget", async () => {
+    const f = codexFixture();
+    observeAgentLifecycle(f.paths, "codex", { kind: "session-start", eventName: "SessionStart", sessionId: "s1" }, f.now());
+    await f.loop.runTick();
+    expect(f.pane.sends).toBe(1);
+    f.pane.draft = "";
+    // The agent took the action, then stalled without a Stop reaching this issue.
+    observeAgentLifecycle(f.paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "s1",
+      turnId: "t1", actionId: f.action().actionId, actionDigest: f.action().actionDigest }, f.now());
+    expect(f.loop.requestReminder("codex")).toContain("Reminder requested for codex");
+    f.advance(61_000);
+    await f.loop.runTick();
+    expect(f.pane.sends).toBe(1);
+    expect(f.messages.join("\n")).toContain("Issue 1: reminder to codex not sent: the agent's hooks still report it mid-turn " +
+      "and its terminal does not end with COORD-IDLE");
+    expect(f.action()).toMatchObject({ delivery: "accepted" });
+    await f.loop.runTick();
+    expect(f.pane.sends).toBe(1);
+
+    f.pane.body = "• done\n\n• COORD-IDLE: waiting for the next coordinator action file";
+    f.loop.requestReminder("codex");
+    await f.loop.runTick();
+    expect(f.pane.sends).toBe(2);
+    expect(f.messages).toContain("Issue 1: reminder sent to codex (send 2 of 4 for this action).");
+    expect(f.action()).toMatchObject({ delivery: "injected", acceptedAt: null });
+    expect(readJournal(f.paths).filter((event) => event.type === "nudged" && event.details.owner === true)).toHaveLength(1);
+    // Only a new prompt acknowledges the reminder; its Stop then makes the agent idle, not queued.
+    observeAgentLifecycle(f.paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "s1",
+      turnId: "t2", actionId: f.action().actionId, actionDigest: f.action().actionDigest }, f.now());
+    observeAgentLifecycle(f.paths, "codex", { kind: "stopped", eventName: "Stop", sessionId: "s1", turnId: "t2" }, f.now());
+    expect(readAgentLifecycle(f.paths).agents.codex).toMatchObject({ execution: "idle", action: { delivery: "accepted" } });
+
+    f.pane.draft = "";
+    f.loop.requestReminder("codex");
+    await f.loop.runTick();
+    expect(f.pane.sends).toBe(2);
+    expect(f.messages.at(-1)).toContain("waits at least that long between sends");
+  });
+
+  it("drops a reminder that a completion, pause or replaced action overtakes", async () => {
+    const f = codexFixture();
+    observeAgentLifecycle(f.paths, "codex", { kind: "session-start", eventName: "SessionStart", sessionId: "s1" }, f.now());
+    await f.loop.runTick();
+    f.loop.requestReminder("codex");
+    mutateCursorsState(f.paths, (current) => setPaused(current, true, f.now()));
+    expect(() => f.loop.requestReminder("codex")).toThrow("paused or held");
+    await f.loop.runTick();
+    expect(f.messages).toContain("Issue 1: dropped the reminder for codex because the issue is paused or held.");
+    mutateCursorsState(f.paths, (current) => setPaused(current, false, f.now()));
+    f.loop.requestReminder("codex");
+    writeFileSync(agentRuntimePaths(f.paths, "codex").complete, "not a sha\n");
+    await f.loop.runTick();
+    expect(f.messages).toContain("Issue 1: codex already reported completion, so its reminder was not sent.");
+    expect(() => f.loop.requestReminder("claude")).toThrow("claude uses pull delivery");
+  });
+
+  it("prints a missing-Stop warning once per kind, not on every poll", async () => {
+    const { paths } = fixture();
+    const messages: string[] = [];
+    const loop = new CoordinatorRunLoop(paths, { tmux: null, log: (message) => messages.push(message) });
+    const observe = (turns: string[]) => {
+      const lifecycle = readAgentLifecycle(paths);
+      lifecycle.agents.claude = { ...lifecycle.agents.claude!, sessionId: "s1",
+        stopObservation: { sessionId: "s1", lastStopAt: null, unstoppedTurns: turns, unstoppedActions: [] } };
+      writeFileSync(paths.agentLifecycle, JSON.stringify(lifecycle));
+    };
+    observe(["t1", "t2"]);
+    await loop.runTick();
+    observe(["t1", "t2", "t3"]);
+    await loop.runTick();
+    const warnings = messages.filter((message) => message.startsWith("[WARN] Issue 1: No Stop hook from claude"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("after 2 observed turns");
+  });
+
+  it("reports wiring and unverified hook activity once, read-only, even while held", async () => {
+    const { root, paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(paths.start, JSON.stringify({ ...start, agents: start.agents.map((agent) =>
+      agent.id === "codex" ? { ...agent, delivery: "both" } : agent) }));
+    writeFileSync(join(root, "config.json"), JSON.stringify({ project: "project", origin: "https://github.com/example/project.git",
+      branch: "issue-{issue}/{agent}", agents: [{ id: "codex", root: "/clones/codex", launcher: "start-codex.sh" }],
+      checks: [{ name: "ok", argv: ["true"] }] }));
+    mutateCursorsState(paths, (current) => setPaused(current, true, "2026-09-22T12:00:00.000Z"));
+    const journal = readFileSync(paths.journal, "utf8");
+    const messages: string[] = [];
+    let sleeps = 0;
+    await new CoordinatorRunLoop(paths, { tmux: null, log: (message) => messages.push(message), sleep: async () => {
+      if (++sleeps === 2) mutateCursorsState(paths, (current) => cursorsStateSchema.parse({ ...current, abandoned: true }));
+    } }).run();
+    expect(messages).toContain("[WARN] Issue 1: codex setup: Agent clone for 'codex' is missing or not a Git worktree. " +
+      "Fix: Re-run coord install to recreate it.");
+    expect(messages.filter((message) => message.startsWith("[WAIT] Issue 1: no hook from codex has reached this issue yet"))).toHaveLength(1);
+    expect(messages.some((message) => message.includes("no hook from claude"))).toBe(false);
+    expect(readFileSync(paths.journal, "utf8")).toBe(journal);
   });
 });

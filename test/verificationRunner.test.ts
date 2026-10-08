@@ -16,7 +16,7 @@ import {
   writeReceipt,
   type ReceiptKeyMaterial
 } from "../src/verificationReceipts.js";
-import { runVerification, type RunVerificationInput } from "../src/verificationRunner.js";
+import { runVerification, type RunVerificationInput, type VerificationProgress } from "../src/verificationRunner.js";
 import { git } from "./support/workspaceFixture.js";
 import { sha256 } from "../src/hash.js";
 
@@ -197,7 +197,9 @@ describe("verification runner", () => {
     const lock = runningLockPath(paths.coordRoot, key);
     writeFileSync(lock, JSON.stringify({ pid: process.pid, hostname: hostname(), token: "other", startedAt: new Date().toISOString() }));
     const calls: string[] = [];
+    const announced: VerificationProgress[] = [];
     const joined = await runVerification(input([lint], async (argv) => { calls.push(argv[0]!); return ok(); }, {
+      progress: (event) => { announced.push(event); },
       // The live owner finishes while this runner waits.
       sleep: async () => {
         writeReceipt(paths.coordRoot, { formatVersion: 1, key, material: material(lint), name: "lint", exitCode: 0,
@@ -207,6 +209,8 @@ describe("verification runner", () => {
       }
     }));
     expect(joined).toMatchObject({ status: "passed", results: [{ name: "lint", joined: true, receiptId: key }] });
+    expect(announced).toMatchObject([{ kind: "preparing" }, { kind: "waiting", name: "lint", for: "another-runner" },
+      { kind: "reused", how: "joined", logPath: "/owner.log" }]);
     expect(calls).toEqual([]);
     expect(journal.map((row) => row.type)).toEqual(["verification-joined"]);
 
@@ -253,6 +257,28 @@ describe("verification runner", () => {
     const waits = journals.map((rows) => rows[0]!.details.queueWaitMs as number).sort((a, b) => a - b);
     expect(waits[0]).toBeLessThan(waits[1]!);
     expect(waits[1]).toBeGreaterThan(0);
+  });
+
+  it("announces each step before awaiting it and reports reuse and failure truthfully", async () => {
+    const { input } = setup();
+    const events: VerificationProgress[] = [];
+    const progress = (event: VerificationProgress) => { events.push(event); };
+    const seenAtRun: string[][] = [];
+    const runner: RunVerificationInput["processRunner"] = async (argv) => {
+      seenAtRun.push(events.map((event) => event.kind));
+      return { exitCode: argv[0] === "test" ? 1 : 0, stdout: "", stderr: "" };
+    };
+    const first = await runVerification(input([cached("lint"), cached("test")], runner, { progress }));
+    expect(first).toMatchObject({ status: "failed", failed: { name: "test" } });
+    // Preparation and the command start are visible before the command resolves.
+    expect(seenAtRun[0]).toEqual(["preparing", "started"]);
+    expect(events.map((event) => [event.kind, "name" in event ? event.name : null])).toEqual([
+      ["preparing", null], ["started", "lint"], ["finished", "lint"], ["started", "test"], ["finished", "test"]]);
+    expect(events.at(-1)).toMatchObject({ exitCode: 1, logPath: expect.any(String) });
+    events.length = 0;
+    const second = await runVerification(input([cached("lint")], runner, { progress }));
+    expect(second).toMatchObject({ status: "passed", results: [{ reused: true }] });
+    expect(events.map((event) => event.kind)).toEqual(["preparing", "reused"]);
   });
 
   it("keeps the original failure when a diagnostic retry passes", async () => {

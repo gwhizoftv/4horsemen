@@ -15,14 +15,44 @@ export type InteractiveCommands = {
   agents(): readonly string[];
   drop(agent: string): void;
   holds(): readonly { id: string; agent: string; reason: string }[];
-  releaseHold(id: string): void;
+  /** `resetBudget` is true only for a confirmed reminder-limit (nudge-loop) hold. */
+  releaseHold(id: string, resetBudget: boolean): void;
+  /** Active agents with an unfinished action coord could remind them about. */
+  remindable(): readonly string[];
+  /** Queue a reminder; returns the sentence to show. */
+  remind(agent: string): string;
   steer(text: string): void;
   answer(id: string, choice: "retry" | "revise" | "abandon"): void;
 };
 export type InteractiveSession = { print(message: string): void; close(): void; settled(): Promise<void> };
 
-type Menu = { kind: "drop" | "hold" | "question"; id?: string; items: { label: string; run(): void; confirm?: boolean }[] };
-const help = "Controls: s status · p/Space manual pause · a attach · d drop · r release hold · /steer <text> · q quit · ?/h help\n";
+type Menu = { kind: "drop" | "hold" | "remind" | "question"; id?: string; items: { label: string; run(): void; confirm?: boolean }[] };
+const help = "Controls: s status · p/Space pause · n remind agent · r release hold · a attach · d drop · /steer <text> · q quit · ?/h help\n";
+const verboseHelp = `Controls (press the key; no Enter needed):
+  s              Show the status snapshot: what coord is doing, whether it needs you, each agent's state, and any holds.
+  p / Space      Pause or unpause coord. Pausing stops new work from being sent to agents; it never releases a hold.
+  n              Remind an agent to finish its current action. coord types the reminder only if that agent's
+                 terminal is provably idle, and prints what happened.
+  r              Release a hold after you have looked at the agent. A reminder-limit hold asks you to confirm
+                 that coord may send that action 4 more times.
+  a              Reopen the agent Terminal windows.
+  d              Drop an agent from this issue (asks you to confirm). Its unfinished work is no longer used.
+  /steer <text>  Queue one line of guidance for every active agent. It is added to each agent's next action;
+                 it is not typed into their terminals now.
+  q              Quit this coordinator window. Agents keep running and coord N resumes later
+                 (coord detach N closes everything).
+  Enter          Print a fresh prompt, to check that coord is responsive.
+  ? / h          Show this help.
+Terms: an action is the task coord writes to an agent's action.md; a turn is one prompt-and-reply cycle in the
+agent's terminal; a hold means coord stopped sending work to one agent until you release it.
+There is no key to force the next stage: coord advances only when agents publish work that passes its checks.
+If an agent is stuck, use n, r, or coord restart-action.
+`;
+/** Visible, bounded echo of what the owner typed; control bytes never reach the terminal. */
+const visible = (text: string): string => {
+  const shown = Array.from(text.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, "?"));
+  return shown.length > 40 ? `${shown.slice(0, 40).join("")}…` : shown.join("");
+};
 
 /** Owns this terminal only; workflow policy stays in the supplied commands. */
 export const startInteractiveSession = (options: {
@@ -130,7 +160,7 @@ export const startInteractiveSession = (options: {
         if (line) {
           const match = /^\/steer\s+(.+)$/.exec(text);
           if (match === null) { say("Usage: /steer <nonblank single-line guidance>"); draw(); }
-          else dispatch(() => { commands.steer(match[1]!); say("Guidance queued for the next workflow boundary."); });
+          else dispatch(() => { commands.steer(match[1]!); say("Guidance queued; every active agent sees it in its next action."); });
         } else {
           const item = /^\d+$/.test(text) ? selected?.items[Number(text) - 1] : undefined;
           if (item === undefined) { say("No such selection."); draw(); }
@@ -146,20 +176,37 @@ export const startInteractiveSession = (options: {
       return;
     }
     if (value === "/") { mode = "line"; buffer = "/"; draw(); return; }
+    // Return is a liveness check: keep the old prompt line and draw a new one.
+    if (value === "\r" || value === "\n") { raw("\n"); draw(); return; }
+    if (!"spa ?hdrn".includes(value)) {
+      if (!/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value)) { say(`Unknown command '${visible(value)}'.\n${verboseHelp}`); draw(); }
+      return;
+    }
     dispatch(async () => {
       if (value === "s") { say(commands.status()); shownQuestion = null; }
       else if (value === "p" || value === " ") say(commands.togglePause());
       else if (value === "a") await commands.attach();
-      else if (value === "?" || value === "h") say(help);
+      else if (value === "?" || value === "h") say(verboseHelp);
+      else if (value === "n") {
+        const agents = commands.remindable();
+        if (agents.length === 0) say("No agent has an unfinished action that coord can remind it about.");
+        else showMenu({ kind: "remind", items: agents.map((agent) => ({
+          label: `Remind ${agent} to finish its current action`, run: () => { say(commands.remind(agent)); }
+        })) }, "Select an agent to remind:");
+      }
       else if (value === "d") showMenu({ kind: "drop", items: commands.agents().map((agent) => ({
         label: `Drop ${agent}`, confirm: true, run: () => { commands.drop(agent); say(`Dropped ${agent}.`); }
       })) }, "Select an active agent to drop:");
       else if (value === "r") {
         const holds = commands.holds();
         if (holds.length === 0) say("No active holds.");
-        else showMenu({ kind: "hold", items: holds.map((hold) => ({
-          label: `${hold.agent}: ${hold.reason}`, run: () => { commands.releaseHold(hold.id); say(`Released hold ${hold.id}.`); }
-        })) }, "Inspect the agent before releasing its hold (budget reset remains CLI-only):");
+        else showMenu({ kind: "hold", items: holds.map((hold) => hold.reason === "nudge-loop" ? {
+          // A reminder-limit release also resets the allowance, so it is confirmed separately.
+          label: `${hold.agent}: reminder limit reached — release it and allow 4 more sends`, confirm: true,
+          run: () => { commands.releaseHold(hold.id, true); say(`Released hold ${hold.id}; coord may send ${hold.agent} its action 4 more times.`); }
+        } : {
+          label: `${hold.agent}: ${hold.reason}`, run: () => { commands.releaseHold(hold.id, false); say(`Released hold ${hold.id}.`); }
+        }) }, "Look at the agent's terminal first, then select the hold to release:");
       }
     });
   };
@@ -170,7 +217,11 @@ export const startInteractiveSession = (options: {
     const multiple = Array.from(text).length > 1;
     // Plain pasted chunks cannot expand into quick controls or confirmations.
     if ((mode === "keys" || mode === "confirm") && escape === "" && paste === null &&
-        multiple && !text.includes("\x1b")) return;
+        multiple && !text.includes("\x1b")) {
+      if (mode === "keys" && /^[\r\n]+$/.test(text)) { key("\r"); return; }
+      if (mode === "keys") { say(`Ignored pasted text '${visible(text)}'; nothing was run. Press / first to paste guidance.`); draw(); }
+      return;
+    }
     if (mode === "menu" && escape === "" && paste === null && multiple &&
         !/^\d+$/.test(text) && !text.includes("\x1b")) return;
     for (const char of text) {

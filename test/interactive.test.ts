@@ -5,7 +5,7 @@ import { startInteractiveSession, type InteractiveSession, type OwnerQuestion, t
 const sessions: InteractiveSession[] = [];
 afterEach(() => { for (const session of sessions.splice(0)) session.close(); vi.useRealTimers(); });
 
-const fixture = (tty = true) => {
+const fixture = (tty = true, holds: { id: string; agent: string; reason: string }[] = [{ id: "hold-1", agent: "codex", reason: "unobservable" }]) => {
   const input: TerminalInput = new PassThrough();
   const output: TerminalOutput = new PassThrough();
   input.isTTY = tty; output.isTTY = tty; input.isRaw = false;
@@ -14,8 +14,9 @@ const fixture = (tty = true) => {
   output.on("data", (chunk) => { printed += String(chunk); });
   let question: OwnerQuestion | null = null;
   const commands = { status: vi.fn(() => "status snapshot"), togglePause: vi.fn(() => "pause toggled"), attach: vi.fn(async () => {}),
-    agents: () => ["claude", "codex"], drop: vi.fn(), holds: () => [{ id: "hold-1", agent: "codex", reason: "unobservable" }],
-    releaseHold: vi.fn(), steer: vi.fn(), answer: vi.fn() };
+    agents: () => ["claude", "codex"], drop: vi.fn(), holds: () => holds,
+    releaseHold: vi.fn(), remindable: vi.fn(() => ["codex"]), remind: vi.fn(() => "Reminder requested for codex."),
+    steer: vi.fn(), answer: vi.fn() };
   const controller = new AbortController();
   const stop = vi.fn(() => controller.abort());
   const session = startInteractiveSession({ input, output, commands, readQuestion: () => question, signal: controller.signal, stop });
@@ -57,7 +58,47 @@ describe("foreground owner terminal", () => {
     await f.send("y");
     expect(f.commands.drop).toHaveBeenCalledWith("codex");
     await f.send("r"); await f.send("1"); await f.send("\r");
-    expect(f.commands.releaseHold).toHaveBeenCalledWith("hold-1");
+    expect(f.commands.releaseHold).toHaveBeenCalledWith("hold-1", false);
+  });
+
+  it("answers Return, unknown keys and pasted hotkeys visibly without running anything", async () => {
+    const f = fixture();
+    await f.send("\r");
+    expect(f.printed()).toContain("coord [? help] > \n\r\x1b[2Kcoord [? help] > ");
+    await f.send("x");
+    expect(f.printed()).toContain("Unknown command 'x'.");
+    expect(f.printed()).toContain("Remind an agent to finish its current action");
+    await f.send("sdq");
+    expect(f.printed()).toContain("Ignored pasted text 'sdq'; nothing was run.");
+    await f.send("?");
+    expect(f.printed()).toContain("a turn is one prompt-and-reply cycle");
+    for (const command of [f.commands.status, f.commands.drop, f.commands.remind, f.commands.releaseHold]) {
+      expect(command).not.toHaveBeenCalled();
+    }
+    expect(f.stop).not.toHaveBeenCalled();
+  });
+
+  it("queues a reminder for a selected agent with an unfinished action", async () => {
+    const f = fixture();
+    await f.send("n");
+    expect(f.printed()).toContain("[1] Remind codex to finish its current action");
+    await f.send("1"); await f.send("\r");
+    expect(f.commands.remind).toHaveBeenCalledWith("codex");
+    expect(f.printed()).toContain("Reminder requested for codex.");
+    f.commands.remindable.mockReturnValue([]);
+    await f.send("n");
+    expect(f.printed()).toContain("No agent has an unfinished action");
+    expect(f.commands.remind).toHaveBeenCalledOnce();
+  });
+
+  it("resets a reminder-limit allowance only after a separate confirmation", async () => {
+    const f = fixture(true, [{ id: "hold-2", agent: "codex", reason: "nudge-loop" }]);
+    await f.send("r"); await f.send("1"); await f.send("\r");
+    expect(f.printed()).toContain("codex: reminder limit reached — release it and allow 4 more sends? [y/N]");
+    await f.send("n");
+    expect(f.commands.releaseHold).not.toHaveBeenCalled();
+    await f.send("r"); await f.send("1"); await f.send("\r"); await f.send("y");
+    expect(f.commands.releaseHold).toHaveBeenCalledWith("hold-2", true);
   });
 
   it("uses only allowed answers and captured question IDs, with explicit abandon confirmation", async () => {
