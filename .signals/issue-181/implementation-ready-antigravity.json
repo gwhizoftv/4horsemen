@@ -1,0 +1,21 @@
+{
+  "protocolVersion": 1,
+  "issue": 181,
+  "issueSessionId": "issue-181:0bf31ac88cd2d8e482fd3f38085470594626bb94",
+  "agent": "antigravity",
+  "inputSetHash": "d8777efc5ffa1b39bb10e99c8a472be011c01ab8aade433b18041479a557a6a6",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "88babdba642d1290e80089e30fbe881557613f6b",
+  "scopeHash": "1d4140de540d9e01c8fc3e65116309a984504bbcdbec60bf81d64182b79841a5",
+  "approvedPaths": [
+    "RunLoop.deliver",
+    "TmuxController.nudge",
+    "coord-runtime/issue-161/journal.jsonl",
+    "docs/readiness-policy.md",
+    "it.each",
+    "runLoop.ts",
+    "src/runLoop.ts",
+    "src/tmux.ts",
+    "test/tmux.test.ts"
+  ]
+}
