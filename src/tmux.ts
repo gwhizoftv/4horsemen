@@ -127,7 +127,12 @@ const codexTurnChrome = (plain: string): boolean =>
   plain.split("\n").filter((line) => line.trim() !== "").slice(-8)
     .some((line) => /^[\s•⠀-⣿]*Working \(.*esc to interrupt/.test(line));
 
-const CODEX_FOOTER = /^(?:\?\s+for shortcuts|Context \d+% left|\d+% context left)/;
+const CODEX_FOOTER =
+  /^(?:(?:←\s+for agents\s+·\s+)?\?\s+for shortcuts|Context \d+% left|\d+% context left)/;
+
+/** Codex's completed-turn timing line between the idle sentinel and the composer. */
+const CODEX_TURN_SUMMARY =
+  /^[─\s]*Worked for \d+[hms](?:\s*\d+[hms])*(?:\s*•\s*\d{1,2}:\d{2}(?:\s*[AP]M)?)?[─\s]*$/;
 
 /**
  * True when the composer after `›` holds nothing but the placeholder Codex
@@ -165,14 +170,17 @@ const paneLines = (paneText: string): PaneLine[] => paneText.split("\n")
 /**
  * Codex renders the sentinel as an assistant item (`• COORD-IDLE: …`) above
  * its composer and footer, so it is never the last line. Below the last
- * sentinel only the composer (which may wrap) and known footer lines may
- * follow; anything else — a new transcript item, a dialog — fails closed.
+ * sentinel only one optional completed-turn `Worked for …` summary, the
+ * composer (which may wrap), and known footer lines may follow; anything else
+ * — a new transcript item, a dialog — fails closed.
  */
 /** Non-blank pane lines below Codex's last rendered sentinel, or null without one. */
 const linesAfterCodexSentinel = (paneText: string): PaneLine[] | null => {
   const lines = paneLines(paneText);
   const sentinel = lines.map((line) => line.plain.replace(/^•\s*/, "")).lastIndexOf(COORD_IDLE_SENTINEL);
-  return sentinel < 0 ? null : lines.slice(sentinel + 1);
+  if (sentinel < 0) return null;
+  const after = lines.slice(sentinel + 1);
+  return after[0] !== undefined && CODEX_TURN_SUMMARY.test(after[0].plain) ? after.slice(1) : after;
 };
 
 const compactText = (value: string): string => value.replace(/\s/g, "");
