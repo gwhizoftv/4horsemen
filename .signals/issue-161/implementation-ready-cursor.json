@@ -1,0 +1,33 @@
+{
+  "protocolVersion": 1,
+  "issue": 161,
+  "issueSessionId": "issue-161:2a3769ec059e0d7e24373e8708fb1e99c0920421",
+  "agent": "cursor",
+  "inputSetHash": "7003a0e1bf61ad7b9d31f7cea670ab2c2bffdcee7eeb013f54ffb7d9b66bc714",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "d76041e1beff91c677615f55c965db94dd1b1698",
+  "scopeHash": "441cdd78690469933c91acb4ccc3d32fb848a1fb2d399f9e5e203c7ab08a78cc",
+  "approvedPaths": [
+    "docs/coord-driver.md",
+    "githooks/",
+    "github-issue.json",
+    "src/agentLifecycle.ts",
+    "src/cli.ts",
+    "src/doctor.ts",
+    "src/interactive.ts",
+    "src/issueReport.ts",
+    "src/runLoop.ts",
+    "src/tmux.ts",
+    "src/verificationRunner.ts",
+    "src/workspace.ts",
+    "test/agentLifecycle.test.ts",
+    "test/cli.test.ts",
+    "test/doctor.test.ts",
+    "test/interactive.test.ts",
+    "test/issueReport.test.ts",
+    "test/runLoop.test.ts",
+    "test/tmux.test.ts",
+    "test/verificationRunner.test.ts",
+    "test/workspace.test.ts"
+  ]
+}
