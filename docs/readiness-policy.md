@@ -91,10 +91,16 @@ the captured buffer — the 40-line capture keeps the sentinel from the previous
 action on screen long after it stopped being true.
 
 Codex renders the sentinel as an assistant item (`• COORD-IDLE: …`) above its
-composer and footer, so it counts there only when everything below it is the
-single `›` composer — empty or holding just Codex's dimmed placeholder, never an
-unsent draft — and known footer lines (`? for shortcuts`, `Context N% left`).
-Any other line fails closed.
+composer and footer. One completed-turn summary (`Worked for 5m 21s • 5:42 AM`,
+or the older `─ Worked for 12s ─────` form) may appear immediately below the
+sentinel. After that, only the single `›` composer — empty or holding just
+Codex's dimmed placeholder, never an unsent draft — and known footer lines
+(`? for shortcuts`, `← for agents · ? for shortcuts`, `Context N% left`,
+`N% context left`) are allowed. The summary must match a whole line: a duration
+with optional clock time and rule decoration, not arbitrary `Worked for …`
+prose. A second summary or any other line fails closed. The same leading-summary
+rule applies when checking the submitted nudge so a successful first submit
+does not send a fallback key into the new turn.
 
 **Legacy terminal proof: a stale `working` record before the first send.** A Stop event
 that never reaches this issue leaves lifecycle at `working`, which would block
