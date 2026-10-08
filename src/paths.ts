@@ -106,7 +106,7 @@ export const resolveSafeCoordRoot = (options: SafeCoordRootOptions): string => {
  * The completion mailbox: a third tree that is a sibling of both the agent
  * clones and the coordinator runtime.
  *
- * `complete` is the only runtime file an agent writes. Leaving it beside
+ * Agents write `complete` and its advisory `ready` sibling. Leaving them beside
  * `action.md` forced every harness to hold a writable grant on the whole coord
  * root, which also holds `cursors.json`, `journal.jsonl`, and every peer's
  * order. Codex ran `--sandbox danger-full-access` for exactly that reason. The
@@ -321,6 +321,7 @@ export type AgentRuntimePaths = {
   root: string;
   action: string;
   complete: string;
+  ready: string;
   renderLog: string;
   /**
    * The directory holding `complete`, and the exact path a harness is granted.
@@ -336,6 +337,9 @@ const actionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}
 
 export const RESERVED_EVIDENCE_AGENT = "coordinator-evidence";
 
+/** Readiness uses the same per-agent writable drop as completion. */
+export const readyReceiptPath = (completePath: string): string => containedPath(dirname(completePath), "ready");
+
 export const agentRuntimePaths = (paths: IssueRuntimePaths, agent: string): AgentRuntimePaths => {
   if (!agentPattern.test(agent)) {
     throw new PathSafetyError(`Invalid agent id: ${agent}`);
@@ -347,6 +351,7 @@ export const agentRuntimePaths = (paths: IssueRuntimePaths, agent: string): Agen
     action: containedPath(root, "action.md"),
     // The receipt leaves the coord root; the order and the log do not.
     complete: containedPath(completeDir, "complete"),
+    ready: readyReceiptPath(containedPath(completeDir, "complete")),
     renderLog: containedPath(root, "render.log"),
     completeDir,
     responsesDir: containedPath(root, "responses")

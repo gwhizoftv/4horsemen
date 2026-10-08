@@ -34,6 +34,55 @@ already raised against it by an older coordinator.
 
 ## Positive evidence is additive
 
+After completing an action and rereading the order, agents write
+`ready <completed-actionId>` in the `ready` file beside `complete` if the order
+is unchanged **or missing**. Acceptance removes the order while peers may still
+be working, so a missing file must not lose this handshake. A changed action is
+executed immediately instead. Other read errors do not authorize a receipt.
+The agent then prints the idle line and ends its turn.
+
+The receipt is a delivery hint, not workflow completion. Its UUID must match
+the agent cursor's durable last accepted action (Git, private response, or an
+accepted amendment request), and differ from the next action being delivered.
+An unanswered peer order retired by an amendment is not an accepted action.
+The amendment request's action UUID must equal the current order's UUID;
+validation rejects a different UUID before advancing the accepted identity.
+Acceptance and preparation leave the receipt in place. Only a successful send
+consumes the observed receipt; a replacement file is preserved. The existing
+mailbox directory grant covers this sibling without new permissions.
+
+File proof is eligible only before the next action's first charged send, with
+no pending input, background work or delivery reservation. Its mtime must be
+strictly newer than the last activity-hook receipt and not in the future;
+millisecond timestamp ties fail closed. A separate per-agent hook receipt
+timestamp/sequence includes duplicate activity callbacks, unlike semantic
+`lastEventAt`. The sequence and file identity are rechecked before each key.
+Status-bar telemetry is deliberately excluded: an idle status render is not
+new activity, and must not invalidate the ready file just written. Identical
+Antigravity status observations explicitly reporting idle, no pending input,
+and no background work also retain semantic deduplication: they neither
+rewrite lifecycle state nor count as a heartbeat after a new order. This
+prevents a harmless redraw between paste and submit from interrupting delivery.
+Do not exclude all status observations: repeated working/unknown reports,
+queue/background activity, session changes and other semantic changes still
+revoke readiness. Neither receipt field fabricates execution or an idle epoch.
+
+A valid file can overrule stale `working` or `unknown` for that first send
+without needing the idle line visible in the pane. It never bypasses process,
+dialog, live-turn, owner-input, pause/hold, authority or send-budget checks.
+Codex must still show an empty composer, then exactly the pasted message before
+submission; its vim and submit-acceptance checks do not depend on a visible
+sentinel when using file proof. Changed proof before any key defers for free;
+after a key the existing delivery-uncertain hold applies. The durable charge
+prevents repeats even if deleting the receipt fails. Legacy states default to
+no accepted identity/receipt and retain the existing behavior below.
+
+Startup `foreground-mismatch (bash)` is a separate, intentional refusal before
+terminal text is considered: the launcher may not yet have handed control to
+the harness. If it persists, the harness may have failed or exited. Neither
+an idle line nor a ready file permits typing into that shell. A pre-send
+refusal preserves readiness so delivery can proceed once the harness is ready.
+
 Agents print `COORD-IDLE: waiting for the next coordinator action file` when
 they finish an action and find no new one. It can confirm a pane that no vendor
 pattern matched; it can never clear a blocker. Every blocking check runs first,
@@ -47,7 +96,7 @@ single `›` composer — empty or holding just Codex's dimmed placeholder, neve
 unsent draft — and known footer lines (`? for shortcuts`, `Context N% left`).
 Any other line fails closed.
 
-**One exception: a stale `working` record before the first send.** A Stop event
+**Legacy terminal proof: a stale `working` record before the first send.** A Stop event
 that never reaches this issue leaves lifecycle at `working`, which would block
 the next action forever. While an action has never been sent (no send charged,
 `delivery: "ordered"`, no injection), a current sentinel that passes every veto
@@ -107,6 +156,8 @@ Prompt readiness (`PromptBlockedReason`):
 | `antigravity-no-prompt` | splash or no prompt yet |
 | `codex-turn-chrome` | Codex's `Working (… esc to interrupt)` status line is up |
 | `no-idle-sentinel` | lifecycle reports `working` and the pane shows no current sentinel to overrule it, or the composer no longer holds exactly the nudge |
+| `codex-composer-not-ready` | file-backed readiness cannot prove an empty Codex composer or exactly the pasted action message |
+| `pane-capture-unavailable` | file-backed readiness cannot check pane vetoes because the capture failed or was empty |
 | `lifecycle-changed` | lifecycle hooks reported new activity while an override send was being prepared |
 
 In-flight status words (`Thinking`, `Working`, `Generating`, `Running`) match
@@ -151,3 +202,5 @@ unchanged code repeating on later ticks stays verbose.
 Clearing a legacy degraded alert on workflow completion appends
 `agent-observability-recovered`. The run loop no longer emits
 `agent-observability-degraded` merely because lifecycle events are missing.
+File-backed sends record `readiness: "ready-file"` and the prior execution in
+`lifecycleOverride`; their diagnostic does not claim a sentinel was visible.

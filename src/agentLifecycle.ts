@@ -117,6 +117,8 @@ export const agentLifecycleEntrySchema = z
     degradedCause: z.enum(["hooks-never-seen", "correlation-lagged"]).nullable().default(null),
     lastEvent: z.string().min(1).nullable(),
     lastEventAt: timestampSchema.nullable(),
+    /** Activity-hook receipt, independent of semantic deduplication and telemetry. */
+    hookReceipt: z.object({ at: timestampSchema, sequence: z.number().int().nonnegative() }).nullable().default(null),
     lastFailure: lifecycleFailureSchema.nullable().default(null),
     claudeRateLimits: claudeRateLimitsSchema.nullable().default(null),
     containment: containmentSchema.nullable().default(null),
@@ -173,6 +175,7 @@ const emptyEntry = (now: string): AgentLifecycleEntry => ({
   degradedCause: null,
   lastEvent: null,
   lastEventAt: null,
+  hookReceipt: null,
   lastFailure: null,
   claudeRateLimits: null,
   containment: null,
@@ -690,14 +693,27 @@ export const observeAgentLifecycleWithResult = (
     const current = state.agents[agent];
     if (current === undefined) throw new Error(`Unknown lifecycle agent ${agent}.`);
     const next = applyLifecycleObservation(current, observation, now);
-    if (next === current) return state;
+    // An unchanged, explicitly fully idle status is a render, not activity or
+    // a heartbeat for a newly ordered action. Other statuses (including repeated
+    // working/unknown reports) still revoke ready, as do session/queue changes.
+    if (observation.kind === "status" && observation.execution === "idle" &&
+      observation.pendingInputCount === 0 && observation.backgroundActive === false &&
+      next !== current && semanticallyEqual(current, next)) return state;
     const expectedAfter = current.action?.injectedAt ?? current.action?.orderedAt ?? null;
     const heartbeatNeeded =
       expectedAfter !== null &&
       (current.lastEventAt === null || Date.parse(current.lastEventAt) < Date.parse(expectedAfter));
-    if (semanticallyEqual(current, next) && !heartbeatNeeded) return state;
-    changed = true;
-    return replaceEntry(state, agent, next, now);
+    changed = next !== current && (!semanticallyEqual(current, next) || heartbeatNeeded);
+    // Status-bar telemetry is not an activity hook: idle renders must not revoke
+    // ready. Every remaining callback counts even when semantic deduplication (or
+    // stale-session rejection) leaves execution unchanged.
+    const hookReceipt = observation.kind === "telemetry" ? current.hookReceipt : {
+      at: new Date(Math.max(Date.parse(now), Date.parse(current.hookReceipt?.at ?? current.lastEventAt ?? now))).toISOString(),
+      sequence: (current.hookReceipt?.sequence ?? 0) + 1
+    };
+    if (!changed && hookReceipt === current.hookReceipt) return state;
+    const effective = changed ? next : current;
+    return replaceEntry(state, agent, { ...effective, hookReceipt }, now);
   });
   return { changed, state };
 };

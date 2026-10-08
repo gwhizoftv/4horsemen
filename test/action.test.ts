@@ -1,8 +1,8 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseAction, parseCompletion, readAction, renderAction, writeAction } from "../src/action.js";
+import { clearReady, parseAction, parseCompletion, parseReady, readAction, readReady, renderAction, writeAction } from "../src/action.js";
 import type { InternalOrder } from "../src/steps.js";
 
 const roots: string[] = [];
@@ -72,6 +72,49 @@ describe("verification instructions", () => {
 });
 
 describe("agent actions", () => {
+  it.each(["git", "response"] as const)("renders the ready handshake for %s, including acceptance removing the action", (submissionMode) => {
+    const input = { ...order("/runtime"), submissionMode, responsePath: "/runtime/response.json" };
+    const raw = renderAction(input);
+    expect(raw).toContain(`/runtime/completes/issue-1/codex/ready`);
+    expect(raw).toContain(`ready ${input.actionId}`);
+    expect(raw).toContain("or is missing because");
+    expect(raw).toContain("COORD-IDLE: waiting for the next coordinator action file");
+    expect(raw.indexOf(`ready ${input.actionId}`)).toBeGreaterThan(raw.indexOf("If `actionId` in the front matter has changed"));
+    expect(parseAction(raw)).not.toHaveProperty("readyPath");
+  });
+
+  it("reads only a bounded, regular, exact ready receipt and preserves a replacement on cleanup", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-ready-"));
+    roots.push(root);
+    const path = join(root, "ready");
+    const id = order(root).actionId;
+    expect(parseReady(`ready ${id}`)).toBe(id);
+    expect(parseReady(`ready ${id}\n`)).toBe(id);
+    for (const raw of ["", `ready ${id}\n\n`, `ready ${id} `, ` ready ${id}`, `ready ${id}\r\n`, "ready nope", `ready ${id}\nextra`, "x".repeat(100)]) {
+      expect(parseReady(raw)).toBeNull();
+      writeFileSync(path, raw);
+      expect(readReady(path, root)).toBeNull();
+    }
+    rmSync(path);
+    expect(readReady(path, root)).toBeNull();
+    mkdirSync(path);
+    expect(readReady(path, root)).toBeNull();
+    rmSync(path, { recursive: true });
+    writeFileSync(join(root, "target"), `ready ${id}\n`);
+    symlinkSync(join(root, "target"), path);
+    expect(readReady(path, root)).toBeNull();
+    rmSync(path);
+    writeFileSync(path, `ready ${id}\n`);
+    const original = readReady(path, root)!;
+    expect(original.actionId).toBe(id);
+    writeFileSync(path, "ready 11111111-1111-4111-8111-111111111111\n");
+    clearReady(path, root, original);
+    expect(existsSync(path)).toBe(true);
+    clearReady(path, root, readReady(path, root)!);
+    expect(existsSync(path)).toBe(false);
+    clearReady(path, root, original);
+  });
+
   it.each(["git", "response"] as const)("renders advisory owner guidance without changing %s authority", (mode) => {
     const base = order("/external/coord");
     const input: InternalOrder = mode === "git" ? base : { ...base, submissionMode: "response",

@@ -765,20 +765,21 @@ describe("tmux boundary", () => {
       .toEqual({ ready: true, reason: "vendor-prompt" });
   });
 
-  it("sends a sentinel-required nudge only while the idle proof holds at each key", async () => {
+  it.each(["idle-sentinel", "ready-file"] as const)("sends a %s nudge only while the idle proof holds at each key", async (source) => {
+    const composerReason = source === "idle-sentinel" ? "no-idle-sentinel" : "codex-composer-not-ready";
     const agent = { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" as const, harnessProcess: "codex" };
     const action = "11111111-2222-3333-4444-555555555555";
     // A minimal Codex: typed text lands in the composer; `onCapture` lets a test change the pane between keys.
     const attempt = async (options: {
-      body?: string; vim?: string; submitOnCtrlJ?: boolean;
+      body?: string; draft?: string; vim?: string; submitOnCtrlJ?: boolean; gate?: string;
       lifecycle?: (check: number) => "unchanged" | "accepted" | "changed";
       onCapture?: (index: number, pane: { body: string; draft: string }) => void;
     } = {}) => {
-      const pane = { body: options.body ?? `• ${COORD_IDLE_SENTINEL}`, draft: "" };
+      const pane = { body: options.body ?? (source === "idle-sentinel" ? `• ${COORD_IDLE_SENTINEL}` : "• done"), draft: options.draft ?? "" };
       const keys: string[] = [];
       let captures = 0;
       const controller = new TmuxController(async (args) => {
-        if (args[0] === "display-message") return ok("0\tcodex\t0\t0\n");
+        if (args[0] === "display-message") return ok(options.gate ?? "0\tcodex\t0\t0\n");
         if (args[0] === "capture-pane") {
           options.onCapture?.(captures++, pane);
           return ok(codexPane(pane.body, pane.draft, options.vim));
@@ -795,26 +796,33 @@ describe("tmux boundary", () => {
       }, null, null, null, noopSleep);
       let checks = 0;
       const outcome = await controller.nudge(1, agent, "/a", undefined, action, undefined, undefined,
-        () => options.lifecycle?.(checks++) ?? "unchanged");
+        { source, lifecycle: () => options.lifecycle?.(checks++) ?? "unchanged" });
       return { outcome, keys };
     };
-    expect(await attempt({ body: "• done" })).toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "prompt" }, keys: [] });
+    if (source === "idle-sentinel") {
+      expect(await attempt({ body: "• done" })).toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "prompt" }, keys: [] });
+    }
+    expect(await attempt({ draft: "Owner draft" })).toMatchObject({ outcome: { status: "busy", reason: composerReason }, keys: [] });
+    expect(await attempt({ body: "Trust this folder?" })).toMatchObject({ outcome: { status: "busy", reason: "trust-dialog" }, keys: [] });
+    for (const [gate, reason] of [["0\tbash\t0\t0\n", "foreground-mismatch"], ["0\tcodex\t1\t0\n", "owner-typing"], ["0\tcodex\t0\t1\n", "input-off"]]) {
+      expect(await attempt({ gate })).toMatchObject({ outcome: { status: "busy", reason }, keys: [] });
+    }
     // The owner starts a turn, or a lifecycle hook reports activity, before the first key: nothing is typed.
     expect(await attempt({ onCapture: (index, pane) => { if (index === 1) pane.body = "• Working (1s • esc to interrupt)"; } }))
       .toMatchObject({ outcome: { status: "busy", reason: "codex-turn-chrome", stage: "prompt" }, keys: [] });
     expect(await attempt({ lifecycle: () => "changed" }))
       .toMatchObject({ outcome: { status: "busy", reason: "lifecycle-changed", stage: "prompt" }, keys: [] });
     // Already in INSERT: no `i` is typed into the composer.
-    expect(await attempt()).toMatchObject({ outcome: { status: "sent", detail: "idle-sentinel" }, keys: ["-l", "C-j", "C-m"] });
+    expect(await attempt()).toMatchObject({ outcome: { status: "sent", detail: source }, keys: ["-l", "C-j", "C-m"] });
     expect(await attempt({ vim: "Normal" })).toMatchObject({ outcome: { status: "sent" }, keys: ["i", "-l", "C-j", "C-m"] });
     // An owner draft after the prelude, or an edit after the paste, stops the send before it is submitted.
     expect(await attempt({ vim: "Normal", onCapture: (index, pane) => { if (index === 2) pane.draft = "owner draft"; } }))
-      .toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "mid-send" }, keys: ["i"] });
+      .toMatchObject({ outcome: { status: "busy", reason: composerReason, stage: "mid-send" }, keys: ["i"] });
     expect(await attempt({ onCapture: (index, pane) => { if (index === 2) pane.draft += " and more"; } }))
-      .toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "mid-send" }, keys: ["-l"] });
+      .toMatchObject({ outcome: { status: "busy", reason: composerReason, stage: "mid-send" }, keys: ["-l"] });
     // Between the submit keys the same proof holds: an edit or new lifecycle activity stops C-m.
     expect(await attempt({ onCapture: (index, pane) => { if (index === 3) pane.draft += " and more"; } }))
-      .toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "mid-send" }, keys: ["-l", "C-j"] });
+      .toMatchObject({ outcome: { status: "busy", reason: composerReason, stage: "mid-send" }, keys: ["-l", "C-j"] });
     expect(await attempt({ lifecycle: (check) => (check === 2 ? "changed" : "unchanged") }))
       .toMatchObject({ outcome: { status: "busy", reason: "lifecycle-changed", stage: "mid-send" }, keys: ["-l", "C-j"] });
     // An unrelated turn between the submit keys, with the nudge still in the composer, is not acceptance.
@@ -824,9 +832,31 @@ describe("tmux boundary", () => {
     })).toMatchObject({ outcome: { status: "busy", reason: "codex-turn-chrome", stage: "mid-send" }, keys: ["-l", "C-j"] });
     // If C-j already submitted the nudge, its turn or its correlated prompt hook ends the send: no fallback C-m.
     expect(await attempt({ submitOnCtrlJ: true }))
-      .toMatchObject({ outcome: { status: "sent", detail: "idle-sentinel" }, keys: ["-l", "C-j"] });
+      .toMatchObject({ outcome: { status: "sent", detail: source }, keys: ["-l", "C-j"] });
     expect(await attempt({ lifecycle: (check) => (check === 2 ? "accepted" : "unchanged") }))
-      .toMatchObject({ outcome: { status: "sent", detail: "idle-sentinel" }, keys: ["-l", "C-j"] });
+      .toMatchObject({ outcome: { status: "sent", detail: source }, keys: ["-l", "C-j"] });
+  });
+
+  it.each([1, 2, 3])("refuses file-backed delivery when capture %s is unavailable", async (failedCapture) => {
+    for (const exitCode of [0, 1]) {
+      const calls: Array<readonly string[]> = [];
+      let captures = 0;
+      const controller = new TmuxController(async (args) => {
+        calls.push(args);
+        if (args[0] === "display-message") return ok("0\tagent\t0\t0\n");
+        if (args[0] === "capture-pane") {
+          if (++captures === failedCapture) return { exitCode, stdout: "", stderr: "" };
+          return ok(promptFor("cursor"));
+        }
+        return ok();
+      }, null, null, null, noopSleep);
+      const result = await controller.nudge(1,
+        { id: "cursor", root: "/clone", launcher: "start-cursor.sh", delivery: "both", harnessProcess: "agent" },
+        "/a", undefined, undefined, undefined, undefined, { source: "ready-file", lifecycle: () => "unchanged" });
+      expect(result).toMatchObject({ status: "busy", reason: "pane-capture-unavailable",
+        stage: failedCapture === 3 ? "mid-send" : "prompt" });
+      expect(calls.filter((args) => args[0] === "send-keys")).toHaveLength(failedCapture === 3 ? 1 : 0);
+    }
   });
 
   it("reports which pane predicate deferred a delivery", async () => {

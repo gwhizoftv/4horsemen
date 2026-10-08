@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readAction, writeAction } from "../src/action.js";
+import { computeInputSetHash } from "../src/evidence.js";
 import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
 import { git, repoRoot } from "./support/workspaceFixture.js";
 import { decideLifecycleNudge, initialAgentLifecycle, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
@@ -186,7 +187,8 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
   writeCursorsState(paths, cursorsStateSchema.parse({ ...current, activeRoster: [vendor], agents: { [vendor]: current.agents.codex } }));
   writeFileSync(paths.agentLifecycle, JSON.stringify(initialAgentLifecycle([vendor], now())));
   const ui = { foreground: "harness", busy: false, dead: false, text: "❯ Antigravity Gemini >", failSubmit: false,
-    failInspect: false, failCapture: false, waitAtCapture: Infinity, sends: 0, inspections: 0, captures: 0 };
+    failInspect: false, failCapture: false, waitAtCapture: Infinity, sends: 0, inspections: 0, captures: 0,
+    onCapture: undefined as (() => void) | undefined };
   const messages: string[] = [];
   const tmux = new TmuxController(async (args) => {
     if (args[0] === "display-message") {
@@ -196,6 +198,7 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
     }
     if (args[0] === "capture-pane") {
       ui.captures++;
+      ui.onCapture?.();
       if (ui.failCapture) throw new Error("capture unavailable");
       return { exitCode: 0, stdout: ui.captures >= ui.waitAtCapture ? "Usage limit reset · continuing automatically\n❯" : ui.text, stderr: "" };
     }
@@ -1100,6 +1103,160 @@ const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], fina
 };
 
 describe("effectful run loop", () => {
+  it.each(["idle", "working", "pending", "background"] as const)(
+    "revalidates ready against duplicate %s status during delivery", async (status) => {
+      const f = safetyFixture("antigravity");
+      const observation = { kind: "status" as const, eventName: "status-line", sessionId: "session",
+        execution: status === "working" ? status : "idle" as const,
+        pendingInputCount: status === "pending" ? 1 : 0, backgroundActive: status === "background" };
+      observeAgentLifecycle(f.paths, "antigravity", observation, f.now());
+      f.advance(10);
+      f.ui.foreground = "bash";
+      await f.tick();
+      const previous = actionIdFor("antigravity", 42);
+      mutateCursorsState(f.paths, (state) => ({ ...state, agents: { ...state.agents,
+        antigravity: { ...state.agents.antigravity, lastAcceptedActionId: previous } } }));
+      f.advance(10);
+      const ready = agentRuntimePaths(f.paths, "antigravity").ready;
+      writeFileSync(ready, `ready ${previous}`);
+      utimesSync(ready, new Date(f.now()), new Date(f.now()));
+      const receipt = readAgentLifecycle(f.paths).agents.antigravity.hookReceipt;
+      f.advance(10);
+      f.ui.foreground = "harness";
+      // Reproduce an idle render between paste and submit, not only before delivery.
+      f.ui.onCapture = () => {
+        if (f.ui.sends > 0) observeAgentLifecycle(f.paths, "antigravity", observation, f.now());
+      };
+      // Newer activity reports must revoke the file before the first key.
+      if (status !== "idle") observeAgentLifecycle(f.paths, "antigravity", observation, f.now());
+      const after = await f.tick();
+      expect(f.ui.sends).toBe(status === "idle" ? 1 : 0);
+      expect(after.holds).toEqual([]);
+      expect(existsSync(ready)).toBe(status !== "idle");
+      if (status === "idle") {
+        expect(readAgentLifecycle(f.paths).agents.antigravity.hookReceipt).toEqual(receipt);
+        expect(after.actionSafety.antigravity.reserved).toBe(false);
+        expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudged",
+          details: expect.objectContaining({ readiness: "ready-file" }) }));
+        await f.tick();
+        expect(f.ui.sends).toBe(1);
+      } else expect(readAgentLifecycle(f.paths).agents.antigravity.hookReceipt!.sequence).toBeGreaterThan(receipt!.sequence);
+    }
+  );
+
+  it.each(["hook", "receipt"].flatMap((change) => [false, true].map((afterPaste) => ({ change, afterPaste }))))(
+    "revokes $change proof during sending, afterPaste=$afterPaste", async ({ change, afterPaste }) => {
+      const f = safetyFixture("claude");
+      f.ui.foreground = "bash";
+      await f.tick();
+      const previous = actionIdFor("claude", 42);
+      mutateCursorsState(f.paths, (state) => ({ ...state, agents: { ...state.agents,
+        claude: { ...state.agents.claude, lastAcceptedActionId: previous } } }));
+      f.advance(10);
+      const hook = { kind: "working" as const, eventName: "tool", sessionId: "session" };
+      observeAgentLifecycle(f.paths, "claude", hook, f.now());
+      const hookAt = f.now();
+      f.advance(10);
+      const ready = agentRuntimePaths(f.paths, "claude").ready;
+      writeFileSync(ready, `ready ${previous}`);
+      utimesSync(ready, new Date(f.now()), new Date(f.now()));
+      f.advance(10);
+      f.ui.foreground = "harness";
+      // Claude's override also checks usage immediately before every key.
+      f.ui.text = "❯ \n-- INSERT --";
+      const changeAt = f.ui.captures + (afterPaste ? 5 : 2);
+      f.ui.onCapture = () => {
+        if (f.ui.captures !== changeAt) return;
+        if (change === "hook") observeAgentLifecycle(f.paths, "claude", hook, hookAt); // same timestamp, new receipt sequence
+        else writeFileSync(ready, `ready ${actionIdFor("claude", 43)}`);
+      };
+      const after = await f.tick();
+      expect(f.ui.sends).toBe(afterPaste ? 1 : 0);
+      expect(after.holds.map((hold) => hold.reason)).toEqual(afterPaste ? ["delivery-uncertain"] : []);
+      expect(existsSync(ready)).toBe(true);
+    }
+  );
+
+  it("keeps ready through actual acceptance and startup refusal, then sends once across restart without a sentinel", async () => {
+    const f = safetyFixture("claude");
+    await f.tick(); f.advance(10); f.working();
+    const runtime = agentRuntimePaths(f.paths, "claude");
+    const completedId = readCursorsState(f.paths).agents.claude.actionId!;
+    const start = readStartState(f.paths);
+    const sha = "d".repeat(40);
+    const mirror = new BareMirror(f.paths.mirror, start.origin, async (args) => {
+      if (args[2] === "rev-parse") return { exitCode: 0, stdout: Buffer.from(`${sha}\n`), stderr: "" };
+      if (args[2] === "show") return { exitCode: 0, stdout: Buffer.from(JSON.stringify({
+        protocolVersion: 1, artifact: "participation-ready", issue: start.issue, issueSessionId: start.issueSessionId,
+        agent: "claude", baselineSha: start.baselineSha, automationDigest: start.automationDigest
+      })), stderr: "" };
+      return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+    });
+    writeFileSync(runtime.complete, sha);
+    f.advance(10);
+    writeFileSync(runtime.ready, `ready ${completedId}\n`);
+    utimesSync(runtime.ready, new Date(f.now()), new Date(f.now()));
+    f.advance(10);
+    // An idle status render is not a new activity hook and must not revoke ready.
+    observeAgentLifecycle(f.paths, "claude", { kind: "telemetry", eventName: "status-line", sessionId: "session",
+      rateLimits: { fiveHour: null, sevenDay: null } }, f.now());
+    f.ui.foreground = "bash";
+    const accepted = await f.makeLoop({ mirror }).runTick();
+    expect(accepted.agents.claude.lastAcceptedActionId).toBe(completedId);
+    expect(existsSync(runtime.complete)).toBe(false);
+    expect(existsSync(runtime.ready)).toBe(true);
+    await f.tick();
+    expect(f.ui.sends).toBe(1);
+    expect(existsSync(runtime.ready)).toBe(true);
+    f.ui.foreground = "harness";
+    f.ui.text = "❯ \nauto mode on";
+    await f.tick(); // a new CoordinatorRunLoop each tick
+    expect(f.ui.sends).toBe(2);
+    expect(existsSync(runtime.ready)).toBe(false);
+    expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudged",
+      details: expect.objectContaining({ readiness: "ready-file", lifecycleOverride: "working" }) }));
+    expect(readAgentLifecycle(f.paths).agents.claude.execution).toBe("working");
+    await f.tick();
+    expect(f.ui.sends).toBe(2);
+  });
+
+  it.each(["valid", "unknown", "wrong-id", "current-id", "unaccepted", "malformed", "missing", "old", "tie", "future", "duplicate-hook", "background", "pending", "charged"])(
+    "uses only eligible ready proof: %s", async (scenario) => {
+      const f = safetyFixture("claude");
+      f.ui.foreground = "bash";
+      await f.tick(); // order, but never send
+      const cursor = readCursorsState(f.paths).agents.claude;
+      const previous = actionIdFor("claude", 42);
+      mutateCursorsState(f.paths, (state) => ({ ...state, agents: { ...state.agents,
+        claude: { ...state.agents.claude, lastAcceptedActionId: scenario === "unaccepted" ? null : previous } } }));
+      f.advance(10);
+      const hook = { kind: "working" as const, eventName: "tool", sessionId: "session" };
+      if (scenario !== "unknown") observeAgentLifecycle(f.paths, "claude", hook, f.now());
+      const hookTime = new Date(f.now());
+      f.advance(10);
+      const runtime = agentRuntimePaths(f.paths, "claude");
+      const id = scenario === "wrong-id" ? actionIdFor("claude", 43) : scenario === "current-id" ? cursor.actionId : previous;
+      if (scenario !== "missing") {
+        writeFileSync(runtime.ready, scenario === "malformed" ? "ready nope" : `ready ${id}\n`);
+        const written = scenario === "old" ? new Date(hookTime.getTime() - 1) : scenario === "tie" ? hookTime
+          : scenario === "future" ? new Date(Date.parse(f.now()) + 100_000) : new Date(f.now());
+        utimesSync(runtime.ready, written, written);
+      }
+      f.advance(10);
+      if (scenario === "duplicate-hook") observeAgentLifecycle(f.paths, "claude", hook, f.now());
+      if (scenario === "background" || scenario === "pending") observeAgentLifecycle(f.paths, "claude", {
+        ...hook, backgroundActive: scenario === "background", pendingInputCount: scenario === "pending" ? 1 : 0
+      }, hookTime.toISOString());
+      if (scenario === "charged") mutateCursorsState(f.paths, (state) => ({ ...state, actionSafety: { ...state.actionSafety,
+        claude: { ...state.actionSafety.claude, sends: 1 } } }));
+      f.ui.foreground = "harness";
+      f.ui.text = "❯ \nauto mode on";
+      await f.tick();
+      expect(f.ui.sends).toBe(["valid", "unknown"].includes(scenario) ? 1 : 0);
+      if (["valid", "unknown"].includes(scenario)) expect(existsSync(runtime.ready)).toBe(false);
+    }
+  );
+
   it("derives an explicit GitHub PR target from supported origin forms", () => {
     expect(githubRepositoryFromOrigin("https://github.com/example/project.git")).toBe("example/project");
     expect(githubRepositoryFromOrigin("git@github.com:example/project.git")).toBe("example/project");
@@ -1300,6 +1457,49 @@ describe("effectful run loop", () => {
     const replaced = cursorsStateSchema.parse({ ...amended, accepted: amended.accepted.map((entry) => ({ ...entry, submissionSha: "f".repeat(40) })) });
     expect(await resolveApprovedPaths({ readBlob: async () => plan }, replaced, "R4.implement")).toEqual(approved);
     expect(buildOrder(paths, readStartState(paths), replaced, "codex", "R4.implement", null).scopeInputs).toEqual([]);
+  });
+
+  it.each([true, false])("binds only a matching accepted amendment request (matches=%s) and preserves ready", async (matches) => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const base = readCursorsState(paths);
+    const id = actionIdFor("codex");
+    const sha = "d".repeat(40);
+    const planSha = "c".repeat(40);
+    const seeded = cursorsStateSchema.parse({ ...base, activeRoster: ["codex"],
+      issueCursor: { stepId: "R4.implement", gateId: "gate-4-implementations", round: null },
+      agents: { ...base.agents, codex: { ...base.agents.codex, actionId: id, status: "ordered", stepId: "R4.implement",
+        evidenceId: "implementation-pinned", submissionMode: "git" } },
+      accepted: [{ stepId: "R2.plan", agent: "codex", round: null, submissionSha: planSha,
+        path: ".plans/issue-1/plan.md", approvedPaths: ["src/product.ts"], acceptedAt: start.createdAt }]
+    });
+    writeCursorsState(paths, seeded);
+    const order = buildOrder(paths, start, seeded, "codex", "R4.implement", null, id);
+    const request = { protocolVersion: 1, issue: 1, issueSessionId: start.issueSessionId, agent: "codex",
+      artifact: "plan-amendment-request", actionId: matches ? id : actionIdFor("codex", 1), inputSetHash: computeInputSetHash(order.inputs), scopeHash: order.scopeHash,
+      explanation: "Regression coverage omitted", additionalPaths: [{ path: "test/product.test.ts", reason: "Regression" }] };
+    const runtime = agentRuntimePaths(paths, "codex");
+    writeAction(paths.coordRoot, runtime.action, order);
+    writeFileSync(runtime.complete, sha);
+    writeFileSync(runtime.ready, `ready ${id}`);
+    const mirror = new BareMirror(paths.mirror, start.origin, async (args) => {
+      if (args[2] === "rev-parse") return { exitCode: 0, stdout: Buffer.from(`${sha}\n`), stderr: "" };
+      if (args[2] === "show") return { exitCode: 0, stdout: Buffer.from(args.at(-1)?.includes(".plans/")
+        ? "## Exact File Map\n`src/product.ts`\n" : JSON.stringify(request)), stderr: "" };
+      return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+    });
+    const after = await new CoordinatorRunLoop(paths, { tmux: null, mirror, log: () => undefined }).runTick();
+    if (!matches) {
+      expect(after.pendingAmendment).toBeNull();
+      expect(after.agents.codex.lastAcceptedActionId).toBeNull();
+      expect(after.agents.codex.outstanding).toContain("amendment request actionId does not match the current action");
+      expect(existsSync(runtime.ready)).toBe(true);
+      return;
+    }
+    expect(after.pendingAmendment?.proposal.actionId).toBe(id);
+    expect(after.agents.codex.lastAcceptedActionId).toBe(id);
+    expect(after.agents.claude.lastAcceptedActionId).toBeNull();
+    expect(existsSync(runtime.ready)).toBe(true);
   });
 
   it("recovers durable amendment retirements before preparing votes and refuses delayed old markers", async () => {
@@ -2370,6 +2570,7 @@ describe("effectful run loop", () => {
     const responsePath = agentResponsePath(paths, "claude", actionId);
     writeAgentResponse(responsePath, paths.issueRoot, response);
     writeFileSync(agentRuntimePaths(paths, "claude").complete, `response ${actionId}\n`);
+    writeFileSync(agentRuntimePaths(paths, "claude").ready, `ready ${actionId}\n`);
 
     const after = await new CoordinatorRunLoop(paths, { tmux: null }).runTick();
     expect(after.ownerQuestion?.id).toBe("10000000-0000-4000-8000-000000000001");
@@ -2383,6 +2584,8 @@ describe("effectful run loop", () => {
       })
     );
     expect(after.agents.claude?.status).toBe("waiting-peer");
+    expect(after.agents.claude?.lastAcceptedActionId).toBe(actionId);
+    expect(existsSync(agentRuntimePaths(paths, "claude").ready)).toBe(true);
     expect(existsSync(agentRuntimePaths(paths, "claude").complete)).toBe(false);
     expect(existsSync(responsePath)).toBe(false);
   });

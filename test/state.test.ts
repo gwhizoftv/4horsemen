@@ -20,6 +20,7 @@ import {
   readCursorsState,
   readJournal,
   readStartState,
+  replaceCursor,
   setPaused,
   releaseHold,
   releaseResourceHold,
@@ -75,6 +76,18 @@ const initialize = () => {
 };
 
 describe("operational state", () => {
+  it("defaults legacy accepted action identity and preserves it across ordering and restart", () => {
+    const { paths, cursors } = initialize();
+    const legacy = JSON.parse(JSON.stringify(cursors));
+    delete legacy.agents.codex.lastAcceptedActionId;
+    const parsed = cursorsStateSchema.parse(legacy);
+    expect(parsed.agents.codex.lastAcceptedActionId).toBeNull();
+    const id = "10000000-0000-4000-8000-000000000001";
+    const accepted = replaceCursor(parsed, "codex", { lastAcceptedActionId: id });
+    writeCursorsState(paths, replaceCursor(accepted, "codex", { actionId: "20000000-0000-4000-8000-000000000002", status: "ordered" }));
+    expect(readCursorsState(paths).agents.codex.lastAcceptedActionId).toBe(id);
+  });
+
   it("defaults old guidance state and freezes each cohort without draining later advice on reissue", () => {
     const { paths, cursors } = initialize();
     const legacy = { ...cursors };
