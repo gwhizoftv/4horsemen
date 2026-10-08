@@ -1,0 +1,56 @@
+{
+  "actionId": "264ef053-6e60-463a-b11b-eaf8c5bb267a",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "9f413acbe6ad68e594ab4981378a36e96bd19b9dbf105173da870ce9f49ee817",
+  "issue": 181,
+  "issueSessionId": "issue-181:0bf31ac88cd2d8e482fd3f38085470594626bb94",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "9fa11cb87b296c072d853f13b218897c25231b55",
+      "path": ".plans/issue-181/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "e5799ab1db49b0bb61d8d333b1c515c4d378a50a",
+      "path": ".plans/issue-181/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ea32c444439647a453ad05ebd45ea135a5237dce",
+      "path": ".plans/issue-181/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "849745d7cee1911d5ce7f0d5d12d87a2de3e39c8",
+      "path": ".plans/issue-181/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude's plan alone names the live ← for agents footer root cause, keeps runLoop unchanged, skips one Worked for turn-summary in linesAfterCodexSentinel, and updates readiness-policy without unsafe Antigravity/unknown expansions.",
+  "responseSha256": "95e8f8ecc5a947314ac2d786f22146cbb2fd97df2aca17011bc977cb021bae6a",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "0defb04f934d3885035a77fe46e6cad75557ea1d",
+      "path": ".plans/issue-181/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "4ff65517d5a39f443b884b20a1f1a7d1f7650827",
+      "path": ".plans/issue-181/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "8d49e76b2b9395e28da5a066f5394e59afa749db",
+      "path": ".plans/issue-181/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e0de83bb033a2bb31414fe2958467480ef7be1f7",
+      "path": ".plans/issue-181/review.md"
+    }
+  ]
+}
