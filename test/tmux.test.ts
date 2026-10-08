@@ -777,18 +777,25 @@ describe("tmux boundary", () => {
     expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}`, `Read and execute ${action}`), "codex", action))
       .toEqual({ ready: true, reason: "vendor-prompt" });
     // Codex's end-of-turn summary may sit between the sentinel and the composer; the legacy footer still counts.
-    expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}\n\n${turnSummary}`), "codex", action))
-      .toEqual({ ready: true, reason: "idle-sentinel" });
+    // Rendered dim, as Codex paints it, and in the older `─` rule form.
+    for (const summary of [turnSummary, `${esc}[2m${turnSummary}${esc}[0m`, "─ Worked for 12s ─────"]) {
+      expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}\n\n${summary}`), "codex", action))
+        .toEqual({ ready: true, reason: "idle-sentinel" });
+    }
     expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}`).replace("← for agents · ", ""), "codex", action))
       .toEqual({ ready: true, reason: "idle-sentinel" });
     expect(harnessPromptReadiness(codexPane(`${turnSummary}\n\n• ${COORD_IDLE_SENTINEL}`), "codex", action))
       .toEqual({ ready: true, reason: "idle-sentinel" });
     // Only one summary line is skipped; prose or a dialog after it still fails closed, and a live turn still vetoes.
     for (const after of [`${turnSummary}\n  2. No, continue without the server`, "  Worked for the reviewer: pick 1 or 2",
-      "• I printed Worked for 5m earlier"]) {
+      "• I printed Worked for 5m earlier", `${turnSummary}\n  Worked for 3s`, "  Worked for 3s • 5:42 AM then pick 1 or 2",
+      `${turnSummary}\n› another request`]) {
       expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}\n\n${after}`), "codex", action))
         .toEqual({ ready: true, reason: "vendor-prompt" });
     }
+    // An unknown line below the footer still fails closed.
+    expect(harnessPromptReadiness(`${codexPane(`• ${COORD_IDLE_SENTINEL}\n\n${turnSummary}`)}\n  unknown footer`, "codex", action))
+      .toEqual({ ready: true, reason: "vendor-prompt" });
     expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}\n\n  Worked for 3s\n• Working (1s • esc to interrupt)`), "codex", action))
       .toEqual({ ready: false, reason: "codex-turn-chrome" });
   });
