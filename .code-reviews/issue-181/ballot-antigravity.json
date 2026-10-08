@@ -1,0 +1,34 @@
+{
+  "actionId": "5982d274-06c3-4ae5-8f37-27065397850b",
+  "agent": "antigravity",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "88babdba642d1290e80089e30fbe881557613f6b",
+      "path": ".signals/issue-181/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "24fbca708b391f9322ab0435f4f9c40de3e8ed56",
+      "path": ".signals/issue-181/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c9708f8f091dd21e57240bbb1a15a9b3532aec12",
+      "path": ".signals/issue-181/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "8524928479df04db525ad9ea81bd0c989093d72e",
+      "path": ".signals/issue-181/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "07ccf0069af73dc2efc5e2afbbf87c6fa821a2b62b8b97c6ab556ae62250cbe0",
+  "issue": 181,
+  "issueSessionId": "issue-181:0bf31ac88cd2d8e482fd3f38085470594626bb94",
+  "protocolVersion": 2,
+  "rationale": "Claude authored the selected plan and delivered a minimal, exact implementation with clean test coverage and accurate policy documentation.",
+  "responseSha256": "7973d7bc93b91faff7c6e24e23b00e3ad68c65feeb1814aa54ca6327164c6b70"
+}
