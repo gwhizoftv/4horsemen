@@ -1,0 +1,9 @@
+{
+  "protocolVersion": 1,
+  "issue": 161,
+  "issueSessionId": "issue-161:2a3769ec059e0d7e24373e8708fb1e99c0920421",
+  "agent": "codex",
+  "artifact": "participation-ready",
+  "baselineSha": "2a3769ec059e0d7e24373e8708fb1e99c0920421",
+  "automationDigest": "1cbc4059a6f852b3e2f4edb5f7f2ae2d6a527d41cd43f47b899a01df408ad397"
+}
