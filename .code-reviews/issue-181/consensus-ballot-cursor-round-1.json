@@ -1,0 +1,14 @@
+{
+  "actionId": "1130d9bd-8e80-4f80-8a12-4b225d63b302",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "7370c91788d18cfa9774a5041e730281977a0d19f3370d631ec135e735134cf5",
+  "issue": 181,
+  "issueSessionId": "issue-181:0bf31ac88cd2d8e482fd3f38085470594626bb94",
+  "protocolVersion": 2,
+  "rationale": "Claude revision c8456efb keeps the selected-plan footer and single Worked-for skip unchanged, documents file-backed composer/footer parity, and tightens fail-closed coverage with dim/rule-form summaries and near-miss lines without speculative [·•] widening.",
+  "responseSha256": "87fa0eacd2a28a61edcbd189dba4f4ca81d4cf039f82eda4fa16a5b22e479e93",
+  "revisionCommitSha": "c8456efbb3da169cb74698e34892afa6e8bd9cce",
+  "round": 1
+}

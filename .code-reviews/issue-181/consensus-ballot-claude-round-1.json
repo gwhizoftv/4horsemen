@@ -1,0 +1,14 @@
+{
+  "actionId": "c1d24d2f-b456-4b1f-ad07-2bd3ae6d315e",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "7370c91788d18cfa9774a5041e730281977a0d19f3370d631ec135e735134cf5",
+  "issue": 181,
+  "issueSessionId": "issue-181:0bf31ac88cd2d8e482fd3f38085470594626bb94",
+  "protocolVersion": 2,
+  "rationale": "Revision c8456efb keeps the selected narrow fix in src/tmux.ts (anchored agents/shortcuts footer and a single whole-line Worked-for summary skip shared by readiness and submit proof), adds only the near-miss assertions peers' comparisons asked for, and passed the hook's fast (681) and system (181) suites with no reviewer-reported defect.",
+  "responseSha256": "370e64985e24b3ef75a170c9e0a48c95f35e66079dc18e9aa9d62b0858a20d51",
+  "revisionCommitSha": "c8456efbb3da169cb74698e34892afa6e8bd9cce",
+  "round": 1
+}
