@@ -68,6 +68,27 @@ const setup = () => {
 const ok = async () => ({ exitCode: 0, stdout: "", stderr: "" });
 
 describe("verification receipts", () => {
+  it("announces checks before running and distinguishes fresh, reused, and failed results", async () => {
+    const { input } = setup();
+    const messages: string[] = [];
+    const progress = (message: string) => { messages.push(message); };
+    const lint = cached("lint");
+    const first = await runVerification(input([lint], async () => {
+      expect(messages[0]).toContain("Preparing verification");
+      expect(messages.at(-1)).toContain("Running lint");
+      expect(messages.join("\n")).not.toContain("passed");
+      return ok();
+    }, { progress }));
+    expect(first.status).toBe("passed");
+    expect(messages.at(-1)).toMatch(/lint: passed.*log:/);
+    messages.length = 0;
+    await runVerification(input([lint], async () => { throw new Error("must reuse"); }, { progress }));
+    expect(messages.join("\n")).toContain("reused, not rerun");
+    expect(messages.join("\n")).not.toContain("Running lint");
+    await runVerification(input([{ name: "fail", argv: ["fail"] }], async () => ({ exitCode: 1, stdout: "", stderr: "private process detail" }), { progress }));
+    expect(messages.join("\n")).toContain("[ACTION] fail: failed");
+    expect(messages.join("\n")).not.toContain("private process detail");
+  });
   it("keys on every declared input and ignores only coordination evidence when asked", () => {
     const { paths, pin, evidencePin, productPin, material } = setup();
     const base = material(cached("lint"));
@@ -197,9 +218,12 @@ describe("verification runner", () => {
     const lock = runningLockPath(paths.coordRoot, key);
     writeFileSync(lock, JSON.stringify({ pid: process.pid, hostname: hostname(), token: "other", startedAt: new Date().toISOString() }));
     const calls: string[] = [];
+    const progress: string[] = [];
     const joined = await runVerification(input([lint], async (argv) => { calls.push(argv[0]!); return ok(); }, {
+      progress: (message) => { progress.push(message); },
       // The live owner finishes while this runner waits.
       sleep: async () => {
+        expect(progress.at(-1)).toContain("Waiting for another coordinator");
         writeReceipt(paths.coordRoot, { formatVersion: 1, key, material: material(lint), name: "lint", exitCode: 0,
           durationMs: 4_000, issue: 1, issueSessionId: "s", productPin: "a".repeat(40), logPath: "/owner.log",
           completedAt: new Date().toISOString() });
@@ -208,6 +232,7 @@ describe("verification runner", () => {
     }));
     expect(joined).toMatchObject({ status: "passed", results: [{ name: "lint", joined: true, receiptId: key }] });
     expect(calls).toEqual([]);
+    expect(progress.at(-1)).toContain("joined, not rerun");
     expect(journal.map((row) => row.type)).toEqual(["verification-joined"]);
 
     rmSync(join(paths.coordRoot, "verification"), { recursive: true });

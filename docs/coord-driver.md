@@ -548,10 +548,17 @@ workflow; no new owner command is required.
 
 ## Owner controls
 
-Every issue command accepts either an explicit workspace `--coord-root` or an
-onboarded `--product`. Product resolution uses the same flat/nested and legacy
-runtime lookup as `coord N`, so owner controls cannot accidentally target the
-outer root of a nested product. `COORD_ISSUE` may replace `--issue`.
+Issue controls accept either an explicit workspace `--coord-root` or an
+onboarded repository `--product` (the flag spelling is unchanged). Without either,
+controls infer the workspace from the current owner or registered agent worktree,
+including subdirectories. A crossed/invalid locator is an error, not a fallback.
+Resolution preserves flat/nested and legacy ambiguity checks and the issue's
+frozen completion mailbox. From unrelated folders, supply the explicit runtime
+root. `COORD_ISSUE` may replace `--issue`.
+
+`coord COMMAND --help` and `coord help COMMAND` explain commands without requiring
+a repository or changing state. Reports use “repository” in prose; old flag names
+such as `--product` and `--write-product` remain compatible.
 
 ```bash
 coord drop cursor --product /path/to/app --issue 42
@@ -607,12 +614,14 @@ not start a second tick loop. Logs clear and redraw the current edit.
 
 | Key | Operation |
 | --- | --- |
-| `s` | Snapshot of active step/round, roster, pins, publication/PR, holds and queued guidance count |
+| `s` | Snapshot of active step/round, roster, commits, publication/PR, holds and queued guidance count |
 | `p` / Space | Toggle manual pause, never release holds |
 | `a` | Reopen missing agent Terminal clients using the existing attach flow |
 | `d` | Numbered active-agent menu; Enter selects, a separate `y` confirms |
-| `r` | Numbered hold menu; release the selected ID after inspecting the agent |
+| `n` | Request a safe reminder for one agent's current task, without restarting it |
+| `r` | Release a selected hold after inspection; a reminder-limit reset asks a separate `y/N` question |
 | `?` / `h` | Help |
+| Return | Newline and prompt redraw in hotkey mode; no state change |
 | `/` | Begin a `/steer <text>` line; Enter queues, Backspace edits, Esc cancels |
 | `q` | Quit outside an edit, stopping only the foreground runner |
 
@@ -621,10 +630,28 @@ number and press Enter; abandon also requires `y`. The captured question ID is
 validated under the same lock as external `coord answer`, so stale selections
 cannot answer a replacement question. Esc returns to hotkeys; `s` redisplays a
 pending question. Menus likewise capture agent/hold identities and revalidate
-them when applied. Nudge-loop budget reset remains CLI-only via
-`coord resume --hold ID --reset-nudge-budget`. No control silently releases
-other holds. Pasted text does not execute hotkeys or confirmations; to paste
+them when applied. For a reminder-limit hold, confirming `r` permits four more
+sends for that action, exactly like `coord resume --hold ID --reset-nudge-budget`;
+it cannot reset a provider's quota. No control silently releases
+other holds or manual pause. Unknown printable input is quoted with help;
+multi-character plain pastes are inert. Pasted text does not execute hotkeys or confirmations; to paste
 guidance, press `/` first. In an edit, `q` is ordinary text.
+
+`n` queues one request in the live runner, bound to the selected task, digest and
+session; “requested” does not mean “sent”. An arriving completion is checked
+first. Changed activity, assignments, pause/holds, missing files or unavailable
+terminal delivery reject the request rather than retargeting it. An explicit
+request can overcome a stale working report only with current positive terminal
+idle proof; foreground/composer, queued/background work and per-key checks still
+veto it. Spacing, four-send limits and uncertain-send reservations still apply.
+No action/response file is cleared, task restarted, or send allowance reset by
+`n`. Inspect/type directly in the agent terminal when safe proof is unavailable.
+
+There is no force-complete/next-stage key: a drafted plan or idle terminal is not
+validated evidence. An **action** is the assigned task in `action.md`; a **turn**
+is one agent prompt/response cycle; a **pin** is an exact commit. Use `n` to remind,
+`r` to recover a diagnosed hold, or the explicit destructive `restart-action`
+command when a replacement assignment is really needed.
 
 `/steer` queues a nonblank single line (maximum 2,000 characters; 32 pending
 entries) in `cursors.json` and journals it. At the first actual order preparation
@@ -645,10 +672,34 @@ not call `detach`, kill tmux, close agent clients, or wipe state, even if that
 last tick completes the issue. Normal un-interrupted completion retains its
 existing cleanup behavior. Direct typing into agent panes is unchanged.
 
+### Reading progress and startup diagnostics
+
+Each complete status snapshot is enclosed by `----` lines. `[WAIT]` means ordinary
+ongoing work, `[OK]` a confirmed result, `[WARN]` uncertainty to inspect, and
+`[ACTION]` owner intervention. Task message sent/acknowledged is separate from
+submission received/validated. Check preparation, waiting, execution and outcomes
+are announced; reused checks are labelled, not claimed as rerun. Branch pushes
+and PR operations announce their work too. Ballot contents stay private.
+
+Recovery commands include the actual shell-quoted `--coord-root`, so they also
+work from another folder. A provider recheck time is not a promise of availability;
+an unknown provider failure is not evidence of exhausted quota.
+
+Startup/resume inspect installed hook definitions, clone identity, wiring and
+issue branch read-only. Installed files and a matching tmux `COORD_ISSUE` do not
+prove an already-running child trusts hooks or inherited that environment. Until
+current-session activity and actual-tool containment observations exist, runtime
+trust remains “not yet verified”: inspect the trust prompt/hook setup and use
+`coord doctor`, repairing/restarting through coord rather than inventing receipts.
+Repeated distinct turns without a matching Stop produce an advisory warning;
+when turn IDs are absent, completed actions are counted separately and labelled
+as actions. Matching current Stop/session replacement clears the episode; stale
+callbacks do not. These warnings neither grant readiness nor create holds.
+
 ### Delivery safety and unknown holds
 
 All vendors (including Antigravity) share a durable delivery budget for each
-unfinished action: one initial send and at most three automatic repeats, spaced
+unfinished action: one initial send and at most three repeats (including owner reminders), spaced
 at least 60, 120 and 240 seconds after the previous send. These are minimum delays,
 not permission to send: lifecycle and terminal readiness must still allow it.
 The 45-second wait before checking unknown/idle lost delivery is independent of

@@ -221,6 +221,106 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
   return { paths, ui, messages, now, tick, makeLoop, working, stop, advance: (ms: number) => { nowMs += ms; } };
 };
 
+describe("owner reminders and advisory diagnostics", () => {
+  it("rejects a stale menu selection rather than reminding a replacement action", async () => {
+    const f = safetyFixture("claude"), loop = f.makeLoop();
+    await loop.runTick();
+    const selected = loop.reminders()[0]!;
+    mutateCursorsState(f.paths, (state) => ({ ...state,
+      agents: { ...state.agents, claude: { ...state.agents.claude!, actionId: randomUUID() } }
+    }));
+    expect(() => selected.request()).toThrow("no longer current");
+    expect(f.ui.sends).toBe(1);
+  });
+  it("reminds the same accepted task only on explicit request and fresh idle proof, retaining spacing and budget", async () => {
+    const f = safetyFixture("claude"), loop = f.makeLoop();
+    await loop.runTick(); f.advance(1); f.working();
+    const runtime = agentRuntimePaths(f.paths, "claude");
+    const before = readFileSync(runtime.action, "utf8");
+    const id = readCursorsState(f.paths).agents.claude!.actionId;
+    f.ui.text = `${id}\nCOORD-IDLE: waiting for the next coordinator action file`;
+    expect(loop.reminders()[0]!.request()).toContain("requested");
+    await loop.runTick(); // minimum spacing still applies
+    expect(f.ui.sends).toBe(1);
+    f.advance(60_000);
+    await loop.runTick(); // explicit request was consumed; automatic stale-working sends remain forbidden
+    expect(f.ui.sends).toBe(1);
+    loop.reminders()[0]!.request();
+    loop.reminders()[0]!.request(); // one queued request, not two
+    await loop.runTick();
+    expect(f.ui.sends).toBe(2);
+    expect(readCursorsState(f.paths).actionSafety.claude).toMatchObject({ sends: 2, reserved: false });
+    expect(readCursorsState(f.paths).agents.claude).toMatchObject({ actionId: id, status: "ordered" });
+    expect(readFileSync(runtime.action, "utf8")).toBe(before);
+    expect(readAgentLifecycle(f.paths).agents.claude?.execution).toBe("working");
+    expect(f.messages.join("\n")).toContain("[OK] Reminder sent");
+    for (const delay of [120_000, 240_000]) {
+      f.advance(delay); loop.reminders()[0]!.request(); await loop.runTick();
+    }
+    f.advance(240_000); loop.reminders()[0]!.request();
+    const held = await loop.runTick();
+    expect(f.ui.sends).toBe(4);
+    expect(held.holds[0]?.reason).toBe("nudge-loop");
+    expect(held.actionSafety.claude?.sends).toBe(4);
+    expect(() => loop.reminders()[0]!.request()).toThrow("Release pauses/holds");
+  });
+
+  it.each(["no-idle", "queued", "background", "session", "digest", "pause", "foreground", "typing", "missing-capture", "new-hook"])(
+    "refuses a queued reminder on %s without resetting its allowance", async (veto) => {
+      const f = safetyFixture("claude"), loop = f.makeLoop();
+      await loop.runTick(); f.advance(1); f.working(); f.advance(60_000);
+      const runtime = agentRuntimePaths(f.paths, "claude");
+      const id = readCursorsState(f.paths).agents.claude!.actionId;
+      f.ui.text = `${id}\nCOORD-IDLE: waiting for the next coordinator action file`;
+      if (veto === "queued" || veto === "background") observeAgentLifecycle(f.paths, "claude", {
+        kind: "status", eventName: "status", sessionId: "session", pendingInputCount: veto === "queued" ? 1 : 0,
+        backgroundActive: veto === "background"
+      }, f.now());
+      loop.reminders()[0]!.request();
+      if (veto === "no-idle") f.ui.text = "Working...\n❯ ";
+      if (veto === "session") observeAgentLifecycle(f.paths, "claude", { kind: "session-start", eventName: "SessionStart", sessionId: "new-session" }, f.now());
+      if (veto === "digest") writeFileSync(runtime.action, `${readFileSync(runtime.action, "utf8")}\nchanged\n`);
+      if (veto === "pause") mutateCursorsState(f.paths, (state) => setPaused(state, true, f.now()));
+      if (veto === "foreground") f.ui.foreground = "bash";
+      if (veto === "typing") f.ui.busy = true;
+      if (veto === "missing-capture") f.ui.failCapture = true;
+      if (veto === "new-hook") f.ui.onCapture = () => { f.working(); f.ui.onCapture = undefined; };
+      await loop.runTick();
+      expect(f.ui.sends).toBe(1);
+      expect(readCursorsState(f.paths).actionSafety.claude?.sends).toBe(1);
+      expect(readCursorsState(f.paths).agents.claude?.actionId).toBe(id);
+      expect(f.messages.join("\n")).not.toContain("[OK] Reminder sent");
+    });
+
+  it("keeps a charged reservation when owner authority changes after reminder text", async () => {
+    const f = safetyFixture("claude"), loop = f.makeLoop();
+    await loop.runTick(); f.advance(1); f.working(); f.advance(60_000);
+    f.ui.text = "COORD-IDLE: waiting for the next coordinator action file";
+    loop.reminders()[0]!.request();
+    f.ui.onCapture = () => {
+      if (f.ui.sends === 2) mutateCursorsState(f.paths, (state) => setPaused(state, true, f.now()));
+    };
+    await loop.runTick();
+    expect(f.ui.sends).toBe(2);
+    expect(readCursorsState(f.paths).actionSafety.claude).toMatchObject({ sends: 2, reserved: true });
+    expect(readCursorsState(f.paths).manualPaused).toBe(true);
+  });
+
+  it("keeps startup and missing-Stop diagnostics advisory and avoids warning on every poll", async () => {
+    const f = safetyFixture("claude"), loop = f.makeLoop();
+    await loop.reportStartup();
+    await loop.reportStartup(); // the foreground run reuses the already-diagnosed startup instance
+    expect(f.messages.join("\n")).toContain("runtime hook trust/activity not yet verified");
+    expect(f.messages.filter((message) => message.includes("claude: runtime hook trust/activity not yet verified"))).toHaveLength(1);
+    await loop.runTick(); f.advance(1); f.working(); f.advance(1); f.working();
+    await loop.runTick(); await loop.runTick();
+    expect(f.messages.filter((message) => message.includes("No Stop hook from claude after 2 observed turns"))).toHaveLength(1);
+    expect(readCursorsState(f.paths).holds).toEqual([]);
+    expect(readAgentLifecycle(f.paths).agents.claude).toMatchObject({ health: "healthy", execution: "working" });
+    expect(f.ui.sends).toBe(1);
+  });
+});
+
 const QUOTA_BASE = Date.parse("2026-09-22T12:00:00.000Z");
 const hoursFromBase = (hours: number): number => QUOTA_BASE / 1000 + hours * 3600;
 const codexLimits = (weeklyPercent: number, resetHours: number, extra: Record<string, unknown> = {}, buckets?: Record<string, unknown>) => {
@@ -361,7 +461,7 @@ describe("runner waiting and initialization", () => {
     } }).run();
     expect(sleeps).toBe(3);
     expect(initializations).toBe(1);
-    expect(f.messages.filter((message) => message.startsWith("Issue 1: paused"))).toHaveLength(1);
+    expect(f.messages.filter((message) => message.includes("Issue 1: paused"))).toHaveLength(1);
   });
 
   it("defers workflow effects when an owner resumes between the initialization check and the tick", async () => {
@@ -470,7 +570,7 @@ describe("vendor resource evidence and recovery", () => {
       expect.objectContaining({ details: expect.objectContaining({ outcome: "owner-release-required" }) })
     ]);
     expect(f.messages.at(-1)).toContain("owner release required");
-    expect(f.messages.filter((message) => message.startsWith("Issue 1: paused"))).toHaveLength(2);
+    expect(f.messages.filter((message) => message.includes("Issue 1: paused"))).toHaveLength(2);
     expect(f.ui.sends).toBe(1);
     // An owner release is not re-held by the same failure episode.
     mutateCursorsState(f.paths, (current) => releaseHold(current, held.holds[0]!.id, false, f.now()));
@@ -496,7 +596,7 @@ describe("vendor resource evidence and recovery", () => {
     expect(readFileSync(f.paths.cursors, "utf8")).toBe(cursors);
     expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
     expect(f.ui.sends).toBe(1);
-    expect(f.messages.filter((message) => message.startsWith("Issue 1: paused"))).toHaveLength(1);
+    expect(f.messages.filter((message) => message.includes("Issue 1: paused"))).toHaveLength(1);
     f.advance(7 * 86400_000);
     for (let i = 0; i < 200; i++) await f.tick();
     expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
@@ -1806,7 +1906,9 @@ describe("effectful run loop", () => {
       return { exitCode: 0, stdout: "", stderr: "" };
     });
     let nowMs = Date.now();
-    const loop = new CoordinatorRunLoop(paths, { now: () => new Date(nowMs).toISOString(), tmux });
+    const messages: string[] = [], verbose: string[] = [];
+    const loop = new CoordinatorRunLoop(paths, { now: () => new Date(nowMs).toISOString(), tmux,
+      log: (message) => messages.push(message), verbose: (message) => verbose.push(message) });
     await loop.runTick();
     const firstNudges = literalNudges;
     expect(firstNudges).toBeGreaterThan(0);
@@ -1817,6 +1919,8 @@ describe("effectful run loop", () => {
     await loop.runTick();
     expect(readCursorsState(paths).agents.codex).toMatchObject({ actionId, status: "ordered", attempt: 2 });
     expect(readAction(runtime.action).body).toContain("complete must contain a 40-character lowercase Git SHA");
+    expect(messages).toContain("[WAIT] codex: submission needs correction; preparing its correction instructions (no owner action needed).");
+    expect(verbose.join("\n")).toContain("complete must contain a 40-character lowercase Git SHA");
     expect(readJournal(paths).some((event) => event.type === "verify-result")).toBe(true);
     expect(readJournal(paths).some((event) => event.type === "nudged" && event.details.reissue === true)).toBe(true);
     expect(literalNudges).toBeGreaterThan(firstNudges);
@@ -1858,7 +1962,7 @@ describe("effectful run loop", () => {
       gateWaiting: true
     });
     expect(first[0]?.details.human).toBe("the foreground process is not this agent's harness");
-    const printedOnce = messages.filter((message) => message.includes("foreground-mismatch"));
+    const printedOnce = messages.filter((message) => message.includes("the foreground process is not this agent's harness"));
     expect(printedOnce).toHaveLength(1);
     // The durable key suppresses journal and console repeats, including restart.
     await loop.runTick();
@@ -1867,7 +1971,7 @@ describe("effectful run loop", () => {
     ).toBe(1);
     await new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) }).runTick();
     expect(readJournal(paths).filter((event) => event.type === "nudge-deferred" && event.agent === "codex")).toHaveLength(1);
-    expect(messages.filter((message) => message.includes("foreground-mismatch"))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes("the foreground process is not this agent's harness"))).toHaveLength(1);
   });
 
   it("records hooks and pane on one event when they disagree", async () => {
@@ -1929,7 +2033,7 @@ describe("effectful run loop", () => {
       code: "foreground-mismatch",
       hooks: { execution: "idle", health: "healthy" }
     });
-    expect(messages.some((message) => message.includes("looks idle to its lifecycle hooks"))).toBe(true);
+    expect(messages.some((message) => message.includes("activity report says idle but its terminal refuses input"))).toBe(true);
   });
 
   it("does not turn delayed correlation into a health warning when lifecycle hooks are live", async () => {
@@ -2071,7 +2175,7 @@ describe("effectful run loop", () => {
     expect(nudged[1]?.details).toMatchObject({ idle: true, actionDigest: action!.actionDigest });
   });
 
-  it("lets a current COORD-IDLE overrule a stale working record only before the first send", async () => {
+  it("automatically overrides stale working only before the first send; owner reminders still check the Codex composer", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);
     writeFileSync(paths.start, `${JSON.stringify({ ...start, agents: start.agents.map((agent) =>
@@ -2081,6 +2185,7 @@ describe("effectful run loop", () => {
     let literalNudges = 0;
     let body = "• done";
     let draft = "";
+    let nowMs = Date.now();
     // Captures to let pass before a hook reports a new turn; -1 disables the race.
     let raceAfterCaptures = -1;
     const messages: string[] = [];
@@ -2099,7 +2204,7 @@ describe("effectful run loop", () => {
       }
       return { exitCode: 0, stdout: "", stderr: "" };
     });
-    const loop = new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) });
+    const loop = new CoordinatorRunLoop(paths, { tmux, now: () => new Date(nowMs).toISOString(), log: (message) => messages.push(message) });
     await loop.runTick();
     expect(literalNudges).toBe(0);
     expect(readAgentLifecycle(paths).agents.codex?.action?.delivery).toBe("ordered");
@@ -2124,6 +2229,22 @@ describe("effectful run loop", () => {
     // After the first send, a stale working record again blocks: no duplicate.
     await loop.runTick();
     expect(literalNudges).toBe(1);
+
+    const action = readAgentLifecycle(paths).agents.codex!.action!;
+    observeAgentLifecycle(paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session-1",
+      turnId: "turn-2", actionId: action.actionId, actionDigest: action.actionDigest }, new Date(++nowMs).toISOString());
+    nowMs += 60_000;
+    body = `• ${action.actionId} done\n\n• COORD-IDLE: waiting for the next coordinator action file`;
+    draft = "owner is editing";
+    loop.reminders().find((item) => item.label === "codex")!.request();
+    await loop.runTick();
+    expect(literalNudges).toBe(1);
+    draft = "";
+    loop.reminders().find((item) => item.label === "codex")!.request();
+    await loop.runTick();
+    expect(literalNudges).toBe(2);
+    expect(readJournal(paths)).toContainEqual(expect.objectContaining({ type: "nudged", agent: "codex",
+      actionId: action.actionId, details: expect.objectContaining({ owner: true }) }));
   });
 
   it("retries an action that a busy pane never injected", async () => {
@@ -2466,9 +2587,11 @@ describe("effectful run loop", () => {
         }
         return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
       });
-      const loop = new CoordinatorRunLoop(paths, { tmux: null, mirror });
+      const progress: string[] = [];
+      const loop = new CoordinatorRunLoop(paths, { tmux: null, mirror, log: (message) => progress.push(message) });
       await loop.runTick();
       const completion = agentRuntimePaths(paths, "codex").complete;
+      loop.reminders().find((item) => item.label === "codex")!.request();
       // The receipt is the one runtime file an agent writes, and it must not be
       // inside the tree that holds cursors.json and every peer's action.md.
       expect(completion.startsWith(`${paths.completesRoot}/`)).toBe(true);
@@ -2476,6 +2599,9 @@ describe("effectful run loop", () => {
       writeFileSync(completion, `${"d".repeat(40)}\n`);
       const pendingTick = loop.runTick();
       await fetchStarted;
+      expect(progress.join("\n")).toContain("completion marker received; checking the submission");
+      expect(progress.join("\n")).not.toContain("validated and accepted");
+      expect(progress.join("\n")).not.toContain("reminder not sent");
       mutateCursorsState(paths, (current) => {
         if (control === "pause") return setPaused(current, true);
         if (control === "drop") return dropAgent(current, "claude");
@@ -2572,7 +2698,13 @@ describe("effectful run loop", () => {
     writeFileSync(agentRuntimePaths(paths, "claude").complete, `response ${actionId}\n`);
     writeFileSync(agentRuntimePaths(paths, "claude").ready, `ready ${actionId}\n`);
 
-    const after = await new CoordinatorRunLoop(paths, { tmux: null }).runTick();
+    const progress: string[] = [];
+    const loop = new CoordinatorRunLoop(paths, { tmux: null, log: (message) => progress.push(message) });
+    loop.reminders().find((item) => item.label === "claude")!.request();
+    const after = await loop.runTick();
+    expect(progress.findIndex((message) => message.includes("completion marker received")))
+      .toBeLessThan(progress.findIndex((message) => message.includes("private response validated and accepted")));
+    expect(progress.join("\n")).not.toMatch(/approve|The revision is ready|reminder not sent/);
     expect(after.ownerQuestion?.id).toBe("10000000-0000-4000-8000-000000000001");
     expect(after.acceptedResponses).toContainEqual(
       expect.objectContaining({
@@ -2662,16 +2794,22 @@ describe("effectful run loop", () => {
         updatedAt: now
       })
     );
+    const progress: string[] = [];
     let pushes = 0;
     const mirror = new BareMirror(paths.mirror, "https://github.com/example/project.git", async (args) => {
-      if (args[2] === "push") pushes += 1;
+      if (args[2] === "push") {
+        expect(progress.at(-1)).toContain("[WAIT] Pushing final branch");
+        pushes += 1;
+      }
       return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
     });
     let opens = 0;
     const failing = new CoordinatorRunLoop(paths, {
       tmux: null,
       mirror,
+      log: (message) => progress.push(message),
       pullRequestOpener: async () => {
+        expect(progress.at(-1)).toBe("[WAIT] Opening the pull request...");
         opens += 1;
         expect(readCursorsState(paths).accepted.some((submission) => submission.stepId === "R7.finalize")).toBe(true);
         throw new Error("GitHub unavailable");
@@ -2684,7 +2822,9 @@ describe("effectful run loop", () => {
     const recovered = await new CoordinatorRunLoop(paths, {
       tmux: null,
       mirror,
+      log: (message) => progress.push(message),
       pullRequestOpener: async () => {
+        expect(progress.at(-1)).toBe("[WAIT] Opening the pull request...");
         opens += 1;
         return { url: "https://github.com/example/project/pull/1" };
       }
@@ -3389,13 +3529,13 @@ describe("materialized bound inputs", () => {
    * is the worst moment to lose the exported paths: the agent is being asked to
    * fix something, and the shim still refuses the reads the files replaced.
    */
-  it("keeps the bound-input paths when an action is re-issued with corrections", async () => {
+  it.each(["R3.review", "R3.plan-ballot"] as const)("keeps the bound-input paths when %s is re-issued without leaking private corrections", async (stepId) => {
     const { paths } = fixture();
     const now = "2026-08-11T17:00:00.000Z";
     mutateCursorsState(paths, (current) =>
       cursorsStateSchema.parse({
         ...current,
-        issueCursor: { stepId: "R3.review", gateId: "gate-3-selection", round: null },
+        issueCursor: { stepId, gateId: "gate-3-selection", round: null },
         accepted: current.activeRoster.map((agent, index) => ({
           stepId: "R2.plan" as const,
           agent,
@@ -3407,7 +3547,7 @@ describe("materialized bound inputs", () => {
         agents: Object.fromEntries(
           current.activeRoster.map((agent) => [
             agent,
-            { ...current.agents[agent], stepId: "R3.review", status: "idle", actionId: null }
+            { ...current.agents[agent], stepId, status: "idle", actionId: null }
           ])
         ),
         updatedAt: now
@@ -3419,21 +3559,37 @@ describe("materialized bound inputs", () => {
       if (command === "rev-parse") return { exitCode: 0, stdout: Buffer.from(`${"d".repeat(40)}\n`), stderr: "" };
       return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
     });
-    const loop = new CoordinatorRunLoop(paths, { mirror, tmux: null });
+    const messages: string[] = [], verbose: string[] = [];
+    const loop = new CoordinatorRunLoop(paths, { mirror, tmux: null,
+      log: (message) => messages.push(message), verbose: (message) => verbose.push(message) });
     await loop.runTick();
 
     const actionPath = agentRuntimePaths(paths, "claude").action;
     const first = readFileSync(actionPath, "utf8");
     expect(first).toContain("## Bound input files");
 
-    // Force the correction path with a malformed completion marker.
-    writeFileSync(agentRuntimePaths(paths, "claude").complete, "not-a-sha\n");
+    // Private parse failures can contain ballot values, unlike public Git corrections.
+    if (stepId === "R3.plan-ballot") {
+      const actionId = readCursorsState(paths).agents.claude!.actionId!;
+      writeAgentResponse(agentResponsePath(paths, "claude", actionId), paths.issueRoot,
+        { actionId, choice: "private-choice", rationale: "Private rationale." });
+      writeFileSync(agentRuntimePaths(paths, "claude").complete, `response ${actionId}\n`);
+    } else {
+      writeFileSync(agentRuntimePaths(paths, "claude").complete, "not-a-sha\n");
+    }
     await loop.runTick();
 
     const reissued = readFileSync(actionPath, "utf8");
     expect(reissued).toContain("Correct these outstanding items");
     expect(reissued).toContain("## Bound input files");
-    for (const path of [...reissued.matchAll(/: "([^"]+)"$/gm)].map((match) => match[1] as string)) {
+    if (stepId === "R3.plan-ballot") {
+      expect(reissued).toContain("choice private-choice is not eligible");
+      expect(verbose.join("\n")).toContain("1 validation finding(s); see its task file");
+      expect([...messages, ...verbose].join("\n")).not.toMatch(/private-choice|Private rationale/);
+    }
+    const boundPaths = [...reissued.matchAll(/^- .*: "([^"]+)"$/gm)].map((match) => match[1] as string);
+    expect(boundPaths.length).toBeGreaterThan(0);
+    for (const path of boundPaths) {
       expect(existsSync(path), path).toBe(true);
     }
   });

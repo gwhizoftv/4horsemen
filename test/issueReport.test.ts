@@ -117,9 +117,9 @@ describe("issue report", () => {
       confidence: "unknown", retryOwner: "owner", evidence: null }];
     const text = renderIssueReport(start("owner-only"), cursors);
     expect(text).toContain("Manual pause: active");
-    expect(text).toContain("cause unknown, reset unknown, retry owner: owner");
+    expect(text).toContain("No provider failure confirmed; provider recovery time unknown. Who acts next: you.");
     expect(text).toContain("coord resume --issue 1 --agent cursor --reset-nudge-budget");
-    expect(text).toContain("coord resume --issue 1 clears only this pause");
+    expect(text).toContain("coord resume --issue 1 --coord-root '/runtime' clears only this pause");
     expect(text).toContain("add --run to resume only if the coordinator was stopped");
     expect(text).toContain("Hold hold-id:");
     expect(text).not.toContain("quota exhausted");
@@ -144,7 +144,7 @@ describe("issue report", () => {
       resource: { starts: 2, failures: 0, inFlight: null, nextAt: "2026-08-20T00:00:30.000Z", consumedDeadlines: [], terminal: null, episode: null } };
     cursors.actionSafety = { codex: safety };
     let text = renderIssueReport(start("owner-only"), cursors);
-    expect(text).toContain("cause usage-window (codex, confirmed), provider reset 2026-08-20T00:00:00.000Z (recheck time, not guaranteed availability)");
+    expect(text).toContain("cause usage-window (codex, confirmed); provider reset 2026-08-20T00:00:00.000Z (recheck time, not guaranteed availability)");
     expect(text).toContain("Blocked windows: codex/secondary 100% (resets 2026-08-20T00:00:00.000Z).");
     expect(text).toContain("Vendor detail (redacted): limit for Bearer [redacted]");
     expect(text).toContain("next automatic check at 2026-08-20T00:00:30.000Z; quota reads 2/6");
@@ -158,7 +158,7 @@ describe("issue report", () => {
     const text = renderIssueReport(start("coord-open-unmerged"), complete());
     expect(text).toContain("Issue 1: complete");
     expect(text).toContain("Chosen agent: cursor");
-    expect(text).toContain(`Final pin (PR head): ${pin}`);
+    expect(text).toContain(`Final commit (PR head): ${pin}`);
     expect(text).toContain("Published branch: issue-1/cursor-final");
     expect(text).toContain("Pull request: https://github.com/example/project/pull/9");
     expect(text).toContain("owner merges");
@@ -176,7 +176,7 @@ describe("issue report", () => {
       start("owner-only"),
       complete({ status: "not-required", finalSha: null, branch: null, url: null, attempts: 0 })
     );
-    expect(text).toContain(`Final pin (PR head): ${pin}`);
+    expect(text).toContain(`Final commit (PR head): ${pin}`);
     expect(text).toContain("legacy owner-only");
     expect(text).toContain("not from issue-1/<agent>");
   });
@@ -201,7 +201,16 @@ describe("issue report", () => {
       backgroundActive: true
     };
     expect(renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle)).toContain(
-      "Agent cursor: none / queued / healthy, pending=2, background-active"
+      "Agent cursor: no current task; input queued; activity reports healthy, pending=2, background-active"
     );
+  });
+
+  it("frames the whole report and quotes recovery paths without changing control vocabulary", () => {
+    const cursors = complete();
+    cursors.completed = false; cursors.paused = true; cursors.manualPaused = true;
+    const text = renderIssueReport({ ...start("owner-only"), coordRoot: "/runtime space/owner's" }, cursors);
+    expect(text).toMatch(/^----\n\[ACTION\] Issue 1: paused/);
+    expect(text).toContain("--coord-root '/runtime space/owner'\"'\"'s'");
+    expect(text).toMatch(/Active step: .*\nActive roster: cursor\nQueued guidance: 0\n----\n$/);
   });
 });

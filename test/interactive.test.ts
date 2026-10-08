@@ -26,6 +26,38 @@ const fixture = (tty = true) => {
 };
 
 describe("foreground owner terminal", () => {
+  it("responds to Return and unknown input without executing pasted controls", async () => {
+    const f = fixture();
+    const before = f.printed();
+    await f.send("\r");
+    expect(f.printed().slice(before.length)).toMatch(/^\n.*coord \[\? help\] > /s);
+    await f.send("x");
+    expect(f.printed()).toContain('Unknown command "x"');
+    expect(f.printed()).toContain("not an immediate broadcast");
+    await f.send("dqypn");
+    expect(f.printed()).toContain('Unknown command "dqypn"');
+    expect(f.commands.drop).not.toHaveBeenCalled();
+    expect(f.commands.togglePause).not.toHaveBeenCalled();
+  });
+
+  it("requests a captured reminder and confirms four more sends for only a reminder-limit hold", async () => {
+    const f = fixture();
+    const request = vi.fn(() => "Reminder requested for captured action");
+    Object.assign(f.commands, { reminders: () => [{ label: "codex", request }] });
+    await f.send("n"); await f.send("1"); await f.send("\r");
+    expect(request).toHaveBeenCalledOnce();
+    expect(f.printed()).toContain("Reminder requested for captured action");
+    f.commands.holds = () => [{ id: "captured", agent: "codex", reason: "nudge-loop" }];
+    await f.send("r"); await f.send("1"); await f.send("\r");
+    expect(f.commands.releaseHold).not.toHaveBeenCalled();
+    expect(f.printed()).toContain("allow four more reminders");
+    await f.send("n");
+    expect(f.commands.releaseHold).not.toHaveBeenCalled();
+    await f.send("r"); await f.send("1"); await f.send("\r");
+    f.commands.holds = () => [];
+    await f.send("y");
+    expect(f.commands.releaseHold).toHaveBeenCalledWith("captured", true);
+  });
   it("does not touch input in non-TTY mode", () => {
     const f = fixture(false);
     expect(f.session).toBeNull();

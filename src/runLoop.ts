@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { shellQuote } from "./agentHookSync.js";
 import { clearCompletion, clearReady, createActionId, readAction, readCompletion, readReady, writeAction, type ReadyReceipt } from "./action.js";
 import {
   AGENT_OBSERVABILITY_WATCHDOG_MS,
@@ -13,6 +14,7 @@ import {
   mutateAgentLifecycle,
   orderAgentAction,
   readAgentLifecycle,
+  stopObservationWarning,
   type AgentLifecycleEntry
 } from "./agentLifecycle.js";
 import {
@@ -108,7 +110,8 @@ import {
   type WorkflowStepId
 } from "./steps.js";
 import { containmentPolicy, ingestContainmentProbe } from "./shellGuard.js";
-import { holdRecoveryCommand, renderIssueReport } from "./issueReport.js";
+import { holdRecoveryCommand, holdDescription, issueCommand, renderIssueReport } from "./issueReport.js";
+import { inspectStartupAgent } from "./doctor.js";
 import { formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import { harnessPromptReadiness, TmuxController, type IdleOverride } from "./tmux.js";
@@ -832,30 +835,30 @@ const candidateResultsFor = (cursors: CursorsState, inputs: readonly BoundInput[
  * journal line always says what was actually observed.
  */
 const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
-  "pane-dead": "the terminal pane for this agent is gone",
+  "pane-dead": "the agent terminal is gone; restore it before retrying",
   "owner-typing": "the pane is in copy mode or the owner is typing in it",
   "input-off": "the pane has input disabled",
   "foreground-mismatch": "the foreground process is not this agent's harness",
-  "trust-dialog": "the harness is waiting on its trust-this-folder prompt",
+  "trust-dialog": "the application is waiting for you to answer its folder-trust prompt; inspect its terminal",
   "claude-no-prompt": "no idle prompt is visible in the pane",
   "claude-usage-wait": "Claude is waiting for a usage limit; coordinator input is blocked",
-  "cursor-turn-chrome": "the pane shows in-flight turn chrome",
-  "antigravity-turn-chrome": "the pane shows in-flight turn chrome",
+  "cursor-turn-chrome": "the agent is still working; no intervention needed",
+  "antigravity-turn-chrome": "the agent is still working; no intervention needed",
   "antigravity-verify-overlay": "the account-verify overlay is up and discards keystrokes",
   "antigravity-no-prompt": "no idle prompt is visible in the pane",
-  "codex-turn-chrome": "the pane shows in-flight turn chrome",
-  "no-idle-sentinel": "lifecycle hooks report the agent mid-turn without a usable ready file or current terminal idle proof",
+  "codex-turn-chrome": "the agent is still working; no intervention needed",
+  "no-idle-sentinel": "coord cannot confirm the agent is ready for input; inspect its terminal, and type there if it is idle",
   "codex-composer-not-ready": "the Codex composer is not empty or no longer holds exactly this action's message",
-  "pane-capture-unavailable": "file-backed readiness cannot check pane vetoes without a readable terminal capture",
-  "lifecycle-changed": "lifecycle activity or the ready receipt changed while the send was being prepared",
-  "unmatched-action": "the recorded lifecycle action does not match the current one",
+  "pane-capture-unavailable": "coord cannot read the terminal to check whether input is safe; inspect the agent terminal",
+  "lifecycle-changed": "new agent activity or completion interrupted the readiness check; waiting rather than typing",
+  "unmatched-action": "activity reports refer to a different task; inspect the agent's current assignment",
   "workflow-complete": "this agent already published its work for this action",
   "pending-input": "the agent has queued input of its own",
   "background-active": "the agent has background work running",
-  unknown: "no lifecycle signal has been correlated yet",
+  unknown: "no activity confirmation has arrived yet; normal just after launch, otherwise inspect the agent's trust prompt and hook setup",
   queued: "the agent has accepted work that has not started",
-  working: "the agent is mid-turn",
-  "idle-transition-already-used": "this action was already delivered on the current idle transition"
+  working: "the agent is working; no intervention needed unless its terminal is visibly idle",
+  "idle-transition-already-used": "this task was already sent while the agent was idle; waiting for fresh activity"
 };
 
 const deferralRationale = (code: string): string =>
@@ -902,6 +905,61 @@ export class CoordinatorRunLoop {
   /** Local probes are advisory; restarting may probe again without changing workflow state. */
   private readonly paneObservations = new Map<string, { identity: string; nextAt: number; available: boolean }>();
   private readonly ingestVerificationMeasurements = createVerificationIngestor();
+  private readonly ownerReminders = new Map<string, { actionId: string; digest: string; sessionId: string | null; sequence: number | undefined }>();
+  private readonly receiptMessages = new Map<string, string>();
+  private readonly stopWarnings = new Map<string, string>();
+  private startupReported = false;
+
+  /** Capture menu identities now, not after the owner selects a possibly stale row. */
+  reminders(): readonly { label: string; request(): string }[] {
+    const state = readCursorsState(this.paths);
+    return state.activeRoster.flatMap((agent) => {
+      const cursor = state.agents[agent];
+      if (cursor?.actionId == null || cursor.status !== "ordered") return [];
+      const path = agentRuntimePaths(this.paths, agent).action;
+      if (!existsSync(path)) return [];
+      const entry = readAgentLifecycle(this.paths).agents[agent];
+      const request = { actionId: cursor.actionId, digest: sha256OfFile(path), sessionId: entry?.sessionId ?? null,
+        sequence: entry?.hookReceipt?.sequence };
+      return [{ label: agent, request: () => {
+        const current = readCursorsState(this.paths);
+        if (current.paused || current.completed || current.abandoned) throw new Error("Release pauses/holds before requesting a reminder; completed work cannot be reminded.");
+        if (current.agents[agent]?.actionId !== request.actionId || !current.activeRoster.includes(agent)) throw new Error("That task is no longer current; open the reminder menu again.");
+        this.ownerReminders.set(agent, request);
+        return `Reminder requested for ${agent}; the running coordinator will check readiness, not restart the task.`;
+      } }];
+    });
+  }
+
+  private reportStopWarnings(): void {
+    const state = readAgentLifecycle(this.paths);
+    for (const agent of readCursorsState(this.paths).activeRoster) {
+      const entry = state.agents[agent];
+      const warning = entry === undefined ? null : stopObservationWarning(agent, entry);
+      const identity = warning === null ? null : `${entry?.sessionId}:${warning}`;
+      if (identity !== null && this.stopWarnings.get(agent) !== identity) this.log(`[WARN] ${warning}`);
+      if (identity === null) this.stopWarnings.delete(agent);
+      else this.stopWarnings.set(agent, identity);
+    }
+  }
+
+  /** Installation is not runtime trust; this diagnostic never grants delivery authority. */
+  async reportStartup(): Promise<void> {
+    if (this.startupReported) return;
+    const start = readStartState(this.paths);
+    const active = readCursorsState(this.paths).activeRoster;
+    const lifecycle = readAgentLifecycle(this.paths);
+    for (const agent of start.agents.filter((entry) => active.includes(entry.id))) {
+      for (const message of inspectStartupAgent(start, agent)) this.log(`[WARN] ${agent.id}: ${message}`);
+      const entry = lifecycle.agents[agent.id];
+      const coverage = containmentCoverage(entry, containmentPolicy(agent.root, agent.id)?.binding ?? null);
+      this.log(`${coverage.hook === "active" && entry?.hookReceipt ? "[OK]" : "[WARN]"} ${agent.id}: ` +
+        (coverage.hook === "active" && entry?.hookReceipt ? "current-session hook activity and actual-tool guard refusal observed." :
+          `runtime hook trust/activity not yet verified for issue ${start.issue}; inspect the terminal's trust prompt and hook setup, then restart the agent if repaired.`));
+    }
+    if (this.tmux !== null && typeof this.tmux.issueEnvironmentDiagnostic === "function") this.log(await this.tmux.issueEnvironmentDiagnostic(start.issue));
+    this.startupReported = true;
+  }
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
@@ -964,7 +1022,7 @@ export class CoordinatorRunLoop {
       if (opened.status === "opened" && opened.count > 0) {
         this.log(`Opened ${opened.count} Terminal window(s), one per agent tmux client.`);
       } else if (opened.status === "failed") {
-        this.log(`Could not open Terminal windows (${opened.error}). Attach manually with coord attach ${start.issue}.`);
+        this.log(`Could not open Terminal windows (${opened.error}). Attach manually with coord attach ${start.issue} --coord-root ${shellQuote(start.coordRoot)}.`);
       }
     }
   }
@@ -1014,8 +1072,9 @@ export class CoordinatorRunLoop {
     if (hold !== null) {
       const cause = hold.evidence === null ? "cause/reset unknown" :
         `${hold.evidence.failureClass}; reset ${hold.resetsAt ?? "unknown"}`;
-      this.log(`Issue ${readStartState(this.paths).issue}: ${agent} held (${reason}; ${cause}). ` +
-        `Inspect the agent, then ${holdRecoveryCommand(this.paths.issue, next, hold)}; add --run only if the coordinator was stopped.`);
+      this.verbose(`Hold diagnostic: ${reason}; ${cause}`);
+      this.log(`[ACTION] Issue ${this.paths.issue}: ${agent}: ${holdDescription(reason)}. ` +
+        `Inspect the agent, then ${holdRecoveryCommand(this.paths.issue, next, hold, this.paths.coordRoot)}; add --run only if the coordinator was stopped.`);
     }
     return next;
   }
@@ -1101,7 +1160,7 @@ export class CoordinatorRunLoop {
   /** One reservation path for initial, idle, reissue and lost-delivery sends. */
   private async deliver(
     start: StartState, cursors: CursorsState, agent: string, actionId: string, actionDigest: string,
-    reason: "initial" | "idle" | "reissue"
+    reason: "initial" | "idle" | "reissue" | "owner"
   ): Promise<CursorsState> {
     const config = start.agents.find((candidate) => candidate.id === agent);
     if (this.tmux === null || config === undefined || !["nudge", "both"].includes(config.delivery)) return cursors;
@@ -1117,7 +1176,8 @@ export class CoordinatorRunLoop {
     const staleWorking = entry?.execution === "working" && safety.sends === 0 &&
       entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest &&
       entry.action.delivery === "ordered" && entry.action.injectedAt === null;
-    if ((entry?.execution === "working" && !staleWorking) || entry?.backgroundActive === true ||
+    const owner = reason === "owner";
+    if ((entry?.execution === "working" && !staleWorking && !owner) || (owner && entry?.execution === "queued") || entry?.backgroundActive === true ||
       (entry?.pendingInputCount ?? 0) > 0) return cursors;
     // Lifecycle hooks write without touching cursor authority, so the override
     // re-reads them at every key until submission starts.
@@ -1125,12 +1185,15 @@ export class CoordinatorRunLoop {
       value?.lastEventAt, value?.execution, value?.pendingInputCount, value?.backgroundActive]);
     const observed = lifecycleSnapshot(entry);
     const hookSequence = entry?.hookReceipt?.sequence;
-    const staleOverride: IdleOverride | undefined = receipt !== null || staleWorking ? {
+    const staleOverride: IdleOverride | undefined = receipt !== null || staleWorking || owner ? {
       source: receipt !== null ? "ready-file" : "idle-sentinel",
       lifecycle: () => {
         const latest = readAgentLifecycle(this.paths).agents[agent];
         if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
-          latest.action.delivery === "accepted") return "accepted";
+          latest.action.delivery === "accepted" && (!owner ||
+            (latest.hookReceipt?.sequence !== hookSequence && latest.action.acceptedAt !== entry?.action?.acceptedAt))) return "accepted";
+        if (owner && (latest?.hookReceipt?.sequence !== hookSequence ||
+          readCompletion(agentRuntimePaths(this.paths, agent).complete).status !== "missing")) return "changed";
         if (receipt !== null && (latest?.hookReceipt?.sequence !== hookSequence ||
           readReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot)?.identity !== receipt.identity)) return "changed";
         return lifecycleSnapshot(latest) === observed ? "unchanged" : "changed";
@@ -1151,7 +1214,13 @@ export class CoordinatorRunLoop {
     let result;
     try {
       result = await this.tmux.nudge(start.issue, config, agentRuntimePaths(this.paths, agent).action,
-        () => this.authority(cursors), actionId, actionDigest, reserve, staleOverride);
+        () => {
+          this.authority(cursors);
+          if (owner && (!existsSync(agentRuntimePaths(this.paths, agent).action) ||
+              sha256OfFile(agentRuntimePaths(this.paths, agent).action) !== actionDigest)) {
+            throw new StateConflictError("The reminder's task changed during delivery.");
+          }
+        }, actionId, actionDigest, reserve, staleOverride);
     } catch (error) {
       this.authority(cursors);
       if (error instanceof StateConflictError) throw error;
@@ -1167,6 +1236,7 @@ export class CoordinatorRunLoop {
       return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`);
     }
     if (result.status === "sent") {
+      if (owner) this.log(`[OK] Reminder sent to ${agent} for its current task.`);
       markActionInjected(this.paths, agent, actionId, actionDigest, sentAt);
       if (receipt !== null) {
         clearReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot, receipt);
@@ -1297,8 +1367,8 @@ export class CoordinatorRunLoop {
     });
     const hold = created as Hold | null;
     if (hold !== null) {
-      this.log(`Issue ${start.issue}: ${agent} held (vendor-failure; ${failure.evidence.failureClass}; reset ${hold.resetsAt ?? "unknown"}). ` +
-        `Inspect the agent, then ${holdRecoveryCommand(this.paths.issue, next, hold)}; add --run only if the coordinator was stopped.`);
+      this.log(`[ACTION] Issue ${start.issue}: ${agent}: ${holdDescription("vendor-failure")} (${failure.evidence.failureClass}; provider recheck time ${hold.resetsAt ?? "unknown"}, not guaranteed availability). ` +
+        `Inspect the agent, then ${holdRecoveryCommand(this.paths.issue, next, hold, this.paths.coordRoot)}; add --run only if the coordinator was stopped.`);
     }
     return next;
   }
@@ -1702,10 +1772,10 @@ export class CoordinatorRunLoop {
         ...safety, deferrals: [...safety.deferrals, key]
       } } };
     });
-    const detailText = detail === undefined ? "" : ` (${detail})`;
     const message = splitBrain
-      ? `Issue ${start.issue}: ${agent} looks idle to its lifecycle hooks but its terminal is not ready to accept typing (${code}${detailText}); ${human}`
-      : `Issue ${start.issue}: delivery to ${agent} deferred: ${code}${detailText}; ${human}`;
+      ? `[WARN] Issue ${start.issue}: ${agent}'s activity report says idle but its terminal refuses input; ${human}`
+      : `[WAIT] Issue ${start.issue}: waiting to send to ${agent}; ${human}`;
+    this.verbose(`Delivery diagnostic: ${code}${detail === undefined ? "" : ` (${detail})`}`);
     if (gateWaiting || splitBrain) this.log(message);
     else this.verbose(message);
     return next;
@@ -1906,6 +1976,8 @@ export class CoordinatorRunLoop {
       });
     });
     const completion = markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
+    this.log(`[OK] ${decision.agent}: submission validated and accepted (commit ${decision.submissionSha.slice(0, 12)}).`);
+    this.reportStopWarnings();
     if (completion.clearedDegraded) {
       // The agent published and pushed, so the earlier watchdog warning is
       // disproven. Retract it explicitly rather than leaving it standing.
@@ -2018,6 +2090,7 @@ export class CoordinatorRunLoop {
   ): Promise<CursorsState> {
     const cursor = cursors.agents[agent];
     if (cursor === undefined || cursor.stepId === null || cursor.actionId === null) return cursors;
+    this.log(`[WAIT] ${agent}: submission needs correction; preparing its correction instructions (no owner action needed).`);
     const runtime = agentRuntimePaths(this.paths, agent);
     const actionId = cursor.actionId;
     const stepId = cursor.stepId;
@@ -2050,7 +2123,10 @@ export class CoordinatorRunLoop {
       changeScope,
       materialized
     );
-    this.verbose(`reissued ${agent} action ${actionId}: ${outstanding.join("; ")}`);
+    // Git artifacts are public; private response validation can contain ballot values.
+    const diagnostic = order.submissionMode === "response"
+      ? `${outstanding.length} validation finding(s); see its task file.` : outstanding.join("; ");
+    this.verbose(`reissued ${agent} action ${actionId}: ${diagnostic}`);
     const next = this.mutate(cursors, (current) => {
       appendJournal(
         this.paths,
@@ -2158,6 +2234,8 @@ export class CoordinatorRunLoop {
       });
     });
     const completion = markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
+    this.log(`[OK] ${decision.agent}: private response validated and accepted.`);
+    this.reportStopWarnings();
     if (completion.clearedDegraded) {
       appendJournal(
         this.paths,
@@ -2330,7 +2408,9 @@ export class CoordinatorRunLoop {
 
     try {
       if (reconcile.outcome === "push") {
+        this.log(`[WAIT] Pushing evidence branch ${branch}...`);
         await this.mirror.publishBranch(commitSha, branch);
+        this.log(`[OK] Evidence branch ${branch} pushed.`);
         this.authority(next);
       }
       const publishedAt = this.now();
@@ -2546,6 +2626,7 @@ export class CoordinatorRunLoop {
       paths: this.paths, start, mirror: this.mirror, processRunner: this.processRunner, now: () => this.now(),
       checkpoint: () => { this.authority(cursors); },
       journal: (type, details, at) => appendJournal(this.paths, { type, agent: order.agent, actionId: order.actionId, details }, at),
+      progress: (message) => this.log(`${order.agent}: ${message}`),
       phase, pin, classification, commands
     });
   }
@@ -2565,7 +2646,9 @@ export class CoordinatorRunLoop {
           `GitHub issue snapshot number ${issueSnapshot.number} does not match start issue ${start.issue}.`
         );
       }
+      this.log(`[WAIT] Pushing final branch ${branch}...`);
       await this.mirror.publishBranch(finalSha, branch);
+      this.log(`[OK] Final branch ${branch} pushed.`);
       this.authority(authority, true);
       const draft = !coordMergesPullRequest(start.prPolicy);
       const { title, body } = formatFinalizationPullRequest({
@@ -2576,6 +2659,7 @@ export class CoordinatorRunLoop {
         evidenceBranch: cursors.evidence.branch,
         evidenceTip: cursors.evidence.tip
       });
+      this.log("[WAIT] Opening the pull request...");
       const result = await this.pullRequestOpener({
         repository,
         base: start.baseBranch,
@@ -2585,9 +2669,12 @@ export class CoordinatorRunLoop {
         draft
       });
       openedUrl = result.url;
+      this.log(`[OK] Pull request: ${result.url}`);
       this.authority(authority, true);
       if (coordMergesPullRequest(start.prPolicy)) {
+        this.log("[WAIT] Merging the pull request...");
         await this.pullRequestMerger({ url: result.url });
+        this.log("[OK] Pull request merged.");
         this.authority(authority, true);
       }
       return this.mutate(authority, (current) => {
@@ -2807,7 +2894,7 @@ export class CoordinatorRunLoop {
           });
         }
         this.log(
-          `Owner action required: ${decision.reason}. Answer with: coord answer ${next.ownerQuestion?.id ?? "<question-id>"} <${decision.allowedAnswers.join("|")}>`
+          `Owner action required: ${decision.reason}. Answer with: ${issueCommand(`answer ${next.ownerQuestion?.id ?? "<question-id>"} <${decision.allowedAnswers.join("|")}>`, start.issue, start.coordRoot)}`
         );
       }
     }
@@ -2818,6 +2905,14 @@ export class CoordinatorRunLoop {
     const start = readStartState(this.paths);
     try {
       let cursors = readCursorsState(this.paths);
+      this.reportStopWarnings();
+      for (const [agent, request] of this.ownerReminders) {
+        if (cursors.paused || cursors.abandoned || cursors.completed || !cursors.activeRoster.includes(agent) ||
+            cursors.agents[agent]?.actionId !== request.actionId) {
+          this.ownerReminders.delete(agent);
+          this.log(`[WAIT] ${agent}: reminder cancelled because its task or pause state changed; select it again when appropriate.`);
+        }
+      }
       if (cursors.abandoned || cursors.completed) return cursors;
       for (const agent of start.agents) {
         if (cursors.activeRoster.includes(agent.id)) {
@@ -2846,6 +2941,14 @@ export class CoordinatorRunLoop {
       if (cursor === undefined || cursor.actionId === null || cursor.stepId === null) continue;
       const runtime = agentRuntimePaths(this.paths, agent);
       const completion = readCompletion(runtime.complete);
+      if (completion.status !== "missing") {
+        this.ownerReminders.delete(agent);
+        const identity = `${cursor.actionId}:${JSON.stringify(completion)}`;
+        if (this.receiptMessages.get(agent) !== identity) {
+          this.receiptMessages.set(agent, identity);
+          this.log(`[WAIT] ${agent}: completion marker received; checking the submission.`);
+        }
+      }
       if (this.tmux !== null && ["ordered", "intent", "verifying"].includes(cursor.status)) {
         cursors = this.ensureActionSafety(cursors, agent, cursor.actionId);
         cursors = await this.observeResources(start, cursors, agent);
@@ -2854,6 +2957,25 @@ export class CoordinatorRunLoop {
         if (cursors.paused) return cursors;
       }
       if (completion.status === "missing") {
+        const request = this.ownerReminders.get(agent);
+        if (request !== undefined) {
+          this.ownerReminders.delete(agent);
+          const entry = readAgentLifecycle(this.paths).agents[agent];
+          const config = start.agents.find((candidate) => candidate.id === agent);
+          if (cursor.status !== "ordered" || request.actionId !== cursor.actionId || !existsSync(runtime.action) ||
+              request.digest !== sha256OfFile(runtime.action) || request.sessionId !== (entry?.sessionId ?? null) ||
+              request.sequence !== entry?.hookReceipt?.sequence || entry?.action?.actionId !== request.actionId ||
+              entry.action.actionDigest !== request.digest || entry.action.workflowCompleteAt !== null ||
+              this.tmux === null || config === undefined || !["nudge", "both"].includes(config.delivery)) {
+            this.log(`[WARN] ${agent}: reminder not sent; task/activity changed or terminal delivery is unavailable. Inspect the terminal and reopen n if appropriate.`);
+          } else {
+            const sends = cursors.actionSafety[agent]?.sends ?? 0;
+            cursors = await this.deliver(start, cursors, agent, request.actionId, request.digest, "owner");
+            const after = cursors.actionSafety[agent];
+            if ((after?.sends ?? 0) === sends || after?.reserved) this.log(`[WAIT] ${agent}: reminder deferred by readiness, send spacing or a hold; inspect the terminal, use r for a hold, or type directly if needed.`);
+          }
+          continue;
+        }
         if (this.tmux !== null) {
           if (cursor.status === "ordered") {
             cursors = await this.maybeLifecycleNudge(start, cursors, agent, cursor.actionId);
@@ -3026,7 +3148,7 @@ export class CoordinatorRunLoop {
           const cursor = cursors.agents[agent];
           if (cursor === undefined) return null;
           if (cursor.status === "idle" && cursor.actionId === null) return null;
-          return `${agent}=${cursor.status}${cursor.outstanding.length > 0 ? `(${cursor.outstanding[0]})` : ""}`;
+          return `${agent}=${cursor.status}${cursor.outstanding.length > 0 ? `(${cursor.outstanding.length} correction(s))` : ""}`;
         })
         .filter((item): item is string => item !== null);
       this.verbose(
@@ -3046,13 +3168,14 @@ export class CoordinatorRunLoop {
     let cursors = readCursorsState(this.paths);
     const finished = (state: CursorsState): boolean => state.completed || state.abandoned;
     if (finished(cursors)) {
-      this.log(renderIssueReport(start, cursors).trimEnd());
+      this.log(renderIssueReport(start, cursors, readAgentLifecycle(this.paths)).trimEnd());
       return;
     }
     this.logPhase(start.issue, cursors.issueCursor.stepId, cursors.issueCursor.round);
     // Pauses retain the runner, not workflow authority. runTick remains
     // observation-only while held, and manual pause also stops quota reads.
     let initialized = false;
+    let diagnosed = false;
     let lastPausedReport: string | null = null;
     while (!stopped()) {
       cursors = readCursorsState(this.paths);
@@ -3062,6 +3185,7 @@ export class CoordinatorRunLoop {
             await this.initializeEffects();
             initialized = true;
           }
+          if (!diagnosed) { await this.reportStartup(); diagnosed = true; }
           if (stopped()) return;
           cursors = await this.runTick({ observeOnly: !initialized });
         }
@@ -3073,10 +3197,10 @@ export class CoordinatorRunLoop {
       }
       if (stopped()) return;
       if (finished(cursors)) {
-        this.log(renderIssueReport(start, cursors).trimEnd());
+        this.log(renderIssueReport(start, cursors, readAgentLifecycle(this.paths)).trimEnd());
         return;
       }
-      const report = cursors.paused ? renderIssueReport(start, cursors).trimEnd() : null;
+      const report = cursors.paused ? renderIssueReport(start, cursors, readAgentLifecycle(this.paths)).trimEnd() : null;
       if (report !== null && report !== lastPausedReport) this.log(report);
       lastPausedReport = report;
       // The default sleep cancels its timer; the wrapper also permits injected

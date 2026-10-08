@@ -77,6 +77,11 @@ export const lifecycleActionSchema = z
 
 const diagnosticSchema = z.string().max(DIAGNOSTIC_MAX_BYTES).nullable();
 
+const emptyStopObservation = () => ({ turns: [] as string[], completedActions: [] as string[], stoppedActionId: null as string | null });
+const stopObservationSchema = z.object({
+  turns: z.array(z.string()).max(128), completedActions: z.array(z.string()).max(128), stoppedActionId: z.string().nullable()
+}).default(emptyStopObservation);
+
 /** Latest correlated vendor failure; `actionId: null` is advisory and cannot hold or release work. */
 export const lifecycleFailureSchema = z
   .object({
@@ -117,6 +122,8 @@ export const agentLifecycleEntrySchema = z
     degradedCause: z.enum(["hooks-never-seen", "correlation-lagged"]).nullable().default(null),
     lastEvent: z.string().min(1).nullable(),
     lastEventAt: timestampSchema.nullable(),
+    /** Advisory only: never used to decide readiness or workflow authority. */
+    stopObservation: stopObservationSchema,
     /** Activity-hook receipt, independent of semantic deduplication and telemetry. */
     hookReceipt: z.object({ at: timestampSchema, sequence: z.number().int().nonnegative() }).nullable().default(null),
     lastFailure: lifecycleFailureSchema.nullable().default(null),
@@ -175,6 +182,7 @@ const emptyEntry = (now: string): AgentLifecycleEntry => ({
   degradedCause: null,
   lastEvent: null,
   lastEventAt: null,
+  stopObservation: emptyStopObservation(),
   hookReceipt: null,
   lastFailure: null,
   claudeRateLimits: null,
@@ -444,6 +452,9 @@ export const markActionWorkflowComplete = (
       agent,
       {
         ...current,
+        stopObservation: current.action.workflowCompleteAt === null && current.stopObservation.stoppedActionId !== actionId
+          ? { ...current.stopObservation, completedActions: [...new Set([...current.stopObservation.completedActions, actionId])].slice(-128) }
+          : current.stopObservation,
         health: clearedDegraded ? "healthy" : current.health,
         degradedCause: clearedDegraded ? null : current.degradedCause,
         action: { ...current.action, workflowCompleteAt: now }
@@ -558,6 +569,20 @@ export const applyLifecycleObservation = (
 
   if (observation.kind === "telemetry") return applyTelemetry(entry, observation, now);
 
+  let stopObservation = sessionChanged || (entry.sessionId === null && incomingSession !== null)
+    ? emptyStopObservation() : entry.stopObservation;
+  if (observation.kind === "prompt-submitted") {
+    stopObservation = { ...stopObservation, stoppedActionId: null,
+      turns: observation.turnId === undefined ? stopObservation.turns
+        : [...new Set([...stopObservation.turns, observation.turnId])].slice(-128) };
+  }
+  if (observation.kind === "stopped" && incomingSession !== null && incomingSession === entry.sessionId &&
+      ((stopObservation.turns.at(-1) ?? entry.turnId) === null ||
+        observation.turnId === (stopObservation.turns.at(-1) ?? entry.turnId)) &&
+      (entry.action?.turnId == null || observation.turnId === entry.action.turnId)) {
+    stopObservation = { ...emptyStopObservation(), stoppedActionId: entry.action?.actionId ?? null };
+  }
+
   let action = entry.action;
   let execution = observation.execution ?? entry.execution;
   let turnId = observation.turnId ?? (sessionChanged ? null : entry.turnId);
@@ -609,7 +634,7 @@ export const applyLifecycleObservation = (
       action = {
         ...action,
         delivery: "accepted",
-        acceptedAt: action.acceptedAt ?? now,
+        acceptedAt: now,
         sessionId,
         turnId: observation.turnId ?? null
       };
@@ -658,6 +683,7 @@ export const applyLifecycleObservation = (
   return agentLifecycleEntrySchema.parse({
     ...entry,
     lastFailure,
+    stopObservation,
     containment: sessionChanged || observation.kind === "session-end" ? null : entry.containment,
     action,
     execution,
@@ -673,6 +699,14 @@ export const applyLifecycleObservation = (
     lastEventAt: now,
     updatedAt: now
   });
+};
+
+/** Missing Stop callbacks are an observability warning, not evidence of failure or idle. */
+export const stopObservationWarning = (agent: string, entry: AgentLifecycleEntry): string | null => {
+  const observed = entry.stopObservation;
+  if (observed.turns.length >= 2) return `No Stop hook from ${agent} after ${observed.turns.length === 128 ? "at least " : ""}${observed.turns.length} observed turns; inspect its hook setup and current issue environment.`;
+  if (observed.completedActions.length >= 2) return `No Stop confirmation from ${agent} after ${observed.completedActions.length === 128 ? "at least " : ""}${observed.completedActions.length} completed actions; turn identity may be unavailable; inspect its hook setup.`;
+  return null;
 };
 
 const semanticallyEqual = (left: AgentLifecycleEntry, right: AgentLifecycleEntry): boolean => {

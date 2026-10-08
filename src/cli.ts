@@ -51,7 +51,7 @@ import {
   type CoordinatorConfig,
   type CursorsState
 } from "./state.js";
-import { describeWorkflowStep, type WorkflowProfile } from "./steps.js";
+import { type WorkflowProfile } from "./steps.js";
 import { applyOwnerAnswer, clearAgentLocalWork, dropOwnerAgent, invalidateUnpublishedBatches,
   queueOwnerGuidance, setOwnerPause } from "./ownerControls.js";
 import { startInteractiveSession, type InteractiveSession, type TerminalInput, type TerminalOutput } from "./interactive.js";
@@ -63,10 +63,12 @@ import {
 import {
   listIssueNumbersInWorkspace,
   resolveWorkspaceFromProduct,
+  resolveWorkspaceFromWorktree,
   workspaceLocationFromConfig,
   type WorkspaceLocation
 } from "./workspace.js";
-import { renderIssueReport } from "./issueReport.js";
+import { issueCommand, renderIssueReport } from "./issueReport.js";
+import { shellQuote } from "./agentHookSync.js";
 import { wipeIssue } from "./wipeIssue.js";
 import { detachIssue } from "./detachIssue.js";
 
@@ -82,6 +84,8 @@ export type CliRunLoop = {
   initializeEffects(): Promise<void>;
   runTick(): Promise<CursorsState>;
   run(signal?: AbortSignal): Promise<void>;
+  reminders?(): readonly { label: string; request(): string }[];
+  reportStartup?(): Promise<void>;
 };
 
 export type CliDependencies = {
@@ -215,7 +219,7 @@ const help = `coord — owner-side workflow driver
 
 Usage:
   coord --version | -V | version
-  coord onboard <product> [--coord-root <path>] [--completes-root <path>] [--agents <a,b,c>] [--profile <p>]
+  coord onboard <repository> [--coord-root <path>] [--completes-root <path>] [--agents <a,b,c>] [--profile <p>]
   coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord manual [--product <path> | --config <path> --coord-root <path>]
   coord install --product <path> --coord-root <external-path> --agents <a,b,c> [--profile <p>]
@@ -248,8 +252,8 @@ Called by the agent-clone hooks, not by operators:
   coord git-guard --vendor <codex|claude|cursor|antigravity> --clone <path>
   coord containment-probe --resolved-git <tool-shell-command-v-result> [--tool-result hook-denied|shim-refused|executed|unknown] [--vendor-version <version>] [--clone <path>] [--issue <n>]
 
-Happy path: bootstrap once, onboard a product once, create GitHub issue N, then run
-\`coord N\` from that onboarded product. Agents author plans on issue-N/<agent>.
+Happy path: bootstrap once, onboard a repository once, create GitHub issue N, then run
+\`coord N\` from that onboarded repository. Agents author plans on issue-N/<agent>.
 
 From an agent clone, \`coord next --issue N\` resolves the runtime via
 coord.workspaceConfig and the caller via consensus.agentId (or --agent / COORD_AGENT).
@@ -262,7 +266,7 @@ for that agent; if ambiguous, use \`--hold\`. Nudge-loop release still requires
 use \`coord resume --issue N --agent claude --run\` only for a stopped coordinator,
 and omit \`--run\` beside a live runner (it does not detect a second runner).
 \`coord --version\` prints the package version (pre-1.0: \`0.0.N\`, advanced by CI on merge to main).
-\`coord status\` prints the chosen agent, final pin, published branch, evidence
+\`coord status\` prints the chosen agent, final commit, published branch, evidence
 branch/tip and publication state, and PR URL. It never exposes ballot choices,
 dispositions, rationales, or pending response bytes.
 
@@ -278,7 +282,7 @@ per-clone remediation — do not run \`git checkout\` by hand; use
 \`coord reset-clones N\` (keeps analytics runtime). \`coord uninstall\` also tears down owner
 tmux/Terminals for the workspace agents. \`coord wipe-issue N\` resets agent clones,
 deletes origin issue-N agent/*-final branches plus leftover tracking refs (keeping
-product-local issue branches that have owner commits or uncommitted work, and
+repository-local issue branches that have owner commits or uncommitted work, and
 keeping \`issue-N/coordinator-evidence\` unless \`--delete-evidence\`), removes the
 issue runtime and completion mailbox, tears down UI, and leaves the GitHub issue
 open. \`coord reset-clones N\` only makes agent clones base-ready (lift overlay,
@@ -293,15 +297,51 @@ chat and agents use their own <agent>/<name> scratch branches. Manual and
 automated issue sessions cannot run concurrently for the same workspace; use
 \`coord detach manual\` to close manual UI before starting or resuming an issue.
 
-install remains the advanced explicit interface. Onboard and install leave the product's
+install remains the advanced explicit interface. Onboard and install leave the repository's
 tracked tree untouched; a fresh human clone receives no coordination hooks or metadata.
 COORD_ISSUE and COORD_AGENT may replace their corresponding owner-control options.
 
 Foreground TTY runs accept s (status), p/Space (manual pause), a (attach),
-d (drop), r (release a selected hold), /steer <text>, ?/h (help), and q (quit).
+d (drop), n (remind one current task without restarting it), r (release a selected hold), /steer <text>, ?/h (help), and q (quit).
+For a reminder-limit hold, r asks before allowing four more sends. Reminders
+retain readiness checks and send limits; inspect/type in the agent terminal if refused.
+/steer queues guidance for every recipient of the next assigned cohort, not an immediate broadcast.
+An action is one assigned task; a turn is one agent prompt/reply; a pin is a commit.
+No control force-completes work: the agent must publish valid evidence first.
+Issue commands infer runtime from a registered current worktree when neither
+--product nor --coord-root is supplied. Use an explicit root from other folders.
 Quit stops only the foreground runner, unlike coord detach; agent panes still
 accept direct typing. Non-TTY runs do not read interactive input.
 `;
+
+const commandDescriptions: Record<string, string> = {
+  start: "Start an issue from its GitHub description and launch agents; existing runtime is not overwritten. Example: coord start 161 --product /repository.",
+  run: "Continue an existing issue in this foreground process. Example: coord run --issue 161; do not start a second runner.",
+  status: "Read an issue's progress, warnings and recovery commands without changing work. Example: coord status --issue 161.",
+  resume: "Clear manual pause, or release one named hold; this changes state only unless --run is supplied for a stopped coordinator. Example: coord resume --issue 161 --agent codex --reset-nudge-budget.",
+  pause: "Pause coordinator work without stopping agent terminals or releasing holds. Example: coord pause --issue 161.",
+  "restart-action": "Discard the selected pending action/response and issue a new assignment; use interactive n for a nondestructive reminder instead. Example: coord restart-action --issue 161 --agent codex.",
+  answer: "Answer the exact pending owner question; only its permitted choices are accepted. Example: coord answer QUESTION retry --issue 161.",
+  drop: "Remove an active agent and rederive decisions; this can invalidate pending work. Example: coord drop cursor --issue 161.",
+  abandon: "End an issue without accepting further work. Example: coord abandon --issue 161.",
+  attach: "Reopen missing terminal windows for a running issue without starting a runner. Example: coord attach 161.",
+  detach: "Close agent terminal/tmux sessions but retain issue runtime and branches. Example: coord detach 161 --dry-run.",
+  analytics: "Read recorded timing and usage without changing issue state. Example: coord analytics --issue 161.",
+  next: "Read the current assignment for a registered agent without accepting it. Example: coord next --issue 161 --agent codex.",
+  manual: "Open workspace agent terminals without issue automation. Example: coord manual --product /repository.",
+  onboard: "Install a coordination workspace for a repository. Example: coord onboard /repository.",
+  install: "Install or repair agent clones, hooks and workspace configuration. Preview changes with --dry-run; see required paths below.",
+  uninstall: "Remove coordination installation; deletion options are destructive. Preview with --dry-run and explicit repository/runtime paths below.",
+  doctor: "Inspect installation wiring read-only, not live harness trust. Example: coord doctor --coord-root /runtime --product /repository.",
+  "wipe-issue": "Delete issue runtime and matching remote branches; inspect --dry-run first. Example: coord wipe-issue 161 --dry-run.",
+  "reset-clones": "Restore matching agent clones to the base branch without deleting issue runtime. Example: coord reset-clones 161 --dry-run.",
+  version: "Print the installed coordinator package version without changing state. Example: coord --version.",
+  "hook-verify": "Run the installed clone's declared Git verification phase; invoked by hooks, not an owner recovery command.",
+  "hook-scope": "Read the clone's verification scope; invoked by hooks.",
+  "agent-event": "Record a vendor hook callback supplied on stdin; this is not an owner command for marking work complete.",
+  "git-guard": "Evaluate a native shell-tool hook request supplied on stdin, using the installed clone binding.",
+  "containment-probe": "Record an actual harness-tool observation, not an invented trust result; follow the agent action's probe instructions."
+};
 
 export const automationDigestMaterial = (
   configPath: string,
@@ -429,20 +469,24 @@ const existingIssueRuntime = (resolution: StartResolution, issue: number): Issue
 
 /** Resolve existing state either explicitly or through an onboarded product. */
 const existingContext = (parsed: ParsedArgs, io: CliIo): IssueRuntimePaths => {
-  if (!parsed.flags.has("product")) return context(parsed, io);
-  if (parsed.flags.has("coord-root")) {
+  if (parsed.flags.has("coord-root") && parsed.flags.has("product")) {
     throw new Error("Use --product or --coord-root for an issue command, not both.");
   }
+  if (parsed.flags.has("coord-root")) return context(parsed, io);
   const issueValue = parsed.flags.get("issue") ?? io.env.COORD_ISSUE;
   if (issueValue === undefined) throw new Error("--issue or COORD_ISSUE is required.");
   const issue = parseIssue(issueValue);
-  const resolution = resolveStart(
+  const workspace = parsed.flags.has("product") ? null : resolveWorkspaceFromWorktree(io.cwd);
+  const config = workspace === null ? null : readConfig(workspace.configPath);
+  const resolution = workspace !== null && config !== null ? {
+    workspace, config, configPath: workspace.configPath, runtimeRoot: workspace.workspaceRoot, profile: config.profile
+  } : resolveStart(
     { positionals: [], flags: new Map([["product", requireFlag(parsed, "product")]]) },
     io
   );
   const paths = existingIssueRuntime(resolution, issue);
   if (paths === null) {
-    throw new Error(`No runtime state exists for issue ${issue} and this product. Run coord ${issue}.`);
+    throw new Error(`No runtime state exists for issue ${issue} and this repository. Run coord ${issue}.`);
   }
   return paths;
 };
@@ -604,8 +648,8 @@ const detachCompletedIssue = async (paths: IssueRuntimePaths, io: CliIo): Promis
   io.stderr(
     `Clone readiness refused for ${refused.length} clone(s). ` +
       `Do not run git checkout ${start.baseBranch} by hand — the AGENTS.md protocol overlay ` +
-      `(skip-worktree) blocks it. Run: coord reset-clones ${start.issue} --product <path> ` +
-      `(or --config <path> --coord-root <path>).\n`
+      `(skip-worktree) blocks it. Run: coord reset-clones ${start.issue} --config ${shellQuote(start.configPath)} ` +
+      `--coord-root ${shellQuote(start.coordRoot)}.\n`
   );
   appendJournal(
     paths,
@@ -679,7 +723,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     reportOwnerAgentClients(await tmux.openOwnerAgentClients(start.issue, start.agents), io.stdout);
   };
 
-  const runIssue = async (paths: IssueRuntimePaths): Promise<number> => {
+  const runIssue = async (paths: IssueRuntimePaths, loop = makeRunLoop(paths)): Promise<number> => {
     const controller = new AbortController();
     let stopCode = 0;
     let session: InteractiveSession | null = null;
@@ -701,10 +745,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         commands: {
           status: () => {
             const state = readCursorsState(paths);
-            return renderIssueReport(readStartState(paths), state, readAgentLifecycle(paths)) +
-              `Active step: ${describeWorkflowStep(state.issueCursor.stepId, state.issueCursor.round)}\n` +
-              `Active roster: ${state.activeRoster.join(", ")}\n` +
-              `Queued guidance: ${state.ownerGuidance?.pending.length ?? 0}\n`;
+            return renderIssueReport(readStartState(paths), state, readAgentLifecycle(paths));
           },
           togglePause: () => {
             const state = setOwnerPause(paths, "toggle");
@@ -714,13 +755,14 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           agents: () => readCursorsState(paths).activeRoster,
           drop: (agent) => { dropOwnerAgent(paths, agent); },
           holds: () => readCursorsState(paths).holds,
-          releaseHold: (hold) => { setOwnerPause(paths, false, { hold }); },
+          releaseHold: (hold, resetBudget) => { setOwnerPause(paths, false, { hold, resetBudget }); },
+          reminders: () => loop.reminders?.() ?? [],
           steer: (text) => { queueOwnerGuidance(paths, text); },
           answer: (id, choice) => { applyOwnerAnswer(paths, id, choice); }
         }
       });
       if (session !== null) { io.stdout = session.print; io.stderr = session.print; }
-      await makeRunLoop(paths).run(controller.signal);
+      await loop.run(controller.signal);
     } finally {
       session?.close();
       io.stdout = stdout; io.stderr = stderr;
@@ -763,7 +805,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
   };
 
-  const startIssue = async (issue: number, resolution: StartResolution): Promise<IssueRuntimePaths> => {
+  const startIssue = async (issue: number, resolution: StartResolution): Promise<{ paths: IssueRuntimePaths; loop: CliRunLoop }> => {
     const { configPath, config, profile } = resolution;
     const agents = resolvedAgents(resolution);
     const roster = profile === "solo" ? agents.slice(0, 1) : agents;
@@ -876,18 +918,28 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       }
       throw error;
     }
+    let initialLoop: CliRunLoop;
     try {
-      await makeRunLoop(paths).runTick();
+      initialLoop = makeRunLoop(paths);
+      await initialLoop.reportStartup?.();
+      await initialLoop.runTick();
     } catch (error) {
       throw new Error(
         `Issue ${issue} was started durably at ${paths.issueRoot}, but its initial tick failed; ` +
-          `resume with coord ${issue}: ${error instanceof Error ? error.message : String(error)}`
+          `resume with ${issueCommand("run", issue, paths.coordRoot)}: ${error instanceof Error ? error.message : String(error)}`
       );
     }
     io.stdout(`Started issue ${issue} (${profile}) at ${paths.issueRoot}.\n`);
-    return paths;
+    return { paths, loop: initialLoop };
   };
   const [command, ...rest] = argv;
+  const helpTarget = command === "help" ? rest[0] : rest.includes("--help") || rest.includes("-h") ? command : undefined;
+  if (helpTarget !== undefined) {
+    const description = commandDescriptions[helpTarget];
+    if (description === undefined) { io.stderr(`Unknown command ${JSON.stringify(helpTarget)}. Use coord --help.\n`); return 2; }
+    io.stdout(`${description}\n\n${help}`);
+    return 0;
+  }
   if (command === undefined || command === "--help" || command === "-h" || command === "help") {
     io.stdout(help);
     return 0;
@@ -908,8 +960,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const resolution = resolveStart(parsed, io);
       await assertNoManualSession(resolution.runtimeRoot);
       const existing = existingIssueRuntime(resolution, issue);
-      const paths = existing ?? (await startIssue(issue, resolution));
-      return await runIssue(paths);
+      if (existing !== null) return await runIssue(existing);
+      const started = await startIssue(issue, resolution);
+      return await runIssue(started.paths, started.loop);
     }
 
     if (command === "manual") {
@@ -936,7 +989,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
 
     if (command === "onboard") {
       allowedFlags(parsed, ["coord-root", "completes-root", "clone-root", "agents", "profile"]);
-      if (parsed.positionals.length !== 1) throw new Error("onboard requires exactly one product path.");
+      if (parsed.positionals.length !== 1) throw new Error("onboard requires exactly one repository path.");
       const agents = (parsed.flags.get("agents") ?? "claude,codex,cursor,antigravity")
         .split(",")
         .map((agent) => agent.trim())
