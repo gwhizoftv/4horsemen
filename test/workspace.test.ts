@@ -63,7 +63,7 @@ describe("workspace layout", () => {
     mkdirSync(join(clone, "sub"), { recursive: true });
     git(clone, "init", "-q");
     mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, JSON.stringify({ ...config("app"), agents: [{ id: "claude", root: clone, launcher: "start-claude.sh" }] }));
+    writeFileSync(configPath, JSON.stringify({ ...config("app", clone), agents: [{ id: "claude", root: clone, launcher: "start-claude.sh" }] }));
     git(clone, "config", "coord.workspaceConfig", configPath);
     git(clone, "config", "consensus.agentId", "claude");
     expect(resolveWorkspaceFromWorktree(join(clone, "sub")).configPath).toBe(configPath);
@@ -75,6 +75,20 @@ describe("workspace layout", () => {
     git(clone, "config", "coord.workspaceConfig", configPath);
     git(clone, "config", "coord.ownerWorkspaceConfig", join(root, "missing.json"));
     expect(() => resolveWorkspaceFromWorktree(clone)).toThrow(); // invalid owner binding cannot fall through to agent binding
+    const ownerConfig = join(root, "owner/config.json");
+    writeConfig(ownerConfig, "owner", clone);
+    git(clone, "config", "coord.ownerWorkspaceConfig", ownerConfig);
+    expect(resolveWorkspaceFromProduct(clone).configPath).toBe(ownerConfig); // explicit owner selection remains available
+    expect(() => resolveWorkspaceFromWorktree(clone)).toThrow("different workspaces");
+    git(clone, "config", "coord.workspaceConfig", join(root, "missing-agent.json"));
+    expect(() => resolveWorkspaceFromWorktree(clone)).toThrow(); // a valid owner cannot hide a stale agent locator
+    git(clone, "config", "coord.workspaceConfig", configPath);
+    const alias = join(dirname(configPath), "config-alias.json");
+    symlinkSync(configPath, alias);
+    git(clone, "config", "coord.ownerWorkspaceConfig", alias);
+    expect(resolveWorkspaceFromWorktree(clone).configPath).toBe(alias); // canonical aliases are not conflicting locators
+    git(clone, "config", "consensus.agentId", "codex");
+    expect(() => resolveWorkspaceFromWorktree(clone)).toThrow("different agent/repository");
     expect(() => resolveWorkspaceFromWorktree(root)).toThrow("not a Git worktree");
   });
   it("diagnoses missing and non-directory working paths without a spawn error", () => {

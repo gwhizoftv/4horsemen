@@ -309,7 +309,9 @@ describe("owner reminders and advisory diagnostics", () => {
   it("keeps startup and missing-Stop diagnostics advisory and avoids warning on every poll", async () => {
     const f = safetyFixture("claude"), loop = f.makeLoop();
     await loop.reportStartup();
+    await loop.reportStartup(); // the foreground run reuses the already-diagnosed startup instance
     expect(f.messages.join("\n")).toContain("runtime hook trust/activity not yet verified");
+    expect(f.messages.filter((message) => message.includes("claude: runtime hook trust/activity not yet verified"))).toHaveLength(1);
     await loop.runTick(); f.advance(1); f.working(); f.advance(1); f.working();
     await loop.runTick(); await loop.runTick();
     expect(f.messages.filter((message) => message.includes("No Stop hook from claude after 2 observed turns"))).toHaveLength(1);
@@ -1904,7 +1906,9 @@ describe("effectful run loop", () => {
       return { exitCode: 0, stdout: "", stderr: "" };
     });
     let nowMs = Date.now();
-    const loop = new CoordinatorRunLoop(paths, { now: () => new Date(nowMs).toISOString(), tmux });
+    const messages: string[] = [], verbose: string[] = [];
+    const loop = new CoordinatorRunLoop(paths, { now: () => new Date(nowMs).toISOString(), tmux,
+      log: (message) => messages.push(message), verbose: (message) => verbose.push(message) });
     await loop.runTick();
     const firstNudges = literalNudges;
     expect(firstNudges).toBeGreaterThan(0);
@@ -1915,6 +1919,8 @@ describe("effectful run loop", () => {
     await loop.runTick();
     expect(readCursorsState(paths).agents.codex).toMatchObject({ actionId, status: "ordered", attempt: 2 });
     expect(readAction(runtime.action).body).toContain("complete must contain a 40-character lowercase Git SHA");
+    expect(messages).toContain("[WAIT] codex: submission needs correction; preparing its correction instructions (no owner action needed).");
+    expect(verbose.join("\n")).toContain("complete must contain a 40-character lowercase Git SHA");
     expect(readJournal(paths).some((event) => event.type === "verify-result")).toBe(true);
     expect(readJournal(paths).some((event) => event.type === "nudged" && event.details.reissue === true)).toBe(true);
     expect(literalNudges).toBeGreaterThan(firstNudges);
@@ -3523,13 +3529,13 @@ describe("materialized bound inputs", () => {
    * is the worst moment to lose the exported paths: the agent is being asked to
    * fix something, and the shim still refuses the reads the files replaced.
    */
-  it("keeps the bound-input paths when an action is re-issued with corrections", async () => {
+  it.each(["R3.review", "R3.plan-ballot"] as const)("keeps the bound-input paths when %s is re-issued without leaking private corrections", async (stepId) => {
     const { paths } = fixture();
     const now = "2026-08-11T17:00:00.000Z";
     mutateCursorsState(paths, (current) =>
       cursorsStateSchema.parse({
         ...current,
-        issueCursor: { stepId: "R3.review", gateId: "gate-3-selection", round: null },
+        issueCursor: { stepId, gateId: "gate-3-selection", round: null },
         accepted: current.activeRoster.map((agent, index) => ({
           stepId: "R2.plan" as const,
           agent,
@@ -3541,7 +3547,7 @@ describe("materialized bound inputs", () => {
         agents: Object.fromEntries(
           current.activeRoster.map((agent) => [
             agent,
-            { ...current.agents[agent], stepId: "R3.review", status: "idle", actionId: null }
+            { ...current.agents[agent], stepId, status: "idle", actionId: null }
           ])
         ),
         updatedAt: now
@@ -3553,21 +3559,37 @@ describe("materialized bound inputs", () => {
       if (command === "rev-parse") return { exitCode: 0, stdout: Buffer.from(`${"d".repeat(40)}\n`), stderr: "" };
       return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
     });
-    const loop = new CoordinatorRunLoop(paths, { mirror, tmux: null });
+    const messages: string[] = [], verbose: string[] = [];
+    const loop = new CoordinatorRunLoop(paths, { mirror, tmux: null,
+      log: (message) => messages.push(message), verbose: (message) => verbose.push(message) });
     await loop.runTick();
 
     const actionPath = agentRuntimePaths(paths, "claude").action;
     const first = readFileSync(actionPath, "utf8");
     expect(first).toContain("## Bound input files");
 
-    // Force the correction path with a malformed completion marker.
-    writeFileSync(agentRuntimePaths(paths, "claude").complete, "not-a-sha\n");
+    // Private parse failures can contain ballot values, unlike public Git corrections.
+    if (stepId === "R3.plan-ballot") {
+      const actionId = readCursorsState(paths).agents.claude!.actionId!;
+      writeAgentResponse(agentResponsePath(paths, "claude", actionId), paths.issueRoot,
+        { actionId, choice: "private-choice", rationale: "Private rationale." });
+      writeFileSync(agentRuntimePaths(paths, "claude").complete, `response ${actionId}\n`);
+    } else {
+      writeFileSync(agentRuntimePaths(paths, "claude").complete, "not-a-sha\n");
+    }
     await loop.runTick();
 
     const reissued = readFileSync(actionPath, "utf8");
     expect(reissued).toContain("Correct these outstanding items");
     expect(reissued).toContain("## Bound input files");
-    for (const path of [...reissued.matchAll(/: "([^"]+)"$/gm)].map((match) => match[1] as string)) {
+    if (stepId === "R3.plan-ballot") {
+      expect(reissued).toContain("choice private-choice is not eligible");
+      expect(verbose.join("\n")).toContain("1 validation finding(s); see its task file");
+      expect([...messages, ...verbose].join("\n")).not.toMatch(/private-choice|Private rationale/);
+    }
+    const boundPaths = [...reissued.matchAll(/^- .*: "([^"]+)"$/gm)].map((match) => match[1] as string);
+    expect(boundPaths.length).toBeGreaterThan(0);
+    for (const path of boundPaths) {
       expect(existsSync(path), path).toBe(true);
     }
   });

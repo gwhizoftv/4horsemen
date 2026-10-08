@@ -723,11 +723,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     reportOwnerAgentClients(await tmux.openOwnerAgentClients(start.issue, start.agents), io.stdout);
   };
 
-  const runIssue = async (paths: IssueRuntimePaths): Promise<number> => {
+  const runIssue = async (paths: IssueRuntimePaths, loop = makeRunLoop(paths)): Promise<number> => {
     const controller = new AbortController();
     let stopCode = 0;
     let session: InteractiveSession | null = null;
-    const loop = makeRunLoop(paths);
     const stdout = io.stdout, stderr = io.stderr;
     // Like sessionExists, test defaults must not operate on the host UI.
     // An explicitly injected terminal still exercises the interactive path.
@@ -806,7 +805,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
   };
 
-  const startIssue = async (issue: number, resolution: StartResolution): Promise<IssueRuntimePaths> => {
+  const startIssue = async (issue: number, resolution: StartResolution): Promise<{ paths: IssueRuntimePaths; loop: CliRunLoop }> => {
     const { configPath, config, profile } = resolution;
     const agents = resolvedAgents(resolution);
     const roster = profile === "solo" ? agents.slice(0, 1) : agents;
@@ -919,8 +918,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       }
       throw error;
     }
+    let initialLoop: CliRunLoop;
     try {
-      const initialLoop = makeRunLoop(paths);
+      initialLoop = makeRunLoop(paths);
       await initialLoop.reportStartup?.();
       await initialLoop.runTick();
     } catch (error) {
@@ -930,10 +930,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       );
     }
     io.stdout(`Started issue ${issue} (${profile}) at ${paths.issueRoot}.\n`);
-    return paths;
+    return { paths, loop: initialLoop };
   };
   const [command, ...rest] = argv;
-  const helpTarget = command === "help" ? rest[0] : rest.length === 1 && (rest[0] === "--help" || rest[0] === "-h") ? command : undefined;
+  const helpTarget = command === "help" ? rest[0] : rest.includes("--help") || rest.includes("-h") ? command : undefined;
   if (helpTarget !== undefined) {
     const description = commandDescriptions[helpTarget];
     if (description === undefined) { io.stderr(`Unknown command ${JSON.stringify(helpTarget)}. Use coord --help.\n`); return 2; }
@@ -960,8 +960,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const resolution = resolveStart(parsed, io);
       await assertNoManualSession(resolution.runtimeRoot);
       const existing = existingIssueRuntime(resolution, issue);
-      const paths = existing ?? (await startIssue(issue, resolution));
-      return await runIssue(paths);
+      if (existing !== null) return await runIssue(existing);
+      const started = await startIssue(issue, resolution);
+      return await runIssue(started.paths, started.loop);
     }
 
     if (command === "manual") {

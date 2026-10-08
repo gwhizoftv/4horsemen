@@ -908,6 +908,7 @@ export class CoordinatorRunLoop {
   private readonly ownerReminders = new Map<string, { actionId: string; digest: string; sessionId: string | null; sequence: number | undefined }>();
   private readonly receiptMessages = new Map<string, string>();
   private readonly stopWarnings = new Map<string, string>();
+  private startupReported = false;
 
   /** Capture menu identities now, not after the owner selects a possibly stale row. */
   reminders(): readonly { label: string; request(): string }[] {
@@ -944,6 +945,7 @@ export class CoordinatorRunLoop {
 
   /** Installation is not runtime trust; this diagnostic never grants delivery authority. */
   async reportStartup(): Promise<void> {
+    if (this.startupReported) return;
     const start = readStartState(this.paths);
     const active = readCursorsState(this.paths).activeRoster;
     const lifecycle = readAgentLifecycle(this.paths);
@@ -956,6 +958,7 @@ export class CoordinatorRunLoop {
           `runtime hook trust/activity not yet verified for issue ${start.issue}; inspect the terminal's trust prompt and hook setup, then restart the agent if repaired.`));
     }
     if (this.tmux !== null && typeof this.tmux.issueEnvironmentDiagnostic === "function") this.log(await this.tmux.issueEnvironmentDiagnostic(start.issue));
+    this.startupReported = true;
   }
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
@@ -2087,7 +2090,7 @@ export class CoordinatorRunLoop {
   ): Promise<CursorsState> {
     const cursor = cursors.agents[agent];
     if (cursor === undefined || cursor.stepId === null || cursor.actionId === null) return cursors;
-    this.log(`[ACTION] ${agent}: submission needs correction; preparing its correction instructions.`);
+    this.log(`[WAIT] ${agent}: submission needs correction; preparing its correction instructions (no owner action needed).`);
     const runtime = agentRuntimePaths(this.paths, agent);
     const actionId = cursor.actionId;
     const stepId = cursor.stepId;
@@ -2120,7 +2123,10 @@ export class CoordinatorRunLoop {
       changeScope,
       materialized
     );
-    this.verbose(`reissued ${agent} action ${actionId}: ${outstanding.length} validation finding(s); see its task file.`);
+    // Git artifacts are public; private response validation can contain ballot values.
+    const diagnostic = order.submissionMode === "response"
+      ? `${outstanding.length} validation finding(s); see its task file.` : outstanding.join("; ");
+    this.verbose(`reissued ${agent} action ${actionId}: ${diagnostic}`);
     const next = this.mutate(cursors, (current) => {
       appendJournal(
         this.paths,

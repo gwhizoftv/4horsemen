@@ -1657,7 +1657,9 @@ describe("CLI — install, doctor, and the hook bridge", () => {
 
   it("serves command help outside a repository before validation or effects", async () => {
     const root = mkdtempSync(join(tmpdir(), "coord-help-")); roots.push(root);
-    for (const args of [["resume", "--help"], ["help", "restart-action"], ["wipe-issue", "--help"]]) {
+    for (const args of [["resume", "--help"], ["help", "restart-action"], ["wipe-issue", "--help"],
+      ["resume", "--issue", "161", "--help"], ["resume", "-h", "--issue", "161"],
+      ["restart-action", "--unknown-option", "--help"]]) {
       const output: string[] = [];
       expect(await runCli(args, {
         io: { cwd: root, stdout: (text) => output.push(text) },
@@ -1669,6 +1671,27 @@ describe("CLI — install, doctor, and the hook bridge", () => {
       expect(output.join("")).not.toMatch(/(?<![-\w])product(?![-\w])/);
       expect(output.join("")).toContain("--product");
     }
+  });
+
+  it("reuses the diagnosed startup loop for a fresh foreground issue", async () => {
+    const fixture = setup();
+    const calls: string[] = [];
+    const makeRunLoop = vi.fn((paths: ReturnType<typeof issueRuntimePaths>): CliRunLoop => ({
+      ...fakeLoop(paths),
+      reportStartup: async () => { calls.push("diagnose"); },
+      runTick: async () => { calls.push("tick"); return readCursorsState(paths); },
+      run: async () => { calls.push("run"); }
+    }));
+    expect(await runCli(["161", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      io: { stdout: () => undefined }, processRunner: successfulStartGit, makeRunLoop
+    })).toBe(0);
+    expect(makeRunLoop).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(["diagnose", "tick", "run"]);
+    calls.length = 0;
+    expect(await runCli(["start", "162", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      io: { stdout: () => undefined }, processRunner: successfulStartGit, makeRunLoop
+    })).toBe(0);
+    expect(calls).toEqual(["diagnose", "tick"]); // start-only still diagnoses before its first tick
   });
 
   it("infers owner and registered clone context while retaining the frozen mailbox", async () => {
