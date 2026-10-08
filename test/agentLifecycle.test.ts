@@ -14,7 +14,8 @@ import {
   markObservabilityDegraded,
   observeAgentLifecycleWithResult,
   orderAgentAction,
-  readAgentLifecycle
+  readAgentLifecycle,
+  stopObservationWarning
 } from "../src/agentLifecycle.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 
@@ -31,6 +32,37 @@ const digest = "a".repeat(64);
 const entry = () => initialAgentLifecycle(["codex"], now).agents.codex!;
 
 describe("agent lifecycle policy", () => {
+  it("counts distinct observed turns without treating other hooks or stale Stop as recovery", () => {
+    let current = applyLifecycleObservation(entry(), { kind: "session-start", eventName: "SessionStart", sessionId: "s" }, now);
+    for (const turnId of ["one", "one", "two"]) current = applyLifecycleObservation(current,
+      { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "s", turnId }, later);
+    expect(stopObservationWarning("codex", current)).toContain("after 2 observed turns");
+    expect(current.execution).toBe("working");
+    expect(current.health).toBe("healthy");
+    current = applyLifecycleObservation(current, { kind: "working", eventName: "Tool", sessionId: "s" }, later);
+    current = applyLifecycleObservation(current, { kind: "stopped", eventName: "Stop", sessionId: "old", turnId: "two" }, later);
+    current = applyLifecycleObservation(current, { kind: "stopped", eventName: "Stop", sessionId: "s", turnId: "one" }, later);
+    current = applyLifecycleObservation(current, { kind: "stopped", eventName: "Stop", sessionId: "s", turnId: "one" }, later);
+    expect(stopObservationWarning("codex", current)).not.toBeNull();
+    current = applyLifecycleObservation(current, { kind: "stopped", eventName: "Stop", sessionId: "s", turnId: "two" }, later);
+    expect(stopObservationWarning("codex", current)).toBeNull();
+    expect(applyLifecycleObservation(current, { kind: "session-start", eventName: "SessionStart", sessionId: "next" }, later).stopObservation.turns).toEqual([]);
+    expect(agentLifecycleEntrySchema.parse({ ...entry(), stopObservation: undefined }).stopObservation.turns).toEqual([]);
+  });
+
+  it("counts completed actions separately when turn IDs are absent, and deduplicates completion", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-stop-warning-")); roots.push(root);
+    const paths = issueRuntimePaths(root, 1); createIssueRuntime(paths, ["codex"]);
+    initializeAgentLifecycle(paths, ["codex"], now);
+    for (const id of [actionId, "22222222-2222-4222-8222-222222222222"]) {
+      orderAgentAction(paths, "codex", id, digest, now);
+      markActionWorkflowComplete(paths, "codex", id, later);
+      markActionWorkflowComplete(paths, "codex", id, later);
+    }
+    const current = readAgentLifecycle(paths).agents.codex!;
+    expect(stopObservationWarning("codex", current)).toContain("2 completed actions");
+    expect(current.execution).toBe("unknown");
+  });
   it("requires a tool-result observation plus a probe denial, and invalidates session/config changes", () => {
     const current = { ...entry(), sessionId: "s" };
     expect(containmentCoverage(current)).toEqual({ hook: "unverified", shim: "unverified" });

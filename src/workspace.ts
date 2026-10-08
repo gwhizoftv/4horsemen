@@ -148,11 +148,11 @@ export const clearOwnerWorkspaceLocator = (productRoot: string): void => {
 
 export const resolveWorkspaceFromProduct = (productOrClone: string): WorkspaceLocation => {
   const root = worktreeRoot(resolve(productOrClone));
-  if (root === null) throw new Error(`${productOrClone} is not a Git worktree; pass --product for an onboarded product.`);
+  if (root === null) throw new Error(`${productOrClone} is not a Git worktree; run from an onboarded repository or pass --product <repository-path>.`);
   const configured = localConfigGet(root, OWNER_WORKSPACE_CONFIG_KEY);
   if (configured === null) {
     throw new Error(
-      `${root} is not onboarded in this worktree. Run \`coord onboard ${root}\`, or pass --product for an onboarded product.`
+      `${root} is not onboarded in this worktree. Run \`coord onboard ${root}\`, or pass --product for an onboarded repository.`
     );
   }
   if (!isAbsolute(configured) || !existsSync(configured)) {
@@ -163,8 +163,23 @@ export const resolveWorkspaceFromProduct = (productOrClone: string): WorkspaceLo
   const config = readConfig(configured);
   if (config.coordination === undefined || !sameExistingPath(config.coordination.productRoot, root)) {
     throw new Error(
-      `${OWNER_WORKSPACE_CONFIG_KEY} points at a workspace for another product. Re-run \`coord onboard ${root}\`.`
+      `${OWNER_WORKSPACE_CONFIG_KEY} points at a workspace for another repository. Re-run \`coord onboard ${root}\`.`
     );
+  }
+  return workspaceLocationFromConfig(configured);
+};
+
+/** Owner commands may infer context only from a validated owner or registered clone locator. */
+export const resolveWorkspaceFromWorktree = (cwd: string): WorkspaceLocation => {
+  const root = worktreeRoot(resolve(cwd));
+  if (root === null || localConfigGet(root, OWNER_WORKSPACE_CONFIG_KEY) !== null) return resolveWorkspaceFromProduct(cwd);
+  const configured = localConfigGet(root, "coord.workspaceConfig");
+  if (configured === null) return resolveWorkspaceFromProduct(cwd);
+  if (!isAbsolute(configured) || !existsSync(configured)) throw new Error("This agent's workspace locator is missing or invalid; pass --coord-root or repair the installation.");
+  const config = readConfig(configured);
+  const id = localConfigGet(root, "consensus.agentId");
+  if (!config.agents.some((agent) => agent.id === id && sameExistingPath(resolve(dirname(configured), agent.root), root))) {
+    throw new Error("This workspace locator belongs to a different agent/repository; pass --coord-root or repair the installation.");
   }
   return workspaceLocationFromConfig(configured);
 };

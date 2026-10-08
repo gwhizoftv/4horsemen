@@ -2,7 +2,8 @@ import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
-import { DOCTOR_CODES, doctor, renderDoctorReport } from "../src/doctor.js";
+import { DOCTOR_CODES, doctor, inspectStartupAgent, renderDoctorReport } from "../src/doctor.js";
+import { readConfig, type StartState } from "../src/state.js";
 import { install } from "../src/install.js";
 import {
   declaredChecks,
@@ -56,6 +57,21 @@ const editConfig = (configPath: string, mutate: (config: Record<string, unknown>
 };
 
 describe("coord doctor", () => {
+  it("reuses installation checks for startup without claiming runtime trust", () => {
+    const { clone, configPath } = installed();
+    const agent = readConfig(configPath).agents[0]!;
+    const start = { configPath, issue: 161, branchTemplate: "issue-{issue}/{agent}" } as StartState;
+    expect(inspectStartupAgent(start, agent).join("\n")).toContain("Expected issue branch issue-161/claude");
+    git(clone, "checkout", "-b", "issue-161/claude");
+    expect(inspectStartupAgent(start, agent)).toEqual([]);
+    const hooks = join(clone, ".claude/settings.local.json");
+    const doc = JSON.parse(readFileSync(hooks, "utf8")) as { hooks: Record<string, unknown> };
+    delete doc.hooks.Stop;
+    writeFileSync(hooks, JSON.stringify(doc));
+    expect(inspectStartupAgent(start, agent).join("\n")).toMatch(/Stop|hook/i);
+    git(clone, "config", "consensus.agentId", "codex");
+    expect(inspectStartupAgent(start, agent).join("\n")).toContain("consensus.agentId");
+  });
   it("distinguishes a missing or disabled shim from a removed native guard", () => {
     const { fixture, clone } = installed();
     const shim = join(clone, ".coord/bin/git");

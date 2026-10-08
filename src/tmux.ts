@@ -824,6 +824,14 @@ export class TmuxController {
     if (available.exitCode !== 0) throw new Error(`tmux is unavailable: ${available.stderr}`);
   }
 
+  async issueEnvironmentDiagnostic(issue: number): Promise<string> {
+    const result = await this.runner(["show-environment", "-t", this.sessionName(issue), "COORD_ISSUE"])
+      .catch(() => ({ exitCode: 1, stdout: "", stderr: "" }));
+    return result.exitCode === 0 && result.stdout.trim() === `COORD_ISSUE=${issue}`
+      ? `[WAIT] Terminal session targets issue ${issue}; existing child processes still need current-issue hook confirmation.`
+      : `[WARN] Terminal session issue binding is missing or differs from ${issue}; inspect/restart the agent terminals through coord before retrying work.`;
+  }
+
   async startSession(issue: number, agents: readonly AgentConfig[]): Promise<void> {
     await this.preflight(agents);
     const session = this.sessionName(issue);
@@ -1001,8 +1009,9 @@ export class TmuxController {
     actionDigest?: string,
     reserveSend: () => void = () => undefined,
     /**
-     * A file or sentinel authorizes the first send despite stale lifecycle
-     * state. Revalidate the proof until submission is confirmed.
+     * A file authorizes the first send; a sentinel can also authorize an
+     * explicit owner reminder despite stale lifecycle state. Revalidate the
+     * proof until submission is confirmed.
      */
     staleOverride?: IdleOverride
   ): Promise<NudgeOutcome> {

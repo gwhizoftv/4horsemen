@@ -235,18 +235,33 @@ describe("CLI version", () => {
     output.on("data", (chunk) => { printed += String(chunk); });
     const errors: string[] = [];
     const send = async (key: string) => { input.emit("data", key); await new Promise<void>((resolve) => setImmediate(resolve)); };
-    let ticks = 0, runs = 0;
+    let ticks = 0, runs = 0, reminders = 0;
     const code = await runCli([command, ...(command === "resume" ? ["--run"] : []), "--issue", "1", "--coord-root", f.runtime], {
       terminal: { input, output }, io: { stdout: (text) => { printed += text; }, stderr: (text) => errors.push(text) },
       makeRunLoop: () => ({ initializeEffects: async () => {}, runTick: async () => { ticks++; return readCursorsState(paths); },
+        reminders: () => [{ label: "codex", request: () => { expect(runs).toBe(1); reminders++; return "Reminder requested"; } }],
         run: async (signal) => {
           runs++;
+          await send("n"); await send("1"); await send("\r");
+          expect(reminders).toBe(1); expect(ticks).toBe(0);
           await send("s"); await send("p");
           expect(readCursorsState(paths).manualPaused).toBe(true);
           // External resume uses the same operation while this runner stays live.
           await runCli(["resume", "--issue", "1", "--coord-root", f.runtime], { io: { stdout: () => undefined } });
           await send("p");
           expect(readCursorsState(paths).manualPaused).toBe(true);
+          const current = readCursorsState(paths), actionId = actionIdFor("codex");
+          const hold = { id: "20000000-0000-4000-8000-000000000001", agent: "codex", actionId,
+            sessionId: null, reason: "nudge-loop", evidenceId: "budget", observedAt: current.updatedAt,
+            resetsAt: null, confidence: "unknown", retryOwner: "owner" };
+          writeCursorsState(paths, cursorsStateSchema.parse({ ...current,
+            agents: { ...current.agents, codex: { ...current.agents.codex, actionId } },
+            holds: [hold], actionSafety: { codex: { actionId, sends: 4, lastSendAt: current.updatedAt, activityAt: current.updatedAt } }
+          }));
+          await send("r"); await send("1"); await send("\r"); await send("n");
+          expect(readCursorsState(paths).actionSafety.codex?.sends).toBe(4);
+          await send("r"); await send("1"); await send("\r"); await send("y");
+          expect(readCursorsState(paths)).toMatchObject({ manualPaused: true, paused: true, holds: [], actionSafety: { codex: { sends: 0 } } });
           await send("/"); await send("steer keep existing helpers"); await send("\r");
           expect(readCursorsState(paths).ownerGuidance!.pending[0]!.text).toBe("keep existing helpers");
           await send("d"); await send("3"); await send("\r"); await send("y");
@@ -261,7 +276,7 @@ describe("CLI version", () => {
     expect(code).toBe(0);
     expect(errors).toEqual([]);
     expect(runs).toBe(1); expect(ticks).toBe(0);
-    expect(printed).toContain("Active step: R1.join");
+    expect(printed).toContain("Active step: checking agent readiness (R1.join)");
     expect(printed).toContain("Active roster: codex, claude, cursor");
     expect(printed).not.toContain("Clone readiness");
     expect(input.isRaw).toBe(false);
@@ -597,7 +612,7 @@ describe("CLI", () => {
     }
   });
 
-  it("requires the external coord root explicitly rather than accepting COORD_ROOT", async () => {
+  it("does not accept COORD_ROOT instead of explicit or worktree context", async () => {
     const fixture = setup();
     const messages: string[] = [];
     const result = await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath], {
@@ -610,12 +625,13 @@ describe("CLI", () => {
     expect(
       await runCli(["run", "--issue", "1"], {
         io: {
+          cwd: fixture.root,
           env: { COORD_ROOT: fixture.runtime },
           stderr: (message) => messages.push(message)
         }
       })
     ).toBe(2);
-    expect(messages.join("")).toContain("--coord-root is required");
+    expect(messages.join("")).toContain("not a Git worktree");
   });
 
   it("starts from the exact origin baseline and exposes only the caller action", async () => {
@@ -668,8 +684,8 @@ describe("CLI", () => {
       })
     ).toBe(0);
     expect(output.join("")).toContain("Issue 1:");
-    expect(output.join("")).toContain("Final pin (PR head):");
-    expect(output.join("")).toContain("Policy: owner-only");
+    expect(output.join("")).toContain("Final commit (PR head):");
+    expect(output.join("")).toContain("Pull request handling: coordinator opens a draft; you review and merge");
   });
 
   it("resumes only the selected hold, audits budget resets, and reports remaining pauses", async () => {
@@ -1040,7 +1056,7 @@ describe("CLI", () => {
     expect(readCursorsState(paths).abandoned).toBe(false);
     expect(cleanups).toBe(0);
     expect(errors.join("")).toContain("was started durably");
-    expect(errors.join("")).toContain("resume with coord 1");
+    expect(errors.join("")).toContain("resume with coord run --issue 1 --coord-root");
   });
 
   it("rejects an escaping launcher before startup effects", async () => {
@@ -1637,6 +1653,48 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     const paths = issueRuntimePaths(runtime, 1, started1.completesRoot);
     expect(existsSync(agentRuntimePaths(paths, "claude").completeDir)).toBe(true);
     expect(agentRuntimePaths(paths, "claude").complete.startsWith(`${resolve(runtime)}/`)).toBe(false);
+  });
+
+  it("serves command help outside a repository before validation or effects", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-help-")); roots.push(root);
+    for (const args of [["resume", "--help"], ["help", "restart-action"], ["wipe-issue", "--help"]]) {
+      const output: string[] = [];
+      expect(await runCli(args, {
+        io: { cwd: root, stdout: (text) => output.push(text) },
+        makeRunLoop: () => { throw new Error("help must not create a runner"); },
+        processRunner: async () => { throw new Error("help must not invoke processes"); }
+      })).toBe(0);
+      expect(output.join("")).toContain("Example:");
+      expect(output.join("")).toContain("repository");
+      expect(output.join("")).not.toMatch(/(?<![-\w])product(?![-\w])/);
+      expect(output.join("")).toContain("--product");
+    }
+  });
+
+  it("infers owner and registered clone context while retaining the frozen mailbox", async () => {
+    const { product, declarePath } = installedWorkspace();
+    expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
+    execFileSync("git", ["config", "--local", "coord.ownerWorkspaceConfig", join(product.coordRoot, "config.json")], { cwd: product.productRoot });
+    expect(await runCli(["start", "89", "--product", product.productRoot], {
+      io: { stdout: () => undefined }, processRunner: successfulStartGit, makeRunLoop: fakeLoop
+    })).toBe(0);
+    const paths = issueRuntimePaths(product.coordRoot, 89);
+    const frozen = readStartState(paths).completesRoot;
+    const configPath = join(product.coordRoot, "config.json");
+    writeFileSync(configPath, JSON.stringify({ ...readConfig(configPath), completesRoot: join(product.workspaceRoot, "moved-mailbox") }));
+    for (const root of [product.productRoot, join(product.workspaceRoot, "myserver-claude")]) {
+      const cwd = join(root, "nested"); mkdirSync(cwd, { recursive: true });
+      const output: string[] = [];
+      expect(await runCli(["status", "--issue", "89"], { io: { cwd, stdout: (text) => output.push(text) } })).toBe(0);
+      expect(output.join("")).toContain("Issue 89:");
+      let runs = 0;
+      expect(await runCli(["run", "--issue", "89"], { io: { cwd, stdout: () => undefined }, makeRunLoop: (resolved) => {
+        expect(resolved.completesRoot).toBe(frozen);
+        runs++;
+        return fakeLoop(resolved);
+      } })).toBe(0);
+      expect(runs).toBe(1);
+    }
   });
 
   it("resolves analytics through an onboarded product", async () => {

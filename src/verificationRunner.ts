@@ -43,6 +43,8 @@ export type RunVerificationInput = {
   /** Throws when the coordinator lost authority; called between every step. */
   checkpoint: () => void;
   journal: VerificationJournal;
+  /** Operator progress only; verification decisions continue to use receipts and checkpoints. */
+  progress?: (message: string) => void;
   phase: "candidate" | "finalization";
   pin: string;
   classification: { kind: "coordination" | "documentation" | "product"; reason: string; inputIdentity: string };
@@ -72,6 +74,7 @@ const trackedInputsClean = (worktree: string): boolean => {
 
 export const runVerification = async (input: RunVerificationInput): Promise<RunVerificationResult> => {
   const { paths, start, checkpoint } = input;
+  const progress = input.progress ?? (() => undefined);
   const sleep = input.sleep ?? defaultSleep;
   const pollMs = input.pollMs ?? 1_000;
   const joinWaitMs = input.joinWaitMs ?? 30 * 60_000;
@@ -108,6 +111,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
         return { receipt: after.receipt, how: polls === 0 ? "reused" : "joined" };
       }
       if (Date.parse(input.now()) >= deadline) return "timed-out";
+      if (polls === 0) progress("[WAIT] Waiting for another coordinator's verification of the same inputs...");
       await sleep(pollMs);
       const again = readReceipt(paths.coordRoot, key);
       if (again.status === "hit") return { receipt: again.receipt, how: "joined" };
@@ -149,6 +153,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
   };
 
   const satisfiedBy = (command: CheckCommand, receipt: Receipt, how: "reused" | "joined"): CheckResult => {
+    progress(`[OK] ${command.name}: trusted success ${how}, not rerun (log: ${receipt.logPath}).`);
     journal(how === "reused" ? "verification-reused" : "verification-joined", {
       phase: input.phase, name: command.name, argv: command.argv, pin: input.pin, receiptId: receipt.key,
       inputIdentity: receipt.material.inputIdentity, originalDurationMs: receipt.durationMs, logPath: receipt.logPath
@@ -158,6 +163,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
 
   try {
     checkpoint();
+    progress(`[WAIT] Preparing verification for commit ${input.pin.slice(0, 12)}...`);
     await input.mirror.materializeWorktree(target, input.pin);
     checkpoint();
     // Every command below must leave tracked files as the pin has them, so a
@@ -197,6 +203,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
       if (command.expensive === true) {
         const queuedAt = Date.parse(input.now());
         const slots = Array.from({ length: start.verification?.maxConcurrentExpensive ?? 1 }, (_, index) => slotLockPath(paths.coordRoot, index));
+        let announced = false;
         for (;;) {
           checkpoint();
           for (const candidate of slots) {
@@ -204,6 +211,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
             if (token !== null) { held.push([candidate, token]); slot = candidate; break; }
           }
           if (slot !== null) break;
+          if (!announced) { progress(`[WAIT] ${command.name}: waiting for a verification slot...`); announced = true; }
           await sleep(pollMs);
         }
         queueWaitMs = Math.max(0, Date.parse(input.now()) - queuedAt);
@@ -230,14 +238,17 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
           return measurement;
         };
         let result: ProcessResult;
+        progress(`[WAIT] Running ${command.name}${attempt > 1 ? ` (diagnostic retry ${attempt - 1}; original failure remains)` : ""}...`);
         try { result = await input.processRunner(argv, target); }
         catch (error) {
           writeFileSync(logPath, `$ ${argv.join(" ")}\n${String(error)}\n`, { mode: 0o600 });
           record(1, String(error));
+          progress(`[ACTION] ${command.name}: could not start/finish (log: ${logPath}).`);
           // A coordinator launch failure is not a rejected agent submission.
           throw error;
         }
         const modified = !trackedInputsClean(target);
+        progress(`${result.exitCode === 0 && !modified ? "[OK]" : "[ACTION]"} ${command.name}: ${result.exitCode === 0 && !modified ? "passed" : "failed"}${attempt > 1 ? "; diagnostic only, original failure remains" : ""} (log: ${logPath}).`);
         writeFileSync(logPath, `$ ${argv.join(" ")}\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}\nexit ${result.exitCode}\n` +
           (modified ? "coord: this command modified tracked files, so the pin's bytes are not what was checked.\n" : ""), { mode: 0o600 });
         const measurement = record(result.exitCode);
@@ -262,6 +273,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
         results.push(failed);
         const failure = first.exitCode !== 0 ? `${command.name} failed with exit ${first.exitCode}`
           : `${command.name} exited 0 but modified tracked files`;
+        progress(`[ACTION] Verification failed: ${failure} (log: ${first.logPath}).`);
         const notes = [first.exitCode !== 0 && first.modified ? "it also modified tracked files" : null, retryNote]
           .filter((entry): entry is string => entry !== null);
         return { status: "failed", results, failed, failure, stderr: first.stderr, note: notes.length === 0 ? null : notes.join("; ") };

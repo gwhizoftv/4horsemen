@@ -15,14 +15,30 @@ export type InteractiveCommands = {
   agents(): readonly string[];
   drop(agent: string): void;
   holds(): readonly { id: string; agent: string; reason: string }[];
-  releaseHold(id: string): void;
+  releaseHold(id: string, resetBudget?: boolean): void;
+  reminders?(): readonly { label: string; request(): string }[];
   steer(text: string): void;
   answer(id: string, choice: "retry" | "revise" | "abandon"): void;
 };
 export type InteractiveSession = { print(message: string): void; close(): void; settled(): Promise<void> };
 
-type Menu = { kind: "drop" | "hold" | "question"; id?: string; items: { label: string; run(): void; confirm?: boolean }[] };
-const help = "Controls: s status · p/Space manual pause · a attach · d drop · r release hold · /steer <text> · q quit · ?/h help\n";
+type Menu = { kind: "drop" | "hold" | "question" | "reminder"; id?: string; items: { label: string; run(): void; confirm?: boolean }[] };
+const banner = "Controls: s status · p/Space manual pause · a attach · d drop · n remind · r release hold · /steer <text> · q quit · ?/h help\n";
+const help = `${banner}
+s: Show status, accepted commits, warnings and recovery commands.
+p / Space: Toggle your manual pause; this never releases an agent hold.
+a: Open missing agent terminal windows so you can inspect them or type directly.
+d: Select an agent to drop; a separate confirmation is required.
+n: Request a reminder for one current task; readiness checks and send limits still apply.
+r: Release one inspected hold; resetting its reminder allowance requires confirmation.
+/steer <text>: Queue guidance for every recipient of the next assigned cohort, not an immediate broadcast.
+q: Stop this foreground coordinator only; agent terminals remain open.
+Enter: Print a new prompt to confirm this terminal is responsive.
+? / h: Show this help.
+An action is a task in action.md; a turn is one agent prompt/reply cycle; a pin is a commit.
+Idle is not completion: the agent must submit valid work before coord advances.
+If a reminder is refused, inspect the agent terminal and type there if needed.
+`;
 
 /** Owns this terminal only; workflow policy stays in the supplied commands. */
 export const startInteractiveSession = (options: {
@@ -146,11 +162,19 @@ export const startInteractiveSession = (options: {
       return;
     }
     if (value === "/") { mode = "line"; buffer = "/"; draw(); return; }
+    if (value === "\r" || value === "\n") { raw("\n"); draw(); return; }
     dispatch(async () => {
       if (value === "s") { say(commands.status()); shownQuestion = null; }
       else if (value === "p" || value === " ") say(commands.togglePause());
       else if (value === "a") await commands.attach();
       else if (value === "?" || value === "h") say(help);
+      else if (value === "n") {
+        const reminders = commands.reminders?.() ?? [];
+        if (reminders.length === 0) say("No outstanding task is available to remind.");
+        else showMenu({ kind: "reminder", items: reminders.map((item) => ({
+          label: item.label, run: () => say(item.request())
+        })) }, "Select an agent to remind about its current task (not restart it):");
+      }
       else if (value === "d") showMenu({ kind: "drop", items: commands.agents().map((agent) => ({
         label: `Drop ${agent}`, confirm: true, run: () => { commands.drop(agent); say(`Dropped ${agent}.`); }
       })) }, "Select an active agent to drop:");
@@ -158,9 +182,16 @@ export const startInteractiveSession = (options: {
         const holds = commands.holds();
         if (holds.length === 0) say("No active holds.");
         else showMenu({ kind: "hold", items: holds.map((hold) => ({
-          label: `${hold.agent}: ${hold.reason}`, run: () => { commands.releaseHold(hold.id); say(`Released hold ${hold.id}.`); }
-        })) }, "Inspect the agent before releasing its hold (budget reset remains CLI-only):");
+          label: hold.reason === "nudge-loop" ? `${hold.agent}: allow four more reminders after inspection` : `${hold.agent}: ${hold.reason}`,
+          confirm: hold.reason === "nudge-loop",
+          run: () => {
+            if (hold.reason === "nudge-loop") commands.releaseHold(hold.id, true);
+            else commands.releaseHold(hold.id);
+            say(`Released hold ${hold.id}; other holds and manual pause are unchanged.`);
+          }
+        })) }, "Inspect the agent before releasing its hold:");
       }
+      else if (!/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value)) say(`Unknown command ${JSON.stringify(value)}.\n${help}`);
     });
   };
 
@@ -170,7 +201,13 @@ export const startInteractiveSession = (options: {
     const multiple = Array.from(text).length > 1;
     // Plain pasted chunks cannot expand into quick controls or confirmations.
     if ((mode === "keys" || mode === "confirm") && escape === "" && paste === null &&
-        multiple && !text.includes("\x1b")) return;
+        multiple && !text.includes("\x1b")) {
+      if (mode === "keys") {
+        if (/^[\r\n]+$/.test(text)) { raw("\n"); draw(); }
+        else { say(`Unknown command ${JSON.stringify(text)} (pasted input is not executed).\n${help}`); draw(); }
+      }
+      return;
+    }
     if (mode === "menu" && escape === "" && paste === null && multiple &&
         !/^\d+$/.test(text) && !text.includes("\x1b")) return;
     for (const char of text) {
@@ -218,7 +255,7 @@ export const startInteractiveSession = (options: {
     signal.addEventListener("abort", close, { once: true });
     input.resume();
     raw("\x1b[?2004h");
-    say(help); refresh();
+    say(banner); refresh();
     interval = setInterval(refresh, 1000);
     interval.unref();
   } catch (cause) { close(); throw cause; }

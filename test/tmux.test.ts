@@ -26,6 +26,18 @@ import {
 
 const ok = (stdout = ""): TmuxResult => ({ exitCode: 0, stdout, stderr: "" });
 const noopSleep = async (): Promise<void> => undefined;
+
+it("reports issue environment wiring without claiming child-process trust", async () => {
+  const calls: string[][] = [];
+  let environment = "COORD_ISSUE=161\n";
+  const tmux = new TmuxController(async (args) => { calls.push([...args]); return ok(environment); });
+  expect(await tmux.issueEnvironmentDiagnostic(161)).toContain("existing child processes still need current-issue hook confirmation");
+  environment = "COORD_ISSUE=139\n";
+  expect(await tmux.issueEnvironmentDiagnostic(161)).toContain("[WARN]");
+  environment = "";
+  expect(await tmux.issueEnvironmentDiagnostic(161)).toContain("binding is missing or differs");
+  expect(calls.every((args) => args[0] === "show-environment")).toBe(true);
+});
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });

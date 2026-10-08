@@ -6,7 +6,7 @@ import { canonicalSourceDigest, inspectCloneHooks, readHookManifest } from "./ho
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, unresolvableCommands, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
 import { GIT_WRAPPER_RELATIVE_PATH, productName } from "./setupWorkspace.js";
-import { readConfig, type CoordinatorConfig } from "./state.js";
+import { readConfig, type CoordinatorConfig, type StartState } from "./state.js";
 import { resolveWorkspaceLocation } from "./workspace.js";
 import { inspectAgentLifecycleHooks } from "./agentHookSync.js";
 import { cloneAgentsProtocolState } from "./agentsProtocol.js";
@@ -428,6 +428,23 @@ const checkStartCompatibility = (config: CoordinatorConfig, configPath: string):
     );
   }
   return findings;
+};
+
+/** Reuse installation checks without treating an active issue's protocol overlay as a defect. */
+export const inspectStartupAgent = (start: StartState, agent: StartState["agents"][number]): string[] => {
+  try {
+    const config = readConfig(start.configPath);
+    const findings = checkClone({ config, configPath: start.configPath, agent, installDigest: null, home: null })
+      .filter((entry) => entry.class !== "agentsProtocol" && entry.class !== "resourceTelemetry")
+      .map((entry) => `${entry.message} ${entry.remediation}`);
+    if (config.coordination === undefined) findings.push("Installation stamp unavailable; installed hook definitions cannot be verified. Repair the workspace installation.");
+    const branch = git(agent.root, "symbolic-ref", "--quiet", "--short", "HEAD");
+    const expected = start.branchTemplate.replaceAll("{issue}", String(start.issue)).replaceAll("{agent}", agent.id);
+    if (branch.exitCode !== 0 || branch.stdout.trim() !== expected) findings.push(`Expected issue branch ${expected}; let coord prepare this clone rather than switching it manually.`);
+    return findings;
+  } catch (error) {
+    return [`Hook installation/wiring could not be inspected: ${error instanceof Error ? error.message : String(error)}. Repair the workspace installation.`];
+  }
 };
 
 const checkDeclarations = (config: CoordinatorConfig, configPath: string, cwd: string): DoctorFinding[] => {
