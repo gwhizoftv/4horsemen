@@ -1,0 +1,34 @@
+{
+  "actionId": "addbde90-0c9d-45b9-a0ac-6fd55f5c77fc",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "87a50cc979b861f3589123a0942d647a18845333",
+      "path": ".signals/issue-161/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "25af4ef94486d3f8e9f123583b82f5464886a98e",
+      "path": ".signals/issue-161/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "46586e29f238f3b8d8de25b9e301a2e1648ed627",
+      "path": ".signals/issue-161/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d76041e1beff91c677615f55c965db94dd1b1698",
+      "path": ".signals/issue-161/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "2fc338c0619ec903b9444bf91ca937bb072a98f11304a5c68c681f92d33efa74",
+  "issue": 161,
+  "issueSessionId": "issue-161:2a3769ec059e0d7e24373e8708fb1e99c0920421",
+  "protocolVersion": 2,
+  "rationale": "Codex alone pairs a same-action owner reminder that overrides stale working when sends>0 with ASCII framed status, quoted recovery, and the full planned test surface; peers leave n inert, reopen acknowledgments, or under-test the map.",
+  "responseSha256": "c1c9ee096d006d0ef7a77894560e89818e6665b1a250b02b610527803cd82ccc"
+}

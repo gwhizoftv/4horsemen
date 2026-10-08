@@ -1,0 +1,34 @@
+{
+  "actionId": "d1efa5cb-c5d1-4a10-9e83-b511b26d72cb",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "87a50cc979b861f3589123a0942d647a18845333",
+      "path": ".signals/issue-161/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "25af4ef94486d3f8e9f123583b82f5464886a98e",
+      "path": ".signals/issue-161/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "46586e29f238f3b8d8de25b9e301a2e1648ed627",
+      "path": ".signals/issue-161/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d76041e1beff91c677615f55c965db94dd1b1698",
+      "path": ".signals/issue-161/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "2fc338c0619ec903b9444bf91ca937bb072a98f11304a5c68c681f92d33efa74",
+  "issue": 161,
+  "issueSessionId": "issue-161:2a3769ec059e0d7e24373e8708fb1e99c0920421",
+  "protocolVersion": 2,
+  "rationale": "Codex is the strongest revision base because its captured reminder identities, completion-first queue, per-key activity guards, correlated Stop diagnostics and focused coverage avoid the peers' more serious delivery defects, while its conflicting owner/agent locator ambiguity remains a specific correction before approval.",
+  "responseSha256": "0ee5ca6d35d10a613223895fea7208683e3c2cbb7b6546ebea3763e4445bc0eb"
+}
