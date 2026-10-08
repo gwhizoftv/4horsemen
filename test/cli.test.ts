@@ -261,7 +261,7 @@ describe("CLI version", () => {
     expect(code).toBe(0);
     expect(errors).toEqual([]);
     expect(runs).toBe(1); expect(ticks).toBe(0);
-    expect(printed).toContain("Active step: R1.join");
+    expect(printed).toContain("Active step: Join (R1.join)");
     expect(printed).toContain("Active roster: codex, claude, cursor");
     expect(printed).not.toContain("Clone readiness");
     expect(input.isRaw).toBe(false);
@@ -607,15 +607,20 @@ describe("CLI", () => {
     expect(messages.join("")).toContain("--config and --coord-root");
 
     messages.length = 0;
+    // COORD_ROOT alone is ignored; without --coord-root/--product, resolve from cwd.
+    // A non-worktree cwd refuses rather than adopting COORD_ROOT.
+    const bareCwd = mkdtempSync(join(tmpdir(), "coord-cli-cwd-"));
+    roots.push(bareCwd);
     expect(
       await runCli(["run", "--issue", "1"], {
         io: {
+          cwd: bareCwd,
           env: { COORD_ROOT: fixture.runtime },
           stderr: (message) => messages.push(message)
         }
       })
     ).toBe(2);
-    expect(messages.join("")).toContain("--coord-root is required");
+    expect(messages.join("")).toMatch(/not a Git worktree|not onboarded|--coord-root|working directory/);
   });
 
   it("starts from the exact origin baseline and exposes only the caller action", async () => {
@@ -668,8 +673,9 @@ describe("CLI", () => {
       })
     ).toBe(0);
     expect(output.join("")).toContain("Issue 1:");
-    expect(output.join("")).toContain("Final pin (PR head):");
-    expect(output.join("")).toContain("Policy: owner-only");
+    expect(output.join("")).toContain("Final commit (PR head):");
+    expect(output.join("")).toContain("Pull request handling: coordinator opens a draft; you review and merge");
+    expect(output.join("")).toContain("legacy owner-only");
   });
 
   it("resumes only the selected hold, audits budget resets, and reports remaining pauses", async () => {

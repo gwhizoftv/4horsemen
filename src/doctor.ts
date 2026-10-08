@@ -130,16 +130,21 @@ const checkInstallRoot = (config: CoordinatorConfig): DoctorFinding[] => {
   return findings;
 };
 
-const checkClone = (input: {
+/**
+ * Read-only install/hooks/shim/lifecycle inspection for one agent clone.
+ * Used by doctor and by run-loop startup diagnostics. Omits issue-branch
+ * overlay advice and resource-telemetry probes that belong only to full doctor.
+ */
+export const inspectAgentStartupWiring = (input: {
   config: CoordinatorConfig;
   configPath: string;
   agent: CoordinatorConfig["agents"][number];
-  installDigest: string | null;
-  home: string | null;
+  installDigest?: string | null;
 }): DoctorFinding[] => {
   const findings: DoctorFinding[] = [];
   const clone = cloneOf(input.configPath, input.agent.root);
   const stamp = input.config.coordination;
+  const installDigest = input.installDigest ?? null;
 
   if (!existsSync(clone)) {
     findings.push(
@@ -148,9 +153,6 @@ const checkClone = (input: {
     return findings;
   }
 
-  // Everything below runs git against the clone. A directory that lost its
-  // .git is precisely the broken install doctor exists to name, so it is
-  // classified here rather than escaping as a raw git error and exit 2.
   if (worktreeRoot(clone) === null) {
     findings.push(
       finding(
@@ -188,10 +190,199 @@ const checkClone = (input: {
       finding("identity", clone, "consensus.agentLabel is unset, so the commit-message prefix is unresolved.", "Re-run coord install.")
     );
   }
-  // A vendored clone deliberately has no install root: its hook bodies are
-  // copies, and a set key would give post-merge two candidate templates.
+
   const manifest = readHookManifest(clone);
   const vendored = manifest.kind === "ok" && manifest.manifest.mode === "vendor";
+  const requiredKeys = vendored ? [CLI_ENTRY_KEY, WORKSPACE_CONFIG_KEY] : [INSTALL_ROOT_KEY, CLI_ENTRY_KEY, WORKSPACE_CONFIG_KEY];
+  for (const key of requiredKeys) {
+    if (localConfigGet(clone, key) === null) {
+      findings.push(finding("installRoot", clone, `${key} is unset in this agent clone.`, "Re-run coord install."));
+    }
+  }
+  if (stamp !== undefined && !vendored) {
+    for (const [key, expected] of [
+      [INSTALL_ROOT_KEY, stamp.installRoot],
+      [CLI_ENTRY_KEY, stamp.cliEntry]
+    ] as const) {
+      const actual = localConfigGet(clone, key);
+      if (actual !== null && actual !== expected) {
+        findings.push(
+          finding(
+            "installDrift",
+            clone,
+            `${key} is '${actual}' but this workspace was installed against '${expected}'.`,
+            "Re-run coord install so every clone resolves the same hook bodies."
+          )
+        );
+      }
+    }
+  }
+  if (localConfigGet(clone, WORKSPACE_CONFIG_KEY) !== input.configPath) {
+    findings.push(
+      finding(
+        "startCompatibility",
+        clone,
+        `${WORKSPACE_CONFIG_KEY} does not point at ${input.configPath}, so hooks and coord start would read different policy.`,
+        "Re-run coord install with this --coord-root."
+      )
+    );
+  }
+
+  if (stamp === undefined) {
+    // Installation stamp absence is reported by checkInstallRoot for full doctor;
+    // startup still surfaces unknown wiring without treating it as healthy.
+    findings.push(
+      finding(
+        "installRoot",
+        input.config.project,
+        "The workspace config carries no install stamp, so hook wiring is unknown.",
+        "Re-run coord install for this repository."
+      )
+    );
+    return findings;
+  }
+
+  const drift = inspectCloneHooks({
+    clone,
+    installRoot: stamp.installRoot,
+    installCommit: stamp.commit,
+    ...(installDigest === null ? {} : { canonicalDigest: installDigest })
+  });
+  if (drift.kind === "absent") {
+    findings.push(
+      finding("hooks", clone, "This agent clone has no coordination hooks, so its commits are ungated.", "Re-run coord install.")
+    );
+  } else if (drift.kind === "unmanaged") {
+    findings.push(
+      finding(
+        "hooks",
+        clone,
+        "Hook files exist but no coordination manifest does, so what runs here is unknown.",
+        "Inspect .git/hooks by hand, then re-run coord install."
+      )
+    );
+  } else if (drift.kind === "missing") {
+    findings.push(
+      finding("hooks", clone, `Installed hooks are missing: ${drift.files.join(", ")}.`, "Re-run coord install.")
+    );
+  } else if (drift.kind === "modified") {
+    findings.push(
+      finding(
+        "hooks",
+        clone,
+        `Installed hooks were edited after installation: ${drift.files.join(", ")}.`,
+        "Edit the bodies in the coordination install instead, then re-run coord install."
+      )
+    );
+  } else if (drift.kind === "shadowed") {
+    findings.push(
+      finding(
+        "hooks",
+        clone,
+        `core.hooksPath is set to '${drift.hooksPath}', which shadows the installed hooks in .git/hooks.`,
+        "Unset it: git -C <clone> config --local --unset core.hooksPath, or re-run coord install."
+      )
+    );
+  } else if (drift.kind === "not-executable") {
+    findings.push(
+      finding(
+        "hooks",
+        clone,
+        `Installed hooks are not executable: ${drift.files.join(", ")}. Git skips a hook without its execute bit and reports nothing.`,
+        "Re-run coord install to restore the mode."
+      )
+    );
+  } else if (drift.kind === "invalid-manifest") {
+    findings.push(
+      finding(
+        "hooks",
+        clone,
+        `The coordination hook manifest is unreadable or names paths it may not (${drift.reason}).`,
+        "Re-run coord install to rewrite it; uninstall will not act on a manifest it cannot validate."
+      )
+    );
+  } else if (drift.kind === "install-modified") {
+    findings.push(
+      finding(
+        "installDrift",
+        stamp.installRoot,
+        "The canonical hook sources in the install root differ from the bytes this workspace was installed against, with no new commit.",
+        "Commit or revert the change in the install root, then re-run coord install."
+      )
+    );
+  } else if (drift.kind === "stale-vendor") {
+    findings.push(
+      finding(
+        "vendorStamp",
+        clone,
+        `Vendored hook bodies were copied at ${drift.recordedCommit.slice(0, 12)} but the install is at ${drift.installCommit.slice(0, 12)}.`,
+        "Re-run coord install --vendor to refresh the copies."
+      )
+    );
+  }
+
+  const shim = join(clone, GIT_WRAPPER_RELATIVE_PATH);
+  if (!isExecutable(shim)) {
+    findings.push(finding("gitShim", shim,
+      "Coordinator Git shim is missing or not executable; the native guard also needs it for policy checks.",
+      "Re-run coord install. Runtime coverage must be measured in the actual agent tool; see coord status."));
+  }
+  const lifecycle = inspectAgentLifecycleHooks({
+    clone,
+    agent: input.agent.id,
+    cliEntry: stamp.cliEntry
+  });
+  if (
+    lifecycle.kind === "unsupported" &&
+    (input.agent.delivery === "nudge" || input.agent.delivery === "both")
+  ) {
+    findings.push(
+      finding(
+        "lifecycleHooks",
+        clone,
+        `Agent '${input.agent.id}' has nudge delivery enabled but no supported lifecycle-hook vendor mapping.`,
+        "Use a supported vendor agent id (claude, codex, cursor, or antigravity), or set delivery to pull so hook-gated nudging is not promised."
+      )
+    );
+  } else if (lifecycle.kind === "missing") {
+    findings.push(
+      finding(
+        "lifecycleHooks",
+        lifecycle.path ?? clone,
+        "Coordinator CLI lifecycle hooks and shell guard are missing; runtime coverage is unverified (see coord status).",
+        "Re-run coord install, then restart this agent CLI so it reloads hooks."
+      )
+    );
+  } else if (lifecycle.kind === "modified") {
+    findings.push(
+      finding(
+        "lifecycleHooks",
+        lifecycle.path ?? clone,
+        "Coordinator CLI lifecycle hooks or shell guard differ from installed definitions; runtime coverage requires a new actual-tool probe (see coord status).",
+        "Preserve any third-party entries, then re-run coord install to repair only coordinator-managed entries."
+      )
+    );
+  }
+  return findings;
+};
+
+const checkClone = (input: {
+  config: CoordinatorConfig;
+  configPath: string;
+  agent: CoordinatorConfig["agents"][number];
+  installDigest: string | null;
+  home: string | null;
+}): DoctorFinding[] => {
+  const clone = cloneOf(input.configPath, input.agent.root);
+  const stamp = input.config.coordination;
+  const findings = inspectAgentStartupWiring({
+    config: input.config,
+    configPath: input.configPath,
+    agent: input.agent,
+    installDigest: input.installDigest
+  });
+  if (findings.some((item) => item.class === "cloneMissing")) return findings;
+
   // Branch preparation clears skip-worktree to move HEAD and re-sets it after.
   // A clone found with the bit clear means that restore did not finish, and the
   // only symptom otherwise is a confusing "uncommitted changes" refusal on the
@@ -226,165 +417,6 @@ const checkClone = (input: {
           "(or --config <path> --coord-root <path>)."
       )
     );
-  }
-  const requiredKeys = vendored ? [CLI_ENTRY_KEY, WORKSPACE_CONFIG_KEY] : [INSTALL_ROOT_KEY, CLI_ENTRY_KEY, WORKSPACE_CONFIG_KEY];
-  for (const key of requiredKeys) {
-    if (localConfigGet(clone, key) === null) {
-      findings.push(finding("installRoot", clone, `${key} is unset in this agent clone.`, "Re-run coord install."));
-    }
-  }
-  // Presence is not agreement. A clone whose installRoot was redirected at an
-  // older checkout passed every other check while executing different hook
-  // bodies than the workspace believes it runs.
-  if (stamp !== undefined && !vendored) {
-    for (const [key, expected] of [
-      [INSTALL_ROOT_KEY, stamp.installRoot],
-      [CLI_ENTRY_KEY, stamp.cliEntry]
-    ] as const) {
-      const actual = localConfigGet(clone, key);
-      if (actual !== null && actual !== expected) {
-        findings.push(
-          finding(
-            "installDrift",
-            clone,
-            `${key} is '${actual}' but this workspace was installed against '${expected}'.`,
-            "Re-run coord install so every clone resolves the same hook bodies."
-          )
-        );
-      }
-    }
-  }
-  if (localConfigGet(clone, WORKSPACE_CONFIG_KEY) !== input.configPath) {
-    findings.push(
-      finding(
-        "startCompatibility",
-        clone,
-        `${WORKSPACE_CONFIG_KEY} does not point at ${input.configPath}, so hooks and coord start would read different policy.`,
-        "Re-run coord install with this --coord-root."
-      )
-    );
-  }
-
-  if (stamp !== undefined) {
-    const drift = inspectCloneHooks({
-      clone,
-      installRoot: stamp.installRoot,
-      installCommit: stamp.commit,
-      ...(input.installDigest === null ? {} : { canonicalDigest: input.installDigest })
-    });
-    if (drift.kind === "absent") {
-      findings.push(
-        finding("hooks", clone, "This agent clone has no coordination hooks, so its commits are ungated.", "Re-run coord install.")
-      );
-    } else if (drift.kind === "unmanaged") {
-      findings.push(
-        finding(
-          "hooks",
-          clone,
-          "Hook files exist but no coordination manifest does, so what runs here is unknown.",
-          "Inspect .git/hooks by hand, then re-run coord install."
-        )
-      );
-    } else if (drift.kind === "missing") {
-      findings.push(
-        finding("hooks", clone, `Installed hooks are missing: ${drift.files.join(", ")}.`, "Re-run coord install.")
-      );
-    } else if (drift.kind === "modified") {
-      findings.push(
-        finding(
-          "hooks",
-          clone,
-          `Installed hooks were edited after installation: ${drift.files.join(", ")}.`,
-          "Edit the bodies in the coordination install instead, then re-run coord install."
-        )
-      );
-    } else if (drift.kind === "shadowed") {
-      findings.push(
-        finding(
-          "hooks",
-          clone,
-          `core.hooksPath is set to '${drift.hooksPath}', which shadows the installed hooks in .git/hooks.`,
-          "Unset it: git -C <clone> config --local --unset core.hooksPath, or re-run coord install."
-        )
-      );
-    } else if (drift.kind === "not-executable") {
-      findings.push(
-        finding(
-          "hooks",
-          clone,
-          `Installed hooks are not executable: ${drift.files.join(", ")}. Git skips a hook without its execute bit and reports nothing.`,
-          "Re-run coord install to restore the mode."
-        )
-      );
-    } else if (drift.kind === "invalid-manifest") {
-      findings.push(
-        finding(
-          "hooks",
-          clone,
-          `The coordination hook manifest is unreadable or names paths it may not (${drift.reason}).`,
-          "Re-run coord install to rewrite it; uninstall will not act on a manifest it cannot validate."
-        )
-      );
-    } else if (drift.kind === "install-modified") {
-      findings.push(
-        finding(
-          "installDrift",
-          stamp.installRoot,
-          "The canonical hook sources in the install root differ from the bytes this workspace was installed against, with no new commit.",
-          "Commit or revert the change in the install root, then re-run coord install."
-        )
-      );
-    } else if (drift.kind === "stale-vendor") {
-      findings.push(
-        finding(
-          "vendorStamp",
-          clone,
-          `Vendored hook bodies were copied at ${drift.recordedCommit.slice(0, 12)} but the install is at ${drift.installCommit.slice(0, 12)}.`,
-          "Re-run coord install --vendor to refresh the copies."
-        )
-      );
-    }
-
-    const shim = join(clone, GIT_WRAPPER_RELATIVE_PATH);
-    if (!isExecutable(shim)) findings.push(finding("gitShim", shim,
-      "Coordinator Git shim is missing or not executable; the native guard also needs it for policy checks.",
-      "Re-run coord install. Runtime coverage must be measured in the actual agent tool; see coord status."));
-    const lifecycle = inspectAgentLifecycleHooks({
-      clone,
-      agent: input.agent.id,
-      cliEntry: stamp.cliEntry
-    });
-    if (
-      lifecycle.kind === "unsupported" &&
-      (input.agent.delivery === "nudge" || input.agent.delivery === "both")
-    ) {
-      findings.push(
-        finding(
-          "lifecycleHooks",
-          clone,
-          `Agent '${input.agent.id}' has nudge delivery enabled but no supported lifecycle-hook vendor mapping.`,
-          "Use a supported vendor agent id (claude, codex, cursor, or antigravity), or set delivery to pull so hook-gated nudging is not promised."
-        )
-      );
-    } else if (lifecycle.kind === "missing") {
-      findings.push(
-        finding(
-          "lifecycleHooks",
-          lifecycle.path ?? clone,
-          "Coordinator CLI lifecycle hooks and shell guard are missing; runtime coverage is unverified (see coord status).",
-          "Re-run coord install, then restart this agent CLI so it reloads hooks."
-        )
-      );
-    } else if (lifecycle.kind === "modified") {
-      findings.push(
-        finding(
-          "lifecycleHooks",
-          lifecycle.path ?? clone,
-          "Coordinator CLI lifecycle hooks or shell guard differ from installed definitions; runtime coverage requires a new actual-tool probe (see coord status).",
-          "Preserve any third-party entries, then re-run coord install to repair only coordinator-managed entries."
-        )
-      );
-    }
   }
 
   // Resource telemetry is read-only here: no probe, no mutation, no owner command or account id printed.

@@ -13,6 +13,7 @@ import {
   mutateAgentLifecycle,
   orderAgentAction,
   readAgentLifecycle,
+  stopObservationWarning,
   type AgentLifecycleEntry
 } from "./agentLifecycle.js";
 import {
@@ -108,7 +109,8 @@ import {
   type WorkflowStepId
 } from "./steps.js";
 import { containmentPolicy, ingestContainmentProbe } from "./shellGuard.js";
-import { holdRecoveryCommand, renderIssueReport } from "./issueReport.js";
+import { describeHold, holdRecoveryCommand, renderIssueReport } from "./issueReport.js";
+import { inspectAgentStartupWiring } from "./doctor.js";
 import { formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import { harnessPromptReadiness, TmuxController, type IdleOverride } from "./tmux.js";
@@ -832,34 +834,34 @@ const candidateResultsFor = (cursors: CursorsState, inputs: readonly BoundInput[
  * journal line always says what was actually observed.
  */
 const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
-  "pane-dead": "the terminal pane for this agent is gone",
-  "owner-typing": "the pane is in copy mode or the owner is typing in it",
-  "input-off": "the pane has input disabled",
-  "foreground-mismatch": "the foreground process is not this agent's harness",
-  "trust-dialog": "the harness is waiting on its trust-this-folder prompt",
-  "claude-no-prompt": "no idle prompt is visible in the pane",
-  "claude-usage-wait": "Claude is waiting for a usage limit; coordinator input is blocked",
-  "cursor-turn-chrome": "the pane shows in-flight turn chrome",
-  "antigravity-turn-chrome": "the pane shows in-flight turn chrome",
-  "antigravity-verify-overlay": "the account-verify overlay is up and discards keystrokes",
-  "antigravity-no-prompt": "no idle prompt is visible in the pane",
-  "codex-turn-chrome": "the pane shows in-flight turn chrome",
-  "no-idle-sentinel": "lifecycle hooks report the agent mid-turn without a usable ready file or current terminal idle proof",
-  "codex-composer-not-ready": "the Codex composer is not empty or no longer holds exactly this action's message",
-  "pane-capture-unavailable": "file-backed readiness cannot check pane vetoes without a readable terminal capture",
-  "lifecycle-changed": "lifecycle activity or the ready receipt changed while the send was being prepared",
-  "unmatched-action": "the recorded lifecycle action does not match the current one",
-  "workflow-complete": "this agent already published its work for this action",
-  "pending-input": "the agent has queued input of its own",
-  "background-active": "the agent has background work running",
-  unknown: "no lifecycle signal has been correlated yet",
-  queued: "the agent has accepted work that has not started",
-  working: "the agent is mid-turn",
-  "idle-transition-already-used": "this action was already delivered on the current idle transition"
+  "pane-dead": "the agent's terminal pane is gone — reopen with coord attach, or restart the agent",
+  "owner-typing": "you are typing in the agent pane or it is in copy mode — finish or leave the pane, then wait for the next attempt",
+  "input-off": "the pane has input disabled — check the agent terminal",
+  "foreground-mismatch": "another process is in the foreground of this pane — switch back to the agent harness",
+  "trust-dialog": "the agent is waiting on a trust-this-folder prompt — answer it in that terminal",
+  "claude-no-prompt": "no idle prompt is visible — wait for the agent to finish, or type in its terminal if it is stuck",
+  "claude-usage-wait": "Claude is waiting for a usage limit — wait for the provider window; you cannot reset that here",
+  "cursor-turn-chrome": "the agent is mid-turn — no owner action needed until it finishes",
+  "antigravity-turn-chrome": "the agent is mid-turn — no owner action needed until it finishes",
+  "antigravity-verify-overlay": "an account-verify overlay is blocking keys — complete or dismiss it in that terminal",
+  "antigravity-no-prompt": "no idle prompt is visible — wait for the agent, or inspect its terminal",
+  "codex-turn-chrome": "the agent is mid-turn — no owner action needed until it finishes",
+  "no-idle-sentinel": "coordinator cannot confirm the agent is idle yet — inspect the terminal; do not force keys",
+  "codex-composer-not-ready": "the Codex composer is not empty or no longer holds this task message — clear or finish editing in that terminal",
+  "pane-capture-unavailable": "the terminal capture is unreadable — check that the agent pane is alive",
+  "lifecycle-changed": "the agent became active again while a send was preparing — waiting for a clean idle",
+  "unmatched-action": "lifecycle state does not match the current task — waiting for correlation",
+  "workflow-complete": "this agent already published its work for this task — no send needed",
+  "pending-input": "the agent has its own queued input — wait for it to drain",
+  "background-active": "the agent has background work running — wait for it to finish",
+  unknown: "coordinator cannot yet confirm readiness — wait, or inspect the agent terminal",
+  queued: "the agent has accepted work that has not started — no intervention needed",
+  working: "the agent is mid-turn — no intervention needed",
+  "idle-transition-already-used": "this task was already delivered on the current idle transition — waiting for new idle proof"
 };
 
 const deferralRationale = (code: string): string =>
-  DEFERRAL_RATIONALE[code] ?? "the terminal or lifecycle layer refused delivery";
+  DEFERRAL_RATIONALE[code] ?? "the terminal or lifecycle layer refused delivery — inspect the agent terminal";
 
 // Delivery protection is independent of the wait before checking for lost delivery.
 const NUDGE_REPEAT_DELAYS_MS = [60_000, 120_000, 240_000];
@@ -902,6 +904,12 @@ export class CoordinatorRunLoop {
   /** Local probes are advisory; restarting may probe again without changing workflow state. */
   private readonly paneObservations = new Map<string, { identity: string; nextAt: number; available: boolean }>();
   private readonly ingestVerificationMeasurements = createVerificationIngestor();
+  /** At most one owner reminder per agent, bound to actionId+digest at queue time. */
+  private readonly ownerReminders = new Map<string, { actionId: string; actionDigest: string }>();
+  /** Last emitted Stop-observation warning identity per agent (transition-only). */
+  private readonly stopWarningKeys = new Map<string, string>();
+  /** Deduplicated completion progress keys (actionId:receipt). */
+  private readonly completionProgressKeys = new Set<string>();
 
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
@@ -919,6 +927,40 @@ export class CoordinatorRunLoop {
     this.codexQuota = dependencies.codexQuota ?? ((input) => readCodexQuota(input));
   }
 
+  /**
+   * Queue an owner reminder for one agent/action. Does not send keys; the
+   * next tick drains it through deliver. Returns owner-facing confirmation.
+   */
+  queueOwnerReminder(agent: string): string {
+    const cursors = readCursorsState(this.paths);
+    if (!cursors.activeRoster.includes(agent)) {
+      throw new Error(`Agent ${agent} is not active.`);
+    }
+    const cursor = cursors.agents[agent];
+    if (cursor?.actionId === null || cursor?.actionId === undefined) {
+      throw new Error(`Agent ${agent} has no outstanding action.`);
+    }
+    const entry = readAgentLifecycle(this.paths).agents[agent];
+    const digest = entry?.action?.actionDigest;
+    if (entry?.action?.actionId !== cursor.actionId || digest === undefined) {
+      throw new Error(`Agent ${agent} has no correlated lifecycle action to remind.`);
+    }
+    this.ownerReminders.set(agent, { actionId: cursor.actionId, actionDigest: digest });
+    return "reminder requested";
+  }
+
+  /** Agents with an outstanding ordered/in-flight action that can be reminded. */
+  remindableAgents(): readonly string[] {
+    const cursors = readCursorsState(this.paths);
+    return cursors.activeRoster.filter((agent) => {
+      const cursor = cursors.agents[agent];
+      if (cursor?.actionId === null || cursor?.actionId === undefined) return false;
+      if (cursors.holds.some((hold) => hold.agent === agent)) return false;
+      const entry = readAgentLifecycle(this.paths).agents[agent];
+      return entry?.action?.actionId === cursor.actionId && entry.action.workflowCompleteAt === null;
+    });
+  }
+
   async initializeEffects(): Promise<void> {
     const start = readStartState(this.paths);
     const authority = readCursorsState(this.paths);
@@ -933,9 +975,11 @@ export class CoordinatorRunLoop {
     // clones that were never installed against it, adding an untracked
     // AGENTS.md that an agent's `git add -A` then sweeps into its commit.
     let installRoot: string | null = null;
+    let config = null as ReturnType<typeof readConfig> | null;
     if (existsSync(start.configPath)) {
       try {
-        installRoot = readConfig(start.configPath).coordination?.installRoot ?? null;
+        config = readConfig(start.configPath);
+        installRoot = config.coordination?.installRoot ?? null;
       } catch (error) {
         this.log(
           `could not read ${start.configPath} for the install root ` +
@@ -959,12 +1003,47 @@ export class CoordinatorRunLoop {
     if (this.tmux !== null) {
       await this.tmux.ensureSession(start.issue, start.agents, () => this.authority(authority));
       this.authority(authority);
+      const sessionIssue = await this.tmux.readSessionCoordIssue(start.issue);
+      if (sessionIssue !== null && sessionIssue !== String(start.issue)) {
+        this.log(
+          `WARNING: tmux session COORD_ISSUE=${sessionIssue} does not match requested issue ${start.issue}. ` +
+            `A matching session environment does not prove an already-running child inherited it.`
+        );
+      } else if (sessionIssue === String(start.issue)) {
+        this.verbose(
+          `tmux session COORD_ISSUE=${sessionIssue} matches issue ${start.issue} ` +
+            `(session env only; child processes started earlier may not have inherited it).`
+        );
+      }
       const opened = await this.tmux.openOwnerAgentClients(start.issue, start.agents, { onlyMissing: true });
       this.authority(authority);
       if (opened.status === "opened" && opened.count > 0) {
         this.log(`Opened ${opened.count} Terminal window(s), one per agent tmux client.`);
       } else if (opened.status === "failed") {
         this.log(`Could not open Terminal windows (${opened.error}). Attach manually with coord attach ${start.issue}.`);
+      }
+    }
+    if (config !== null) {
+      for (const agent of start.agents) {
+        if (!authority.activeRoster.includes(agent.id)) continue;
+        const findings = inspectAgentStartupWiring({
+          config,
+          configPath: start.configPath,
+          agent
+        });
+        for (const item of findings) {
+          this.log(`WARNING: ${agent.id} startup wiring [${item.class}]: ${item.message} — ${item.remediation}`);
+        }
+        if (findings.length === 0) {
+          const entry = readAgentLifecycle(this.paths).agents[agent.id];
+          const coverage = containmentCoverage(entry, containmentPolicy(agent.root, agent.id)?.binding ?? null);
+          if (coverage.hook === "unverified" && coverage.shim === "unverified") {
+            this.log(
+              `WARNING: ${agent.id} runtime hook trust/activity not yet verified ` +
+                `(installed files alone cannot prove native enforcement).`
+            );
+          }
+        }
       }
     }
   }
@@ -1012,10 +1091,10 @@ export class CoordinatorRunLoop {
     });
     const hold = created as Hold | null;
     if (hold !== null) {
-      const cause = hold.evidence === null ? "cause/reset unknown" :
-        `${hold.evidence.failureClass}; reset ${hold.resetsAt ?? "unknown"}`;
-      this.log(`Issue ${readStartState(this.paths).issue}: ${agent} held (${reason}; ${cause}). ` +
-        `Inspect the agent, then ${holdRecoveryCommand(this.paths.issue, next, hold)}; add --run only if the coordinator was stopped.`);
+      const start = readStartState(this.paths);
+      const sends = next.actionSafety[agent]?.sends ?? 0;
+      this.log(`Issue ${start.issue}: ${agent} held (${describeHold(hold, sends)}). ` +
+        `Inspect the agent, then ${holdRecoveryCommand(start.issue, next, hold, start.coordRoot)}; add --run only if the coordinator was stopped.`);
     }
     return next;
   }
@@ -1098,10 +1177,10 @@ export class CoordinatorRunLoop {
     return writtenAt > lastHook && writtenAt <= Date.parse(this.now()) ? receipt : null;
   }
 
-  /** One reservation path for initial, idle, reissue and lost-delivery sends. */
+  /** One reservation path for initial, idle, reissue, lost-delivery and owner-reminder sends. */
   private async deliver(
     start: StartState, cursors: CursorsState, agent: string, actionId: string, actionDigest: string,
-    reason: "initial" | "idle" | "reissue"
+    reason: "initial" | "idle" | "reissue" | "owner-reminder"
   ): Promise<CursorsState> {
     const config = start.agents.find((candidate) => candidate.id === agent);
     if (this.tmux === null || config === undefined || !["nudge", "both"].includes(config.delivery)) return cursors;
@@ -1117,16 +1196,29 @@ export class CoordinatorRunLoop {
     const staleWorking = entry?.execution === "working" && safety.sends === 0 &&
       entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest &&
       entry.action.delivery === "ordered" && entry.action.injectedAt === null;
-    if ((entry?.execution === "working" && !staleWorking) || entry?.backgroundActive === true ||
-      (entry?.pendingInputCount ?? 0) > 0) return cursors;
+    // Owner reminder may request the same idle override on the SAME action even
+    // when sends>0; it may not manufacture idle, reset budget, or clear holds.
+    const ownerReminderWorking = reason === "owner-reminder" && entry?.execution === "working" &&
+      entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest;
+    const allowWorkingOverride = staleWorking || ownerReminderWorking;
+    if ((entry?.execution === "working" && !allowWorkingOverride) || entry?.backgroundActive === true ||
+      (entry?.pendingInputCount ?? 0) > 0) {
+      if (reason === "owner-reminder" && entry?.execution === "working" && !allowWorkingOverride) {
+        this.log(
+          `Issue ${start.issue}: owner reminder for ${agent} deferred — agent still working without idle proof; ` +
+            `inspect or type in the agent terminal rather than forcing keys.`
+        );
+      }
+      return cursors;
+    }
     // Lifecycle hooks write without touching cursor authority, so the override
     // re-reads them at every key until submission starts.
     const lifecycleSnapshot = (value: typeof entry): string => JSON.stringify([value?.sessionId, value?.turnId,
       value?.lastEventAt, value?.execution, value?.pendingInputCount, value?.backgroundActive]);
     const observed = lifecycleSnapshot(entry);
     const hookSequence = entry?.hookReceipt?.sequence;
-    const staleOverride: IdleOverride | undefined = receipt !== null || staleWorking ? {
-      source: receipt !== null ? "ready-file" : "idle-sentinel",
+    const staleOverride: IdleOverride | undefined = receipt !== null || allowWorkingOverride ? {
+      source: receipt !== null ? "ready-file" : reason === "owner-reminder" ? "owner-reminder" : "idle-sentinel",
       lifecycle: () => {
         const latest = readAgentLifecycle(this.paths).agents[agent];
         if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
@@ -1171,10 +1263,12 @@ export class CoordinatorRunLoop {
       if (receipt !== null) {
         clearReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot, receipt);
         this.log(`Issue ${start.issue}: ${agent}'s ready file for its last accepted action confirmed readiness; delivered action ${actionId}.`);
-      } else if (staleWorking) {
+      } else if (allowWorkingOverride) {
         this.log(
           `Issue ${start.issue}: ${agent}'s lifecycle hooks still report it mid-turn, but its pane shows COORD-IDLE; ` +
-            `delivered action ${actionId}. No Stop event from ${agent} reached this issue — ` +
+            `delivered action ${actionId}` +
+            (reason === "owner-reminder" ? " (owner reminder)." : ".") +
+            ` No Stop event from ${agent} reached this issue — ` +
             `check that its hooks run with COORD_ISSUE=${start.issue}.`
         );
       }
@@ -1297,8 +1391,9 @@ export class CoordinatorRunLoop {
     });
     const hold = created as Hold | null;
     if (hold !== null) {
-      this.log(`Issue ${start.issue}: ${agent} held (vendor-failure; ${failure.evidence.failureClass}; reset ${hold.resetsAt ?? "unknown"}). ` +
-        `Inspect the agent, then ${holdRecoveryCommand(this.paths.issue, next, hold)}; add --run only if the coordinator was stopped.`);
+      const sends = next.actionSafety[agent]?.sends ?? 0;
+      this.log(`Issue ${start.issue}: ${agent} held (${describeHold(hold, sends)}). ` +
+        `Inspect the agent, then ${holdRecoveryCommand(start.issue, next, hold, start.coordRoot)}; add --run only if the coordinator was stopped.`);
     }
     return next;
   }
@@ -1826,6 +1921,7 @@ export class CoordinatorRunLoop {
         (coverage.shim !== "active" ? "No verified containment layer. " : "Only PATH shim coverage observed. ") +
         "Check native hook support/trust and run the probes in the actual harness shell tool.\n");
     }
+    this.log(`Issue ${start.issue}: accepted ${decision.agent}'s git submission for ${cursor.stepId}.`);
     const accepted: AcceptedSubmission = {
       stepId: cursor.stepId,
       agent: decision.agent,
@@ -2102,6 +2198,7 @@ export class CoordinatorRunLoop {
     }
     const archivePath = archiveAcceptedResponse(this.paths, decision.agent, cursor.actionId, read.bytes);
     void archivePath;
+    this.log(`Issue ${start.issue}: accepted ${decision.agent}'s private response for ${cursor.stepId}.`);
     const accepted: AcceptedResponse = {
       stepId: cursor.stepId,
       agent: decision.agent,
@@ -2542,12 +2639,39 @@ export class CoordinatorRunLoop {
           cacheReason: "not cached: nothing selected" }) }, at);
       return { status: "passed", results: [] };
     }
-    return runVerification({
+    this.log(`Issue ${start.issue}: verification ${phase} starting for ${order.agent} at ${pin.slice(0, 12)}…`);
+    const result = await runVerification({
       paths: this.paths, start, mirror: this.mirror, processRunner: this.processRunner, now: () => this.now(),
       checkpoint: () => { this.authority(cursors); },
       journal: (type, details, at) => appendJournal(this.paths, { type, agent: order.agent, actionId: order.actionId, details }, at),
-      phase, pin, classification, commands
+      phase, pin, classification, commands,
+      onProgress: (event) => {
+        if (event.kind === "prepare") {
+          this.log(`Issue ${start.issue}: preparing verification worktree for ${event.pin.slice(0, 12)}…`);
+        } else if (event.kind === "command-start") {
+          this.log(`Issue ${start.issue}: running check ${event.name}…`);
+        } else if (event.kind === "reused") {
+          this.log(`Issue ${start.issue}: reused cached check ${event.name}` +
+            (event.logPath !== null ? ` (log ${event.logPath})` : ""));
+        } else if (event.kind === "waiting") {
+          this.log(`Issue ${start.issue}: waiting for another verification of ${event.waitingFor}…`);
+        } else if (event.kind === "command-result" && event.reused !== true) {
+          this.log(`Issue ${start.issue}: check ${event.name} exited ${event.exitCode}` +
+            (event.logPath !== null ? ` (log ${event.logPath})` : ""));
+        } else if (event.kind === "failed") {
+          this.log(`Issue ${start.issue}: verification failed: ${event.failure}` +
+            (event.logPath !== null ? ` (log ${event.logPath})` : ""));
+        }
+      }
     });
+    if (result.status === "passed") {
+      this.log(`Issue ${start.issue}: verification ${phase} passed for ${order.agent}.`);
+    } else if (result.status === "waiting") {
+      this.log(`Issue ${start.issue}: verification ${phase} waiting for ${result.waitingFor}.`);
+    } else {
+      this.log(`Issue ${start.issue}: verification ${phase} failed for ${order.agent}: ${result.failure}`);
+    }
+    return result;
   }
 
   private async publishAcceptedFinalization(start: StartState, cursors: CursorsState): Promise<CursorsState> {
@@ -2565,7 +2689,9 @@ export class CoordinatorRunLoop {
           `GitHub issue snapshot number ${issueSnapshot.number} does not match start issue ${start.issue}.`
         );
       }
+      this.log(`Issue ${start.issue}: pushing final branch ${branch}…`);
       await this.mirror.publishBranch(finalSha, branch);
+      this.log(`Issue ${start.issue}: pushed ${branch}.`);
       this.authority(authority, true);
       const draft = !coordMergesPullRequest(start.prPolicy);
       const { title, body } = formatFinalizationPullRequest({
@@ -2576,6 +2702,7 @@ export class CoordinatorRunLoop {
         evidenceBranch: cursors.evidence.branch,
         evidenceTip: cursors.evidence.tip
       });
+      this.log(`Issue ${start.issue}: opening pull request for ${branch}…`);
       const result = await this.pullRequestOpener({
         repository,
         base: start.baseBranch,
@@ -2585,9 +2712,12 @@ export class CoordinatorRunLoop {
         draft
       });
       openedUrl = result.url;
+      this.log(`Issue ${start.issue}: pull request ${result.url}`);
       this.authority(authority, true);
       if (coordMergesPullRequest(start.prPolicy)) {
+        this.log(`Issue ${start.issue}: merging pull request…`);
         await this.pullRequestMerger({ url: result.url });
+        this.log(`Issue ${start.issue}: pull request merged.`);
         this.authority(authority, true);
       }
       return this.mutate(authority, (current) => {
@@ -2846,12 +2976,40 @@ export class CoordinatorRunLoop {
       if (cursor === undefined || cursor.actionId === null || cursor.stepId === null) continue;
       const runtime = agentRuntimePaths(this.paths, agent);
       const completion = readCompletion(runtime.complete);
+      const lifecycleEntry = readAgentLifecycle(this.paths).agents[agent];
+      const stopWarn = stopObservationWarning(lifecycleEntry, agent);
+      const stopKey = stopWarn ?? "";
+      if (stopWarn !== null && this.stopWarningKeys.get(agent) !== stopKey) {
+        this.stopWarningKeys.set(agent, stopKey);
+        this.log(`WARNING: ${stopWarn}`);
+      } else if (stopWarn === null) {
+        this.stopWarningKeys.delete(agent);
+      }
       if (this.tmux !== null && ["ordered", "intent", "verifying"].includes(cursor.status)) {
         cursors = this.ensureActionSafety(cursors, agent, cursor.actionId);
         cursors = await this.observeResources(start, cursors, agent);
         if (cursors.paused) return cursors;
         cursors = await this.observeUnfinished(start, cursors, agent, cursor.actionId);
         if (cursors.paused) return cursors;
+      }
+      // Drain owner reminders through the same deliver path (no concurrent tick).
+      const reminder = this.ownerReminders.get(agent);
+      if (reminder !== undefined && this.tmux !== null && !cursors.paused) {
+        this.ownerReminders.delete(agent);
+        const live = readAgentLifecycle(this.paths).agents[agent];
+        if (
+          cursors.holds.some((hold) => hold.agent === agent) ||
+          cursor.actionId !== reminder.actionId ||
+          live?.action?.actionId !== reminder.actionId ||
+          live.action.actionDigest !== reminder.actionDigest ||
+          live.action.workflowCompleteAt !== null
+        ) {
+          this.log(`Issue ${start.issue}: discarded stale owner reminder for ${agent}.`);
+        } else {
+          this.log(`Issue ${start.issue}: executing owner reminder for ${agent} (action ${reminder.actionId}).`);
+          cursors = await this.deliver(start, cursors, agent, reminder.actionId, reminder.actionDigest, "owner-reminder");
+          if (cursors.paused) return cursors;
+        }
       }
       if (completion.status === "missing") {
         if (this.tmux !== null) {
@@ -2861,6 +3019,14 @@ export class CoordinatorRunLoop {
           }
         }
         continue;
+      }
+
+      if (completion.status === "valid") {
+        const progressKey = `${cursor.actionId}:${completion.kind === "sha" ? completion.sha : completion.actionId}`;
+        if (!this.completionProgressKeys.has(progressKey)) {
+          this.completionProgressKeys.add(progressKey);
+          this.log(`Issue ${start.issue}: ${agent} complete received; checking.`);
+        }
       }
 
       if (completion.status === "malformed") {

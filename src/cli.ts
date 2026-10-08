@@ -51,7 +51,7 @@ import {
   type CoordinatorConfig,
   type CursorsState
 } from "./state.js";
-import { describeWorkflowStep, type WorkflowProfile } from "./steps.js";
+import { type WorkflowProfile } from "./steps.js";
 import { applyOwnerAnswer, clearAgentLocalWork, dropOwnerAgent, invalidateUnpublishedBatches,
   queueOwnerGuidance, setOwnerPause } from "./ownerControls.js";
 import { startInteractiveSession, type InteractiveSession, type TerminalInput, type TerminalOutput } from "./interactive.js";
@@ -62,6 +62,7 @@ import {
 } from "./tmux.js";
 import {
   listIssueNumbersInWorkspace,
+  resolveWorkspaceFromOwnerOrAgentClone,
   resolveWorkspaceFromProduct,
   workspaceLocationFromConfig,
   type WorkspaceLocation
@@ -215,7 +216,9 @@ const help = `coord — owner-side workflow driver
 
 Usage:
   coord --version | -V | version
-  coord onboard <product> [--coord-root <path>] [--completes-root <path>] [--agents <a,b,c>] [--profile <p>]
+  coord help [<command>]
+  coord <command> --help
+  coord onboard <repository> [--coord-root <path>] [--completes-root <path>] [--agents <a,b,c>] [--profile <p>]
   coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord manual [--product <path> | --config <path> --coord-root <path>]
   coord install --product <path> --coord-root <external-path> --agents <a,b,c> [--profile <p>]
@@ -248,11 +251,12 @@ Called by the agent-clone hooks, not by operators:
   coord git-guard --vendor <codex|claude|cursor|antigravity> --clone <path>
   coord containment-probe --resolved-git <tool-shell-command-v-result> [--tool-result hook-denied|shim-refused|executed|unknown] [--vendor-version <version>] [--clone <path>] [--issue <n>]
 
-Happy path: bootstrap once, onboard a product once, create GitHub issue N, then run
-\`coord N\` from that onboarded product. Agents author plans on issue-N/<agent>.
+Happy path: bootstrap once, onboard a repository once, create GitHub issue N, then run
+\`coord N\` from that onboarded repository. Agents author plans on issue-N/<agent>.
+\`--product\` still names the repository path (no --repository alias).
 
-From an agent clone, \`coord next --issue N\` resolves the runtime via
-coord.workspaceConfig and the caller via consensus.agentId (or --agent / COORD_AGENT).
+From an agent clone, \`coord next --issue N\` and other issue commands without
+\`--product\`/\`--coord-root\` resolve via coord.workspaceConfig (and consensus.agentId for next).
 Use \`-v\` / \`--verbose\` on \`coord N\`, start, or run for tick-level nudge logs.
 Phase changes (R1.join → R2.plan, …) always print.
 Pauses and holds keep the coordinator waiting without advancing work; Ctrl-C stops it.
@@ -262,7 +266,7 @@ for that agent; if ambiguous, use \`--hold\`. Nudge-loop release still requires
 use \`coord resume --issue N --agent claude --run\` only for a stopped coordinator,
 and omit \`--run\` beside a live runner (it does not detect a second runner).
 \`coord --version\` prints the package version (pre-1.0: \`0.0.N\`, advanced by CI on merge to main).
-\`coord status\` prints the chosen agent, final pin, published branch, evidence
+\`coord status\` prints the chosen agent, implementation/final commits, published branch, evidence
 branch/tip and publication state, and PR URL. It never exposes ballot choices,
 dispositions, rationales, or pending response bytes.
 
@@ -278,7 +282,7 @@ per-clone remediation — do not run \`git checkout\` by hand; use
 \`coord reset-clones N\` (keeps analytics runtime). \`coord uninstall\` also tears down owner
 tmux/Terminals for the workspace agents. \`coord wipe-issue N\` resets agent clones,
 deletes origin issue-N agent/*-final branches plus leftover tracking refs (keeping
-product-local issue branches that have owner commits or uncommitted work, and
+repository-local issue branches that have owner commits or uncommitted work, and
 keeping \`issue-N/coordinator-evidence\` unless \`--delete-evidence\`), removes the
 issue runtime and completion mailbox, tears down UI, and leaves the GitHub issue
 open. \`coord reset-clones N\` only makes agent clones base-ready (lift overlay,
@@ -293,15 +297,65 @@ chat and agents use their own <agent>/<name> scratch branches. Manual and
 automated issue sessions cannot run concurrently for the same workspace; use
 \`coord detach manual\` to close manual UI before starting or resuming an issue.
 
-install remains the advanced explicit interface. Onboard and install leave the product's
+install remains the advanced explicit interface. Onboard and install leave the repository's
 tracked tree untouched; a fresh human clone receives no coordination hooks or metadata.
 COORD_ISSUE and COORD_AGENT may replace their corresponding owner-control options.
 
 Foreground TTY runs accept s (status), p/Space (manual pause), a (attach),
-d (drop), r (release a selected hold), /steer <text>, ?/h (help), and q (quit).
+d (drop), r (release a selected hold; nudge-loop confirms budget reset),
+n (remind an agent), /steer <text>, ?/h (help), and q (quit).
 Quit stops only the foreground runner, unlike coord detach; agent panes still
 accept direct typing. Non-TTY runs do not read interactive input.
 `;
+
+const restartActionHelp =
+  "restart-action — reissue the current action for one agent without changing the gate.\n" +
+  "Inputs: --issue --agent; optional --product or --coord-root.\n" +
+  "Side effects: clears that agent's local action/completion and re-prepares the order.\n" +
+  "Unlike interactive n (reminder), this restarts delivery from ordered.\n" +
+  "Example: coord restart-action --issue 42 --agent codex\n";
+
+const COMMAND_HELP: Readonly<Record<string, string>> = {
+  status:
+    "status — print the issue snapshot (step, roster, holds, commits, PR).\n" +
+    "Inputs: --issue (or COORD_ISSUE); optional --product <repository> or --coord-root.\n" +
+    "Side effects: none (read-only).\n" +
+    "Example: coord status --issue 42\n",
+  resume:
+    "resume — clear manual pause and/or release one hold; optionally start a runner.\n" +
+    "Inputs: --issue; optional --agent or --hold; --reset-nudge-budget for nudge-loop only; --run to start a foreground runner.\n" +
+    "Side effects: mutates pause/holds; --run starts the coordinator (use only if stopped).\n" +
+    "State-only resume (default) is safe beside a live runner. Reminder (interactive n) does not clear holds.\n" +
+    "Example: coord resume --issue 42 --agent claude --reset-nudge-budget\n",
+  run:
+    "run — start a foreground coordinator for an existing issue.\n" +
+    "Inputs: --issue; optional --product <repository> or --coord-root; -v.\n" +
+    "Side effects: runs the workflow loop; opens Terminal clients when needed.\n" +
+    "Example: coord run --issue 42\n",
+  pause:
+    "pause — set manual pause so the coordinator waits without releasing holds.\n" +
+    "Inputs: --issue; optional --product or --coord-root.\n" +
+    "Side effects: sets manualPaused.\n" +
+    "Example: coord pause --issue 42\n",
+  attach:
+    "attach — reopen missing agent Terminal windows for a live issue session.\n" +
+    "Inputs: <issue>; optional --product or --coord-root.\n" +
+    "Side effects: opens Terminal.app clients; does not start a runner.\n" +
+    "Example: coord attach 42\n",
+  detach:
+    "detach — close Terminal windows and kill the issue (or manual) tmux session.\n" +
+    "Inputs: <issue>|manual; optional --product/--coord-root; --dry-run.\n" +
+    "Side effects: tears down UI only (not runtime state). Quit (q) does not detach.\n" +
+    "Example: coord detach 42\n",
+  doctor:
+    "doctor — inspect install/hooks/identity wiring for a repository workspace.\n" +
+    "Inputs: --coord-root and --product <repository>.\n" +
+    "Side effects: none (read-only).\n" +
+    "Example: coord doctor --coord-root /runtime --product /path/to/repo\n",
+  restart: restartActionHelp,
+  "restart-action": restartActionHelp
+};
+
 
 export const automationDigestMaterial = (
   configPath: string,
@@ -369,10 +423,10 @@ const resolveStart = (parsed: ParsedArgs, io: CliIo): StartResolution => {
   const hasConfig = parsed.flags.has("config");
   const hasCoordRoot = parsed.flags.has("coord-root");
   if (hasConfig !== hasCoordRoot) {
-    throw new Error("--config and --coord-root must be supplied together, or use --product after coord onboard.");
+    throw new Error("--config and --coord-root must be supplied together, or use --product after coord onboard for a repository.");
   }
   if (hasConfig && parsed.flags.has("product")) {
-    throw new Error("Use --product or the explicit --config/--coord-root pair, not both.");
+    throw new Error("Use --product (repository path) or the explicit --config/--coord-root pair, not both.");
   }
 
   let configPath: string;
@@ -427,22 +481,53 @@ const existingIssueRuntime = (resolution: StartResolution, issue: number): Issue
   return null;
 };
 
-/** Resolve existing state either explicitly or through an onboarded product. */
+/** Resolve existing state: explicit flags win; otherwise owner or agent worktree. */
 const existingContext = (parsed: ParsedArgs, io: CliIo): IssueRuntimePaths => {
-  if (!parsed.flags.has("product")) return context(parsed, io);
-  if (parsed.flags.has("coord-root")) {
+  if (parsed.flags.has("product") && parsed.flags.has("coord-root")) {
     throw new Error("Use --product or --coord-root for an issue command, not both.");
   }
   const issueValue = parsed.flags.get("issue") ?? io.env.COORD_ISSUE;
   if (issueValue === undefined) throw new Error("--issue or COORD_ISSUE is required.");
   const issue = parseIssue(issueValue);
-  const resolution = resolveStart(
-    { positionals: [], flags: new Map([["product", requireFlag(parsed, "product")]]) },
-    io
-  );
+
+  if (parsed.flags.has("coord-root") && !parsed.flags.has("product")) {
+    return context(parsed, io);
+  }
+
+  if (parsed.flags.has("product")) {
+    const resolution = resolveStart(
+      { positionals: [], flags: new Map([["product", requireFlag(parsed, "product")]]) },
+      io
+    );
+    const paths = existingIssueRuntime(resolution, issue);
+    if (paths === null) {
+      throw new Error(`No runtime state exists for issue ${issue} and this repository. Run coord ${issue}.`);
+    }
+    return paths;
+  }
+
+  // Neither flag: resolve like coord N from cwd (owner), or a registered agent clone.
+  let workspace: WorkspaceLocation;
+  try {
+    workspace = resolveWorkspaceFromProduct(io.cwd);
+  } catch (ownerError) {
+    try {
+      workspace = resolveWorkspaceFromOwnerOrAgentClone(io.cwd, WORKSPACE_CONFIG_KEY);
+    } catch {
+      throw ownerError instanceof Error ? ownerError : new Error(String(ownerError));
+    }
+  }
+  const config = readConfig(workspace.configPath);
+  const resolution: StartResolution = {
+    configPath: workspace.configPath,
+    config,
+    runtimeRoot: workspace.workspaceRoot,
+    workspace,
+    profile: workflowProfile(config.profile)
+  };
   const paths = existingIssueRuntime(resolution, issue);
   if (paths === null) {
-    throw new Error(`No runtime state exists for issue ${issue} and this product. Run coord ${issue}.`);
+    throw new Error(`No runtime state exists for issue ${issue} under ${workspace.workspaceRoot}. Run coord ${issue}.`);
   }
   return paths;
 };
@@ -684,6 +769,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     let stopCode = 0;
     let session: InteractiveSession | null = null;
     const stdout = io.stdout, stderr = io.stderr;
+    // One shared run-loop instance so interactive reminders drain on its ticks.
+    const loop = makeRunLoop(paths);
+    const remindLoop = loop instanceof CoordinatorRunLoop ? loop : null;
     // Like sessionExists, test defaults must not operate on the host UI.
     // An explicitly injected terminal still exercises the interactive path.
     const terminal = dependencies.terminal ?? (process.env.VITEST !== undefined ? null : {
@@ -699,13 +787,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         },
         readQuestion: () => readCursorsState(paths).ownerQuestion,
         commands: {
-          status: () => {
-            const state = readCursorsState(paths);
-            return renderIssueReport(readStartState(paths), state, readAgentLifecycle(paths)) +
-              `Active step: ${describeWorkflowStep(state.issueCursor.stepId, state.issueCursor.round)}\n` +
-              `Active roster: ${state.activeRoster.join(", ")}\n` +
-              `Queued guidance: ${state.ownerGuidance?.pending.length ?? 0}\n`;
-          },
+          status: () =>
+            renderIssueReport(readStartState(paths), readCursorsState(paths), readAgentLifecycle(paths)),
           togglePause: () => {
             const state = setOwnerPause(paths, "toggle");
             return `Manual pause ${state.manualPaused ? "enabled" : "cleared"}; ${state.holds.length} active hold(s).`;
@@ -714,13 +797,20 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           agents: () => readCursorsState(paths).activeRoster,
           drop: (agent) => { dropOwnerAgent(paths, agent); },
           holds: () => readCursorsState(paths).holds,
-          releaseHold: (hold) => { setOwnerPause(paths, false, { hold }); },
+          releaseHold: (hold, resetBudget) => {
+            setOwnerPause(paths, false, { hold, resetBudget: resetBudget === true });
+          },
+          remindableAgents: () => remindLoop?.remindableAgents() ?? [],
+          remind: (agent) => {
+            if (remindLoop === null) throw new Error("Owner reminders require the coordinator run loop.");
+            return remindLoop.queueOwnerReminder(agent);
+          },
           steer: (text) => { queueOwnerGuidance(paths, text); },
           answer: (id, choice) => { applyOwnerAnswer(paths, id, choice); }
         }
       });
       if (session !== null) { io.stdout = session.print; io.stderr = session.print; }
-      await makeRunLoop(paths).run(controller.signal);
+      await loop.run(controller.signal);
     } finally {
       session?.close();
       io.stdout = stdout; io.stderr = stderr;
@@ -888,12 +978,32 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     return paths;
   };
   const [command, ...rest] = argv;
-  if (command === undefined || command === "--help" || command === "-h" || command === "help") {
+  if (command === undefined || command === "--help" || command === "-h") {
     io.stdout(help);
+    return 0;
+  }
+  if (command === "help") {
+    const topic = rest[0];
+    if (topic === undefined || topic === "--help" || topic === "-h") {
+      io.stdout(help);
+      return 0;
+    }
+    const text = COMMAND_HELP[topic];
+    if (text === undefined) {
+      io.stdout(`No detailed help for '${topic}'.\n\n${help}`);
+      return 0;
+    }
+    io.stdout(text);
     return 0;
   }
   if (command === "--version" || command === "-V" || command === "version") {
     io.stdout(`${packageVersion(coordinatorSourceRoot)}\n`);
+    return 0;
+  }
+  // Side-effect-free per-command help before flag/context validation.
+  if (rest.includes("--help") || rest.includes("-h")) {
+    const text = COMMAND_HELP[command] ?? COMMAND_HELP[command.replace(/^restart$/, "restart-action")];
+    io.stdout(text ?? `No detailed help for '${command}'.\n\n${help}`);
     return 0;
   }
 

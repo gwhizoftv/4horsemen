@@ -361,7 +361,7 @@ describe("runner waiting and initialization", () => {
     } }).run();
     expect(sleeps).toBe(3);
     expect(initializations).toBe(1);
-    expect(f.messages.filter((message) => message.startsWith("Issue 1: paused"))).toHaveLength(1);
+    expect(f.messages.filter((message) => message.includes("Issue 1: paused"))).toHaveLength(1);
   });
 
   it("defers workflow effects when an owner resumes between the initialization check and the tick", async () => {
@@ -470,7 +470,7 @@ describe("vendor resource evidence and recovery", () => {
       expect.objectContaining({ details: expect.objectContaining({ outcome: "owner-release-required" }) })
     ]);
     expect(f.messages.at(-1)).toContain("owner release required");
-    expect(f.messages.filter((message) => message.startsWith("Issue 1: paused"))).toHaveLength(2);
+    expect(f.messages.filter((message) => message.includes("Issue 1: paused"))).toHaveLength(2);
     expect(f.ui.sends).toBe(1);
     // An owner release is not re-held by the same failure episode.
     mutateCursorsState(f.paths, (current) => releaseHold(current, held.holds[0]!.id, false, f.now()));
@@ -496,7 +496,7 @@ describe("vendor resource evidence and recovery", () => {
     expect(readFileSync(f.paths.cursors, "utf8")).toBe(cursors);
     expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
     expect(f.ui.sends).toBe(1);
-    expect(f.messages.filter((message) => message.startsWith("Issue 1: paused"))).toHaveLength(1);
+    expect(f.messages.filter((message) => message.includes("Issue 1: paused"))).toHaveLength(1);
     f.advance(7 * 86400_000);
     for (let i = 0; i < 200; i++) await f.tick();
     expect(readFileSync(f.paths.journal, "utf8")).toBe(journal);
@@ -1857,7 +1857,7 @@ describe("effectful run loop", () => {
       // The action is out and unanswered, so the workflow is blocked on it.
       gateWaiting: true
     });
-    expect(first[0]?.details.human).toBe("the foreground process is not this agent's harness");
+    expect(first[0]?.details.human).toBe("another process is in the foreground of this pane — switch back to the agent harness");
     const printedOnce = messages.filter((message) => message.includes("foreground-mismatch"));
     expect(printedOnce).toHaveLength(1);
     // The durable key suppresses journal and console repeats, including restart.

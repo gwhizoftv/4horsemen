@@ -124,7 +124,7 @@ export const recordOwnerWorkspace = (productRoot: string, configPath: string): v
   if (root === null) throw new Error(`${productRoot} is not a Git worktree.`);
   const config = readConfig(resolve(configPath));
   if (config.coordination === undefined || !sameExistingPath(config.coordination.productRoot, root)) {
-    throw new Error(`Workspace config ${configPath} is not installed for product worktree ${root}.`);
+    throw new Error(`Workspace config ${configPath} is not installed for repository worktree ${root}.`);
   }
   localConfigSet(productRoot, OWNER_WORKSPACE_CONFIG_KEY, resolve(configPath));
 };
@@ -148,11 +148,11 @@ export const clearOwnerWorkspaceLocator = (productRoot: string): void => {
 
 export const resolveWorkspaceFromProduct = (productOrClone: string): WorkspaceLocation => {
   const root = worktreeRoot(resolve(productOrClone));
-  if (root === null) throw new Error(`${productOrClone} is not a Git worktree; pass --product for an onboarded product.`);
+  if (root === null) throw new Error(`${productOrClone} is not a Git worktree; pass --product for an onboarded repository.`);
   const configured = localConfigGet(root, OWNER_WORKSPACE_CONFIG_KEY);
   if (configured === null) {
     throw new Error(
-      `${root} is not onboarded in this worktree. Run \`coord onboard ${root}\`, or pass --product for an onboarded product.`
+      `${root} is not onboarded in this worktree. Run \`coord onboard ${root}\`, or pass --product for an onboarded repository.`
     );
   }
   if (!isAbsolute(configured) || !existsSync(configured)) {
@@ -163,8 +163,58 @@ export const resolveWorkspaceFromProduct = (productOrClone: string): WorkspaceLo
   const config = readConfig(configured);
   if (config.coordination === undefined || !sameExistingPath(config.coordination.productRoot, root)) {
     throw new Error(
-      `${OWNER_WORKSPACE_CONFIG_KEY} points at a workspace for another product. Re-run \`coord onboard ${root}\`.`
+      `${OWNER_WORKSPACE_CONFIG_KEY} points at a workspace for another repository. Re-run \`coord onboard ${root}\`.`
     );
   }
   return workspaceLocationFromConfig(configured);
+};
+
+/**
+ * Resolve installed workspace config from an owner repository or a registered
+ * agent clone (coord.workspaceConfig). Rejects crossed agent identity/root.
+ */
+export const resolveWorkspaceFromOwnerOrAgentClone = (
+  path: string,
+  workspaceConfigKey: string
+): WorkspaceLocation => {
+  const root = worktreeRoot(resolve(path));
+  if (root === null) {
+    throw new Error(`${path} is not a Git worktree; pass --product for an onboarded repository.`);
+  }
+  const ownerConfigured = localConfigGet(root, OWNER_WORKSPACE_CONFIG_KEY);
+  if (ownerConfigured !== null) return resolveWorkspaceFromProduct(root);
+
+  const agentConfigured = localConfigGet(root, workspaceConfigKey);
+  if (agentConfigured === null) {
+    throw new Error(
+      `${root} is not an onboarded repository or registered agent clone. ` +
+        `Run \`coord onboard ${root}\`, or pass --product / --coord-root.`
+    );
+  }
+  if (!isAbsolute(agentConfigured) || !existsSync(agentConfigured)) {
+    throw new Error(
+      `${workspaceConfigKey} points at missing workspace config '${agentConfigured}'. Re-run coord install.`
+    );
+  }
+  const workspace = workspaceLocationFromConfig(agentConfigured);
+  const config = readConfig(workspace.configPath);
+  const agentId = localConfigGet(root, "consensus.agentId");
+  if (agentId === null) {
+    throw new Error(
+      `This agent clone has ${workspaceConfigKey} but no consensus.agentId. Re-run coord install.`
+    );
+  }
+  const match = config.agents.find((agent) => agent.id === agentId);
+  if (match === undefined) {
+    throw new Error(
+      `Agent '${agentId}' is not configured in ${workspace.configPath}.`
+    );
+  }
+  const expectedRoot = resolve(dirname(workspace.configPath), match.root);
+  if (!sameExistingPath(expectedRoot, root)) {
+    throw new Error(
+      `Clone root ${root} does not match configured root ${expectedRoot} for agent '${agentId}'.`
+    );
+  }
+  return workspace;
 };

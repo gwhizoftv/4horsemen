@@ -102,6 +102,23 @@ export const claudeRateLimitsSchema = z
   })
   .strict();
 
+/**
+ * Advisory Stop-hook bookkeeping. Defaults keep old lifecycle files readable.
+ * Does not authorize delivery, holds, or readiness.
+ */
+export const stopObservationSchema = z
+  .object({
+    sessionId: z.string().min(1).nullable().default(null),
+    /** Distinct prompt turn IDs seen since the last matching Stop or session reset. */
+    openTurnIds: z.array(z.string().min(1)).max(64).default([]),
+    /** Distinct completed action IDs when turn IDs were unavailable. */
+    completedActionsWithoutTurnId: z.array(z.string().uuid()).max(64).default([])
+  })
+  .strict()
+  .default({ sessionId: null, openTurnIds: [], completedActionsWithoutTurnId: [] });
+
+export type StopObservation = z.infer<typeof stopObservationSchema>;
+
 export const agentLifecycleEntrySchema = z
   .object({
     action: lifecycleActionSchema.nullable(),
@@ -122,6 +139,7 @@ export const agentLifecycleEntrySchema = z
     lastFailure: lifecycleFailureSchema.nullable().default(null),
     claudeRateLimits: claudeRateLimitsSchema.nullable().default(null),
     containment: containmentSchema.nullable().default(null),
+    stopObservation: stopObservationSchema,
     updatedAt: timestampSchema
   })
   .strict();
@@ -162,6 +180,12 @@ export type LifecycleObservation = {
   rateLimits?: ClaudeRateLimits;
 };
 
+const emptyStopObservation = (): StopObservation => ({
+  sessionId: null,
+  openTurnIds: [],
+  completedActionsWithoutTurnId: []
+});
+
 const emptyEntry = (now: string): AgentLifecycleEntry => ({
   action: null,
   execution: "unknown",
@@ -179,8 +203,30 @@ const emptyEntry = (now: string): AgentLifecycleEntry => ({
   lastFailure: null,
   claudeRateLimits: null,
   containment: null,
+  stopObservation: emptyStopObservation(),
   updatedAt: now
 });
+
+/**
+ * Advisory warning when Stop/activity confirmation is missing.
+ * Never invents an N from elapsed time; only counts observed turn/action IDs.
+ */
+export const stopObservationWarning = (
+  entry: AgentLifecycleEntry | undefined,
+  agentId: string
+): string | null => {
+  if (entry === undefined) return null;
+  const obs = entry.stopObservation ?? emptyStopObservation();
+  if (obs.openTurnIds.length >= 2) {
+    return `No Stop hook from ${agentId} after ${obs.openTurnIds.length} observed turns`;
+  }
+  if (obs.completedActionsWithoutTurnId.length >= 2) {
+    return `No activity/Stop confirmation after ${obs.completedActionsWithoutTurnId.length} completed actions`;
+  }
+  // Unverified install/runtime trust is a one-shot startup diagnostic in
+  // initializeEffects — not a per-tick Stop-observation warning.
+  return null;
+};
 
 export const initialAgentLifecycle = (
   agents: readonly string[],
@@ -439,6 +485,13 @@ export const markActionWorkflowComplete = (
     const current = current0.agents[agent];
     if (current?.action?.actionId !== actionId) return current0;
     clearedDegraded = current.health === "degraded";
+    const stopObservation = current.stopObservation ?? emptyStopObservation();
+    // Without a turn id on this action, count the completed action for advisory warnings.
+    const withoutTurn =
+      current.action.turnId === null &&
+      !stopObservation.completedActionsWithoutTurnId.includes(actionId)
+        ? [...stopObservation.completedActionsWithoutTurnId, actionId].slice(-64)
+        : stopObservation.completedActionsWithoutTurnId;
     return replaceEntry(
       current0,
       agent,
@@ -446,7 +499,12 @@ export const markActionWorkflowComplete = (
         ...current,
         health: clearedDegraded ? "healthy" : current.health,
         degradedCause: clearedDegraded ? null : current.degradedCause,
-        action: { ...current.action, workflowCompleteAt: now }
+        action: { ...current.action, workflowCompleteAt: now },
+        stopObservation: {
+          ...stopObservation,
+          sessionId: current.sessionId,
+          completedActionsWithoutTurnId: withoutTurn
+        }
       },
       now
     );
@@ -655,6 +713,35 @@ export const applyLifecycleObservation = (
   const lastFailure = observation.failure === undefined
     ? entry.lastFailure
     : recordFailure(entry, observation.failure, { action, sessionId, turnId: observation.turnId ?? null, now });
+
+  let stopObservation = entry.stopObservation ?? emptyStopObservation();
+  if (sessionChanged || observation.kind === "session-start" || observation.kind === "session-end") {
+    // A new/ended session resets the advisory episode; old sessions cannot clear it later.
+    stopObservation = { ...emptyStopObservation(), sessionId };
+  } else if (observation.kind === "prompt-submitted") {
+    const promptTurn = observation.turnId ?? null;
+    if (promptTurn !== null) {
+      const open = stopObservation.openTurnIds.includes(promptTurn)
+        ? stopObservation.openTurnIds
+        : [...stopObservation.openTurnIds, promptTurn].slice(-64);
+      stopObservation = { sessionId, openTurnIds: open, completedActionsWithoutTurnId: stopObservation.completedActionsWithoutTurnId };
+    }
+  } else if (observation.kind === "stopped") {
+    const stoppedTurn = observation.turnId ?? null;
+    if (stoppedTurn !== null) {
+      const remaining = stopObservation.openTurnIds.filter((id) => id !== stoppedTurn);
+      // A matching Stop for the current episode clears open turns when none remain.
+      stopObservation = {
+        sessionId,
+        openTurnIds: remaining,
+        completedActionsWithoutTurnId: remaining.length === 0 ? [] : stopObservation.completedActionsWithoutTurnId
+      };
+    } else if (stopObservation.openTurnIds.length === 0) {
+      // Stop without turn identity still clears action-fallback counters for this episode.
+      stopObservation = { sessionId, openTurnIds: [], completedActionsWithoutTurnId: [] };
+    }
+  }
+
   return agentLifecycleEntrySchema.parse({
     ...entry,
     lastFailure,
@@ -671,6 +758,7 @@ export const applyLifecycleObservation = (
     degradedCause: null,
     lastEvent: observation.eventName,
     lastEventAt: now,
+    stopObservation,
     updatedAt: now
   });
 };

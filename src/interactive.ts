@@ -15,14 +15,28 @@ export type InteractiveCommands = {
   agents(): readonly string[];
   drop(agent: string): void;
   holds(): readonly { id: string; agent: string; reason: string }[];
-  releaseHold(id: string): void;
+  releaseHold(id: string, resetBudget?: boolean): void;
+  /** Agents with an outstanding action that can receive an owner reminder. */
+  remindableAgents(): readonly string[];
+  /** Queue a reminder for the selected agent; returns owner-facing confirmation. */
+  remind(agent: string): string;
   steer(text: string): void;
   answer(id: string, choice: "retry" | "revise" | "abandon"): void;
 };
 export type InteractiveSession = { print(message: string): void; close(): void; settled(): Promise<void> };
 
-type Menu = { kind: "drop" | "hold" | "question"; id?: string; items: { label: string; run(): void; confirm?: boolean }[] };
-const help = "Controls: s status · p/Space manual pause · a attach · d drop · r release hold · /steer <text> · q quit · ?/h help\n";
+type Menu = { kind: "drop" | "hold" | "question" | "remind"; id?: string; items: { label: string; run(): void; confirm?: boolean }[] };
+const help =
+  "Controls (press a key, then follow prompts when asked):\n" +
+  "  s — show status snapshot (step, roster, holds, publication).\n" +
+  "  p / Space — toggle manual pause (does not release holds).\n" +
+  "  a — reopen missing agent Terminal windows.\n" +
+  "  d — drop an active agent (numbered menu + confirm).\n" +
+  "  r — release one hold after you inspect the agent; nudge-loop holds ask whether to reset the four-send reminder allowance.\n" +
+  "  n — remind an agent to finish its current task (queues a request; does not force keys or clear holds).\n" +
+  "  /steer <text> — queue guidance for every recipient of the next assigned cohort (not an immediate broadcast into every terminal).\n" +
+  "  Enter — in hotkey mode, redraws the prompt (liveness check; no state change).\n" +
+  "  ? / h — this help.  q — quit the foreground runner only (agent panes keep running).\n";
 
 /** Owns this terminal only; workflow policy stays in the supplied commands. */
 export const startInteractiveSession = (options: {
@@ -70,6 +84,10 @@ export const startInteractiveSession = (options: {
   const showMenu = (value: Menu, title: string) => {
     menu = value; mode = "menu"; buffer = "";
     say(`${title}\n${value.items.map((item, index) => `  [${index + 1}] ${item.label}`).join("\n")}`);
+  };
+  const unknownInput = (text: string) => {
+    const quoted = text.length === 1 ? `'${text}'` : JSON.stringify(text);
+    say(`Unknown command ${quoted}\n${help}`);
   };
   const refreshQuestion = () => {
     if (closed) return;
@@ -145,6 +163,12 @@ export const startInteractiveSession = (options: {
       }
       return;
     }
+    // Hotkey mode: bare CR/LF is liveness only — newline + redraw, no help.
+    if (value === "\r" || value === "\n") {
+      say("");
+      draw();
+      return;
+    }
     if (value === "/") { mode = "line"; buffer = "/"; draw(); return; }
     dispatch(async () => {
       if (value === "s") { say(commands.status()); shownQuestion = null; }
@@ -154,12 +178,44 @@ export const startInteractiveSession = (options: {
       else if (value === "d") showMenu({ kind: "drop", items: commands.agents().map((agent) => ({
         label: `Drop ${agent}`, confirm: true, run: () => { commands.drop(agent); say(`Dropped ${agent}.`); }
       })) }, "Select an active agent to drop:");
+      else if (value === "n") {
+        const agents = commands.remindableAgents();
+        if (agents.length === 0) say("No agents with an outstanding action to remind.");
+        else showMenu({ kind: "remind", items: agents.map((agent) => ({
+          label: `Remind ${agent}`, run: () => { say(commands.remind(agent)); }
+        })) }, "Remind an agent to finish its current task:");
+      }
       else if (value === "r") {
         const holds = commands.holds();
         if (holds.length === 0) say("No active holds.");
-        else showMenu({ kind: "hold", items: holds.map((hold) => ({
-          label: `${hold.agent}: ${hold.reason}`, run: () => { commands.releaseHold(hold.id); say(`Released hold ${hold.id}.`); }
-        })) }, "Inspect the agent before releasing its hold (budget reset remains CLI-only):");
+        else showMenu({ kind: "hold", items: holds.map((hold) => {
+          if (hold.reason === "nudge-loop") {
+            return {
+              label: `${hold.agent}: ${hold.reason}`,
+              confirm: true,
+              run: () => {
+                commands.releaseHold(hold.id, true);
+                say(`Released hold ${hold.id} and reset its reminder allowance.`);
+              }
+            };
+          }
+          return {
+            label: `${hold.agent}: ${hold.reason}`,
+            run: () => { commands.releaseHold(hold.id); say(`Released hold ${hold.id}.`); }
+          };
+        }) }, "Inspect the agent before releasing its hold:");
+        // For nudge-loop, confirmation prompt text explains the budget reset.
+        if (holds.some((hold) => hold.reason === "nudge-loop") && mode === "menu") {
+          // Labels stay short; the confirm question carries the budget explanation.
+          for (const item of menu?.items ?? []) {
+            if (item.confirm) {
+              item.label =
+                `Reset the automatic reminder allowance (4 sends) for this nudge-loop hold and release it`;
+            }
+          }
+        }
+      } else if (!/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value)) {
+        unknownInput(value);
       }
     });
   };
@@ -170,7 +226,10 @@ export const startInteractiveSession = (options: {
     const multiple = Array.from(text).length > 1;
     // Plain pasted chunks cannot expand into quick controls or confirmations.
     if ((mode === "keys" || mode === "confirm") && escape === "" && paste === null &&
-        multiple && !text.includes("\x1b")) return;
+        multiple && !text.includes("\x1b")) {
+      if (mode === "keys") dispatch(() => { unknownInput(text); });
+      return;
+    }
     if (mode === "menu" && escape === "" && paste === null && multiple &&
         !/^\d+$/.test(text) && !text.includes("\x1b")) return;
     for (const char of text) {

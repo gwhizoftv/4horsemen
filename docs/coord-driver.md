@@ -549,14 +549,17 @@ workflow; no new owner command is required.
 ## Owner controls
 
 Every issue command accepts either an explicit workspace `--coord-root` or an
-onboarded `--product`. Product resolution uses the same flat/nested and legacy
-runtime lookup as `coord N`, so owner controls cannot accidentally target the
-outer root of a nested product. `COORD_ISSUE` may replace `--issue`.
+onboarded `--product` (repository path; the flag name is unchanged). With
+neither flag, commands resolve the current worktree like `coord N`: an owner
+repository via `coord.ownerWorkspaceConfig`, or a registered agent clone via
+`coord.workspaceConfig`. Resolution uses the same flat/nested and legacy
+runtime lookup, so owner controls cannot accidentally target the outer root of
+a nested repository. `COORD_ISSUE` may replace `--issue`.
 
 ```bash
 coord drop cursor --product /path/to/app --issue 42
 coord pause --product /path/to/app --issue 42
-coord resume --product /path/to/app --issue 42
+coord resume --product /path/to/app --issue 42 --coord-root /runtime
 coord restart-action --agent codex --product /path/to/app --issue 42
 coord answer <question-id> <retry|revise|abandon> --product /path/to/app --issue 42
 coord abandon --product /path/to/app --issue 42
@@ -607,37 +610,59 @@ not start a second tick loop. Logs clear and redraw the current edit.
 
 | Key | Operation |
 | --- | --- |
-| `s` | Snapshot of active step/round, roster, pins, publication/PR, holds and queued guidance count |
+| `s` | Snapshot framed by `----` with severity, step/roster, commits, publication/PR, holds and queued guidance |
 | `p` / Space | Toggle manual pause, never release holds |
 | `a` | Reopen missing agent Terminal clients using the existing attach flow |
 | `d` | Numbered active-agent menu; Enter selects, a separate `y` confirms |
-| `r` | Numbered hold menu; release the selected ID after inspecting the agent |
-| `?` / `h` | Help |
+| `r` | Numbered hold menu; release the selected ID after inspecting the agent. For a nudge-loop hold, a separate `y/N` confirms resetting the four-send reminder allowance |
+| `n` | Numbered menu of agents with outstanding actions; queues a reminder (reports “reminder requested”, not “sent”) |
+| Enter | In hotkey mode, redraws the prompt (liveness); no help and no state change |
+| `?` / `h` | Verbose help |
 | `/` | Begin a `/steer <text>` line; Enter queues, Backspace edits, Esc cancels |
 | `q` | Quit outside an edit, stopping only the foreground runner |
+
+### Owner glossary (status / recovery)
+
+- **Action** — the assigned task in `action.md` (UUID). **Turn** — one observed
+  agent prompt/response cycle.
+- **Implementation commit** / **Final commit (PR head)** — product SHAs formerly
+  called “pins” in status output.
+- Delivery: `ordered` = task file published, not yet sent; `injected` = task
+  message sent, waiting for acknowledgment; `accepted` = agent acknowledged the
+  task (not “submission accepted”).
+- **nudge-loop** — automatic reminder limit reached (4/4). Recovery requires
+  inspection plus explicit permission to reset that allowance
+  (`--reset-nudge-budget` or interactive `r` confirm). That is separate from a
+  provider usage window.
+- Severity labels: `[OK]`, `[WAIT]`, `[WARN]`, `[ACTION]` (ASCII; normal ongoing
+  work is `[WAIT]`).
 
 Owner questions appear as numbered menus with only `allowedAnswers`. Select a
 number and press Enter; abandon also requires `y`. The captured question ID is
 validated under the same lock as external `coord answer`, so stale selections
 cannot answer a replacement question. Esc returns to hotkeys; `s` redisplays a
 pending question. Menus likewise capture agent/hold identities and revalidate
-them when applied. Nudge-loop budget reset remains CLI-only via
-`coord resume --hold ID --reset-nudge-budget`. No control silently releases
-other holds. Pasted text does not execute hotkeys or confirmations; to paste
-guidance, press `/` first. In an edit, `q` is ordinary text.
+them when applied. Unknown printable keys echo `Unknown command '…'` plus help;
+a multi-character plain paste in hotkey mode is one inert unknown input.
+Recovery commands in status include quoted `--coord-root` when available.
+No control silently releases other holds. Pasted text does not execute hotkeys
+or confirmations; to paste guidance, press `/` first. In an edit, `q` is
+ordinary text.
 
 `/steer` queues a nonblank single line (maximum 2,000 characters; 32 pending
-entries) in `cursors.json` and journals it. At the first actual order preparation
-for the next cohort, all pending entries bind atomically to that step, round and
-cohort generation. Every recipient, reissue and restart of that cohort sees the
-same snapshot, even when more advice is queued between agents. Advice entered
-after the snapshot waits for the following cohort; a same-round owner retry is
-a new cohort. Skipped/normalized steps do not consume the queue. Amendment
-ballots have their own snapshot and preserve the interrupted product cohort's
-advice for resumed work. Existing pre-feature in-flight work is not retrofitted.
-Git and response actions render this as advisory **Owner guidance**; it cannot
-expand the file map, alter pins or paths, or override checks or evidence rules.
-There is no external `coord steer` command or in-flight prompt injection.
+entries) in `cursors.json` and journals it for every recipient of the **next
+assigned cohort** — it does not immediately broadcast into every agent terminal.
+At the first actual order preparation for the next cohort, all pending entries
+bind atomically to that step, round and cohort generation. Every recipient,
+reissue and restart of that cohort sees the same snapshot, even when more advice
+is queued between agents. Advice entered after the snapshot waits for the
+following cohort; a same-round owner retry is a new cohort. Skipped/normalized
+steps do not consume the queue. Amendment ballots have their own snapshot and
+preserve the interrupted product cohort's advice for resumed work. Existing
+pre-feature in-flight work is not retrofitted. Git and response actions render
+this as advisory **Owner guidance**; it cannot expand the file map, alter pins
+or paths, or override checks or evidence rules. There is no external
+`coord steer` command or in-flight prompt injection.
 
 Quit, Ctrl-C, EOF and termination restore terminal settings and stop waiting;
 an already-running workflow effect may finish before the runner exits. They do
@@ -690,17 +715,19 @@ Use `coord status --issue N` to see the hold ID and recovery instruction. After
 inspecting the agent and fixing the underlying problem, from another shell:
 
 ```sh
-coord resume --issue N --agent claude
+coord resume --issue N --agent claude --coord-root '/path/with spaces'
 # If that agent has multiple holds, select exactly one:
-coord resume --issue N --hold HOLD_ID
+coord resume --issue N --hold HOLD_ID --coord-root '/path/with spaces'
 # A nudge-loop latch requires explicit authorization for a fresh send budget:
-coord resume --issue N --agent claude --reset-nudge-budget
-coord resume --issue N  # separately clear a manual pause, if present
+coord resume --issue N --agent claude --reset-nudge-budget --coord-root '/path/with spaces'
+coord resume --issue N --coord-root '/path/with spaces'  # separately clear a manual pause, if present
 # Only if the coordinator was stopped: release one hold and restart together.
-coord resume --issue N --agent claude --run
+coord resume --issue N --agent claude --run --coord-root '/path/with spaces'
 ```
 
-Include `--product PATH` or `--coord-root PATH` as usual. Releasing one hold never
+Include `--product PATH` (repository) or `--coord-root PATH` as usual; status
+prints a copyable recovery line with a quoted `--coord-root` when available.
+Releasing one hold never
 clears another hold or a manual pause, and is audited. Retired actions cannot be
 released; `restart-action` and `drop` require resolving holds first. Owner release
 acknowledges a hold, not the continuing condition: a fresh local observation of

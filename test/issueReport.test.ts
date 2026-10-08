@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderIssueReport } from "../src/issueReport.js";
+import { renderIssueReport, holdRecoveryCommand, describeHold } from "../src/issueReport.js";
 import { initialAgentLifecycle } from "../src/agentLifecycle.js";
 import type { CursorsState, StartState } from "../src/state.js";
 
@@ -28,7 +28,7 @@ const start = (policy: StartState["prPolicy"]): StartState =>
     automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }],
     trustedSourceCommit: "c".repeat(40),
     origin: "https://github.com/example/project.git",
-    coordRoot: "/runtime",
+    coordRoot: "/runtime/with spaces/o's",
     configPath: "/runtime/config.json",
     agents: [{ id: "cursor", root: "/c", launcher: "start-cursor.sh", delivery: "pull" }],
     checks: [{ name: "check", argv: ["true"] }],
@@ -109,17 +109,31 @@ const complete = (overrides: Partial<CursorsState["publication"]> = {}): Cursors
   }) as CursorsState;
 
 describe("issue report", () => {
-  it("reports unknown holds and scoped recovery without implying capacity or auto-resume", () => {
+  it("frames the full snapshot with ---- and ASCII severity", () => {
+    const text = renderIssueReport(start("coord-open-unmerged"), complete());
+    expect(text.startsWith("----\n")).toBe(true);
+    expect(text.trimEnd().endsWith("----")).toBe(true);
+    expect(text).toMatch(/\[OK\] Issue 1: complete/);
+    expect(text).toContain("Active step:");
+    expect(text).toContain("Active roster: cursor");
+    expect(text).toContain("Queued guidance: 0");
+  });
+
+  it("reports humanized holds and scoped recovery with quoted --coord-root", () => {
     const cursors = complete();
     cursors.completed = false; cursors.paused = true; cursors.manualPaused = true;
     cursors.holds = [{ id: "hold-id", agent: "cursor", actionId: "action-id", sessionId: null,
       reason: "nudge-loop", evidenceId: "budget", observedAt: cursors.updatedAt, resetsAt: null,
       confidence: "unknown", retryOwner: "owner", evidence: null }];
+    cursors.actionSafety = { cursor: { actionId: "action-id", sends: 4, lastSendAt: null, reserved: false,
+      deferrals: [], holdGeneration: 0, observationChecks: 0, nextObservationAt: null, activityAt: cursors.updatedAt,
+      resource: { starts: 0, failures: 0, inFlight: null, nextAt: null, consumedDeadlines: [], terminal: null, episode: null } } };
     const text = renderIssueReport(start("owner-only"), cursors);
     expect(text).toContain("Manual pause: active");
-    expect(text).toContain("cause unknown, reset unknown, retry owner: owner");
-    expect(text).toContain("coord resume --issue 1 --agent cursor --reset-nudge-budget");
-    expect(text).toContain("coord resume --issue 1 clears only this pause");
+    expect(text).toContain("automatic reminder limit reached (4/4)");
+    expect(text).toContain("your action is required");
+    expect(text).not.toContain("cause unknown");
+    expect(text).toContain("coord resume --issue 1 --agent cursor --reset-nudge-budget --coord-root '/runtime/with spaces/o'\"'\"'s'");
     expect(text).toContain("add --run to resume only if the coordinator was stopped");
     expect(text).toContain("Hold hold-id:");
     expect(text).not.toContain("quota exhausted");
@@ -129,6 +143,7 @@ describe("issue report", () => {
     expect(ambiguous).toContain("--hold hold-id --reset-nudge-budget");
     expect(ambiguous).toContain("--hold another-hold --reset-nudge-budget");
   });
+
   it("separates cause, exact recheck time, blocked windows and redacted detail from owner release", () => {
     const cursors = complete();
     cursors.completed = false; cursors.paused = true;
@@ -144,7 +159,8 @@ describe("issue report", () => {
       resource: { starts: 2, failures: 0, inFlight: null, nextAt: "2026-08-20T00:00:30.000Z", consumedDeadlines: [], terminal: null, episode: null } };
     cursors.actionSafety = { codex: safety };
     let text = renderIssueReport(start("owner-only"), cursors);
-    expect(text).toContain("cause usage-window (codex, confirmed), provider reset 2026-08-20T00:00:00.000Z (recheck time, not guaranteed availability)");
+    expect(text).toContain("cause usage-window (codex, confirmed)");
+    expect(text).toContain("provider reset 2026-08-20T00:00:00.000Z (recheck time, not guaranteed availability)");
     expect(text).toContain("Blocked windows: codex/secondary 100% (resets 2026-08-20T00:00:00.000Z).");
     expect(text).toContain("Vendor detail (redacted): limit for Bearer [redacted]");
     expect(text).toContain("next automatic check at 2026-08-20T00:00:30.000Z; quota reads 2/6");
@@ -154,16 +170,20 @@ describe("issue report", () => {
     expect(text).toContain("coord resume --issue 1 --agent codex");
   });
 
-  it("names the pin, published branch, and that the owner merges", () => {
+  it("names the implementation and final commits and that the owner merges", () => {
     const text = renderIssueReport(start("coord-open-unmerged"), complete());
     expect(text).toContain("Issue 1: complete");
     expect(text).toContain("Chosen agent: cursor");
-    expect(text).toContain(`Final pin (PR head): ${pin}`);
+    expect(text).toContain(`Implementation commit: ${impl}`);
+    expect(text).toContain(`Final commit (PR head): ${pin}`);
+    expect(text).toContain("Pull request handling: coordinator opens a draft; you review and merge");
     expect(text).toContain("Published branch: issue-1/cursor-final");
     expect(text).toContain("Pull request: https://github.com/example/project/pull/9");
     expect(text).toContain("owner merges");
     expect(text).toContain("Evidence branch: issue-1/coordinator-evidence");
     expect(text).toContain(`latest published tip ${"d".repeat(40)}`);
+    expect(text).not.toContain("Final pin");
+    expect(text).not.toContain("Implementation pin");
   });
 
   it("says the coordinator merged under coord-merged", () => {
@@ -171,12 +191,12 @@ describe("issue report", () => {
     expect(text).toContain("coordinator merged");
   });
 
-  it("tells the owner to PR the final pin when publication was skipped", () => {
+  it("tells the owner to PR the final commit when publication was skipped", () => {
     const text = renderIssueReport(
       start("owner-only"),
       complete({ status: "not-required", finalSha: null, branch: null, url: null, attempts: 0 })
     );
-    expect(text).toContain(`Final pin (PR head): ${pin}`);
+    expect(text).toContain(`Final commit (PR head): ${pin}`);
     expect(text).toContain("legacy owner-only");
     expect(text).toContain("not from issue-1/<agent>");
   });
@@ -191,17 +211,41 @@ describe("issue report", () => {
     );
   });
 
-  it("shows delivery, execution, health, queue, and background state", () => {
+  it("shows delivery labels, execution, health, queue, and background state", () => {
     const lifecycle = initialAgentLifecycle(["cursor"], "2026-08-13T00:00:00.000Z");
     lifecycle.agents.cursor = {
       ...lifecycle.agents.cursor!,
+      action: {
+        actionId: "11111111-1111-4111-8111-111111111111",
+        actionDigest: "a".repeat(64),
+        delivery: "injected",
+        orderedAt: "2026-08-13T00:00:00.000Z",
+        injectedAt: "2026-08-13T00:00:01.000Z",
+        retryableInjectionAt: null,
+        acceptedAt: null,
+        sessionId: null,
+        turnId: null,
+        lastNudgedIdleEpoch: null,
+        workflowCompleteAt: null
+      },
       execution: "queued",
       health: "healthy",
       pendingInputCount: 2,
       backgroundActive: true
     };
     expect(renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle)).toContain(
-      "Agent cursor: none / queued / healthy, pending=2, background-active"
+      "Agent cursor: task message sent; waiting for acknowledgment / queued / healthy, pending=2, background-active"
     );
+  });
+
+  it("exports describeHold and quotes recovery paths with spaces", () => {
+    const hold = {
+      id: "h", agent: "cursor", actionId: "a", sessionId: null, reason: "nudge-loop" as const,
+      evidenceId: "e", observedAt: "2026-08-13T00:00:00.000Z", resetsAt: null, confidence: "unknown" as const,
+      retryOwner: "vendor" as const, evidence: null
+    };
+    expect(describeHold(hold, 4)).toContain("waiting for the agent application's own retry");
+    const cmd = holdRecoveryCommand(1, complete(), hold, "/tmp/my root");
+    expect(cmd).toContain("--coord-root '/tmp/my root'");
   });
 });

@@ -15,7 +15,8 @@ const fixture = (tty = true) => {
   let question: OwnerQuestion | null = null;
   const commands = { status: vi.fn(() => "status snapshot"), togglePause: vi.fn(() => "pause toggled"), attach: vi.fn(async () => {}),
     agents: () => ["claude", "codex"], drop: vi.fn(), holds: () => [{ id: "hold-1", agent: "codex", reason: "unobservable" }],
-    releaseHold: vi.fn(), steer: vi.fn(), answer: vi.fn() };
+    releaseHold: vi.fn(), remindableAgents: () => ["claude"], remind: vi.fn(() => "reminder requested"),
+    steer: vi.fn(), answer: vi.fn() };
   const controller = new AbortController();
   const stop = vi.fn(() => controller.abort());
   const session = startInteractiveSession({ input, output, commands, readQuestion: () => question, signal: controller.signal, stop });
@@ -58,6 +59,37 @@ describe("foreground owner terminal", () => {
     expect(f.commands.drop).toHaveBeenCalledWith("codex");
     await f.send("r"); await f.send("1"); await f.send("\r");
     expect(f.commands.releaseHold).toHaveBeenCalledWith("hold-1");
+  });
+
+  it("redraws on Enter, echoes unknown keys with help, and treats plain paste as one unknown input", async () => {
+    const f = fixture();
+    const before = f.printed();
+    await f.send("\r");
+    expect(f.printed().length).toBeGreaterThan(before.length);
+    expect(f.commands.status).not.toHaveBeenCalled();
+    await f.send("z");
+    expect(f.printed()).toContain("Unknown command 'z'");
+    expect(f.printed()).toContain("remind an agent");
+    await f.send("abc");
+    expect(f.printed()).toContain('Unknown command "abc"');
+    expect(f.commands.drop).not.toHaveBeenCalled();
+  });
+
+  it("queues an owner reminder from n without claiming it was sent", async () => {
+    const f = fixture();
+    await f.send("n"); await f.send("1"); await f.send("\r");
+    expect(f.commands.remind).toHaveBeenCalledWith("claude");
+    expect(f.printed()).toContain("reminder requested");
+  });
+
+  it("confirms nudge-loop release with budget reset and leaves other holds one-shot", async () => {
+    const f = fixture();
+    f.commands.holds = () => [{ id: "loop", agent: "codex", reason: "nudge-loop" }];
+    await f.send("r"); await f.send("1"); await f.send("\r");
+    expect(f.commands.releaseHold).not.toHaveBeenCalled();
+    expect(f.printed()).toMatch(/reminder allowance|4 sends/i);
+    await f.send("y");
+    expect(f.commands.releaseHold).toHaveBeenCalledWith("loop", true);
   });
 
   it("uses only allowed answers and captured question IDs, with explicit abandon confirmation", async () => {

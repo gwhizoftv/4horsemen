@@ -84,7 +84,11 @@ export type PromptBlockedReason =
 
 /** The lifecycle record since an override send began: untouched, showing this nudge accepted, or anything else. */
 export type OverrideLifecycle = "unchanged" | "accepted" | "changed";
-export type IdleOverride = { source: "idle-sentinel" | "ready-file"; lifecycle: () => OverrideLifecycle };
+export type IdleOverride = {
+  /** ready-file: never-sent next-action; idle-sentinel/owner-reminder: COORD-IDLE proof required. */
+  source: "idle-sentinel" | "ready-file" | "owner-reminder";
+  lifecycle: () => OverrideLifecycle;
+};
 
 export type PromptReadiness =
   | { ready: true; reason: "vendor-prompt" | "idle-sentinel" }
@@ -860,6 +864,19 @@ export class TmuxController {
 
   async stopSession(key: SessionKey): Promise<void> {
     await this.runner(["kill-session", "-t", this.sessionName(key)]);
+  }
+
+  /**
+   * Read-only session COORD_ISSUE. Matching the requested issue does not prove
+   * an already-running child inherited it.
+   */
+  async readSessionCoordIssue(key: SessionKey): Promise<string | null> {
+    const session = this.sessionName(key);
+    const result = await this.runner(["show-environment", "-t", session, "COORD_ISSUE"]);
+    if (result.exitCode !== 0) return null;
+    const line = result.stdout.trim().split("\n")[0] ?? "";
+    const match = /^COORD_ISSUE=(.*)$/.exec(line);
+    return match?.[1] ?? (line.includes("=") ? null : line || null);
   }
 
   async ensureSession(
