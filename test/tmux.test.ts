@@ -749,13 +749,13 @@ describe("tmux boundary", () => {
     expect(idleSentinelAfterAction("no sentinel here", action)).toBe(false);
   });
 
-  // Modelled on a live Codex 0.160 capture: dim placeholder composer, two footer lines.
+  // Modelled on a live Codex capture (issue 181): dim placeholder composer, two footer lines.
   const esc = String.fromCharCode(0x1b);
   const codexComposer = (draft: string) =>
     `${esc}[1m›${esc}[0m${esc}[48;2;30;158;159m ${draft === "" ? `${esc}[2mAsk Codex to do anything${esc}[0m` : draft}`;
   const codexFooter =
     "  Context 71% left · weekly 96% left · 258K window · 84.6K used · Vim: Insert\n" +
-    "  ? for shortcuts                                      ⚠ 1 warning · f2 to view";
+    "  ← for agents · ? for shortcuts                       ⚠ 1 warning · f2 to view";
   const codexPane = (body: string, draft = "", vim = "Insert") =>
     `• Explored\n  └ Read action.md\n\n${body}\n\n${codexComposer(draft)}\n\n${codexFooter.replace("Vim: Insert", `Vim: ${vim}`)}`;
 
@@ -768,6 +768,33 @@ describe("tmux boundary", () => {
       .toEqual({ ready: true, reason: "vendor-prompt" });
     expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}`), "codex", action))
       .toEqual({ ready: true, reason: "idle-sentinel" });
+    expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}\n\n  Worked for 5m 21s • 5:42 AM`), "codex", action))
+      .toEqual({ ready: true, reason: "idle-sentinel" });
+    // Legacy footer (? for shortcuts without ← for agents) still passes.
+    expect(harnessPromptReadiness(
+      codexPane(`• ${COORD_IDLE_SENTINEL}\n\n  Worked for 5m 21s • 5:42 AM`).replace("← for agents · ? for shortcuts", "? for shortcuts"),
+      "codex",
+      action,
+    )).toEqual({ ready: true, reason: "idle-sentinel" });
+    // Turn chrome veto still wins over turn summary.
+    expect(harnessPromptReadiness(
+      codexPane(`• ${COORD_IDLE_SENTINEL}\n\n  Worked for 3s\n• Working (1s • esc to interrupt)`),
+      "codex",
+      action,
+    )).toEqual({ ready: false, reason: "codex-turn-chrome" });
+    // Fail-closed guards: summary without sentinel, two lines after sentinel, prose mention.
+    expect(harnessPromptReadiness(codexPane("  Worked for 5m 21s • 5:42 AM"), "codex", action))
+      .toEqual({ ready: true, reason: "vendor-prompt" });
+    expect(harnessPromptReadiness(
+      codexPane(`• ${COORD_IDLE_SENTINEL}\n  Worked for 5m 21s • 5:42 AM\n  2. No, continue without the server`),
+      "codex",
+      action,
+    )).toEqual({ ready: true, reason: "vendor-prompt" });
+    expect(harnessPromptReadiness(
+      codexPane(`• ${COORD_IDLE_SENTINEL}\n• I printed Worked for 5m earlier`),
+      "codex",
+      action,
+    )).toEqual({ ready: true, reason: "vendor-prompt" });
     // An unsent owner draft, a dialog line, or the action after the sentinel is not idle proof.
     expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}`, "Please inspect my changes"), "codex", action))
       .toEqual({ ready: true, reason: "vendor-prompt" });
@@ -787,7 +814,10 @@ describe("tmux boundary", () => {
       lifecycle?: (check: number) => "unchanged" | "accepted" | "changed";
       onCapture?: (index: number, pane: { body: string; draft: string }) => void;
     } = {}) => {
-      const pane = { body: options.body ?? (source === "idle-sentinel" ? `• ${COORD_IDLE_SENTINEL}` : "• done"), draft: options.draft ?? "" };
+      const pane = {
+        body: options.body ?? (source === "idle-sentinel" ? `• ${COORD_IDLE_SENTINEL}\n\n  Worked for 5m 21s • 5:42 AM` : "• done"),
+        draft: options.draft ?? "",
+      };
       const keys: string[] = [];
       let captures = 0;
       const controller = new TmuxController(async (args) => {

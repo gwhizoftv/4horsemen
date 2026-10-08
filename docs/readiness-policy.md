@@ -91,9 +91,10 @@ the captured buffer — the 40-line capture keeps the sentinel from the previous
 action on screen long after it stopped being true.
 
 Codex renders the sentinel as an assistant item (`• COORD-IDLE: …`) above its
-composer and footer, so it counts there only when everything below it is the
-single `›` composer — empty or holding just Codex's dimmed placeholder, never an
-unsent draft — and known footer lines (`? for shortcuts`, `Context N% left`).
+composer and footer, so it counts there only when everything below it is an
+optional single `Worked for …` turn-summary line, the single `›` composer — empty
+or holding just Codex's dimmed placeholder, never an unsent draft — and known
+footer lines (`? for shortcuts`, `← for agents · ? for shortcuts`, `Context N% left`).
 Any other line fails closed.
 
 **Legacy terminal proof: a stale `working` record before the first send.** A Stop event
