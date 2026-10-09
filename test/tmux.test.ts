@@ -943,6 +943,9 @@ describe("tmux boundary", () => {
     // Input turns off while the override waits for a late paint: the earlier gate no longer authorizes C-j.
     expect(await codexSubmit({ source: "ready-file", lateCaptures: 1, onGate: (gates, pane) => { if (gates === 4) pane.inputOff = true; } }))
       .toMatchObject({ outcome: midSend("input-off"), keys: ["-l"] });
+    // The owner edits the draft during that re-gate: the proof re-reads the pane, so C-j never lands on it.
+    expect(await codexSubmit({ source: "ready-file", lateCaptures: 1, onGate: (gates, pane) => { if (gates === 4) pane.draft = "owner draft"; } }))
+      .toMatchObject({ outcome: midSend("codex-composer-not-ready"), keys: ["-l"] });
   });
 
   it.each([1, 2, 3])("refuses file-backed delivery when capture %s is unavailable", async (failedCapture) => {

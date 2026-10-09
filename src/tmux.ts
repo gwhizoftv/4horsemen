@@ -1107,10 +1107,13 @@ export class TmuxController {
         let latest = await this.capturePane(target);
         assertAuthority();
         if (confirmCodex && typedText && !submitting && !codexComposerHolds(latest, text, requireSentinel)) {
-          latest = await settled(latest, requireSentinel);
-          // The gate above predates the settle wait; it cannot authorize this key.
+          await settled(latest, requireSentinel);
+          // The gate above predates the settle wait; it cannot authorize this
+          // key. Gate again, then prove against a capture taken after it.
           const regate = await gated();
           if (regate !== null) return regate;
+          latest = await this.capturePane(target);
+          assertAuthority();
         }
         const lifecycle = staleOverride.lifecycle();
         if (submitting && (lifecycle === "accepted" ||
