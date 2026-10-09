@@ -1,0 +1,14 @@
+{
+  "actionId": "e72f390f-7bd0-4e6f-948b-ce7162a4bb81",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "c0deb8eac98970b49e6f6ccb6823a6cb5b98ed669c154286f85d6365d3015bc0",
+  "issue": 186,
+  "issueSessionId": "issue-186:15c2973d02e848cc537efd8e7bf9acc56c0304ee",
+  "protocolVersion": 2,
+  "rationale": "Claude revision keeps --no-daemon and the selected settle/retry shape while adding ordinary-path retry turn-chrome and composer checks, lost-capture mid-send, and settle re-gate coverage without expanding the file map.",
+  "responseSha256": "65ab96b5dcd4bf583a585f57694bd3b34f10a7a1a3023106240eb22dca6c0d29",
+  "revisionCommitSha": "e0f6024025fca46e2359db308ad088d044228000",
+  "round": 1
+}

@@ -1,0 +1,14 @@
+{
+  "actionId": "42bccfec-7fe6-4cb3-9e8e-af1094d93522",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "c0deb8eac98970b49e6f6ccb6823a6cb5b98ed669c154286f85d6365d3015bc0",
+  "issue": 186,
+  "issueSessionId": "issue-186:15c2973d02e848cc537efd8e7bf9acc56c0304ee",
+  "protocolVersion": 2,
+  "rationale": "Revision e0f60240 implements the selected plan within the approved paths (--no-daemon launcher, INSERT-aware Codex prelude, bounded settle and C-m confirmation) and fixes the reproduced comparison gaps by re-checking the pane after the gate for every ordinary-path retry, re-gating after a settle wait, and refusing on a lost capture, with a regression test that fails on edab4cbe and passes here (hooks passed 687 fast and 181 system tests); the remaining limits (exhaustion still recorded as sent, and the issue-176 proof still requiring Working chrome) are the selected plan's explicit contract, are documented in docs/coord-driver.md, and need a separately approved behavior change.",
+  "responseSha256": "99b9d168a060a05083acb425527cc4db4007e95e6ef5066b7525c2dbecd6b52e",
+  "revisionCommitSha": "e0f6024025fca46e2359db308ad088d044228000",
+  "round": 1
+}

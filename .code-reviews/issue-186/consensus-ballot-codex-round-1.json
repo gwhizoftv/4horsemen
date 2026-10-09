@@ -1,0 +1,14 @@
+{
+  "actionId": "f0788600-e056-4118-a634-24548f158b3a",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "c0deb8eac98970b49e6f6ccb6823a6cb5b98ed669c154286f85d6365d3015bc0",
+  "issue": 186,
+  "issueSessionId": "issue-186:15c2973d02e848cc537efd8e7bf9acc56c0304ee",
+  "protocolVersion": 2,
+  "rationale": "src/tmux.ts:1110-1125 must re-read the composer after the post-settle gate, but a ready-file send with one delayed draft capture and an owner edit during that gate still sends C-j into the owner's draft before refusing, so revise this stale-proof path and add the matching existing-fixture regression.",
+  "responseSha256": "fb6a2c1543149e3c4689b712543cc0606273e374b9dd661c63e881ca7ed3217d",
+  "revisionCommitSha": "e0f6024025fca46e2359db308ad088d044228000",
+  "round": 1
+}
