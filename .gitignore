@@ -9,3 +9,4 @@ coverage/
 .antigravity/
 .agents/
 /tags
+.pnpm-store/

@@ -775,7 +775,7 @@ describe("generated git shim", () => {
     const f = product();
     const marker = join(f.workspaceRoot, "real-git-ran");
     const fake = join(f.workspaceRoot, "fake-git");
-    writeFileSync(fake, `#!/bin/sh\nprintf ran > '${marker}'\n`, { mode: 0o700 });
+    writeFileSync(fake, `#!/bin/sh\n[ "$1" = config ] && exit 1\nprintf ran > '${marker}'\n`, { mode: 0o700 });
     const shim = join(f.productRoot, ".coord/bin/git");
     execFileSync("bash", ["-c", '. "$1"; write_git_wrapper "$2" "$3" "$4"', "_",
       join(repoRoot, "scripts/lib/launcher.sh"), shim, fake, realpathSync(f.productRoot)]);
@@ -797,6 +797,8 @@ describe("generated git shim", () => {
     args: readonly string[],
     env: NodeJS.ProcessEnv = {}
   ): { status: number; stderr: string } => {
+    // This helper exercises live-issue policy; stale bindings are covered by the shared guard tests.
+    mkdirSync(join(dirname(git(clone, "config", "--local", "--get", "coord.workspaceConfig")), "issue-42"), { recursive: true });
     const result = execFileSync("/bin/bash", ["-c", 'PATH="$1:$PATH"; shift; git "$@"; echo "exit=$?"', "_",
       join(clone, ".coord", "bin"), ...args], {
       cwd,
@@ -828,6 +830,9 @@ describe("generated git shim", () => {
 
     // Untracked and excluded, so the clone stays clean.
     expect(readFileSync(join(clone, ".git", "info", "exclude"), "utf8")).toContain(".coord/");
+    expect(readFileSync(join(clone, ".git", "info", "exclude"), "utf8")).toContain(".pnpm-store/");
+    mkdirSync(join(clone, ".pnpm-store"));
+    writeFileSync(join(clone, ".pnpm-store", "cache"), "ignored");
     expect(git(clone, "status", "--porcelain")).toBe("");
 
     const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");

@@ -387,6 +387,57 @@ describe("CLI version", () => {
 });
 
 describe("CLI manual mode", () => {
+  const cleanManualFixture = () => {
+    const f = setup();
+    for (const agent of ["codex", "claude", "cursor"]) {
+      const clone = join(f.root, `clone-${agent}`), origin = join(f.root, `origin-${agent}.git`);
+      fixtureGit(clone, "init", "-q", "--initial-branch=main");
+      fixtureGit(clone, "config", "user.name", "Fixture");
+      fixtureGit(clone, "config", "user.email", "fixture@example.com");
+      fixtureGit(clone, "add", "."); fixtureGit(clone, "commit", "-qm", "initial");
+      fixtureGit(f.root, "clone", "--bare", "-q", clone, origin);
+      fixtureGit(clone, "remote", "add", "origin", origin);
+      fixtureGit(clone, "fetch", "-q", "origin");
+      fixtureGit(clone, "checkout", "-qb", `${agent}/manual`);
+    }
+    return f;
+  };
+
+  it.each([false, true])("confirms manual cleanup but refuses unsaved work before teardown (dirty=%s)", async (dirty) => {
+    const f = cleanManualFixture(), output: string[] = [], errors: string[] = [];
+    const clone = join(f.root, "clone-claude");
+    if (dirty) writeFileSync(join(clone, "keep.txt"), "unsaved");
+    const confirm = vi.fn(async () => true);
+    const code = await runCli(["start", "7", "--config", f.configPath, "--coord-runtime", f.runtime], {
+      confirm, sessionExists: async (name) => name.startsWith("coord-manual-"),
+      io: { stdout: (text) => output.push(text), stderr: (text) => errors.push(text) },
+      processRunner: successfulStartGit, makeRunLoop: fakeLoop
+    });
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(code).toBe(dirty ? 2 : 0);
+    expect(output.join("").includes("Detached manual mode")).toBe(!dirty);
+    expect(existsSync(issueRuntimePaths(f.runtime, 7).start)).toBe(!dirty);
+    expect(fixtureGit(clone, "branch", "--show-current")).toBe(dirty ? "claude/manual" : "issue-7/claude");
+    if (dirty) {
+      expect(errors.join("")).toContain("keep.txt");
+      expect(readFileSync(join(clone, "keep.txt"), "utf8")).toBe("unsaved");
+    }
+  });
+
+  it.each([false, true])("requires confirmation for a leftover same-issue session before runtime effects (accepted=%s)", async (accepted) => {
+    const f = setup(), errors: string[] = [];
+    const confirm = vi.fn(async () => accepted);
+    const code = await runCli(["start", "7", "--config", f.configPath, "--coord-runtime", f.runtime], {
+      confirm, sessionExists: async (name) => name === "coord-7",
+      io: { stdout: () => undefined, stderr: (text) => errors.push(text) },
+      processRunner: successfulStartGit, makeRunLoop: fakeLoop
+    });
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(code).toBe(accepted ? 0 : 2);
+    expect(existsSync(f.runtime)).toBe(accepted);
+    if (!accepted) expect(errors.join("")).toContain("coord detach 7");
+  });
+
   it("launches every configured agent without GitHub, runtime, or run-loop effects", async () => {
     const fixture = setup();
     const launches: Array<{ namespace: string | null; group: string; agents: string[] }> = [];
@@ -546,14 +597,16 @@ describe("CLI manual mode", () => {
   });
 
   it("dispatches exact manual teardown and advertises both manual commands", async () => {
-    const fixture = setup();
+    const fixture = cleanManualFixture();
     const output: string[] = [];
     expect(
       await runCli(["detach", "manual", "--config", fixture.configPath, "--coord-runtime", fixture.runtime, "--dry-run"], {
         io: { stdout: (message) => output.push(message) }
       })
     ).toBe(0);
-    expect(output.join("")).toContain("Detached manual mode");
+    expect(output.join("")).toContain("Would detach manual mode");
+    expect(output.join("")).toContain("Clone readiness");
+    expect(fixtureGit(join(fixture.root, "clone-claude"), "branch", "--show-current")).toBe("claude/manual");
 
     output.length = 0;
     expect(await runCli(["--help"], { io: { stdout: (message) => output.push(message) } })).toBe(0);
@@ -615,11 +668,11 @@ describe("CLI", () => {
   it("does not accept COORD_ROOT instead of explicit or worktree context", async () => {
     const fixture = setup();
     const messages: string[] = [];
-    const result = await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath], {
-      io: { stderr: (message) => messages.push(message) }
+    const result = await runCli(["start", "1", "--profile", "solo", "--coord-runtime", fixture.runtime], {
+      io: { env: { COORD_ROOT: fixture.runtime }, stderr: (message) => messages.push(message) }
     });
     expect(result).toBe(2);
-    expect(messages.join("")).toContain("--config and --coord-runtime");
+    expect(messages.join("")).toContain("--coord-runtime requires --config");
 
     messages.length = 0;
     expect(
@@ -1718,7 +1771,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     const { product, declarePath } = installedWorkspace();
     expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
     execFileSync("git", ["config", "--local", "coord.ownerWorkspaceConfig", join(product.coordRoot, "config.json")], { cwd: product.productRoot });
-    expect(await runCli(["start", "89", "--product", product.productRoot], {
+    expect(await runCli(["start", "89", "--config", join(product.coordRoot, "config.json")], {
       io: { stdout: () => undefined }, processRunner: successfulStartGit, makeRunLoop: fakeLoop
     })).toBe(0);
     const paths = issueRuntimePaths(product.coordRoot, 89);
@@ -1737,6 +1790,13 @@ describe("CLI — install, doctor, and the hook bridge", () => {
         return fakeLoop(resolved);
       } })).toBe(0);
       expect(runs).toBe(1);
+      for (const argv of [["reset-clones", "89", "--dry-run"], ["detach", "89", "--dry-run"]]) {
+        expect(await runCli(argv, { io: { cwd, stdout: () => undefined } })).toBe(0);
+      }
+      const doctorOutput: string[] = [];
+      const doctorCode = await runCli(["doctor"], { io: { cwd, stdout: (text) => doctorOutput.push(text), stderr: (text) => doctorOutput.push(text) } });
+      expect(doctorCode).not.toBe(2);
+      expect(doctorOutput.join("")).not.toContain("Missing --coord-runtime");
     }
   });
 

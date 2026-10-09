@@ -218,7 +218,7 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
   };
   const stop = () => observeAgentLifecycle(paths, vendor, { kind: "stopped", eventName: "stop", sessionId: "session",
     turnId: `turn-${turn}`, backgroundActive: false }, now());
-  return { paths, ui, messages, now, tick, makeLoop, working, stop, advance: (ms: number) => { nowMs += ms; } };
+  return { paths, ui, tmux, messages, now, tick, makeLoop, working, stop, advance: (ms: number) => { nowMs += ms; } };
 };
 
 describe("owner reminders and advisory diagnostics", () => {
@@ -308,8 +308,10 @@ describe("owner reminders and advisory diagnostics", () => {
 
   it("keeps startup and missing-Stop diagnostics advisory and avoids warning on every poll", async () => {
     const f = safetyFixture("claude"), loop = f.makeLoop();
+    Object.assign(f.tmux, { agentPlacementDiagnostics: async () => ["[WARN] placement fixture"] });
     await loop.reportStartup();
     await loop.reportStartup(); // the foreground run reuses the already-diagnosed startup instance
+    expect(f.messages.filter((message) => message === "[WARN] placement fixture")).toHaveLength(1);
     expect(f.messages.join("\n")).toContain("runtime hook trust/activity not yet verified");
     expect(f.messages.filter((message) => message.includes("claude: runtime hook trust/activity not yet verified"))).toHaveLength(1);
     await loop.runTick(); f.advance(1); f.working(); f.advance(1); f.working();

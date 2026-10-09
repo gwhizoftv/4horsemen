@@ -39,6 +39,26 @@ it("reports issue environment wiring without claiming child-process trust", asyn
   expect(await tmux.issueEnvironmentDiagnostic(161)).toContain("binding is missing or differs");
   expect(calls.every((args) => args[0] === "show-environment")).toBe(true);
 });
+it("reports pane placement and owner titles separately, without claiming unavailable checks succeeded", async () => {
+  const agents = ["correct", "dead", "wrong", "missing", "unknown"].map((id) => ({ id, root: `/clones/${id}`, launcher: "launch", delivery: "pull" as const }));
+  const calls: string[][] = [];
+  const tmux = new TmuxController(async (args) => {
+    calls.push([...args]);
+    const target = args[3] ?? "";
+    if (target.includes("missing")) return { exitCode: 1, stdout: "", stderr: "missing pane" };
+    const id = target.split(":")[1]!.split(".")[0]!;
+    return ok(`${id === "dead" ? "1" : "0"}\t${id === "unknown" ? "" : id === "wrong" ? "/elsewhere" : `/clones/${id}`}\n`);
+  }, null, null, null, noopSleep, null, (titles) => titles.filter((title) => title.includes("correct")));
+  const messages = await tmux.agentPlacementDiagnostics(172, agents);
+  expect(messages).toContain("[OK] correct: pane coord-172:correct.0 started in /clones/correct.");
+  for (const id of ["dead", "missing", "unknown"]) expect(messages.some((line) => line.startsWith(`[WARN] ${id}: live pane`))).toBe(true);
+  expect(messages.some((line) => line.includes("[WARN] wrong: pane") && line.includes("/elsewhere"))).toBe(true);
+  expect(messages.some((line) => line.includes("[WARN] wrong: owner Terminal title missing"))).toBe(true);
+  expect(calls.every((args) => args[0] === "display-message")).toBe(true);
+  const noProbe = new TmuxController(async () => ok("0\t/clones/correct\n"), null, null, null, noopSleep, null, null);
+  expect((await noProbe.agentPlacementDiagnostics(172, agents.slice(0, 1))).some((line) => line.includes("could not be checked"))).toBe(true);
+});
+
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -435,10 +455,12 @@ describe("tmux boundary", () => {
     writeFileSync(join(clone, "start-claude.sh"), "#!/bin/sh\n", { mode: 0o700 });
     const calls: string[][] = [];
     let windows = "";
+    let sessionPresent = false;
     let paneDead = "1";
     const runner: TmuxRunner = async (args) => {
       calls.push([...args]);
-      if (args[0] === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "has-session") return { exitCode: sessionPresent ? 0 : 1, stdout: "", stderr: "" };
+      if (args[0] === "new-session") sessionPresent = true;
       if (args[0] === "list-windows") return ok(windows);
       if (args[0] === "display-message") return ok(`${paneDead}\tclaude\t0\n`);
       if (args[0] === "new-window") {
@@ -453,9 +475,14 @@ describe("tmux boundary", () => {
     };
     const controller = new TmuxController(runner, null, null, null);
     const agent = { id: "claude", root: clone, launcher: "start-claude.sh", delivery: "both" as const };
+    await controller.startSession(3, [agent]);
+    expect(calls).toContainEqual(["set-environment", "-r", "-t", "coord-3", "COORD_MANUAL"]);
+    calls.length = 0;
+    windows = "";
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "new-window")).toBe(true);
     expect(calls).toContainEqual(["set-environment", "-t", "coord-3", "COORD_ISSUE", "3"]);
+    expect(calls).toContainEqual(["set-environment", "-r", "-t", "coord-3", "COORD_MANUAL"]);
     calls.length = 0;
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "respawn-pane")).toBe(true);
@@ -492,7 +519,7 @@ describe("tmux boundary", () => {
     await controller.ensureSession("manual", [agent]);
     expect(calls).toContainEqual([
       "set-environment",
-      "-u",
+      "-r",
       "-t",
       "coord-manual-abc12def00",
       "COORD_ISSUE"
@@ -504,7 +531,7 @@ describe("tmux boundary", () => {
       "COORD_MANUAL",
       "1"
     ]);
-    expect(calls.some((args) => args.includes("COORD_ISSUE") && !args.includes("-u"))).toBe(false);
+    expect(calls.some((args) => args.includes("COORD_ISSUE") && !args.includes("-r"))).toBe(false);
     expect(calls.filter((args) => args[0] === "new-window")).toHaveLength(1);
 
     calls.length = 0;

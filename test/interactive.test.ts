@@ -44,7 +44,7 @@ describe("foreground owner terminal", () => {
     const f = fixture();
     const request = vi.fn(() => "Reminder requested for captured action");
     Object.assign(f.commands, { reminders: () => [{ label: "codex", request }] });
-    await f.send("n"); await f.send("1"); await f.send("\r");
+    await f.send("n"); expect(f.printed()).not.toContain("All agents"); await f.send("1"); await f.send("\r");
     expect(request).toHaveBeenCalledOnce();
     expect(f.printed()).toContain("Reminder requested for captured action");
     f.commands.holds = () => [{ id: "captured", agent: "codex", reason: "nudge-loop" }];
@@ -58,6 +58,19 @@ describe("foreground owner terminal", () => {
     await f.send("y");
     expect(f.commands.releaseHold).toHaveBeenCalledWith("captured", true);
   });
+  it("requests all captured reminders independently without suppressing failures", async () => {
+    const f = fixture();
+    const first = vi.fn(() => { throw new Error("task changed"); });
+    const second = vi.fn(() => "Reminder requested for codex");
+    Object.assign(f.commands, { reminders: () => [{ label: "claude", request: first }, { label: "codex", request: second }] });
+    await f.send("n");
+    expect(f.printed()).toContain("[3] All agents");
+    await f.send("3"); await f.send("\r");
+    expect(first).toHaveBeenCalledOnce(); expect(second).toHaveBeenCalledOnce();
+    expect(f.printed()).toContain("claude: task changed");
+    expect(f.printed()).toContain("Reminder requested for codex");
+  });
+
   it("does not touch input in non-TTY mode", () => {
     const f = fixture(false);
     expect(f.session).toBeNull();

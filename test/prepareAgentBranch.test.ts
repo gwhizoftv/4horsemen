@@ -6,6 +6,7 @@ import { liftCloneAgentsProtocol, writeCloneAgentsProtocol } from "../src/agents
 import {
   AgentCloneReadinessRefusal,
   makeAgentClonesBaseReady,
+  makeManualClonesBaseReady,
   prepareAgentIssueBranches
 } from "../src/prepareAgentBranch.js";
 import { git, repoRoot, tryGit } from "./support/workspaceFixture.js";
@@ -689,5 +690,89 @@ describe("makeAgentClonesBaseReady", () => {
     expect(git(clone, "status", "--porcelain")).toBe("");
     expect(logs.join("")).toContain("using fallback main");
     expect(skipWorktree(clone)).toBe(true);
+  });
+});
+
+describe("manual clone readiness", () => {
+  it.each([false, true])("returns a merged or published scratch branch to fresh base (published=%s)", async (published) => {
+    const { clone, baseline } = seedClone();
+    git(clone, "checkout", "-qb", "claude/manual");
+    if (published) {
+      writeFileSync(join(clone, "work.txt"), "published\n");
+      git(clone, "add", "work.txt"); git(clone, "commit", "-qm", "manual work");
+      git(clone, "push", "-qu", "origin", "claude/manual");
+    }
+    const scratchTip = git(clone, "rev-parse", "HEAD");
+    let closed = false;
+    const [result] = await makeManualClonesBaseReady({ agents: [{ id: "claude", root: clone }], baseBranch: "main",
+      beforeCheckout: async () => { closed = true; } });
+    expect(closed).toBe(true);
+    expect(result).toMatchObject({ action: "checked-out", baseTip: baseline, baseSynced: true, discardedPaths: [], protocol: "overlay" });
+    expect(git(clone, "branch", "--show-current")).toBe("main");
+    expect(git(clone, "rev-parse", "claude/manual")).toBe(scratchTip);
+    expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toContain("# product v2");
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it.each(["untracked", "tracked", "hidden", "unpublished", "base-ahead", "stale-upstream", "offline"])(
+    "refuses %s before closing UI or changing any clone", async (kind) => {
+      const { clone } = seedClone();
+      if (kind !== "base-ahead") git(clone, "checkout", "-qb", "claude/manual");
+      if (kind === "hidden") writeFileSync(join(clone, "AGENTS.md"), readFileSync(join(clone, "AGENTS.md"), "utf8") + "owner note\n");
+      else if (kind !== "offline") {
+        writeFileSync(join(clone, "work.txt"), "keep\n");
+        if (kind !== "untracked") {
+          git(clone, "add", "work.txt"); git(clone, "commit", "-qm", "manual work");
+          if (kind === "tracked") writeFileSync(join(clone, "work.txt"), "unsaved\n");
+          if (kind === "stale-upstream") {
+            git(clone, "push", "-qu", "origin", "claude/manual");
+            const origin = git(clone, "remote", "get-url", "origin");
+            git(origin, "update-ref", "-d", "refs/heads/claude/manual");
+          }
+        }
+      }
+      if (kind === "offline") git(clone, "remote", "set-url", "origin", join(clone, "missing-origin"));
+      const ready = seedClone();
+      const tip = git(clone, "rev-parse", "HEAD"), head = git(clone, "branch", "--show-current");
+      const agents = readFileSync(join(clone, "AGENTS.md"), "utf8");
+      let closed = false;
+      const results = await makeManualClonesBaseReady({ agents: [{ id: "claude", root: ready.clone }, { id: "codex", root: clone }],
+        baseBranch: "main", beforeCheckout: async () => { closed = true; } });
+      expect(results.every((result) => result.action === "refused" && result.discardedPaths.length === 0)).toBe(true);
+      expect(closed).toBe(false);
+      expect(git(clone, "rev-parse", "HEAD")).toBe(tip);
+      expect(git(clone, "branch", "--show-current")).toBe(head);
+      expect(git(ready.clone, "rev-parse", "HEAD")).toBe(ready.earlier);
+      expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toBe(agents);
+      expect(skipWorktree(clone)).toBe(true);
+      if (existsSync(join(clone, "work.txt"))) expect(readFileSync(join(clone, "work.txt"), "utf8")).toBe(kind === "tracked" ? "unsaved\n" : "keep\n");
+    }
+  );
+
+  it("leaves branch, worktree and protocol unchanged in dry run and refuses writes during teardown", async () => {
+    const { clone, earlier } = seedClone();
+    git(clone, "checkout", "-qb", "claude/manual");
+    const input = { agents: [{ id: "claude", root: clone }], baseBranch: "main" };
+    const agents = readFileSync(join(clone, "AGENTS.md"), "utf8");
+    expect((await makeManualClonesBaseReady({ ...input, dryRun: true }))[0]?.action).toBe("checked-out");
+    expect(git(clone, "branch", "--show-current")).toBe("claude/manual");
+    expect(git(clone, "rev-parse", "HEAD")).toBe(earlier);
+    expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toBe(agents);
+    const [result] = await makeManualClonesBaseReady({ ...input, beforeCheckout: async () => {
+      writeFileSync(join(clone, "new-work"), "keep");
+    } });
+    expect(result?.action).toBe("refused");
+    expect(git(clone, "branch", "--show-current")).toBe("claude/manual");
+    expect(readFileSync(join(clone, "new-work"), "utf8")).toBe("keep");
+  });
+
+  it.each([false, true])("names blocking paths and distinguishes untracked leftovers (tracked=%s)", (tracked) => {
+    const { clone, baseline } = seedClone();
+    writeFileSync(join(clone, "work.txt"), "keep");
+    if (tracked) git(clone, "add", "work.txt");
+    const run = () => prepareAgentIssueBranches({ agents: [{ id: "claude", root: clone }], issue: 7,
+      baseBranch: "main", baselineSha: baseline, branchTemplate: "issue-{issue}/{agent}" });
+    expect(run).toThrow("work.txt");
+    expect(run).toThrow(tracked ? "Commit/stash" : "coord reset-clones 7 --force");
   });
 });

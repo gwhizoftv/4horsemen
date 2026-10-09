@@ -113,3 +113,38 @@ describe("native shell guard shared policy", () => {
     expect(staticGitCalls("cd /missing/coord-test; git status", f.productRoot, {})).toEqual([]);
   });
 });
+
+it.each(["flat", "nested"])("recognizes positive stale issue evidence in a %s workspace", (layout) => {
+  const f = fixture(), clone = f.productRoot;
+  const root = layout === "flat" ? f.coordRoot : join(f.coordRoot, "workspaces", "app");
+  mkdirSync(root, { recursive: true });
+  const config = join(root, "config.json");
+  writeFileSync(config, "{}");
+  git(clone, "config", "coord.workspaceConfig", config);
+  git(clone, "config", "consensus.agentId", "codex");
+  const issue = join(root, "issue-42");
+  mkdirSync(issue);
+  const check = (extra: NodeJS.ProcessEnv = {}) => guardShellRequest({ vendor: "codex", clone,
+    raw: payload("codex", "git status", clone), env: { ...process.env, COORD_ISSUE: "42", COORD_MANUAL: "", ...extra } });
+  writeFileSync(join(issue, "cursors.json"), JSON.stringify({ completed: false, abandoned: false }, null, 2));
+  expect(JSON.stringify(check())).toContain('"deny"');
+  expect(check({ COORD_MANUAL: "1" })).toEqual({});
+  for (const key of ["completed", "abandoned"]) {
+    writeFileSync(join(issue, "cursors.json"), JSON.stringify({ [key]: true }, null, 2));
+    expect(check()).toEqual({});
+  }
+  writeFileSync(join(issue, "cursors.json"), JSON.stringify({ nested: { completed: true } }, null, 2));
+  expect(JSON.stringify(check())).toContain('"deny"');
+  rmSync(issue, { recursive: true });
+  expect(check()).toEqual({});
+  if (layout === "nested") {
+    const legacyAction = join(f.coordRoot, "issue-42", "agents", "codex", "action.md");
+    mkdirSync(dirname(legacyAction), { recursive: true });
+    writeFileSync(legacyAction, "## Bound input files\n");
+    expect(JSON.stringify(check())).toContain('"deny"');
+    const pinned = guardShellRequest({ vendor: "codex", clone,
+      raw: payload("codex", `git show ${git(clone, "rev-parse", "HEAD")}:README.md`, clone),
+      env: { ...process.env, COORD_ISSUE: "42", COORD_MANUAL: "" } });
+    expect(JSON.stringify(pinned)).toContain('"deny"');
+  }
+});

@@ -205,14 +205,15 @@ export const prepareAgentIssueBranches = (input: {
   const installRoot = input.installRoot ?? null;
   // Same-branch WIP needs no checkout. Share the read-only snapshot with base
   // readiness, but not its discard policy: preparation never discards work.
-  const snapshots = snapshotCloneReadiness(input);
-  const dirty = snapshots
-    .filter(({ available, head, branch, dirtyLines }) => available && head !== branch && dirtyLines.length > 0)
-    .map(({ clone }) => clone);
+  const snapshots = snapshotCloneReadiness(input.agents, (agent) => issueBranchFor(input.branchTemplate, input.issue, agent));
+  const dirty = snapshots.filter(({ available, head, branch, dirtyLines }) => available && head !== branch && dirtyLines.length > 0);
   if (dirty.length > 0) {
     throw new Error(
-      `Refusing to check out issue branches: uncommitted changes in ${dirty.join(", ")}. ` +
-        "Commit/stash them, then retry. Nothing has been changed."
+      `Refusing to check out issue branches: uncommitted changes in ${dirty.map(({ clone }) => clone).join(", ")}.\n` +
+      dirty.map(({ clone, dirtyLines }) => `${clone}: ${dirtyLines.map(statusPath).join(", ")}. ` +
+        (dirtyLines.every((line) => line.startsWith("?? "))
+          ? `Untracked leftovers; save needed files, or discard them with coord reset-clones ${input.issue} --force.`
+          : "Commit/stash them, then retry.")).join("\n") + "\nNothing has been changed."
     );
   }
 
@@ -290,13 +291,12 @@ type CloneReadinessSnapshot = {
   dirtyLines: readonly string[];
 };
 
-const snapshotCloneReadiness = (input: {
-  agents: readonly { id: string; root: string }[];
-  issue: number;
-  branchTemplate: string;
-}): CloneReadinessSnapshot[] =>
-  input.agents.map((agent) => {
-    const branch = issueBranchFor(input.branchTemplate, input.issue, agent.id);
+const snapshotCloneReadiness = (
+  agents: readonly { id: string; root: string }[],
+  branchFor: (agent: string) => string
+): CloneReadinessSnapshot[] =>
+  agents.map((agent) => {
+    const branch = branchFor(agent.id);
     if (!existsSync(agent.root) || !isGitWorktree(agent.root)) {
       return { agent: agent.id, clone: agent.root, branch, available: false, head: "", dirtyLines: [] };
     }
@@ -396,6 +396,88 @@ const resolveCloneBaseTarget = (
   };
 };
 
+const checkOutCloneBase = (
+  snapshot: CloneReadinessSnapshot,
+  baseBranch: string,
+  baseTarget: Extract<CloneBaseTarget, { kind: "target" }>,
+  discardedPaths: string[],
+  installRoot: string | null,
+  log: (message: string) => void,
+  preserveLocalBase = false
+): CloneBaseReadyResult => {
+  const captured = captureCloneAgentsProtocol(snapshot.clone);
+  let protocol: ProtocolRestoreOutcome = "bit-only";
+  let failure: string | null = null;
+  let discarded: string[] = [];
+  try {
+    liftCloneAgentsProtocol(snapshot.clone, { dryRun: false, log, changes: [] });
+    if (discardedPaths.length > 0) {
+      log(
+        `${snapshot.agent} discarding ${discardedPaths.length} path(s) in ${snapshot.clone}: ` +
+          `${discardedPaths.join(", ")}\n`
+      );
+      gitOrThrow(snapshot.clone, "reset", "--hard", "HEAD");
+      gitOrThrow(snapshot.clone, "clean", "-fd");
+      discarded = [...discardedPaths];
+      log(`${snapshot.agent} discarded ${discarded.length} path(s) in ${snapshot.clone}\n`);
+    }
+    if (preserveLocalBase) {
+      const local = git(snapshot.clone, "rev-parse", "--verify", `refs/heads/${baseBranch}^{commit}`);
+      if (local.exitCode === 0) {
+        gitOrThrow(snapshot.clone, "checkout", "--quiet", baseBranch);
+        gitOrThrow(snapshot.clone, "merge", "--ff-only", "--quiet", baseTarget.sha);
+      } else {
+        gitOrThrow(snapshot.clone, "checkout", "--quiet", "-b", baseBranch, baseTarget.sha);
+      }
+    } else if (baseTarget.ref === baseBranch) {
+      gitOrThrow(snapshot.clone, "checkout", "--quiet", baseBranch);
+    } else {
+      gitOrThrow(snapshot.clone, "checkout", "--quiet", "-B", baseBranch, baseTarget.ref);
+    }
+  } catch (error) {
+    failure = errorMessage(error);
+  } finally {
+    protocol = restoreProtocol(snapshot.clone, installRoot, captured, log);
+  }
+
+  if (failure !== null) {
+    log(`refused clone readiness for ${snapshot.agent}: ${failure}\n`);
+    return refusedResult(snapshot, failure, discarded, protocol);
+  }
+
+  const head = git(snapshot.clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+  const headSha = git(snapshot.clone, "rev-parse", "HEAD").stdout.trim();
+  const state = cloneAgentsProtocolState(snapshot.clone);
+  const problems: string[] = [];
+  if (head !== baseBranch) problems.push(`HEAD is ${head || "detached"}, not ${baseBranch}`);
+  if (headSha !== baseTarget.sha) {
+    problems.push(`HEAD ${headSha || "is missing"} is not expected base ${baseTarget.sha}`);
+  }
+  if (state.tracked && !state.skipWorktree) problems.push("AGENTS.md is tracked but skip-worktree is not set");
+  if (captured !== null && protocol !== "overlay") problems.push("the captured AGENTS.md protocol was not restored");
+  if (protocol === "overlay" && !state.overlayPresent) problems.push("the restored AGENTS.md protocol is missing");
+  if (problems.length > 0) {
+    const reason = problems.join("; ");
+    log(`refused clone readiness for ${snapshot.agent}: ${reason}\n`);
+    return refusedResult(snapshot, reason, discarded, protocol);
+  }
+
+  log(
+    `${snapshot.agent} checked out ${baseBranch} at ${baseTarget.sha.slice(0, 12)}` +
+      `${baseTarget.synced ? "" : " (offline fallback)"}\n`
+  );
+  return {
+    agent: snapshot.agent,
+    clone: snapshot.clone,
+    branch: snapshot.branch,
+    action: snapshot.head === baseBranch ? "already-base" : "checked-out",
+    discardedPaths: discarded,
+    protocol,
+    baseTip: baseTarget.sha,
+    baseSynced: baseTarget.synced
+  };
+};
+
 /**
  * End an issue with agent clones ready for the next one.
  *
@@ -419,7 +501,7 @@ export const makeAgentClonesBaseReady = (input: {
   const installRoot = input.installRoot ?? null;
   const discardPolicy = input.discardPolicy ?? "finished-issue-only";
   const dryRun = input.dryRun === true;
-  const snapshots = snapshotCloneReadiness(input);
+  const snapshots = snapshotCloneReadiness(input.agents, (agent) => issueBranchFor(input.branchTemplate, input.issue, agent));
   const ineligible = snapshots.filter(
     (snapshot) =>
       snapshot.available &&
@@ -547,71 +629,83 @@ export const makeAgentClonesBaseReady = (input: {
         );
       }
     }
-    const captured = captureCloneAgentsProtocol(snapshot.clone);
-    let protocol: ProtocolRestoreOutcome = "bit-only";
-    let failure: string | null = null;
-    let discarded: string[] = [];
-    try {
-      liftCloneAgentsProtocol(snapshot.clone, { dryRun: false, log, changes: [] });
-      if (discardedPaths.length > 0) {
-        log(
-          `${snapshot.agent} discarding ${discardedPaths.length} path(s) in ${snapshot.clone}: ` +
-            `${discardedPaths.join(", ")}\n`
-        );
-        gitOrThrow(snapshot.clone, "reset", "--hard", "HEAD");
-        gitOrThrow(snapshot.clone, "clean", "-fd");
-        discarded = [...discardedPaths];
-        log(`${snapshot.agent} discarded ${discarded.length} path(s) in ${snapshot.clone}\n`);
-      }
-      if (baseTarget.ref === input.baseBranch) {
-        gitOrThrow(snapshot.clone, "checkout", "--quiet", input.baseBranch);
-      } else {
-        gitOrThrow(snapshot.clone, "checkout", "--quiet", "-B", input.baseBranch, baseTarget.ref);
-      }
-    } catch (error) {
-      failure = errorMessage(error);
-    } finally {
-      protocol = restoreProtocol(snapshot.clone, installRoot, captured, log);
-    }
-
-    if (failure !== null) {
-      log(`refused clone readiness for ${snapshot.agent}: ${failure}\n`);
-      results.push(refusedResult(snapshot, failure, discarded, protocol));
-      continue;
-    }
-
-    const head = git(snapshot.clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
-    const headSha = git(snapshot.clone, "rev-parse", "HEAD").stdout.trim();
-    const state = cloneAgentsProtocolState(snapshot.clone);
-    const problems: string[] = [];
-    if (head !== input.baseBranch) problems.push(`HEAD is ${head || "detached"}, not ${input.baseBranch}`);
-    if (headSha !== baseTarget.sha) {
-      problems.push(`HEAD ${headSha || "is missing"} is not expected base ${baseTarget.sha}`);
-    }
-    if (state.tracked && !state.skipWorktree) problems.push("AGENTS.md is tracked but skip-worktree is not set");
-    if (captured !== null && protocol !== "overlay") problems.push("the captured AGENTS.md protocol was not restored");
-    if (protocol === "overlay" && !state.overlayPresent) problems.push("the restored AGENTS.md protocol is missing");
-    if (problems.length > 0) {
-      const reason = problems.join("; ");
-      log(`refused clone readiness for ${snapshot.agent}: ${reason}\n`);
-      results.push(refusedResult(snapshot, reason, discarded, protocol));
-      continue;
-    }
-
-    log(
-      `${snapshot.agent} checked out ${input.baseBranch} at ${baseTarget.sha.slice(0, 12)}` +
-        `${baseTarget.synced ? "" : " (offline fallback)"}\n`
-    );
-    results.push({
-      agent: snapshot.agent,
-      clone: snapshot.clone,
-      branch: snapshot.branch,
-      action,
-      discardedPaths: discarded,
-      protocol,
-      baseTip: baseTarget.sha,
-      baseSynced: baseTarget.synced
-    });
+    results.push(checkOutCloneBase(snapshot, input.baseBranch, baseTarget, discardedPaths, installRoot, log));
   }
   return results;
+};
+
+/** Manual cleanup never discards work or resets a branch. Preflight the batch before closing UI. */
+export const makeManualClonesBaseReady = async (input: {
+  agents: readonly { id: string; root: string }[];
+  baseBranch: string;
+  installRoot?: string | null;
+  dryRun?: boolean;
+  log?: (message: string) => void;
+  beforeCheckout?: () => Promise<void>;
+}): Promise<CloneBaseReadyResult[]> => {
+  const log = input.log ?? (() => undefined);
+  const snapshots = snapshotCloneReadiness(input.agents, () => input.baseBranch);
+  const targets = new Map<string, Extract<CloneBaseTarget, { kind: "target" }>>();
+  const tips = new Map<string, string>();
+  const reasons = new Map<string, string>();
+  const dirt = (snapshot: CloneReadinessSnapshot): readonly string[] => {
+    const paths = blockingDirtyPaths(snapshot.clone);
+    return cloneAgentsProtocolState(snapshot.clone).tracked && !agentsMdDiffersOnlyByProtocol(snapshot.clone)
+      ? [...paths, " M AGENTS.md (including hidden changes)"] : paths;
+  };
+  for (const snapshot of snapshots) {
+    const refuse = (reason: string): void => { reasons.set(snapshot.clone, reason); };
+    if (!snapshot.available) { refuse("clone is missing or is not a Git worktree"); continue; }
+    const dirty = dirt(snapshot);
+    if (dirty.length > 0) { refuse(`uncommitted changes: ${dirty.map(statusPath).join(", ")}; commit/stash them before detach`); continue; }
+    const tip = gitOrThrow(snapshot.clone, "rev-parse", "HEAD").trim();
+    tips.set(snapshot.clone, tip);
+    const cached = git(snapshot.clone, "rev-parse", "--verify", `origin/${input.baseBranch}^{commit}`);
+    const target: CloneBaseTarget = input.dryRun
+      ? cached.exitCode === 0
+        ? { kind: "target", sha: cached.stdout.trim(), ref: `origin/${input.baseBranch}`, synced: false }
+        : { kind: "refuse", reason: "no cached base to inspect; retry without --dry-run to fetch" }
+      : resolveCloneBaseTarget(snapshot, input.baseBranch);
+    if (target.kind === "refuse") { refuse(target.reason); continue; }
+    if (!input.dryRun && !target.synced) { refuse(`cannot verify published work: ${target.fallbackReason}`); continue; }
+    const ancestor = (commit: string, parent: string): boolean =>
+      git(snapshot.clone, "merge-base", "--is-ancestor", commit, parent).exitCode === 0;
+    const localBase = git(snapshot.clone, "rev-parse", "--verify", `refs/heads/${input.baseBranch}^{commit}`);
+    if (localBase.exitCode === 0 && !ancestor(localBase.stdout.trim(), target.sha)) {
+      refuse(`local ${input.baseBranch} has unpublished or divergent commits; publish/merge them before detach`); continue;
+    }
+    if (!ancestor(tip, target.sha)) {
+      const remote = localConfigGet(snapshot.clone, `branch.${snapshot.head}.remote`);
+      const merge = localConfigGet(snapshot.clone, `branch.${snapshot.head}.merge`);
+      let published = false;
+      if (remote && remote !== "." && merge?.startsWith("refs/heads/")) {
+        if (input.dryRun) published = ancestor(tip, "@{upstream}");
+        else if (git(snapshot.clone, "fetch", "--quiet", remote, merge).exitCode === 0) published = ancestor(tip, "FETCH_HEAD");
+      }
+      if (!published) { refuse(`HEAD on ${snapshot.head} has unpublished commits; push or merge them before detach`); continue; }
+    }
+    targets.set(snapshot.clone, target);
+  }
+  const refused = (): CloneBaseReadyResult[] => snapshots.map((snapshot) => refusedResult(snapshot,
+    reasons.get(snapshot.clone) ?? "another clone is not ready; no worktrees were changed"));
+  if (reasons.size > 0) return refused();
+  await input.beforeCheckout?.();
+  // The owner UI may have written while preflight was running. Never discard that work.
+  for (const snapshot of snapshots) {
+    if (git(snapshot.clone, "rev-parse", "HEAD").stdout.trim() !== tips.get(snapshot.clone) ||
+        git(snapshot.clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim() !== snapshot.head || dirt(snapshot).length > 0) {
+      reasons.set(snapshot.clone, "clone changed during manual detach; preserve the new work and retry");
+    }
+  }
+  if (reasons.size > 0) return refused();
+  return snapshots.map((snapshot) => {
+    const target = targets.get(snapshot.clone)!;
+    if (input.dryRun) {
+      log(`would return ${snapshot.agent} to ${input.baseBranch} in ${snapshot.clone} (cached publication check; live detach fetches again)\n`);
+      return { agent: snapshot.agent, clone: snapshot.clone, branch: input.baseBranch,
+        action: snapshot.head === input.baseBranch ? "already-base" : "checked-out", discardedPaths: [],
+        protocol: "skipped", baseTip: null, baseSynced: false };
+    }
+    return checkOutCloneBase(snapshot, input.baseBranch, target, [], input.installRoot ?? null, log, true);
+  });
 };

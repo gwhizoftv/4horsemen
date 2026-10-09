@@ -143,7 +143,7 @@ if [[ "${COORD_GIT_DELEGATE:-}" == 1 ]]; then
 fi
 
 # Owner-driven manual mode: no automated issue, no restrictions.
-if [[ ! "${COORD_ISSUE:-}" =~ ^[1-9][0-9]*$ ]]; then
+if [[ "${COORD_MANUAL:-}" == 1 || ! "${COORD_ISSUE:-}" =~ ^[1-9][0-9]*$ ]]; then
   delegate "$@"
 fi
 
@@ -191,22 +191,43 @@ coord_refuse() {
   exit 2
 }
 
-# Whether the action in front of this agent already lists the files a `git show`
-# would be duplicating. Resolved from the clone's own identity keys and the
-# nested-vs-flat topology, exactly as the launcher resolves its grants, and
-# through $REAL_GIT so this never re-enters the shim.
-#
-# Fails open on purpose: every unreadable config, missing action, or absent
-# section leaves the pinned read allowed. The documented fallback for a packet
-# the coordinator could not produce must survive anything going wrong here.
-coord_action_lists_files() {
-  local config agent dir parent root action
+# Resolve current nested/flat runtime beside the configured workspace. A legacy
+# outer issue is safe to consult for bound-file restrictions, but insufficient
+# evidence for relaxing restrictions on a current nested workspace.
+coord_runtime_root() {
+  local config dir parent legacy
   config="$("$REAL_GIT" config --local --get coord.workspaceConfig 2>/dev/null)" || return 1
-  agent="$("$REAL_GIT" config --local --get consensus.agentId 2>/dev/null)" || return 1
-  [[ -n "$config" && -n "$agent" && -f "$config" ]] || return 1
+  [[ -n "$config" && -f "$config" ]] || return 1
   dir="$(dirname "$config")"
   parent="$(dirname "$dir")"
-  if [[ "$(basename "$parent")" == "workspaces" ]]; then root="$(dirname "$parent")"; else root="$dir"; fi
+  # Current nested installs store issues beside their config. An outer legacy
+  # issue is ambiguous here: preserve the restriction instead of calling it absent.
+  if [[ "$(basename "$parent")" == "workspaces" && ! -d "$dir/issue-$COORD_ISSUE" ]]; then
+    legacy="$(dirname "$parent")/issue-$COORD_ISSUE"
+    if [[ -d "$legacy" ]]; then
+      [[ "${1:-}" == bound-files ]] || return 1
+      dir="$(dirname "$parent")"
+    fi
+  fi
+  printf '%s\n' "$dir"
+}
+
+# Only positively inactive contexts relax the policy. Missing/unreadable config
+# or cursor data retains the existing refusal; no vendor-session inference.
+coord_root="$(coord_runtime_root)" || coord_root=""
+if [[ -n "$coord_root" ]]; then
+  coord_issue_dir="$coord_root/issue-$COORD_ISSUE"
+  if [[ ! -e "$coord_issue_dir" ]] ||
+     grep -Eq '^  "(completed|abandoned)": true,?$' "$coord_issue_dir/cursors.json" 2>/dev/null; then
+    delegate "$@"
+  fi
+fi
+
+coord_action_lists_files() {
+  local agent root action
+  root="$(coord_runtime_root bound-files)" || return 1
+  agent="$("$REAL_GIT" config --local --get consensus.agentId 2>/dev/null)" || return 1
+  [[ -n "$agent" ]] || return 1
   action="$root/issue-$COORD_ISSUE/agents/$agent/action.md"
   [[ -f "$action" ]] || return 1
   grep -q '^## Bound input files$' "$action" 2>/dev/null || return 1
