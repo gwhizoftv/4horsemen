@@ -1,0 +1,14 @@
+{
+  "actionId": "a7593435-0cab-4567-93d9-29d668b025c2",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "27e72845ccb779b0ac3a82acbd98f032190b223a51975e19467544d95a66384a",
+  "issue": 186,
+  "issueSessionId": "issue-186:15c2973d02e848cc537efd8e7bf9acc56c0304ee",
+  "protocolVersion": 2,
+  "rationale": "The post-settle gate now uses a fresh composer capture and both targeted race probes pass with recorded check:fast and e2e success, satisfying the approved revision scope while retaining the explicitly selected, documented exhausted-retry behavior and leaving live containment unverified.",
+  "responseSha256": "5e37d15bf4b3897b23af5e517441f3075f611148be1ecd7e841dc4b8ef87aa03",
+  "revisionCommitSha": "63c8f05b47516d71f9cc80d66da4c0f16e1e4ea7",
+  "round": 2
+}

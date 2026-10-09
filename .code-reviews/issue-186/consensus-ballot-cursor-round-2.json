@@ -1,0 +1,14 @@
+{
+  "actionId": "dde2d667-e6dc-4032-8387-2a85215cb634",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "27e72845ccb779b0ac3a82acbd98f032190b223a51975e19467544d95a66384a",
+  "issue": 186,
+  "issueSessionId": "issue-186:15c2973d02e848cc537efd8e7bf9acc56c0304ee",
+  "protocolVersion": 2,
+  "rationale": "Round 2 re-captures after the post-settle re-gate so override proof cannot use a pre-settle pane, and the new owner-edit-during-re-gate test covers that race without leaving the selected plan.",
+  "responseSha256": "d931aa30b901f192a6d52021ec2a4e4a2a9c221727efaee411d5335cb353afd3",
+  "revisionCommitSha": "63c8f05b47516d71f9cc80d66da4c0f16e1e4ea7",
+  "round": 2
+}

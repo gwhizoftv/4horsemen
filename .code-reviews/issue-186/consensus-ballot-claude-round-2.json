@@ -1,0 +1,14 @@
+{
+  "actionId": "5766d999-aebc-40f5-b12f-6482612923cd",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "27e72845ccb779b0ac3a82acbd98f032190b223a51975e19467544d95a66384a",
+  "issue": 186,
+  "issueSessionId": "issue-186:15c2973d02e848cc537efd8e7bf9acc56c0304ee",
+  "protocolVersion": 2,
+  "rationale": "Revision 63c8f05b closes the round-1 finding by proving the Codex override against a capture taken after the post-settle re-gate (so every key now follows gate, then capture, then proof), adds the owner-edit-during-re-gate regression that fails on e0f60240 and passes here (hooks passed 687 fast and 181 system tests), and stays within the selected plan and approved paths, with the documented exhaustion-as-sent and Working-chrome proof limits left to a separately approved change.",
+  "responseSha256": "ac2ba07208027f6ab149539db40fca6d7da79710dfaefd9fecc5422a6bda15dd",
+  "revisionCommitSha": "63c8f05b47516d71f9cc80d66da4c0f16e1e4ea7",
+  "round": 2
+}
