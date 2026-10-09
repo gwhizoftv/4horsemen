@@ -6,6 +6,7 @@ import { liftCloneAgentsProtocol, writeCloneAgentsProtocol } from "../src/agents
 import {
   AgentCloneReadinessRefusal,
   makeAgentClonesBaseReady,
+  makeManualClonesBaseReady,
   prepareAgentIssueBranches
 } from "../src/prepareAgentBranch.js";
 import { git, repoRoot, tryGit } from "./support/workspaceFixture.js";
@@ -689,5 +690,121 @@ describe("makeAgentClonesBaseReady", () => {
     expect(git(clone, "status", "--porcelain")).toBe("");
     expect(logs.join("")).toContain("using fallback main");
     expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("advises reset-clones for untracked-only dirt and commit/stash when tracked edits block prepare", () => {
+    const untracked = seedClone();
+    const tracked = seedClone();
+    prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: untracked.clone }],
+      issue: 7,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: untracked.baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+    writeFileSync(join(untracked.clone, "junk.txt"), "cache\n");
+    expect(() =>
+      prepareAgentIssueBranches({
+        agents: [{ id: "codex", root: untracked.clone }],
+        issue: 7,
+        branchTemplate: "issue-{issue}/{agent}",
+        baselineSha: untracked.baseline,
+        baseBranch: "main",
+        installRoot: repoRoot
+      })
+    ).toThrow(/coord reset-clones 7 --force/);
+
+    prepareAgentIssueBranches({
+      agents: [{ id: "claude", root: tracked.clone }],
+      issue: 7,
+      branchTemplate: "issue-{issue}/{agent}",
+      baselineSha: tracked.baseline,
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+    writeFileSync(join(tracked.clone, "AGENTS.md"), "# edited\n");
+    liftCloneAgentsProtocol(tracked.clone, { dryRun: false, log: () => undefined, changes: [] });
+    writeFileSync(join(tracked.clone, "README.md"), "tracked edit\n");
+    git(tracked.clone, "add", "README.md");
+    expect(() =>
+      prepareAgentIssueBranches({
+        agents: [{ id: "codex", root: tracked.clone }],
+        issue: 7,
+        branchTemplate: "issue-{issue}/{agent}",
+        baselineSha: tracked.baseline,
+        baseBranch: "main",
+        installRoot: repoRoot
+      })
+    ).toThrow(/Commit\/stash/);
+  });
+
+  it("returns published clean manual branches to base and refuses unpublished or dirty work", () => {
+    const published = seedClone();
+    liftCloneAgentsProtocol(published.clone, { dryRun: false, log: () => undefined, changes: [] });
+    git(published.clone, "checkout", "-q", "-B", "claude/scratch", "origin/main");
+    writeCloneAgentsProtocol({
+      clone: published.clone,
+      installRoot: repoRoot,
+      options: { dryRun: false, log: () => undefined, changes: [] }
+    });
+    const ok = makeManualClonesBaseReady({
+      agents: [{ id: "claude", root: published.clone }],
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+    expect(ok[0]?.action).toBe("checked-out");
+    expect(git(published.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(skipWorktree(published.clone)).toBe(true);
+
+    const unpushed = seedClone();
+    liftCloneAgentsProtocol(unpushed.clone, { dryRun: false, log: () => undefined, changes: [] });
+    git(unpushed.clone, "checkout", "-q", "-B", "claude/wip", "origin/main");
+    writeFileSync(join(unpushed.clone, "wip.txt"), "local\n");
+    git(unpushed.clone, "add", "wip.txt");
+    git(unpushed.clone, "commit", "-qm", "unpushed");
+    writeCloneAgentsProtocol({
+      clone: unpushed.clone,
+      installRoot: repoRoot,
+      options: { dryRun: false, log: () => undefined, changes: [] }
+    });
+    const before = git(unpushed.clone, "rev-parse", "HEAD");
+    const refused = makeManualClonesBaseReady({
+      agents: [{ id: "claude", root: unpushed.clone }],
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+    expect(refused[0]?.action).toBe("refused");
+    expect(git(unpushed.clone, "rev-parse", "HEAD")).toBe(before);
+    expect(git(unpushed.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("claude/wip");
+
+    const dirty = seedClone();
+    writeFileSync(join(dirty.clone, "dirt.txt"), "no\n");
+    expect(
+      makeManualClonesBaseReady({
+        agents: [{ id: "claude", root: dirty.clone }],
+        baseBranch: "main",
+        installRoot: repoRoot
+      })[0]?.action
+    ).toBe("refused");
+
+    const ahead = seedClone();
+    liftCloneAgentsProtocol(ahead.clone, { dryRun: false, log: () => undefined, changes: [] });
+    git(ahead.clone, "checkout", "-q", "-B", "main", "origin/main");
+    writeFileSync(join(ahead.clone, "local-base.txt"), "ahead\n");
+    git(ahead.clone, "add", "local-base.txt");
+    git(ahead.clone, "commit", "-qm", "local main ahead");
+    writeCloneAgentsProtocol({
+      clone: ahead.clone,
+      installRoot: repoRoot,
+      options: { dryRun: false, log: () => undefined, changes: [] }
+    });
+    expect(
+      makeManualClonesBaseReady({
+        agents: [{ id: "claude", root: ahead.clone }],
+        baseBranch: "main",
+        installRoot: repoRoot
+      })[0]?.action
+    ).toBe("refused");
   });
 });

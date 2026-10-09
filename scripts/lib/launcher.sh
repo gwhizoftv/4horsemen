@@ -147,6 +147,11 @@ if [[ ! "${COORD_ISSUE:-}" =~ ^[1-9][0-9]*$ ]]; then
   delegate "$@"
 fi
 
+# Explicit manual mode wins over an inherited issue number.
+if [[ "${COORD_MANUAL:-}" == "1" ]]; then
+  delegate "$@"
+fi
+
 # Resolve the repository this invocation targets, and the subcommand, reading
 # the global options exactly as git does.
 coord_target="${GIT_WORK_TREE:-${GIT_DIR:-$PWD}}"
@@ -191,22 +196,43 @@ coord_refuse() {
   exit 2
 }
 
+# Workspace root from coord.workspaceConfig (config dir). Matches
+# workspaceLocationFromConfig for both flat and nested layouts, where issue-N
+# state lives. Fails open (return 1) when identity keys are missing.
+coord_runtime_root() {
+  local config dir
+  config="$("$REAL_GIT" config --local --get coord.workspaceConfig 2>/dev/null)" || return 1
+  [[ -n "$config" && -f "$config" ]] || return 1
+  dir="$(dirname "$config")"
+  [[ -n "$dir" && -d "$dir" ]] || return 1
+  printf '%s\n' "$dir"
+}
+
+# Positive evidence that COORD_ISSUE is stale: no issue runtime, or top-level
+# completed/abandoned in cursors.json. Unresolvable root keeps today's refuse.
+if root="$(coord_runtime_root)"; then
+  issue_dir="$root/issue-$COORD_ISSUE"
+  if [[ ! -d "$issue_dir" ]]; then
+    delegate "$@"
+  fi
+  cursors="$issue_dir/cursors.json"
+  if [[ -f "$cursors" ]] && grep -qE '^  "(completed|abandoned)": true' "$cursors" 2>/dev/null; then
+    delegate "$@"
+  fi
+fi
+
 # Whether the action in front of this agent already lists the files a `git show`
 # would be duplicating. Resolved from the clone's own identity keys and the
-# nested-vs-flat topology, exactly as the launcher resolves its grants, and
-# through $REAL_GIT so this never re-enters the shim.
+# workspace-scoped runtime root, through $REAL_GIT so this never re-enters the shim.
 #
 # Fails open on purpose: every unreadable config, missing action, or absent
 # section leaves the pinned read allowed. The documented fallback for a packet
 # the coordinator could not produce must survive anything going wrong here.
 coord_action_lists_files() {
-  local config agent dir parent root action
-  config="$("$REAL_GIT" config --local --get coord.workspaceConfig 2>/dev/null)" || return 1
+  local agent root action
   agent="$("$REAL_GIT" config --local --get consensus.agentId 2>/dev/null)" || return 1
-  [[ -n "$config" && -n "$agent" && -f "$config" ]] || return 1
-  dir="$(dirname "$config")"
-  parent="$(dirname "$dir")"
-  if [[ "$(basename "$parent")" == "workspaces" ]]; then root="$(dirname "$parent")"; else root="$dir"; fi
+  root="$(coord_runtime_root)" || return 1
+  [[ -n "$agent" ]] || return 1
   action="$root/issue-$COORD_ISSUE/agents/$agent/action.md"
   [[ -f "$action" ]] || return 1
   grep -q '^## Bound input files$' "$action" 2>/dev/null || return 1

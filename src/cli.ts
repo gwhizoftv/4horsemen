@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
+import { stdin as defaultStdin, stdout as defaultStdout } from "node:process";
 import { fileURLToPath } from "node:url";
 import { readAction } from "./action.js";
 import { handleAgentEvent, lifecycleVendorSchema } from "./agentEvent.js";
@@ -16,7 +18,7 @@ import { hookVerificationRecorder } from "./verificationLog.js";
 import { install, onboard, packageVersion, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
-import { makeAgentClonesBaseReady, prepareAgentIssueBranches } from "./prepareAgentBranch.js";
+import { makeAgentClonesBaseReady, makeManualClonesBaseReady, prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import {
   agentRuntimePaths,
   assertNoSymlink,
@@ -111,6 +113,8 @@ export type CliDependencies = {
   }) => Promise<OpenOwnerAgentClientsResult>;
   /** Test/embedding override for exact tmux liveness probes. */
   sessionExists?: (sessionName: string) => Promise<boolean>;
+  /** Test/embedding override for owner confirmation prompts (default: false under Vitest / non-TTY). */
+  confirm?: (question: string) => Promise<boolean>;
 };
 
 /** Upper bound for one lifecycle hook or status-line payload. */
@@ -241,7 +245,7 @@ Usage:
                [--product <path> | --coord-runtime <path>]
   coord attach <issue> [--product <path> | --coord-runtime <path>]
   coord detach <issue> [--product <path> | --coord-runtime <path>] [--dry-run]
-  coord detach manual [--product <path> | --config <path> --coord-runtime <path>] [--dry-run]
+  coord detach manual [--product <path> | --config <path>] [--dry-run]
   coord wipe-issue <issue> [--product <path> | --config <path> --coord-runtime <path>] [--force] [--dry-run] [--delete-evidence]
   coord reset-clones <issue> [--product <path> | --config <path> --coord-runtime <path>] [--force] [--dry-run]
 
@@ -295,22 +299,25 @@ agent, opens only missing Terminal windows, and returns without an issue,
 coordinator state, action, run loop, or publication. The owner assigns work in
 chat and agents use their own <agent>/<name> scratch branches. Manual and
 automated issue sessions cannot run concurrently for the same workspace; use
-\`coord detach manual\` to close manual UI before starting or resuming an issue.
+\`coord detach manual\` to close manual UI and return clean, fully published clones to
+base (unpublished or dirty work is refused). Starting an issue on a TTY may ask before
+closing a leftover manual session.
 
 install remains the advanced explicit interface. Onboard and install leave the repository's
 tracked tree untouched; a fresh human clone receives no coordination hooks or metadata.
 COORD_ISSUE and COORD_AGENT may replace their corresponding owner-control options.
 
 Foreground TTY runs accept s (status), p/Space (manual pause), a (attach),
-d (drop), n (remind one current task without restarting it), r (release a selected hold), /steer <text>, ?/h (help), and q (quit).
+d (drop), n (remind one or all current tasks without restarting them), r (release a selected hold), /steer <text>, ?/h (help), and q (quit).
 For a reminder-limit hold, r asks before allowing four more sends. Reminders
 retain readiness checks and send limits; inspect/type in the agent terminal if refused.
 /steer queues guidance for every recipient of the next assigned cohort, not an immediate broadcast.
 An action is one assigned task; a turn is one agent prompt/reply; a pin is a commit.
 No control force-completes work: the agent must publish valid evidence first.
-Issue commands infer runtime from a registered current worktree when neither
---product nor --coord-runtime is supplied. Use --coord-runtime to name the runtime
-directory explicitly. Onboard defaults to a coord-runtime directory beside the repository.
+Issue commands and start/manual infer runtime from an onboarded owner checkout or
+registered agent clone when flags are omitted. \`--config\` may be given alone
+(runtime is the config's workspace directory); \`--coord-runtime\` still requires
+\`--config\`. Onboard defaults to a coord-runtime directory beside the repository.
 Quit stops only the foreground runner, unlike coord detach; agent panes still
 accept direct typing. Non-TTY runs do not read interactive input.
 `;
@@ -326,7 +333,7 @@ const commandDescriptions: Record<string, string> = {
   drop: "Remove an active agent and rederive decisions; this can invalidate pending work. Example: coord drop cursor --issue 161.",
   abandon: "End an issue without accepting further work. Example: coord abandon --issue 161.",
   attach: "Reopen missing terminal windows for a running issue without starting a runner. Example: coord attach 161.",
-  detach: "Close agent terminal/tmux sessions but retain issue runtime and branches. Example: coord detach 161 --dry-run.",
+  detach: "Close agent terminal/tmux sessions but retain issue runtime and branches; detach manual also returns published clean clones to base. Example: coord detach 161 --dry-run.",
   analytics: "Read recorded timing and usage without changing issue state. Example: coord analytics --issue 161.",
   next: "Read the current assignment for a registered agent without accepting it. Example: coord next --issue 161 --agent codex.",
   manual: "Open workspace agent terminals without issue automation. Example: coord manual --product /repository.",
@@ -409,22 +416,31 @@ const workflowProfile = (value: string): WorkflowProfile => {
 const resolveStart = (parsed: ParsedArgs, io: CliIo): StartResolution => {
   const hasConfig = parsed.flags.has("config");
   const hasCoordRoot = parsed.flags.has("coord-runtime");
-  if (hasConfig !== hasCoordRoot) {
-    throw new Error("--config and --coord-runtime must be supplied together, or use --product after coord onboard.");
+  if (!hasConfig && hasCoordRoot) {
+    throw new Error(
+      "--coord-runtime requires --config, or omit both and use an onboarded worktree (--config may be given alone)."
+    );
   }
   if (hasConfig && parsed.flags.has("product")) {
-    throw new Error("Use --product or the explicit --config/--coord-runtime pair, not both.");
+    throw new Error("Use --product or --config (optionally with --coord-runtime), not both.");
   }
 
   let configPath: string;
   let runtimeRoot: string;
   let workspace: WorkspaceLocation | null = null;
-  if (hasConfig) {
+  if (hasConfig && hasCoordRoot) {
     configPath = resolve(io.cwd, requireFlag(parsed, "config"));
     runtimeRoot = resolve(io.cwd, requireFlag(parsed, "coord-runtime"));
+  } else if (hasConfig) {
+    configPath = resolve(io.cwd, requireFlag(parsed, "config"));
+    workspace = workspaceLocationFromConfig(configPath);
+    runtimeRoot = workspace.workspaceRoot;
+  } else if (parsed.flags.has("product")) {
+    workspace = resolveWorkspaceFromProduct(resolve(io.cwd, requireFlag(parsed, "product")));
+    configPath = workspace.configPath;
+    runtimeRoot = workspace.workspaceRoot;
   } else {
-    const product = parsed.flags.has("product") ? resolve(io.cwd, requireFlag(parsed, "product")) : io.cwd;
-    workspace = resolveWorkspaceFromProduct(product);
+    workspace = resolveWorkspaceFromWorktree(io.cwd);
     configPath = workspace.configPath;
     runtimeRoot = workspace.workspaceRoot;
   }
@@ -692,27 +708,135 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     (process.env.VITEST !== undefined
       ? async () => false
       : async (sessionName: string) => (await runner(["tmux", "has-session", "-t", sessionName], io.cwd)).exitCode === 0);
+  const confirm =
+    dependencies.confirm ??
+    (async (question: string): Promise<boolean> => {
+      if (process.env.VITEST !== undefined) return false;
+      if (!defaultStdin.isTTY || !defaultStdout.isTTY) return false;
+      const rl = createInterface({ input: defaultStdin, output: defaultStdout });
+      try {
+        const answer = (await rl.question(`${question} [y/N] `)).trim().toLowerCase();
+        return answer === "y" || answer === "yes";
+      } finally {
+        rl.close();
+      }
+    });
 
   const sessionName = (key: number | "manual", identity: WorkspaceUiIdentity): string =>
     new TmuxController(undefined, identity.tmuxNamespace, null, null, undefined, identity.terminalGroup).sessionName(key);
 
-  const assertNoManualSession = async (workspaceRoot: string): Promise<void> => {
-    const identity = workspaceUiIdentity(workspaceRoot);
-    const manual = sessionName("manual", identity);
-    if (await sessionExists(manual)) {
-      throw new Error(
-        `Manual mode is active for this workspace (tmux session ${manual}). Run \`coord detach manual\` first.`
-      );
-    }
+  type ManualCleanup = {
+    agents: CoordinatorConfig["agents"];
+    baseBranch: string;
+    installRoot?: string | null;
+    dryRun?: boolean;
   };
 
+  const detachManual = async (
+    workspaceRoot: string,
+    cleanup: ManualCleanup
+  ): Promise<number> => {
+    const identity = workspaceUiIdentity(workspaceRoot);
+    const agents = cleanup.agents;
+    const readiness = makeManualClonesBaseReady({
+      agents,
+      baseBranch: cleanup.baseBranch,
+      installRoot: cleanup.installRoot ?? null,
+      dryRun: true,
+      log: io.stdout
+    });
+    const refused = readiness.filter((result) => result.action === "refused");
+    if (refused.length > 0) {
+      for (const result of refused) {
+        io.stderr(`  refused ${result.agent} (${result.clone}): ${result.reason ?? "readiness refused"}\n`);
+      }
+      io.stderr(
+        `Clone readiness refused for ${refused.length} clone(s). ` +
+          "Publish or clean the work before detach manual; nothing was torn down.\n"
+      );
+      return 1;
+    }
+    const outcome = await detachIssue({
+      issue: "manual",
+      agentIds: agents.map((agent) => agent.id),
+      tmuxNamespace: identity.tmuxNamespace,
+      terminalGroup: identity.terminalGroup,
+      dryRun: cleanup.dryRun === true,
+      log: io.stdout
+    });
+    io.stdout(
+      `Detached manual mode: killed ${outcome.killedSessions.length} tmux session(s)` +
+        (outcome.terminalClose === "closed"
+          ? `, closed ${outcome.closedTerminalTitles.length} Terminal window(s)`
+          : "") +
+        ".\n"
+    );
+    if (cleanup.dryRun === true) {
+      io.stdout("Clone readiness: dry-run only; no checkouts performed.\n");
+      return 0;
+    }
+    const applied = makeManualClonesBaseReady({
+      agents,
+      baseBranch: cleanup.baseBranch,
+      installRoot: cleanup.installRoot ?? null,
+      dryRun: false,
+      log: io.stdout
+    });
+    const appliedRefused = applied.filter((result) => result.action === "refused");
+    const checkedOut = applied.filter((result) => result.action === "checked-out").length;
+    const alreadyBase = applied.filter((result) => result.action === "already-base").length;
+    const skipped = applied.filter((result) => result.action === "skipped-missing").length;
+    io.stdout(
+      `Clone readiness: checked out ${checkedOut}, already base ${alreadyBase}, ` +
+        `refused ${appliedRefused.length}, skipped ${skipped}.\n`
+    );
+    if (appliedRefused.length === 0) return 0;
+    for (const result of appliedRefused) {
+      io.stderr(`  refused ${result.agent} (${result.clone}): ${result.reason ?? "readiness refused"}\n`);
+    }
+    return 1;
+  };
+
+  const assertNoManualSession = async (
+    workspaceRoot: string,
+    cleanup: ManualCleanup
+  ): Promise<void> => {
+    const identity = workspaceUiIdentity(workspaceRoot);
+    const manual = sessionName("manual", identity);
+    if (!(await sessionExists(manual))) return;
+    const accepted = await confirm(
+      `Close manual session ${manual} and return its clones to ${cleanup.baseBranch}?`
+    );
+    if (accepted) {
+      const code = await detachManual(workspaceRoot, cleanup);
+      if (code === 0) return;
+      throw new Error(
+        `Manual mode cleanup refused clone readiness. Resolve unpublished or dirty work, then retry or run \`coord detach manual\`.`
+      );
+    }
+    throw new Error(
+      `Manual mode is active for this workspace (tmux session ${manual}). Run \`coord detach manual\` first.`
+    );
+  };
+
+  const manualCleanupFromResolution = (resolution: StartResolution): ManualCleanup => ({
+    agents: resolvedAgents(resolution),
+    baseBranch: resolution.config.baseBranch,
+    installRoot: resolution.config.coordination?.installRoot ?? coordinatorSourceRoot
+  });
+
   const assertIssueCanRun = async (paths: IssueRuntimePaths): Promise<void> => {
-    const workspace = workspaceLocationFromConfig(readStartState(paths).configPath);
+    const start = readStartState(paths);
+    const workspace = workspaceLocationFromConfig(start.configPath);
     const manualWorkspaceRoot =
       workspace.layout === "nested" && resolve(paths.coordRoot) === resolve(workspace.coordRoot)
         ? workspace.workspaceRoot
         : paths.coordRoot;
-    await assertNoManualSession(manualWorkspaceRoot);
+    await assertNoManualSession(manualWorkspaceRoot, {
+      agents: start.agents,
+      baseBranch: start.baseBranch,
+      installRoot: readConfig(start.configPath).coordination?.installRoot ?? coordinatorSourceRoot
+    });
   };
 
   const attachIssue = async (paths: IssueRuntimePaths): Promise<void> => {
@@ -834,6 +958,26 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         `A completion mailbox already exists for issue ${issue} at ${paths.completesIssueRoot}. ` +
           "Wipe it with coord wipe-issue before starting; a stale receipt there would be read as completion intent."
       );
+    }
+
+    const identity = workspaceUiIdentity(coordRoot);
+    const leftover = sessionName(issue, identity);
+    if (await sessionExists(leftover)) {
+      const accepted = await confirm(
+        `Close leftover tmux session ${leftover} before starting issue ${issue}?`
+      );
+      if (!accepted) {
+        throw new Error(
+          `tmux session ${leftover} already exists; run \`coord detach ${issue}\` before starting.`
+        );
+      }
+      await detachIssue({
+        issue,
+        agentIds: roster.map((agent) => agent.id),
+        tmuxNamespace: identity.tmuxNamespace,
+        terminalGroup: identity.terminalGroup,
+        log: io.stdout
+      });
     }
 
     const snapshot = await fetchGitHubIssue({ origin: config.origin, issue, cwd: io.cwd, runner });
@@ -959,7 +1103,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       verboseState.enabled = flagIsSet(parsed, "verbose");
       const issue = parseIssue(command);
       const resolution = resolveStart(parsed, io);
-      await assertNoManualSession(resolution.runtimeRoot);
+      await assertNoManualSession(resolution.runtimeRoot, manualCleanupFromResolution(resolution));
       const existing = existingIssueRuntime(resolution, issue);
       if (existing !== null) return await runIssue(existing);
       const started = await startIssue(issue, resolution);
@@ -1082,10 +1226,25 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     if (command === "doctor") {
       allowedFlags(parsed, ["product", "project", "coord-runtime"]);
       if (parsed.positionals.length !== 0) throw new Error("doctor takes no positional arguments.");
+      let coordRoot: string;
+      let productRoot: string | undefined =
+        parsed.flags.has("product") ? resolve(io.cwd, requireFlag(parsed, "product")) : undefined;
+      let project: string | undefined = parsed.flags.has("project") ? requireFlag(parsed, "project") : undefined;
+      if (parsed.flags.has("coord-runtime")) {
+        coordRoot = resolve(io.cwd, requireFlag(parsed, "coord-runtime"));
+      } else {
+        const workspace =
+          productRoot !== undefined
+            ? resolveWorkspaceFromProduct(productRoot)
+            : resolveWorkspaceFromWorktree(io.cwd);
+        coordRoot = workspace.coordRoot;
+        if (productRoot === undefined) productRoot = readConfig(workspace.configPath).coordination?.productRoot;
+        if (project === undefined) project = readConfig(workspace.configPath).project;
+      }
       const report = doctor({
-        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-runtime")),
-        ...(parsed.flags.has("product") ? { productRoot: resolve(io.cwd, requireFlag(parsed, "product")) } : {}),
-        ...(parsed.flags.has("project") ? { project: requireFlag(parsed, "project") } : {}),
+        coordRoot,
+        ...(productRoot === undefined ? {} : { productRoot }),
+        ...(project === undefined ? {} : { project }),
         ...(dependencies.home === undefined ? {} : { home: dependencies.home })
       });
       (report.exitCode === 0 ? io.stdout : io.stderr)(renderDoctorReport(report));
@@ -1197,7 +1356,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       verboseState.enabled = flagIsSet(parsed, "verbose");
       const issue = parseIssue(parsed.positionals[0] as string);
       const resolution = resolveStart(parsed, io);
-      await assertNoManualSession(resolution.runtimeRoot);
+      await assertNoManualSession(resolution.runtimeRoot, manualCleanupFromResolution(resolution));
       await startIssue(issue, resolution);
       return 0;
     }
@@ -1207,7 +1366,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (parsed.positionals.length !== 1) throw new Error("attach requires exactly one issue number.");
       const issue = parseIssue(parsed.positionals[0] as string);
       const resolution = resolveStart(parsed, io);
-      await assertNoManualSession(resolution.runtimeRoot);
+      await assertNoManualSession(resolution.runtimeRoot, manualCleanupFromResolution(resolution));
       const paths = existingIssueRuntime(resolution, issue);
       if (paths === null) {
         throw new Error(`No runtime state exists for issue ${issue}. Start it with coord ${issue} first.`);
@@ -1221,23 +1380,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (parsed.positionals.length !== 1) throw new Error("detach requires exactly one issue number or 'manual'.");
       const resolution = resolveStart(parsed, io);
       if (parsed.positionals[0] === "manual") {
-        const identity = workspaceUiIdentity(resolution.runtimeRoot);
-        const outcome = await detachIssue({
-          issue: "manual",
-          agentIds: resolution.config.agents.map((agent) => agent.id),
-          tmuxNamespace: identity.tmuxNamespace,
-          terminalGroup: identity.terminalGroup,
-          dryRun: flagIsSet(parsed, "dry-run"),
-          log: io.stdout
+        return await detachManual(resolution.runtimeRoot, {
+          ...manualCleanupFromResolution(resolution),
+          dryRun: flagIsSet(parsed, "dry-run")
         });
-        io.stdout(
-          `Detached manual mode: killed ${outcome.killedSessions.length} tmux session(s)` +
-            (outcome.terminalClose === "closed"
-              ? `, closed ${outcome.closedTerminalTitles.length} Terminal window(s)`
-              : "") +
-            ".\n"
-        );
-        return 0;
       }
       const issue = parseIssue(parsed.positionals[0] as string);
       const paths = existingIssueRuntime(resolution, issue);

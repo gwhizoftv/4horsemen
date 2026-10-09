@@ -775,7 +775,8 @@ describe("generated git shim", () => {
     const f = product();
     const marker = join(f.workspaceRoot, "real-git-ran");
     const fake = join(f.workspaceRoot, "fake-git");
-    writeFileSync(fake, `#!/bin/sh\nprintf ran > '${marker}'\n`, { mode: 0o700 });
+    // Config lookups for staleness must not count as "running" the guarded command.
+    writeFileSync(fake, `#!/bin/sh\n[ "$1" = "config" ] && exit 1\nprintf ran > '${marker}'\n`, { mode: 0o700 });
     const shim = join(f.productRoot, ".coord/bin/git");
     execFileSync("bash", ["-c", '. "$1"; write_git_wrapper "$2" "$3" "$4"', "_",
       join(repoRoot, "scripts/lib/launcher.sh"), shim, fake, realpathSync(f.productRoot)]);
@@ -784,7 +785,8 @@ describe("generated git shim", () => {
     });
     expect(check(["status"]).status).toBe(2);
     for (const result of [check(["log", "-1"]), check(["push"]), check(["-C", f.workspaceRoot, "status"]),
-      check(["status"], { COORD_ISSUE: "" }), check(["status"], { COORD_GIT_DELEGATE: "1" })]) {
+      check(["status"], { COORD_ISSUE: "" }), check(["status"], { COORD_GIT_DELEGATE: "1" }),
+      check(["status"], { COORD_MANUAL: "1" })]) {
       expect(result.status).toBe(0); expect(result.stdout).toBe("");
     }
     expect(existsSync(marker)).toBe(false);
@@ -828,6 +830,7 @@ describe("generated git shim", () => {
 
     // Untracked and excluded, so the clone stays clean.
     expect(readFileSync(join(clone, ".git", "info", "exclude"), "utf8")).toContain(".coord/");
+    expect(readFileSync(join(clone, ".git", "info", "exclude"), "utf8")).toContain(".pnpm-store/");
     expect(git(clone, "status", "--porcelain")).toBe("");
 
     const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
@@ -836,9 +839,17 @@ describe("generated git shim", () => {
     expect(launcher).not.toContain("git status -sb");
   });
 
+  const seedLiveIssue = (clone: string, issue = "42"): void => {
+    const config = git(clone, "config", "--local", "--get", "coord.workspaceConfig");
+    const issueRoot = join(dirname(config), `issue-${issue}`);
+    mkdirSync(issueRoot, { recursive: true });
+    writeFileSync(join(issueRoot, "cursors.json"), `${JSON.stringify({ completed: false, abandoned: false }, null, 2)}\n`);
+  };
+
   it("refuses the reads coordination owns and delegates everything else", () => {
     const fixture = product();
     const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
+    seedLiveIssue(clone);
     const head = git(clone, "rev-parse", "HEAD");
     const tracked = git(clone, "ls-tree", "--name-only", "HEAD").split("\n")[0] as string;
 
@@ -860,6 +871,7 @@ describe("generated git shim", () => {
   it("refuses even when the suite itself runs under a delegated git", () => {
     const fixture = product();
     const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
+    seedLiveIssue(clone);
     const prior = process.env.COORD_GIT_DELEGATE;
     try {
       process.env.COORD_GIT_DELEGATE = "1";
@@ -881,7 +893,10 @@ describe("generated git shim", () => {
     const fixture = product();
     const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
     const elsewhere = fixture.productRoot;
+    seedLiveIssue(clone);
 
+    expect(runGit(clone, clone, ["status"]).status).toBe(2);
+    expect(runGit(clone, clone, ["status"], { COORD_MANUAL: "1" }).status).toBe(0);
     expect(runGit(clone, clone, ["status"], { COORD_ISSUE: "" }).status).toBe(0);
     expect(runGit(clone, clone, ["status"], { COORD_GIT_DELEGATE: "1" }).status).toBe(0);
     expect(runGit(clone, elsewhere, ["status", "--porcelain"]).status).toBe(0);

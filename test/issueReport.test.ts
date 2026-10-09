@@ -209,8 +209,8 @@ describe("issue report", () => {
     const cursors = complete();
     cursors.completed = false; cursors.paused = true; cursors.manualPaused = true;
     const text = renderIssueReport({ ...start("owner-only"), coordRoot: "/runtime space/owner's" }, cursors);
-    expect(text).toMatch(/^----\n\[ACTION\] Issue 1: paused/);
+    expect(text).toMatch(/^==== coord status: issue 1 ====\n\[ACTION\] Issue 1: paused/);
     expect(text).toContain("--coord-runtime '/runtime space/owner'\"'\"'s'");
-    expect(text).toMatch(/Active step: .*\nActive roster: cursor\nQueued guidance: 0\n----\n$/);
+    expect(text).toMatch(/Active step: .*\nActive roster: cursor\nQueued guidance: 0\n==== end coord status: issue 1 ====\n$/);
   });
 });

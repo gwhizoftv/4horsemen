@@ -104,6 +104,29 @@ describe("native shell guard shared policy", () => {
     expect(check("git status")).toEqual({});
   });
 
+  it("allows git status when COORD_MANUAL or a stale issue binding is proven", () => {
+    const f = fixture(), clone = f.productRoot;
+    const config = join(f.coordRoot, "config.json");
+    writeFileSync(config, "{}");
+    git(clone, "config", "coord.workspaceConfig", config);
+    git(clone, "config", "consensus.agentId", "codex");
+    const issueRoot = join(f.coordRoot, "issue-42");
+    mkdirSync(join(issueRoot, "agents", "codex"), { recursive: true });
+    const cursors = join(issueRoot, "cursors.json");
+    writeFileSync(cursors, JSON.stringify({ completed: false, abandoned: false }, null, 2));
+    const env = { ...process.env, COORD_ISSUE: "42" };
+    const check = (environment: NodeJS.ProcessEnv) =>
+      guardShellRequest({ vendor: "codex", clone, raw: payload("codex", "git status", clone), env: environment });
+    expect(JSON.stringify(check(env))).toContain('"deny"');
+    expect(check({ ...env, COORD_MANUAL: "1" })).toEqual({});
+    writeFileSync(cursors, JSON.stringify({ completed: true, abandoned: false }, null, 2));
+    expect(check(env)).toEqual({});
+    writeFileSync(cursors, JSON.stringify({ completed: false, abandoned: true }, null, 2));
+    expect(check(env)).toEqual({});
+    rmSync(issueRoot, { recursive: true, force: true });
+    expect(check(env)).toEqual({});
+  });
+
   it("bounds recursion and does not interpret dynamic words or heredoc data", () => {
     expect(staticGitCalls("echo 'git status'", "/", {})).toEqual([]);
     expect(staticGitCalls("git status".repeat(20000), "/", {})).toEqual([]);

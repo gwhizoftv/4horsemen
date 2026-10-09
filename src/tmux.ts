@@ -846,6 +846,54 @@ export class TmuxController {
       : `[WARN] Terminal session issue binding is missing or differs from ${issue}; inspect/restart the agent terminals through coord before retrying work.`;
   }
 
+  /**
+   * Read-only placement check per agent pane. Empty pane_start_path is unknown
+   * (older tmux), not a mismatch. Never kills or relaunches.
+   */
+  async agentPlacementDiagnostics(issue: number, agents: readonly AgentConfig[]): Promise<string[]> {
+    const lines: string[] = [];
+    const launches = this.agentAttachLaunches(issue, agents);
+    const expectedTitles = new Set(launches.map((launch) => launch.windowTitle));
+    const presentTitles =
+      this.titleProbe === null ? null : new Set(this.titleProbe([...expectedTitles]));
+    for (const agent of agents) {
+      const target = this.target(issue, agent.id);
+      const display = await this.runner([
+        "display-message",
+        "-p",
+        "-t",
+        target,
+        "#{pane_dead}\t#{pane_start_path}"
+      ]).catch(() => ({ exitCode: 1, stdout: "", stderr: "missing" }));
+      if (display.exitCode !== 0) {
+        lines.push(`[WARN] ${agent.id}: tmux pane ${target} is missing; run coord attach ${issue}.`);
+        continue;
+      }
+      const [deadRaw = "", startPathRaw = ""] = display.stdout.trim().split("\t");
+      if (deadRaw === "1") {
+        lines.push(`[WARN] ${agent.id}: tmux pane ${target} is dead; run coord attach ${issue}.`);
+        continue;
+      }
+      const startPath = startPathRaw.trim();
+      // Empty start path means the format is unavailable — do not warn.
+      if (startPath !== "" && resolve(startPath) !== resolve(agent.root)) {
+        lines.push(
+          `[WARN] ${agent.id}: pane start path ${startPath} is not ${resolve(agent.root)}; run coord attach ${issue}.`
+        );
+        continue;
+      }
+      const launch = launches.find((item) => item.agentId === agent.id);
+      if (presentTitles !== null && launch !== undefined && !presentTitles.has(launch.windowTitle)) {
+        lines.push(
+          `[WARN] ${agent.id}: Terminal window ${launch.windowTitle} is not open; run coord attach ${issue}.`
+        );
+        continue;
+      }
+      lines.push(`[OK] ${agent.id}: pane ${target} is placed in ${resolve(agent.root)}.`);
+    }
+    return lines;
+  }
+
   async startSession(issue: number, agents: readonly AgentConfig[]): Promise<void> {
     await this.preflight(agents);
     const session = this.sessionName(issue);
@@ -857,6 +905,10 @@ export class TmuxController {
       const environment = await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(issue)]);
       if (environment.exitCode !== 0) {
         throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
+      }
+      const clearManual = await this.runner(["set-environment", "-r", "-t", session, "COORD_MANUAL"]);
+      if (clearManual.exitCode !== 0) {
+        throw new Error(`cannot clear manual environment in ${session}: ${clearManual.stderr}`);
       }
       for (const agent of agents) {
         const launcher = resolveAgentLauncher(agent);
@@ -897,22 +949,29 @@ export class TmuxController {
       assertAuthority();
       if (created.exitCode !== 0) throw new Error(`tmux session creation failed: ${created.stderr}`);
     }
-    const environment =
-      key === "manual"
-        ? await this.runner(["set-environment", "-u", "-t", session, "COORD_ISSUE"])
-        : await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(key)]);
-    assertAuthority();
-    if (environment.exitCode !== 0) {
-      throw new Error(
-        `${key === "manual" ? "cannot clear coordinator issue environment" : "cannot set coordinator issue environment"} ` +
-          `in ${session}: ${environment.stderr}`
-      );
-    }
     if (key === "manual") {
+      // -r removes the variable from future child environments; -u only unsets
+      // the session value and can leave a global COORD_ISSUE visible to panes.
+      const environment = await this.runner(["set-environment", "-r", "-t", session, "COORD_ISSUE"]);
+      assertAuthority();
+      if (environment.exitCode !== 0) {
+        throw new Error(`cannot clear coordinator issue environment in ${session}: ${environment.stderr}`);
+      }
       const manualEnvironment = await this.runner(["set-environment", "-t", session, "COORD_MANUAL", "1"]);
       assertAuthority();
       if (manualEnvironment.exitCode !== 0) {
         throw new Error(`cannot set manual environment in ${session}: ${manualEnvironment.stderr}`);
+      }
+    } else {
+      const environment = await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(key)]);
+      assertAuthority();
+      if (environment.exitCode !== 0) {
+        throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
+      }
+      const clearManual = await this.runner(["set-environment", "-r", "-t", session, "COORD_MANUAL"]);
+      assertAuthority();
+      if (clearManual.exitCode !== 0) {
+        throw new Error(`cannot clear manual environment in ${session}: ${clearManual.stderr}`);
       }
     }
     for (const agent of agents) {

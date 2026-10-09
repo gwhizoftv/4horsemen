@@ -958,6 +958,10 @@ export class CoordinatorRunLoop {
           `runtime hook trust/activity not yet verified for issue ${start.issue}; inspect the terminal's trust prompt and hook setup, then restart the agent if repaired.`));
     }
     if (this.tmux !== null && typeof this.tmux.issueEnvironmentDiagnostic === "function") this.log(await this.tmux.issueEnvironmentDiagnostic(start.issue));
+    if (this.tmux !== null && typeof this.tmux.agentPlacementDiagnostics === "function") {
+      const activeAgents = start.agents.filter((entry) => active.includes(entry.id));
+      for (const line of await this.tmux.agentPlacementDiagnostics(start.issue, activeAgents)) this.log(line);
+    }
     this.startupReported = true;
   }
 

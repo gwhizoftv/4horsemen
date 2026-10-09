@@ -502,6 +502,16 @@ describe("CLI manual mode", () => {
     expect(errors.join("")).toContain("coord detach manual");
 
     expect(
+      await runCli(["start", "7", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
+        io: { stdout: () => undefined, stderr: () => undefined },
+        sessionExists: isManual,
+        confirm: async () => true,
+        processRunner: successfulStartGit,
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+
+    expect(
       await runCli(["start", "8", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { stdout: () => undefined },
         sessionExists: async () => false,
@@ -554,6 +564,7 @@ describe("CLI manual mode", () => {
       })
     ).toBe(0);
     expect(output.join("")).toContain("Detached manual mode");
+    expect(output.join("")).toContain("Clone readiness");
 
     output.length = 0;
     expect(await runCli(["--help"], { io: { stdout: (message) => output.push(message) } })).toBe(0);
@@ -615,11 +626,11 @@ describe("CLI", () => {
   it("does not accept COORD_ROOT instead of explicit or worktree context", async () => {
     const fixture = setup();
     const messages: string[] = [];
-    const result = await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath], {
+    const result = await runCli(["start", "1", "--profile", "solo", "--coord-runtime", fixture.runtime], {
       io: { stderr: (message) => messages.push(message) }
     });
     expect(result).toBe(2);
-    expect(messages.join("")).toContain("--config and --coord-runtime");
+    expect(messages.join("")).toContain("--coord-runtime requires --config");
 
     messages.length = 0;
     expect(
@@ -1737,7 +1748,16 @@ describe("CLI — install, doctor, and the hook bridge", () => {
         return fakeLoop(resolved);
       } })).toBe(0);
       expect(runs).toBe(1);
+      expect(await runCli(["reset-clones", "89", "--dry-run"], {
+        io: { cwd, stdout: () => undefined, stderr: () => undefined }
+      })).toBe(0);
+      expect(await runCli(["detach", "89", "--dry-run"], {
+        io: { cwd, stdout: () => undefined }
+      })).toBe(0);
     }
+    expect(await runCli(["start", "90", "--config", configPath], {
+      io: { stdout: () => undefined }, processRunner: successfulStartGit, makeRunLoop: fakeLoop
+    })).toBe(0);
   });
 
   it("resolves analytics through an onboarded product", async () => {

@@ -46,7 +46,10 @@ export const DEFAULT_CLONE_IGNORES: readonly string[] = [
   ".agents/",
   // The generated git shim. Untracked like start-<agent>.sh, and for the same
   // reason: it is per-clone machine state, not product source.
-  ".coord/"
+  ".coord/",
+  // Codex sandbox_mode=workspace-write falls back here when the global pnpm
+  // store is not writable; it must not count as clone dirt.
+  ".pnpm-store/"
 ];
 
 export class ManagedBlockError extends Error {
