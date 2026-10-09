@@ -1,0 +1,17 @@
+{
+  "protocolVersion": 1,
+  "issue": 186,
+  "issueSessionId": "issue-186:15c2973d02e848cc537efd8e7bf9acc56c0304ee",
+  "agent": "claude",
+  "inputSetHash": "43b0a6a052ce903441c2e1cadd683de8c8e724b9553f66c60d9678662bb0f45c",
+  "artifact": "plan-amendment-request",
+  "actionId": "14610988-2016-435b-b12e-23d438367a53",
+  "scopeHash": "a633a767a1d44fd71f8ff88852def0cb26734403d90299cb094acd787d1676fe",
+  "explanation": "The selected plan's Codex submit confirmation (with the reviewed correction that a nudge still in the composer after the bounded C-m re-presses is a mid-send refusal, not a successful send) breaks an existing test the plan did not list: in test/runLoop.test.ts, 'effectful run loop > automatically overrides stale working only before the first send; owner reminders still check the Codex composer' stubs a Codex pane whose composer keeps the typed nudge forever, because its send-keys stub never models a submit key. Under the planned behavior that pane is correctly an unsubmitted nudge, so the test now sees a delivery-uncertain hold instead of the 'nudged' journal event it asserts. pnpm check:fast fails with exactly this 1 of 686 tests; all other tests pass, including the new focused cases in test/tmux.test.ts and the launcher argv test in test/install.test.ts.",
+  "additionalPaths": [
+    {
+      "path": "test/runLoop.test.ts",
+      "reason": "Only the existing Codex pane stub in that one test changes: a non-literal submit key (C-m) moves the draft into the transcript and empties the composer, as real Codex does. Its assertions stay the same. Without this the planned Codex submit confirmation cannot pass the precommit check:fast suite."
+    }
+  ]
+}
