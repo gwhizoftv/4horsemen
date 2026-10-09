@@ -1,4 +1,4 @@
-# Installing Four Horsemen against a product
+# Installing Four Horsemen onto a product's local repository
 
 ## The rule everything else follows
 
