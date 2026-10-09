@@ -91,10 +91,13 @@ the captured buffer — the 40-line capture keeps the sentinel from the previous
 action on screen long after it stopped being true.
 
 Codex renders the sentinel as an assistant item (`• COORD-IDLE: …`) above its
-composer and footer, so it counts there only when everything below it is the
-single `›` composer — empty or holding just Codex's dimmed placeholder, never an
-unsent draft — and known footer lines (`? for shortcuts`, `Context N% left`).
-Any other line fails closed.
+composer and footer, so it counts there only when everything below it is at
+most one end-of-turn summary line (`Worked for 5m 21s • 5:42 AM`), the single
+`›` composer — empty or holding just Codex's dimmed placeholder, never an
+unsent draft — and known footer lines (`? for shortcuts` or
+`← for agents · ? for shortcuts`, `Context N% left`). Any other line fails
+closed. The file-backed path applies the same composer and footer rules
+without requiring the sentinel.
 
 **Legacy terminal proof: a stale `working` record before the first send.** A Stop event
 that never reaches this issue leaves lifecycle at `working`, which would block
