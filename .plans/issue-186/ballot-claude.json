@@ -1,0 +1,46 @@
+{
+  "actionId": "08bd9d96-d5d3-46b9-b898-ae844ac54200",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "6641b31ddebf0eca01ac6f21fbf53a6ba827a1b24d992e4ba493724829682676",
+  "issue": 186,
+  "issueSessionId": "issue-186:15c2973d02e848cc537efd8e7bf9acc56c0304ee",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "25daecbd4dae7694a80e30b3b7c285b11e40ee8d",
+      "path": ".plans/issue-186/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9a7921a29926ccade26cd73512bfd3f35ef316fa",
+      "path": ".plans/issue-186/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d076173d30216e31583862e01bd12f5478c8ce44",
+      "path": ".plans/issue-186/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "All three reviews converge on the claude plan as the base because it alone removes the verified root cause (Codex hooks running in a shared daemon with COORD_ISSUE=139) via a launcher --no-daemon flag with the smallest file map covering all three symptoms, provided the implementation adopts the reviewed corrections: exhausted C-m retries return mid-send instead of sent, ordinary-path retries recheck readiness and acceptance, submission proof is relative to the pre-send capture without requiring Working chrome, install.test.ts runs under vitest.system.config.ts, and a live fresh-launch check confirms hook identity.",
+  "responseSha256": "5af6eb4b0f9bd389e62819011f5ddda7cc895d316b4494fee39bdde11ac95f89",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "039338f9a45ffb78b4aa2ed6a24875eaee20875f",
+      "path": ".plans/issue-186/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "54f8311a09093d8de420cecb00415f5ce83f11e1",
+      "path": ".plans/issue-186/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d5e848d3eeec125cb28d10fbbc9b57562ef29bcd",
+      "path": ".plans/issue-186/review.md"
+    }
+  ]
+}

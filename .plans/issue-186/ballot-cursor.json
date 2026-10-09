@@ -1,0 +1,46 @@
+{
+  "actionId": "40946160-f886-4783-9434-691deab75b6b",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "6641b31ddebf0eca01ac6f21fbf53a6ba827a1b24d992e4ba493724829682676",
+  "issue": 186,
+  "issueSessionId": "issue-186:15c2973d02e848cc537efd8e7bf9acc56c0304ee",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "25daecbd4dae7694a80e30b3b7c285b11e40ee8d",
+      "path": ".plans/issue-186/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9a7921a29926ccade26cd73512bfd3f35ef316fa",
+      "path": ".plans/issue-186/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d076173d30216e31583862e01bd12f5478c8ce44",
+      "path": ".plans/issue-186/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude alone fixes the verified stale-daemon COORD_ISSUE cause with --no-daemon and a small file map; Cursor omits item 3 and risks Escape into a live turn, while Codex's snapshot bind misses the hook server.",
+  "responseSha256": "fd7f8d4d45d7eaad25516251c99feafe5e0cf490665a2df2e93c61215562545d",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "039338f9a45ffb78b4aa2ed6a24875eaee20875f",
+      "path": ".plans/issue-186/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "54f8311a09093d8de420cecb00415f5ce83f11e1",
+      "path": ".plans/issue-186/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d5e848d3eeec125cb28d10fbbc9b57562ef29bcd",
+      "path": ".plans/issue-186/review.md"
+    }
+  ]
+}
