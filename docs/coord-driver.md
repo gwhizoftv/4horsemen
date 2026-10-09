@@ -209,10 +209,24 @@ Uninstall performs the same workspace-scoped cleanup even when there are no
 Confirm the installed driver with `coord --version` (or `-V`). Pre-1.0 releases
 use `0.0.N`, and the patch advances on every merge so a merge is visible after
 reinstall/refresh. **Nobody bumps it by hand.** The `version-bump-on-merge`
-GitHub Action runs on each push to `main`, advances `package.json`, and pushes a
-`chore: release 0.0.N` commit back to `main`. Runs are serialized, so two PRs
-merging minutes apart get two distinct versions without either one reserving a
-number in advance.
+GitHub Action runs on each push to `main`, advances `package.json`, and atomically
+pushes a `chore: release 0.0.N` commit and its `v0.0.N` tag back to the repository.
+The same run publishes a GitHub Release for that exact tag with generated notes,
+so `coord --version` maps to a release page and source archive; npm publishing
+and binary assets remain out of scope. Runs are serialized with up to 100 pending
+runs queued rather than replaced. Queue overflow cancels additional runs, and
+dispatch order is not guaranteed. No branch reserves a version in advance;
+because each run fetches main, nearby merges can share a release snapshot. The
+first release's generated notes can cover the earlier history.
+
+If only release creation fails after the atomic push, the tag and version commit
+are already published. Do **not** rerun the job: it would bump again. Confirm the
+release is missing, then run this from an authenticated repository checkout,
+replacing `<version>` with the version reported by the successful bump step:
+
+```sh
+gh release create "v<version>" --verify-tag --title "v<version>" --generate-notes
+```
 
 Nothing on a branch requires or checks a version advance — not `pnpm check:fast`,
 not `pnpm check`, not any PR workflow — so an issue branch stays at `main`'s
