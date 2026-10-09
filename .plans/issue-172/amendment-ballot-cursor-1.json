@@ -1,0 +1,26 @@
+{
+  "actionId": "e686a762-6aa4-488a-a0d9-014f4daf4a93",
+  "agent": "cursor",
+  "artifact": "amendment-ballot",
+  "disposition": "revise",
+  "inputSetHash": "c6b2fe11bf79f92883744a2dac1b81bfb8e63e1c77431557b2c949b2aa6a2173",
+  "issue": 172,
+  "issueSessionId": "issue-172:80a3e714afda3c63bc89726d77a0cd61aee08b17",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "3e67191cefbc89b732f7cf8c412b3b30e214bc5e",
+      "path": ".plans/issue-172/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "Adding src/shellGuard.ts expands past Claude's selected plan, which deliberately keeps staleness in the shim (COORD_MANUAL / missing or completed|abandoned issue dir) and rejected a TypeScript guard fork that would treat retired vendor sessions as allow signals.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "4c1cf399e97b52f42cfc0e70416eb7bd597c2bb6",
+    "path": ".signals/issue-172/implementation-ready-codex.json"
+  },
+  "responseSha256": "7ec2b12dd30a32e33f64cbd2524fe94a3fbeba45c2b3071ddcc8cac20db1bca3",
+  "sequence": 1
+}

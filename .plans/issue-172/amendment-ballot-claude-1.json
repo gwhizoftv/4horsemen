@@ -1,0 +1,26 @@
+{
+  "actionId": "55611d54-b879-4987-8340-807e528c9b3b",
+  "agent": "claude",
+  "artifact": "amendment-ballot",
+  "disposition": "revise",
+  "inputSetHash": "c6b2fe11bf79f92883744a2dac1b81bfb8e63e1c77431557b2c949b2aa6a2173",
+  "issue": 172,
+  "issueSessionId": "issue-172:80a3e714afda3c63bc89726d77a0cd61aee08b17",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "3e67191cefbc89b732f7cf8c412b3b30e214bc5e",
+      "path": ".plans/issue-172/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "src/shellGuard.ts is not needed to finish the selected plan, which deliberately keeps one policy in the shim (its Alternatives Rejected names TS-side staleness in guardShellRequest) and defines staleness by COORD_MANUAL, an absent runtime, or a completed/abandoned issue; session-ID staleness is new behavior, and allowing it only in the native guard would still be refused by the shim that actually runs git, while a lifecycle session mismatch is routinely stale in live issues and would open the guard.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "4c1cf399e97b52f42cfc0e70416eb7bd597c2bb6",
+    "path": ".signals/issue-172/implementation-ready-codex.json"
+  },
+  "responseSha256": "8fa2d41a0f5c66a87b3973a5a598c9139cf2fa2ac4dd90af2add90b8b9728a42",
+  "sequence": 1
+}

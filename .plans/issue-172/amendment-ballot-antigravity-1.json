@@ -1,0 +1,26 @@
+{
+  "actionId": "e5b6a082-fafc-4265-ac37-8accebc619d8",
+  "agent": "antigravity",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "c6b2fe11bf79f92883744a2dac1b81bfb8e63e1c77431557b2c949b2aa6a2173",
+  "issue": 172,
+  "issueSessionId": "issue-172:80a3e714afda3c63bc89726d77a0cd61aee08b17",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "3e67191cefbc89b732f7cf8c412b3b30e214bc5e",
+      "path": ".plans/issue-172/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "Modifying src/shellGuard.ts is necessary to inspect vendor session IDs and allow stale or retired sessions as required by the issue and verified by test/shellGuard.test.ts.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "4c1cf399e97b52f42cfc0e70416eb7bd597c2bb6",
+    "path": ".signals/issue-172/implementation-ready-codex.json"
+  },
+  "responseSha256": "0d845148235a3dd790c2e0202c6bab78592ec9b008d8edf8967d1d5eed508c41",
+  "sequence": 1
+}

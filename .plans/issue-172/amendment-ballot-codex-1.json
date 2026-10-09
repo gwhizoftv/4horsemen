@@ -1,0 +1,26 @@
+{
+  "actionId": "a60baaf7-5a26-4474-bab4-b0de360ac433",
+  "agent": "codex",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "c6b2fe11bf79f92883744a2dac1b81bfb8e63e1c77431557b2c949b2aa6a2173",
+  "issue": 172,
+  "issueSessionId": "issue-172:80a3e714afda3c63bc89726d77a0cd61aee08b17",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "3e67191cefbc89b732f7cf8c412b3b30e214bc5e",
+      "path": ".plans/issue-172/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "Adding src/shellGuard.ts is necessary to recognize positively stale vendor sessions for the original inherited-context fix, while retaining conservative treatment of unknown or startup evidence and using the already-approved shell guard regression tests.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "4c1cf399e97b52f42cfc0e70416eb7bd597c2bb6",
+    "path": ".signals/issue-172/implementation-ready-codex.json"
+  },
+  "responseSha256": "07ff228b0ee67b0da1f3d5d6b505a55aa65e7b8371e92006dd35b22f62a5ac90",
+  "sequence": 1
+}
