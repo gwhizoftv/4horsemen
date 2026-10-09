@@ -629,7 +629,7 @@ describe("completion mailbox wiring", () => {
 
     const expected = {
       claude: ["--permission-mode", "auto"],
-      codex: ["--ask-for-approval", "never", "--sandbox", "workspace-write"],
+      codex: ["--ask-for-approval", "never", "--sandbox", "workspace-write", "--no-daemon"],
       cursor: ["--sandbox", "enabled"],
       antigravity: ["--mode", "accept-edits", "--dangerously-skip-permissions"]
     } as const;

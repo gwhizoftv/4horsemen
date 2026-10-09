@@ -7,6 +7,7 @@ import {
   harnessPromptReady,
   harnessPromptReadiness,
   idleSentinelAfterAction,
+  CODEX_SUBMIT_RETRIES,
   COORD_IDLE_SENTINEL,
   nudgePreludeKeys,
   ownerTerminalCloseAppleScript,
@@ -821,7 +822,7 @@ describe("tmux boundary", () => {
         }
         if (args[0] === "send-keys") {
           if (args.includes("-l")) pane.draft += args.at(-1)!;
-          if (options.submitOnCtrlJ === true && args.at(-1) === "C-j") {
+          if ((options.submitOnCtrlJ === true && args.at(-1) === "C-j") || args.at(-1) === "C-m") {
             pane.body += `\n\n› ${pane.draft}\n\n• Working (0s • esc to interrupt)`;
             pane.draft = "";
           }
@@ -870,6 +871,51 @@ describe("tmux boundary", () => {
       .toMatchObject({ outcome: { status: "sent", detail: source }, keys: ["-l", "C-j"] });
     expect(await attempt({ lifecycle: (check) => (check === 2 ? "accepted" : "unchanged") }))
       .toMatchObject({ outcome: { status: "sent", detail: source }, keys: ["-l", "C-j"] });
+  });
+
+  // Issue 186: a minimal Codex whose Enter can be lost and whose typed text can paint late.
+  const codexSubmit = async (options: {
+    vim?: string; lostEnters?: number; lateCaptures?: number; source?: "ready-file";
+  } = {}) => {
+    const agent = { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" as const, harnessProcess: "codex" };
+    const pane = { body: "• done", draft: "", hidden: 0 };
+    let lostEnters = options.lostEnters ?? 0;
+    const keys: string[] = [];
+    const controller = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return ok("0\tcodex\t0\t0\n");
+      if (args[0] === "capture-pane") {
+        const painted = pane.hidden > 0 ? "" : pane.draft;
+        if (pane.hidden > 0) pane.hidden -= 1;
+        return ok(codexPane(pane.body, painted, options.vim));
+      }
+      if (args[0] === "send-keys") {
+        keys.push(args.includes("-l") ? "-l" : args.at(-1)!);
+        if (args.includes("-l")) { pane.draft += args.at(-1)!; pane.hidden = options.lateCaptures ?? 0; }
+        if (args.at(-1) === "C-m" && lostEnters-- <= 0) {
+          pane.body += `\n\n› ${pane.draft}\n\n• Working (0s • esc to interrupt)`;
+          pane.draft = "";
+        }
+      }
+      return ok();
+    }, null, null, null, noopSleep);
+    const outcome = await controller.nudge(1, agent, "/a", undefined, "11111111-2222-3333-4444-555555555555", undefined, undefined,
+      options.source === undefined ? undefined : { source: options.source, lifecycle: () => "unchanged" });
+    return { outcome, keys };
+  };
+
+  it("types Codex's `i` prelude only when INSERT is not visible", async () => {
+    expect(await codexSubmit()).toMatchObject({ outcome: { status: "sent" }, keys: ["-l", "C-j", "C-m"] });
+    expect(await codexSubmit({ vim: "Normal" })).toMatchObject({ outcome: { status: "sent" }, keys: ["i", "-l", "C-j", "C-m"] });
+  });
+
+  it("re-presses Enter, bounded, while the Codex composer still holds the nudge", async () => {
+    expect(await codexSubmit({ lostEnters: 1 }))
+      .toMatchObject({ outcome: { status: "sent" }, keys: ["-l", "C-j", "C-m", "C-m"] });
+    expect((await codexSubmit({ lostEnters: 9 })).keys)
+      .toEqual(["-l", "C-j", "C-m", ...Array<string>(CODEX_SUBMIT_RETRIES).fill("C-m")]);
+    // A late paint of the typed text is waited for, not refused mid-send.
+    expect(await codexSubmit({ source: "ready-file", lateCaptures: 2 }))
+      .toMatchObject({ outcome: { status: "sent", detail: "ready-file" }, keys: ["-l", "C-j", "C-m"] });
   });
 
   it.each([1, 2, 3])("refuses file-backed delivery when capture %s is unavailable", async (failedCapture) => {

@@ -368,7 +368,8 @@ Nudge delivery uses literal `send-keys -l` (not paste-buffer — some TUIs such
 as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`.
 Per-agent config controls owner UI:
 
-- `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert)
+- `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert,
+  skipped when Codex's footer already shows `Vim: Insert`)
 - `nudgeSubmit` — tmux keys after the text (Claude default: `Escape` then
   `Enter` to dismiss autocomplete; Cursor without vim and Antigravity default:
   `Enter` only — Escape dismisses a non-vim Cursor composer and cancels
@@ -376,6 +377,13 @@ Per-agent config controls owner UI:
   INSERT does not treat Enter as a newline; Codex default: `C-j` then `C-m`.
   Stale single `Enter`/`C-m` on Claude, mistaken Escape+Enter on non-vim
   Cursor/Antigravity, and stale `C-m` on Antigravity, are upgraded)
+
+A Codex submit is confirmed where its composer can be read: the driver waits
+briefly for the typed nudge to paint, and while the composer still holds exactly
+that nudge after the submit keys it presses `C-m` again, at most twice. The
+Codex launcher passes `--no-daemon`: the shared app-server would otherwise run
+hooks with the `COORD_ISSUE` of whichever launch started it, not this pane's.
+Existing clones keep their old `start-codex.sh` until `coord install` rewrites it.
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Claude 1 / Codex 1 / Cursor 1 / Gemini 1)
 
