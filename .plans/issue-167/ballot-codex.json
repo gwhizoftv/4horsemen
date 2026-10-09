@@ -1,0 +1,46 @@
+{
+  "actionId": "981c7144-8786-4c62-81f0-876707d87286",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "cd56ec0eef8c08631bf8a72366198ae7a3d2f787b9366c21a48371b34f2de89d",
+  "issue": 167,
+  "issueSessionId": "issue-167:26f53972ddf036310c24f41ffd746e699976079b",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "9ce80a0081ae28217e2e26f94febbed030aadce4",
+      "path": ".plans/issue-167/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "10eecaca18ec334c19c38a2dd75ea069a75a24b1",
+      "path": ".plans/issue-167/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "482f75fecda3f916c9973e0e97055ebf6a87e543",
+      "path": ".plans/issue-167/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude's plan at 9ce80a0081ae28217e2e26f94febbed030aadce4 offers the smallest exact-commit release solution through atomic bump/tag publication, focused existing tests, and documented manual recovery, with the shared concurrency finding to be addressed by queue: max and explicit capacity limits.",
+  "responseSha256": "6d81d32a5a8ff7f659c3f08d06e74e1344afdea095b132f6e2dd4998304082a5",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "d02d730aba377be38a96a6345e7ef50728a0f2ab",
+      "path": ".plans/issue-167/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "90cc9d4ca14a3aefe98d3aeff99c8b53e76740a7",
+      "path": ".plans/issue-167/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "a7b42ba20dd8c8fdabf77ac53cf6bf3ec4f8c2b4",
+      "path": ".plans/issue-167/review.md"
+    }
+  ]
+}
