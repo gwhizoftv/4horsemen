@@ -1,0 +1,14 @@
+{
+  "actionId": "27b12c36-9929-4067-a286-29a91dc44152",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "b976626fd219453bcc96025cd3cccb467f811985462ed4e58ca0bf88679d8f18",
+  "issue": 167,
+  "issueSessionId": "issue-167:26f53972ddf036310c24f41ffd746e699976079b",
+  "protocolVersion": 2,
+  "rationale": "The unchanged reviewed pin 654c95664b1eb3752f460071f1d8c83f7231fa1e implements the selected atomic tag-and-release design within approved scope, includes the queue correction and recovery documentation, has recorded passing hook checks, and has no outstanding required fixes.",
+  "responseSha256": "af83af4550dda9661174b5c588841184cabc0b0b005471349e90add75abcfc2e",
+  "revisionCommitSha": "654c95664b1eb3752f460071f1d8c83f7231fa1e",
+  "round": 1
+}

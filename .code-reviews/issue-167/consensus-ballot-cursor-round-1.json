@@ -1,0 +1,14 @@
+{
+  "actionId": "d7980c85-7fe6-4b10-a75a-0a7d7cac5617",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "b976626fd219453bcc96025cd3cccb467f811985462ed4e58ca0bf88679d8f18",
+  "issue": 167,
+  "issueSessionId": "issue-167:26f53972ddf036310c24f41ffd746e699976079b",
+  "protocolVersion": 2,
+  "rationale": "Codex 654c9566 atomically tags v0.0.N with the bump, publishes via gh release create --verify-tag, sets queue: max, and locks those invariants in workflows.test.ts.",
+  "responseSha256": "f6159bc1fb0f287bd0a657e41ec487e954a019a23502afab067eb947df8bd0de",
+  "revisionCommitSha": "654c95664b1eb3752f460071f1d8c83f7231fa1e",
+  "round": 1
+}
