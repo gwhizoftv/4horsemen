@@ -239,6 +239,10 @@ const codexNudgeSubmitted = (paneText: string, text: string, requireSentinel = t
 const codexVimNormal = (paneText: string, requireSentinel = true): boolean =>
   codexTail(paneText, requireSentinel)?.footer.some((line) => /Vim: Normal/.test(line.plain)) === true;
 
+/** In visible INSERT an `i` prelude would be typed into the message itself. */
+const codexVimInsert = (paneText: string): boolean =>
+  codexTail(paneText, false)?.footer.some((line) => /Vim: Insert/.test(line.plain)) === true;
+
 /** Active unquoted terminal lines, not prose discussing a past limit. Fail closed. */
 const claudeUsageWait = (plain: string): boolean => {
   const tail = plain.split("\n").slice(-12).join("\n");
@@ -417,6 +421,10 @@ export const resolveNudgeKeys = (
 export const NUDGE_AFTER_TEXT_MS = 300;
 /** Delay between successive submit keys (Escape must land before Enter). */
 export const NUDGE_BETWEEN_SUBMIT_MS = 150;
+/** Captures allowed for Codex to paint the typed nudge before the first submit key. */
+export const CODEX_SUBMIT_SETTLE_CHECKS = 4;
+/** Extra `C-m` presses while the Codex composer still holds exactly the nudge. */
+export const CODEX_SUBMIT_RETRIES = 2;
 /**
  * Antigravity under tmux often paints `⚠ Verifying your account...` a beat after
  * the idle `>` prompt. Typing then discards the nudge. Wait, then recapture.
@@ -1057,17 +1065,35 @@ export class TmuxController {
     // reaches the input widget. Prelude/submit keys come from agent config.
     const { prelude: resolvedPrelude, submit: submitKeys } = resolveNudgeKeys(agent, paneText);
     // On an override the composer must stay empty until the nudge is typed,
-    // and Codex's `i` types itself unless vim is in NORMAL.
-    const preludeKeys = staleOverride !== undefined && agent.id === "codex" && !codexVimNormal(paneText, requireSentinel)
+    // and Codex's `i` types itself unless vim is in NORMAL. Otherwise skip it
+    // only on positive INSERT evidence, so an unreadable footer still gets `i`.
+    const preludeKeys = agent.id === "codex" &&
+      (staleOverride !== undefined ? !codexVimNormal(paneText, requireSentinel) : codexVimInsert(paneText))
       ? [] : resolvedPrelude;
+    // A Codex submit is confirmed only where its composer can be read.
+    const confirmCodex = agent.id === "codex" && codexTail(paneText, false) !== null;
+    /** Codex paints typed text a beat late; wait (bounded) for the composer to show it. */
+    const settled = async (latest: string, sentinel: boolean): Promise<string> => {
+      for (let check = 1; check < CODEX_SUBMIT_SETTLE_CHECKS && !codexComposerHolds(latest, text, sentinel); check += 1) {
+        await this.sleep(NUDGE_BETWEEN_SUBMIT_MS);
+        assertAuthority();
+        latest = await this.capturePane(target);
+        assertAuthority();
+      }
+      return latest;
+    };
     let began = false;
     let typedText = false;
     let submitting = false;
-    const send = async (args: readonly string[], fail: string): Promise<NudgeOutcome> => {
+    let retrying = false;
+    const gated = async (): Promise<NudgeOutcome | null> => {
       const gate = await this.injectionGate(target, agent, assertAuthority);
-      if (gate.status !== "ok") {
-        return { status: gate.status, reason: gate.reason, stage: began ? "mid-send" : "gate", ...(gate.detail === undefined ? {} : { detail: gate.detail }) };
-      }
+      return gate.status === "ok" ? null
+        : { status: gate.status, reason: gate.reason, stage: began ? "mid-send" : "gate", ...(gate.detail === undefined ? {} : { detail: gate.detail }) };
+    };
+    const send = async (args: readonly string[], fail: string): Promise<NudgeOutcome> => {
+      const gate = await gated();
+      if (gate !== null) return gate;
       if (agent.id === "claude") {
         const latest = await this.capturePane(target);
         assertAuthority();
@@ -1078,8 +1104,17 @@ export class TmuxController {
         // every key: the proof unchanged, the composer empty until
         // the nudge is typed and holding exactly the nudge after that. Once a
         // submit key is out, proof that the nudge was accepted ends the send.
-        const latest = await this.capturePane(target);
+        let latest = await this.capturePane(target);
         assertAuthority();
+        if (confirmCodex && typedText && !submitting && !codexComposerHolds(latest, text, requireSentinel)) {
+          await settled(latest, requireSentinel);
+          // The gate above predates the settle wait; it cannot authorize this
+          // key. Gate again, then prove against a capture taken after it.
+          const regate = await gated();
+          if (regate !== null) return regate;
+          latest = await this.capturePane(target);
+          assertAuthority();
+        }
         const lifecycle = staleOverride.lifecycle();
         if (submitting && (lifecycle === "accepted" ||
           (agent.id === "codex" && codexNudgeSubmitted(latest, text, requireSentinel)))) {
@@ -1094,6 +1129,14 @@ export class TmuxController {
             ? (requireSentinel ? "no-idle-sentinel" : "codex-composer-not-ready")
           : null;
         if (refused !== null) return { status: "busy", reason: refused, stage: began ? "mid-send" : "prompt" };
+      } else if (retrying) {
+        // An ordinary send has no override proof, so a retry key re-reads the
+        // pane after its gate: the composer must still hold exactly the nudge.
+        const latest = await this.capturePane(target);
+        assertAuthority();
+        const current = readinessForSend(latest);
+        if (!current.ready) return { status: "busy", reason: current.reason, stage: "mid-send" };
+        if (!codexComposerHolds(latest, text, false)) return { status: "busy", reason: "codex-composer-not-ready", stage: "mid-send" };
       }
       if (!began) { reserveSend(); began = true; }
       const result = await this.runner(["send-keys", ...args]);
@@ -1111,6 +1154,8 @@ export class TmuxController {
     // Autocomplete/multiline handlers need a beat before Escape; then gap before Enter.
     await this.sleep(NUDGE_AFTER_TEXT_MS);
     assertAuthority();
+    if (confirmCodex && staleOverride === undefined) await settled(await this.capturePane(target), false);
+    let accepted = false;
     for (const [index, key] of submitKeys.entries()) {
       if (index > 0) {
         submitting = true;
@@ -1119,7 +1164,23 @@ export class TmuxController {
       }
       const submit = await send(["-t", target, key], "tmux send-keys submit failed: ");
       if (submit.status !== "sent") return submit;
-      if (submit.detail === "accepted") break;
+      if (submit.detail === "accepted") { accepted = true; break; }
+    }
+    // A tmux write is not a submit: while the composer still holds exactly
+    // this nudge, press Enter again, at most CODEX_SUBMIT_RETRIES times.
+    for (let retry = 0; confirmCodex && !accepted; retry += 1) {
+      submitting = true;
+      await this.sleep(NUDGE_BETWEEN_SUBMIT_MS);
+      assertAuthority();
+      const latest = await this.capturePane(target);
+      assertAuthority();
+      // A lost capture is no evidence that the nudge left the composer.
+      if (stripAnsi(latest).trim() === "") return { status: "busy", reason: "pane-capture-unavailable", stage: "mid-send" };
+      if (!codexComposerHolds(latest, text, false) || retry === CODEX_SUBMIT_RETRIES) break;
+      retrying = true;
+      const again = await send(["-t", target, "C-m"], "tmux send-keys submit failed: ");
+      if (again.status !== "sent") return again;
+      accepted = again.detail === "accepted";
     }
     return { status: "sent", reason: "sent", stage: "complete",
       ...(staleOverride !== undefined ? { detail: staleOverride.source }
