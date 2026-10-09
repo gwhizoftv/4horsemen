@@ -18,10 +18,17 @@ const workflowsDir = join(dirname(fileURLToPath(import.meta.url)), "..", ".githu
 
 const workflowFiles = readdirSync(workflowsDir).filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"));
 
+type WorkflowStep = {
+  id?: unknown;
+  name?: unknown;
+  run?: unknown;
+  env?: Record<string, unknown>;
+};
+
 type Workflow = {
   on?: unknown;
   true?: unknown;
-  jobs?: Record<string, { if?: unknown; steps?: unknown[] }>;
+  jobs?: Record<string, { if?: unknown; steps?: WorkflowStep[] }>;
 };
 
 const parse = (name: string): Workflow => load(readFileSync(join(workflowsDir, name), "utf8")) as Workflow;
@@ -76,5 +83,30 @@ describe("version-bump-on-merge", () => {
     expect(typeof guard).toBe("string");
     expect(guard).toContain("chore: release ");
     expect(guard).toContain("startsWith");
+  });
+
+  it("pushes the release tag atomically with the bump commit", () => {
+    const steps = parse("version-bump-on-merge.yml").jobs?.bump?.steps ?? [];
+    const bump = steps.find((step) => step.id === "bump");
+    expect(bump).toBeDefined();
+    expect(typeof bump?.run).toBe("string");
+    const script = bump?.run as string;
+    expect(script).toContain('git tag -f "v${version}"');
+    expect(script).toContain('git push --atomic origin "HEAD:main" "refs/tags/v${version}"');
+    expect(script).toContain('echo "version=${version}" >> "$GITHUB_OUTPUT"');
+  });
+
+  it("publishes a GitHub release for the pushed tag after the bump", () => {
+    const steps = parse("version-bump-on-merge.yml").jobs?.bump?.steps ?? [];
+    const bumpIndex = steps.findIndex((step) => step.id === "bump");
+    expect(bumpIndex).toBeGreaterThanOrEqual(0);
+    const release = steps.slice(bumpIndex + 1).find((step) => typeof step.run === "string" && step.run.includes("gh release create"));
+    expect(release).toBeDefined();
+    const script = release?.run as string;
+    expect(script).toContain("gh release create");
+    expect(script).toContain("--verify-tag");
+    expect(script).toContain("--generate-notes");
+    expect(release?.env?.GH_TOKEN).toBe("${{ github.token }}");
+    expect(release?.env?.VERSION).toBe("${{ steps.bump.outputs.version }}");
   });
 });

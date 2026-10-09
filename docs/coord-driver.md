@@ -210,9 +210,11 @@ Confirm the installed driver with `coord --version` (or `-V`). Pre-1.0 releases
 use `0.0.N`, and the patch advances on every merge so a merge is visible after
 reinstall/refresh. **Nobody bumps it by hand.** The `version-bump-on-merge`
 GitHub Action runs on each push to `main`, advances `package.json`, and pushes a
-`chore: release 0.0.N` commit back to `main`. Runs are serialized, so two PRs
-merging minutes apart get two distinct versions without either one reserving a
-number in advance.
+`chore: release 0.0.N` commit back to `main`. Each bump also pushes a `v0.0.N`
+tag with that commit and publishes a GitHub release for it, so the installed
+`coord --version` maps to a release page with generated notes. Runs are
+serialized, so two PRs merging minutes apart get two distinct versions without
+either one reserving a number in advance.
 
 Nothing on a branch requires or checks a version advance — not `pnpm check:fast`,
 not `pnpm check`, not any PR workflow — so an issue branch stays at `main`'s

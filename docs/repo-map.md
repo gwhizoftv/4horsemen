@@ -75,7 +75,8 @@ Nothing on a branch checks or changes the version. `check:fast`, `check`, and
 the PR workflows never compare `package.json` with `origin/main`, so an issue
 branch sits at `main`'s version for the whole issue and a plan must not list
 `package.json` for a bump. The `0.0.N` advance happens after the merge, as a
-`chore: release 0.0.N` commit pushed to `main` by CI.
+`chore: release 0.0.N` commit pushed to `main` by CI, which also tags that
+commit `v0.0.N` and publishes a GitHub release.
 `test/versionBump.test.ts` covers the bump helpers against fixture manifests and
 against this repository's own `package.json`, never writing either back.
 
