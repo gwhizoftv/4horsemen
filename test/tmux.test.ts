@@ -876,14 +876,23 @@ describe("tmux boundary", () => {
   // Issue 186: a minimal Codex whose Enter can be lost and whose typed text can paint late.
   const codexSubmit = async (options: {
     vim?: string; lostEnters?: number; lateCaptures?: number; source?: "ready-file";
+    /** Pane changes at the Nth display-message gate (1-based). */
+    onGate?: (gates: number, pane: { body: string; draft: string; inputOff: boolean }) => void;
+    /** Pane changes once the first Enter has been lost. */
+    afterLostEnter?: (pane: { body: string; draft: string; captureLost: boolean }) => void;
   } = {}) => {
     const agent = { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" as const, harnessProcess: "codex" };
-    const pane = { body: "• done", draft: "", hidden: 0 };
+    const pane = { body: "• done", draft: "", hidden: 0, inputOff: false, captureLost: false };
     let lostEnters = options.lostEnters ?? 0;
+    let gates = 0;
     const keys: string[] = [];
     const controller = new TmuxController(async (args) => {
-      if (args[0] === "display-message") return ok("0\tcodex\t0\t0\n");
+      if (args[0] === "display-message") {
+        options.onGate?.(++gates, pane);
+        return ok(`0\tcodex\t0\t${pane.inputOff ? 1 : 0}\n`);
+      }
       if (args[0] === "capture-pane") {
+        if (pane.captureLost) return { exitCode: 1, stdout: "", stderr: "" };
         const painted = pane.hidden > 0 ? "" : pane.draft;
         if (pane.hidden > 0) pane.hidden -= 1;
         return ok(codexPane(pane.body, painted, options.vim));
@@ -894,6 +903,8 @@ describe("tmux boundary", () => {
         if (args.at(-1) === "C-m" && lostEnters-- <= 0) {
           pane.body += `\n\n› ${pane.draft}\n\n• Working (0s • esc to interrupt)`;
           pane.draft = "";
+        } else if (args.at(-1) === "C-m" && keys.filter((key) => key === "C-m").length === 1) {
+          options.afterLostEnter?.(pane);
         }
       }
       return ok();
@@ -916,6 +927,22 @@ describe("tmux boundary", () => {
     // A late paint of the typed text is waited for, not refused mid-send.
     expect(await codexSubmit({ source: "ready-file", lateCaptures: 2 }))
       .toMatchObject({ outcome: { status: "sent", detail: "ready-file" }, keys: ["-l", "C-j", "C-m"] });
+  });
+
+  it("re-checks the pane at every Codex retry and after a settle wait", async () => {
+    const midSend = (reason: string) => ({ status: "busy", reason, stage: "mid-send" });
+    // A turn starts with the nudge still in the composer: no Enter is pressed into it.
+    expect(await codexSubmit({ lostEnters: 9, afterLostEnter: (pane) => { pane.body += "\n\n• Working (1s • esc to interrupt)"; } }))
+      .toMatchObject({ outcome: midSend("codex-turn-chrome"), keys: ["-l", "C-j", "C-m"] });
+    // The owner edits the composer during the retry key's own gate.
+    expect(await codexSubmit({ lostEnters: 9, onGate: (gates, pane) => { if (gates === 5) pane.draft = "owner draft"; } }))
+      .toMatchObject({ outcome: midSend("codex-composer-not-ready"), keys: ["-l", "C-j", "C-m"] });
+    // A lost capture is not evidence that the nudge was submitted.
+    expect(await codexSubmit({ lostEnters: 9, afterLostEnter: (pane) => { pane.captureLost = true; } }))
+      .toMatchObject({ outcome: midSend("pane-capture-unavailable"), keys: ["-l", "C-j", "C-m"] });
+    // Input turns off while the override waits for a late paint: the earlier gate no longer authorizes C-j.
+    expect(await codexSubmit({ source: "ready-file", lateCaptures: 1, onGate: (gates, pane) => { if (gates === 4) pane.inputOff = true; } }))
+      .toMatchObject({ outcome: midSend("input-off"), keys: ["-l"] });
   });
 
   it.each([1, 2, 3])("refuses file-backed delivery when capture %s is unavailable", async (failedCapture) => {

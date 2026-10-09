@@ -380,7 +380,11 @@ Per-agent config controls owner UI:
 
 A Codex submit is confirmed where its composer can be read: the driver waits
 briefly for the typed nudge to paint, and while the composer still holds exactly
-that nudge after the submit keys it presses `C-m` again, at most twice. The
+that nudge after the submit keys it presses `C-m` again, at most twice. Each
+extra `C-m` re-reads the pane after its gate: a running turn, an edited draft or
+a lost capture ends the send as a mid-send refusal instead. If the nudge is
+still in the composer after the last allowed press, the send is still recorded
+as delivered; it is not proof that Codex accepted it, so check that pane. The
 Codex launcher passes `--no-daemon`: the shared app-server would otherwise run
 hooks with the `COORD_ISSUE` of whichever launch started it, not this pane's.
 Existing clones keep their old `start-codex.sh` until `coord install` rewrites it.

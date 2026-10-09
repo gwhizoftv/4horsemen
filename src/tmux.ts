@@ -1085,11 +1085,15 @@ export class TmuxController {
     let began = false;
     let typedText = false;
     let submitting = false;
-    const send = async (args: readonly string[], fail: string): Promise<NudgeOutcome> => {
+    let retrying = false;
+    const gated = async (): Promise<NudgeOutcome | null> => {
       const gate = await this.injectionGate(target, agent, assertAuthority);
-      if (gate.status !== "ok") {
-        return { status: gate.status, reason: gate.reason, stage: began ? "mid-send" : "gate", ...(gate.detail === undefined ? {} : { detail: gate.detail }) };
-      }
+      return gate.status === "ok" ? null
+        : { status: gate.status, reason: gate.reason, stage: began ? "mid-send" : "gate", ...(gate.detail === undefined ? {} : { detail: gate.detail }) };
+    };
+    const send = async (args: readonly string[], fail: string): Promise<NudgeOutcome> => {
+      const gate = await gated();
+      if (gate !== null) return gate;
       if (agent.id === "claude") {
         const latest = await this.capturePane(target);
         assertAuthority();
@@ -1102,7 +1106,12 @@ export class TmuxController {
         // submit key is out, proof that the nudge was accepted ends the send.
         let latest = await this.capturePane(target);
         assertAuthority();
-        if (confirmCodex && typedText && !submitting) latest = await settled(latest, requireSentinel);
+        if (confirmCodex && typedText && !submitting && !codexComposerHolds(latest, text, requireSentinel)) {
+          latest = await settled(latest, requireSentinel);
+          // The gate above predates the settle wait; it cannot authorize this key.
+          const regate = await gated();
+          if (regate !== null) return regate;
+        }
         const lifecycle = staleOverride.lifecycle();
         if (submitting && (lifecycle === "accepted" ||
           (agent.id === "codex" && codexNudgeSubmitted(latest, text, requireSentinel)))) {
@@ -1117,6 +1126,14 @@ export class TmuxController {
             ? (requireSentinel ? "no-idle-sentinel" : "codex-composer-not-ready")
           : null;
         if (refused !== null) return { status: "busy", reason: refused, stage: began ? "mid-send" : "prompt" };
+      } else if (retrying) {
+        // An ordinary send has no override proof, so a retry key re-reads the
+        // pane after its gate: the composer must still hold exactly the nudge.
+        const latest = await this.capturePane(target);
+        assertAuthority();
+        const current = readinessForSend(latest);
+        if (!current.ready) return { status: "busy", reason: current.reason, stage: "mid-send" };
+        if (!codexComposerHolds(latest, text, false)) return { status: "busy", reason: "codex-composer-not-ready", stage: "mid-send" };
       }
       if (!began) { reserveSend(); began = true; }
       const result = await this.runner(["send-keys", ...args]);
@@ -1154,9 +1171,10 @@ export class TmuxController {
       assertAuthority();
       const latest = await this.capturePane(target);
       assertAuthority();
+      // A lost capture is no evidence that the nudge left the composer.
+      if (stripAnsi(latest).trim() === "") return { status: "busy", reason: "pane-capture-unavailable", stage: "mid-send" };
       if (!codexComposerHolds(latest, text, false) || retry === CODEX_SUBMIT_RETRIES) break;
-      const current = readinessForSend(latest);
-      if (!current.ready) return { status: "busy", reason: current.reason, stage: "mid-send" };
+      retrying = true;
       const again = await send(["-t", target, "C-m"], "tmux send-keys submit failed: ");
       if (again.status !== "sent") return again;
       accepted = again.detail === "accepted";
