@@ -4,14 +4,23 @@
   "issueSessionId": "issue-186:15c2973d02e848cc537efd8e7bf9acc56c0304ee",
   "agent": "codex",
   "inputSetHash": "43b0a6a052ce903441c2e1cadd683de8c8e724b9553f66c60d9678662bb0f45c",
-  "artifact": "plan-amendment-request",
-  "actionId": "4049c2e6-e00b-48dc-9337-128cdb826a13",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "89ab6ee45e8ad1da3886074bf1f5c2781d1a8c1a",
   "scopeHash": "a633a767a1d44fd71f8ff88852def0cb26734403d90299cb094acd787d1676fe",
-  "explanation": "The selected plan omitted the existing run-loop integration tests affected by confirming Codex submission instead of treating a successful tmux write as submission: the test 'automatically overrides stale working only before the first send; owner reminders still check the Codex composer' only copies literal text into its draft and never handles C-m, yet expects the action to become injected, so the focused run-loop suite now correctly refuses that unsubmitted draft while its other 181 tests passed; the tmux suite and focused launcher regression passed, and product edits remain unstaged pending approval.",
-  "additionalPaths": [
-    {
-      "path": "test/runLoop.test.ts",
-      "reason": "Update the existing Codex successful-send fixture to model C-m moving the draft into a submitted transcript and emptying the composer, preserving its stale-working, owner-draft and no-duplicate assertions; extend the same existing test support with focused current-action lifecycle confirmation and exhausted-submit reservation/hold checks so the original issue's delivery-uncertain behavior is validated at the run-loop boundary."
-    }
+  "approvedPaths": [
+    ".coord/bin",
+    "RunLoop.deliver",
+    "TmuxController.nudge",
+    "coord-runtime/issue-139/journal.jsonl",
+    "docs/coord-driver.md",
+    "expected.codex",
+    "githooks/post-merge",
+    "pane.draft",
+    "scripts/lib/launcher.sh",
+    "src/runLoop.ts",
+    "src/tmux.ts",
+    "start-codex.sh",
+    "test/install.test.ts",
+    "test/tmux.test.ts"
   ]
 }
