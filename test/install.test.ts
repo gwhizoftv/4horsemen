@@ -207,7 +207,7 @@ describe("coord install — emitted config", () => {
     expect(config.agents[0]?.launcher).toBe("start-claude.sh");
   });
 
-  it("records the install stamp under coord-root, never in the product tree", () => {
+  it("records the install stamp under coord-runtime, never in the product tree", () => {
     const fixture = product();
     const result = installOnce(fixture);
     expect(result.configPath.startsWith(fixture.coordRoot)).toBe(true);
@@ -577,7 +577,7 @@ describe("completion mailbox wiring", () => {
 
     expect(mailbox).toBeDefined();
     expect(isAbsolute(mailbox)).toBe(true);
-    // A sibling, not a child: granting a path inside the coord root would grant
+    // A sibling, not a child: granting a path inside the runtime directory would grant
     // cursors.json and every peer's action.md along with it.
     expect(mailbox.startsWith(`${resolve(fixture.coordRoot)}/`)).toBe(false);
     expect(existsSync(mailbox)).toBe(true);

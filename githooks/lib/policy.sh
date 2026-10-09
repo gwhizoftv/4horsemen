@@ -19,7 +19,7 @@ coord_cli_entry() {
 
   if [[ -z "$entry" ]]; then
     echo "HOOK BLOCKED: this clone has no local coord.cliEntry, so the project's declared checks cannot be resolved." >&2
-    echo "  Fix: coord install --product <product> --coord-root <runtime> --agents <agents>" >&2
+    echo "  Fix: coord install --product <product> --coord-runtime <runtime> --agents <agents>" >&2
     return 1
   fi
 

@@ -150,7 +150,7 @@ common_ensure_agents_md() {
 # in-flight work.
 common_clone_agent() {
   [[ -d "$CLONE_DIR" ]] \
-    || die "Clone $CLONE_DIR does not exist. Create it first: coord install --product '$MASTER_ROOT' --coord-root <runtime> --agents $AGENT_NAME"
+    || die "Clone $CLONE_DIR does not exist. Create it first: coord install --product '$MASTER_ROOT' --coord-runtime <runtime> --agents $AGENT_NAME"
   echo "Clone present: $CLONE_DIR"
 }
 
@@ -262,7 +262,7 @@ common_install_hooks() {
   }
 
   [[ -f "$manifest" ]] \
-    || die "Clone $CLONE_DIR has no coordination hooks. Run: coord install --product '$MASTER_ROOT' --coord-root <runtime> --agents $AGENT_NAME"
+    || die "Clone $CLONE_DIR has no coordination hooks. Run: coord install --product '$MASTER_ROOT' --coord-runtime <runtime> --agents $AGENT_NAME"
 
   local recorded
   recorded="$(git -C "$CLONE_DIR" config --local --get consensus.agentId || true)"
@@ -285,6 +285,6 @@ common_write_start_sh() {
   }
 
   [[ -x "$launcher" ]] \
-    || die "Launcher $launcher is missing. Run: coord install --product '$MASTER_ROOT' --coord-root <runtime> --agents $AGENT_NAME"
+    || die "Launcher $launcher is missing. Run: coord install --product '$MASTER_ROOT' --coord-runtime <runtime> --agents $AGENT_NAME"
   echo "Launcher present: $launcher"
 }

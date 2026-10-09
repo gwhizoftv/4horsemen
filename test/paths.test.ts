@@ -24,7 +24,7 @@ afterEach(() => {
 
 /**
  * Every root is nested inside one temp directory the test owns. A fixture that
- * mkdtemps the coord root directly in `tmpdir()` would derive a mailbox beside
+ * mkdtemps the runtime directory directly in `tmpdir()` would derive a mailbox beside
  * every other test file's, and parallel workers would then read and clear each
  * other's receipts.
  */
@@ -37,7 +37,7 @@ const workspace = (): { root: string; coordRoot: string; completesRoot: string }
 };
 
 describe("completion mailbox paths", () => {
-  it("puts the receipt in the mailbox and leaves the order under the coord root", () => {
+  it("puts the receipt in the mailbox and leaves the order under the runtime directory", () => {
     const { coordRoot, completesRoot } = workspace();
     const paths = issueRuntimePaths(coordRoot, 98, completesRoot);
     const runtime = agentRuntimePaths(paths, "claude");
@@ -203,7 +203,7 @@ describe("completion mailbox paths", () => {
     expect(removeIssueMailbox(wiped)).toBe(false);
   });
 
-  it("keeps the mailbox root outside the coord root for the derived default", () => {
+  it("keeps the mailbox root outside the runtime directory for the derived default", () => {
     const { coordRoot } = workspace();
     const paths = issueRuntimePaths(coordRoot, 98);
     expect(resolve(paths.completesRoot).startsWith(resolve(coordRoot))).toBe(false);

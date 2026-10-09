@@ -117,7 +117,7 @@ export const resolveSafeCoordRoot = (options: SafeCoordRootOptions): string => {
  * Sibling `completes/`, then one segment identifying the workspace whose
  * receipts live under it.
  *
- * The mailbox is a *sibling* of the coord root so granting it never grants
+ * The mailbox is a *sibling* of the runtime directory so granting it never grants
  * coordinator state — that is the whole point of the third tree. Under that
  * sibling comes one segment naming the runtime, and the project too when the
  * workspace is nested.
@@ -204,7 +204,7 @@ export type SafeCompletesRootOptions = {
 };
 
 /**
- * Resolve and validate the mailbox root. Unlike the coord root, this tree has
+ * Resolve and validate the mailbox root. Unlike the runtime directory, this tree has
  * directories inside it that agents can write, so the containment checks matter
  * more here rather than less: a symlinked component would let a receipt write
  * land anywhere the coordinator later reads as intent.
@@ -349,7 +349,7 @@ export const agentRuntimePaths = (paths: IssueRuntimePaths, agent: string): Agen
   return {
     root,
     action: containedPath(root, "action.md"),
-    // The receipt leaves the coord root; the order and the log do not.
+    // The receipt leaves the runtime directory; the order and the log do not.
     complete: containedPath(completeDir, "complete"),
     ready: readyReceiptPath(containedPath(completeDir, "complete")),
     renderLog: containedPath(root, "render.log"),
@@ -443,7 +443,7 @@ export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly st
     assertNoSymlink(paths.coordRoot, runtime.responsesDir);
     mkdirSync(runtime.responsesDir, { recursive: true, mode: 0o700 });
     assertNoSymlink(paths.coordRoot, runtime.responsesDir);
-    // Checked against the mailbox root, not the coord root: the two trees are
+    // Checked against the mailbox root, not the runtime directory: the two trees are
     // deliberately disjoint, so containment must be asserted within each.
     assertNoSymlink(paths.completesRoot, runtime.completeDir);
     mkdirSync(runtime.completeDir, { recursive: true, mode: 0o700 });
@@ -452,7 +452,7 @@ export const createIssueRuntime = (paths: IssueRuntimePaths, agents: readonly st
 };
 
 /**
- * Remove this issue's mailbox subtree. Separate from the coord-root teardown
+ * Remove this issue's mailbox subtree. Separate from the coord-runtime teardown
  * because the two trees fail independently: a stale receipt left behind is read
  * as completion intent by a later run that reuses the issue number.
  */
@@ -467,7 +467,7 @@ export type ResourceBindingPaths = { root: string; record: string; lock: string 
 
 /**
  * Owner-runtime record that serializes Codex quota reads for one
- * home/account binding across every issue under this coord root (#140). The
+ * home/account binding across every issue under this runtime directory (#140). The
  * key is a digest, so neither the home path nor the account id is exposed in
  * a file name.
  */

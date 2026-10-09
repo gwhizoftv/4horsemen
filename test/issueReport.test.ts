@@ -119,7 +119,7 @@ describe("issue report", () => {
     expect(text).toContain("Manual pause: active");
     expect(text).toContain("No provider failure confirmed; provider recovery time unknown. Who acts next: you.");
     expect(text).toContain("coord resume --issue 1 --agent cursor --reset-nudge-budget");
-    expect(text).toContain("coord resume --issue 1 --coord-root '/runtime' clears only this pause");
+    expect(text).toContain("coord resume --issue 1 --coord-runtime '/runtime' clears only this pause");
     expect(text).toContain("add --run to resume only if the coordinator was stopped");
     expect(text).toContain("Hold hold-id:");
     expect(text).not.toContain("quota exhausted");
@@ -210,7 +210,7 @@ describe("issue report", () => {
     cursors.completed = false; cursors.paused = true; cursors.manualPaused = true;
     const text = renderIssueReport({ ...start("owner-only"), coordRoot: "/runtime space/owner's" }, cursors);
     expect(text).toMatch(/^----\n\[ACTION\] Issue 1: paused/);
-    expect(text).toContain("--coord-root '/runtime space/owner'\"'\"'s'");
+    expect(text).toContain("--coord-runtime '/runtime space/owner'\"'\"'s'");
     expect(text).toMatch(/Active step: .*\nActive roster: cursor\nQueued guidance: 0\n----\n$/);
   });
 });
