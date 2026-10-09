@@ -1,0 +1,17 @@
+{
+  "protocolVersion": 1,
+  "issue": 172,
+  "issueSessionId": "issue-172:80a3e714afda3c63bc89726d77a0cd61aee08b17",
+  "agent": "codex",
+  "inputSetHash": "8e113c7a8b3a45eaf3132d3fd150fe0e9d64c12c2af5f3e04ac48764a86dc2d3",
+  "artifact": "plan-amendment-request",
+  "actionId": "93112629-0666-498b-a24e-568be3032962",
+  "scopeHash": "d8c2aa85e75a7b46d212022c67df8fc04541e2cfa0e8781086a8b2fd8f794bf8",
+  "explanation": "The selected plan assumes the generated shim can detect all stale session bindings without changing the native guard, but guardShellRequest receives the vendor request session ID and never uses or passes it when deciding applicability; an explicitly retired session still receives automated denials while its old issue directory remains active, which leaves the original stale-session requirement unresolved.",
+  "additionalPaths": [
+    {
+      "path": "src/shellGuard.ts",
+      "reason": "Use the normalized vendor session identity and existing lifecycle binding to distinguish positively stale or retired sessions from live automated requests before applying the shim policy, keeping unknown or startup evidence conservative and native/shim applicability consistent; regressions can extend the already-approved test/shellGuard.test.ts, so no new module or test file is requested."
+    }
+  ]
+}
