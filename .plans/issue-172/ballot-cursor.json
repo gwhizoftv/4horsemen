@@ -1,0 +1,56 @@
+{
+  "actionId": "0ae42e1f-ffae-4e68-9637-c556ceb2ee39",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "0a02f6142d5146acd0201a7377251cdef54ff2d3c7600d3fc389b5de517ef11b",
+  "issue": 172,
+  "issueSessionId": "issue-172:80a3e714afda3c63bc89726d77a0cd61aee08b17",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "d298175f625de94aeedd41a1d86c1f95d5cea268",
+      "path": ".plans/issue-172/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "3e67191cefbc89b732f7cf8c412b3b30e214bc5e",
+      "path": ".plans/issue-172/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "be4b37b973bb3420d44cbe41f7238d9c1c167a05",
+      "path": ".plans/issue-172/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "cde4a70b515558e80d32c422a85fd9e50529f1c4",
+      "path": ".plans/issue-172/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude covers the issue with a fail-closed bash shim, owner-confirmed cleanup, and non-discarding manual readiness, while Codex’s shim-spawned CLI context query can fail open under sandbox and Cursor/Antigravity have blocking safety or coverage gaps.",
+  "responseSha256": "5f37ce38a79f799275738b596c112b35bbc3c05128573b20bfff56a535640511",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "1c613220971f82b860a112fd70c4fbc235cc7633",
+      "path": ".plans/issue-172/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "6f242c5c96252225b6422bd1b19b34bb7f338854",
+      "path": ".plans/issue-172/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "8cc48f84d0d5012a02eb21f0d6a77a7b484de646",
+      "path": ".plans/issue-172/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "878fb302fb3bafacfce3ecd438aceb4a8b9c69a1",
+      "path": ".plans/issue-172/review.md"
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "actionId": "5cd58a7d-fa12-4599-8152-1b2f2bac8cf7",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "0a02f6142d5146acd0201a7377251cdef54ff2d3c7600d3fc389b5de517ef11b",
+  "issue": 172,
+  "issueSessionId": "issue-172:80a3e714afda3c63bc89726d77a0cd61aee08b17",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "d298175f625de94aeedd41a1d86c1f95d5cea268",
+      "path": ".plans/issue-172/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "3e67191cefbc89b732f7cf8c412b3b30e214bc5e",
+      "path": ".plans/issue-172/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "be4b37b973bb3420d44cbe41f7238d9c1c167a05",
+      "path": ".plans/issue-172/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "cde4a70b515558e80d32c422a85fd9e50529f1c4",
+      "path": ".plans/issue-172/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex's plan has the only complete file map (it lists its test files), preflights clone safety before any teardown, and does not misresolve nested runtimes as the Claude plan's shim staleness check does; its shim subprocess fail-open risk (my X1) is an implementation-time correction, whereas Cursor's undeliverable nudge CLI and unsafe base reset and Antigravity's missing items and guard/shim split are structural.",
+  "responseSha256": "e3d9265166a724ea0e3738422810629a69ae6180729c4227c7bb52e32bffc717",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "1c613220971f82b860a112fd70c4fbc235cc7633",
+      "path": ".plans/issue-172/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "6f242c5c96252225b6422bd1b19b34bb7f338854",
+      "path": ".plans/issue-172/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "8cc48f84d0d5012a02eb21f0d6a77a7b484de646",
+      "path": ".plans/issue-172/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "878fb302fb3bafacfce3ecd438aceb4a8b9c69a1",
+      "path": ".plans/issue-172/review.md"
+    }
+  ]
+}
