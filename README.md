@@ -4,15 +4,15 @@
 
 # Four Horsemen
 
-**Multi-agent consensus engine and workflow driver for autonomous software development.**
+**Multi-agent CLI/LLM consensus engine and workflow driver for autonomous software development.**
 
-Four Horsemen (`4horsemen`) runs through the `coord` command.
+Four Horsemen (`4horsemen`) run by using its `coord` command, short for coordinator.
 
 ![Claude Code](https://img.shields.io/badge/agent-Claude_Code-d97757) ![Codex](https://img.shields.io/badge/agent-Codex-10a37f) ![Cursor](https://img.shields.io/badge/agent-Cursor-555555) ![Antigravity](https://img.shields.io/badge/agent-Antigravity-4285f4) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Instead of trusting a single model with a change, give a team of coding agents
 the same GitHub issue. Four Horsemen runs Claude Code, Codex, Cursor, and Antigravity
-in separate Git clones, coordinates their plans and peer reviews, and verifies
+in separate Git clones, coordinates their plans, plan reviews, competitive implementations and peer code reviews, and verifies
 the exact commits they submit before publishing a pull request. You choose the
 agents, the project's checks, and when to intervene.
 
@@ -93,7 +93,7 @@ install from a private fork, see [bootstrap options](docs/setup-workspace.md#boo
 coord onboard /path/to/app
 ```
 
-The default is all four agents and the consensus profile. Onboarding creates
+The default is all four agents and your own clone. Onboarding creates
 the agent clones, proposes checks for the product, and runs `coord doctor`.
 Install all four harnesses, or use this alternative for a one-agent start:
 
