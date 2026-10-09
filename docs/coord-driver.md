@@ -368,7 +368,8 @@ Nudge delivery uses literal `send-keys -l` (not paste-buffer — some TUIs such
 as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`.
 Per-agent config controls owner UI:
 
-- `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert)
+- `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert;
+  skipped when Codex's footer already shows `Vim: Insert`)
 - `nudgeSubmit` — tmux keys after the text (Claude default: `Escape` then
   `Enter` to dismiss autocomplete; Cursor without vim and Antigravity default:
   `Enter` only — Escape dismisses a non-vim Cursor composer and cancels
@@ -388,7 +389,11 @@ input off, or the foreground command is no longer the harness, it skips that
 injection (`busy` / `gone`) instead of typing into a pane that changed after
 the original readiness check. Antigravity then waits 2.5s and recaptures: tmux
 sessions often paint the verify overlay after `>` looks idle, which discards
-a typed nudge.
+a typed nudge. For a readable Codex composer, the driver waits briefly for the
+typed nudge to appear, then re-presses `C-m` a bounded number of times only
+while that composer still holds exactly the nudge. Automated Codex launches use
+`--no-daemon` so hooks inherit the pane's `COORD_ISSUE` instead of a shared
+app-server environment.
 If the first delivery is skipped, the action remains ordered. It is eligible
 again only after a positive lifecycle observation says the CLI became idle or
 the CLI session was replaced. After a successful send, the coordinator records

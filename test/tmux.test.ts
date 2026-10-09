@@ -16,6 +16,7 @@ import {
   readCursorVimMode,
   resolveAgentLauncher,
   NUDGE_BEFORE_ANTIGRAVITY_MS,
+  CODEX_SUBMIT_RETRIES,
   resolveNudgeKeys,
   runTmux,
   TmuxController,
@@ -821,7 +822,8 @@ describe("tmux boundary", () => {
         }
         if (args[0] === "send-keys") {
           if (args.includes("-l")) pane.draft += args.at(-1)!;
-          if (options.submitOnCtrlJ === true && args.at(-1) === "C-j") {
+          const submitKey = args.at(-1) === "C-m" || (options.submitOnCtrlJ === true && args.at(-1) === "C-j");
+          if (submitKey) {
             pane.body += `\n\n› ${pane.draft}\n\n• Working (0s • esc to interrupt)`;
             pane.draft = "";
           }
@@ -856,20 +858,99 @@ describe("tmux boundary", () => {
     expect(await attempt({ onCapture: (index, pane) => { if (index === 2) pane.draft += " and more"; } }))
       .toMatchObject({ outcome: { status: "busy", reason: composerReason, stage: "mid-send" }, keys: ["-l"] });
     // Between the submit keys the same proof holds: an edit or new lifecycle activity stops C-m.
-    expect(await attempt({ onCapture: (index, pane) => { if (index === 3) pane.draft += " and more"; } }))
+    // Capture index 4 is before C-m (0 readiness, 1 before -l, 2 settle, 3 before C-j).
+    expect(await attempt({ onCapture: (index, pane) => { if (index === 4) pane.draft += " and more"; } }))
       .toMatchObject({ outcome: { status: "busy", reason: composerReason, stage: "mid-send" }, keys: ["-l", "C-j"] });
     expect(await attempt({ lifecycle: (check) => (check === 2 ? "changed" : "unchanged") }))
       .toMatchObject({ outcome: { status: "busy", reason: "lifecycle-changed", stage: "mid-send" }, keys: ["-l", "C-j"] });
     // An unrelated turn between the submit keys, with the nudge still in the composer, is not acceptance.
     expect(await attempt({
       lifecycle: (check) => (check === 2 ? "changed" : "unchanged"),
-      onCapture: (index, pane) => { if (index === 3) pane.body += "\n\n• Working (3s • esc to interrupt)"; }
+      onCapture: (index, pane) => { if (index === 4) pane.body += "\n\n• Working (3s • esc to interrupt)"; }
     })).toMatchObject({ outcome: { status: "busy", reason: "codex-turn-chrome", stage: "mid-send" }, keys: ["-l", "C-j"] });
     // If C-j already submitted the nudge, its turn or its correlated prompt hook ends the send: no fallback C-m.
     expect(await attempt({ submitOnCtrlJ: true }))
       .toMatchObject({ outcome: { status: "sent", detail: source }, keys: ["-l", "C-j"] });
     expect(await attempt({ lifecycle: (check) => (check === 2 ? "accepted" : "unchanged") }))
       .toMatchObject({ outcome: { status: "sent", detail: source }, keys: ["-l", "C-j"] });
+  });
+
+  it("types Codex's i prelude only when INSERT is not visible", async () => {
+    const agent = { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" as const, harnessProcess: "codex" };
+    const keysFor = async (vim: "Insert" | "Normal") => {
+      const keys: string[] = [];
+      let draft = "";
+      const controller = new TmuxController(async (args) => {
+        if (args[0] === "display-message") return ok("0\tcodex\t0\t0\n");
+        if (args[0] === "capture-pane") return ok(codexPane("• done", draft, vim));
+        if (args[0] === "send-keys") {
+          if (args.includes("-l")) draft = args.at(-1)!;
+          if (args.at(-1) === "C-m") draft = "";
+          keys.push(args.includes("-l") ? "-l" : args.at(-1)!);
+        }
+        return ok();
+      }, null, null, null, noopSleep);
+      expect(await controller.nudge(1, agent, "/a")).toMatchObject({ status: "sent" });
+      return keys;
+    };
+    expect(await keysFor("Insert")).toEqual(["-l", "C-j", "C-m"]);
+    expect(await keysFor("Normal")).toEqual(["i", "-l", "C-j", "C-m"]);
+  });
+
+  it("re-presses Enter while the Codex composer still holds the nudge", async () => {
+    const agent = { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" as const, harnessProcess: "codex" };
+    const action = "11111111-2222-3333-4444-555555555555";
+    const run = async (options: {
+      submitOn?: number; lagDraft?: boolean; override?: boolean;
+    } = {}) => {
+      const pane = { body: options.override === true ? `• ${COORD_IDLE_SENTINEL}\n\n${turnSummary}` : "• done", draft: "" };
+      const keys: string[] = [];
+      let cmCount = 0;
+      let captures = 0;
+      let pendingDraft = "";
+      const controller = new TmuxController(async (args) => {
+        if (args[0] === "display-message") return ok("0\tcodex\t0\t0\n");
+        if (args[0] === "capture-pane") {
+          captures += 1;
+          // After -l (capture 2), first settle (3) stays empty; later settle shows text.
+          if (options.lagDraft === true && pendingDraft !== "" && pane.draft === "" && captures > 3) {
+            pane.draft = pendingDraft;
+          }
+          return ok(codexPane(pane.body, pane.draft));
+        }
+        if (args[0] === "send-keys") {
+          if (args.includes("-l")) {
+            const text = args.at(-1)!;
+            if (options.lagDraft === true) pendingDraft = text;
+            else pane.draft += text;
+          }
+          if (args.at(-1) === "C-m") {
+            cmCount += 1;
+            if (cmCount >= (options.submitOn ?? 1)) {
+              pane.body += `\n\n› ${pane.draft || pendingDraft}\n\n• Working (0s • esc to interrupt)`;
+              pane.draft = "";
+              pendingDraft = "";
+            }
+          }
+          keys.push(args.includes("-l") ? "-l" : args.at(-1)!);
+        }
+        return ok();
+      }, null, null, null, noopSleep);
+      const outcome = await controller.nudge(1, agent, "/a", undefined, action, undefined, undefined,
+        options.override === true ? { source: "ready-file", lifecycle: () => "unchanged" } : undefined);
+      return { outcome, keys };
+    };
+    expect(await run({ submitOn: 2 })).toMatchObject({
+      outcome: { status: "sent" }, keys: ["-l", "C-j", "C-m", "C-m"]
+    });
+    // Bounded retries: configured C-m plus CODEX_SUBMIT_RETRIES extras, still `sent`.
+    expect(await run({ submitOn: 99 })).toMatchObject({
+      outcome: { status: "sent" },
+      keys: ["-l", "C-j", "C-m", ...Array.from({ length: CODEX_SUBMIT_RETRIES }, () => "C-m")]
+    });
+    expect(await run({ lagDraft: true, override: true })).toMatchObject({
+      outcome: { status: "sent" }, keys: ["-l", "C-j", "C-m"]
+    });
   });
 
   it.each([1, 2, 3])("refuses file-backed delivery when capture %s is unavailable", async (failedCapture) => {

@@ -239,6 +239,10 @@ const codexNudgeSubmitted = (paneText: string, text: string, requireSentinel = t
 const codexVimNormal = (paneText: string, requireSentinel = true): boolean =>
   codexTail(paneText, requireSentinel)?.footer.some((line) => /Vim: Normal/.test(line.plain)) === true;
 
+/** True when the footer positively shows INSERT — then `i` would type into the composer. */
+const codexVimInsert = (paneText: string): boolean =>
+  codexTail(paneText, false)?.footer.some((line) => /Vim: Insert/.test(line.plain)) === true;
+
 /** Active unquoted terminal lines, not prose discussing a past limit. Fail closed. */
 const claudeUsageWait = (plain: string): boolean => {
   const tail = plain.split("\n").slice(-12).join("\n");
@@ -417,6 +421,10 @@ export const resolveNudgeKeys = (
 export const NUDGE_AFTER_TEXT_MS = 300;
 /** Delay between successive submit keys (Escape must land before Enter). */
 export const NUDGE_BETWEEN_SUBMIT_MS = 150;
+/** Codex composer paint checks after typing, before the first submit key. */
+export const CODEX_SUBMIT_SETTLE_CHECKS = 4;
+/** Extra `C-m` presses while the Codex composer still holds the unsubmitted nudge. */
+export const CODEX_SUBMIT_RETRIES = 2;
 /**
  * Antigravity under tmux often paints `⚠ Verifying your account...` a beat after
  * the idle `>` prompt. Typing then discards the nudge. Wait, then recapture.
@@ -1056,10 +1064,14 @@ export class TmuxController {
     // Some harnesses (notably agy) ignore tmux paste-buffer; literal send-keys
     // reaches the input widget. Prelude/submit keys come from agent config.
     const { prelude: resolvedPrelude, submit: submitKeys } = resolveNudgeKeys(agent, paneText);
-    // On an override the composer must stay empty until the nudge is typed,
-    // and Codex's `i` types itself unless vim is in NORMAL.
-    const preludeKeys = staleOverride !== undefined && agent.id === "codex" && !codexVimNormal(paneText, requireSentinel)
-      ? [] : resolvedPrelude;
+    // Override: skip `i` unless vim NORMAL. Ordinary: skip `i` when INSERT is visible.
+    // Unreadable Codex footer still gets `i` so NORMAL never swallows the first character.
+    const preludeKeys = agent.id === "codex" && (
+      (staleOverride !== undefined && !codexVimNormal(paneText, requireSentinel)) ||
+      codexVimInsert(paneText)
+    ) ? [] : resolvedPrelude;
+    // Readable Codex composers get settle/retry confirmation; opaque panes keep today's path.
+    const confirmCodexSubmit = agent.id === "codex" && codexTail(paneText, false) !== null;
     let began = false;
     let typedText = false;
     let submitting = false;
@@ -1111,6 +1123,18 @@ export class TmuxController {
     // Autocomplete/multiline handlers need a beat before Escape; then gap before Enter.
     await this.sleep(NUDGE_AFTER_TEXT_MS);
     assertAuthority();
+    if (confirmCodexSubmit) {
+      for (let check = 0; check < CODEX_SUBMIT_SETTLE_CHECKS; check += 1) {
+        if (check > 0) {
+          await this.sleep(NUDGE_BETWEEN_SUBMIT_MS);
+          assertAuthority();
+        }
+        const latest = await this.capturePane(target);
+        assertAuthority();
+        if (codexComposerHolds(latest, text, false)) break;
+      }
+    }
+    let accepted = false;
     for (const [index, key] of submitKeys.entries()) {
       if (index > 0) {
         submitting = true;
@@ -1119,7 +1143,23 @@ export class TmuxController {
       }
       const submit = await send(["-t", target, key], "tmux send-keys submit failed: ");
       if (submit.status !== "sent") return submit;
-      if (submit.detail === "accepted") break;
+      if (submit.detail === "accepted") {
+        accepted = true;
+        break;
+      }
+    }
+    if (confirmCodexSubmit && !accepted) {
+      submitting = true;
+      for (let retry = 0; retry < CODEX_SUBMIT_RETRIES; retry += 1) {
+        await this.sleep(NUDGE_BETWEEN_SUBMIT_MS);
+        assertAuthority();
+        const latest = await this.capturePane(target);
+        assertAuthority();
+        if (!codexComposerHolds(latest, text, false)) break;
+        const confirm = await send(["-t", target, "C-m"], "tmux send-keys submit failed: ");
+        if (confirm.status !== "sent") return confirm;
+        if (confirm.detail === "accepted") break;
+      }
     }
     return { status: "sent", reason: "sent", stage: "complete",
       ...(staleOverride !== undefined ? { detail: staleOverride.source }
