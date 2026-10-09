@@ -1,0 +1,29 @@
+{
+  "actionId": "98472283-b460-4ca6-a849-a29981832aca",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "e291099d78f28c5538c5176cd47cfc37675105d0",
+      "path": ".signals/issue-167/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "654c95664b1eb3752f460071f1d8c83f7231fa1e",
+      "path": ".signals/issue-167/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "cb86b961055c15b72e81e56e0a9032c279173c0c",
+      "path": ".signals/issue-167/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "feaecae57597f570930270df0f5ab84c265afdb119d143f9fa96f83dd3655ce5",
+  "issue": 167,
+  "issueSessionId": "issue-167:26f53972ddf036310c24f41ffd746e699976079b",
+  "protocolVersion": 2,
+  "rationale": "Claude matches the peers on atomic v0.0.N tagging and --verify-tag release creation, and uniquely pairs that with queue: max plus matching tests so burst merges cannot drop a pending release run.",
+  "responseSha256": "0dde74b32b57f00d96e1b0653510dc7cf3aa71492c5a8aca12785b7bcb79beb0"
+}

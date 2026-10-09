@@ -1,0 +1,29 @@
+{
+  "actionId": "dacaa296-c430-4f79-9524-a46fd70dd46d",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "e291099d78f28c5538c5176cd47cfc37675105d0",
+      "path": ".signals/issue-167/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "654c95664b1eb3752f460071f1d8c83f7231fa1e",
+      "path": ".signals/issue-167/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "cb86b961055c15b72e81e56e0a9032c279173c0c",
+      "path": ".signals/issue-167/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "feaecae57597f570930270df0f5ab84c265afdb119d143f9fa96f83dd3655ce5",
+  "issue": 167,
+  "issueSessionId": "issue-167:26f53972ddf036310c24f41ffd746e699976079b",
+  "protocolVersion": 2,
+  "rationale": "Codex at 654c95664b1eb3752f460071f1d8c83f7231fa1e delivers the selected atomic release design and reviewed queue correction with stronger output/order/permission assertions, explicit recovery and queue-limit documentation, and recorded passing hook checks without expanding the approved product scope.",
+  "responseSha256": "59c5d9c586fc8103445eb5634932ac45857e2a6ed2e72bb6a0f9e2363f629b92"
+}

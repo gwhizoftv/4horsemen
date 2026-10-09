@@ -1,0 +1,29 @@
+{
+  "actionId": "44005e40-79c9-413f-9c69-4a7a9ca35ecb",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "e291099d78f28c5538c5176cd47cfc37675105d0",
+      "path": ".signals/issue-167/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "654c95664b1eb3752f460071f1d8c83f7231fa1e",
+      "path": ".signals/issue-167/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "cb86b961055c15b72e81e56e0a9032c279173c0c",
+      "path": ".signals/issue-167/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "feaecae57597f570930270df0f5ab84c265afdb119d143f9fa96f83dd3655ce5",
+  "issue": 167,
+  "issueSessionId": "issue-167:26f53972ddf036310c24f41ffd746e699976079b",
+  "protocolVersion": 2,
+  "rationale": "Codex's workflow is behaviorally identical to claude's (atomic v0.0.N tag push, queue: max, --verify-tag release from env-passed version) but its tests pin the exact commands and the push-then-output ordering and its docs give operators the full no-rerun recovery procedure, whereas cursor omits queue: max, never asserts the v-prefixed tag argument, and leaves recovery out of the docs.",
+  "responseSha256": "45735eaa2da6d63e8adb869a86eca098ba1ab0ab19b848e10c3a1728e4642937"
+}
