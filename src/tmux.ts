@@ -209,35 +209,34 @@ const codexComposerHolds = (paneText: string, text: string, requireSentinel = tr
 };
 
 /**
- * After a submit key, positive proof that this nudge was submitted: below the
- * sentinel the first transcript message is exactly `text`, a live turn is
- * running, and the composer above the footer is empty again. Further fallback
- * submit keys would land in that turn. An unrelated Working line with the
- * nudge still in the composer is not proof.
+ * A new exact transcript message and an empty composer prove submission even
+ * before Working paints, or after tool activity replaces it. Count against the
+ * pre-send capture: an older identical nudge cannot prove this attempt. If old
+ * messages scroll away, this deliberately requires lifecycle confirmation.
  */
-const codexNudgeSubmitted = (paneText: string, text: string, requireSentinel = true): boolean => {
-  const after = requireSentinel ? linesAfterCodexSentinel(paneText) : paneLines(paneText);
-  if (after === null) return false;
-  let end = after.length;
-  while (end > 0 && CODEX_FOOTER.test(after[end - 1]!.plain)) end -= 1;
-  const composer = after[end - 1];
-  if (composer === undefined || !composer.plain.startsWith("›") || !codexComposerEmpty(composer.raw)) return false;
-  let transcript = after.slice(0, end - 1);
-  if (!requireSentinel) {
-    const messageAt = transcript.map((line) => line.plain.startsWith("›")).lastIndexOf(true);
-    if (messageAt < 0) return false;
-    transcript = transcript.slice(messageAt);
-  }
-  if (transcript[0]?.plain.startsWith("›") !== true) return false;
-  const nextItem = transcript.findIndex((line) => line.plain.startsWith("•"));
-  const message = transcript.slice(0, nextItem < 0 ? transcript.length : nextItem);
-  return compactText(message.map((line) => line.plain).join("").slice(1)) === compactText(text) &&
-    codexTurnChrome(transcript.map((line) => line.plain).join("\n"));
+const codexNudgeSubmitted = (paneText: string, text: string, before: string): boolean => {
+  const count = (capture: string): number => {
+    if (!codexSentinelAtTail(capture, false)) return 0;
+    const lines = paneLines(capture);
+    const composer = lines.map((line) => line.plain.startsWith("›")).lastIndexOf(true);
+    let matches = 0;
+    for (let index = 0; index < composer; index++) {
+      if (!lines[index]!.plain.startsWith("›")) continue;
+      let end = index + 1;
+      while (end < composer && !/^[›•]/.test(lines[end]!.plain)) end++;
+      if (compactText(lines.slice(index, end).map((line) => line.plain).join("").slice(1)) === compactText(text)) matches++;
+    }
+    return matches;
+  };
+  return count(paneText) > count(before);
 };
 
 /** Codex's footer names its vim mode; the `i` prelude is only needed to leave NORMAL. */
 const codexVimNormal = (paneText: string, requireSentinel = true): boolean =>
   codexTail(paneText, requireSentinel)?.footer.some((line) => /Vim: Normal/.test(line.plain)) === true;
+
+const codexVimInsert = (paneText: string): boolean =>
+  codexTail(paneText, false)?.footer.some((line) => /Vim: Insert/.test(line.plain)) === true;
 
 /** Active unquoted terminal lines, not prose discussing a past limit. Fail closed. */
 const claudeUsageWait = (plain: string): boolean => {
@@ -417,6 +416,9 @@ export const resolveNudgeKeys = (
 export const NUDGE_AFTER_TEXT_MS = 300;
 /** Delay between successive submit keys (Escape must land before Enter). */
 export const NUDGE_BETWEEN_SUBMIT_MS = 150;
+/** Codex may paint the draft/submitted message after the tmux write completes. */
+const CODEX_SUBMIT_SETTLE_CHECKS = 4;
+const CODEX_SUBMIT_RETRIES = 2;
 /**
  * Antigravity under tmux often paints `⚠ Verifying your account...` a beat after
  * the idle `>` prompt. Typing then discards the nudge. Wait, then recapture.
@@ -1019,7 +1021,9 @@ export class TmuxController {
      * explicit owner reminder despite stale lifecycle state. Revalidate the
      * proof until submission is confirmed.
      */
-    staleOverride?: IdleOverride
+    staleOverride?: IdleOverride,
+    /** Observe ordinary Codex delivery without granting a stale-working override. */
+    deliveryLifecycle?: () => OverrideLifecycle
   ): Promise<NudgeOutcome> {
     if (agent.delivery !== "nudge" && agent.delivery !== "both") {
       return { status: "disabled", reason: "delivery-disabled", stage: "config" };
@@ -1053,16 +1057,60 @@ export class TmuxController {
       if (!recaptured.ready) return { status: "busy", reason: recaptured.reason, stage: "antigravity-recapture" };
     }
     const text = renderNudgeText(actionPath, actionId, actionDigest);
+    const confirmCodex = agent.id === "codex" && codexTail(paneText, false) !== null;
+    const codexRequiresSentinel = staleOverride !== undefined && requireSentinel;
+    let submissionBaseline = paneText;
     // Some harnesses (notably agy) ignore tmux paste-buffer; literal send-keys
     // reaches the input widget. Prelude/submit keys come from agent config.
     const { prelude: resolvedPrelude, submit: submitKeys } = resolveNudgeKeys(agent, paneText);
     // On an override the composer must stay empty until the nudge is typed,
     // and Codex's `i` types itself unless vim is in NORMAL.
-    const preludeKeys = staleOverride !== undefined && agent.id === "codex" && !codexVimNormal(paneText, requireSentinel)
+    const preludeKeys = agent.id === "codex" && (staleOverride !== undefined
+      ? !codexVimNormal(paneText, requireSentinel) : codexVimInsert(paneText))
       ? [] : resolvedPrelude;
     let began = false;
     let typedText = false;
     let submitting = false;
+    const refusal = (reason: PromptBlockedReason): NudgeOutcome =>
+      ({ status: "busy", reason, stage: began ? "mid-send" : "prompt" });
+    const checkProof = async (): Promise<NudgeOutcome | null> => {
+      const checks = confirmCodex && typedText ? CODEX_SUBMIT_SETTLE_CHECKS : 1;
+      for (let check = 0; check < checks; check++) {
+        if (check > 0) {
+          await this.sleep(NUDGE_BETWEEN_SUBMIT_MS);
+          assertAuthority();
+          const gate = await this.injectionGate(target, agent, assertAuthority);
+          if (gate.status !== "ok") return { ...gate, status: gate.status, stage: "mid-send" };
+        }
+        const latest = await this.capturePane(target);
+        assertAuthority();
+        const lifecycle = (staleOverride?.lifecycle ?? deliveryLifecycle)?.() ?? "unchanged";
+        if (submitting && (lifecycle === "accepted" ||
+          (agent.id === "codex" && lifecycle === "unchanged" && codexNudgeSubmitted(latest, text, submissionBaseline)))) {
+          return { status: "sent", reason: "sent", stage: "complete", detail: "accepted" };
+        }
+        const current = readinessForSend(latest);
+        const composerReason = codexRequiresSentinel ? "no-idle-sentinel" : "codex-composer-not-ready";
+        const refused = !current.ready ? current.reason
+          : lifecycle !== "unchanged" ? "lifecycle-changed"
+          : !typedText ? (staleOverride !== undefined && requireSentinel
+            ? (current.reason === "idle-sentinel" ? null : "no-idle-sentinel")
+            : agent.id === "codex" && !codexSentinelAtTail(latest, false) ? composerReason : null)
+          : agent.id === "codex" && !codexComposerHolds(latest, text, codexRequiresSentinel) ? composerReason
+          : null;
+        if (refused === null) {
+          if (!typedText) submissionBaseline = latest;
+          return null;
+        }
+        // An empty composer may be a delayed paint/acceptance. Wait without
+        // typing; edits, lost captures and changed lifecycle remain vetoes.
+        const settling = confirmCodex && typedText && lifecycle === "unchanged" &&
+          codexSentinelAtTail(latest, false) &&
+          (current.ready || (submitting && current.reason === "codex-turn-chrome"));
+        if (!settling || check === checks - 1) return refusal(refused);
+      }
+      return refusal("codex-composer-not-ready");
+    };
     const send = async (args: readonly string[], fail: string): Promise<NudgeOutcome> => {
       const gate = await this.injectionGate(target, agent, assertAuthority);
       if (gate.status !== "ok") {
@@ -1073,27 +1121,9 @@ export class TmuxController {
         assertAuthority();
         if (claudeUsageWait(stripAnsi(latest))) return { status: "busy", reason: "claude-usage-wait", stage: began ? "mid-send" : "prompt" };
       }
-      if (staleOverride !== undefined) {
-        // Idle proof overrules a lifecycle veto, so it must still hold at
-        // every key: the proof unchanged, the composer empty until
-        // the nudge is typed and holding exactly the nudge after that. Once a
-        // submit key is out, proof that the nudge was accepted ends the send.
-        const latest = await this.capturePane(target);
-        assertAuthority();
-        const lifecycle = staleOverride.lifecycle();
-        if (submitting && (lifecycle === "accepted" ||
-          (agent.id === "codex" && codexNudgeSubmitted(latest, text, requireSentinel)))) {
-          return { status: "sent", reason: "sent", stage: "complete", detail: "accepted" };
-        }
-        const current = readinessForSend(latest);
-        const refused = !current.ready ? current.reason
-          : lifecycle !== "unchanged" ? "lifecycle-changed"
-          : !typedText ? (requireSentinel ? (current.reason === "idle-sentinel" ? null : "no-idle-sentinel")
-            : agent.id === "codex" && !codexSentinelAtTail(latest, false) ? "codex-composer-not-ready" : null)
-          : agent.id === "codex" && !codexComposerHolds(latest, text, requireSentinel)
-            ? (requireSentinel ? "no-idle-sentinel" : "codex-composer-not-ready")
-          : null;
-        if (refused !== null) return { status: "busy", reason: refused, stage: began ? "mid-send" : "prompt" };
+      if (staleOverride !== undefined || confirmCodex) {
+        const proof = await checkProof();
+        if (proof !== null) return proof;
       }
       if (!began) { reserveSend(); began = true; }
       const result = await this.runner(["send-keys", ...args]);
@@ -1111,15 +1141,31 @@ export class TmuxController {
     // Autocomplete/multiline handlers need a beat before Escape; then gap before Enter.
     await this.sleep(NUDGE_AFTER_TEXT_MS);
     assertAuthority();
+    let accepted = false;
     for (const [index, key] of submitKeys.entries()) {
       if (index > 0) {
-        submitting = true;
         await this.sleep(NUDGE_BETWEEN_SUBMIT_MS);
         assertAuthority();
       }
       const submit = await send(["-t", target, key], "tmux send-keys submit failed: ");
       if (submit.status !== "sent") return submit;
-      if (submit.detail === "accepted") break;
+      submitting = true;
+      if (submit.detail === "accepted") { accepted = true; break; }
+    }
+    if (confirmCodex && !accepted) {
+      for (let retry = 0; ; retry++) {
+        await this.sleep(NUDGE_BETWEEN_SUBMIT_MS);
+        assertAuthority();
+        const proof = await checkProof();
+        if (proof?.status === "sent") break;
+        if (proof !== null) return proof;
+        // Keep the selected plan's legacy sent outcome at the retry bound:
+        // it records key injection, not native acceptance. Never replay text.
+        if (retry === CODEX_SUBMIT_RETRIES || submitKeys.length === 0) break;
+        const submit = await send(["-t", target, "C-m"], "tmux send-keys submit failed: ");
+        if (submit.status !== "sent") return submit;
+        if (submit.detail === "accepted") break;
+      }
     }
     return { status: "sent", reason: "sent", stage: "complete",
       ...(staleOverride !== undefined ? { detail: staleOverride.source }

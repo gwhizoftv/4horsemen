@@ -36,7 +36,8 @@ launcher_command() {
       # ever here because `complete` sat under coord-runtime and workspace-write
       # prompted for it — that reason is gone, and the broad grant reached
       # cursors.json and peers' orders along with it.
-      printf 'exec codex --ask-for-approval never --sandbox workspace-write ${coord_grant[@]+"${coord_grant[@]}"}\n'
+      # A shared daemon can retain an older issue's environment for hooks/tools.
+      printf 'exec codex --ask-for-approval never --sandbox workspace-write --no-daemon ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     antigravity)
       # agy installs into ~/.local/bin, which a login shell does not always

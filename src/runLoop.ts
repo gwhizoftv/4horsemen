@@ -1179,25 +1179,28 @@ export class CoordinatorRunLoop {
     const owner = reason === "owner";
     if ((entry?.execution === "working" && !staleWorking && !owner) || (owner && entry?.execution === "queued") || entry?.backgroundActive === true ||
       (entry?.pendingInputCount ?? 0) > 0) return cursors;
-    // Lifecycle hooks write without touching cursor authority, so the override
-    // re-reads them at every key until submission starts.
+    // Hooks do not touch cursor authority. Observe them during Codex submit
+    // confirmation too, without giving ordinary sends override permission.
     const lifecycleSnapshot = (value: typeof entry): string => JSON.stringify([value?.sessionId, value?.turnId,
       value?.lastEventAt, value?.execution, value?.pendingInputCount, value?.backgroundActive]);
     const observed = lifecycleSnapshot(entry);
     const hookSequence = entry?.hookReceipt?.sequence;
+    const deliveryLifecycle: IdleOverride["lifecycle"] = () => {
+      const latest = readAgentLifecycle(this.paths).agents[agent];
+      if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
+        latest.action.delivery === "accepted" &&
+        (agent !== "codex" || entry?.sessionId == null || latest.sessionId === entry.sessionId) &&
+        (!(owner || agent === "codex") || (latest.hookReceipt?.sequence !== hookSequence &&
+          latest.action.acceptedAt !== entry?.action?.acceptedAt))) return "accepted";
+      if (agent === "codex" && latest?.hookReceipt?.sequence !== hookSequence) return "changed";
+      if (owner && (latest?.hookReceipt?.sequence !== hookSequence ||
+        readCompletion(agentRuntimePaths(this.paths, agent).complete).status !== "missing")) return "changed";
+      if (receipt !== null && (latest?.hookReceipt?.sequence !== hookSequence ||
+        readReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot)?.identity !== receipt.identity)) return "changed";
+      return lifecycleSnapshot(latest) === observed ? "unchanged" : "changed";
+    };
     const staleOverride: IdleOverride | undefined = receipt !== null || staleWorking || owner ? {
-      source: receipt !== null ? "ready-file" : "idle-sentinel",
-      lifecycle: () => {
-        const latest = readAgentLifecycle(this.paths).agents[agent];
-        if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
-          latest.action.delivery === "accepted" && (!owner ||
-            (latest.hookReceipt?.sequence !== hookSequence && latest.action.acceptedAt !== entry?.action?.acceptedAt))) return "accepted";
-        if (owner && (latest?.hookReceipt?.sequence !== hookSequence ||
-          readCompletion(agentRuntimePaths(this.paths, agent).complete).status !== "missing")) return "changed";
-        if (receipt !== null && (latest?.hookReceipt?.sequence !== hookSequence ||
-          readReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot)?.identity !== receipt.identity)) return "changed";
-        return lifecycleSnapshot(latest) === observed ? "unchanged" : "changed";
-      }
+      source: receipt !== null ? "ready-file" : "idle-sentinel", lifecycle: deliveryLifecycle
     } : undefined;
     if (safety.sends >= 4) return this.hold(cursors, agent, "nudge-loop", `${actionId}:budget:${safety.lastSendAt}`);
     const delay = NUDGE_REPEAT_DELAYS_MS[safety.sends - 1] ?? 0;
@@ -1220,7 +1223,7 @@ export class CoordinatorRunLoop {
               sha256OfFile(agentRuntimePaths(this.paths, agent).action) !== actionDigest)) {
             throw new StateConflictError("The reminder's task changed during delivery.");
           }
-        }, actionId, actionDigest, reserve, staleOverride);
+        }, actionId, actionDigest, reserve, staleOverride, agent === "codex" ? deliveryLifecycle : undefined);
     } catch (error) {
       this.authority(cursors);
       if (error instanceof StateConflictError) throw error;

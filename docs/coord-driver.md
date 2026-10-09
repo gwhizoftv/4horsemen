@@ -368,7 +368,8 @@ Nudge delivery uses literal `send-keys -l` (not paste-buffer — some TUIs such
 as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`.
 Per-agent config controls owner UI:
 
-- `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert)
+- `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert;
+  skipped when the footer already shows `Vim: Insert`)
 - `nudgeSubmit` — tmux keys after the text (Claude default: `Escape` then
   `Enter` to dismiss autocomplete; Cursor without vim and Antigravity default:
   `Enter` only — Escape dismisses a non-vim Cursor composer and cancels
@@ -378,6 +379,26 @@ Per-agent config controls owner UI:
   Cursor/Antigravity, and stale `C-m` on Antigravity, are upgraded)
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Claude 1 / Codex 1 / Cursor 1 / Gemini 1)
+
+The Codex launcher uses `--no-daemon` so its hooks and tool shells do not inherit
+an older issue's environment from a shared app-server. After upgrading, re-run
+`coord install` to regenerate existing launchers and restart the affected Codex
+pane after preserving its work; changing tmux's environment alone cannot update
+an existing child process. Do not restart the shared server used by other clients.
+Verify the fresh pane's current-issue lifecycle session and prescribed containment
+probe before claiming the environment or guard is working.
+
+For readable Codex composers, delivery waits at most four captures (150 ms apart)
+for the typed nudge or delayed submission rendering. It preserves `C-j`, `C-m`,
+then re-presses `C-m` at most twice, only while the idle composer still holds
+exactly that nudge and the per-key gates/lifecycle remain unchanged. A new exact
+transcript message plus an empty composer, or freshly correlated hook acceptance,
+stops all further keys; old scrollback or an empty composer alone does not prove
+submission. At the retry bound, delivery retains the legacy `sent`/`injected`
+outcome even if the nudge remains in the composer; it is not proof of native
+acceptance. A per-key refusal after a partial send still retains the existing
+`delivery-uncertain` hold. Unrecognized initial composer layouts keep the legacy
+send path rather than authorizing additional retry keys.
 
 Nudge waits until the pane shows an idle prompt (not Claude's trust dialog,
 Antigravity splash, account-verification overlay, or an in-flight Antigravity

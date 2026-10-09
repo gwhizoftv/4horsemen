@@ -821,7 +821,7 @@ describe("tmux boundary", () => {
         }
         if (args[0] === "send-keys") {
           if (args.includes("-l")) pane.draft += args.at(-1)!;
-          if (options.submitOnCtrlJ === true && args.at(-1) === "C-j") {
+          if ((options.submitOnCtrlJ === true && args.at(-1) === "C-j") || args.at(-1) === "C-m") {
             pane.body += `\n\n› ${pane.draft}\n\n• Working (0s • esc to interrupt)`;
             pane.draft = "";
           }
@@ -870,6 +870,74 @@ describe("tmux boundary", () => {
       .toMatchObject({ outcome: { status: "sent", detail: source }, keys: ["-l", "C-j"] });
     expect(await attempt({ lifecycle: (check) => (check === 2 ? "accepted" : "unchanged") }))
       .toMatchObject({ outcome: { status: "sent", detail: source }, keys: ["-l", "C-j"] });
+  });
+
+  it.each([undefined, "ready-file", "idle-sentinel"] as const)("retries Codex submission within bounds (%s)", async (source) => {
+    const agent = { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" as const, harnessProcess: "codex" };
+    const attempt = async (options: {
+      vim?: string; acceptOn?: string; lostReturns?: number; lag?: number; stale?: boolean;
+      beforeRetry?: "working" | "edit" | "capture-lost" | "clear";
+      lifecycleAfterReturn?: "accepted" | "changed";
+    } = {}) => {
+      const text = "Read and execute your current coordinator action at /a";
+      const old = options.stale ? `› ${text}\n\n• Opened old result\n` : "• done";
+      const pane = { body: source === "idle-sentinel" ? `• ${COORD_IDLE_SENTINEL}` : old, draft: "" };
+      const keys: string[] = [];
+      let returns = 0, lag = options.lag ?? 0, captures = 0, reservations = 0;
+      const controller = new TmuxController(async (args) => {
+        if (args[0] === "display-message") return ok("0\tcodex\t0\t0\n");
+        if (args[0] === "capture-pane") {
+          captures++;
+          if (returns === 1) {
+            if (options.beforeRetry === "working") pane.body += "\n• Working (1s • esc to interrupt)";
+            if (options.beforeRetry === "edit") pane.draft = "owner draft";
+            if (options.beforeRetry === "clear") pane.draft = "";
+            if (options.beforeRetry === "capture-lost") return ok("");
+          }
+          const draft = pane.draft !== "" && lag-- > 0 ? "" : pane.draft;
+          return ok(codexPane(pane.body, draft, options.vim));
+        }
+        if (args[0] === "send-keys") {
+          const key = args.at(-1)!;
+          keys.push(args.includes("-l") ? "-l" : key);
+          if (args.includes("-l")) pane.draft += key;
+          if (key === "C-m") returns++;
+          if (key === (options.acceptOn ?? "C-m") &&
+              (key !== "C-m" || returns > (options.lostReturns ?? 0)) && options.beforeRetry === undefined) {
+            // Submission need not paint Working before the next capture.
+            pane.body += `\n\n› ${pane.draft}\n\n• Opened current result`;
+            pane.draft = "";
+          }
+        }
+        return ok();
+      }, null, null, null, noopSleep);
+      const lifecycle = () => returns > 0 ? options.lifecycleAfterReturn ?? "unchanged" : "unchanged";
+      const outcome = await controller.nudge(1, agent, "/a", undefined, undefined, undefined,
+        () => { reservations++; }, source === undefined ? undefined : { source, lifecycle }, lifecycle);
+      return { outcome, keys, captures, reservations };
+    };
+    expect(await attempt()).toMatchObject({ outcome: { status: "sent" }, keys: ["-l", "C-j", "C-m"], reservations: 1 });
+    expect(await attempt({ vim: "Normal" })).toMatchObject({ outcome: { status: "sent" }, keys: ["i", "-l", "C-j", "C-m"] });
+    expect(await attempt({ acceptOn: "C-j" })).toMatchObject({ outcome: { status: "sent" }, keys: ["-l", "C-j"] });
+    expect(await attempt({ lag: 2 })).toMatchObject({ outcome: { status: "sent" }, keys: ["-l", "C-j", "C-m"] });
+    expect(await attempt({ lostReturns: 1 })).toMatchObject({ outcome: { status: "sent" }, keys: ["-l", "C-j", "C-m", "C-m"], reservations: 1 });
+    const exhausted = await attempt({ lostReturns: 99 });
+    // Exhaustion retains the selected plan's sent contract, not proof of acceptance.
+    expect(exhausted).toMatchObject({ outcome: { status: "sent", stage: "complete" }, keys: ["-l", "C-j", "C-m", "C-m", "C-m"], reservations: 1 });
+    expect(exhausted.captures).toBeLessThan(25);
+    expect(await attempt({ lostReturns: 99, lifecycleAfterReturn: "accepted" })).toMatchObject({
+      outcome: { status: "sent" }, keys: ["-l", "C-j", "C-m"], reservations: 1
+    });
+    expect(await attempt({ lostReturns: 99, lifecycleAfterReturn: "changed" })).toMatchObject({
+      outcome: { status: "busy", reason: "lifecycle-changed", stage: "mid-send" }, keys: ["-l", "C-j", "C-m"]
+    });
+    for (const beforeRetry of ["working", "edit", "capture-lost", "clear"] as const) {
+      expect(await attempt({ beforeRetry })).toMatchObject({ outcome: { status: "busy", stage: "mid-send" }, keys: ["-l", "C-j", "C-m"], reservations: 1 });
+    }
+    if (source !== "idle-sentinel") {
+      // Emptying a draft must not reuse an older identical transcript message.
+      expect(await attempt({ stale: true, beforeRetry: "clear" })).toMatchObject({ outcome: { status: "busy", stage: "mid-send" } });
+    }
   });
 
   it.each([1, 2, 3])("refuses file-backed delivery when capture %s is unavailable", async (failedCapture) => {
