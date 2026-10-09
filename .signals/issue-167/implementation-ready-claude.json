@@ -1,0 +1,16 @@
+{
+  "protocolVersion": 1,
+  "issue": 167,
+  "issueSessionId": "issue-167:26f53972ddf036310c24f41ffd746e699976079b",
+  "agent": "claude",
+  "inputSetHash": "a3190835db1dff4fc76b9747dfba412a092a0953bfda4af267a61633260d78b4",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "e291099d78f28c5538c5176cd47cfc37675105d0",
+  "scopeHash": "17d0a26ae50b365ed7cbc4f7bb327d61ac0ab601591b4fd26a68b0811073928b",
+  "approvedPaths": [
+    ".github/workflows/version-bump-on-merge.yml",
+    "docs/coord-driver.md",
+    "docs/repo-map.md",
+    "test/workflows.test.ts"
+  ]
+}
