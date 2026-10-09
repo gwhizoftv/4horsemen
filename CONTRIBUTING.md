@@ -1,7 +1,7 @@
-# Contributing
+# Contributing to Four Horsemen
 
 Human contributors can use an ordinary fork, topic branch and pull request into
-`main`. Coordination's own multi-agent workflow is optional, not a prerequisite
+`main`. Four Horsemen's own multi-agent workflow is optional, not a prerequisite
 for contributing. Keep changes focused on one issue and describe the behavior,
 risks and verification in the PR. Maintainers review and merge; the driver does
 not merge PRs automatically.

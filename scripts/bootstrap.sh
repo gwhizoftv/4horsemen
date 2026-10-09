@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install or update a complete coordination checkout and optionally link
+# Install or update a complete Four Horsemen checkout and optionally link
 # ~/.local/bin/coord.
 #
 # Public install: curl -fsSL <public-raw-bootstrap-url> | sh
@@ -15,7 +15,7 @@ die() {
 
 default_root=${COORD_INSTALL_ROOT:-"$HOME/.local/share/coordination"}
 root=$default_root
-source_repo=${COORD_SOURCE:-https://github.com/gwhizoftv/coordination.git}
+source_repo=${COORD_SOURCE:-https://github.com/gwhizoftv/4horsemen.git}
 install_path=true
 
 while [ "$#" -gt 0 ]; do
@@ -40,7 +40,7 @@ Usage: bootstrap.sh [--root <path>] [--source <git-url-or-path>] [--no-path]
 
 Defaults:
   --root   $COORD_INSTALL_ROOT or ~/.local/share/coordination
-  --source $COORD_SOURCE or https://github.com/gwhizoftv/coordination.git
+  --source $COORD_SOURCE or https://github.com/gwhizoftv/4horsemen.git
   PATH     install ~/.local/bin/coord unless --no-path is supplied
 
 Public install: curl -fsSL <public-raw-bootstrap-url> | sh

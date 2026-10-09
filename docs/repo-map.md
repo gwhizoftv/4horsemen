@@ -1,4 +1,4 @@
-# Repo map — coordination driver
+# Repo map — Four Horsemen
 
 Orientation for an agent starting work here. Read this instead of running a
 repository-wide search to find where a change belongs.
@@ -9,10 +9,10 @@ make it wrong.
 
 ## What this repository is
 
-The **coordination driver**. It prepares actions for agents, verifies the
-evidence they publish, and advances a workflow state machine. It is not the
-product it coordinates — the product lives in its own repository, and hooks and
-tests stay decoupled from it on purpose.
+**Four Horsemen**, the coordination driver invoked with `coord`. It prepares
+actions for agents, verifies the evidence they publish, and advances a workflow
+state machine. The products it coordinates live in their own repositories,
+with their hooks and tests kept separate from the driver.
 
 Runtime state lives **outside every clone**, under the `--coord-root` directory.
 Nothing in this repository writes issue state into the working tree.

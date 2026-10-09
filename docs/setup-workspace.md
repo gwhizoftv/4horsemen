@@ -1,8 +1,8 @@
-# Installing coordination against a product
+# Installing Four Horsemen against a product
 
 ## The rule everything else follows
 
-> Coordination constrains **agents and the owner control plane**. It does not
+> Four Horsemen constrains **agents and the owner control plane**. It does not
 > constrain the product's other developers. One person must be able to use plain
 > VS Code on the product repo — no `coord`, no Node, no new git obligations —
 > while another drives agents against the same GitHub remote.
@@ -25,18 +25,18 @@ them alone. "No hooks for humans" means none *from coordination*.
 ## Bootstrap once
 
 With Node 26, pnpm 11 and Git installed, bootstrap from the public URL without
-GitHub CLI authentication to coordination:
+GitHub CLI authentication to Four Horsemen:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/gwhizoftv/coordination/main/scripts/bootstrap.sh | sh
+curl -fsSL https://raw.githubusercontent.com/gwhizoftv/4horsemen/main/scripts/bootstrap.sh | sh
 ```
 
 Or clone and inspect the script before executing it:
 
 ```sh
-git clone https://github.com/gwhizoftv/coordination.git coordination-src
-# Review coordination-src/scripts/bootstrap.sh first.
-sh coordination-src/scripts/bootstrap.sh --source "$PWD/coordination-src"
+git clone https://github.com/gwhizoftv/4horsemen.git 4horsemen-src
+# Review 4horsemen-src/scripts/bootstrap.sh first.
+sh 4horsemen-src/scripts/bootstrap.sh --source "$PWD/4horsemen-src"
 ```
 
 The POSIX shell bootstrap clones or updates a complete install at
@@ -55,7 +55,7 @@ owner of that checkout.
 forks, authenticate Git and pass a local authenticated clone as `--source`.
 The anonymous commands require a public upstream: release preparation does not
 itself change repository visibility. Owner release gates remain in
-[issue #139](https://github.com/gwhizoftv/coordination/issues/139).
+[issue #139](https://github.com/gwhizoftv/4horsemen/issues/139).
 
 GitHub CLI (`gh`) authentication is needed for product issue/PR operations, not
 for public bootstrap. Interactive operation also needs tmux, the configured

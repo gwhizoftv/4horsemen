@@ -1,15 +1,17 @@
 <p align="center">
-  <img src="docs/images/coord-banner.jpg" width="100%" alt="Open Source LLM Coordinator: four coding agents collaborating around a shared software project">
+  <img src="docs/images/coord-banner.jpg" width="100%" alt="Four Horsemen: four coding agents collaborating around a shared software project">
 </p>
 
-# coord
+# Four Horsemen
 
 **Multi-agent consensus engine and workflow driver for autonomous software development.**
+
+Four Horsemen (`4horsemen`) runs through the `coord` command.
 
 ![Claude Code](https://img.shields.io/badge/agent-Claude_Code-d97757) ![Codex](https://img.shields.io/badge/agent-Codex-10a37f) ![Cursor](https://img.shields.io/badge/agent-Cursor-555555) ![Antigravity](https://img.shields.io/badge/agent-Antigravity-4285f4) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Instead of trusting a single model with a change, give a team of coding agents
-the same GitHub issue. `coord` runs Claude Code, Codex, Cursor, and Antigravity
+the same GitHub issue. Four Horsemen runs Claude Code, Codex, Cursor, and Antigravity
 in separate Git clones, coordinates their plans and peer reviews, and verifies
 the exact commits they submit before publishing a pull request. You choose the
 agents, the project's checks, and when to intervene.
@@ -42,7 +44,7 @@ Use **solo** for one agent, **reviewed** for peer plan selection followed by one
 implementer, or **consensus** for the full review loop. See
 [workflow profiles](docs/coord-driver.md#profiles) for details.
 
-## Why coord
+## Why Four Horsemen
 
 - **Review before and after coding.** In consensus mode, peers challenge both
   design plans and concrete implementations.
@@ -78,7 +80,7 @@ you have work to delegate. Your product must have a GitHub `origin` remote.
 ### 1. Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/gwhizoftv/coordination/main/scripts/bootstrap.sh | sh
+curl -fsSL https://raw.githubusercontent.com/gwhizoftv/4horsemen/main/scripts/bootstrap.sh | sh
 ```
 
 This installs under `~/.local/share/coordination` and links `~/.local/bin/coord`;

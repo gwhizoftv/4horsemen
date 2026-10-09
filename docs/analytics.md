@@ -1,4 +1,4 @@
-# Coordination analytics — what we can measure today, and what we cannot
+# Four Horsemen analytics — what we can measure today, and what we cannot
 
 ## Verification measurements (#162)
 
