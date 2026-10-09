@@ -212,7 +212,11 @@ reinstall/refresh. **Nobody bumps it by hand.** The `version-bump-on-merge`
 GitHub Action runs on each push to `main`, advances `package.json`, and pushes a
 `chore: release 0.0.N` commit back to `main`. Runs are serialized, so two PRs
 merging minutes apart get two distinct versions without either one reserving a
-number in advance.
+number in advance. The same push carries a `v0.0.N` tag on that commit, and the
+job then publishes a GitHub release for the tag with generated notes, so the
+version `coord --version` reports has a release page listing what landed. If
+only the release step fails, do not re-run the job (that bumps again); run
+`gh release create v0.0.N --verify-tag --title v0.0.N --generate-notes`.
 
 Nothing on a branch requires or checks a version advance — not `pnpm check:fast`,
 not `pnpm check`, not any PR workflow — so an issue branch stays at `main`'s

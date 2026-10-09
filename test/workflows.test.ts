@@ -18,10 +18,13 @@ const workflowsDir = join(dirname(fileURLToPath(import.meta.url)), "..", ".githu
 
 const workflowFiles = readdirSync(workflowsDir).filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"));
 
+type Step = { id?: string; name?: string; run?: string; env?: Record<string, string> };
+
 type Workflow = {
   on?: unknown;
   true?: unknown;
-  jobs?: Record<string, { if?: unknown; steps?: unknown[] }>;
+  concurrency?: { "cancel-in-progress"?: unknown; queue?: unknown };
+  jobs?: Record<string, { if?: unknown; steps?: Step[] }>;
 };
 
 const parse = (name: string): Workflow => load(readFileSync(join(workflowsDir, name), "utf8")) as Workflow;
@@ -76,5 +79,42 @@ describe("version-bump-on-merge", () => {
     expect(typeof guard).toBe("string");
     expect(guard).toContain("chore: release ");
     expect(guard).toContain("startsWith");
+  });
+
+  it("queues every pending run instead of replacing it", () => {
+    // The default single pending slot lets a third merge replace the second's
+    // pending run, so that merge never gets a release of its own.
+    const concurrency = parse("version-bump-on-merge.yml").concurrency;
+    expect(concurrency?.["cancel-in-progress"]).toBe(false);
+    expect(concurrency?.queue).toBe("max");
+  });
+
+  it("pushes the release tag atomically with the bump commit", () => {
+    const steps = parse("version-bump-on-merge.yml").jobs?.bump?.steps ?? [];
+    const run = steps.find((step) => step.id === "bump")?.run ?? "";
+    expect(run).toContain('git tag -f "v${version}"');
+    // A separate tag push could leave main at a version with no tag, or leave a
+    // remote tag behind for a number the retry then hands to another run.
+    const push = run.split("\n").find((line) => line.includes("git push")) ?? "";
+    expect(push).toContain("--atomic");
+    expect(push).toContain('"HEAD:main"');
+    expect(push).toContain('"refs/tags/v${version}"');
+    expect(run).toContain('echo "version=${version}" >> "$GITHUB_OUTPUT"');
+  });
+
+  it("publishes a GitHub release for the pushed tag after the bump", () => {
+    const steps = parse("version-bump-on-merge.yml").jobs?.bump?.steps ?? [];
+    const bump = steps.findIndex((step) => step.id === "bump");
+    const release = steps.findIndex((step) => (step.run ?? "").includes("gh release create"));
+    expect(bump).toBeGreaterThanOrEqual(0);
+    expect(release).toBeGreaterThan(bump);
+    const step = steps[release] as Step;
+    // Without --verify-tag a missing tag is created at main's head when the API
+    // call lands, which can already be a later merge.
+    expect(step.run).toContain("--verify-tag");
+    expect(step.run).toContain("--generate-notes");
+    expect(step.env?.GH_TOKEN).toBe("${{ github.token }}");
+    expect(step.env?.VERSION).toBe("${{ steps.bump.outputs.version }}");
+    expect(step.run).toContain('"v${VERSION}"');
   });
 });
