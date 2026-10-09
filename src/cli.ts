@@ -203,7 +203,7 @@ const withStoredMailbox = (paths: IssueRuntimePaths): IssueRuntimePaths => {
 };
 
 const context = (parsed: ParsedArgs, io: CliIo): IssueRuntimePaths => {
-  const coordRoot = requireFlag(parsed, "coord-root");
+  const coordRoot = requireFlag(parsed, "coord-runtime");
   const issueValue = parsed.flags.get("issue") ?? io.env.COORD_ISSUE;
   if (issueValue === undefined) throw new Error("--issue or COORD_ISSUE is required.");
   return withStoredMailbox(issueRuntimePaths(resolve(io.cwd, coordRoot), parseIssue(issueValue)));
@@ -219,31 +219,31 @@ const help = `Four Horsemen (coord) — owner-side workflow driver
 
 Usage:
   coord --version | -V | version
-  coord onboard <repository> [--coord-root <path>] [--completes-root <path>] [--agents <a,b,c>] [--profile <p>]
+  coord onboard <repository> [--coord-runtime <path>] [--completes-root <path>] [--agents <a,b,c>] [--profile <p>]
   coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>] [-v|--verbose]
-  coord manual [--product <path> | --config <path> --coord-root <path>]
-  coord install --product <path> --coord-root <external-path> --agents <a,b,c> [--profile <p>]
+  coord manual [--product <path> | --config <path> --coord-runtime <path>]
+  coord install --product <path> --coord-runtime <external-path> --agents <a,b,c> [--profile <p>]
                 [--completes-root <path>] [--clone-root <dir>] [--declare <file>]
                 [--write-product] [--vendor] [--bootstrap-coordination] [--dry-run]
-  coord uninstall --coord-root <path> --product <path> [--delete-clones] [--force]
+  coord uninstall --coord-runtime <path> --product <path> [--delete-clones] [--force]
                   [--wipe-runtime] [--delete-coordination] [--dry-run]
-  coord doctor --coord-root <path> --product <path>
+  coord doctor --coord-runtime <path> --product <path>
   coord start <issue> --product <path> [--profile <solo|reviewed|consensus>] [-v|--verbose]
-  coord start <issue> --config <path> --coord-root <external-path> [--profile <solo|reviewed|consensus>] [-v|--verbose]
-  coord run --issue <issue> [--product <path> | --coord-root <path>] [-v|--verbose]
-  coord status --issue <issue> [--product <path> | --coord-root <path>]
-  coord analytics --issue <issue> [--product <path> | --coord-root <path>]
-  coord next --issue <issue> [--product <path> | --coord-root <path>] [--agent <agent>]
-  coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-root <path>]
-  coord drop <agent> --issue <issue> [--product <path> | --coord-root <path>]
-  coord pause|resume|restart-action|abandon --issue <issue> [--product <path> | --coord-root <path>]
+  coord start <issue> --config <path> --coord-runtime <external-path> [--profile <solo|reviewed|consensus>] [-v|--verbose]
+  coord run --issue <issue> [--product <path> | --coord-runtime <path>] [-v|--verbose]
+  coord status --issue <issue> [--product <path> | --coord-runtime <path>]
+  coord analytics --issue <issue> [--product <path> | --coord-runtime <path>]
+  coord next --issue <issue> [--product <path> | --coord-runtime <path>] [--agent <agent>]
+  coord answer <question-id> <retry|revise|abandon> --issue <issue> [--product <path> | --coord-runtime <path>]
+  coord drop <agent> --issue <issue> [--product <path> | --coord-runtime <path>]
+  coord pause|resume|restart-action|abandon --issue <issue> [--product <path> | --coord-runtime <path>]
   coord resume --issue <issue> [--agent <agent> | --hold <id>] [--reset-nudge-budget] [--run]
-               [--product <path> | --coord-root <path>]
-  coord attach <issue> [--product <path> | --coord-root <path>]
-  coord detach <issue> [--product <path> | --coord-root <path>] [--dry-run]
-  coord detach manual [--product <path> | --config <path> --coord-root <path>] [--dry-run]
-  coord wipe-issue <issue> [--product <path> | --config <path> --coord-root <path>] [--force] [--dry-run] [--delete-evidence]
-  coord reset-clones <issue> [--product <path> | --config <path> --coord-root <path>] [--force] [--dry-run]
+               [--product <path> | --coord-runtime <path>]
+  coord attach <issue> [--product <path> | --coord-runtime <path>]
+  coord detach <issue> [--product <path> | --coord-runtime <path>] [--dry-run]
+  coord detach manual [--product <path> | --config <path> --coord-runtime <path>] [--dry-run]
+  coord wipe-issue <issue> [--product <path> | --config <path> --coord-runtime <path>] [--force] [--dry-run] [--delete-evidence]
+  coord reset-clones <issue> [--product <path> | --config <path> --coord-runtime <path>] [--force] [--dry-run]
 
 Called by the agent-clone hooks, not by operators:
   coord hook-verify --clone <path> --phase <precommit|prepush>
@@ -309,7 +309,8 @@ retain readiness checks and send limits; inspect/type in the agent terminal if r
 An action is one assigned task; a turn is one agent prompt/reply; a pin is a commit.
 No control force-completes work: the agent must publish valid evidence first.
 Issue commands infer runtime from a registered current worktree when neither
---product nor --coord-root is supplied. Use an explicit root from other folders.
+--product nor --coord-runtime is supplied. Use --coord-runtime to name the runtime
+directory explicitly. Onboard defaults to a coord-runtime directory beside the repository.
 Quit stops only the foreground runner, unlike coord detach; agent panes still
 accept direct typing. Non-TTY runs do not read interactive input.
 `;
@@ -332,7 +333,7 @@ const commandDescriptions: Record<string, string> = {
   onboard: "Install a coordination workspace for a repository. Example: coord onboard /repository.",
   install: "Install or repair agent clones, hooks and workspace configuration. Preview changes with --dry-run; see required paths below.",
   uninstall: "Remove coordination installation; deletion options are destructive. Preview with --dry-run and explicit repository/runtime paths below.",
-  doctor: "Inspect installation wiring read-only, not live harness trust. Example: coord doctor --coord-root /runtime --product /repository.",
+  doctor: "Inspect installation wiring read-only, not live harness trust. Example: coord doctor --coord-runtime /runtime --product /repository.",
   "wipe-issue": "Delete issue runtime and matching remote branches; inspect --dry-run first. Example: coord wipe-issue 161 --dry-run.",
   "reset-clones": "Restore matching agent clones to the base branch without deleting issue runtime. Example: coord reset-clones 161 --dry-run.",
   version: "Print the installed coordinator package version without changing state. Example: coord --version.",
@@ -407,12 +408,12 @@ const workflowProfile = (value: string): WorkflowProfile => {
 
 const resolveStart = (parsed: ParsedArgs, io: CliIo): StartResolution => {
   const hasConfig = parsed.flags.has("config");
-  const hasCoordRoot = parsed.flags.has("coord-root");
+  const hasCoordRoot = parsed.flags.has("coord-runtime");
   if (hasConfig !== hasCoordRoot) {
-    throw new Error("--config and --coord-root must be supplied together, or use --product after coord onboard.");
+    throw new Error("--config and --coord-runtime must be supplied together, or use --product after coord onboard.");
   }
   if (hasConfig && parsed.flags.has("product")) {
-    throw new Error("Use --product or the explicit --config/--coord-root pair, not both.");
+    throw new Error("Use --product or the explicit --config/--coord-runtime pair, not both.");
   }
 
   let configPath: string;
@@ -420,7 +421,7 @@ const resolveStart = (parsed: ParsedArgs, io: CliIo): StartResolution => {
   let workspace: WorkspaceLocation | null = null;
   if (hasConfig) {
     configPath = resolve(io.cwd, requireFlag(parsed, "config"));
-    runtimeRoot = resolve(io.cwd, requireFlag(parsed, "coord-root"));
+    runtimeRoot = resolve(io.cwd, requireFlag(parsed, "coord-runtime"));
   } else {
     const product = parsed.flags.has("product") ? resolve(io.cwd, requireFlag(parsed, "product")) : io.cwd;
     workspace = resolveWorkspaceFromProduct(product);
@@ -469,10 +470,10 @@ const existingIssueRuntime = (resolution: StartResolution, issue: number): Issue
 
 /** Resolve existing state either explicitly or through an onboarded product. */
 const existingContext = (parsed: ParsedArgs, io: CliIo): IssueRuntimePaths => {
-  if (parsed.flags.has("coord-root") && parsed.flags.has("product")) {
-    throw new Error("Use --product or --coord-root for an issue command, not both.");
+  if (parsed.flags.has("coord-runtime") && parsed.flags.has("product")) {
+    throw new Error("Use --product or --coord-runtime for an issue command, not both.");
   }
-  if (parsed.flags.has("coord-root")) return context(parsed, io);
+  if (parsed.flags.has("coord-runtime")) return context(parsed, io);
   const issueValue = parsed.flags.get("issue") ?? io.env.COORD_ISSUE;
   if (issueValue === undefined) throw new Error("--issue or COORD_ISSUE is required.");
   const issue = parseIssue(issueValue);
@@ -492,7 +493,7 @@ const existingContext = (parsed: ParsedArgs, io: CliIo): IssueRuntimePaths => {
 };
 
 /**
- * Agent-facing next resolution: product, explicit coord-root, or the calling
+ * Agent-facing next resolution: product, explicit coord-runtime, or the calling
  * agent clone's coord.workspaceConfig.
  */
 const nextContext = (
@@ -504,7 +505,7 @@ const nextContext = (
   const issue = parseIssue(issueValue);
   const flagAgent = parsed.flags.get("agent") ?? io.env.COORD_AGENT;
 
-  if (parsed.flags.has("product") || parsed.flags.has("coord-root")) {
+  if (parsed.flags.has("product") || parsed.flags.has("coord-runtime")) {
     const paths = existingContext(parsed, io);
     if (flagAgent === undefined) throw new Error("--agent or COORD_AGENT is required.");
     return { paths, agent: flagAgent };
@@ -513,13 +514,13 @@ const nextContext = (
   const cloneRoot = worktreeRoot(io.cwd);
   if (cloneRoot === null) {
     throw new Error(
-      "coord next needs --product, --coord-root, or to be run from an agent clone with coord.workspaceConfig set."
+      "coord next needs --product, --coord-runtime, or to be run from an agent clone with coord.workspaceConfig set."
     );
   }
   const configPath = localConfigGet(cloneRoot, WORKSPACE_CONFIG_KEY);
   if (configPath === null) {
     throw new Error(
-      `This worktree has no local ${WORKSPACE_CONFIG_KEY}. Run from an agent clone, or pass --product / --coord-root.`
+      `This worktree has no local ${WORKSPACE_CONFIG_KEY}. Run from an agent clone, or pass --product / --coord-runtime.`
     );
   }
   const workspace = workspaceLocationFromConfig(configPath);
@@ -649,7 +650,7 @@ const detachCompletedIssue = async (paths: IssueRuntimePaths, io: CliIo): Promis
     `Clone readiness refused for ${refused.length} clone(s). ` +
       `Do not run git checkout ${start.baseBranch} by hand — the AGENTS.md protocol overlay ` +
       `(skip-worktree) blocks it. Run: coord reset-clones ${start.issue} --config ${shellQuote(start.configPath)} ` +
-      `--coord-root ${shellQuote(start.coordRoot)}.\n`
+      `--coord-runtime ${shellQuote(start.coordRoot)}.\n`
   );
   appendJournal(
     paths,
@@ -953,7 +954,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     const parsed = parseArgs(rest, booleanFlags[command] ?? []);
 
     if (/^[0-9]+$/.test(command)) {
-      allowedFlags(parsed, ["product", "profile", "config", "coord-root", "verbose"]);
+      allowedFlags(parsed, ["product", "profile", "config", "coord-runtime", "verbose"]);
       if (parsed.positionals.length !== 0) throw new Error("coord <issue> takes no additional positional arguments.");
       verboseState.enabled = flagIsSet(parsed, "verbose");
       const issue = parseIssue(command);
@@ -966,7 +967,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "manual") {
-      allowedFlags(parsed, ["product", "config", "coord-root"]);
+      allowedFlags(parsed, ["product", "config", "coord-runtime"]);
       if (parsed.positionals.length !== 0) throw new Error("manual takes no positional arguments.");
       const resolution = resolveStart(parsed, io);
       const agents = resolvedAgents(resolution);
@@ -988,7 +989,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "onboard") {
-      allowedFlags(parsed, ["coord-root", "completes-root", "clone-root", "agents", "profile"]);
+      allowedFlags(parsed, ["coord-runtime", "completes-root", "clone-root", "agents", "profile"]);
       if (parsed.positionals.length !== 1) throw new Error("onboard requires exactly one repository path.");
       const agents = (parsed.flags.get("agents") ?? "claude,codex,cursor,antigravity")
         .split(",")
@@ -1002,7 +1003,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         productRoot,
         agents,
         profile,
-        ...(parsed.flags.has("coord-root") ? { coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")) } : {}),
+        ...(parsed.flags.has("coord-runtime") ? { coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-runtime")) } : {}),
         ...(parsed.flags.has("completes-root")
           ? { completesRoot: resolve(io.cwd, requireFlag(parsed, "completes-root")) }
           : {}),
@@ -1017,7 +1018,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     if (command === "install") {
       allowedFlags(parsed, [
         "product",
-        "coord-root",
+        "coord-runtime",
         "completes-root",
         "agents",
         "profile",
@@ -1040,7 +1041,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       install({
         installRoot: coordinatorSourceRoot,
         productRoot: resolve(io.cwd, requireFlag(parsed, "product")),
-        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
+        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-runtime")),
         agents,
         profile,
         ...(parsed.flags.has("completes-root")
@@ -1061,10 +1062,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "uninstall") {
-      allowedFlags(parsed, ["product", "project", "coord-root", ...(booleanFlags.uninstall ?? [])]);
+      allowedFlags(parsed, ["product", "project", "coord-runtime", ...(booleanFlags.uninstall ?? [])]);
       if (parsed.positionals.length !== 0) throw new Error("uninstall takes no positional arguments.");
       uninstall({
-        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
+        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-runtime")),
         ...(parsed.flags.has("product") ? { productRoot: resolve(io.cwd, requireFlag(parsed, "product")) } : {}),
         ...(parsed.flags.has("project") ? { project: requireFlag(parsed, "project") } : {}),
         deleteClones: flagIsSet(parsed, "delete-clones"),
@@ -1079,10 +1080,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "doctor") {
-      allowedFlags(parsed, ["product", "project", "coord-root"]);
+      allowedFlags(parsed, ["product", "project", "coord-runtime"]);
       if (parsed.positionals.length !== 0) throw new Error("doctor takes no positional arguments.");
       const report = doctor({
-        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-root")),
+        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-runtime")),
         ...(parsed.flags.has("product") ? { productRoot: resolve(io.cwd, requireFlag(parsed, "product")) } : {}),
         ...(parsed.flags.has("project") ? { project: requireFlag(parsed, "project") } : {}),
         ...(dependencies.home === undefined ? {} : { home: dependencies.home })
@@ -1191,7 +1192,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "start") {
-      allowedFlags(parsed, ["profile", "config", "coord-root", "product", "verbose"]);
+      allowedFlags(parsed, ["profile", "config", "coord-runtime", "product", "verbose"]);
       if (parsed.positionals.length !== 1) throw new Error("start requires exactly one issue number.");
       verboseState.enabled = flagIsSet(parsed, "verbose");
       const issue = parseIssue(parsed.positionals[0] as string);
@@ -1202,7 +1203,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "attach") {
-      allowedFlags(parsed, ["product", "config", "coord-root"]);
+      allowedFlags(parsed, ["product", "config", "coord-runtime"]);
       if (parsed.positionals.length !== 1) throw new Error("attach requires exactly one issue number.");
       const issue = parseIssue(parsed.positionals[0] as string);
       const resolution = resolveStart(parsed, io);
@@ -1216,7 +1217,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "detach") {
-      allowedFlags(parsed, ["product", "config", "coord-root", ...(booleanFlags.detach ?? [])]);
+      allowedFlags(parsed, ["product", "config", "coord-runtime", ...(booleanFlags.detach ?? [])]);
       if (parsed.positionals.length !== 1) throw new Error("detach requires exactly one issue number or 'manual'.");
       const resolution = resolveStart(parsed, io);
       if (parsed.positionals[0] === "manual") {
@@ -1263,7 +1264,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "wipe-issue") {
-      allowedFlags(parsed, ["product", "config", "coord-root", ...(booleanFlags["wipe-issue"] ?? [])]);
+      allowedFlags(parsed, ["product", "config", "coord-runtime", ...(booleanFlags["wipe-issue"] ?? [])]);
       if (parsed.positionals.length !== 1) throw new Error("wipe-issue requires exactly one issue number.");
       const issue = parseIssue(parsed.positionals[0] as string);
       const resolution = resolveStart(parsed, io);
@@ -1292,7 +1293,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "reset-clones") {
-      allowedFlags(parsed, ["product", "config", "coord-root", ...(booleanFlags["reset-clones"] ?? [])]);
+      allowedFlags(parsed, ["product", "config", "coord-runtime", ...(booleanFlags["reset-clones"] ?? [])]);
       if (parsed.positionals.length !== 1) throw new Error("reset-clones requires exactly one issue number.");
       const issue = parseIssue(parsed.positionals[0] as string);
       const resolution = resolveStart(parsed, io);
@@ -1356,7 +1357,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "run") {
-      allowedFlags(parsed, ["issue", "coord-root", "product", "verbose"]);
+      allowedFlags(parsed, ["issue", "coord-runtime", "product", "verbose"]);
       if (parsed.positionals.length !== 0) throw new Error("run takes no positional arguments.");
       verboseState.enabled = flagIsSet(parsed, "verbose");
       const paths = existingContext(parsed, io);
@@ -1365,7 +1366,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "status") {
-      allowedFlags(parsed, ["issue", "coord-root", "product"]);
+      allowedFlags(parsed, ["issue", "coord-runtime", "product"]);
       if (parsed.positionals.length !== 0) throw new Error("status takes no positional arguments.");
       const paths = existingContext(parsed, io);
       io.stdout(renderIssueReport(readStartState(paths), readCursorsState(paths), readAgentLifecycle(paths)));
@@ -1373,7 +1374,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "analytics") {
-      allowedFlags(parsed, ["issue", "coord-root", "product"]);
+      allowedFlags(parsed, ["issue", "coord-runtime", "product"]);
       if (parsed.positionals.length !== 0) throw new Error("analytics takes no positional arguments.");
       const paths = existingContext(parsed, io);
       const runtime = readAnalyticsRuntime(paths);
@@ -1396,7 +1397,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "next") {
-      allowedFlags(parsed, ["issue", "coord-root", "product", "agent"]);
+      allowedFlags(parsed, ["issue", "coord-runtime", "product", "agent"]);
       if (parsed.positionals.length !== 0) throw new Error("next takes no positional arguments.");
       const { paths, agent } = nextContext(parsed, io);
       const start = readStartState(paths);
@@ -1413,7 +1414,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "answer") {
-      allowedFlags(parsed, ["issue", "coord-root", "product"]);
+      allowedFlags(parsed, ["issue", "coord-runtime", "product"]);
       if (parsed.positionals.length !== 2) {
         throw new Error("answer requires <question-id> and one of retry, revise, or abandon.");
       }
@@ -1434,7 +1435,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "drop") {
-      allowedFlags(parsed, ["issue", "coord-root", "product"]);
+      allowedFlags(parsed, ["issue", "coord-runtime", "product"]);
       if (parsed.positionals.length !== 1) throw new Error("drop requires exactly one agent id.");
       const paths = existingContext(parsed, io);
       const agent = parsed.positionals[0] as string;
@@ -1445,7 +1446,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "pause" || command === "resume") {
-      allowedFlags(parsed, ["issue", "coord-root", "product", ...(command === "resume" ? ["agent", "hold", "reset-nudge-budget", "run"] : [])]);
+      allowedFlags(parsed, ["issue", "coord-runtime", "product", ...(command === "resume" ? ["agent", "hold", "reset-nudge-budget", "run"] : [])]);
       if (parsed.positionals.length !== 0) throw new Error(`${command} takes no positional arguments.`);
       const paths = existingContext(parsed, io);
       const paused = command === "pause";
@@ -1470,7 +1471,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "restart-action") {
-      allowedFlags(parsed, ["issue", "coord-root", "product", "agent"]);
+      allowedFlags(parsed, ["issue", "coord-runtime", "product", "agent"]);
       if (parsed.positionals.length !== 0) throw new Error("restart-action takes no positional arguments.");
       const paths = existingContext(parsed, io);
       const requestedAgent = parsed.flags.has("agent") ? requireFlag(parsed, "agent") : null;
@@ -1504,7 +1505,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "abandon") {
-      allowedFlags(parsed, ["issue", "coord-root", "product"]);
+      allowedFlags(parsed, ["issue", "coord-runtime", "product"]);
       if (parsed.positionals.length !== 0) throw new Error("abandon takes no positional arguments.");
       const paths = existingContext(parsed, io);
       const now = new Date().toISOString();

@@ -12,7 +12,7 @@ Branches: `issue-<n>/<agent>` for automated coordinator actions and
 `<agent>/<name>` for owner-driven manual work. Never commit on `main` or peer
 branches.
 Runtime state lives outside all clones:
-`/Volumes/4TB-SOURCE/REPOS/coord/coord-runtime` (`coord start --coord-root ...`).
+`/Volumes/4TB-SOURCE/REPOS/coord/coord-runtime` (`coord start --coord-runtime ...`).
 
 ## Automated and manual modes
 

@@ -17,7 +17,7 @@ into an owner-side bare mirror and evaluates blobs at the exact submission SHA.
 
 ## Runtime topology
 
-`--coord-root` must resolve outside every configured clone. Existing symlinks
+`--coord-runtime` must resolve outside every configured clone. Existing symlinks
 within derived runtime paths are rejected.
 
 ```text
@@ -36,7 +36,7 @@ within derived runtime paths are rejected.
       render.log     optional human log
       responses/     agent-writable private ballot JSON (one file per actionId)
 
-<parent-of-coord-root>/completes/<coord-root-name>[/<project>]/
+<parent-of-coord-runtime>/completes/<coord-runtime-name>[/<project>]/
   issue-<n>/<agent>/
     complete         exact pushed SHA or `response <actionId>` marker
 ```
@@ -45,7 +45,7 @@ Agents write at most two runtime paths: the completion marker in the mailbox,
 and (for ballot actions) a private response under `agents/<agent>/responses/`.
 Neither grant reaches `cursors.json`, `journal.jsonl`, peers, or the
 accepted-response archive. Codex ran `--sandbox danger-full-access` purely
-because `complete` used to sit under the coord root; it now runs
+because `complete` used to sit under the runtime directory; it now runs
 `workspace-write` plus narrow `--add-dir` grants on its own drop and response
 directory.
 
@@ -55,10 +55,10 @@ whole mailbox. The response grant is exactly
 The generated `start-<agent>.sh` resolves both at launch from
 `coord.completesRoot`, `coord.workspaceConfig`, and `COORD_ISSUE`.
 
-The identity segments separate products that share one outer root: without them
-two workspaces would resolve `issue-42/claude/complete` to the same file. The
-coord root's own directory name is always present; a nested workspace adds its
-project, because the project alone is not unique across outer roots.
+The identity segments separate products that share one outer runtime directory:
+without them, two workspaces would resolve `issue-42/claude/complete` to the same
+file. The runtime directory's name is always present; a nested workspace adds
+its project, because the project alone is not unique across runtime directories.
 
 `completesRoot` defaults to that derived path, may be set with
 `--completes-root` on `coord install` / `coord onboard`, and is claimed at the
@@ -66,7 +66,7 @@ mailbox root so a second workspace cannot silently share it; the resolved absolu
 `coord start`, and every later command for that issue reads it from there rather
 than from a config that a reinstall may have moved.
 
-For a fresh single-product onboard, `<workspace-root>` is the outer coord root
+For a fresh single-product onboard, `<workspace-root>` is the outer runtime directory
 and `config.json` is flat beside these paths. Additional products sharing that
 outer root use `workspaces/<project>/` as their workspace root. They therefore
 receive distinct mirrors, issue-number namespaces, and tmux session names.
@@ -127,7 +127,7 @@ classification, then runs each declared final component. A component with a
 trusted receipt for equivalent inputs is skipped (`verification-reused`); every
 other component runs. With no receipts, the full declared gate runs.
 
-Receipts live in `<coord-root>/verification/receipts/<key>.json`, outside every
+Receipts live in `<coord-runtime>/verification/receipts/<key>.json`, outside every
 clone. The key is a digest of the origin, the input identity (tree id, or a
 digest of the tree without coordination evidence), the declared argv, the
 frozen policy digest, platform, architecture, Node version, probe outputs,
@@ -179,7 +179,7 @@ owner-provided start input.
 
 `coord manual` is a launch/attach lifecycle, not a workflow profile. From an
 onboarded product it resolves the registered config; explicit callers may use
-`--product` or `--config <path> --coord-root <path>`. It validates all
+`--product` or `--config <path> --coord-runtime <path>`. It validates all
 configured launchers, creates or repairs the workspace's
 `coord-manual-<group>` tmux session, reuses live agent panes, respawns dead
 panes, creates missing agent windows, opens only missing macOS Terminal clients
@@ -276,9 +276,9 @@ coord start 42 --product /path/to/onboarded/product
 
 coord start 42 \
   --config /absolute/owner/runtime/config.json \
-  --coord-root /absolute/owner/runtime
+  --coord-runtime /absolute/owner/runtime
 
-COORD_ISSUE=42 coord run --coord-root /absolute/owner/runtime
+COORD_ISSUE=42 coord run --coord-runtime /absolute/owner/runtime
 ```
 
 `start` derives the repository from `config.origin`, runs an argv-safe `gh issue
@@ -509,7 +509,7 @@ coord next --issue 42
 Explicit forms remain available:
 
 ```sh
-COORD_AGENT=codex coord next --issue 42 --coord-root /path/to/runtime
+COORD_AGENT=codex coord next --issue 42 --coord-runtime /path/to/runtime
 ```
 
 ## Profiles
@@ -574,7 +574,7 @@ workflow; no new owner command is required.
 
 ## Owner controls
 
-Issue controls accept either an explicit workspace `--coord-root` or an
+Issue controls accept either an explicit workspace `--coord-runtime` or an
 onboarded repository `--product` (the flag spelling is unchanged). Without either,
 controls infer the workspace from the current owner or registered agent worktree,
 including subdirectories. A crossed/invalid locator is an error, not a fallback.
@@ -707,7 +707,7 @@ submission received/validated. Check preparation, waiting, execution and outcome
 are announced; reused checks are labelled, not claimed as rerun. Branch pushes
 and PR operations announce their work too. Ballot contents stay private.
 
-Recovery commands include the actual shell-quoted `--coord-root`, so they also
+Recovery commands include the actual shell-quoted `--coord-runtime`, so they also
 work from another folder. A provider recheck time is not a promise of availability;
 an unknown provider failure is not evidence of exhausted quota.
 
@@ -777,7 +777,7 @@ coord resume --issue N  # separately clear a manual pause, if present
 coord resume --issue N --agent claude --run
 ```
 
-Include `--product PATH` or `--coord-root PATH` as usual. Releasing one hold never
+Include `--product PATH` or `--coord-runtime PATH` as usual. Releasing one hold never
 clears another hold or a manual pause, and is audited. Retired actions cannot be
 released; `restart-action` and `drop` require resolving holds first. Owner release
 acknowledges a hold, not the continuing condition: a fresh local observation of
@@ -829,7 +829,7 @@ clock text such as "resets 3:45pm" is never parsed.
   has a 10 s lifetime and a 256 KiB output cap, and it is always reaped.
   Reads are triggered only by the initial binding check, by a new hold for
   that agent, or by an exact deadline plus 30 seconds. Limits:
-  - at most one helper runs per binding, across issues in this coord root;
+  - at most one helper runs per binding, across issues in this runtime directory;
   - starts are at least 5 minutes apart;
   - after a failed read there are two retries (at +5 then +10 minutes);
   - each action gets six starts in total, and neither restarts nor your
@@ -840,7 +840,7 @@ clock text such as "resets 3:45pm" is never parsed.
   previously blocked window is back below its limit with the same duration.
   The helper must report that version and the bound home, and the account must
   be unchanged across the read. It removes only that resource hold. Without a
-  validated version, quota reads only enrich the hold and you release it. A binding shared by two separately managed coord roots
+  validated version, quota reads only enrich the hold and you release it. A binding shared by two separately managed runtime directories
   cannot be serialized and is unsupported.
 - **Cursor** errors stay unknown and `aborted` is a cancellation. **Antigravity**
   keeps the vendor-independent protections only.

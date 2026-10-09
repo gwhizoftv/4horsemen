@@ -300,7 +300,7 @@ export const coordinatorConfigSchema = z
     workflowCriticalFiles: z.array(pathTokenSchema).default([]),
     /**
      * Absolute root of the completion mailbox. Optional: a flat workspace
-     * derives the sibling of the coord root. Nested or shared runtimes that do
+     * derives the sibling of the runtime directory. Nested or shared runtimes that do
      * not share that parent must state it, because the derived sibling would
      * put two products' receipts in one tree.
      */

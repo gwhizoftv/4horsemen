@@ -83,7 +83,7 @@ import { removeClaudeStatusLine, syncClaudeStatusLine } from "./claudeStatusLine
  * the product repo — no `coord`, no Node, no new git obligations — while
  * another drives agents against the same remote. So the default install leaves
  * the product's tracked tree byte-for-byte unchanged, and every constraint
- * lands in agent clones or under `coord-root`.
+ * lands in agent clones or under `coord-runtime`.
  */
 
 export type InstallOptions = {
@@ -104,7 +104,7 @@ export type InstallOptions = {
   now?: string;
   /**
    * Owner override for the completion mailbox root. Defaults to the sibling of
-   * the coord root; a nested or shared runtime that does not share that parent
+   * the runtime directory; a nested or shared runtime that does not share that parent
    * has to state one, or two products would drop receipts in the same tree.
    */
   completesRoot?: string;
@@ -490,7 +490,7 @@ export const install = (options: InstallOptions): InstallResult => {
     }
   }
 
-  // ---- step 6: emit the workspace config under coord-root ------------------
+  // ---- step 6: emit the workspace config under coord-runtime ------------------
   writeWorkspaceConfig(workspace, config, effects);
 
   // ---- step 7: next steps, never run for the operator ----------------------
@@ -503,10 +503,10 @@ export const install = (options: InstallOptions): InstallResult => {
       `  product tree     : ${options.writeProduct ? "opt-in tracked changes written" : "untouched (git status unchanged)"}`,
       "",
       "Next steps — coord does not start anything for you:",
-      `  coord doctor --coord-root ${coordRoot} --product ${productRoot}`,
+      `  coord doctor --coord-runtime ${coordRoot} --product ${productRoot}`,
       `  coord manual --product ${productRoot}`,
-      `  coord start <issue> --config ${configPath} --coord-root ${workspace.workspaceRoot}`,
-      `  COORD_ISSUE=<issue> coord run --coord-root ${workspace.workspaceRoot}`,
+      `  coord start <issue> --config ${configPath} --coord-runtime ${workspace.workspaceRoot}`,
+      `  COORD_ISSUE=<issue> coord run --coord-runtime ${workspace.workspaceRoot}`,
       ""
     ].join("\n")
   );

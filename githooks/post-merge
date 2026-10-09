@@ -34,7 +34,7 @@ fi
 if [[ ! -e "$launcher" || ! -e ".coord/bin/git" ]] || grep -qF "# coord-managed-git-wrapper" ".coord/bin/git" 2>/dev/null; then
   if [[ ! -r "$launcher_lib" ]]; then
     echo "Cannot regenerate $launcher: the launcher template $launcher_lib is unreadable." >&2
-    echo "  Fix: coord doctor --coord-root <runtime> --product <product>" >&2
+    echo "  Fix: coord doctor --coord-runtime <runtime> --product <product>" >&2
     exit 0
   fi
 

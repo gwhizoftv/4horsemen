@@ -91,7 +91,7 @@ const checkInstallRoot = (config: CoordinatorConfig): DoctorFinding[] => {
         "installRoot",
         stamp.installRoot,
         "The recorded coordination install root does not exist.",
-        "Restore the checkout, or re-run coord install with the current --coord-root and product."
+        "Restore the checkout, or re-run coord install with the current --coord-runtime and product."
       )
     );
     return findings;
@@ -223,7 +223,7 @@ const checkClone = (input: {
         `Agent clone is on ${headBranch} with a managed AGENTS.md protocol overlay (skip-worktree). ` +
           `Raw git checkout ${input.config.baseBranch} will fail because Git treats the overlay as local changes.`,
         `Do not run git checkout ${input.config.baseBranch}. Run: coord reset-clones ${issueHint} --product <path> ` +
-          "(or --config <path> --coord-root <path>)."
+          "(or --config <path> --coord-runtime <path>)."
       )
     );
   }
@@ -260,7 +260,7 @@ const checkClone = (input: {
         "startCompatibility",
         clone,
         `${WORKSPACE_CONFIG_KEY} does not point at ${input.configPath}, so hooks and coord start would read different policy.`,
-        "Re-run coord install with this --coord-root."
+        "Re-run coord install with this --coord-runtime."
       )
     );
   }

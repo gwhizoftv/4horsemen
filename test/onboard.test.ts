@@ -192,14 +192,14 @@ describe("coord onboard", () => {
     const sharedRoot = first.coordRoot;
     expect(
       await runCli(
-        ["onboard", first.productRoot, "--coord-root", sharedRoot, "--agents", "claude", "--profile", "solo"],
+        ["onboard", first.productRoot, "--coord-runtime", sharedRoot, "--agents", "claude", "--profile", "solo"],
         { io: { stdout: () => undefined } }
       )
     ).toBe(0);
     const firstConfigBytes = readFileSync(join(sharedRoot, "config.json"), "utf8");
     expect(
       await runCli(
-        ["onboard", second.productRoot, "--coord-root", sharedRoot, "--agents", "claude", "--profile", "solo"],
+        ["onboard", second.productRoot, "--coord-runtime", sharedRoot, "--agents", "claude", "--profile", "solo"],
         { io: { stdout: () => undefined } }
       )
     ).toBe(0);

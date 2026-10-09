@@ -47,7 +47,7 @@ export const resolveWorkspaceConfig = (clone: string): ResolvedWorkspace => {
     throw new HookPolicyError(
       `This clone has no local ${WORKSPACE_CONFIG_KEY}, so the project's declared verification cannot be located.\n` +
         "  Coordination hooks are present here, so this is an agent clone and must not commit without running the project's declared checks.\n" +
-        "  Fix: coord install --product <product> --coord-root <runtime> --agents <agents>"
+        "  Fix: coord install --product <product> --coord-runtime <runtime> --agents <agents>"
     );
   }
   if (!isAbsolute(configPath)) {

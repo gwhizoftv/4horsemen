@@ -198,7 +198,7 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
 describe("CLI version", () => {
   it("never touches the default terminal under Vitest, even when both host streams are TTYs", async () => {
     const f = setup();
-    await runCli(["start", "1", "--profile", "solo", "--config", f.configPath, "--coord-root", f.runtime], {
+    await runCli(["start", "1", "--profile", "solo", "--config", f.configPath, "--coord-runtime", f.runtime], {
       processRunner: successfulStartGit, makeRunLoop: fakeLoop, io: { stdout: () => undefined }
     });
     const input: TerminalInput = new PassThrough(), output: PassThrough & TerminalOutput = new PassThrough();
@@ -211,7 +211,7 @@ describe("CLI version", () => {
     const stdout = vi.spyOn(process, "stdout", "get").mockReturnValue(output as unknown as typeof process.stdout);
     let code: number;
     try {
-      code = await runCli(["run", "--issue", "1", "--coord-root", f.runtime], {
+      code = await runCli(["run", "--issue", "1", "--coord-runtime", f.runtime], {
         io: { stdout: () => undefined }, makeRunLoop: (paths) => ({ ...fakeLoop(paths), run })
       });
     } finally { stdin.mockRestore(); stdout.mockRestore(); }
@@ -224,7 +224,7 @@ describe("CLI version", () => {
 
   it.each(["run", "resume"])("routes %s foreground controls through shared state without another tick or quit teardown", async (command) => {
     const f = setup();
-    await runCli(["start", "1", "--config", f.configPath, "--coord-root", f.runtime], {
+    await runCli(["start", "1", "--config", f.configPath, "--coord-runtime", f.runtime], {
       processRunner: successfulStartGit, makeRunLoop: fakeLoop, io: { stdout: () => undefined }
     });
     const paths = issueRuntimePaths(f.runtime, 1);
@@ -236,7 +236,7 @@ describe("CLI version", () => {
     const errors: string[] = [];
     const send = async (key: string) => { input.emit("data", key); await new Promise<void>((resolve) => setImmediate(resolve)); };
     let ticks = 0, runs = 0, reminders = 0;
-    const code = await runCli([command, ...(command === "resume" ? ["--run"] : []), "--issue", "1", "--coord-root", f.runtime], {
+    const code = await runCli([command, ...(command === "resume" ? ["--run"] : []), "--issue", "1", "--coord-runtime", f.runtime], {
       terminal: { input, output }, io: { stdout: (text) => { printed += text; }, stderr: (text) => errors.push(text) },
       makeRunLoop: () => ({ initializeEffects: async () => {}, runTick: async () => { ticks++; return readCursorsState(paths); },
         reminders: () => [{ label: "codex", request: () => { expect(runs).toBe(1); reminders++; return "Reminder requested"; } }],
@@ -247,7 +247,7 @@ describe("CLI version", () => {
           await send("s"); await send("p");
           expect(readCursorsState(paths).manualPaused).toBe(true);
           // External resume uses the same operation while this runner stays live.
-          await runCli(["resume", "--issue", "1", "--coord-root", f.runtime], { io: { stdout: () => undefined } });
+          await runCli(["resume", "--issue", "1", "--coord-runtime", f.runtime], { io: { stdout: () => undefined } });
           await send("p");
           expect(readCursorsState(paths).manualPaused).toBe(true);
           const current = readCursorsState(paths), actionId = actionIdFor("codex");
@@ -285,14 +285,14 @@ describe("CLI version", () => {
 
   it("restores the foreground terminal if the runner throws", async () => {
     const f = setup();
-    await runCli(["start", "1", "--profile", "solo", "--config", f.configPath, "--coord-root", f.runtime], {
+    await runCli(["start", "1", "--profile", "solo", "--config", f.configPath, "--coord-runtime", f.runtime], {
       processRunner: successfulStartGit, makeRunLoop: fakeLoop, io: { stdout: () => undefined }
     });
     const input: TerminalInput = new PassThrough(), output: TerminalOutput = new PassThrough();
     input.isTTY = output.isTTY = true;
     input.setRawMode = (raw) => { input.isRaw = raw; };
     const errors: string[] = [];
-    expect(await runCli(["run", "--issue", "1", "--coord-root", f.runtime], {
+    expect(await runCli(["run", "--issue", "1", "--coord-runtime", f.runtime], {
       terminal: { input, output }, io: { stderr: (text) => errors.push(text) },
       makeRunLoop: (paths) => ({ ...fakeLoop(paths), run: async () => { throw new Error("runner failed"); } })
     })).toBe(2);
@@ -321,7 +321,7 @@ describe("CLI version", () => {
     const config = JSON.parse(readFileSync(f.configPath, "utf8")) as { agents: { root: string }[] };
     for (const agent of config.agents) agent.root = join(f.root, agent.root);
     writeFileSync(configPath, JSON.stringify(config));
-    expect(await runCli(["start", "1", "--profile", "solo", "--config", configPath, "--coord-root", f.runtime], {
+    expect(await runCli(["start", "1", "--profile", "solo", "--config", configPath, "--coord-runtime", f.runtime], {
       makeRunLoop: fakeLoop, processRunner: successfulStartGit, io: { stdout: () => undefined }
     })).toBe(0);
     const clone = join(f.root, "clone-codex");
@@ -391,7 +391,7 @@ describe("CLI manual mode", () => {
     const fixture = setup();
     const launches: Array<{ namespace: string | null; group: string; agents: string[] }> = [];
     const output: string[] = [];
-    const code = await runCli(["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+    const code = await runCli(["manual", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
       io: { stdout: (message) => output.push(message) },
       processRunner: async () => {
         throw new Error("manual mode must not query GitHub or git");
@@ -433,7 +433,7 @@ describe("CLI manual mode", () => {
         return launches === 1 ? ({ status: "opened", count: 3 } as const) : ({ status: "already-open", count: 3 } as const);
       }
     };
-    const argv = ["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime];
+    const argv = ["manual", "--config", fixture.configPath, "--coord-runtime", fixture.runtime];
     expect(await runCli(argv, dependencies)).toBe(0);
     expect(await runCli(argv, dependencies)).toBe(0);
     expect(launches).toBe(2);
@@ -445,7 +445,7 @@ describe("CLI manual mode", () => {
     mkdirSync(issueRuntimePaths(fixture.runtime, 7).issueRoot, { recursive: true });
     const errors: string[] = [];
     let launched = false;
-    const code = await runCli(["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+    const code = await runCli(["manual", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
       io: { stderr: (message) => errors.push(message) },
       sessionExists: async (name) => name === "coord-7",
       manualUi: async () => {
@@ -461,7 +461,7 @@ describe("CLI manual mode", () => {
   it("ignores a live issue session durably owned by another config", async () => {
     const fixture = setup();
     expect(
-      await runCli(["start", "7", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      await runCli(["start", "7", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { stdout: () => undefined },
         sessionExists: async () => false,
         processRunner: successfulStartGit,
@@ -474,7 +474,7 @@ describe("CLI manual mode", () => {
 
     let launched = false;
     expect(
-      await runCli(["manual", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      await runCli(["manual", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { stdout: () => undefined },
         sessionExists: async (name) => name === "coord-7",
         manualUi: async () => {
@@ -491,7 +491,7 @@ describe("CLI manual mode", () => {
     const isManual = async (name: string) => name.startsWith("coord-manual-");
     const errors: string[] = [];
     expect(
-      await runCli(["start", "7", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      await runCli(["start", "7", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
         sessionExists: isManual,
         processRunner: async () => {
@@ -502,7 +502,7 @@ describe("CLI manual mode", () => {
     expect(errors.join("")).toContain("coord detach manual");
 
     expect(
-      await runCli(["start", "8", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      await runCli(["start", "8", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { stdout: () => undefined },
         sessionExists: async () => false,
         processRunner: successfulStartGit,
@@ -512,7 +512,7 @@ describe("CLI manual mode", () => {
     errors.length = 0;
     let resumed = false;
     expect(
-      await runCli(["run", "--issue", "8", "--coord-root", fixture.runtime], {
+      await runCli(["run", "--issue", "8", "--coord-runtime", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
         sessionExists: isManual,
         makeRunLoop: () => ({
@@ -528,8 +528,8 @@ describe("CLI manual mode", () => {
     expect(errors.join("")).toContain("coord detach manual");
 
     for (const argv of [
-      ["8", "--config", fixture.configPath, "--coord-root", fixture.runtime],
-      ["attach", "8", "--config", fixture.configPath, "--coord-root", fixture.runtime]
+      ["8", "--config", fixture.configPath, "--coord-runtime", fixture.runtime],
+      ["attach", "8", "--config", fixture.configPath, "--coord-runtime", fixture.runtime]
     ]) {
       errors.length = 0;
       expect(
@@ -549,7 +549,7 @@ describe("CLI manual mode", () => {
     const fixture = setup();
     const output: string[] = [];
     expect(
-      await runCli(["detach", "manual", "--config", fixture.configPath, "--coord-root", fixture.runtime, "--dry-run"], {
+      await runCli(["detach", "manual", "--config", fixture.configPath, "--coord-runtime", fixture.runtime, "--dry-run"], {
         io: { stdout: (message) => output.push(message) }
       })
     ).toBe(0);
@@ -619,7 +619,7 @@ describe("CLI", () => {
       io: { stderr: (message) => messages.push(message) }
     });
     expect(result).toBe(2);
-    expect(messages.join("")).toContain("--config and --coord-root");
+    expect(messages.join("")).toContain("--config and --coord-runtime");
 
     messages.length = 0;
     expect(
@@ -638,7 +638,7 @@ describe("CLI", () => {
     const fixture = setup();
     const output: string[] = [];
     const result = await runCli(
-      ["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+      ["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime],
       {
         io: { cwd: process.cwd(), stdout: (message) => output.push(message) },
         processRunner: resolvableStartGit,
@@ -657,7 +657,7 @@ describe("CLI", () => {
 
     output.length = 0;
     expect(
-      await runCli(["next", "--issue", "1", "--coord-root", fixture.runtime, "--agent", "codex"], {
+      await runCli(["next", "--issue", "1", "--coord-runtime", fixture.runtime, "--agent", "codex"], {
         io: { stdout: (message) => output.push(message) }
       })
     ).toBe(0);
@@ -673,13 +673,13 @@ describe("CLI", () => {
     const fixture = setup();
     expect(
       await runCli(
-        ["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+        ["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime],
         { processRunner: resolvableStartGit, makeRunLoop: fakeLoop }
       )
     ).toBe(0);
     const output: string[] = [];
     expect(
-      await runCli(["status", "--issue", "1", "--coord-root", fixture.runtime], {
+      await runCli(["status", "--issue", "1", "--coord-runtime", fixture.runtime], {
         io: { stdout: (message) => output.push(message) }
       })
     ).toBe(0);
@@ -690,7 +690,7 @@ describe("CLI", () => {
 
   it("resumes only the selected hold, audits budget resets, and reports remaining pauses", async () => {
     const fixture = setup();
-    expect(await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+    expect(await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime],
       { processRunner: resolvableStartGit, makeRunLoop: fakeLoop })).toBe(0);
     const paths = issueRuntimePaths(fixture.runtime, 1);
     const current = readCursorsState(paths);
@@ -704,7 +704,7 @@ describe("CLI", () => {
     const output: string[] = [];
     const errors: string[] = [];
     const io = { stdout: (s: string) => output.push(s), stderr: (s: string) => errors.push(s) };
-    const args = ["--issue", "1", "--coord-root", fixture.runtime];
+    const args = ["--issue", "1", "--coord-runtime", fixture.runtime];
     expect(await runCli(["resume", ...args], { io })).toBe(0);
     expect(readCursorsState(paths).paused).toBe(true);
     expect(output.join("")).toContain("1 active hold");
@@ -728,7 +728,7 @@ describe("CLI", () => {
 
   it("resolves scoped agent recovery under the lock and runs only on explicit request", async () => {
     const f = setup();
-    await runCli(["start", "1", "--config", f.configPath, "--coord-root", f.runtime],
+    await runCli(["start", "1", "--config", f.configPath, "--coord-runtime", f.runtime],
       { processRunner: resolvableStartGit, makeRunLoop: fakeLoop });
     const paths = issueRuntimePaths(f.runtime, 1);
     const current = readCursorsState(paths);
@@ -747,7 +747,7 @@ describe("CLI", () => {
     const errors: string[] = [];
     const deps = { io: { stdout: () => undefined, stderr: (s: string) => errors.push(s) },
       makeRunLoop: () => ({ ...fakeLoop(paths), run: async () => { runs++; } }) };
-    const args = ["resume", "--issue", "1", "--coord-root", f.runtime];
+    const args = ["resume", "--issue", "1", "--coord-runtime", f.runtime];
     const rejectUnchanged = async (flags: string[], sessionExists?: (name: string) => Promise<boolean>) => {
       const before = readFileSync(paths.cursors, "utf8");
       const journal = readFileSync(paths.journal, "utf8");
@@ -794,7 +794,7 @@ describe("CLI", () => {
     const fixture = setup();
     expect(
       await runCli(
-        ["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+        ["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime],
         { processRunner: resolvableStartGit, makeRunLoop: fakeLoop }
       )
     ).toBe(0);
@@ -815,7 +815,7 @@ describe("CLI", () => {
 
     const output: string[] = [];
     expect(
-      await runCli(["analytics", "--issue", "1", "--coord-root", fixture.runtime], {
+      await runCli(["analytics", "--issue", "1", "--coord-runtime", fixture.runtime], {
         home,
         io: { stdout: (message) => output.push(message) }
       })
@@ -827,7 +827,7 @@ describe("CLI", () => {
 
     const errors: string[] = [];
     expect(
-      await runCli(["analytics", "--issue", "1", "--coord-root", fixture.runtime, "--json", "true"], {
+      await runCli(["analytics", "--issue", "1", "--coord-runtime", fixture.runtime, "--json", "true"], {
         io: { stderr: (message) => errors.push(message) }
       })
     ).toBe(2);
@@ -836,7 +836,7 @@ describe("CLI", () => {
     rmSync(paths.journal);
     errors.length = 0;
     expect(
-      await runCli(["analytics", "--issue", "1", "--coord-root", fixture.runtime], {
+      await runCli(["analytics", "--issue", "1", "--coord-runtime", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) }
       })
     ).toBe(2);
@@ -847,7 +847,7 @@ describe("CLI", () => {
     const fixture = setup();
     expect(
       await runCli(
-        ["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime],
+        ["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime],
         { processRunner: resolvableStartGit, makeRunLoop: fakeLoop }
       )
     ).toBe(0);
@@ -867,7 +867,7 @@ describe("CLI", () => {
 
     const output: string[] = [];
     expect(
-      await runCli(["analytics", "--issue", "1", "--coord-root", fixture.runtime], {
+      await runCli(["analytics", "--issue", "1", "--coord-runtime", fixture.runtime], {
         io: { stdout: (message) => output.push(message) }
       })
     ).toBe(0);
@@ -878,7 +878,7 @@ describe("CLI", () => {
 
     const errors: string[] = [];
     expect(
-      await runCli(["run", "--issue", "1", "--coord-root", fixture.runtime], {
+      await runCli(["run", "--issue", "1", "--coord-runtime", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) }
       })
     ).toBe(2);
@@ -913,7 +913,7 @@ describe("CLI", () => {
     const elsewhere = mkdtempSync(join(tmpdir(), "coord-other-cwd-"));
     roots.push(elsewhere);
     expect(
-      await runCli(["start", "7", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      await runCli(["start", "7", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { cwd: elsewhere },
         processRunner: successfulStartGit,
         makeRunLoop: fakeLoop
@@ -934,7 +934,7 @@ describe("CLI", () => {
     writeFileSync(fixture.configPath, JSON.stringify(config));
     const errors: string[] = [];
     expect(
-      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
         processRunner: successfulStartGit,
         makeRunLoop: fakeLoop
@@ -949,7 +949,7 @@ describe("CLI", () => {
     const errors: string[] = [];
     let effectsCalled = false;
     expect(
-      await runCli(["start", "999", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      await runCli(["start", "999", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
         processRunner: async (argv) =>
           argv[0] === "gh"
@@ -972,7 +972,7 @@ describe("CLI", () => {
     const errors: string[] = [];
     let effectsCalled = false;
     expect(
-      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
         processRunner: async (argv) => {
           if (argv[0] === "gh") return successfulStartGit(argv);
@@ -996,7 +996,7 @@ describe("CLI", () => {
     const fixture = setup();
     const errors: string[] = [];
     expect(
-      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
         processRunner: successfulStartGit,
         startEffects: async () => {
@@ -1014,7 +1014,7 @@ describe("CLI", () => {
     const paths = issueRuntimePaths(fixture.runtime, 1);
     const errors: string[] = [];
     expect(
-      await runCli(["start", "1", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      await runCli(["start", "1", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
         processRunner: successfulStartGit,
         startEffects: async () => {
@@ -1034,7 +1034,7 @@ describe("CLI", () => {
     const errors: string[] = [];
     let cleanups = 0;
     expect(
-      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
         processRunner: successfulStartGit,
         startEffects: async () => ({
@@ -1056,7 +1056,7 @@ describe("CLI", () => {
     expect(readCursorsState(paths).abandoned).toBe(false);
     expect(cleanups).toBe(0);
     expect(errors.join("")).toContain("was started durably");
-    expect(errors.join("")).toContain("resume with coord run --issue 1 --coord-root");
+    expect(errors.join("")).toContain("resume with coord run --issue 1 --coord-runtime");
   });
 
   it("rejects an escaping launcher before startup effects", async () => {
@@ -1069,7 +1069,7 @@ describe("CLI", () => {
     let effectsCalled = false;
     const errors: string[] = [];
     expect(
-      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
         processRunner: successfulStartGit,
         startEffects: async () => {
@@ -1084,7 +1084,7 @@ describe("CLI", () => {
     expect(existsSync(join(fixture.runtime, "issue-1"))).toBe(false);
   });
 
-  it("resolves coord next from an agent clone without --coord-root", async () => {
+  it("resolves coord next from an agent clone without --coord-runtime", async () => {
     const fixture = setup();
     const runtimeConfig = join(fixture.runtime, "config.json");
     mkdirSync(fixture.runtime, { recursive: true });
@@ -1094,7 +1094,7 @@ describe("CLI", () => {
     config.agents = config.agents.map((agent) => ({ ...agent, root: join(fixture.root, agent.root) }));
     writeFileSync(runtimeConfig, JSON.stringify(config));
     expect(
-      await runCli(["start", "1", "--profile", "solo", "--config", runtimeConfig, "--coord-root", fixture.runtime], {
+      await runCli(["start", "1", "--profile", "solo", "--config", runtimeConfig, "--coord-runtime", fixture.runtime], {
         processRunner: successfulStartGit,
         makeRunLoop: fakeLoop
       })
@@ -1144,7 +1144,7 @@ describe("CLI", () => {
     execFileSync("git", ["config", "user.email", "fixture@example.com"], { cwd: clone });
     writeFileSync(join(clone, "start-codex.sh"), "#!/usr/bin/env bash\n", { mode: 0o700 });
 
-    await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+    await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
       processRunner: successfulStartGit,
       makeRunLoop: fakeLoop
     });
@@ -1166,7 +1166,7 @@ describe("CLI", () => {
     writeCursorsState(paths, cursorsStateSchema.parse({ ...current, completed: true }));
     const output: string[] = [];
     expect(
-      await runCli(["1", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      await runCli(["1", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { stdout: (message) => output.push(message) },
         makeRunLoop: fakeLoop
       })
@@ -1191,7 +1191,7 @@ describe("CLI", () => {
 
     const runOutput: string[] = [];
     expect(
-      await runCli(["resume", "--run", "--issue", "1", "--coord-root", fixture.runtime], {
+      await runCli(["resume", "--run", "--issue", "1", "--coord-runtime", fixture.runtime], {
         io: { stdout: (message) => runOutput.push(message) },
         makeRunLoop: fakeLoop
       })
@@ -1202,7 +1202,7 @@ describe("CLI", () => {
     const refusedOutput: string[] = [];
     const refusedErrors: string[] = [];
     expect(
-      await runCli(["run", "--issue", "1", "--coord-root", fixture.runtime], {
+      await runCli(["run", "--issue", "1", "--coord-runtime", fixture.runtime], {
         io: {
           stdout: (message) => refusedOutput.push(message),
           stderr: (message) => refusedErrors.push(message)
@@ -1229,7 +1229,7 @@ describe("CLI", () => {
     const failedCheckoutOutput: string[] = [];
     const failedCheckoutErrors: string[] = [];
     expect(
-      await runCli(["run", "--issue", "1", "--coord-root", fixture.runtime], {
+      await runCli(["run", "--issue", "1", "--coord-runtime", fixture.runtime], {
         io: {
           stdout: (message) => failedCheckoutOutput.push(message),
           stderr: (message) => failedCheckoutErrors.push(message)
@@ -1270,7 +1270,7 @@ describe("CLI", () => {
     execFileSync("git", ["config", "user.email", "fixture@example.com"], { cwd: clone });
     writeFileSync(join(clone, "start-codex.sh"), "#!/usr/bin/env bash\n", { mode: 0o700 });
 
-    await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+    await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
       processRunner: successfulStartGit,
       makeRunLoop: fakeLoop
     });
@@ -1278,7 +1278,7 @@ describe("CLI", () => {
     writeFileSync(join(clone, "wip.txt"), "leftover\n");
     const output: string[] = [];
     expect(
-      await runCli(["reset-clones", "1", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+      await runCli(["reset-clones", "1", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
         io: { stdout: (message) => output.push(message) },
         makeRunLoop: fakeLoop
       })
@@ -1294,12 +1294,12 @@ describe("CLI", () => {
 
   it("refuses to drop the final active agent", async () => {
     const fixture = setup();
-    await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+    await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
       processRunner: successfulStartGit,
       makeRunLoop: fakeLoop
     });
     const errors: string[] = [];
-    const result = await runCli(["drop", "codex", "--issue", "1", "--coord-root", fixture.runtime], {
+    const result = await runCli(["drop", "codex", "--issue", "1", "--coord-runtime", fixture.runtime], {
       io: { stderr: (message) => errors.push(message) },
       makeRunLoop: fakeLoop
     });
@@ -1309,7 +1309,7 @@ describe("CLI", () => {
 
   it("refuses to silently rebind an authorized reviser on drop", async () => {
     const fixture = setup();
-    await runCli(["start", "1", "--profile", "consensus", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+    await runCli(["start", "1", "--profile", "consensus", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
       processRunner: successfulStartGit,
       makeRunLoop: fakeLoop
     });
@@ -1352,7 +1352,7 @@ describe("CLI", () => {
     );
     const errors: string[] = [];
     expect(
-      await runCli(["drop", "cursor", "--issue", "1", "--coord-root", fixture.runtime], {
+      await runCli(["drop", "cursor", "--issue", "1", "--coord-runtime", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
         makeRunLoop: fakeLoop
       })
@@ -1365,7 +1365,7 @@ describe("CLI", () => {
 
   it.each([false, true])("resets to plan-ballot after a drop when evidence roster changes (amendment: %s)", async (amendment) => {
     const fixture = setup();
-    await runCli(["start", "1", "--profile", "consensus", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+    await runCli(["start", "1", "--profile", "consensus", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
       processRunner: successfulStartGit,
       makeRunLoop: fakeLoop
     });
@@ -1449,7 +1449,7 @@ describe("CLI", () => {
       }
     }
     expect(
-      await runCli(["drop", "cursor", "--issue", "1", "--coord-root", fixture.runtime], {
+      await runCli(["drop", "cursor", "--issue", "1", "--coord-runtime", fixture.runtime], {
         makeRunLoop: fakeLoop
       })
     ).toBe(0);
@@ -1476,7 +1476,7 @@ describe("CLI", () => {
 
   it("preserves peer acceptance and pending intent when another agent is dropped", async () => {
     const fixture = setup();
-    await runCli(["start", "1", "--profile", "reviewed", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+    await runCli(["start", "1", "--profile", "reviewed", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
       processRunner: successfulStartGit,
       makeRunLoop: fakeLoop
     });
@@ -1512,7 +1512,7 @@ describe("CLI", () => {
     writeFileSync(pending, `${"c".repeat(40)}\n`);
 
     expect(
-      await runCli(["drop", "cursor", "--issue", "1", "--coord-root", fixture.runtime], { makeRunLoop: fakeLoop })
+      await runCli(["drop", "cursor", "--issue", "1", "--coord-runtime", fixture.runtime], { makeRunLoop: fakeLoop })
     ).toBe(0);
     const after = readCursorsState(paths);
     expect(after.accepted).toContainEqual(expect.objectContaining({ stepId: "R2.plan", agent: "codex" }));
@@ -1523,7 +1523,7 @@ describe("CLI", () => {
 
   it("applies typed owner answers durably and idempotently without allowing round four", async () => {
     const fixture = setup();
-    await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+    await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
       processRunner: successfulStartGit,
       makeRunLoop: fakeLoop
     });
@@ -1544,7 +1544,7 @@ describe("CLI", () => {
         }
       })
     );
-    const args = ["answer", questionId, "revise", "--issue", "1", "--coord-root", fixture.runtime];
+    const args = ["answer", questionId, "revise", "--issue", "1", "--coord-runtime", fixture.runtime];
     expect(await runCli(args, { makeRunLoop: fakeLoop })).toBe(0);
     expect(readCursorsState(paths)).toMatchObject({
       issueCursor: { stepId: "R6.revise", round: 3 },
@@ -1573,7 +1573,7 @@ describe("CLI", () => {
     );
     const errors: string[] = [];
     expect(
-      await runCli(["answer", limitQuestion, "revise", "--issue", "1", "--coord-root", fixture.runtime], {
+      await runCli(["answer", limitQuestion, "revise", "--issue", "1", "--coord-runtime", fixture.runtime], {
         io: { stderr: (message) => errors.push(message) },
         makeRunLoop: fakeLoop
       })
@@ -1584,6 +1584,26 @@ describe("CLI", () => {
 });
 
 describe("CLI — install, doctor, and the hook bridge", () => {
+  it.each(["onboard", "install", "start", "run", "doctor", "resume", "status", "manual"])(
+    "rejects the removed runtime option before %s can act on a default directory",
+    async (command) => {
+      const root = mkdtempSync(join(tmpdir(), "coord-option-"));
+      roots.push(root);
+      const runtime = join(root, "runtime");
+      const errors: string[] = [];
+      const output: string[] = [];
+      expect(await runCli([command, "--coord-root", runtime], {
+        io: { cwd: root, stdout: (text) => output.push(text), stderr: (text) => errors.push(text) },
+        makeRunLoop: () => { throw new Error("invalid options must not create a runner"); },
+        processRunner: async () => { throw new Error("invalid options must not invoke processes"); }
+      })).toBe(2);
+      expect(errors.join("")).toContain("Unknown option --coord-root");
+      expect(output).toEqual([]);
+      expect(existsSync(runtime)).toBe(false);
+      expect(existsSync(join(root, "coord-runtime"))).toBe(false);
+    }
+  );
+
   const installedWorkspace = () => {
     ensureBuilt();
     const product = makeProduct();
@@ -1603,7 +1623,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     "install",
     "--product",
     product.productRoot,
-    "--coord-root",
+    "--coord-runtime",
     product.coordRoot,
     "--agents",
     "claude",
@@ -1632,7 +1652,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     const runtime = join(product.coordRoot, "runtime");
     const messages: string[] = [];
     const started = await runCli(
-      ["start", "1", "--profile", "solo", "--config", configPath, "--coord-root", runtime],
+      ["start", "1", "--profile", "solo", "--config", configPath, "--coord-runtime", runtime],
       {
         io: { stdout: (message) => messages.push(message), stderr: (message) => messages.push(message) },
         makeRunLoop: fakeLoop,
@@ -1682,13 +1702,13 @@ describe("CLI — install, doctor, and the hook bridge", () => {
       runTick: async () => { calls.push("tick"); return readCursorsState(paths); },
       run: async () => { calls.push("run"); }
     }));
-    expect(await runCli(["161", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+    expect(await runCli(["161", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
       io: { stdout: () => undefined }, processRunner: successfulStartGit, makeRunLoop
     })).toBe(0);
     expect(makeRunLoop).toHaveBeenCalledTimes(1);
     expect(calls).toEqual(["diagnose", "tick", "run"]);
     calls.length = 0;
-    expect(await runCli(["start", "162", "--config", fixture.configPath, "--coord-root", fixture.runtime], {
+    expect(await runCli(["start", "162", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
       io: { stdout: () => undefined }, processRunner: successfulStartGit, makeRunLoop
     })).toBe(0);
     expect(calls).toEqual(["diagnose", "tick"]); // start-only still diagnoses before its first tick
@@ -1756,7 +1776,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     const { product, declarePath } = installedWorkspace();
     expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
 
-    const doctorArgs = ["doctor", "--coord-root", product.coordRoot, "--product", product.productRoot];
+    const doctorArgs = ["doctor", "--coord-runtime", product.coordRoot, "--product", product.productRoot];
     expect(await runCli(doctorArgs, { io: { stdout: () => undefined } })).toBe(0);
 
     rmSync(join(product.workspaceRoot, "myserver-claude", "start-claude.sh"));

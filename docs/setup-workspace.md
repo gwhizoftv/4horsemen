@@ -17,7 +17,7 @@
 A default `coord onboard` or `coord install` leaves the product's tracked tree byte-for-byte
 unchanged: `git status` in the product master is empty afterwards. Everything
 coordination adds lives in each agent clone's untracked per-clone state
-(`.git/hooks/`, `.git/info/exclude`, local git config) or under `--coord-root`.
+(`.git/hooks/`, `.git/info/exclude`, local git config) or under `--coord-runtime`.
 
 If the product already has its own hooks for its own humans, coordination leaves
 them alone. "No hooks for humans" means none *from coordination*.
@@ -68,7 +68,8 @@ integration; on other platforms use tmux without those windows.
 coord onboard /path/to/app
 ```
 
-The default coord root and clone root are the product's parent directory:
+The runtime directory defaults to `coord-runtime` beside the product checkout.
+The four agent clones also sit beside that checkout:
 
 ```text
 /path/to/app/
@@ -77,7 +78,16 @@ The default coord root and clone root are the product's parent directory:
 /path/to/app-cursor/
 /path/to/app-antigravity/
 /path/to/coord-runtime/config.json
+/path/to/completes/coord-runtime/
 ```
+
+Use `--coord-runtime` to choose a different runtime directory, for example:
+
+```sh
+coord onboard /path/to/app --coord-runtime /path/to/app-runtime
+```
+
+Its completion mailbox then defaults to `/path/to/completes/app-runtime/`.
 
 Onboard is a preset over the same installer described below. It selects the
 four standard agents and consensus profile, creates the agent wiring, runs
@@ -87,7 +97,7 @@ product worktree's **local** Git config. It does not set the three agent-wiring
 keys on that product. The locator is untracked and does not appear in a fresh
 human clone.
 
-Overrides kept on the simple command are `--coord-root`, `--clone-root`,
+Overrides kept on the simple command are `--coord-runtime`, `--clone-root`,
 `--agents`, and `--profile`. Use advanced install for policy declarations,
 vendoring, tracked product changes, origin/base overrides, or dry runs.
 
@@ -96,7 +106,7 @@ vendoring, tracked product changes, origin/base overrides, or dry runs.
 ```bash
 coord install \
   --product /path/to/app \
-  --coord-root /path/to/coord-runtime \
+  --coord-runtime /path/to/coord-runtime \
   --agents claude,codex,cursor,antigravity \
   --profile consensus
   # --write-product            # opt-in tracked product changes (additive only)
@@ -110,12 +120,12 @@ coord install \
 | Step | Default action |
 | --- | --- |
 | 0 | Optional bootstrap/build of the coordination install |
-| 1 | Preflight and containment (product ⊄ coord-root, clone root ⊄ product, …) |
+| 1 | Preflight and containment (product ⊄ coord-runtime, clone root ⊄ product, …) |
 | 2 | Create missing `<product>-<agent>` clones from the product **origin** URL (not the local product worktree); adopt only a worktree of this product; fast-forward a clean one; **never reset one** |
 | 3 | Write `start-<agent>.sh`; add the managed block to each clone's `.git/info/exclude` |
 | 4 | Record `consensus.*`, `coord.installRoot`, `coord.cliEntry`, `coord.workspaceConfig` in each clone |
 | 5 | Install fail-closed shims into each agent clone's `.git/hooks/` |
-| 6 | Emit the selected flat or nested workspace config under `--coord-root` |
+| 6 | Emit the selected flat or nested workspace config under `--coord-runtime` |
 | 7 | Print explicit `coord doctor` / `coord manual` / `coord start` / `coord run` next steps — nothing is auto-started |
 
 Not written by default: the product's `githooks/`, `.gitignore`, `package.json`,
@@ -142,7 +152,7 @@ a clone.
 ## Uninstall
 
 ```bash
-coord uninstall --coord-root /path/to/coord-runtime --product /path/to/app
+coord uninstall --coord-runtime /path/to/coord-runtime --product /path/to/app
   # --delete-clones        # refuses a dirty clone unless --force
   # --force
   # --wipe-runtime
@@ -204,12 +214,12 @@ than guessing what to restore.
 
 Agents publish a completion marker to `complete`: either a pushed commit SHA
 (Git-mode actions) or `response <actionId>` (ballot response-mode). That file
-does not live under the coord root. It lives in a sibling tree so the harness
+does not live under the runtime directory. It lives in a sibling tree so the harness
 can be granted the single directory it must write without also being granted
 `cursors.json`, the journal, or another agent's `action.md`:
 
 ```text
-/path/to/completes/<coord-root-name>[/<project>]/issue-<n>/<agent>/complete
+/path/to/completes/<coord-runtime-name>[/<project>]/issue-<n>/<agent>/complete
 ```
 
 Ballot responses live under the issue runtime at
@@ -217,13 +227,13 @@ Ballot responses live under the issue runtime at
 directory when it exists, in addition to the mailbox drop. It never grants the
 issue root, peer paths, or the accepted-response archive.
 
-`completesRoot` defaults to `<parent-of-coord-root>/completes/<coord-root-name>`
+`completesRoot` defaults to `<parent-of-coord-runtime>/completes/<coord-runtime-name>`
 for a flat install, with the project appended for a nested one, and is created by
 `coord install`. Those segments are what keep two products sharing an outer root
 — or two outer roots sharing a parent — from resolving the same
 `issue-42/claude/complete`. Pass `--completes-root <path>` to `coord install` or `coord onboard` when
 neither derived location suits the layout; the resolved absolute value is
-written to the workspace config. It must be outside the coord root and outside
+written to the workspace config. It must be outside the runtime directory and outside
 every agent clone, or install refuses it.
 
 Install also records a claim file at the mailbox root naming the workspace whose
@@ -248,7 +258,7 @@ Five scoping rules matter:
   directory may also be removed. Issue snapshots and run state stay unless
   `--wipe-runtime` is explicit.
 - `--wipe-runtime` removes this product's issue state and, when no other
-  workspace still uses the outer coord root, deletes that folder and the
+  workspace still uses the outer runtime directory, deletes that folder and the
   workspace's completion mailbox too (e.g. `./coord-runtime` and
   `./completes/coord-runtime`). If nested siblings share the root, wipe stays
   scoped to this product's targets and keeps the outer directory and every
@@ -409,9 +419,9 @@ the product's tracked tree, adjusting commands and critical paths to its layout:
 ```
 
 ```sh
-coord install --product /path/to/app --coord-root /path/to/coord-runtime \
+coord install --product /path/to/app --coord-runtime /path/to/coord-runtime \
   --agents codex --profile solo --declare /path/to/declaration.json
-coord doctor --coord-root /path/to/coord-runtime --product /path/to/app
+coord doctor --coord-runtime /path/to/coord-runtime --product /path/to/app
 ```
 
 Use `install`, not `onboard`, for `--declare`. Install Ruff/pytest and expose
@@ -590,7 +600,7 @@ owns the system suites.
 A fresh single-product runtime is flat:
 
 ```text
-<coord-root>/
+<coord-runtime>/
   config.json
   mirror.git/
   issue-42/
@@ -600,7 +610,7 @@ A fresh single-product runtime is flat:
 ```
 
 If a different flat product already occupies that root, the next product uses
-`<coord-root>/workspaces/<project>/`. Its config, mirror, issue directories,
+`<coord-runtime>/workspaces/<project>/`. Its config, mirror, issue directories,
 and tmux namespace all stay inside that workspace, so the same issue number in
 two repositories cannot collide. Flat resolution wins for a matching product;
 existing nested installs remain supported by onboard/install, start, doctor,
@@ -625,7 +635,7 @@ own issue branch as R2 evidence. Coordination checks that clone out on
 ## Doctor
 
 ```bash
-coord doctor --coord-root /path/to/coord-runtime --product /path/to/app
+coord doctor --coord-runtime /path/to/coord-runtime --product /path/to/app
 ```
 
 Each class of drift has its own exit code, so a script can act on the answer.

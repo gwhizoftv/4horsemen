@@ -177,16 +177,16 @@ export const resolveWorkspaceFromWorktree = (cwd: string): WorkspaceLocation => 
   const configured = localConfigGet(root, "coord.workspaceConfig");
   if (owner !== null && configured !== null &&
       (!isAbsolute(owner) || !isAbsolute(configured) || !sameExistingPath(owner, configured))) {
-    throw new Error("This worktree has owner and agent locators for different workspaces; pass --product or --coord-root explicitly, or repair the installation.");
+    throw new Error("This worktree has owner and agent locators for different workspaces; pass --product or --coord-runtime explicitly, or repair the installation.");
   }
   // When both locators agree, validate both roles rather than hiding stale agent wiring.
   const ownerWorkspace = owner === null ? null : resolveWorkspaceFromProduct(cwd);
   if (configured === null) return ownerWorkspace ?? resolveWorkspaceFromProduct(cwd);
-  if (!isAbsolute(configured) || !existsSync(configured)) throw new Error("This agent's workspace locator is missing or invalid; pass --coord-root or repair the installation.");
+  if (!isAbsolute(configured) || !existsSync(configured)) throw new Error("This agent's workspace locator is missing or invalid; pass --coord-runtime or repair the installation.");
   const config = readConfig(configured);
   const id = localConfigGet(root, "consensus.agentId");
   if (!config.agents.some((agent) => agent.id === id && sameExistingPath(resolve(dirname(configured), agent.root), root))) {
-    throw new Error("This workspace locator belongs to a different agent/repository; pass --coord-root or repair the installation.");
+    throw new Error("This workspace locator belongs to a different agent/repository; pass --coord-runtime or repair the installation.");
   }
   return ownerWorkspace ?? workspaceLocationFromConfig(configured);
 };

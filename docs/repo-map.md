@@ -14,7 +14,7 @@ actions for agents, verifies the evidence they publish, and advances a workflow
 state machine. The products it coordinates live in their own repositories,
 with their hooks and tests kept separate from the driver.
 
-Runtime state lives **outside every clone**, under the `--coord-root` directory.
+Runtime state lives **outside every clone**, under the `--coord-runtime` directory.
 Nothing in this repository writes issue state into the working tree.
 
 ## Module groups

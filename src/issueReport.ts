@@ -5,7 +5,7 @@ import { containmentPolicy } from "./shellGuard.js";
 import { shellQuote } from "./agentHookSync.js";
 
 export const issueCommand = (command: string, issue: number, coordRoot: string): string =>
-  `coord ${command} --issue ${issue} --coord-root ${shellQuote(coordRoot)}`;
+  `coord ${command} --issue ${issue} --coord-runtime ${shellQuote(coordRoot)}`;
 
 const stageNames: Record<WorkflowStepId, string> = {
   "R1.join": "checking agent readiness", "R2.plan": "writing plans", "R3.review": "reviewing plans",
@@ -37,7 +37,7 @@ export const holdRecoveryCommand = (issue: number, cursors: CursorsState, hold: 
     cursors.holds.filter((entry) => entry.agent === hold.agent).length === 1;
   return `coord resume --issue ${issue} ` +
     (uniqueAgent ? `--agent ${hold.agent}` : `--hold ${hold.id}`) +
-    (hold.reason === "nudge-loop" ? " --reset-nudge-budget" : "") + ` --coord-root ${shellQuote(coordRoot)}`;
+    (hold.reason === "nudge-loop" ? " --reset-nudge-budget" : "") + ` --coord-runtime ${shellQuote(coordRoot)}`;
 };
 
 /**

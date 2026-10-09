@@ -1022,7 +1022,7 @@ export class CoordinatorRunLoop {
       if (opened.status === "opened" && opened.count > 0) {
         this.log(`Opened ${opened.count} Terminal window(s), one per agent tmux client.`);
       } else if (opened.status === "failed") {
-        this.log(`Could not open Terminal windows (${opened.error}). Attach manually with coord attach ${start.issue} --coord-root ${shellQuote(start.coordRoot)}.`);
+        this.log(`Could not open Terminal windows (${opened.error}). Attach manually with coord attach ${start.issue} --coord-runtime ${shellQuote(start.coordRoot)}.`);
       }
     }
   }

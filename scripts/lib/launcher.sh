@@ -326,9 +326,9 @@ elif [[ -z "\$coord_completes_root" ]]; then
   echo "WARNING: coord.completesRoot is unset in this clone; no completion mailbox will be granted." >&2
   echo "  Fix: re-run coord install for this workspace." >&2
 fi
-# Response dir: derive coord root from coord.workspaceConfig path topology
-# (nested: …/workspaces/<project>/config.json → outer coord root; flat: config
-# dir is the coord root). Never read a coordRoot field from the JSON.
+# Response dir: derive runtime directory from coord.workspaceConfig path topology
+# (nested: …/workspaces/<project>/config.json → outer runtime directory; flat: config
+# dir is the runtime directory). Never read a coordRoot field from the JSON.
 if [[ -n "\$coord_workspace_config" && -f "\$coord_workspace_config" && "\${COORD_ISSUE:-}" =~ ^[1-9][0-9]*\$ ]]; then
   coord_config_dir="\$(dirname "\$coord_workspace_config")"
   coord_config_parent="\$(dirname "\$coord_config_dir")"

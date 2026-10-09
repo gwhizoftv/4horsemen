@@ -77,7 +77,7 @@ export const agentNudgeKeyDefaults = (
  *
  * The division of labour this module encodes: the product's tracked tree gets
  * nothing, the agent clones get identity and wiring in per-clone untracked
- * state, and the declared policy the hooks read lives under `coord-root`, where
+ * state, and the declared policy the hooks read lives under `coord-runtime`, where
  * no agent can write argv that another clone would execute.
  */
 
@@ -727,7 +727,7 @@ export const assertContainment = (input: {
   const clones = resolve(input.cloneRoot);
   if (isPathInside(coord, product) || isPathInside(product, coord)) {
     throw new Error(
-      `The owner runtime ${coord} and the product ${product} must not contain each other. Choose an external --coord-root.`
+      `The owner runtime ${coord} and the product ${product} must not contain each other. Choose an external --coord-runtime.`
     );
   }
   // The clone root is only a parent directory to put clones in, and the normal
