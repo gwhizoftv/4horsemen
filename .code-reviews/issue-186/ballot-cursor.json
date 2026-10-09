@@ -1,0 +1,29 @@
+{
+  "actionId": "978d5ad2-1be3-409a-9b66-a87f36f40748",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "edab4cbee8b779be8d086b03232fcb21a4ce8ce9",
+      "path": ".signals/issue-186/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "89ab6ee45e8ad1da3886074bf1f5c2781d1a8c1a",
+      "path": ".signals/issue-186/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e2868cbb3590997c9ddf91de04810ec02f3c9d0f",
+      "path": ".signals/issue-186/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "34b2696ecf7b93faecff6a0c8184357e7768394c22fac3f44766cd7ff5f930a1",
+  "issue": 186,
+  "issueSessionId": "issue-186:15c2973d02e848cc537efd8e7bf9acc56c0304ee",
+  "protocolVersion": 2,
+  "rationale": "Claude is the closest faithful selected-plan pin: --no-daemon, plan-shaped INSERT prelude, settle/retry with a turn-chrome gate before extra C-m, no runLoop expansion, and unchanged issue-176 submit proof.",
+  "responseSha256": "39e2681c3c71faf7a897ca7a64775dc16c9bf447a26517005954b73e24ad13e6"
+}

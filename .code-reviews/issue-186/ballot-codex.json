@@ -1,0 +1,29 @@
+{
+  "actionId": "93a1e7b4-5a0a-4911-8878-ff0c5f8bfad8",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "edab4cbee8b779be8d086b03232fcb21a4ce8ce9",
+      "path": ".signals/issue-186/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "89ab6ee45e8ad1da3886074bf1f5c2781d1a8c1a",
+      "path": ".signals/issue-186/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e2868cbb3590997c9ddf91de04810ec02f3c9d0f",
+      "path": ".signals/issue-186/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "34b2696ecf7b93faecff6a0c8184357e7768394c22fac3f44766cd7ff5f930a1",
+  "issue": 186,
+  "issueSessionId": "issue-186:15c2973d02e848cc537efd8e7bf9acc56c0304ee",
+  "protocolVersion": 2,
+  "rationale": "Codex is the strongest revision base because it revalidates ordinary retries and lifecycle, rejects lost confirmation, and recognizes fresh transcript evidence without Working chrome, but still requires an explicitly approved correction to exhausted-submit outcomes and corresponding integration coverage before acceptance.",
+  "responseSha256": "6d1ef2e06290aeb86bcfbe9b93f5f6b7d27fff4d245b0265865b76af763e4090"
+}

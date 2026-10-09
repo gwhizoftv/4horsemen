@@ -1,0 +1,29 @@
+{
+  "actionId": "6a84b9e4-b29d-42c4-8c53-9046196b6ea0",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "edab4cbee8b779be8d086b03232fcb21a4ce8ce9",
+      "path": ".signals/issue-186/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "89ab6ee45e8ad1da3886074bf1f5c2781d1a8c1a",
+      "path": ".signals/issue-186/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e2868cbb3590997c9ddf91de04810ec02f3c9d0f",
+      "path": ".signals/issue-186/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "34b2696ecf7b93faecff6a0c8184357e7768394c22fac3f44766cd7ff5f930a1",
+  "issue": 186,
+  "issueSessionId": "issue-186:15c2973d02e848cc537efd8e7bf9acc56c0304ee",
+  "protocolVersion": 2,
+  "rationale": "The claude pin edab4cbe implements the selected plan exactly with the smallest footprint and, unlike cursor e2868cbb, rechecks pane readiness before each ordinary-path C-m retry so a newly running Codex turn is not steered into, whereas codex 89ab6ee4, though it fixes the residual false hold after a C-j submit, departs from the plan's stated proof contract and changes RunLoop.deliver lifecycle handling in src/runLoop.ts without any run-loop test.",
+  "responseSha256": "045712660d3a0d3c4b7863b8e58bc6ee632b016720ae9d1c446270a072458171"
+}
