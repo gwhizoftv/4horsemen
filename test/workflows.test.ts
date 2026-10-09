@@ -21,7 +21,12 @@ const workflowFiles = readdirSync(workflowsDir).filter((name) => name.endsWith("
 type Workflow = {
   on?: unknown;
   true?: unknown;
-  jobs?: Record<string, { if?: unknown; steps?: unknown[] }>;
+  concurrency?: { group?: string; queue?: string; "cancel-in-progress"?: boolean };
+  permissions?: Record<string, string>;
+  jobs?: Record<string, {
+    if?: unknown;
+    steps?: { id?: string; run?: string; env?: Record<string, string> }[];
+  }>;
 };
 
 const parse = (name: string): Workflow => load(readFileSync(join(workflowsDir, name), "utf8")) as Workflow;
@@ -76,5 +81,52 @@ describe("version-bump-on-merge", () => {
     expect(typeof guard).toBe("string");
     expect(guard).toContain("chore: release ");
     expect(guard).toContain("startsWith");
+  });
+
+  it("queues pending merges instead of replacing the previous pending run", () => {
+    expect(parse("version-bump-on-merge.yml").concurrency).toEqual({
+      group: "version-bump-on-merge",
+      queue: "max",
+      "cancel-in-progress": false
+    });
+  });
+
+  it("pushes the release tag atomically with the bump commit", () => {
+    const bump = parse("version-bump-on-merge.yml").jobs?.bump?.steps?.find((step) => step.id === "bump");
+    expect(bump).toBeDefined();
+    const script = bump?.run ?? "";
+    const commit = 'git commit -m "chore: release ${version}"';
+    const tag = 'git tag -f "v${version}"';
+    const push = 'git push --atomic origin "HEAD:main" "refs/tags/v${version}"';
+    expect(script).toContain(commit);
+    expect(script).toContain(tag);
+    expect(script).toContain(push);
+    expect(script.indexOf(commit)).toBeLessThan(script.indexOf(tag));
+    expect(script.indexOf(tag)).toBeLessThan(script.indexOf(push));
+    // Outputs belong to the successful atomic push, never a rejected attempt.
+    const lines = script.split("\n").map((line) => line.trim());
+    const pushLine = lines.indexOf(`if ${push}; then`);
+    expect(pushLine).toBeGreaterThanOrEqual(0);
+    expect(lines[pushLine + 1]).toBe('echo "version=${version}" >> "$GITHUB_OUTPUT"');
+    expect(script).toMatch(/echo "version=\$\{version\}" >> "\$GITHUB_OUTPUT"[\s\S]*?exit 0\s+fi/);
+  });
+
+  it("publishes a GitHub release for the pushed tag after the bump", () => {
+    const workflow = parse("version-bump-on-merge.yml");
+    const steps = workflow.jobs?.bump?.steps ?? [];
+    const bumpIndex = steps.findIndex((step) => step.id === "bump");
+    const releaseIndex = steps.findIndex((step) => step.run?.includes("gh release create"));
+    expect(bumpIndex).toBeGreaterThanOrEqual(0);
+    expect(releaseIndex).toBeGreaterThan(bumpIndex);
+    const release = steps[releaseIndex];
+    expect(release?.run?.trim()).toBe(
+      'gh release create "v${VERSION}" --verify-tag --title "v${VERSION}" --generate-notes'
+    );
+    expect(release?.env).toEqual({
+      GH_TOKEN: "${{ github.token }}",
+      VERSION: "${{ steps.bump.outputs.version }}"
+    });
+    expect(release?.run).not.toContain("${{");
+    expect(workflow.permissions?.contents).toBe("write");
   });
 });

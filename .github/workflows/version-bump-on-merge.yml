@@ -10,15 +10,19 @@ name: version-bump-on-merge
 # `pnpm check:fast` and `pnpm check` for the same reason. Nothing on a branch
 # checks or changes the version any more: issue branches sit at main's version
 # for the whole run, and plans must not list package.json for a bump.
+#
+# Push each v0.0.N tag atomically with its bump commit: a rejected main update
+# must not leave a tag pointing at an unpublished bump. Then publish the GitHub
+# release in this run; GITHUB_TOKEN's tag push will not start another workflow.
 on:
   push:
     branches: [main]
 
-# Serialize, never cancel. Two merges landing seconds apart must produce two
-# bumps; cancelling the older run would skip a release number and leave main at a
-# version some clone has already installed.
+# Serialize and queue pending merges instead of replacing the previous pending
+# run. GitHub accepts up to 100 pending runs; dispatch order is not guaranteed.
 concurrency:
   group: version-bump-on-merge
+  queue: max
   cancel-in-progress: false
 
 permissions:
@@ -47,6 +51,7 @@ jobs:
       - run: pnpm build
 
       - name: Bump package.json and push to main
+        id: bump
         env:
           GIT_AUTHOR_NAME: github-actions[bot]
           GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
@@ -64,7 +69,11 @@ jobs:
             version="$(node -p 'require("./package.json").version')"
             git add package.json
             git commit -m "chore: release ${version}"
-            if git push origin "HEAD:main"; then
+            # A rejected attempt may leave this runner's local tag behind.
+            # Replace it locally, but never force-update a remote tag.
+            git tag -f "v${version}"
+            if git push --atomic origin "HEAD:main" "refs/tags/v${version}"; then
+              echo "version=${version}" >> "$GITHUB_OUTPUT"
               echo "published ${version} on main"
               exit 0
             fi
@@ -72,3 +81,13 @@ jobs:
           done
           echo "could not publish a version bump on main after 2 attempts" >&2
           exit 1
+
+      # If only this step fails, the tag and bump are already published. Do not
+      # rerun the job (it bumps again); repair the missing release from the repo:
+      # gh release create "v<version>" --verify-tag --title "v<version>" --generate-notes
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          gh release create "v${VERSION}" --verify-tag --title "v${VERSION}" --generate-notes
