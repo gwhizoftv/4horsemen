@@ -20,6 +20,11 @@ Observed failure modes on current code:
    `runLoop.deliver` records `delivery-uncertain` even though the nudge was
    submitted.
 
+- The action digest matches and the branch is issue-186/codex. The containment
+  probe was blocked by the hook, but its message referenced issue 139; recording
+  the observation failed with “session or installed policy unknown.” Containment
+  remains unverified. I’ll continue with the readiness artifact as instructed.
+
 ## Exact File List to be changed or deleted
 
 - `src/tmux.ts` — broaden Codex live-turn / submitted-nudge recognition beyond
