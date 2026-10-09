@@ -215,7 +215,7 @@ const allowedFlags = (parsed: ParsedArgs, allowed: readonly string[]): void => {
   }
 };
 
-const help = `coord — owner-side workflow driver
+const help = `Four Horsemen (coord) — owner-side workflow driver
 
 Usage:
   coord --version | -V | version

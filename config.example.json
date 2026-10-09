@@ -1,10 +1,10 @@
 {
-  "project": "coordination",
-  "origin": "https://github.com/example/coordination.git",
+  "project": "4horsemen",
+  "origin": "https://github.com/example/4horsemen.git",
   "agents": [
     {
       "id": "claude",
-      "root": "../coordination-claude",
+      "root": "../4horsemen-claude",
       "launcher": "start-claude.sh",
       "delivery": "nudge",
       "harnessProcess": "claude",
@@ -14,7 +14,7 @@
     },
     {
       "id": "codex",
-      "root": "../coordination-codex",
+      "root": "../4horsemen-codex",
       "launcher": "start-codex.sh",
       "delivery": "pull",
       "harnessProcess": "codex",
@@ -24,7 +24,7 @@
     },
     {
       "id": "cursor",
-      "root": "../coordination-cursor",
+      "root": "../4horsemen-cursor",
       "launcher": "start-cursor.sh",
       "delivery": "pull",
       "nudgePrelude": [],
@@ -33,7 +33,7 @@
     },
     {
       "id": "antigravity",
-      "root": "../coordination-antigravity",
+      "root": "../4horsemen-antigravity",
       "launcher": "start-antigravity.sh",
       "delivery": "pull",
       "nudgePrelude": [],

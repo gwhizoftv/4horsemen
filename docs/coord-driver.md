@@ -1,4 +1,4 @@
-# Coord driver operator guide
+# Four Horsemen operator guide (`coord`)
 
 ## Authority and safety model
 
