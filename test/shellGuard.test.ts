@@ -112,4 +112,43 @@ describe("native shell guard shared policy", () => {
     expect(readFileSync(join(f.productRoot, ".coord/bin/git"), "utf8")).toContain("COORD_GIT_POLICY_CHECK");
     expect(staticGitCalls("cd /missing/coord-test; git status", f.productRoot, {})).toEqual([]);
   });
+
+  it("relaxes guard on COORD_MANUAL=1, completed/abandoned issue, or absent issue runtime", () => {
+    const f = fixture(), clone = f.productRoot;
+    const config = join(f.coordRoot, "config.json");
+    writeFileSync(config, "{}");
+    git(clone, "config", "coord.workspaceConfig", config);
+    git(clone, "config", "consensus.agentId", "codex");
+    const issueDir = join(f.coordRoot, "issue-42");
+    mkdirSync(issueDir, { recursive: true });
+    const cursors = join(issueDir, "cursors.json");
+    writeFileSync(cursors, JSON.stringify({ completed: false, abandoned: false }, null, 2));
+
+    const check = (env: NodeJS.ProcessEnv) =>
+      guardShellRequest({
+        vendor: "codex",
+        clone,
+        raw: payload("codex", "git status", clone),
+        env
+      });
+
+    const automatedEnv: NodeJS.ProcessEnv = { ...process.env, COORD_ISSUE: "42" };
+    // denied while issue-42/ exists with cursors.json "completed": false
+    expect(JSON.stringify(check(automatedEnv))).toContain('"deny"');
+
+    // allowed with COORD_MANUAL=1
+    expect(check({ ...automatedEnv, COORD_MANUAL: "1" })).toEqual({});
+
+    // allowed after cursors.json is rewritten with top-level "completed": true
+    writeFileSync(cursors, JSON.stringify({ completed: true, abandoned: false }, null, 2));
+    expect(check(automatedEnv)).toEqual({});
+
+    // allowed after "abandoned": true
+    writeFileSync(cursors, JSON.stringify({ completed: false, abandoned: true }, null, 2));
+    expect(check(automatedEnv)).toEqual({});
+
+    // allowed when issue-42/ is removed
+    rmSync(issueDir, { recursive: true, force: true });
+    expect(check(automatedEnv)).toEqual({});
+  });
 });

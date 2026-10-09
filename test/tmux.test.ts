@@ -39,6 +39,34 @@ it("reports issue environment wiring without claiming child-process trust", asyn
   expect(await tmux.issueEnvironmentDiagnostic(161)).toContain("binding is missing or differs");
   expect(calls.every((args) => args[0] === "show-environment")).toBe(true);
 });
+
+it("reports agent placement diagnostics covering correct, dead, mismatched start path, and missing Terminal title", async () => {
+  const agents = [
+    { id: "claude" as const, root: "/work/claude", launcher: "start-claude.sh", delivery: "both" as const },
+    { id: "codex" as const, root: "/work/codex", launcher: "start-codex.sh", delivery: "both" as const },
+    { id: "cursor" as const, root: "/work/cursor", launcher: "start-cursor.sh", delivery: "both" as const },
+    { id: "antigravity" as const, root: "/work/antigravity", launcher: "start-antigravity.sh", delivery: "both" as const }
+  ];
+  const runner: TmuxRunner = async (args) => {
+    if (args[0] === "display-message") {
+      const target = args[3];
+      if (target === "coord-161:claude.0") return ok("0\t/work/claude\n");
+      if (target === "coord-161:codex.0") return ok("1\t/work/codex\n");
+      if (target === "coord-161:cursor.0") return ok("0\t/other/path\n");
+      if (target === "coord-161:antigravity.0") return ok("0\t/work/antigravity\n");
+    }
+    return { exitCode: 1, stdout: "", stderr: "unknown" };
+  };
+  const titleProbe = (titles: readonly string[]) =>
+    titles.filter((t) => !t.includes("antigravity"));
+  const tmux = new TmuxController(runner, null, null, null, noopSleep, "abc12def00", titleProbe);
+  const diagnostics = await tmux.agentPlacementDiagnostics(161, agents);
+  expect(diagnostics).toHaveLength(4);
+  expect(diagnostics[0]).toContain("[OK] Agent claude: running in coord-161:claude.0.");
+  expect(diagnostics[1]).toContain("[WARN] Agent codex: pane coord-161:codex.0 is dead");
+  expect(diagnostics[2]).toContain("[WARN] Agent cursor: pane coord-161:cursor.0 started in /other/path, expected /work/cursor.");
+  expect(diagnostics[3]).toContain("[WARN] Agent antigravity: Terminal window 'coord-161-abc12def00/antigravity' is not open; attach with coord attach 161.");
+});
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -456,6 +484,7 @@ describe("tmux boundary", () => {
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "new-window")).toBe(true);
     expect(calls).toContainEqual(["set-environment", "-t", "coord-3", "COORD_ISSUE", "3"]);
+    expect(calls).toContainEqual(["set-environment", "-r", "-t", "coord-3", "COORD_MANUAL"]);
     calls.length = 0;
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "respawn-pane")).toBe(true);
@@ -492,7 +521,7 @@ describe("tmux boundary", () => {
     await controller.ensureSession("manual", [agent]);
     expect(calls).toContainEqual([
       "set-environment",
-      "-u",
+      "-r",
       "-t",
       "coord-manual-abc12def00",
       "COORD_ISSUE"
@@ -504,7 +533,7 @@ describe("tmux boundary", () => {
       "COORD_MANUAL",
       "1"
     ]);
-    expect(calls.some((args) => args.includes("COORD_ISSUE") && !args.includes("-u"))).toBe(false);
+    expect(calls.some((args) => args.includes("COORD_ISSUE") && !args.includes("-r"))).toBe(false);
     expect(calls.filter((args) => args[0] === "new-window")).toHaveLength(1);
 
     calls.length = 0;

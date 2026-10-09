@@ -543,6 +543,17 @@ describe("CLI manual mode", () => {
       ).toBe(2);
       expect(errors.join("")).toContain("coord detach manual");
     }
+
+    const confirmFixture = setup();
+    expect(
+      await runCli(["start", "9", "--config", confirmFixture.configPath, "--coord-runtime", confirmFixture.runtime], {
+        io: { stdout: () => undefined },
+        confirm: async () => true,
+        sessionExists: isManual,
+        processRunner: successfulStartGit,
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
   });
 
   it("dispatches exact manual teardown and advertises both manual commands", async () => {
@@ -554,12 +565,41 @@ describe("CLI manual mode", () => {
       })
     ).toBe(0);
     expect(output.join("")).toContain("Detached manual mode");
+    expect(output.join("")).toContain("Clone readiness");
 
     output.length = 0;
     expect(await runCli(["--help"], { io: { stdout: (message) => output.push(message) } })).toBe(0);
     expect(output.join("")).toContain("coord manual");
     expect(output.join("")).toContain("coord detach manual");
     expect(output.join("")).toContain("coord analytics --issue");
+  });
+
+  it("supports coord manual --done as an alias for detaching manual mode", async () => {
+    const fixture = setup();
+    const output: string[] = [];
+    expect(
+      await runCli(["manual", "--done", "--config", fixture.configPath, "--coord-runtime", fixture.runtime, "--dry-run"], {
+        io: { stdout: (message) => output.push(message) }
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Detached manual mode");
+    expect(output.join("")).toContain("Clone readiness");
+  });
+
+  it("discovers leftover manual session and auto-cleans when clones are clean before starting issue", async () => {
+    const fixture = setup();
+    const isManual = async (name: string) => name.startsWith("coord-manual-");
+    const output: string[] = [];
+    expect(
+      await runCli(["start", "10", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
+        io: { stdout: (text) => output.push(text) },
+        confirm: async () => true,
+        sessionExists: isManual,
+        processRunner: successfulStartGit,
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Started issue 10");
   });
 });
 
@@ -1730,6 +1770,8 @@ describe("CLI — install, doctor, and the hook bridge", () => {
       const output: string[] = [];
       expect(await runCli(["status", "--issue", "89"], { io: { cwd, stdout: (text) => output.push(text) } })).toBe(0);
       expect(output.join("")).toContain("Issue 89:");
+      expect(await runCli(["reset-clones", "89", "--dry-run"], { io: { cwd, stdout: (text) => output.push(text) } })).toBe(0);
+      expect(await runCli(["detach", "89", "--dry-run"], { io: { cwd, stdout: (text) => output.push(text) } })).toBe(0);
       let runs = 0;
       expect(await runCli(["run", "--issue", "89"], { io: { cwd, stdout: () => undefined }, makeRunLoop: (resolved) => {
         expect(resolved.completesRoot).toBe(frozen);

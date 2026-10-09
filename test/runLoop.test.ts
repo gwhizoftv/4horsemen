@@ -218,7 +218,7 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
   };
   const stop = () => observeAgentLifecycle(paths, vendor, { kind: "stopped", eventName: "stop", sessionId: "session",
     turnId: `turn-${turn}`, backgroundActive: false }, now());
-  return { paths, ui, messages, now, tick, makeLoop, working, stop, advance: (ms: number) => { nowMs += ms; } };
+  return { paths, ui, messages, now, tick, makeLoop, working, stop, tmux, advance: (ms: number) => { nowMs += ms; } };
 };
 
 describe("owner reminders and advisory diagnostics", () => {
@@ -307,11 +307,22 @@ describe("owner reminders and advisory diagnostics", () => {
   });
 
   it("keeps startup and missing-Stop diagnostics advisory and avoids warning on every poll", async () => {
-    const f = safetyFixture("claude"), loop = f.makeLoop();
+    const f = safetyFixture("claude");
+    let placementCalls = 0;
+    const fakeTmux = Object.assign(Object.create(f.tmux), {
+      agentPlacementDiagnostics: async () => {
+        placementCalls++;
+        return ["[OK] Agent claude: running in coord-1:claude.0."];
+      },
+      issueEnvironmentDiagnostic: async () => "[OK] Terminal session targets issue 1."
+    });
+    const loop = f.makeLoop({ tmux: fakeTmux });
     await loop.reportStartup();
     await loop.reportStartup(); // the foreground run reuses the already-diagnosed startup instance
     expect(f.messages.join("\n")).toContain("runtime hook trust/activity not yet verified");
     expect(f.messages.filter((message) => message.includes("claude: runtime hook trust/activity not yet verified"))).toHaveLength(1);
+    expect(f.messages.filter((message) => message.includes("[OK] Agent claude: running in coord-1:claude.0."))).toHaveLength(1);
+    expect(placementCalls).toBe(1);
     await loop.runTick(); f.advance(1); f.working(); f.advance(1); f.working();
     await loop.runTick(); await loop.runTick();
     expect(f.messages.filter((message) => message.includes("No Stop hook from claude after 2 observed turns"))).toHaveLength(1);

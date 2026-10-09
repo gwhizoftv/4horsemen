@@ -949,7 +949,8 @@ export class CoordinatorRunLoop {
     const start = readStartState(this.paths);
     const active = readCursorsState(this.paths).activeRoster;
     const lifecycle = readAgentLifecycle(this.paths);
-    for (const agent of start.agents.filter((entry) => active.includes(entry.id))) {
+    const activeAgents = start.agents.filter((entry) => active.includes(entry.id));
+    for (const agent of activeAgents) {
       for (const message of inspectStartupAgent(start, agent)) this.log(`[WARN] ${agent.id}: ${message}`);
       const entry = lifecycle.agents[agent.id];
       const coverage = containmentCoverage(entry, containmentPolicy(agent.root, agent.id)?.binding ?? null);
@@ -958,6 +959,10 @@ export class CoordinatorRunLoop {
           `runtime hook trust/activity not yet verified for issue ${start.issue}; inspect the terminal's trust prompt and hook setup, then restart the agent if repaired.`));
     }
     if (this.tmux !== null && typeof this.tmux.issueEnvironmentDiagnostic === "function") this.log(await this.tmux.issueEnvironmentDiagnostic(start.issue));
+    if (this.tmux !== null && typeof this.tmux.agentPlacementDiagnostics === "function") {
+      const placementLines = await this.tmux.agentPlacementDiagnostics(start.issue, activeAgents);
+      for (const line of placementLines) this.log(line);
+    }
     this.startupReported = true;
   }
 

@@ -147,6 +147,10 @@ if [[ ! "${COORD_ISSUE:-}" =~ ^[1-9][0-9]*$ ]]; then
   delegate "$@"
 fi
 
+if [[ "${COORD_MANUAL:-}" == "1" ]]; then
+  delegate "$@"
+fi
+
 # Resolve the repository this invocation targets, and the subcommand, reading
 # the global options exactly as git does.
 coord_target="${GIT_WORK_TREE:-${GIT_DIR:-$PWD}}"
@@ -183,6 +187,33 @@ if [[ "$coord_target" != "$COORD_CLONE" ]]; then
   delegate "$@"
 fi
 
+coord_runtime_root() {
+  local git_config config dir parent
+  git_config="$COORD_CLONE/.git/config"
+  [[ -f "$git_config" ]] || git_config="$COORD_CLONE/config"
+  [[ -f "$git_config" ]] || return 1
+  config="$(sed -n -E 's/^[[:space:]]*workspaceConfig[[:space:]]*=[[:space:]]*(.+)$/\1/p' "$git_config" 2>/dev/null | head -n1)"
+  [[ -n "$config" && -f "$config" ]] || return 1
+  dir="$(dirname "$config")"
+  parent="$(dirname "$dir")"
+  if [[ "$(basename "$parent")" == "workspaces" ]]; then
+    printf '%s\n' "$(dirname "$parent")"
+  else
+    printf '%s\n' "$dir"
+  fi
+}
+
+if coord_root="$(coord_runtime_root)"; then
+  if [[ ! -d "$coord_root/issue-$COORD_ISSUE" ]]; then
+    delegate "$@"
+  fi
+  if [[ -f "$coord_root/issue-$COORD_ISSUE/cursors.json" ]]; then
+    if grep -q -E '"(completed|abandoned)"[[:space:]]*:[[:space:]]*true' "$coord_root/issue-$COORD_ISSUE/cursors.json" 2>/dev/null; then
+      delegate "$@"
+    fi
+  fi
+fi
+
 coord_refuse() {
   echo "coord: 'git $1' is blocked in this clone during automated issue $COORD_ISSUE." >&2
   echo "  Coordination owns this checkout and already resolved what changed." >&2
@@ -200,13 +231,10 @@ coord_refuse() {
 # section leaves the pinned read allowed. The documented fallback for a packet
 # the coordinator could not produce must survive anything going wrong here.
 coord_action_lists_files() {
-  local config agent dir parent root action
-  config="$("$REAL_GIT" config --local --get coord.workspaceConfig 2>/dev/null)" || return 1
+  local agent root action
   agent="$("$REAL_GIT" config --local --get consensus.agentId 2>/dev/null)" || return 1
-  [[ -n "$config" && -n "$agent" && -f "$config" ]] || return 1
-  dir="$(dirname "$config")"
-  parent="$(dirname "$dir")"
-  if [[ "$(basename "$parent")" == "workspaces" ]]; then root="$(dirname "$parent")"; else root="$dir"; fi
+  [[ -n "$agent" ]] || return 1
+  root="$(coord_runtime_root)" || return 1
   action="$root/issue-$COORD_ISSUE/agents/$agent/action.md"
   [[ -f "$action" ]] || return 1
   grep -q '^## Bound input files$' "$action" 2>/dev/null || return 1

@@ -6,6 +6,7 @@ import { liftCloneAgentsProtocol, writeCloneAgentsProtocol } from "../src/agents
 import {
   AgentCloneReadinessRefusal,
   makeAgentClonesBaseReady,
+  makeManualClonesBaseReady,
   prepareAgentIssueBranches
 } from "../src/prepareAgentBranch.js";
 import { git, repoRoot, tryGit } from "./support/workspaceFixture.js";
@@ -94,8 +95,36 @@ describe("prepareAgentIssueBranches", () => {
       expect(git(clone, "rev-parse", "HEAD")).toBe(before[index]!.head);
       expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toBe(before[index]!.agents);
       expect(readFileSync(join(clone, "dirty.txt"), "utf8")).toBe("keep\n");
-      expect(skipWorktree(clone)).toBe(true);
     });
+  });
+
+  it("advises coord reset-clones --force for untracked-only dirt and Commit/stash for tracked modifications", () => {
+    const untracked = seedClone();
+    writeFileSync(join(untracked.clone, "scratch.txt"), "junk\n");
+    expect(() =>
+      prepareAgentIssueBranches({
+        agents: [{ id: "claude", root: untracked.clone }],
+        issue: 7,
+        branchTemplate: "issue-{issue}/{agent}",
+        baselineSha: untracked.baseline,
+        baseBranch: "main"
+      })
+    ).toThrow("coord reset-clones 7 --force");
+
+    const tracked = seedClone();
+    writeFileSync(join(tracked.clone, "work.txt"), "hello\n");
+    git(tracked.clone, "add", "work.txt");
+    git(tracked.clone, "commit", "-qm", "add work");
+    writeFileSync(join(tracked.clone, "work.txt"), "# modified\n");
+    expect(() =>
+      prepareAgentIssueBranches({
+        agents: [{ id: "claude", root: tracked.clone }],
+        issue: 7,
+        branchTemplate: "issue-{issue}/{agent}",
+        baselineSha: tracked.baseline,
+        baseBranch: "main"
+      })
+    ).toThrow("Commit/stash");
   });
 
   it("checks out issue-N/agent at the baseline around skip-worktree AGENTS.md and restores the overlay", () => {
@@ -689,5 +718,105 @@ describe("makeAgentClonesBaseReady", () => {
     expect(git(clone, "status", "--porcelain")).toBe("");
     expect(logs.join("")).toContain("using fallback main");
     expect(skipWorktree(clone)).toBe(true);
+  });
+});
+
+describe("makeManualClonesBaseReady", () => {
+  it("returns checked-out on main with overlay restored for a clean branch merged into origin/main", () => {
+    const { clone } = seedClone();
+    liftCloneAgentsProtocol(clone, { dryRun: false, log: () => undefined, changes: [] });
+    const originMain = git(clone, "rev-parse", "origin/main");
+    git(clone, "checkout", "-q", "-b", "claude/scratch", originMain);
+    writeCloneAgentsProtocol({
+      clone,
+      installRoot: repoRoot,
+      options: { dryRun: false, log: () => undefined, changes: [] }
+    });
+    expect(skipWorktree(clone)).toBe(true);
+
+    const results = makeManualClonesBaseReady({
+      agents: [{ id: "claude", root: clone }],
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.action).toBe("checked-out");
+    expect(results[0]?.protocol).toBe("overlay");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(git(clone, "rev-parse", "HEAD")).toBe(originMain);
+    expect(skipWorktree(clone)).toBe(true);
+  });
+
+  it("refuses a clean branch with an unpushed commit, leaving HEAD, branch and commit unchanged", () => {
+    const { clone } = seedClone();
+    liftCloneAgentsProtocol(clone, { dryRun: false, log: () => undefined, changes: [] });
+    const originMain = git(clone, "rev-parse", "origin/main");
+    git(clone, "checkout", "-q", "-b", "claude/scratch", originMain);
+    writeCloneAgentsProtocol({
+      clone,
+      installRoot: repoRoot,
+      options: { dryRun: false, log: () => undefined, changes: [] }
+    });
+    writeFileSync(join(clone, "scratch.txt"), "unpushed\n");
+    git(clone, "add", "scratch.txt");
+    git(clone, "commit", "-qm", "Claude: unpushed commit");
+    const commitSha = git(clone, "rev-parse", "HEAD");
+
+    const results = makeManualClonesBaseReady({
+      agents: [{ id: "claude", root: clone }],
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.action).toBe("refused");
+    expect(results[0]?.reason).toContain("unpushed commits");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("claude/scratch");
+    expect(git(clone, "rev-parse", "HEAD")).toBe(commitSha);
+    expect(existsSync(join(clone, "scratch.txt"))).toBe(true);
+  });
+
+  it("refuses a dirty clone, leaving the worktree unchanged", () => {
+    const { clone } = seedClone();
+    liftCloneAgentsProtocol(clone, { dryRun: false, log: () => undefined, changes: [] });
+    const originMain = git(clone, "rev-parse", "origin/main");
+    git(clone, "checkout", "-q", "-b", "claude/scratch", originMain);
+    writeCloneAgentsProtocol({
+      clone,
+      installRoot: repoRoot,
+      options: { dryRun: false, log: () => undefined, changes: [] }
+    });
+    writeFileSync(join(clone, "dirty.txt"), "dirty work\n");
+
+    const results = makeManualClonesBaseReady({
+      agents: [{ id: "claude", root: clone }],
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.action).toBe("refused");
+    expect(results[0]?.reason).toContain("uncommitted changes");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("claude/scratch");
+    expect(readFileSync(join(clone, "dirty.txt"), "utf8")).toBe("dirty work\n");
+  });
+
+  it("refuses when local main is ahead of origin", () => {
+    const { clone } = seedClone();
+    git(clone, "checkout", "-q", "main");
+    writeFileSync(join(clone, "ahead.txt"), "local ahead\n");
+    git(clone, "add", "ahead.txt");
+    git(clone, "commit", "-qm", "Local commit on main");
+
+    const results = makeManualClonesBaseReady({
+      agents: [{ id: "claude", root: clone }],
+      baseBranch: "main",
+      installRoot: repoRoot
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.action).toBe("refused");
+    expect(results[0]?.reason).toContain("local main has unpushed commits");
   });
 });

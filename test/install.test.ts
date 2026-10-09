@@ -828,6 +828,7 @@ describe("generated git shim", () => {
 
     // Untracked and excluded, so the clone stays clean.
     expect(readFileSync(join(clone, ".git", "info", "exclude"), "utf8")).toContain(".coord/");
+    expect(readFileSync(join(clone, ".git", "info", "exclude"), "utf8")).toContain(".pnpm-store/");
     expect(git(clone, "status", "--porcelain")).toBe("");
 
     const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
@@ -838,6 +839,7 @@ describe("generated git shim", () => {
 
   it("refuses the reads coordination owns and delegates everything else", () => {
     const fixture = product();
+    mkdirSync(join(fixture.coordRoot, "issue-42"), { recursive: true });
     const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
     const head = git(clone, "rev-parse", "HEAD");
     const tracked = git(clone, "ls-tree", "--name-only", "HEAD").split("\n")[0] as string;
@@ -859,6 +861,7 @@ describe("generated git shim", () => {
 
   it("refuses even when the suite itself runs under a delegated git", () => {
     const fixture = product();
+    mkdirSync(join(fixture.coordRoot, "issue-42"), { recursive: true });
     const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
     const prior = process.env.COORD_GIT_DELEGATE;
     try {
@@ -868,6 +871,17 @@ describe("generated git shim", () => {
       if (prior === undefined) delete process.env.COORD_GIT_DELEGATE;
       else process.env.COORD_GIT_DELEGATE = prior;
     }
+  });
+
+  it("delegates git status and diff when COORD_MANUAL=1, issue directory is absent, or issue is completed", () => {
+    const fixture = product();
+    const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
+    expect(runGit(clone, clone, ["status"]).status).toBe(0);
+    mkdirSync(join(fixture.coordRoot, "issue-42"), { recursive: true });
+    expect(runGit(clone, clone, ["status"]).status).toBe(2);
+    expect(runGit(clone, clone, ["status"], { COORD_MANUAL: "1" }).status).toBe(0);
+    writeFileSync(join(fixture.coordRoot, "issue-42", "cursors.json"), JSON.stringify({ completed: true }));
+    expect(runGit(clone, clone, ["status"]).status).toBe(0);
   });
 
   /**

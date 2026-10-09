@@ -846,6 +846,46 @@ export class TmuxController {
       : `[WARN] Terminal session issue binding is missing or differs from ${issue}; inspect/restart the agent terminals through coord before retrying work.`;
   }
 
+  async agentPlacementDiagnostics(
+    issue: number,
+    agents: readonly AgentConfig[]
+  ): Promise<string[]> {
+    const lines: string[] = [];
+    const launches = this.agentAttachLaunches(issue, agents);
+    const presentTitles = this.titleProbe?.(launches.map((item) => item.windowTitle)) ?? null;
+    for (const agent of agents) {
+      const target = this.target(issue, agent.id);
+      const res = await this.runner([
+        "display-message",
+        "-p",
+        "-t",
+        target,
+        "#{pane_dead}\t#{pane_start_path}"
+      ]).catch(() => ({ exitCode: 1, stdout: "", stderr: "" }));
+      if (res.exitCode !== 0) {
+        lines.push(`[WARN] Agent ${agent.id}: pane ${target} is missing; attach with coord attach ${issue}.`);
+        continue;
+      }
+      const [dead = "1", startPath = ""] = res.stdout.trim().split("\t");
+      if (dead === "1") {
+        lines.push(`[WARN] Agent ${agent.id}: pane ${target} is dead; inspect or restart it through coord.`);
+        continue;
+      }
+      const expectedRoot = resolve(agent.root);
+      if (startPath !== "" && resolve(startPath) !== expectedRoot) {
+        lines.push(`[WARN] Agent ${agent.id}: pane ${target} started in ${startPath}, expected ${expectedRoot}.`);
+        continue;
+      }
+      const expectedTitle = launches.find((l) => l.agentId === agent.id)?.windowTitle;
+      if (presentTitles !== null && expectedTitle !== undefined && !presentTitles.includes(expectedTitle)) {
+        lines.push(`[WARN] Agent ${agent.id}: Terminal window '${expectedTitle}' is not open; attach with coord attach ${issue}.`);
+        continue;
+      }
+      lines.push(`[OK] Agent ${agent.id}: running in ${target}.`);
+    }
+    return lines;
+  }
+
   async startSession(issue: number, agents: readonly AgentConfig[]): Promise<void> {
     await this.preflight(agents);
     const session = this.sessionName(issue);
@@ -858,6 +898,7 @@ export class TmuxController {
       if (environment.exitCode !== 0) {
         throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
       }
+      await this.runner(["set-environment", "-r", "-t", session, "COORD_MANUAL"]);
       for (const agent of agents) {
         const launcher = resolveAgentLauncher(agent);
         const target = `${session}:${safeName(agent.id)}`;
@@ -899,7 +940,7 @@ export class TmuxController {
     }
     const environment =
       key === "manual"
-        ? await this.runner(["set-environment", "-u", "-t", session, "COORD_ISSUE"])
+        ? await this.runner(["set-environment", "-r", "-t", session, "COORD_ISSUE"])
         : await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(key)]);
     assertAuthority();
     if (environment.exitCode !== 0) {
@@ -914,6 +955,9 @@ export class TmuxController {
       if (manualEnvironment.exitCode !== 0) {
         throw new Error(`cannot set manual environment in ${session}: ${manualEnvironment.stderr}`);
       }
+    } else {
+      await this.runner(["set-environment", "-r", "-t", session, "COORD_MANUAL"]);
+      assertAuthority();
     }
     for (const agent of agents) {
       const target = `${session}:${safeName(agent.id)}`;
