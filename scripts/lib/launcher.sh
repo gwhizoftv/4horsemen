@@ -142,8 +142,10 @@ if [[ "${COORD_GIT_DELEGATE:-}" == 1 ]]; then
   exec "$REAL_GIT" "$@"
 fi
 
-# Owner-driven manual mode: no automated issue, no restrictions.
-if [[ ! "${COORD_ISSUE:-}" =~ ^[1-9][0-9]*$ ]]; then
+# Owner-driven manual mode: no automated issue, no restrictions. A manual tmux
+# session sets COORD_MANUAL=1 and automated sessions remove it, so an issue
+# number inherited into a manual pane is not mistaken for automation.
+if [[ ! "${COORD_ISSUE:-}" =~ ^[1-9][0-9]*$ || "${COORD_MANUAL:-}" == 1 ]]; then
   delegate "$@"
 fi
 
@@ -183,6 +185,41 @@ if [[ "$coord_target" != "$COORD_CLONE" ]]; then
   delegate "$@"
 fi
 
+# The runtime directory that holds this clone's issues, from the clone's own
+# identity keys and the nested-vs-flat topology, through $REAL_GIT so this never
+# re-enters the shim. Prints the workspace directory and, for a nested layout,
+# the outer runtime directory too (issue state may live under either).
+coord_runtime_roots() {
+  local config dir parent
+  config="$("$REAL_GIT" config --local --get coord.workspaceConfig 2>/dev/null)" || return 1
+  [[ -n "$config" && -f "$config" ]] || return 1
+  dir="$(dirname "$config")"
+  parent="$(dirname "$dir")"
+  echo "$dir"
+  if [[ "$(basename "$parent")" == "workspaces" ]]; then dirname "$parent"; fi
+}
+
+# A stale binding: the inherited issue number names no runtime, or one whose
+# workflow already completed or was abandoned. Only this positive evidence
+# relaxes the guard; an unresolvable workspace keeps the refusal below.
+# cursors.json is written by JSON.stringify(value, null, 2), so top-level keys
+# sit on two-space-indented lines.
+coord_issue_is_stale() {
+  local roots root found=""
+  roots="$(coord_runtime_roots)" || return 1
+  while IFS= read -r root; do
+    [[ -d "$root/issue-$COORD_ISSUE" ]] || continue
+    found="$root/issue-$COORD_ISSUE"
+    break
+  done <<< "$roots"
+  [[ -n "$found" ]] || return 0
+  grep -Eq '^  "(completed|abandoned)": true,?$' "$found/cursors.json" 2>/dev/null
+}
+
+if coord_issue_is_stale; then
+  delegate "$@"
+fi
+
 coord_refuse() {
   echo "coord: 'git $1' is blocked in this clone during automated issue $COORD_ISSUE." >&2
   echo "  Coordination owns this checkout and already resolved what changed." >&2
@@ -200,13 +237,12 @@ coord_refuse() {
 # section leaves the pinned read allowed. The documented fallback for a packet
 # the coordinator could not produce must survive anything going wrong here.
 coord_action_lists_files() {
-  local config agent dir parent root action
-  config="$("$REAL_GIT" config --local --get coord.workspaceConfig 2>/dev/null)" || return 1
+  local agent root action
   agent="$("$REAL_GIT" config --local --get consensus.agentId 2>/dev/null)" || return 1
-  [[ -n "$config" && -n "$agent" && -f "$config" ]] || return 1
-  dir="$(dirname "$config")"
-  parent="$(dirname "$dir")"
-  if [[ "$(basename "$parent")" == "workspaces" ]]; then root="$(dirname "$parent")"; else root="$dir"; fi
+  [[ -n "$agent" ]] || return 1
+  # The last listed root is the launcher's grant root (outer for nested).
+  root="$(coord_runtime_roots | tail -n 1)"
+  [[ -n "$root" ]] || return 1
   action="$root/issue-$COORD_ISSUE/agents/$agent/action.md"
   [[ -f "$action" ]] || return 1
   grep -q '^## Bound input files$' "$action" 2>/dev/null || return 1

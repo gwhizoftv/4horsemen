@@ -29,7 +29,7 @@ s: Show status, accepted commits, warnings and recovery commands.
 p / Space: Toggle your manual pause; this never releases an agent hold.
 a: Open missing agent terminal windows so you can inspect them or type directly.
 d: Select an agent to drop; a separate confirmation is required.
-n: Request a reminder for one current task; readiness checks and send limits still apply.
+n: Request a reminder for one current task, or for all of them; readiness checks and send limits still apply.
 r: Release one inspected hold; resetting its reminder allowance requires confirmation.
 /steer <text>: Queue guidance for every recipient of the next assigned cohort, not an immediate broadcast.
 q: Stop this foreground coordinator only; agent terminals remain open.
@@ -171,9 +171,17 @@ export const startInteractiveSession = (options: {
       else if (value === "n") {
         const reminders = commands.reminders?.() ?? [];
         if (reminders.length === 0) say("No outstanding task is available to remind.");
-        else showMenu({ kind: "reminder", items: reminders.map((item) => ({
-          label: item.label, run: () => say(item.request())
-        })) }, "Select an agent to remind about its current task (not restart it):");
+        else {
+          const items: Menu["items"] = reminders.map((item) => ({ label: item.label, run: () => say(item.request()) }));
+          // Each captured request keeps its own guards; one refusal must not hide the others.
+          if (reminders.length > 1) items.push({ label: "All agents", run: () => {
+            for (const item of reminders) {
+              try { say(item.request()); }
+              catch (error) { say(`coord: ${item.label}: ${error instanceof Error ? error.message : String(error)}`); }
+            }
+          } });
+          showMenu({ kind: "reminder", items }, "Select an agent (or all) to remind about its current task (not restart it):");
+        }
       }
       else if (value === "d") showMenu({ kind: "drop", items: commands.agents().map((agent) => ({
         label: `Drop ${agent}`, confirm: true, run: () => { commands.drop(agent); say(`Dropped ${agent}.`); }

@@ -312,6 +312,8 @@ describe("owner reminders and advisory diagnostics", () => {
     await loop.reportStartup(); // the foreground run reuses the already-diagnosed startup instance
     expect(f.messages.join("\n")).toContain("runtime hook trust/activity not yet verified");
     expect(f.messages.filter((message) => message.includes("claude: runtime hook trust/activity not yet verified"))).toHaveLength(1);
+    // Per-agent tmux placement is reported once, from the same startup pass.
+    expect(f.messages.filter((message) => /^\[(OK|WARN)\] claude: (running in|the pane in) coord-/.test(message))).toHaveLength(1);
     await loop.runTick(); f.advance(1); f.working(); f.advance(1); f.working();
     await loop.runTick(); await loop.runTick();
     expect(f.messages.filter((message) => message.includes("No Stop hook from claude after 2 observed turns"))).toHaveLength(1);
