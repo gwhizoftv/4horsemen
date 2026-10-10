@@ -194,19 +194,20 @@ describe("tmux boundary", () => {
     expect(calls[3]?.args).toEqual([
       "send-keys", "-l", "-t", "coord-1:cursor.0",
       `Read and execute coordinator action 11111111-1111-4111-8111-111111111111 digest ${"a".repeat(64)} at /runtime/action.md`,
+      ";", "run-shell", "sleep 0.3",
       ";", "send-keys", "-t", "coord-1:cursor.0", "Enter"
     ]);
     expect(slept).toEqual([]);
   });
 
-  it("submits Cursor vim INSERT with Escape then Enter, not a bare Enter", async () => {
+  it.each(["claude", "cursor"])("submits %s vim INSERT with gaps after text and Escape in one batch", async (id) => {
     const root = mkdtempSync(join(tmpdir(), "coord-cursor-vim-nudge-"));
     roots.push(root);
     mkdirSync(join(root, ".cursor"));
     writeFileSync(join(root, ".cursor/cli.json"), `${JSON.stringify({ editor: { vimMode: true } })}\n`);
     const calls: Array<{ args: readonly string[] }> = [];
     const controller = new TmuxController(
-      runnerWithPrompt(calls, "0\tagent\t0\t0\n", "Auto ·\n-- INSERT --\n"),
+      runnerWithPrompt(calls, "0\tagent\t0\t0\n", `${id === "claude" ? "❯" : "Auto ·"}\n-- INSERT --\n`),
       null,
       null,
       null,
@@ -215,16 +216,20 @@ describe("tmux boundary", () => {
     expect(
       await controller.nudge(
         1,
-        { id: "cursor", root, launcher: "start-cursor.sh", delivery: "both", harnessProcess: "agent" },
+        { id, root, launcher: `start-${id}.sh`, delivery: "both", harnessProcess: "agent" },
         "/runtime/action.md"
       )
     ).toMatchObject({ status: "sent" });
     const sent = calls.filter((call) => call.args[0] === "send-keys");
-    expect(sent.flatMap((call) => commandsIn(call.args)).map((args) => args.at(-1))).toEqual([
-      "Read and execute your current coordinator action at /runtime/action.md",
-      "Escape",
-      "Enter"
+    expect(sent).toHaveLength(1);
+    expect(commandsIn(sent[0]!.args)).toEqual([
+      ["send-keys", "-l", "-t", `coord-1:${id}.0`, "Read and execute your current coordinator action at /runtime/action.md"],
+      ["run-shell", "sleep 0.3"],
+      ["send-keys", "-t", `coord-1:${id}.0`, "Escape"],
+      ["run-shell", "sleep 0.15"],
+      ["send-keys", "-t", `coord-1:${id}.0`, "Enter"]
     ]);
+    expect(calls.at(-1)).toBe(sent[0]);
     expect(sent.some((call) => call.args.includes("a"))).toBe(false);
   });
 
@@ -302,7 +307,7 @@ describe("tmux boundary", () => {
     const batches = calls.filter((call) => call.args[0] === "send-keys");
     expect(batches).toHaveLength(1);
     expect(commandsIn(batches[0]!.args).map((args) => args.at(-1))).toEqual([
-      "i", "Read and execute your current coordinator action at /runtime/action.md", "Enter"
+      "i", "Read and execute your current coordinator action at /runtime/action.md", "sleep 0.3", "Enter"
     ]);
     for (const nudgeSubmit of [["Enter"], ["C-m"], ["C-j", "C-m"]]) {
       expect(resolveNudgeKeys({ id: "codex", root: "/c", launcher: "x", delivery: "both", nudgeSubmit }).submit).toEqual(["Enter"]);
@@ -334,6 +339,7 @@ describe("tmux boundary", () => {
     expect(batches).toHaveLength(1);
     expect(commandsIn(batches[0]!.args)).toEqual([
       ["send-keys", "-l", "-t", "coord-1:codex.0", "Read and execute your current coordinator action at /a"],
+      ["run-shell", "sleep 0.3"],
       ["send-keys", "-t", "coord-1:codex.0", "Enter"]
     ]);
   });
@@ -839,7 +845,9 @@ describe("tmux boundary", () => {
           return ok(codexPane(pane.body, pane.draft, options.vim));
         }
         if (args[0] === "send-keys") {
-          for (const command of commandsIn(args)) keys.push(command.includes("-l") ? "-l" : command.at(-1)!);
+          for (const command of commandsIn(args)) {
+            if (command[0] === "send-keys") keys.push(command.includes("-l") ? "-l" : command.at(-1)!);
+          }
         }
         return ok();
       }, null, null, null, noopSleep);
@@ -883,7 +891,7 @@ describe("tmux boundary", () => {
     const sends = calls.filter((args) => args[0] === "send-keys");
     expect(sends).toHaveLength(1);
     expect(commandsIn(sends[0]!).map((args) => args.includes("-l") ? "-l" : args.at(-1)))
-      .toEqual(vim === "Normal" ? ["i", "-l", "Enter"] : ["-l", "Enter"]);
+      .toEqual(vim === "Normal" ? ["i", "-l", "sleep 0.3", "Enter"] : ["-l", "sleep 0.3", "Enter"]);
     expect(calls.at(-1)).toBe(sends[0]);
     expect(sleeps).toEqual([]);
   });

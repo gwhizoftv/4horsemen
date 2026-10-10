@@ -9,13 +9,14 @@ ballots, signals, or completion markers.
 - `config.example.json`: show the same default.
 - `src/tmux.ts`: normalize old Codex submit defaults to Enter; send literal text
   and real submit keys in one tmux command batch for Codex, Claude, and Cursor;
-  remove Codex composer polling and fallback submits. Preserve AGY delivery.
+  include blocking 300 ms text and 150 ms submit-key delays; remove Codex
+  composer polling and fallback submits. Preserve AGY delivery.
 - `src/agentLifecycle.ts`: retain valid Stop readiness despite background work,
   with session/turn checks and invalidation on new foreground activity.
 - `src/runLoop.ts`: use Stop readiness without terminal idle confirmation;
   reconcile matching submission hooks and late delivery-uncertain holds.
 - `test/tmux.test.ts`: replace obsolete polling/retry expectations with batch,
-  literal-text, real-key, and pre-send guard coverage.
+  literal-text, real-key, blocking-delay, and pre-send guard coverage.
 - `test/agentLifecycle.test.ts`: exercise Stop, background work, stale turns,
   and subsequent foreground activity.
 - `test/agentEvent.test.ts`: cover vendor Stop normalization through readiness.
@@ -63,6 +64,12 @@ the corresponding uncertainty hold. Stop must not let stale sessions or older
 turns authorize delivery. Record background work as telemetry without letting
 it veto a current Stop.
 
+Owner live testing confirmed that without delays Codex treats Enter as part of
+the paste, and vim Claude/Cursor can combine Escape and Enter into Alt+Enter.
+Keep `run-shell 'sleep 0.3'` after the text and `run-shell 'sleep 0.15'` between
+submit keys, with no `-b`, in the same tmux invocation. Reuse the existing delay
+constants and validate both single-Enter and vim Escape/Enter sequences.
+
 ## Conclusion
 
 Implement the issue and owner clarifications as a reviewable manual branch,
@@ -75,13 +82,21 @@ preserving AGY's functioning path and documenting actual verification results.
 - Focused transport, lifecycle, vendor-hook, and run-loop regression tests were
   run during development, including hook-before-transport-return and delayed
   acknowledgment cases. The commit hook runs the complete `pnpm check:fast`.
-- Live Codex composer validation is **not verified**: installed CLI is
-  `codex-cli 0.162.1`, but this execution environment rejects both existing tmux
-  socket access and creation of a separate test socket (`Operation not
-  permitted`). Before release, exercise an isolated live Codex composer with
-  the exact batch, verify one complete intended prompt in `UserPromptSubmit`,
-  and verify one submitted turn. Automated tmux-runner tests establish command
-  construction, not real composer acceptance.
+- Delay correction: `test/tmux.test.ts` passed all 64 tests, covering one batch
+  with blocking delays for Codex, Claude vim, Cursor vim and non-vim Cursor.
+- An isolated real tmux server with a raw-input recorder exercised the built
+  `TmuxController.nudge`. The exact prompt and one submit sequence arrived in
+  every case. Measured text gaps: Codex 308 ms, Claude INSERT 312 ms, Cursor
+  INSERT 312 ms, Claude NORMAL 313 ms. Escape/Enter gaps: 167, 167 and 173 ms
+  respectively. Each attempt used one tmux send invocation; the temporary
+  server was removed afterward.
+- The initial live composer attempt was blocked by sandbox tmux permissions.
+  The native transport check above used granted permission, but a raw-input
+  recorder does not establish real composer acceptance. The owner supplied the
+  live findings and working delayed sequences; this agent has not independently
+  repeated a full composer/hook check with the corrected batch. Before release,
+  verify one complete intended prompt in the vendor submission hook and one
+  submitted turn.
 
 The working branch is in a temporary checkout because this session grants only
 read access to the supplied workspace's `.git`. The temporary checkout retains

@@ -371,7 +371,8 @@ Per-agent config controls owner UI:
 - `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert,
   skipped when Codex's footer already shows `Vim: Insert`)
 - `nudgeSubmit` — tmux keys after the text (Claude default: `Escape` then
-  `Enter` to dismiss autocomplete; Cursor without vim and Antigravity default:
+  `Enter` to leave vim INSERT and dismiss autocomplete; Cursor without vim and
+  Antigravity default:
   `Enter` only — Escape dismisses a non-vim Cursor composer and cancels
   Antigravity; Cursor with `editor.vimMode` uses `Escape` then `Enter` so
   INSERT does not treat Enter as a newline; Codex default: `Enter`.
@@ -380,7 +381,11 @@ Per-agent config controls owner UI:
   Cursor/Antigravity, and stale `C-m` on Antigravity, are upgraded)
 
 Codex, Claude and Cursor receive one tmux command batch containing literal
-text followed by real submit-key events. The coordinator does not poll for the
+text followed by real submit-key events. Blocking `run-shell 'sleep …'` commands
+inside the batch wait 300 ms after text and 150 ms between submit keys. The text
+gap keeps Enter out of paste detection; the Escape/Enter gap prevents Alt+Enter
+in vim mode. These commands must not use `-b`, which would let the following key
+run before the sleep finishes. The coordinator does not poll for the
 pasted prompt or send fallback submit keys. A matching `UserPromptSubmit` or
 `beforeSubmitPrompt` hook is sufficient acceptance evidence; delayed hooks also
 clear the corresponding delivery-uncertain hold without resetting the send

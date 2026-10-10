@@ -387,9 +387,9 @@ export const resolveNudgeKeys = (
   return { prelude, submit };
 };
 
-/** AGY delay after literal text before its first submit key. */
+/** Let the TUI finish recognizing pasted text before its first submit key. */
 export const NUDGE_AFTER_TEXT_MS = 300;
-/** AGY delay between configured submit keys. */
+/** Keep Escape and Enter separate so the TUI does not interpret Alt+Enter. */
 export const NUDGE_BETWEEN_SUBMIT_MS = 150;
 /**
  * Antigravity under tmux often paints `⚠ Verifying your account...` a beat after
@@ -1129,12 +1129,16 @@ export class TmuxController {
         if (refused !== null) return refused;
       }
     } else {
-      // A single tmux operation, with literal text and actual key events in
-      // separate commands. No pane polling, sleep, or retry between them.
+      // Blocking run-shell commands keep the TUI's text/key gaps inside one
+      // tmux operation. Without them, Enter can join the paste as a newline,
+      // or Escape+Enter can become Alt+Enter. Never use run-shell -b here.
       const commands = [
         ...preludeKeys.map((key) => ["send-keys", "-t", target, key]),
         ["send-keys", "-l", "-t", target, text],
-        ...submit.map((key) => ["send-keys", "-t", target, key])
+        ...submit.flatMap((key, index) => [
+          ["run-shell", `sleep ${(index === 0 ? NUDGE_AFTER_TEXT_MS : NUDGE_BETWEEN_SUBMIT_MS) / 1000}`],
+          ["send-keys", "-t", target, key]
+        ])
       ];
       const refused = await send(commands.flatMap((command, index) => index === 0 ? command : [";", ...command]));
       if (refused !== null) return refused;

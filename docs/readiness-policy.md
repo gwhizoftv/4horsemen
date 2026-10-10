@@ -30,6 +30,10 @@ path without acquiring a prompt-submit-hook requirement.
 
 A successful tmux write proves injection only. Codex, Claude and Cursor receive
 one tmux command batch: literal prompt text followed by actual submit-key events.
+Blocking `run-shell` sleeps inside that batch allow 300 ms after the text and
+150 ms between submit keys. This keeps Enter out of paste detection and separates
+vim Escape from Enter so it cannot be read as Alt+Enter. These fixed delays do
+not depend on pane text.
 The coordinator does not wait for the prompt to paint, poll the composer, or
 press fallback submit keys. Codex uses Enter, including old configurations with
 `["C-j", "C-m"]` or `["C-m"]`. AGY keeps its separate literal-text/Enter delivery
