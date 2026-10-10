@@ -104,6 +104,42 @@ describe("native shell guard shared policy", () => {
     expect(check("git status")).toEqual({});
   });
 
+  it("treats manual mode and stale inherited issue bindings as owner work, not automation", () => {
+    const f = fixture(), clone = f.productRoot;
+    const nested = join(f.coordRoot, "workspaces", "app");
+    const config = join(nested, "config.json");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(config, "{}");
+    git(clone, "config", "coord.workspaceConfig", config);
+    git(clone, "config", "consensus.agentId", "codex");
+    const cursors = (root: string, completed: boolean, abandoned = false) => {
+      mkdirSync(join(root, "issue-42"), { recursive: true });
+      writeFileSync(join(root, "issue-42", "cursors.json"),
+        `${JSON.stringify({ formatVersion: 4, publication: { status: "completed" }, completed, abandoned }, null, 2)}\n`);
+    };
+    const status = (extra: NodeJS.ProcessEnv = {}, command = "git status") => guardShellRequest({ vendor: "codex", clone,
+      raw: payload("codex", command, clone), env: { ...process.env, COORD_ISSUE: "42", ...extra } });
+    const denied = (result: Record<string, unknown>) => JSON.stringify(result).includes('"deny"');
+    const pinned = `git show ${git(clone, "rev-parse", "HEAD")}:README.md`;
+    // Live under either the workspace directory or the outer nested runtime.
+    for (const root of [nested, f.coordRoot]) {
+      cursors(root, false);
+      expect(denied(status())).toBe(true);
+      // Exported-file enforcement reads the action of the runtime being guarded.
+      mkdirSync(join(root, "issue-42", "agents", "codex"), { recursive: true });
+      writeFileSync(join(root, "issue-42", "agents", "codex", "action.md"), "## Bound input files\n");
+      expect(denied(status({}, pinned))).toBe(true);
+      expect(status({ COORD_MANUAL: "1" })).toEqual({});
+      cursors(root, true);
+      expect(status()).toEqual({});
+      cursors(root, false, true);
+      expect(status()).toEqual({});
+      rmSync(join(root, "issue-42"), { recursive: true });
+    }
+    // No runtime for the inherited number at all.
+    expect(status()).toEqual({});
+  });
+
   it("bounds recursion and does not interpret dynamic words or heredoc data", () => {
     expect(staticGitCalls("echo 'git status'", "/", {})).toEqual([]);
     expect(staticGitCalls("git status".repeat(20000), "/", {})).toEqual([]);

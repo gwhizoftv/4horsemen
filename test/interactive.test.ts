@@ -58,6 +58,25 @@ describe("foreground owner terminal", () => {
     await f.send("y");
     expect(f.commands.releaseHold).toHaveBeenCalledWith("captured", true);
   });
+
+  it("reminds all agents through each captured request without one refusal hiding another", async () => {
+    const f = fixture();
+    const refused = vi.fn(() => { throw new Error("That task is no longer current"); });
+    const sent = vi.fn(() => "Reminder requested for codex");
+    Object.assign(f.commands, { reminders: () => [{ label: "claude", request: refused }, { label: "codex", request: sent }] });
+    await f.send("n");
+    expect(f.printed()).toContain("[3] All agents");
+    await f.send("3"); await f.send("\r");
+    expect(refused).toHaveBeenCalledOnce();
+    expect(sent).toHaveBeenCalledOnce();
+    expect(f.printed()).toContain("coord: claude: That task is no longer current");
+    expect(f.printed()).toContain("Reminder requested for codex");
+    await f.send("\x1b");
+    Object.assign(f.commands, { reminders: () => [{ label: "codex", request: sent }] });
+    const before = f.printed().length;
+    await f.send("n");
+    expect(f.printed().slice(before)).not.toContain("All agents");
+  });
   it("does not touch input in non-TTY mode", () => {
     const f = fixture(false);
     expect(f.session).toBeNull();

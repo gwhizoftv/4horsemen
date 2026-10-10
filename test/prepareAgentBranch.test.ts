@@ -6,6 +6,7 @@ import { liftCloneAgentsProtocol, writeCloneAgentsProtocol } from "../src/agents
 import {
   AgentCloneReadinessRefusal,
   makeAgentClonesBaseReady,
+  makeManualClonesBaseReady,
   prepareAgentIssueBranches
 } from "../src/prepareAgentBranch.js";
 import { git, repoRoot, tryGit } from "./support/workspaceFixture.js";
@@ -332,6 +333,139 @@ describe("prepareAgentIssueBranches", () => {
     ).toThrow(/uncommitted changes/);
     expect(existsSync(join(clone, "dirty.txt"))).toBe(true);
     expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe(branch === "detached" ? "HEAD" : branch);
+  });
+});
+
+describe("start-time dirty refusal advice", () => {
+  const prepare = (clone: string, baseline: string) => () => prepareAgentIssueBranches({
+    agents: [{ id: "claude", root: clone }], issue: 9, branchTemplate: "issue-{issue}/{agent}",
+    baselineSha: baseline, baseBranch: "main", installRoot: repoRoot
+  });
+
+  it("names the paths and points untracked-only leftovers at reset-clones, tracked edits at commit/stash", () => {
+    const { clone, baseline } = seedClone();
+    mkdirSync(join(clone, "cache"));
+    writeFileSync(join(clone, "cache", "blob"), "x\n");
+    expect(prepare(clone, baseline)).toThrow(`uncommitted changes in ${clone} (cache/)`);
+    expect(prepare(clone, baseline)).toThrow(/untracked files only.*coord reset-clones 9 --force/);
+    git(clone, "update-index", "--no-skip-worktree", "--", "AGENTS.md");
+    git(clone, "checkout", "--", "AGENTS.md");
+    writeFileSync(join(clone, "AGENTS.md"), "# owner edit\n");
+    expect(prepare(clone, baseline)).toThrow(/Commit\/stash them, then retry/);
+    expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toBe("# owner edit\n");
+  });
+});
+
+describe("makeManualClonesBaseReady", () => {
+  const scratch = (clone: string, name: string, commit = false): string => {
+    git(clone, "checkout", "-q", "-b", name);
+    if (commit) {
+      writeFileSync(join(clone, `${name.replace("/", "-")}.txt`), "manual work\n");
+      git(clone, "add", ".");
+      git(clone, "commit", "-qm", "manual work");
+    }
+    return git(clone, "rev-parse", "HEAD");
+  };
+  const ready = (agents: { id: string; root: string }[], phase?: "dry-run" | "preflight") =>
+    makeManualClonesBaseReady({ agents, baseBranch: "main", installRoot: repoRoot, ...(phase ? { phase } : {}) });
+
+  it("returns clean, published clones to base and keeps their branch refs and overlay", () => {
+    const a = seedClone(), b = seedClone();
+    scratch(a.clone, "claude/merged");
+    const pushed = scratch(b.clone, "codex/pushed", true);
+    git(b.clone, "push", "-q", "-u", "origin", "codex/pushed");
+    const agents = [{ id: "claude", root: a.clone }, { id: "codex", root: b.clone }];
+    for (const phase of ["dry-run", "preflight"] as const) {
+      expect(ready(agents, phase).map((result) => result.action)).toEqual(["checked-out", "checked-out"]);
+    }
+    expect(git(a.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("claude/merged");
+    const outcome = ready(agents);
+    expect(outcome.map((result) => result.action)).toEqual(["checked-out", "checked-out"]);
+    for (const { clone, baseline } of [a, b]) {
+      expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+      expect(git(clone, "rev-parse", "HEAD")).toBe(baseline);
+      expect(readFileSync(join(clone, "AGENTS.md"), "utf8")).toContain("coordination protocol");
+      expect(skipWorktree(clone)).toBe(true);
+    }
+    expect(git(b.clone, "rev-parse", "codex/pushed")).toBe(pushed);
+    expect(ready(agents).map((result) => result.action)).toEqual(["already-base", "already-base"]);
+  });
+
+  it("refuses the whole batch on unpushed commits, dirt or a local base ahead, changing nothing", () => {
+    const clean = seedClone(), unpushed = seedClone(), dirty = seedClone(), ahead = seedClone();
+    scratch(clean.clone, "claude/clean");
+    const tip = scratch(unpushed.clone, "codex/unpushed", true);
+    scratch(dirty.clone, "cursor/dirty");
+    writeFileSync(join(dirty.clone, "wip.txt"), "keep\n");
+    writeFileSync(join(ahead.clone, "local.txt"), "unpushed base\n");
+    git(ahead.clone, "add", "local.txt");
+    git(ahead.clone, "commit", "-qm", "local base work");
+    const aheadTip = git(ahead.clone, "rev-parse", "HEAD");
+    git(ahead.clone, "checkout", "-q", "-b", "antigravity/published", "HEAD~1");
+    const outcome = ready([
+      { id: "claude", root: clean.clone }, { id: "codex", root: unpushed.clone },
+      { id: "cursor", root: dirty.clone }, { id: "antigravity", root: ahead.clone }
+    ]);
+    expect(outcome.map((result) => result.action)).toEqual(["refused", "refused", "refused", "refused"]);
+    expect(outcome[0]?.reason).toContain("another clone is not ready (codex, cursor, antigravity); no clone was changed");
+    expect(outcome[1]?.reason).toContain("codex/unpushed has commits that are neither on origin's copy");
+    expect(outcome[2]?.reason).toContain("uncommitted changes (wip.txt)");
+    expect(outcome[3]?.reason).toContain("local main has commits not in origin/main");
+    expect(git(clean.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("claude/clean");
+    expect(git(unpushed.clone, "rev-parse", "HEAD")).toBe(tip);
+    expect(readFileSync(join(dirty.clone, "wip.txt"), "utf8")).toBe("keep\n");
+    expect(git(ahead.clone, "rev-parse", "main")).toBe(aheadTip);
+  });
+
+  it("refuses owner edits hidden in AGENTS.md by skip-worktree and keeps them", () => {
+    const { clone } = seedClone();
+    scratch(clone, "claude/notes");
+    const path = join(clone, "AGENTS.md");
+    writeFileSync(path, `${readFileSync(path, "utf8")}\nowner note\n`);
+    const before = readFileSync(path, "utf8");
+    expect(git(clone, "status", "--porcelain")).toBe("");
+    const [result] = ready([{ id: "claude", root: clone }]);
+    expect(result?.action).toBe("refused");
+    expect(result?.reason).toContain("AGENTS.md has edits outside the coordination protocol");
+    expect(readFileSync(path, "utf8")).toBe(before);
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("claude/notes");
+  });
+
+  it("judges publication by origin now, not a stale tracking ref or an unreachable origin", () => {
+    const deleted = seedClone();
+    scratch(deleted.clone, "codex/gone", true);
+    git(deleted.clone, "push", "-q", "-u", "origin", "codex/gone");
+    git(deleted.clone, "push", "-q", "origin", "--delete", "codex/gone");
+    git(deleted.clone, "update-ref", "refs/remotes/origin/codex/gone", "HEAD");
+    expect(ready([{ id: "codex", root: deleted.clone }])[0]?.reason).toContain("codex/gone has commits that are neither");
+    expect(git(deleted.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("codex/gone");
+
+    const offline = seedClone();
+    writeFileSync(join(offline.clone, "local.txt"), "unpushed base\n");
+    git(offline.clone, "add", "local.txt");
+    git(offline.clone, "commit", "-qm", "local base work");
+    git(offline.clone, "remote", "set-url", "origin", join(offline.clone, "missing-origin.git"));
+    for (const phase of ["dry-run", undefined] as const) {
+      const [result] = ready([{ id: "claude", root: offline.clone }], phase);
+      expect(result?.action).toBe("refused");
+      expect(result?.reason).toContain("cannot verify publication against origin");
+    }
+  });
+
+  it("dry-run moves no ref, even when origin has advanced", () => {
+    const { clone } = seedClone();
+    const origin = join(clone, "..", "origin.git"), product = join(clone, "..", "app");
+    writeFileSync(join(product, "next.txt"), "next\n");
+    git(product, "add", "next.txt");
+    git(product, "commit", "-qm", "next");
+    git(product, "push", "-q", origin, "HEAD:main");
+    const tracking = git(clone, "rev-parse", "origin/main");
+    const [result] = ready([{ id: "claude", root: clone }], "dry-run");
+    expect(result?.reason).toContain("run without --dry-run to fetch and verify");
+    expect(git(clone, "rev-parse", "origin/main")).toBe(tracking);
+    expect(tryGit(clone, "rev-parse", "--verify", "--quiet", "FETCH_HEAD").exitCode).not.toBe(0);
+    expect(ready([{ id: "claude", root: clone }], "preflight")[0]?.action).toBe("already-base");
+    expect(git(clone, "rev-parse", "origin/main")).toBe(git(product, "rev-parse", "HEAD"));
   });
 });
 

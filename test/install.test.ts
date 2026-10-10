@@ -775,7 +775,9 @@ describe("generated git shim", () => {
     const f = product();
     const marker = join(f.workspaceRoot, "real-git-ran");
     const fake = join(f.workspaceRoot, "fake-git");
-    writeFileSync(fake, `#!/bin/sh\nprintf ran > '${marker}'\n`, { mode: 0o700 });
+    // The policy itself may read clone config (to resolve the runtime); only an
+    // allowed command actually running would leave the marker.
+    writeFileSync(fake, `#!/bin/sh\n[ "$1" = config ] && exit 1\nprintf ran > '${marker}'\n`, { mode: 0o700 });
     const shim = join(f.productRoot, ".coord/bin/git");
     execFileSync("bash", ["-c", '. "$1"; write_git_wrapper "$2" "$3" "$4"', "_",
       join(repoRoot, "scripts/lib/launcher.sh"), shim, fake, realpathSync(f.productRoot)]);
@@ -811,6 +813,10 @@ describe("generated git shim", () => {
     const match = /exit=(\d+)\s*$/.exec(result);
     return { status: Number(match?.[1] ?? -1), stderr: "" };
   };
+  // A live automated issue: COORD_ISSUE alone names one only while its runtime exists.
+  const liveIssue = (clone: string): void => {
+    mkdirSync(join(dirname(git(clone, "config", "--get", "coord.workspaceConfig")), "issue-42"), { recursive: true });
+  };
 
   it("installs an untracked shim the launcher puts on PATH", () => {
     const fixture = product();
@@ -829,6 +835,10 @@ describe("generated git shim", () => {
     // Untracked and excluded, so the clone stays clean.
     expect(readFileSync(join(clone, ".git", "info", "exclude"), "utf8")).toContain(".coord/");
     expect(git(clone, "status", "--porcelain")).toBe("");
+    // A sandbox-local pnpm store is cache, so it must not dirty the clone either.
+    mkdirSync(join(clone, ".pnpm-store", "v10"), { recursive: true });
+    writeFileSync(join(clone, ".pnpm-store", "v10", "index"), "cache\n");
+    expect(git(clone, "status", "--porcelain")).toBe("");
 
     const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
     expect(launcher).toContain('.coord/bin:$PATH');
@@ -839,6 +849,7 @@ describe("generated git shim", () => {
   it("refuses the reads coordination owns and delegates everything else", () => {
     const fixture = product();
     const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
+    liveIssue(clone);
     const head = git(clone, "rev-parse", "HEAD");
     const tracked = git(clone, "ls-tree", "--name-only", "HEAD").split("\n")[0] as string;
 
@@ -860,6 +871,7 @@ describe("generated git shim", () => {
   it("refuses even when the suite itself runs under a delegated git", () => {
     const fixture = product();
     const clone = installOnce(fixture, { agents: ["claude"] }).clones[0] as string;
+    liveIssue(clone);
     const prior = process.env.COORD_GIT_DELEGATE;
     try {
       process.env.COORD_GIT_DELEGATE = "1";

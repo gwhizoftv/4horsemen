@@ -543,6 +543,37 @@ describe("CLI manual mode", () => {
       ).toBe(2);
       expect(errors.join("")).toContain("coord detach manual");
     }
+
+    // With the owner's consent the leftover manual session is closed (clones
+    // checked first) and the issue starts without a separate detach.
+    const questions: string[] = [];
+    const output: string[] = [];
+    expect(
+      await runCli(["start", "9", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
+        io: { stdout: (message) => output.push(message) },
+        sessionExists: isManual,
+        confirm: async (question) => { questions.push(question); return true; },
+        processRunner: successfulStartGit,
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    expect(questions).toEqual([expect.stringContaining("Manual mode is still open for this workspace")]);
+    expect(output.join("")).toContain("Detached manual mode");
+    expect(output.join("")).toContain("Started issue 9");
+
+    // A same-issue session left with no runtime is caught before any effect.
+    errors.length = 0;
+    expect(
+      await runCli(["start", "10", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
+        io: { stderr: (message) => errors.push(message) },
+        sessionExists: async (name) => name.startsWith("coord-10"),
+        processRunner: async () => {
+          throw new Error("a leftover session must refuse before issue lookup");
+        }
+      })
+    ).toBe(2);
+    expect(errors.join("")).toContain("Run `coord detach 10` first");
+    expect(existsSync(issueRuntimePaths(fixture.runtime, 10).issueRoot)).toBe(false);
   });
 
   it("dispatches exact manual teardown and advertises both manual commands", async () => {
@@ -554,6 +585,7 @@ describe("CLI manual mode", () => {
       })
     ).toBe(0);
     expect(output.join("")).toContain("Detached manual mode");
+    expect(output.join("")).toContain("Clone readiness:");
 
     output.length = 0;
     expect(await runCli(["--help"], { io: { stdout: (message) => output.push(message) } })).toBe(0);
@@ -615,11 +647,11 @@ describe("CLI", () => {
   it("does not accept COORD_ROOT instead of explicit or worktree context", async () => {
     const fixture = setup();
     const messages: string[] = [];
-    const result = await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath], {
+    const result = await runCli(["start", "1", "--profile", "solo", "--coord-runtime", fixture.runtime], {
       io: { stderr: (message) => messages.push(message) }
     });
     expect(result).toBe(2);
-    expect(messages.join("")).toContain("--config and --coord-runtime");
+    expect(messages.join("")).toContain("--coord-runtime needs --config");
 
     messages.length = 0;
     expect(
@@ -1738,6 +1770,17 @@ describe("CLI — install, doctor, and the hook bridge", () => {
       } })).toBe(0);
       expect(runs).toBe(1);
     }
+    // Runtime-requiring commands infer it from an agent clone too, or from --config alone.
+    const clone = join(product.workspaceRoot, "myserver-claude");
+    for (const argv of [["reset-clones", "89", "--dry-run"], ["detach", "89", "--dry-run"]]) {
+      expect(await runCli(argv, { io: { cwd: clone, stdout: () => undefined } })).toBe(0);
+    }
+    // An issue with no runtime still detaches only this workspace's UI.
+    const scoped: string[] = [];
+    expect(await runCli(["detach", "7", "--dry-run"], { io: { cwd: clone, stdout: (text) => scoped.push(text) } })).toBe(0);
+    expect(scoped.join("")).toContain(issueRuntimePaths(product.coordRoot, 7).terminalGroup);
+    expect(await runCli(["reset-clones", "89", "--dry-run", "--config", configPath],
+      { io: { cwd: product.workspaceRoot, stdout: () => undefined } })).toBe(0);
   });
 
   it("resolves analytics through an onboarded product", async () => {

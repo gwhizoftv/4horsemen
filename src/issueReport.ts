@@ -83,8 +83,10 @@ export const renderIssueReport = (
       containmentCoverage(entry, root === undefined ? null : containmentPolicy(root, id)?.binding ?? null).hook !== "active";
   });
   const cue = needsAction ? "[ACTION]" : uncertain ? "[WARN]" : cursors.completed ? "[OK]" : "[WAIT]";
+  // Labeled, not bare dashes: the report lands between log lines and the
+  // interactive prompt, so the owner must see exactly where it begins and ends.
   const lines = [
-    "----",
+    `==== coord status: issue ${start.issue} ====`,
     `${cue} Issue ${start.issue}: ${phase}`,
     `Pull request handling: ${cursors.completed && cursors.publication.status === "not-required" ? "you open and merge it (legacy owner-only)" : coordMergesPullRequest(start.prPolicy) ? "coordinator opens and merges it" : "coordinator opens a draft; you review and merge"}.`,
     `Chosen agent: ${chosen ?? "(not selected yet)"}`,
@@ -207,6 +209,7 @@ export const renderIssueReport = (
     }
   }
   lines.push(`Active step: ${stageNames[cursors.issueCursor.stepId]} (${describeWorkflowStep(cursors.issueCursor.stepId, cursors.issueCursor.round)})`,
-    `Active roster: ${cursors.activeRoster.join(", ")}`, `Queued guidance: ${cursors.ownerGuidance?.pending.length ?? 0}`, "----");
+    `Active roster: ${cursors.activeRoster.join(", ")}`, `Queued guidance: ${cursors.ownerGuidance?.pending.length ?? 0}`,
+    `==== end coord status: issue ${start.issue} ====`);
   return `${lines.join("\n")}\n`;
 };

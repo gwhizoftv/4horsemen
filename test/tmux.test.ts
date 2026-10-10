@@ -39,6 +39,32 @@ it("reports issue environment wiring without claiming child-process trust", asyn
   expect(await tmux.issueEnvironmentDiagnostic(161)).toContain("binding is missing or differs");
   expect(calls.every((args) => args[0] === "show-environment")).toBe(true);
 });
+it("reports per-agent tmux placement and missing Terminal windows read-only", async () => {
+  const calls: string[][] = [];
+  const panes: Record<string, string> = {
+    "coord-7:claude.0": "0\t/clones/claude\n",
+    "coord-7:codex.0": "1\t/clones/codex\n",
+    "coord-7:cursor.0": "0\t/elsewhere\n",
+    "coord-7:antigravity.0": "0\t\n"
+  };
+  const runner: TmuxRunner = async (args) => {
+    calls.push([...args]);
+    const output = panes[args[3] ?? ""];
+    return output === undefined ? { exitCode: 1, stdout: "", stderr: "can't find pane" } : ok(output);
+  };
+  const agents = ["claude", "codex", "cursor", "antigravity", "gemini"].map((id) =>
+    ({ id, root: `/clones/${id}`, launcher: `start-${id}.sh`, delivery: "both" as const }));
+  const tmux = new TmuxController(runner, null, null, null, noopSleep, "grp", (titles) => titles.filter((title) => !title.includes("codex")));
+  const lines = await tmux.agentPlacementDiagnostics(7, agents);
+  expect(lines).toContain("[OK] claude: running in coord-7:claude.0.");
+  expect(lines.find((line) => line.startsWith("[WARN] codex: the pane"))).toContain("has exited");
+  expect(lines.find((line) => line.startsWith("[WARN] cursor"))).toContain("started in /elsewhere, not its clone /clones/cursor");
+  expect(lines).toContain("[OK] antigravity: running in coord-7:antigravity.0 (start directory unknown).");
+  expect(lines.find((line) => line.startsWith("[WARN] gemini"))).toContain("no window in tmux session coord-7");
+  expect(lines.find((line) => line.startsWith("[WARN] codex: no Terminal window"))).toContain("coord attach 7");
+  expect(calls.every((args) => args[0] === "display-message")).toBe(true);
+});
+
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -456,6 +482,14 @@ describe("tmux boundary", () => {
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "new-window")).toBe(true);
     expect(calls).toContainEqual(["set-environment", "-t", "coord-3", "COORD_ISSUE", "3"]);
+    // A COORD_MANUAL=1 leaked from the tmux server would disarm the git shim.
+    expect(calls).toContainEqual(["set-environment", "-r", "-t", "coord-3", "COORD_MANUAL"]);
+    const fresh: string[][] = [];
+    await new TmuxController(async (args) => {
+      fresh.push([...args]);
+      return args[0] === "has-session" ? { exitCode: 1, stdout: "", stderr: "missing" } : ok();
+    }, null, null, null).startSession(4, [agent]);
+    expect(fresh).toContainEqual(["set-environment", "-r", "-t", "coord-4", "COORD_MANUAL"]);
     calls.length = 0;
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "respawn-pane")).toBe(true);
@@ -492,7 +526,7 @@ describe("tmux boundary", () => {
     await controller.ensureSession("manual", [agent]);
     expect(calls).toContainEqual([
       "set-environment",
-      "-u",
+      "-r",
       "-t",
       "coord-manual-abc12def00",
       "COORD_ISSUE"
@@ -504,7 +538,8 @@ describe("tmux boundary", () => {
       "COORD_MANUAL",
       "1"
     ]);
-    expect(calls.some((args) => args.includes("COORD_ISSUE") && !args.includes("-u"))).toBe(false);
+    expect(calls.some((args) => args.includes("COORD_ISSUE") && !args.includes("-r"))).toBe(false);
+    expect(calls.some((args) => args.includes("COORD_MANUAL") && args.includes("-r"))).toBe(false);
     expect(calls.filter((args) => args[0] === "new-window")).toHaveLength(1);
 
     calls.length = 0;

@@ -858,6 +858,7 @@ export class TmuxController {
       if (environment.exitCode !== 0) {
         throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
       }
+      await this.removeInheritedMode(session, "COORD_MANUAL");
       for (const agent of agents) {
         const launcher = resolveAgentLauncher(agent);
         const target = `${session}:${safeName(agent.id)}`;
@@ -880,6 +881,48 @@ export class TmuxController {
     }
   }
 
+  /** The git shim disarms on COORD_MANUAL=1, so an automated session must never pass one on. */
+  private async removeInheritedMode(session: string, name: string): Promise<void> {
+    const removed = await this.runner(["set-environment", "-r", "-t", session, name]);
+    if (removed.exitCode !== 0) throw new Error(`cannot remove ${name} from ${session}: ${removed.stderr}`);
+  }
+
+  /**
+   * Read-only startup check that each agent window exists, is alive, and was
+   * started in its own clone. The start path is fixed at creation, unlike the
+   * foreground command, so a slow harness start cannot make it look wrong; an
+   * empty value (older tmux) is reported as unknown rather than a mismatch.
+   */
+  async agentPlacementDiagnostics(key: SessionKey, agents: readonly AgentConfig[]): Promise<string[]> {
+    const session = this.sessionName(key);
+    const lines: string[] = [];
+    for (const agent of agents) {
+      const target = this.target(key, agent.id);
+      const result = await this.runner(["display-message", "-p", "-t", target, "#{pane_dead}\t#{pane_start_path}"])
+        .catch(() => ({ exitCode: 1, stdout: "", stderr: "" }));
+      const [dead = "1", startPath = ""] = result.stdout.replace(/\n$/, "").split("\t");
+      if (result.exitCode !== 0 || result.stdout.trim() === "") {
+        lines.push(`[WARN] ${agent.id}: no window in tmux session ${session}; run coord attach or restart the agent through coord.`);
+      } else if (dead === "1") {
+        lines.push(`[WARN] ${agent.id}: the pane in ${target} has exited; inspect it, then restart the agent through coord.`);
+      } else if (startPath !== "" && resolve(startPath) !== resolve(agent.root)) {
+        lines.push(`[WARN] ${agent.id}: the pane in ${target} started in ${startPath}, not its clone ${resolve(agent.root)}.`);
+      } else {
+        lines.push(`[OK] ${agent.id}: running in ${target}${startPath === "" ? " (start directory unknown)" : ""}.`);
+      }
+    }
+    if (this.titleProbe !== null) {
+      const launches = this.agentAttachLaunches(key, agents);
+      const present = this.titleProbe(launches.map((launch) => launch.windowTitle));
+      for (const launch of launches) {
+        if (!present.includes(launch.windowTitle)) {
+          lines.push(`[WARN] ${launch.agentId}: no Terminal window titled ${launch.windowTitle}; run coord attach${key === "manual" ? "" : ` ${key}`} to reopen it.`);
+        }
+      }
+    }
+    return lines;
+  }
+
   async stopSession(key: SessionKey): Promise<void> {
     await this.runner(["kill-session", "-t", this.sessionName(key)]);
   }
@@ -897,9 +940,12 @@ export class TmuxController {
       assertAuthority();
       if (created.exitCode !== 0) throw new Error(`tmux session creation failed: ${created.stderr}`);
     }
+    // `-r` removes the variable from every process the session starts, even one
+    // the tmux server's global environment still carries; `-u` would only drop
+    // the session value and let that global value through.
     const environment =
       key === "manual"
-        ? await this.runner(["set-environment", "-u", "-t", session, "COORD_ISSUE"])
+        ? await this.runner(["set-environment", "-r", "-t", session, "COORD_ISSUE"])
         : await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(key)]);
     assertAuthority();
     if (environment.exitCode !== 0) {
@@ -907,6 +953,10 @@ export class TmuxController {
         `${key === "manual" ? "cannot clear coordinator issue environment" : "cannot set coordinator issue environment"} ` +
           `in ${session}: ${environment.stderr}`
       );
+    }
+    if (key !== "manual") {
+      await this.removeInheritedMode(session, "COORD_MANUAL");
+      assertAuthority();
     }
     if (key === "manual") {
       const manualEnvironment = await this.runner(["set-environment", "-t", session, "COORD_MANUAL", "1"]);
