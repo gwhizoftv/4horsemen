@@ -1,0 +1,34 @@
+{
+  "actionId": "21c2f02e-1e28-48eb-8885-b76585556cf6",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "7427ebfca2a4969916aabf54d698146a49d4b2c9",
+      "path": ".signals/issue-172/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "38d0460c436ade9a8fb7bdba6070ae923e2d1d80",
+      "path": ".signals/issue-172/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "e62ba296c26b0602dbefb300604e83a057e200d6",
+      "path": ".signals/issue-172/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "abb2cf2b4afdcf38c67bec77a556385c282410e3",
+      "path": ".signals/issue-172/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "a9496968b9ea5e603c94cef05479ae345167971238e6fe5e076e6ca657b39cf2",
+  "issue": 172,
+  "issueSessionId": "issue-172:80a3e714afda3c63bc89726d77a0cd61aee08b17",
+  "protocolVersion": 2,
+  "rationale": "Codex e62ba296c26b0602dbefb300604e83a057e200d6 is the strongest revision base because the focused reproductions confirm preservation of hidden owner edits, fresh publication checks, and containment for active current and legacy runtimes, while its refusal for positively completed legacy runtimes still requires correction before approval.",
+  "responseSha256": "cfd1c9725a7d5adb05fb848fe5a38c444bd8cc1552acafed05d4edff2c5a9dcc"
+}

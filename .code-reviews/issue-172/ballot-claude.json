@@ -1,0 +1,34 @@
+{
+  "actionId": "fd4d37b6-2eab-45b4-ad81-a4efa99185ec",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "7427ebfca2a4969916aabf54d698146a49d4b2c9",
+      "path": ".signals/issue-172/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "38d0460c436ade9a8fb7bdba6070ae923e2d1d80",
+      "path": ".signals/issue-172/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "e62ba296c26b0602dbefb300604e83a057e200d6",
+      "path": ".signals/issue-172/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "abb2cf2b4afdcf38c67bec77a556385c282410e3",
+      "path": ".signals/issue-172/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "a9496968b9ea5e603c94cef05479ae345167971238e6fe5e076e6ca657b39cf2",
+  "issue": 172,
+  "issueSessionId": "issue-172:80a3e714afda3c63bc89726d77a0cd61aee08b17",
+  "protocolVersion": 2,
+  "rationale": "Codex's pin e62ba296 implements the selected plan most safely: it preflights every manual clone before teardown and re-checks them after, fast-forwards base without resets, keeps the git guard closed for both current and legacy nested runtimes, and scopes runtime-less numeric detach to the workspace, leaving only minor issues (roster-scoped run cleanup, empty start-path warning, missing-clone refusal) versus claude's cross-workspace detach advice, cursor's legacy-nested guard opening, and antigravity's disabled nested guard and failing fast test.",
+  "responseSha256": "9e56fd57459b6b715449f9a123eaef01aa2e67d0154ee8058c59df1a024f77bd"
+}
