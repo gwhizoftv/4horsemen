@@ -643,52 +643,106 @@ export const makeAgentClonesBaseReady = (input: {
 const isAncestor = (clone: string, commit: string, of: string): boolean =>
   git(clone, "merge-base", "--is-ancestor", commit, of).exitCode === 0;
 
+/** The commit origin has at `ref` right now, read without moving any local ref. */
+const remoteTip = (clone: string, ref: string): { sha: string | null } | { error: string } => {
+  const listed = git(clone, "ls-remote", "origin", ref);
+  if (listed.exitCode !== 0) return { error: listed.stderr.trim() || "git ls-remote origin failed" };
+  const line = listed.stdout.split("\n").find((entry) => entry.endsWith(`\t${ref}`));
+  return { sha: line?.split("\t")[0] ?? null };
+};
+
+/**
+ * `dry-run` changes nothing, not even remote-tracking refs. `preflight` may
+ * fetch but never touches a worktree. `apply` re-checks from scratch and then
+ * checks out base.
+ */
+export type ManualReadinessPhase = "dry-run" | "preflight" | "apply";
+
+type ManualPlan = {
+  snapshot: CloneReadinessSnapshot;
+  target: Extract<CloneBaseTarget, { kind: "target" }> | null;
+  reason: string | null;
+};
+
+const planManualClone = (agent: { id: string; root: string }, baseBranch: string, fetch: boolean): ManualPlan => {
+  if (!existsSync(agent.root) || !isGitWorktree(agent.root)) {
+    return { snapshot: { agent: agent.id, clone: agent.root, branch: "", available: false, head: "", dirtyLines: [] },
+      target: null, reason: null };
+  }
+  const head = git(agent.root, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+  const snapshot: CloneReadinessSnapshot = {
+    agent: agent.id, clone: agent.root, branch: head, available: true, head, dirtyLines: blockingDirtyPaths(agent.root)
+  };
+  const refuse = (reason: string): ManualPlan => ({ snapshot, target: null, reason });
+  if (snapshot.dirtyLines.length > 0) {
+    return refuse(`uncommitted changes (${snapshot.dirtyLines.map(statusPath).join(", ")}); commit and push, or stash them, first`);
+  }
+  // skip-worktree hides AGENTS.md from status, and the checkout below rewrites it.
+  if (cloneAgentsProtocolState(agent.root).tracked && !agentsMdDiffersOnlyByProtocol(agent.root)) {
+    return refuse("AGENTS.md has edits outside the coordination protocol (hidden by skip-worktree); commit or move them first");
+  }
+
+  // Publication is judged against origin as it is now, never a local base or
+  // a tracking ref left behind by an earlier fetch.
+  let baseSha: string;
+  if (fetch) {
+    const target = resolveCloneBaseTarget(snapshot, baseBranch);
+    if (target.kind === "refuse") return refuse(target.reason);
+    if (!target.synced) return refuse(`cannot verify publication against origin (${target.fallbackReason ?? "fetch failed"})`);
+    baseSha = target.sha;
+  } else {
+    const base = remoteTip(agent.root, `refs/heads/${baseBranch}`);
+    if ("error" in base) return refuse(`cannot verify publication against origin (${base.error})`);
+    if (base.sha === null) return refuse(`origin has no ${baseBranch}`);
+    if (!commitExists(agent.root, base.sha)) {
+      return refuse(`origin/${baseBranch} has commits not fetched here; run without --dry-run to fetch and verify`);
+    }
+    baseSha = base.sha;
+  }
+  let upstreamSha: string | null = null;
+  const merge = git(agent.root, "config", "--get", `branch.${head}.merge`).stdout.trim();
+  if (head !== "HEAD" && merge !== "" && git(agent.root, "config", "--get", `branch.${head}.remote`).stdout.trim() === "origin") {
+    const upstream = remoteTip(agent.root, merge);
+    if ("error" in upstream) return refuse(`cannot verify publication against origin (${upstream.error})`);
+    upstreamSha = upstream.sha;
+    if (upstreamSha !== null && !commitExists(agent.root, upstreamSha) && fetch) {
+      git(agent.root, "fetch", "--quiet", "origin", merge);
+    }
+    if (upstreamSha !== null && !commitExists(agent.root, upstreamSha)) upstreamSha = null;
+  }
+  if (!isAncestor(agent.root, "HEAD", baseSha) && !(upstreamSha !== null && isAncestor(agent.root, "HEAD", upstreamSha))) {
+    return refuse(`${head === "HEAD" ? "detached HEAD" : head} has commits that are neither on origin's copy of ` +
+      `its upstream nor in origin/${baseBranch}; push or merge them first`);
+  }
+  const localBase = git(agent.root, "rev-parse", "--verify", `refs/heads/${baseBranch}^{commit}`);
+  if (localBase.exitCode === 0 && !isAncestor(agent.root, localBase.stdout.trim(), baseSha)) {
+    return refuse(`local ${baseBranch} has commits not in origin/${baseBranch}; push them first`);
+  }
+  return { snapshot, target: { kind: "target", sha: baseSha, ref: `origin/${baseBranch}`, synced: true }, reason: null };
+};
+
 /**
  * End owner-driven manual mode with every clone back on base, or change none.
  *
  * Unlike issue completion this never discards anything: manual work has no
  * issue branch that coordination already published. The whole batch is
- * checked first, read-only apart from fetching origin, and a single clone with
- * uncommitted work, a HEAD not contained in its upstream or the base, or a local
- * base ahead of the target refuses every clone. Branch refs are never moved
- * or deleted, except the local base fast-forwarding to its target.
+ * checked first against origin, and a single clone with uncommitted work
+ * (including AGENTS.md edits the skip-worktree bit hides), a HEAD that origin
+ * does not hold in its upstream or the base, or a local base ahead of origin
+ * refuses every clone. Branch refs are never moved or deleted, except the
+ * local base fast-forwarding to origin's.
  */
 export const makeManualClonesBaseReady = (input: {
   agents: readonly { id: string; root: string }[];
   baseBranch: string;
   installRoot?: string | null;
-  dryRun?: boolean;
+  phase?: ManualReadinessPhase;
   log?: (message: string) => void;
 }): CloneBaseReadyResult[] => {
   const log = input.log ?? (() => undefined);
   const { baseBranch } = input;
-  const plans = input.agents.map((agent) => {
-    if (!existsSync(agent.root) || !isGitWorktree(agent.root)) {
-      const snapshot: CloneReadinessSnapshot = { agent: agent.id, clone: agent.root, branch: "", available: false, head: "", dirtyLines: [] };
-      return { snapshot, target: null, reason: null };
-    }
-    const head = git(agent.root, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
-    const snapshot: CloneReadinessSnapshot = {
-      agent: agent.id, clone: agent.root, branch: head, available: true, head, dirtyLines: blockingDirtyPaths(agent.root)
-    };
-    if (snapshot.dirtyLines.length > 0) {
-      return { snapshot, target: null, reason:
-        `uncommitted changes (${snapshot.dirtyLines.map(statusPath).join(", ")}); commit and push, or stash them, first` };
-    }
-    const target = resolveCloneBaseTarget(snapshot, baseBranch);
-    if (target.kind === "refuse") return { snapshot, target: null, reason: target.reason };
-    const upstream = git(agent.root, "rev-parse", "--verify", "--quiet", "@{upstream}^{commit}");
-    if (!isAncestor(agent.root, "HEAD", target.sha) &&
-        !(upstream.exitCode === 0 && isAncestor(agent.root, "HEAD", upstream.stdout.trim()))) {
-      return { snapshot, target: null, reason:
-        `${head === "HEAD" ? "detached HEAD" : head} has commits that are neither pushed to its upstream nor in ${target.ref}; push or merge them first` };
-    }
-    const localBase = git(agent.root, "rev-parse", "--verify", `refs/heads/${baseBranch}^{commit}`);
-    if (localBase.exitCode === 0 && !isAncestor(agent.root, localBase.stdout.trim(), target.sha)) {
-      return { snapshot, target: null, reason: `local ${baseBranch} has commits not in ${target.ref}; push them first` };
-    }
-    return { snapshot, target, reason: null };
-  });
+  const phase = input.phase ?? "apply";
+  const plans = input.agents.map((agent) => planManualClone(agent, baseBranch, phase !== "dry-run"));
 
   const refused = plans.filter((plan) => plan.reason !== null);
   return plans.map(({ snapshot, target, reason }): CloneBaseReadyResult => {
@@ -703,8 +757,8 @@ export const makeManualClonesBaseReady = (input: {
       return refusedResult(snapshot, why);
     }
     const action = snapshot.head === baseBranch ? "already-base" : "checked-out";
-    if (input.dryRun === true) {
-      log(`would check out ${baseBranch} at ${target.ref} in ${snapshot.clone}\n`);
+    if (phase !== "apply") {
+      log(`would check out ${baseBranch} at ${target.ref} (${target.sha.slice(0, 12)}) in ${snapshot.clone}\n`);
       return { agent: snapshot.agent, clone: snapshot.clone, branch: snapshot.branch, action,
         discardedPaths: [], protocol: "skipped", baseTip: null, baseSynced: false };
     }

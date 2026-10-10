@@ -1775,6 +1775,10 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     for (const argv of [["reset-clones", "89", "--dry-run"], ["detach", "89", "--dry-run"]]) {
       expect(await runCli(argv, { io: { cwd: clone, stdout: () => undefined } })).toBe(0);
     }
+    // An issue with no runtime still detaches only this workspace's UI.
+    const scoped: string[] = [];
+    expect(await runCli(["detach", "7", "--dry-run"], { io: { cwd: clone, stdout: (text) => scoped.push(text) } })).toBe(0);
+    expect(scoped.join("")).toContain(issueRuntimePaths(product.coordRoot, 7).terminalGroup);
     expect(await runCli(["reset-clones", "89", "--dry-run", "--config", configPath],
       { io: { cwd: product.workspaceRoot, stdout: () => undefined } })).toBe(0);
   });

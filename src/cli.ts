@@ -755,7 +755,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         "Commit and push (or stash) the work above, then run coord detach manual again.\n");
       return 1;
     };
-    const preflight = makeManualClonesBaseReady({ ...cleanup, dryRun: true, ...(dryRun ? { log: io.stdout } : {}) });
+    const preflight = makeManualClonesBaseReady({ ...cleanup, phase: dryRun ? "dry-run" : "preflight",
+      ...(dryRun ? { log: io.stdout } : {}) });
     if (reportRefusals(preflight) !== 0) {
       io.stdout(readinessSummary(preflight));
       return 1;
@@ -773,7 +774,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         (outcome.terminalClose === "closed" ? `, closed ${outcome.closedTerminalTitles.length} Terminal window(s)` : "") +
         ".\n"
     );
-    const readiness = dryRun ? preflight : makeManualClonesBaseReady({ ...cleanup, log: io.stdout });
+    // Re-checked from scratch: an agent may have changed its clone while closing.
+    const readiness = dryRun ? preflight : makeManualClonesBaseReady({ ...cleanup, phase: "apply", log: io.stdout });
     io.stdout(readinessSummary(readiness));
     return reportRefusals(readiness);
   };
@@ -1335,11 +1337,14 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         paths === null
           ? resolution.config.agents.map((agent) => agent.id)
           : readStartState(paths).agents.map((agent) => agent.id);
+      // Without a runtime, scope to the workspace an issue would start in here,
+      // never to every workspace's coord-N-* sessions.
+      const identity = paths ?? workspaceUiIdentity(resolution.runtimeRoot);
       const outcome = await detachIssue({
         issue,
         agentIds,
-        tmuxNamespace: paths?.tmuxNamespace ?? null,
-        terminalGroup: paths?.terminalGroup ?? null,
+        tmuxNamespace: identity.tmuxNamespace,
+        terminalGroup: identity.terminalGroup,
         dryRun: flagIsSet(parsed, "dry-run"),
         log: io.stdout
       });

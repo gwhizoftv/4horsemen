@@ -366,8 +366,8 @@ describe("makeManualClonesBaseReady", () => {
     }
     return git(clone, "rev-parse", "HEAD");
   };
-  const ready = (agents: { id: string; root: string }[], dryRun = false) =>
-    makeManualClonesBaseReady({ agents, baseBranch: "main", installRoot: repoRoot, dryRun });
+  const ready = (agents: { id: string; root: string }[], phase?: "dry-run" | "preflight") =>
+    makeManualClonesBaseReady({ agents, baseBranch: "main", installRoot: repoRoot, ...(phase ? { phase } : {}) });
 
   it("returns clean, published clones to base and keeps their branch refs and overlay", () => {
     const a = seedClone(), b = seedClone();
@@ -375,7 +375,9 @@ describe("makeManualClonesBaseReady", () => {
     const pushed = scratch(b.clone, "codex/pushed", true);
     git(b.clone, "push", "-q", "-u", "origin", "codex/pushed");
     const agents = [{ id: "claude", root: a.clone }, { id: "codex", root: b.clone }];
-    expect(ready(agents, true).map((result) => result.action)).toEqual(["checked-out", "checked-out"]);
+    for (const phase of ["dry-run", "preflight"] as const) {
+      expect(ready(agents, phase).map((result) => result.action)).toEqual(["checked-out", "checked-out"]);
+    }
     expect(git(a.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("claude/merged");
     const outcome = ready(agents);
     expect(outcome.map((result) => result.action)).toEqual(["checked-out", "checked-out"]);
@@ -406,13 +408,64 @@ describe("makeManualClonesBaseReady", () => {
     ]);
     expect(outcome.map((result) => result.action)).toEqual(["refused", "refused", "refused", "refused"]);
     expect(outcome[0]?.reason).toContain("another clone is not ready (codex, cursor, antigravity); no clone was changed");
-    expect(outcome[1]?.reason).toContain("codex/unpushed has commits that are neither pushed");
+    expect(outcome[1]?.reason).toContain("codex/unpushed has commits that are neither on origin's copy");
     expect(outcome[2]?.reason).toContain("uncommitted changes (wip.txt)");
     expect(outcome[3]?.reason).toContain("local main has commits not in origin/main");
     expect(git(clean.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("claude/clean");
     expect(git(unpushed.clone, "rev-parse", "HEAD")).toBe(tip);
     expect(readFileSync(join(dirty.clone, "wip.txt"), "utf8")).toBe("keep\n");
     expect(git(ahead.clone, "rev-parse", "main")).toBe(aheadTip);
+  });
+
+  it("refuses owner edits hidden in AGENTS.md by skip-worktree and keeps them", () => {
+    const { clone } = seedClone();
+    scratch(clone, "claude/notes");
+    const path = join(clone, "AGENTS.md");
+    writeFileSync(path, `${readFileSync(path, "utf8")}\nowner note\n`);
+    const before = readFileSync(path, "utf8");
+    expect(git(clone, "status", "--porcelain")).toBe("");
+    const [result] = ready([{ id: "claude", root: clone }]);
+    expect(result?.action).toBe("refused");
+    expect(result?.reason).toContain("AGENTS.md has edits outside the coordination protocol");
+    expect(readFileSync(path, "utf8")).toBe(before);
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("claude/notes");
+  });
+
+  it("judges publication by origin now, not a stale tracking ref or an unreachable origin", () => {
+    const deleted = seedClone();
+    scratch(deleted.clone, "codex/gone", true);
+    git(deleted.clone, "push", "-q", "-u", "origin", "codex/gone");
+    git(deleted.clone, "push", "-q", "origin", "--delete", "codex/gone");
+    git(deleted.clone, "update-ref", "refs/remotes/origin/codex/gone", "HEAD");
+    expect(ready([{ id: "codex", root: deleted.clone }])[0]?.reason).toContain("codex/gone has commits that are neither");
+    expect(git(deleted.clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("codex/gone");
+
+    const offline = seedClone();
+    writeFileSync(join(offline.clone, "local.txt"), "unpushed base\n");
+    git(offline.clone, "add", "local.txt");
+    git(offline.clone, "commit", "-qm", "local base work");
+    git(offline.clone, "remote", "set-url", "origin", join(offline.clone, "missing-origin.git"));
+    for (const phase of ["dry-run", undefined] as const) {
+      const [result] = ready([{ id: "claude", root: offline.clone }], phase);
+      expect(result?.action).toBe("refused");
+      expect(result?.reason).toContain("cannot verify publication against origin");
+    }
+  });
+
+  it("dry-run moves no ref, even when origin has advanced", () => {
+    const { clone } = seedClone();
+    const origin = join(clone, "..", "origin.git"), product = join(clone, "..", "app");
+    writeFileSync(join(product, "next.txt"), "next\n");
+    git(product, "add", "next.txt");
+    git(product, "commit", "-qm", "next");
+    git(product, "push", "-q", origin, "HEAD:main");
+    const tracking = git(clone, "rev-parse", "origin/main");
+    const [result] = ready([{ id: "claude", root: clone }], "dry-run");
+    expect(result?.reason).toContain("run without --dry-run to fetch and verify");
+    expect(git(clone, "rev-parse", "origin/main")).toBe(tracking);
+    expect(tryGit(clone, "rev-parse", "--verify", "--quiet", "FETCH_HEAD").exitCode).not.toBe(0);
+    expect(ready([{ id: "claude", root: clone }], "preflight")[0]?.action).toBe("already-base");
+    expect(git(clone, "rev-parse", "origin/main")).toBe(git(product, "rev-parse", "HEAD"));
   });
 });
 

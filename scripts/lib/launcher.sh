@@ -204,15 +204,24 @@ coord_runtime_roots() {
 # relaxes the guard; an unresolvable workspace keeps the refusal below.
 # cursors.json is written by JSON.stringify(value, null, 2), so top-level keys
 # sit on two-space-indented lines.
-coord_issue_is_stale() {
-  local roots root found=""
+# The runtime directory of the inherited issue: the first root that has one.
+coord_issue_dir() {
+  local roots root
   roots="$(coord_runtime_roots)" || return 1
   while IFS= read -r root; do
     [[ -d "$root/issue-$COORD_ISSUE" ]] || continue
-    found="$root/issue-$COORD_ISSUE"
-    break
+    echo "$root/issue-$COORD_ISSUE"
+    return 0
   done <<< "$roots"
-  [[ -n "$found" ]] || return 0
+  return 2
+}
+
+coord_issue_is_stale() {
+  local found status
+  found="$(coord_issue_dir)"
+  status=$?
+  [[ $status -ne 2 ]] || return 0
+  [[ $status -eq 0 && -n "$found" ]] || return 1
   grep -Eq '^  "(completed|abandoned)": true,?$' "$found/cursors.json" 2>/dev/null
 }
 
@@ -237,13 +246,13 @@ coord_refuse() {
 # section leaves the pinned read allowed. The documented fallback for a packet
 # the coordinator could not produce must survive anything going wrong here.
 coord_action_lists_files() {
-  local agent root action
+  local agent issue_dir action
   agent="$("$REAL_GIT" config --local --get consensus.agentId 2>/dev/null)" || return 1
   [[ -n "$agent" ]] || return 1
-  # The last listed root is the launcher's grant root (outer for nested).
-  root="$(coord_runtime_roots | tail -n 1)"
-  [[ -n "$root" ]] || return 1
-  action="$root/issue-$COORD_ISSUE/agents/$agent/action.md"
+  # The action of the runtime actually being guarded: beside a nested config
+  # for current issues, the outer root for legacy ones.
+  issue_dir="$(coord_issue_dir)" || return 1
+  action="$issue_dir/agents/$agent/action.md"
   [[ -f "$action" ]] || return 1
   grep -q '^## Bound input files$' "$action" 2>/dev/null || return 1
   # A partly exported action keeps the fallback: the input that is missing from
