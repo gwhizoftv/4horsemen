@@ -1,0 +1,14 @@
+{
+  "actionId": "973f374a-08a5-41e6-8970-f38fe66bddeb",
+  "agent": "antigravity",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "8389fca0d45202b6c7e987f45658ec65a3beb8ac925a204a0d8ec2816b976044",
+  "issue": 172,
+  "issueSessionId": "issue-172:80a3e714afda3c63bc89726d77a0cd61aee08b17",
+  "protocolVersion": 2,
+  "rationale": "Claude's revision addresses all comparison findings with rigorous origin publication checks, hidden AGENTS.md detection, and correct nested action scoping while preserving clean transactional preflight separation.",
+  "responseSha256": "705960ab5d38aa1bb3c9cc7ddf2d7c8bf1ed0734084783b6460f5e7948e44a51",
+  "revisionCommitSha": "0d615656cf043790218ac4e2f9f62a85241bfb6d",
+  "round": 1
+}

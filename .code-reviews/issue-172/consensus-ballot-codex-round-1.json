@@ -1,0 +1,14 @@
+{
+  "actionId": "c3fa5fc7-b680-4216-8bac-bacdbbdd0c75",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "8389fca0d45202b6c7e987f45658ec65a3beb8ac925a204a0d8ec2816b976044",
+  "issue": 172,
+  "issueSessionId": "issue-172:80a3e714afda3c63bc89726d77a0cd61aee08b17",
+  "protocolVersion": 2,
+  "rationale": "Revision 0d615656cf043790218ac4e2f9f62a85241bfb6d resolves the prior manual-cleanup, stale-guard, dry-run, and workspace-isolation blockers, includes focused regression coverage, and has recorded passing check:fast and test:e2e hook results.",
+  "responseSha256": "b2cc2afaf7c4ebbc4a1c513f83202b6a2880b17b46355514366f5bd587f5a9f3",
+  "revisionCommitSha": "0d615656cf043790218ac4e2f9f62a85241bfb6d",
+  "round": 1
+}

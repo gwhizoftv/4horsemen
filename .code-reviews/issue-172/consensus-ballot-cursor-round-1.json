@@ -1,0 +1,14 @@
+{
+  "actionId": "7731d25f-2974-4178-99a8-bfea74f3bcf3",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "8389fca0d45202b6c7e987f45658ec65a3beb8ac925a204a0d8ec2816b976044",
+  "issue": 172,
+  "issueSessionId": "issue-172:80a3e714afda3c63bc89726d77a0cd61aee08b17",
+  "protocolVersion": 2,
+  "rationale": "Claude revision 0d615656 keeps preflight-before-teardown and dual-root staleness, fixes nested Bound-input enforcement via coord_issue_dir, and tightens origin-backed manual readiness without expanding scope.",
+  "responseSha256": "1f135c0d0c2684a0f2f544c13f49dc3aa57e85d11cfb1584134f7159c6267e5f",
+  "revisionCommitSha": "0d615656cf043790218ac4e2f9f62a85241bfb6d",
+  "round": 1
+}

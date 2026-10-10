@@ -1,0 +1,14 @@
+{
+  "actionId": "c42e6cae-1f30-4e3d-8280-288a94456bb8",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "8389fca0d45202b6c7e987f45658ec65a3beb8ac925a204a0d8ec2816b976044",
+  "issue": 172,
+  "issueSessionId": "issue-172:80a3e714afda3c63bc89726d77a0cd61aee08b17",
+  "protocolVersion": 2,
+  "rationale": "Revision 0d615656cf043790218ac4e2f9f62a85241bfb6d fixes the peer-reported defects in the selected pin (manual readiness now refuses AGENTS.md owner edits hidden by skip-worktree, judges publication against origin's current tips and refuses offline or deleted upstreams, moves no ref in dry-run and re-checks after teardown, the shim reads the action of the runtime actually guarded, and runtime-less detach is workspace-scoped) within the approved paths, with focused regressions and passing commit/push hooks.",
+  "responseSha256": "1c338b000c8b6767e64d10ff0067ab619b091509f76e038a9ffd1a01e2865dea",
+  "revisionCommitSha": "0d615656cf043790218ac4e2f9f62a85241bfb6d",
+  "round": 1
+}
