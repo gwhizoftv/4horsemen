@@ -94,8 +94,9 @@ describe("coord onboard", () => {
     const config = JSON.parse(readFileSync(configPath, "utf8")) as {
       profile: string;
       digestPaths: string[];
-      agents: Array<{ id: string }>;
+      agents: Array<{ id: string; nudgeSubmit: string[] }>;
     };
+    expect(config.agents.find((agent) => agent.id === "codex")?.nudgeSubmit).toEqual(["Enter"]);
     expect(config.profile).toBe("consensus");
     expect(config.digestPaths).toEqual([]);
     expect(config.agents.map((agent) => agent.id)).toEqual(["claude", "codex", "cursor", "antigravity"]);

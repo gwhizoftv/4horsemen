@@ -19,7 +19,7 @@
       "delivery": "pull",
       "harnessProcess": "codex",
       "nudgePrelude": ["i"],
-      "nudgeSubmit": ["C-j", "C-m"],
+      "nudgeSubmit": ["Enter"],
       "terminalProfile": "Grass"
     },
     {
