@@ -84,7 +84,7 @@ export type PromptBlockedReason =
 
 /** The lifecycle record since an override send began: untouched, showing this nudge accepted, or anything else. */
 export type OverrideLifecycle = "unchanged" | "accepted" | "changed";
-export type IdleOverride = { source: "idle-sentinel" | "ready-file"; lifecycle: () => OverrideLifecycle };
+export type IdleOverride = { source: "idle-sentinel" | "ready-file" | "stop-hook"; lifecycle: () => OverrideLifecycle };
 
 export type PromptReadiness =
   | { ready: true; reason: "vendor-prompt" | "idle-sentinel" }
@@ -181,8 +181,6 @@ const linesAfterCodexSentinel = (paneText: string): PaneLine[] | null => {
   return after[0] !== undefined && CODEX_TURN_SUMMARY.test(after[0].plain) ? after.slice(1) : after;
 };
 
-const compactText = (value: string): string => value.replace(/\s/g, "");
-
 const codexTail = (paneText: string, requireSentinel = true): { composer: PaneLine[]; footer: PaneLine[] } | null => {
   const lines = paneLines(paneText);
   const composerAt = lines.map((line) => line.plain.startsWith("›")).lastIndexOf(true);
@@ -200,39 +198,6 @@ const codexTail = (paneText: string, requireSentinel = true): { composer: PaneLi
 const codexSentinelAtTail = (paneText: string, requireSentinel = true): boolean => {
   const tail = codexTail(paneText, requireSentinel);
   return tail !== null && tail.composer.length === 1 && codexComposerEmpty(tail.composer[0]!.raw);
-};
-
-/** True when the composer holds exactly `text`, however it wrapped. */
-const codexComposerHolds = (paneText: string, text: string, requireSentinel = true): boolean => {
-  const tail = codexTail(paneText, requireSentinel);
-  return tail !== null && compactText(tail.composer.map((line) => line.plain).join("").slice(1)) === compactText(text);
-};
-
-/**
- * After a submit key, positive proof that this nudge was submitted: below the
- * sentinel the first transcript message is exactly `text`, a live turn is
- * running, and the composer above the footer is empty again. Further fallback
- * submit keys would land in that turn. An unrelated Working line with the
- * nudge still in the composer is not proof.
- */
-const codexNudgeSubmitted = (paneText: string, text: string, requireSentinel = true): boolean => {
-  const after = requireSentinel ? linesAfterCodexSentinel(paneText) : paneLines(paneText);
-  if (after === null) return false;
-  let end = after.length;
-  while (end > 0 && CODEX_FOOTER.test(after[end - 1]!.plain)) end -= 1;
-  const composer = after[end - 1];
-  if (composer === undefined || !composer.plain.startsWith("›") || !codexComposerEmpty(composer.raw)) return false;
-  let transcript = after.slice(0, end - 1);
-  if (!requireSentinel) {
-    const messageAt = transcript.map((line) => line.plain.startsWith("›")).lastIndexOf(true);
-    if (messageAt < 0) return false;
-    transcript = transcript.slice(messageAt);
-  }
-  if (transcript[0]?.plain.startsWith("›") !== true) return false;
-  const nextItem = transcript.findIndex((line) => line.plain.startsWith("•"));
-  const message = transcript.slice(0, nextItem < 0 ? transcript.length : nextItem);
-  return compactText(message.map((line) => line.plain).join("").slice(1)) === compactText(text) &&
-    codexTurnChrome(transcript.map((line) => line.plain).join("\n"));
 };
 
 /** Codex's footer names its vim mode; the `i` prelude is only needed to leave NORMAL. */
@@ -397,6 +362,11 @@ export const resolveNudgeKeys = (
   const configuredPrelude = agent.nudgePrelude ?? defaults.nudgePrelude;
   const prelude = configuredPrelude.length === 0 ? vimInsertPrelude(paneText, agent.id) : configuredPrelude;
   let rawSubmit = agent.nudgeSubmit ?? defaults.nudgeSubmit;
+  if (agent.id === "codex") {
+    const legacy = (rawSubmit.length === 2 && rawSubmit[0] === "C-j" && rawSubmit[1] === "C-m") ||
+      (rawSubmit.length === 1 && rawSubmit[0] === "C-m");
+    return { prelude, submit: legacy ? ["Enter"] : rawSubmit };
+  }
   // #28 applied Escape+Enter to Antigravity; there Escape cancels.
   if (
     agent.id === "antigravity" &&
@@ -417,14 +387,10 @@ export const resolveNudgeKeys = (
   return { prelude, submit };
 };
 
-/** Delay after typing nudge text before the first submit key (lets autocomplete engage). */
+/** AGY delay after literal text before its first submit key. */
 export const NUDGE_AFTER_TEXT_MS = 300;
-/** Delay between successive submit keys (Escape must land before Enter). */
+/** AGY delay between configured submit keys. */
 export const NUDGE_BETWEEN_SUBMIT_MS = 150;
-/** Captures allowed for Codex to paint the typed nudge before the first submit key. */
-export const CODEX_SUBMIT_SETTLE_CHECKS = 4;
-/** Extra `C-m` presses while the Codex composer still holds exactly the nudge. */
-export const CODEX_SUBMIT_RETRIES = 2;
 /**
  * Antigravity under tmux often paints `⚠ Verifying your account...` a beat after
  * the idle `>` prompt. Typing then discards the nudge. Wait, then recapture.
@@ -1073,9 +1039,8 @@ export class TmuxController {
     actionDigest?: string,
     reserveSend: () => void = () => undefined,
     /**
-     * A file authorizes the first send; a sentinel can also authorize an
-     * explicit owner reminder despite stale lifecycle state. Revalidate the
-     * proof until submission is confirmed.
+     * Stop authorizes queued delivery; file/sentinel proof can recover stale
+     * lifecycle state. Revalidate immediately before the batch or AGY key.
      */
     staleOverride?: IdleOverride
   ): Promise<NudgeOutcome> {
@@ -1087,153 +1052,97 @@ export class TmuxController {
     if (initial.status !== "ok") {
       return { status: initial.status, reason: initial.reason, stage: "gate", ...(initial.detail === undefined ? {} : { detail: initial.detail }) };
     }
-    const requireSentinel = staleOverride?.source !== "ready-file";
-    const readinessForSend = (text: string): PromptReadiness =>
-      !requireSentinel && stripAnsi(text).trim() === ""
-        ? { ready: false, reason: "pane-capture-unavailable" }
-        : harnessPromptReadiness(text, agent.id, actionId);
+    const stopped = staleOverride?.source === "stop-hook";
+    const requireSentinel = staleOverride?.source === "idle-sentinel";
+    const readinessForSend = (text: string): PromptReadiness => {
+      const readiness = harnessPromptReadiness(text, agent.id, actionId);
+      // Stop is vendor evidence that the next prompt can be queued. Stale
+      // Working chrome and missing prompt/sentinel text cannot veto it.
+      if (stopped && (readiness.ready || !["trust-dialog", "claude-usage-wait", "antigravity-verify-overlay"].includes(readiness.reason))) {
+        return { ready: true, reason: "vendor-prompt" };
+      }
+      if (staleOverride?.source === "ready-file" && stripAnsi(text).trim() === "") {
+        return { ready: false, reason: "pane-capture-unavailable" };
+      }
+      return readiness;
+    };
+    const proofRefusal = (text: string): PromptBlockedReason | null => {
+      const readiness = readinessForSend(text);
+      if (!readiness.ready) return readiness.reason;
+      if (requireSentinel && readiness.reason !== "idle-sentinel") return "no-idle-sentinel";
+      if (staleOverride?.source === "ready-file" && agent.id === "codex" && !codexSentinelAtTail(text, false)) {
+        return "codex-composer-not-ready";
+      }
+      return staleOverride !== undefined && staleOverride.lifecycle() !== "unchanged" ? "lifecycle-changed" : null;
+    };
     let paneText = await this.capturePane(target);
     assertAuthority();
-    const readiness = readinessForSend(paneText);
-    if (!readiness.ready) return { status: "busy", reason: readiness.reason, stage: "prompt" };
-    if (staleOverride !== undefined && requireSentinel && readiness.reason !== "idle-sentinel") {
-      return { status: "busy", reason: "no-idle-sentinel", stage: "prompt" };
-    }
-    if (!requireSentinel && agent.id === "codex" && !codexSentinelAtTail(paneText, false)) {
-      return { status: "busy", reason: "codex-composer-not-ready", stage: "prompt" };
-    }
+    const refused = proofRefusal(paneText);
+    if (refused !== null) return { status: "busy", reason: refused, stage: "prompt" };
     if (agent.id === "antigravity") {
       await this.sleep(NUDGE_BEFORE_ANTIGRAVITY_MS);
       assertAuthority();
       paneText = await this.capturePane(target);
       assertAuthority();
-      const recaptured = readinessForSend(paneText);
-      if (!recaptured.ready) return { status: "busy", reason: recaptured.reason, stage: "antigravity-recapture" };
+      const refused = proofRefusal(paneText);
+      if (refused !== null) return { status: "busy", reason: refused, stage: "antigravity-recapture" };
     }
     const text = renderNudgeText(actionPath, actionId, actionDigest);
-    // Some harnesses (notably agy) ignore tmux paste-buffer; literal send-keys
-    // reaches the input widget. Prelude/submit keys come from agent config.
-    const { prelude: resolvedPrelude, submit: submitKeys } = resolveNudgeKeys(agent, paneText);
-    // On an override the composer must stay empty until the nudge is typed,
-    // and Codex's `i` types itself unless vim is in NORMAL. Otherwise skip it
-    // only on positive INSERT evidence, so an unreadable footer still gets `i`.
+    const { prelude, submit } = resolveNudgeKeys(agent, paneText);
     const preludeKeys = agent.id === "codex" &&
       (staleOverride !== undefined ? !codexVimNormal(paneText, requireSentinel) : codexVimInsert(paneText))
-      ? [] : resolvedPrelude;
-    // A Codex submit is confirmed only where its composer can be read.
-    const confirmCodex = agent.id === "codex" && codexTail(paneText, false) !== null;
-    /** Codex paints typed text a beat late; wait (bounded) for the composer to show it. */
-    const settled = async (latest: string, sentinel: boolean): Promise<string> => {
-      for (let check = 1; check < CODEX_SUBMIT_SETTLE_CHECKS && !codexComposerHolds(latest, text, sentinel); check += 1) {
-        await this.sleep(NUDGE_BETWEEN_SUBMIT_MS);
-        assertAuthority();
-        latest = await this.capturePane(target);
-        assertAuthority();
-      }
-      return latest;
-    };
+      ? [] : prelude;
     let began = false;
-    let typedText = false;
-    let submitting = false;
-    let retrying = false;
-    const gated = async (): Promise<NudgeOutcome | null> => {
+    const send = async (args: readonly string[]): Promise<NudgeOutcome | null> => {
       const gate = await this.injectionGate(target, agent, assertAuthority);
-      return gate.status === "ok" ? null
-        : { status: gate.status, reason: gate.reason, stage: began ? "mid-send" : "gate", ...(gate.detail === undefined ? {} : { detail: gate.detail }) };
-    };
-    const send = async (args: readonly string[], fail: string): Promise<NudgeOutcome> => {
-      const gate = await gated();
-      if (gate !== null) return gate;
-      if (agent.id === "claude") {
+      if (gate.status !== "ok") return { status: gate.status, reason: gate.reason,
+        stage: began ? "mid-send" : "gate", ...(gate.detail === undefined ? {} : { detail: gate.detail }) };
+      if (staleOverride !== undefined || agent.id === "claude") {
         const latest = await this.capturePane(target);
         assertAuthority();
-        if (claudeUsageWait(stripAnsi(latest))) return { status: "busy", reason: "claude-usage-wait", stage: began ? "mid-send" : "prompt" };
-      }
-      if (staleOverride !== undefined) {
-        // Idle proof overrules a lifecycle veto, so it must still hold at
-        // every key: the proof unchanged, the composer empty until
-        // the nudge is typed and holding exactly the nudge after that. Once a
-        // submit key is out, proof that the nudge was accepted ends the send.
-        let latest = await this.capturePane(target);
-        assertAuthority();
-        if (confirmCodex && typedText && !submitting && !codexComposerHolds(latest, text, requireSentinel)) {
-          await settled(latest, requireSentinel);
-          // The gate above predates the settle wait; it cannot authorize this
-          // key. Gate again, then prove against a capture taken after it.
-          const regate = await gated();
-          if (regate !== null) return regate;
-          latest = await this.capturePane(target);
-          assertAuthority();
-        }
-        const lifecycle = staleOverride.lifecycle();
-        if (submitting && (lifecycle === "accepted" ||
-          (agent.id === "codex" && codexNudgeSubmitted(latest, text, requireSentinel)))) {
-          return { status: "sent", reason: "sent", stage: "complete", detail: "accepted" };
-        }
-        const current = readinessForSend(latest);
-        const refused = !current.ready ? current.reason
-          : lifecycle !== "unchanged" ? "lifecycle-changed"
-          : !typedText ? (requireSentinel ? (current.reason === "idle-sentinel" ? null : "no-idle-sentinel")
-            : agent.id === "codex" && !codexSentinelAtTail(latest, false) ? "codex-composer-not-ready" : null)
-          : agent.id === "codex" && !codexComposerHolds(latest, text, requireSentinel)
-            ? (requireSentinel ? "no-idle-sentinel" : "codex-composer-not-ready")
-          : null;
+        const readiness = readinessForSend(latest);
+        const refused = began
+          ? (staleOverride !== undefined && staleOverride.lifecycle() !== "unchanged" ? "lifecycle-changed"
+            : !readiness.ready ? readiness.reason : null)
+          : proofRefusal(latest);
         if (refused !== null) return { status: "busy", reason: refused, stage: began ? "mid-send" : "prompt" };
-      } else if (retrying) {
-        // An ordinary send has no override proof, so a retry key re-reads the
-        // pane after its gate: the composer must still hold exactly the nudge.
-        const latest = await this.capturePane(target);
-        assertAuthority();
-        const current = readinessForSend(latest);
-        if (!current.ready) return { status: "busy", reason: current.reason, stage: "mid-send" };
-        if (!codexComposerHolds(latest, text, false)) return { status: "busy", reason: "codex-composer-not-ready", stage: "mid-send" };
       }
       if (!began) { reserveSend(); began = true; }
-      const result = await this.runner(["send-keys", ...args]);
+      const result = await this.runner(args);
       assertAuthority();
-      if (result.exitCode !== 0) throw new Error(`${fail}${result.stderr}`);
-      return { status: "sent", reason: "sent", stage: "complete" };
+      if (result.exitCode !== 0) throw new Error(`tmux send-keys failed: ${result.stderr}`);
+      return null;
     };
-    for (const key of preludeKeys) {
-      const prelude = await send(["-t", target, key], "tmux send-keys prelude failed: ");
-      if (prelude.status !== "sent") return prelude;
-    }
-    const typed = await send(["-l", "-t", target, text], "tmux send-keys text failed: ");
-    if (typed.status !== "sent") return typed;
-    typedText = true;
-    // Autocomplete/multiline handlers need a beat before Escape; then gap before Enter.
-    await this.sleep(NUDGE_AFTER_TEXT_MS);
-    assertAuthority();
-    if (confirmCodex && staleOverride === undefined) await settled(await this.capturePane(target), false);
-    let accepted = false;
-    for (const [index, key] of submitKeys.entries()) {
-      if (index > 0) {
-        submitting = true;
-        await this.sleep(NUDGE_BETWEEN_SUBMIT_MS);
-        assertAuthority();
+    if (agent.id === "antigravity") {
+      // Preserve AGY's working delivery, which has no prompt-submit callback.
+      for (const key of preludeKeys) {
+        const refused = await send(["send-keys", "-t", target, key]);
+        if (refused !== null) return refused;
       }
-      const submit = await send(["-t", target, key], "tmux send-keys submit failed: ");
-      if (submit.status !== "sent") return submit;
-      if (submit.detail === "accepted") { accepted = true; break; }
-    }
-    // A tmux write is not a submit: while the composer still holds exactly
-    // this nudge, press Enter again, at most CODEX_SUBMIT_RETRIES times.
-    for (let retry = 0; confirmCodex && !accepted; retry += 1) {
-      submitting = true;
-      await this.sleep(NUDGE_BETWEEN_SUBMIT_MS);
+      const refused = await send(["send-keys", "-l", "-t", target, text]);
+      if (refused !== null) return refused;
+      await this.sleep(NUDGE_AFTER_TEXT_MS);
       assertAuthority();
-      const latest = await this.capturePane(target);
-      assertAuthority();
-      // A lost capture is no evidence that the nudge left the composer.
-      if (stripAnsi(latest).trim() === "") return { status: "busy", reason: "pane-capture-unavailable", stage: "mid-send" };
-      if (!codexComposerHolds(latest, text, false) || retry === CODEX_SUBMIT_RETRIES) break;
-      retrying = true;
-      const again = await send(["-t", target, "C-m"], "tmux send-keys submit failed: ");
-      if (again.status !== "sent") return again;
-      accepted = again.detail === "accepted";
+      for (const [index, key] of submit.entries()) {
+        if (index > 0) { await this.sleep(NUDGE_BETWEEN_SUBMIT_MS); assertAuthority(); }
+        const refused = await send(["send-keys", "-t", target, key]);
+        if (refused !== null) return refused;
+      }
+    } else {
+      // A single tmux operation, with literal text and actual key events in
+      // separate commands. No pane polling, sleep, or retry between them.
+      const commands = [
+        ...preludeKeys.map((key) => ["send-keys", "-t", target, key]),
+        ["send-keys", "-l", "-t", target, text],
+        ...submit.map((key) => ["send-keys", "-t", target, key])
+      ];
+      const refused = await send(commands.flatMap((command, index) => index === 0 ? command : [";", ...command]));
+      if (refused !== null) return refused;
     }
+    // This is transport success only. A matching vendor prompt-submit hook
+    // acknowledges acceptance, even if it arrives after this method returns.
     return { status: "sent", reason: "sent", stage: "complete",
       ...(staleOverride !== undefined ? { detail: staleOverride.source }
-        : readiness.reason === "idle-sentinel" ? { detail: "idle-sentinel" } : {}) };
+        : harnessPromptReadiness(paneText, agent.id, actionId).reason === "idle-sentinel" ? { detail: "idle-sentinel" } : {}) };
   }
 }

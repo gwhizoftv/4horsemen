@@ -374,33 +374,31 @@ Per-agent config controls owner UI:
   `Enter` to dismiss autocomplete; Cursor without vim and Antigravity default:
   `Enter` only — Escape dismisses a non-vim Cursor composer and cancels
   Antigravity; Cursor with `editor.vimMode` uses `Escape` then `Enter` so
-  INSERT does not treat Enter as a newline; Codex default: `C-j` then `C-m`.
+  INSERT does not treat Enter as a newline; Codex default: `Enter`.
+  Old Codex `["C-j", "C-m"]` and `["C-m"]` settings resolve to Enter.
   Stale single `Enter`/`C-m` on Claude, mistaken Escape+Enter on non-vim
   Cursor/Antigravity, and stale `C-m` on Antigravity, are upgraded)
 
-A Codex submit is confirmed where its composer can be read: the driver waits
-briefly for the typed nudge to paint, and while the composer still holds exactly
-that nudge after the submit keys it presses `C-m` again, at most twice. Each
-extra `C-m` re-reads the pane after its gate: a running turn, an edited draft or
-a lost capture ends the send as a mid-send refusal instead. If the nudge is
-still in the composer after the last allowed press, the send is still recorded
-as delivered; it is not proof that Codex accepted it, so check that pane. The
-Codex launcher passes `--no-daemon`: the shared app-server would otherwise run
+Codex, Claude and Cursor receive one tmux command batch containing literal
+text followed by real submit-key events. The coordinator does not poll for the
+pasted prompt or send fallback submit keys. A matching `UserPromptSubmit` or
+`beforeSubmitPrompt` hook is sufficient acceptance evidence; delayed hooks also
+clear the corresponding delivery-uncertain hold without resetting the send
+budget or clearing other holds/manual pause. A tmux write alone is injection,
+not acceptance. AGY keeps its working delivery without a new hook requirement.
+The Codex launcher passes `--no-daemon`: the shared app-server would otherwise run
 hooks with the `COORD_ISSUE` of whichever launch started it, not this pane's.
 Existing clones keep their old `start-codex.sh` until `coord install` rewrites it.
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Claude 1 / Codex 1 / Cursor 1 / Gemini 1)
 
-Nudge waits until the pane shows an idle prompt (not Claude's trust dialog,
-Antigravity splash, account-verification overlay, or an in-flight Antigravity
-turn with `esc to cancel`). Before the prelude, the action text, and every
-submit key, the driver re-reads `pane_dead`, `pane_current_command`,
-`pane_in_mode`, and `pane_input_off`. If the pane is dead, in copy/mode, has
-input off, or the foreground command is no longer the harness, it skips that
-injection (`busy` / `gone`) instead of typing into a pane that changed after
-the original readiness check. Antigravity then waits 2.5s and recaptures: tmux
-sessions often paint the verify overlay after `>` looks idle, which discards
-a typed nudge.
+A current vendor Stop allows the next prompt even while background work remains;
+no idle text, Working indicator or empty-composer confirmation is required.
+Without Stop, nudge uses pane readiness. Before the batch, the driver re-reads
+`pane_dead`, `pane_current_command`, `pane_in_mode`, and `pane_input_off`; dead,
+copy-mode, input-off, and non-harness panes still refuse delivery. Trust dialogs,
+usage waits and account-verification overlays still block. AGY retains its 2.5s
+pre-delivery recapture, text/submit delays and per-key gates.
 If the first delivery is skipped, the action remains ordered. It is eligible
 again only after a positive lifecycle observation says the CLI became idle or
 the CLI session was replaced. After a successful send, the coordinator records

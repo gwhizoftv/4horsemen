@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { extractPromptActionIdentity, handleAgentEvent, normalizeAgentEvent, normalizeCursorUsageEvent } from "../src/agentEvent.js";
 import {
   initializeAgentLifecycle,
+  initialAgentLifecycle,
+  applyLifecycleObservation,
   markActionInjected,
   orderAgentAction,
   readAgentLifecycle
@@ -248,7 +250,15 @@ describe("vendor lifecycle event normalization", () => {
     });
   });
 
-  it("uses Antigravity queue, task, agent-state, and fullyIdle signals", () => {
+  it.each(["codex", "claude", "cursor", "antigravity"] as const)("uses %s Stop as readiness despite background work", (vendor) => {
+    const current = { ...initialAgentLifecycle([vendor]).agents[vendor]!, execution: "working" as const,
+      sessionId: "session", backgroundActive: true };
+    const stop = normalizeAgentEvent(vendor, { session_id: "session", conversation_id: "session",
+      background_tasks: [{ id: "task" }], fullyIdle: false }, "Stop")!;
+    expect(applyLifecycleObservation(current, stop)).toMatchObject({ execution: "idle", stoppedAt: expect.any(String) });
+  });
+
+  it("retains Antigravity activity telemetry while accepting every Stop", () => {
     expect(
       normalizeAgentEvent(
         "antigravity",
@@ -269,7 +279,7 @@ describe("vendor lifecycle event normalization", () => {
     });
     expect(
       normalizeAgentEvent("antigravity", { conversationId: "agy-1", fullyIdle: false }, "Stop")
-    ).toMatchObject({ kind: "stopped", backgroundActive: true });
+    ).toMatchObject({ kind: "stopped", backgroundActive: true, allowInjectedIdle: false });
     expect(
       normalizeAgentEvent("antigravity", { conversationId: "agy-1", fullyIdle: true }, "Stop")
     ).toMatchObject({ kind: "stopped", backgroundActive: false, allowInjectedIdle: true });

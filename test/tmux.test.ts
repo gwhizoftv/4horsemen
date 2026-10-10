@@ -7,7 +7,6 @@ import {
   harnessPromptReady,
   harnessPromptReadiness,
   idleSentinelAfterAction,
-  CODEX_SUBMIT_RETRIES,
   COORD_IDLE_SENTINEL,
   nudgePreludeKeys,
   ownerTerminalCloseAppleScript,
@@ -26,6 +25,14 @@ import {
 } from "../src/tmux.js";
 
 const ok = (stdout = ""): TmuxResult => ({ exitCode: 0, stdout, stderr: "" });
+const commandsIn = (args: readonly string[]): string[][] => {
+  const commands: string[][] = [[]];
+  for (const arg of args) {
+    if (arg === ";") commands.push([]);
+    else commands.at(-1)!.push(arg);
+  }
+  return commands;
+};
 const noopSleep = async (): Promise<void> => undefined;
 
 it("reports issue environment wiring without claiming child-process trust", async () => {
@@ -122,7 +129,8 @@ describe("Claude usage-wait veto", () => {
     expect(harnessPromptReadiness(`Usage limit reached\n${"old history\n".repeat(15)}❯`, "claude").ready).toBe(true);
   });
 
-  it.each([2, 3])("rechecks before keys and never submits if the wait appears at capture %s", async (blockedCapture) => {
+  it("rechecks usage wait before the batch without reserving a send", async () => {
+    const blockedCapture = 2;
     let captures = 0;
     let reservations = 0;
     const keys: string[] = [];
@@ -135,9 +143,9 @@ describe("Claude usage-wait veto", () => {
     const result = await tmux.nudge(1, { id: "claude", root: "/clone", launcher: "claude", delivery: "both",
       harnessProcess: "claude", nudgePrelude: [], nudgeSubmit: ["Enter"] }, "/action.md", () => undefined,
     undefined, undefined, () => { reservations++; });
-    expect(result).toMatchObject({ status: "busy", reason: "claude-usage-wait", stage: blockedCapture === 2 ? "prompt" : "mid-send" });
+    expect(result).toMatchObject({ status: "busy", reason: "claude-usage-wait", stage: "prompt" });
     expect(keys).not.toContain("Enter");
-    expect(reservations).toBe(blockedCapture === 2 ? 0 : 1);
+    expect(reservations).toBe(0);
   });
 });
 
@@ -182,23 +190,13 @@ describe("tmux boundary", () => {
         "a".repeat(64)
       )
     ).toMatchObject({ status: "sent" });
-    expect(calls.map((call) => call.args[0])).toEqual([
-      "display-message",
-      "capture-pane",
-      "display-message",
-      "send-keys",
-      "display-message",
-      "send-keys"
-    ]);
+    expect(calls.map((call) => call.args[0])).toEqual(["display-message", "capture-pane", "display-message", "send-keys"]);
     expect(calls[3]?.args).toEqual([
-      "send-keys",
-      "-l",
-      "-t",
-      "coord-1:cursor.0",
-      `Read and execute coordinator action 11111111-1111-4111-8111-111111111111 digest ${"a".repeat(64)} at /runtime/action.md`
+      "send-keys", "-l", "-t", "coord-1:cursor.0",
+      `Read and execute coordinator action 11111111-1111-4111-8111-111111111111 digest ${"a".repeat(64)} at /runtime/action.md`,
+      ";", "send-keys", "-t", "coord-1:cursor.0", "Enter"
     ]);
-    expect(calls[5]?.args.slice(-1)).toEqual(["Enter"]);
-    expect(slept).not.toContain(NUDGE_BEFORE_ANTIGRAVITY_MS);
+    expect(slept).toEqual([]);
   });
 
   it("submits Cursor vim INSERT with Escape then Enter, not a bare Enter", async () => {
@@ -222,7 +220,7 @@ describe("tmux boundary", () => {
       )
     ).toMatchObject({ status: "sent" });
     const sent = calls.filter((call) => call.args[0] === "send-keys");
-    expect(sent.map((call) => call.args.slice(-1)[0])).toEqual([
+    expect(sent.flatMap((call) => commandsIn(call.args)).map((args) => args.at(-1))).toEqual([
       "Read and execute your current coordinator action at /runtime/action.md",
       "Escape",
       "Enter"
@@ -301,22 +299,14 @@ describe("tmux boundary", () => {
         "/runtime/action.md"
       )
     ).toMatchObject({ status: "sent" });
-    expect(calls.map((call) => call.args[0])).toEqual([
-      "display-message",
-      "capture-pane",
-      "display-message",
-      "send-keys",
-      "display-message",
-      "send-keys",
-      "display-message",
-      "send-keys",
-      "display-message",
-      "send-keys"
+    const batches = calls.filter((call) => call.args[0] === "send-keys");
+    expect(batches).toHaveLength(1);
+    expect(commandsIn(batches[0]!.args).map((args) => args.at(-1))).toEqual([
+      "i", "Read and execute your current coordinator action at /runtime/action.md", "Enter"
     ]);
-    expect(calls[3]?.args.slice(-1)).toEqual(["i"]);
-    expect(calls[5]?.args[1]).toBe("-l");
-    expect(calls[7]?.args.slice(-1)).toEqual(["C-j"]);
-    expect(calls[9]?.args.slice(-1)).toEqual(["C-m"]);
+    for (const nudgeSubmit of [["Enter"], ["C-m"], ["C-j", "C-m"]]) {
+      expect(resolveNudgeKeys({ id: "codex", root: "/c", launcher: "x", delivery: "both", nudgeSubmit }).submit).toEqual(["Enter"]);
+    }
   });
 
   it("honors explicit empty prelude over Codex defaults", async () => {
@@ -340,19 +330,12 @@ describe("tmux boundary", () => {
       },
       "/a"
     );
-    expect(calls.map((call) => call.args[0])).toEqual([
-      "display-message",
-      "capture-pane",
-      "display-message",
-      "send-keys",
-      "display-message",
-      "send-keys",
-      "display-message",
-      "send-keys"
+    const batches = calls.filter((call) => call.args[0] === "send-keys");
+    expect(batches).toHaveLength(1);
+    expect(commandsIn(batches[0]!.args)).toEqual([
+      ["send-keys", "-l", "-t", "coord-1:codex.0", "Read and execute your current coordinator action at /a"],
+      ["send-keys", "-t", "coord-1:codex.0", "Enter"]
     ]);
-    expect(calls[3]?.args[1]).toBe("-l");
-    expect(calls[5]?.args.slice(-1)).toEqual(["C-j"]);
-    expect(calls[7]?.args.slice(-1)).toEqual(["C-m"]);
   });
 
   it("builds one attach command per agent window with terminal profiles", () => {
@@ -836,13 +819,13 @@ describe("tmux boundary", () => {
       .toEqual({ ready: false, reason: "codex-turn-chrome" });
   });
 
-  it.each(["idle-sentinel", "ready-file"] as const)("sends a %s nudge only while the idle proof holds at each key", async (source) => {
+  it.each(["idle-sentinel", "ready-file"] as const)("sends a %s nudge only while the idle proof holds before its batch", async (source) => {
     const composerReason = source === "idle-sentinel" ? "no-idle-sentinel" : "codex-composer-not-ready";
     const agent = { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" as const, harnessProcess: "codex" };
     const action = "11111111-2222-3333-4444-555555555555";
     // A minimal Codex: typed text lands in the composer; `onCapture` lets a test change the pane between keys.
     const attempt = async (options: {
-      body?: string; draft?: string; vim?: string; submitOnCtrlJ?: boolean; gate?: string;
+      body?: string; draft?: string; vim?: string; gate?: string;
       lifecycle?: (check: number) => "unchanged" | "accepted" | "changed";
       onCapture?: (index: number, pane: { body: string; draft: string }) => void;
     } = {}) => {
@@ -856,12 +839,7 @@ describe("tmux boundary", () => {
           return ok(codexPane(pane.body, pane.draft, options.vim));
         }
         if (args[0] === "send-keys") {
-          if (args.includes("-l")) pane.draft += args.at(-1)!;
-          if ((options.submitOnCtrlJ === true && args.at(-1) === "C-j") || args.at(-1) === "C-m") {
-            pane.body += `\n\n› ${pane.draft}\n\n• Working (0s • esc to interrupt)`;
-            pane.draft = "";
-          }
-          keys.push(args.includes("-l") ? "-l" : args.at(-1)!);
+          for (const command of commandsIn(args)) keys.push(command.includes("-l") ? "-l" : command.at(-1)!);
         }
         return ok();
       }, null, null, null, noopSleep);
@@ -883,107 +861,48 @@ describe("tmux boundary", () => {
       .toMatchObject({ outcome: { status: "busy", reason: "codex-turn-chrome", stage: "prompt" }, keys: [] });
     expect(await attempt({ lifecycle: () => "changed" }))
       .toMatchObject({ outcome: { status: "busy", reason: "lifecycle-changed", stage: "prompt" }, keys: [] });
-    // Already in INSERT: no `i` is typed into the composer.
-    expect(await attempt()).toMatchObject({ outcome: { status: "sent", detail: source }, keys: ["-l", "C-j", "C-m"] });
-    expect(await attempt({ vim: "Normal" })).toMatchObject({ outcome: { status: "sent" }, keys: ["i", "-l", "C-j", "C-m"] });
-    // An owner draft after the prelude, or an edit after the paste, stops the send before it is submitted.
-    expect(await attempt({ vim: "Normal", onCapture: (index, pane) => { if (index === 2) pane.draft = "owner draft"; } }))
-      .toMatchObject({ outcome: { status: "busy", reason: composerReason, stage: "mid-send" }, keys: ["i"] });
-    expect(await attempt({ onCapture: (index, pane) => { if (index === 2) pane.draft += " and more"; } }))
-      .toMatchObject({ outcome: { status: "busy", reason: composerReason, stage: "mid-send" }, keys: ["-l"] });
-    // Between the submit keys the same proof holds: an edit or new lifecycle activity stops C-m.
-    expect(await attempt({ onCapture: (index, pane) => { if (index === 3) pane.draft += " and more"; } }))
-      .toMatchObject({ outcome: { status: "busy", reason: composerReason, stage: "mid-send" }, keys: ["-l", "C-j"] });
-    expect(await attempt({ lifecycle: (check) => (check === 2 ? "changed" : "unchanged") }))
-      .toMatchObject({ outcome: { status: "busy", reason: "lifecycle-changed", stage: "mid-send" }, keys: ["-l", "C-j"] });
-    // An unrelated turn between the submit keys, with the nudge still in the composer, is not acceptance.
-    expect(await attempt({
-      lifecycle: (check) => (check === 2 ? "changed" : "unchanged"),
-      onCapture: (index, pane) => { if (index === 3) pane.body += "\n\n• Working (3s • esc to interrupt)"; }
-    })).toMatchObject({ outcome: { status: "busy", reason: "codex-turn-chrome", stage: "mid-send" }, keys: ["-l", "C-j"] });
-    // If C-j already submitted the nudge, its turn or its correlated prompt hook ends the send: no fallback C-m.
-    expect(await attempt({ submitOnCtrlJ: true }))
-      .toMatchObject({ outcome: { status: "sent", detail: source }, keys: ["-l", "C-j"] });
-    expect(await attempt({ lifecycle: (check) => (check === 2 ? "accepted" : "unchanged") }))
-      .toMatchObject({ outcome: { status: "sent", detail: source }, keys: ["-l", "C-j"] });
+    expect(await attempt()).toMatchObject({ outcome: { status: "sent", detail: source }, keys: ["-l", "Enter"] });
+    expect(await attempt({ vim: "Normal" })).toMatchObject({ outcome: { status: "sent" }, keys: ["i", "-l", "Enter"] });
+    expect(await attempt({ onCapture: (index, pane) => { if (index === 1) pane.draft = "owner draft"; } }))
+      .toMatchObject({ outcome: { status: "busy", reason: composerReason, stage: "prompt" }, keys: [] });
+    expect(await attempt({ lifecycle: (check) => check === 1 ? "changed" : "unchanged" }))
+      .toMatchObject({ outcome: { status: "busy", reason: "lifecycle-changed", stage: "prompt" }, keys: [] });
   });
 
-  // Issue 186: a minimal Codex whose Enter can be lost and whose typed text can paint late.
-  const codexSubmit = async (options: {
-    vim?: string; lostEnters?: number; lateCaptures?: number; source?: "ready-file";
-    /** Pane changes at the Nth display-message gate (1-based). */
-    onGate?: (gates: number, pane: { body: string; draft: string; inputOff: boolean }) => void;
-    /** Pane changes once the first Enter has been lost. */
-    afterLostEnter?: (pane: { body: string; draft: string; captureLost: boolean }) => void;
-  } = {}) => {
-    const agent = { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" as const, harnessProcess: "codex" };
-    const pane = { body: "• done", draft: "", hidden: 0, inputOff: false, captureLost: false };
-    let lostEnters = options.lostEnters ?? 0;
-    let gates = 0;
-    const keys: string[] = [];
+  it.each(["Insert", "Normal"])("sends Codex text and Enter once in %s mode without waiting for paint", async (vim) => {
+    const calls: string[][] = [];
+    const sleeps: number[] = [];
     const controller = new TmuxController(async (args) => {
-      if (args[0] === "display-message") {
-        options.onGate?.(++gates, pane);
-        return ok(`0\tcodex\t0\t${pane.inputOff ? 1 : 0}\n`);
-      }
-      if (args[0] === "capture-pane") {
-        if (pane.captureLost) return { exitCode: 1, stdout: "", stderr: "" };
-        const painted = pane.hidden > 0 ? "" : pane.draft;
-        if (pane.hidden > 0) pane.hidden -= 1;
-        return ok(codexPane(pane.body, painted, options.vim));
-      }
-      if (args[0] === "send-keys") {
-        keys.push(args.includes("-l") ? "-l" : args.at(-1)!);
-        if (args.includes("-l")) { pane.draft += args.at(-1)!; pane.hidden = options.lateCaptures ?? 0; }
-        if (args.at(-1) === "C-m" && lostEnters-- <= 0) {
-          pane.body += `\n\n› ${pane.draft}\n\n• Working (0s • esc to interrupt)`;
-          pane.draft = "";
-        } else if (args.at(-1) === "C-m" && keys.filter((key) => key === "C-m").length === 1) {
-          options.afterLostEnter?.(pane);
-        }
-      }
+      calls.push([...args]);
+      if (args[0] === "display-message") return ok("0\tcodex\t0\t0");
+      if (args[0] === "capture-pane") return ok(codexPane("done", "", vim));
+      return ok();
+    }, null, null, null, async (ms) => { sleeps.push(ms); });
+    expect(await controller.nudge(1, { id: "codex", root: "/clone", launcher: "codex", delivery: "both" }, "/a"))
+      .toMatchObject({ status: "sent" });
+    const sends = calls.filter((args) => args[0] === "send-keys");
+    expect(sends).toHaveLength(1);
+    expect(commandsIn(sends[0]!).map((args) => args.includes("-l") ? "-l" : args.at(-1)))
+      .toEqual(vim === "Normal" ? ["i", "-l", "Enter"] : ["-l", "Enter"]);
+    expect(calls.at(-1)).toBe(sends[0]);
+    expect(sleeps).toEqual([]);
+  });
+
+  it.each(["codex", "claude", "cursor", "antigravity"])("trusts %s Stop without a visible idle prompt", async (id) => {
+    const calls: string[][] = [];
+    const controller = new TmuxController(async (args) => {
+      calls.push([...args]);
+      if (args[0] === "display-message") return ok(`0\t${id}\t0\t0`);
+      if (args[0] === "capture-pane") return ok("Working... esc to cancel");
       return ok();
     }, null, null, null, noopSleep);
-    const outcome = await controller.nudge(1, agent, "/a", undefined, "11111111-2222-3333-4444-555555555555", undefined, undefined,
-      options.source === undefined ? undefined : { source: options.source, lifecycle: () => "unchanged" });
-    return { outcome, keys };
-  };
-
-  it("types Codex's `i` prelude only when INSERT is not visible", async () => {
-    expect(await codexSubmit()).toMatchObject({ outcome: { status: "sent" }, keys: ["-l", "C-j", "C-m"] });
-    expect(await codexSubmit({ vim: "Normal" })).toMatchObject({ outcome: { status: "sent" }, keys: ["i", "-l", "C-j", "C-m"] });
+    expect(await controller.nudge(1, { id, root: "/clone", launcher: id, delivery: "both", nudgePrelude: [] },
+      "/a", undefined, undefined, undefined, undefined, { source: "stop-hook", lifecycle: () => "unchanged" }))
+      .toMatchObject({ status: "sent", detail: "stop-hook" });
+    expect(calls.filter((args) => args[0] === "send-keys").flatMap(commandsIn).at(-1)?.at(-1)).toBe("Enter");
   });
 
-  it("re-presses Enter, bounded, while the Codex composer still holds the nudge", async () => {
-    expect(await codexSubmit({ lostEnters: 1 }))
-      .toMatchObject({ outcome: { status: "sent" }, keys: ["-l", "C-j", "C-m", "C-m"] });
-    expect((await codexSubmit({ lostEnters: 9 })).keys)
-      .toEqual(["-l", "C-j", "C-m", ...Array<string>(CODEX_SUBMIT_RETRIES).fill("C-m")]);
-    // A late paint of the typed text is waited for, not refused mid-send.
-    expect(await codexSubmit({ source: "ready-file", lateCaptures: 2 }))
-      .toMatchObject({ outcome: { status: "sent", detail: "ready-file" }, keys: ["-l", "C-j", "C-m"] });
-  });
-
-  it("re-checks the pane at every Codex retry and after a settle wait", async () => {
-    const midSend = (reason: string) => ({ status: "busy", reason, stage: "mid-send" });
-    // A turn starts with the nudge still in the composer: no Enter is pressed into it.
-    expect(await codexSubmit({ lostEnters: 9, afterLostEnter: (pane) => { pane.body += "\n\n• Working (1s • esc to interrupt)"; } }))
-      .toMatchObject({ outcome: midSend("codex-turn-chrome"), keys: ["-l", "C-j", "C-m"] });
-    // The owner edits the composer during the retry key's own gate.
-    expect(await codexSubmit({ lostEnters: 9, onGate: (gates, pane) => { if (gates === 5) pane.draft = "owner draft"; } }))
-      .toMatchObject({ outcome: midSend("codex-composer-not-ready"), keys: ["-l", "C-j", "C-m"] });
-    // A lost capture is not evidence that the nudge was submitted.
-    expect(await codexSubmit({ lostEnters: 9, afterLostEnter: (pane) => { pane.captureLost = true; } }))
-      .toMatchObject({ outcome: midSend("pane-capture-unavailable"), keys: ["-l", "C-j", "C-m"] });
-    // Input turns off while the override waits for a late paint: the earlier gate no longer authorizes C-j.
-    expect(await codexSubmit({ source: "ready-file", lateCaptures: 1, onGate: (gates, pane) => { if (gates === 4) pane.inputOff = true; } }))
-      .toMatchObject({ outcome: midSend("input-off"), keys: ["-l"] });
-    // The owner edits the draft during that re-gate: the proof re-reads the pane, so C-j never lands on it.
-    expect(await codexSubmit({ source: "ready-file", lateCaptures: 1, onGate: (gates, pane) => { if (gates === 4) pane.draft = "owner draft"; } }))
-      .toMatchObject({ outcome: midSend("codex-composer-not-ready"), keys: ["-l"] });
-  });
-
-  it.each([1, 2, 3])("refuses file-backed delivery when capture %s is unavailable", async (failedCapture) => {
+  it.each([1, 2])("refuses file-backed delivery when capture %s is unavailable", async (failedCapture) => {
     for (const exitCode of [0, 1]) {
       const calls: Array<readonly string[]> = [];
       let captures = 0;
@@ -1000,8 +919,8 @@ describe("tmux boundary", () => {
         { id: "cursor", root: "/clone", launcher: "start-cursor.sh", delivery: "both", harnessProcess: "agent" },
         "/a", undefined, undefined, undefined, undefined, { source: "ready-file", lifecycle: () => "unchanged" });
       expect(result).toMatchObject({ status: "busy", reason: "pane-capture-unavailable",
-        stage: failedCapture === 3 ? "mid-send" : "prompt" });
-      expect(calls.filter((args) => args[0] === "send-keys")).toHaveLength(failedCapture === 3 ? 1 : 0);
+        stage: "prompt" });
+      expect(calls.filter((args) => args[0] === "send-keys")).toHaveLength(0);
     }
   });
 
@@ -1270,7 +1189,7 @@ describe("tmux boundary", () => {
     expect(calls.some((call) => call.args[0] === "send-keys")).toBe(false);
   });
 
-  it("rechecks pane mode before each key and stops if it changes", async () => {
+  it("rechecks pane mode before the batch and stops if it changes", async () => {
     const calls: Array<{ args: readonly string[] }> = [];
     let inspects = 0;
     const controller = new TmuxController(
@@ -1278,9 +1197,8 @@ describe("tmux boundary", () => {
         calls.push({ args });
         if (args[0] === "display-message") {
           inspects += 1;
-          // Initial readiness and the gate before the text succeed; the gate
-          // before Enter sees copy-mode.
-          if (inspects >= 3) return ok("0\tagent\t1\t0\n");
+          // Copy-mode appears between initial readiness and the batch.
+          if (inspects >= 2) return ok("0\tagent\t1\t0\n");
           return ok("0\tagent\t0\t0\n");
         }
         if (args[0] === "capture-pane") return ok(promptFor("cursor"));
@@ -1299,8 +1217,7 @@ describe("tmux boundary", () => {
       )
     ).toMatchObject({ status: "busy" });
     const sent = calls.filter((call) => call.args[0] === "send-keys");
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.args[1]).toBe("-l");
+    expect(sent).toHaveLength(0);
   });
 
   it("confines executable launchers to the real agent clone", () => {

@@ -6,23 +6,36 @@ can carry.
 
 | Layer | Mechanism | Authority for |
 | --- | --- | --- |
-| Delivery readiness | tmux pane scrape (`harnessLooksReady`, `harnessPromptReadiness`) | whether it is safe to type into the pane |
+| Delivery readiness | process/pane gates, vendor Stop, fallback pane inspection | whether the next prompt can be delivered |
 | Observability | vendor lifecycle hooks (`SessionStart`, prompt-submit, `Stop`) | whether a second send would be a duplicate |
 | Workflow truth | the `complete` file plus Git pin **or** accepted response + published batch | whether the work actually happened |
 
 ## The three rules
 
-**Scrape is a veto, never an authorization.** A pane that looks busy always
-blocks typing, whatever the hooks say. Keystrokes sent into a running turn are
-appended to that turn's input or cancel it, so a false stall is recoverable and
-a false send is not. Hooks reporting `execution: "idle"` never override a
-blocking scrape.
+**A current Stop authorizes the next delivery.** Background work remains
+telemetry and does not block the next prompt or action. A Stop from an old
+session or a known older turn is not current. New foreground activity, queued
+input, session replacement, or a new delivery revokes this readiness. No
+Working-text, idle-sentinel, or empty-composer confirmation of Stop is required.
+Process identity, pane liveness, copy mode, disabled input, trust/account dialogs,
+vendor usage waits, manual pause, holds and send budgets still apply.
 
-**Hooks authorize duplicates, and only duplicates.** Before the first successful
-send there is nothing to duplicate: an action still at `delivery: "ordered"`
-may be retried whenever the scrape becomes ready. After a send succeeds, another
-send needs `decideLifecycleNudge` to return `send`, or the lost-delivery
-recovery below.
+**A matching submit hook confirms acceptance.** `UserPromptSubmit` (Codex and
+Claude) or `beforeSubmitPrompt` (Cursor) must match the current action UUID,
+digest, and session. No subsequent pane evidence is needed. Matching hooks also
+clear that attempt's delivery reservation and corresponding `delivery-uncertain`
+hold, even after a restart or delayed receipt. Other holds, manual pause and
+charged send counts remain intact. AGY retains its existing delivery and Stop
+path without acquiring a prompt-submit-hook requirement.
+
+A successful tmux write proves injection only. Codex, Claude and Cursor receive
+one tmux command batch: literal prompt text followed by actual submit-key events.
+The coordinator does not wait for the prompt to paint, poll the composer, or
+press fallback submit keys. Codex uses Enter, including old configurations with
+`["C-j", "C-m"]` or `["C-m"]`. AGY keeps its separate literal-text/Enter delivery
+and existing delays. Without Stop evidence, pane readiness remains the fallback.
+After an injection, a repeat requires a new eligible idle transition or the
+lost-delivery proof below; a delayed hook alone never authorizes a duplicate.
 
 **Workflow truth outranks both.** For Git-mode actions, `complete` plus a
 pushed commit proves the action arrived. For ballot response-mode actions,
@@ -52,11 +65,12 @@ consumes the observed receipt; a replacement file is preserved. The existing
 mailbox directory grant covers this sibling without new permissions.
 
 File proof is eligible only before the next action's first charged send, with
-no pending input, background work or delivery reservation. Its mtime must be
+no pending input or delivery reservation. Background work blocks file-only
+proof unless a current Stop already authorizes delivery. Its mtime must be
 strictly newer than the last activity-hook receipt and not in the future;
 millisecond timestamp ties fail closed. A separate per-agent hook receipt
 timestamp/sequence includes duplicate activity callbacks, unlike semantic
-`lastEventAt`. The sequence and file identity are rechecked before each key.
+`lastEventAt`. The sequence and file identity are rechecked before the batch (and each AGY key).
 Status-bar telemetry is deliberately excluded: an idle status render is not
 new activity, and must not invalidate the ready file just written. Identical
 Antigravity status observations explicitly reporting idle, no pending input,
@@ -70,12 +84,11 @@ revoke readiness. Neither receipt field fabricates execution or an idle epoch.
 A valid file can overrule stale `working` or `unknown` for that first send
 without needing the idle line visible in the pane. It never bypasses process,
 dialog, live-turn, owner-input, pause/hold, authority or send-budget checks.
-Codex must still show an empty composer, then exactly the pasted message before
-submission; its vim and submit-acceptance checks do not depend on a visible
-sentinel when using file proof. Changed proof before any key defers for free;
-after a key the existing delivery-uncertain hold applies. The durable charge
-prevents repeats even if deleting the receipt fails. Legacy states default to
-no accepted identity/receipt and retain the existing behavior below.
+For file-only Codex proof, the composer must be empty before the batch; the
+coordinator never waits for the pasted message to become visible. Changed proof
+before delivery defers for free. An ambiguous transport failure after reservation
+retains its durable charge and creates a delivery-uncertain hold, which a matching
+submit hook can resolve. Legacy lifecycle files default to no Stop receipt.
 
 Startup `foreground-mismatch (bash)` is a separate, intentional refusal before
 terminal text is considered: the launcher may not yet have handed control to
@@ -103,24 +116,12 @@ without requiring the sentinel.
 that never reaches this issue leaves lifecycle at `working`, which would block
 the next action forever. While an action has never been sent (no send charged,
 `delivery: "ordered"`, no injection), a current sentinel that passes every veto
-may overrule that `working` record, and only that one. The pane is rechecked at
-every key, with the turn-chrome veto always applied:
-
-- the lifecycle record must be unchanged, or the send stops with
-  `lifecycle-changed`;
-- until the nudge is typed, the composer must be empty, so Codex's vim `i`
-  prelude is sent only from vim NORMAL;
-- before every submit key, the composer must hold exactly this nudge, so an
-  owner edit is never submitted with it;
-- once a submit key is out, a correlated prompt hook for this action, or Codex
-  showing exactly this nudge as the submitted message of a running turn with
-  an empty composer again, ends the send without the remaining fallback submit
-  keys. An unrelated turn with the nudge still in the composer is not proof.
-
-A refusal before any key costs nothing; after a key, the existing
-`delivery-uncertain` hold applies. The send is journalled with
-`lifecycleOverride: "working"`, and stdout names the missing Stop. Lifecycle state is not rewritten; after that first send, a
-`working` record blocks exactly as before.
+may overrule that `working` record, and only that one. Lifecycle and pane proof
+are rechecked immediately before the batch; AGY retains its per-key checks.
+Codex must show an empty composer, and its vim `i` prelude is sent only from
+NORMAL. A refusal before any key costs nothing. The send is journalled with
+`lifecycleOverride: "working"`, and stdout names the missing Stop. Lifecycle
+state is not rewritten; after that first send, `working` blocks another send.
 
 ## Lost delivery is retried only on positive proof
 
@@ -158,8 +159,8 @@ Prompt readiness (`PromptBlockedReason`):
 | `antigravity-verify-overlay` | the account-verify overlay is up and discards keys |
 | `antigravity-no-prompt` | splash or no prompt yet |
 | `codex-turn-chrome` | Codex's `Working (… esc to interrupt)` status line is up |
-| `no-idle-sentinel` | lifecycle reports `working` and the pane shows no current sentinel to overrule it, or the composer no longer holds exactly the nudge |
-| `codex-composer-not-ready` | file-backed readiness cannot prove an empty Codex composer or exactly the pasted action message |
+| `no-idle-sentinel` | lifecycle reports `working` and the pane shows no current sentinel to overrule it, or its pre-send composer is not empty |
+| `codex-composer-not-ready` | file-backed readiness cannot prove an empty Codex composer before the batch |
 | `pane-capture-unavailable` | file-backed readiness cannot check pane vetoes because the capture failed or was empty |
 | `lifecycle-changed` | lifecycle hooks reported new activity while an override send was being prepared |
 
@@ -207,3 +208,7 @@ Clearing a legacy degraded alert on workflow completion appends
 `agent-observability-degraded` merely because lifecycle events are missing.
 File-backed sends record `readiness: "ready-file"` and the prior execution in
 `lifecycleOverride`; their diagnostic does not claim a sentinel was visible.
+
+Stop-authorized sends record `readiness: "stop-hook"`. A late submission hook
+that resolves uncertainty records an automatic `hold-released` event with
+`reason: "prompt-submitted"`.

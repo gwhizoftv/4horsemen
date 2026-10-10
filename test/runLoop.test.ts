@@ -188,7 +188,7 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
   writeFileSync(paths.agentLifecycle, JSON.stringify(initialAgentLifecycle([vendor], now())));
   const ui = { foreground: "harness", busy: false, dead: false, text: "❯ Antigravity Gemini >", failSubmit: false,
     failInspect: false, failCapture: false, waitAtCapture: Infinity, sends: 0, inspections: 0, captures: 0,
-    onCapture: undefined as (() => void) | undefined };
+    onCapture: undefined as (() => void) | undefined, onSend: undefined as (() => void) | undefined };
   const messages: string[] = [];
   const tmux = new TmuxController(async (args) => {
     if (args[0] === "display-message") {
@@ -202,8 +202,8 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
       if (ui.failCapture) throw new Error("capture unavailable");
       return { exitCode: 0, stdout: ui.captures >= ui.waitAtCapture ? "Usage limit reset · continuing automatically\n❯" : ui.text, stderr: "" };
     }
-    if (args[0] === "send-keys" && args.includes("-l")) ui.sends++;
-    if (args[0] === "send-keys" && !args.includes("-l") && ui.sends > 0 && ui.failSubmit) throw new Error("connection lost");
+    if (args[0] === "send-keys" && args.includes("-l")) { ui.sends++; ui.onSend?.(); }
+    if (args[0] === "send-keys" && args.includes("Enter") && ui.sends > 0 && ui.failSubmit) throw new Error("connection lost");
     return { exitCode: 0, stdout: "", stderr: "" };
   }, undefined, undefined, undefined, async () => undefined);
   // Every tick uses a new coordinator: all protections must be durable.
@@ -297,7 +297,7 @@ describe("owner reminders and advisory diagnostics", () => {
     await loop.runTick(); f.advance(1); f.working(); f.advance(60_000);
     f.ui.text = "COORD-IDLE: waiting for the next coordinator action file";
     loop.reminders()[0]!.request();
-    f.ui.onCapture = () => {
+    f.ui.onSend = () => {
       if (f.ui.sends === 2) mutateCursorsState(f.paths, (state) => setPaused(state, true, f.now()));
     };
     await loop.runTick();
@@ -927,6 +927,80 @@ describe("durable delivery safety", () => {
     expect(released.actionSafety.codex).toMatchObject({ sends: 1, reserved: false });
   });
 
+  it.each(["codex", "claude", "cursor"])("reconciles %s's delayed submit hook without pane confirmation or another send", async (vendor) => {
+    const f = safetyFixture(vendor);
+    f.ui.failSubmit = true;
+    const held = await f.tick();
+    expect(held.holds[0]?.reason).toBe("delivery-uncertain");
+    f.ui.failSubmit = false;
+    f.ui.text = "Working... still rendering the previous turn";
+    f.advance(1);
+    f.working(); // exact current action UUID/digest, with no Working or empty-composer proof
+    const recovered = await f.tick();
+    expect(recovered.holds).toEqual([]);
+    expect(recovered.paused).toBe(false);
+    expect(recovered.actionSafety[vendor]).toMatchObject({ sends: 1, reserved: false });
+    expect(readAgentLifecycle(f.paths).agents[vendor].action?.delivery).toBe("accepted");
+    expect(f.ui.sends).toBe(1);
+    expect(readJournal(f.paths).filter((event) => event.type === "hold-released")).toHaveLength(1);
+    await f.tick();
+    expect(f.ui.sends).toBe(1);
+    expect(readJournal(f.paths).filter((event) => event.type === "hold-released")).toHaveLength(1);
+  });
+
+  it.each([false, true])("accepts a matching hook during the batch, transport failure=%s", async (failSubmit) => {
+    const f = safetyFixture();
+    f.ui.failSubmit = failSubmit;
+    f.ui.onSend = () => { f.advance(1); f.working(); };
+    const after = await f.tick();
+    expect(after.holds).toEqual([]);
+    expect(after.actionSafety.codex).toMatchObject({ sends: 1, reserved: false });
+    expect(readAgentLifecycle(f.paths).agents.codex.action?.delivery).toBe("accepted");
+    expect(f.ui.sends).toBe(1);
+  });
+
+  it("does not clear uncertainty for an unmatched hook or a prior attempt's acceptance", async () => {
+    const f = safetyFixture(); f.ui.failSubmit = true;
+    await f.tick();
+    const action = readAgentLifecycle(f.paths).agents.codex.action!;
+    f.advance(1);
+    observeAgentLifecycle(f.paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session",
+      actionId: action.actionId, actionDigest: "f".repeat(64) }, f.now());
+    expect((await f.tick()).holds[0]?.reason).toBe("delivery-uncertain");
+    f.working();
+    f.advance(1);
+    mutateCursorsState(f.paths, (current) => ({ ...current, actionSafety: { codex: { ...current.actionSafety.codex!, lastSendAt: f.now() } } }));
+    expect((await f.tick()).holds[0]?.reason).toBe("delivery-uncertain");
+  });
+
+  it("acknowledges delivery while retaining manual pause and unrelated holds", async () => {
+    const f = safetyFixture(); f.ui.failSubmit = true;
+    const held = await f.tick();
+    mutateCursorsState(f.paths, (current) => ({ ...current, manualPaused: true,
+      holds: [...current.holds, { ...held.holds[0]!, id: randomUUID(), reason: "vendor-wait", evidenceId: "other" }] }));
+    f.advance(1); f.working();
+    const after = await f.tick();
+    expect(after).toMatchObject({ manualPaused: true, paused: true });
+    expect(after.holds.map((hold) => hold.reason)).toEqual(["vendor-wait"]);
+    expect(after.actionSafety.codex).toMatchObject({ sends: 1, reserved: false });
+    expect(f.ui.sends).toBe(1);
+  });
+
+  it.each(["codex", "claude", "cursor", "antigravity"])("delivers after %s Stop with background work and stale busy pane text", async (vendor) => {
+    const f = safetyFixture(vendor);
+    await f.tick(); f.advance(1); f.working();
+    observeAgentLifecycle(f.paths, vendor, { kind: "stopped", eventName: "Stop", sessionId: "session", turnId: "turn-1", backgroundActive: true }, f.now());
+    f.ui.text = "Working... esc to cancel";
+    f.advance(60_000);
+    const after = await f.tick();
+    expect(after.holds).toEqual([]);
+    expect(f.ui.sends).toBe(2);
+    expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudged", agent: vendor,
+      details: expect.objectContaining({ readiness: "stop-hook" }) }));
+    await f.tick();
+    expect(f.ui.sends).toBe(2);
+  });
+
   it("restores a crashed reservation as a hold instead of authorizing another send", async () => {
     const f = safetyFixture();
     await f.tick();
@@ -1004,12 +1078,12 @@ describe("durable delivery safety", () => {
     expect(f.ui.sends).toBe(0);
   });
 
-  it("keeps native ownership and the charge when a Claude wait appears mid-send", async () => {
+  it("keeps native ownership without charging when a Claude wait appears before the batch", async () => {
     const f = safetyFixture("claude");
-    f.ui.waitAtCapture = 3; // the prelude has been sent; literal text has not
+    f.ui.waitAtCapture = 2; // final recapture before reserving the batch
     const held = await f.tick();
     expect(held.holds[0]).toMatchObject({ reason: "vendor-wait", retryOwner: "vendor" });
-    expect(held.actionSafety.claude).toMatchObject({ sends: 1, reserved: true });
+    expect(held.actionSafety.claude).toMatchObject({ sends: 0, reserved: false });
     expect(f.ui.sends).toBe(0);
     expect((await f.tick()).holds).toEqual(held.holds);
   });
@@ -1248,29 +1322,29 @@ describe("effectful run loop", () => {
 
   it.each(["hook", "receipt"].flatMap((change) => [false, true].map((afterPaste) => ({ change, afterPaste }))))(
     "revokes $change proof during sending, afterPaste=$afterPaste", async ({ change, afterPaste }) => {
-      const f = safetyFixture("claude");
+      const f = safetyFixture("antigravity");
       f.ui.foreground = "bash";
       await f.tick();
-      const previous = actionIdFor("claude", 42);
+      const previous = actionIdFor("antigravity", 42);
       mutateCursorsState(f.paths, (state) => ({ ...state, agents: { ...state.agents,
-        claude: { ...state.agents.claude, lastAcceptedActionId: previous } } }));
+        antigravity: { ...state.agents.antigravity, lastAcceptedActionId: previous } } }));
       f.advance(10);
       const hook = { kind: "working" as const, eventName: "tool", sessionId: "session" };
-      observeAgentLifecycle(f.paths, "claude", hook, f.now());
+      observeAgentLifecycle(f.paths, "antigravity", hook, f.now());
       const hookAt = f.now();
       f.advance(10);
-      const ready = agentRuntimePaths(f.paths, "claude").ready;
+      const ready = agentRuntimePaths(f.paths, "antigravity").ready;
       writeFileSync(ready, `ready ${previous}`);
       utimesSync(ready, new Date(f.now()), new Date(f.now()));
       f.advance(10);
       f.ui.foreground = "harness";
-      // Claude's override also checks usage immediately before every key.
-      f.ui.text = "❯ \n-- INSERT --";
-      const changeAt = f.ui.captures + (afterPaste ? 5 : 2);
+      // AGY retains rechecks between text and submit.
+      f.ui.text = "Antigravity Gemini >";
+      const changeAt = f.ui.captures + 2;
       f.ui.onCapture = () => {
-        if (f.ui.captures !== changeAt) return;
-        if (change === "hook") observeAgentLifecycle(f.paths, "claude", hook, hookAt); // same timestamp, new receipt sequence
-        else writeFileSync(ready, `ready ${actionIdFor("claude", 43)}`);
+        if (afterPaste ? f.ui.sends === 0 : f.ui.captures !== changeAt) return;
+        if (change === "hook") observeAgentLifecycle(f.paths, "antigravity", hook, hookAt); // same timestamp, new receipt sequence
+        else writeFileSync(ready, `ready ${actionIdFor("antigravity", 43)}`);
       };
       const after = await f.tick();
       expect(f.ui.sends).toBe(afterPaste ? 1 : 0);
@@ -2202,7 +2276,7 @@ describe("effectful run loop", () => {
       }
       if (args[0] === "send-keys" && args.includes("-l")) {
         literalNudges += 1;
-        draft = args.at(-1)!;
+        draft = args[args.indexOf("-l") + 3]!;
       }
       return { exitCode: 0, stdout: "", stderr: "" };
     });
@@ -2439,7 +2513,7 @@ describe("effectful run loop", () => {
     expect(f.ui.sends).toBe(2);
   });
 
-  it("retries once when a later ready prompt proves an injected action is absent", async () => {
+  it("uses Stop readiness after an injection without a submit callback", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);
     writeFileSync(
@@ -2474,7 +2548,7 @@ describe("effectful run loop", () => {
       turnId: "unrelated-turn",
       backgroundActive: false
     });
-    expect(readAgentLifecycle(paths).agents.codex?.execution).toBe("queued");
+    expect(readAgentLifecycle(paths).agents.codex?.execution).toBe("idle");
     nowMs += 60_000;
 
     await loop.runTick();

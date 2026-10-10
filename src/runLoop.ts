@@ -15,6 +15,7 @@ import {
   orderAgentAction,
   readAgentLifecycle,
   stopObservationWarning,
+  hasStopReadiness,
   type AgentLifecycleEntry
 } from "./agentLifecycle.js";
 import {
@@ -1150,7 +1151,7 @@ export class CoordinatorRunLoop {
     if (safety?.actionId !== actionId || safety.sends !== 0 || safety.reserved || entry === undefined ||
       entry.action?.actionId !== actionId || entry.action.actionDigest !== actionDigest ||
       entry.action.delivery !== "ordered" || entry.action.injectedAt !== null || entry.action.workflowCompleteAt !== null ||
-      entry.execution === "queued" || entry.backgroundActive === true || (entry.pendingInputCount ?? 0) > 0) return null;
+      entry.execution === "queued" || (entry.backgroundActive === true && !hasStopReadiness(entry)) || (entry.pendingInputCount ?? 0) > 0) return null;
     const receipt = readReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot);
     if (receipt === null || receipt.actionId !== cursors.agents[agent]?.lastAcceptedActionId || receipt.actionId === actionId) return null;
     const lastHook = Math.max(Date.parse(entry.hookReceipt?.at ?? "") || 0, Date.parse(entry.lastEventAt ?? "") || 0);
@@ -1170,7 +1171,7 @@ export class CoordinatorRunLoop {
     cursors = this.ensureActionSafety(cursors, agent, actionId);
     const safety = cursors.actionSafety[agent]!;
     if (safety.reserved) return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends}`);
-    // A reissue cannot interrupt ongoing/background work either.
+    // A current Stop permits queued delivery even while background tasks remain.
     const entry = readAgentLifecycle(this.paths).agents[agent];
     const receipt = this.readyForNextAction(cursors, agent, actionId, actionDigest, entry);
     // Before the first send there is nothing to duplicate, so a `working`
@@ -1180,21 +1181,21 @@ export class CoordinatorRunLoop {
       entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest &&
       entry.action.delivery === "ordered" && entry.action.injectedAt === null;
     const owner = reason === "owner";
-    if ((entry?.execution === "working" && !staleWorking && !owner) || (owner && entry?.execution === "queued") || entry?.backgroundActive === true ||
+    if ((entry?.execution === "working" && !staleWorking && !owner) || (owner && entry?.execution === "queued") || (entry?.backgroundActive === true && !hasStopReadiness(entry)) ||
       (entry?.pendingInputCount ?? 0) > 0) return cursors;
     // Lifecycle hooks write without touching cursor authority, so the override
-    // re-reads them at every key until submission starts.
+    // re-reads them immediately before the batch (or each AGY key).
     const lifecycleSnapshot = (value: typeof entry): string => JSON.stringify([value?.sessionId, value?.turnId,
-      value?.lastEventAt, value?.execution, value?.pendingInputCount, value?.backgroundActive]);
+      value?.lastEventAt, value?.execution, value?.pendingInputCount, value?.backgroundActive, value?.stoppedAt]);
     const observed = lifecycleSnapshot(entry);
     const hookSequence = entry?.hookReceipt?.sequence;
-    const staleOverride: IdleOverride | undefined = receipt !== null || staleWorking || owner ? {
-      source: receipt !== null ? "ready-file" : "idle-sentinel",
+    const staleOverride: IdleOverride | undefined = hasStopReadiness(entry) || receipt !== null || staleWorking || owner ? {
+      source: hasStopReadiness(entry) ? "stop-hook" : receipt !== null ? "ready-file" : "idle-sentinel",
       lifecycle: () => {
         const latest = readAgentLifecycle(this.paths).agents[agent];
         if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
-          latest.action.delivery === "accepted" && (!owner ||
-            (latest.hookReceipt?.sequence !== hookSequence && latest.action.acceptedAt !== entry?.action?.acceptedAt))) return "accepted";
+          latest.action.delivery === "accepted" && latest.hookReceipt?.sequence !== hookSequence &&
+            (latest.action.acceptedAt !== entry?.action?.acceptedAt || latest.action.turnId !== entry?.action?.turnId)) return "accepted";
         if (owner && (latest?.hookReceipt?.sequence !== hookSequence ||
           readCompletion(agentRuntimePaths(this.paths, agent).complete).status !== "missing")) return "changed";
         if (receipt !== null && (latest?.hookReceipt?.sequence !== hookSequence ||
@@ -1227,7 +1228,9 @@ export class CoordinatorRunLoop {
     } catch (error) {
       this.authority(cursors);
       if (error instanceof StateConflictError) throw error;
-      return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`);
+      cursors = this.reconcileSubmitted(cursors, agent);
+      return cursors.actionSafety[agent]?.reserved
+        ? this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`) : cursors;
     }
     this.authority(cursors);
     // Native retry ownership remains known even if earlier keys were ambiguous.
@@ -1236,7 +1239,9 @@ export class CoordinatorRunLoop {
       return this.hold(cursors, agent, "vendor-wait", this.observationEvidence(agent, actionId));
     }
     if (result.status !== "sent" && result.stage === "mid-send") {
-      return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`);
+      cursors = this.reconcileSubmitted(cursors, agent);
+      return cursors.actionSafety[agent]?.reserved
+        ? this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`) : cursors;
     }
     if (result.status === "sent") {
       if (owner) this.log(`[OK] Reminder sent to ${agent} for its current task.`);
@@ -1267,6 +1272,29 @@ export class CoordinatorRunLoop {
         deferralRationale(result.reason), result.detail);
     }
     return cursors;
+  }
+
+  /** A correlated submit callback resolves this attempt, including after a crash or timeout. */
+  private reconcileSubmitted(cursors: CursorsState, agent: string): CursorsState {
+    const safety = cursors.actionSafety[agent];
+    const entry = readAgentLifecycle(this.paths).agents[agent];
+    const action = entry?.action;
+    if (safety === undefined || !safety.reserved || safety.lastSendAt === null ||
+        action?.delivery !== "accepted" || action.actionId !== safety.actionId ||
+        cursors.agents[agent]?.actionId !== action.actionId || action.sessionId !== entry?.sessionId ||
+        action.acceptedAt === null || Date.parse(action.acceptedAt) < Date.parse(safety.lastSendAt)) return cursors;
+    const path = agentRuntimePaths(this.paths, agent).action;
+    if (!existsSync(path) || sha256OfFile(path) !== action.actionDigest) return cursors;
+    const matched = cursors.holds.filter((hold) => hold.reason === "delivery-uncertain" &&
+      hold.agent === agent && hold.actionId === action.actionId &&
+      (hold.sessionId === null || hold.sessionId === action.sessionId));
+    return this.mutate(cursors, (current) => {
+      const holds = current.holds.filter((hold) => !matched.some((match) => match.id === hold.id));
+      for (const hold of matched) appendJournal(this.paths, { type: "hold-released", agent, actionId: action.actionId,
+        details: { hold: hold.id, automatic: true, reason: "prompt-submitted", eventId: `hold-release:${hold.id}` } }, this.now());
+      return { ...current, holds, paused: current.manualPaused || holds.length > 0,
+        actionSafety: { ...current.actionSafety, [agent]: { ...current.actionSafety[agent]!, reserved: false } } };
+    });
   }
 
   /** Quiet work is normal. Only explicit pane conditions can hold unfinished work. */
@@ -2923,6 +2951,7 @@ export class CoordinatorRunLoop {
           this.ingestVerificationMeasurements(this.paths, agent.root, agent.id, start, this.now());
         }
       }
+      for (const agent of cursors.activeRoster) cursors = this.reconcileSubmitted(cursors, agent);
       if (cursors.paused) {
         // Observation-only while held: no preparation, delivery, acceptance or publication.
         for (const agent of cursors.activeRoster) {

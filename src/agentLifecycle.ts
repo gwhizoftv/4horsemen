@@ -116,6 +116,8 @@ export const agentLifecycleEntrySchema = z
     turnId: z.string().min(1).nullable(),
     pendingInputCount: z.number().int().nonnegative().nullable(),
     backgroundActive: z.boolean().nullable(),
+    /** Current Stop readiness; background activity does not revoke it. */
+    stoppedAt: timestampSchema.nullable().default(null),
     idleEpoch: z.number().int().nonnegative(),
     health: z.enum(["unknown", "healthy", "degraded"]),
     /** Why health degraded, so the operator message names what was observed. */
@@ -177,6 +179,7 @@ const emptyEntry = (now: string): AgentLifecycleEntry => ({
   turnId: null,
   pendingInputCount: null,
   backgroundActive: null,
+  stoppedAt: null,
   idleEpoch: 0,
   health: "unknown",
   degradedCause: null,
@@ -344,6 +347,7 @@ export const markActionInjected = (
       agent,
       {
         ...current,
+        stoppedAt: current.stoppedAt !== null && Date.parse(current.stoppedAt) >= Date.parse(now) ? current.stoppedAt : null,
         health: acceptedDuringAttempt ? "healthy" : "unknown",
         degradedCause: null,
         action: {
@@ -583,6 +587,7 @@ export const applyLifecycleObservation = (
     stopObservation = { ...emptyStopObservation(), stoppedActionId: entry.action?.actionId ?? null };
   }
 
+  let stoppedAt = sessionChanged ? null : entry.stoppedAt;
   let action = entry.action;
   let execution = observation.execution ?? entry.execution;
   let turnId = observation.turnId ?? (sessionChanged ? null : entry.turnId);
@@ -624,6 +629,7 @@ export const applyLifecycleObservation = (
   }
 
   if (observation.kind === "prompt-submitted") {
+    stoppedAt = null;
     execution = "working";
     pendingInputCount = Math.max(0, (pendingInputCount ?? 1) - 1);
     if (
@@ -641,7 +647,8 @@ export const applyLifecycleObservation = (
     }
   }
 
-  if (observation.kind === "working") execution = "working";
+  if (observation.kind === "working") { execution = "working"; stoppedAt = null; }
+  if (["failed", "session-end", "session-start"].includes(observation.kind)) stoppedAt = null;
   if (observation.kind === "failed") {
     const injectedAwaitingAcceptance =
       action?.delivery === "injected" && action.turnId === null && observation.allowInjectedIdle !== true;
@@ -653,27 +660,27 @@ export const applyLifecycleObservation = (
   if (observation.kind === "session-end") execution = "failed";
 
   if (observation.kind === "stopped") {
-    const currentActionTurn = action?.turnId ?? null;
+    const currentActionTurn = action?.turnId ?? entry.stopObservation.turns.at(-1) ?? entry.turnId;
     const stoppedTurn = observation.turnId ?? null;
     const stoppingOlderTurn =
       currentActionTurn !== null && stoppedTurn !== null && currentActionTurn !== stoppedTurn;
-    const injectedAwaitingAcceptance =
-      action?.delivery === "injected" && action.turnId === null && observation.allowInjectedIdle !== true;
     if (
       (pendingInputCount ?? 0) > 0 ||
-      backgroundActive === true ||
-      stoppingOlderTurn ||
-      injectedAwaitingAcceptance
+      stoppingOlderTurn
     ) {
       execution = "queued";
+      stoppedAt = null;
     } else {
       execution = "idle";
+      stoppedAt = now;
       turnId = null;
     }
   }
 
   if (observation.kind === "status") {
-    if ((pendingInputCount ?? 0) > 0 || backgroundActive === true) execution = "queued";
+    if ((pendingInputCount ?? 0) > 0 || observation.execution === "working" || observation.execution === "unknown") stoppedAt = null;
+    if (stoppedAt !== null) execution = "idle";
+    else if ((pendingInputCount ?? 0) > 0 || backgroundActive === true) execution = "queued";
   }
 
   const idleEpoch = positiveIdle(entry, execution);
@@ -692,6 +699,7 @@ export const applyLifecycleObservation = (
     turnId,
     pendingInputCount,
     backgroundActive,
+    stoppedAt,
     idleEpoch,
     health: "healthy",
     degradedCause: null,
@@ -759,6 +767,9 @@ export const observeAgentLifecycle = (
   now = new Date().toISOString()
 ): AgentLifecycleState => observeAgentLifecycleWithResult(paths, agent, observation, now).state;
 
+export const hasStopReadiness = (entry: AgentLifecycleEntry | undefined): boolean =>
+  entry?.stoppedAt != null && entry.execution === "idle";
+
 /** Every reason delivery can be held back, as a closed union. */
 export type NudgeWaitCode =
   | "unmatched-action"
@@ -789,7 +800,7 @@ export const decideLifecycleNudge = (
   if (entry.pendingInputCount !== null && entry.pendingInputCount > 0) {
     return { kind: "wait", reason: "pending-input", code: "pending-input" };
   }
-  if (entry.backgroundActive === true) {
+  if (entry.backgroundActive === true && !hasStopReadiness(entry)) {
     return { kind: "wait", reason: "background-active", code: "background-active" };
   }
   if (entry.execution !== "idle" && entry.execution !== "failed") {

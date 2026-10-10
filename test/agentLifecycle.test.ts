@@ -155,7 +155,7 @@ describe("agent lifecycle policy", () => {
     expect(failedPriorTurn.execution).toBe("queued");
   });
 
-  it("lets Antigravity fully-idle Stop end an injected action without a prompt-submit hook", () => {
+  it.each([false, true])("lets Stop end an injected action without a submit callback, backgroundActive=%s", (backgroundActive) => {
     const injected = {
       ...entry(),
       execution: "working" as const,
@@ -178,11 +178,30 @@ describe("agent lifecycle policy", () => {
       kind: "stopped",
       eventName: "Stop",
       sessionId: "agy-1",
-      backgroundActive: false,
-      allowInjectedIdle: true
+      backgroundActive
     });
     expect(stopped.execution).toBe("idle");
     expect(decideLifecycleNudge(stopped, actionId, digest).kind).toBe("send");
+  });
+
+  it("uses a current Stop despite background work and revokes it on a new turn", () => {
+    let current = applyLifecycleObservation(entry(), { kind: "session-start", eventName: "SessionStart", sessionId: "s" }, now);
+    current = applyLifecycleObservation(current, { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "s", turnId: "new" }, now);
+    const oldStop = applyLifecycleObservation(current, { kind: "stopped", eventName: "Stop", sessionId: "s", turnId: "old", backgroundActive: true }, later);
+    expect(oldStop.stoppedAt).toBeNull();
+    current = applyLifecycleObservation(current, { kind: "stopped", eventName: "Stop", sessionId: "s", turnId: "new", backgroundActive: true }, later);
+    expect(current).toMatchObject({ execution: "idle", backgroundActive: true, stoppedAt: later });
+    current = applyLifecycleObservation(current, { kind: "status", eventName: "status-line", sessionId: "s", execution: "queued",
+      backgroundActive: true, pendingInputCount: 0 }, later);
+    expect(current).toMatchObject({ execution: "idle", backgroundActive: true, stoppedAt: later });
+    expect(applyLifecycleObservation(current, { kind: "working", eventName: "PreInvocation", sessionId: "s" }, later))
+      .toMatchObject({ execution: "working", stoppedAt: null });
+    expect(applyLifecycleObservation(current, { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "s", turnId: "next" }, later))
+      .toMatchObject({ execution: "working", stoppedAt: null });
+    expect(applyLifecycleObservation(current, { kind: "session-start", eventName: "SessionStart", sessionId: "next" }, later).stoppedAt).toBeNull();
+    expect(applyLifecycleObservation(current, { kind: "status", eventName: "status-line", sessionId: "s", execution: "queued", pendingInputCount: 1 }, later))
+      .toMatchObject({ execution: "queued", stoppedAt: null });
+    expect(agentLifecycleEntrySchema.parse({ ...entry(), stoppedAt: undefined }).stoppedAt).toBeNull();
   });
 
   it("keeps queue and activity fields from a session-replacing status payload", () => {

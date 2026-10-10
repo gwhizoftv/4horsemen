@@ -43,7 +43,7 @@ export const agentHarnessProcess = (agent: string): string => {
  * Cursor without vim and Antigravity submit on Enter; Escape dismisses that
  * Cursor composer and cancels Antigravity. Cursor with `editor.vimMode` uses
  * vim `a` (when not INSERT) and Escape then Enter so INSERT does not treat
- * Enter as a newline. Codex uses vim insert (`i`) and `C-j` then `C-m`.
+ * Enter as a newline. Codex uses vim insert (`i`) and `Enter`.
  * Operators override via config.json (non-vim Cursor Escape+Enter is still
  * upgraded to Enter).
  */
@@ -52,7 +52,7 @@ export const agentOwnerUiDefaults = (
 ): { nudgePrelude: string[]; nudgeSubmit: string[]; terminalProfile: string } => {
   switch (agent) {
     case "codex":
-      return { nudgePrelude: ["i"], nudgeSubmit: ["C-j", "C-m"], terminalProfile: "Codex 1" };
+      return { nudgePrelude: ["i"], nudgeSubmit: ["Enter"], terminalProfile: "Codex 1" };
     case "claude":
       return { nudgePrelude: [], nudgeSubmit: ["Escape", "Enter"], terminalProfile: "Claude 1" };
     case "cursor":
