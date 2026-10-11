@@ -1,0 +1,10 @@
+{
+  "protocolVersion": 1,
+  "issue": 177,
+  "issueSessionId": "issue-177:8d38734a93bc374560d2728e8cff6f9636181585",
+  "agent": "codex",
+  "artifact": "finalization",
+  "consensusSha": "46dd47112ddc72776d957c9553b31c71a1fa2c1c",
+  "finalSha": "be5ee3e06a43fbfac57e6a2c98e811ffa2aa0e66",
+  "checks": []
+}
