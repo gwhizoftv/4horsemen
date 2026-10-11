@@ -1,0 +1,14 @@
+{
+  "actionId": "0da6193d-e280-4fd7-bef4-d0a3bf7d9b6b",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "23f4c5b1929d82fa34aa742578646b3f6562c36bc4cc639dc72d481f592bc09a",
+  "issue": 177,
+  "issueSessionId": "issue-177:8d38734a93bc374560d2728e8cff6f9636181585",
+  "protocolVersion": 2,
+  "rationale": "Approve: 46dd47112ddc72776d957c9553b31c71a1fa2c1c keeps the stored pull-request URL across a late third-round drop and describes a unanimous remainder as approval, leaving dropped historical ballots on the evidence branch instead of counting them as approvals.",
+  "responseSha256": "154bff10ee3022fdf91b248469fa30dfa2f254332964779c70cefbc92935f3b1",
+  "revisionCommitSha": "46dd47112ddc72776d957c9553b31c71a1fa2c1c",
+  "round": 2
+}
