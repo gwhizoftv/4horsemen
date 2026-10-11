@@ -37,6 +37,7 @@ common_detect_project
 common_write_gitignore
 common_install_hooks
 common_write_start_sh
+common_configure_trust
 
 # ==================== Antigravity-specific setup below ======================
 
@@ -91,9 +92,8 @@ const fs = require('fs');
 const path = require('path');
 const [,, settingsPath, cloneDir] = process.argv;
 
-// Trust only this agent's own clone. Trusting peer clones handed Antigravity
-// write access to work it must never touch, and the completion mailbox is
-// granted per issue by the launcher (--add-dir), not by blanket trust here.
+// Parent-folder trust is established by common_configure_trust. Keep this
+// legacy clone entry while preserving the owner's other trusted workspaces.
 const agentClones = [cloneDir];
 
 // Paths an earlier version of THIS script derived and trusted: the sibling

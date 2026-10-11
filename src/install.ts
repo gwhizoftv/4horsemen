@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { syncAgentTrust } from "./agentTrust.js";
 import {
   clearAgentsProtocolFile,
   clearClaudeAgentsShim,
@@ -108,7 +109,7 @@ export type InstallOptions = {
    * has to state one, or two products would drop receipts in the same tree.
    */
   completesRoot?: string;
-  /** Test/embedding override for the one Antigravity user-global setting. */
+  /** Test/embedding override for user-global vendor settings; null skips them. */
   home?: string | null;
 };
 
@@ -416,6 +417,10 @@ export const install = (options: InstallOptions): InstallResult => {
       effects
     );
     syncAgentLifecycleHooks({ clone, agent, cliEntry, options: effects });
+    syncAgentTrust({
+      agent, productRoot, clone, additionalRoots: [coordRoot, completesRoot],
+      home: options.home, options: effects
+    });
     if (agent === "claude") {
       const launcher = config.agents.find((candidate) => candidate.id === agent)?.launcher;
       syncClaudeStatusLine({

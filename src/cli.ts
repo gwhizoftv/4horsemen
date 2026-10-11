@@ -87,6 +87,7 @@ export type CliRunLoop = {
   run(signal?: AbortSignal): Promise<void>;
   reminders?(): readonly { label: string; request(): string }[];
   reportStartup?(): Promise<void>;
+  restoreTerminals?(): Promise<void>;
 };
 
 export type CliDependencies = {
@@ -808,12 +809,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   };
 
   const attachIssue = async (paths: IssueRuntimePaths): Promise<void> => {
-    const start = readStartState(paths);
-    const tmux = new TmuxController(undefined, paths.tmuxNamespace, undefined, undefined, undefined, paths.terminalGroup);
-    const session = tmux.sessionName(start.issue);
-    const present = await runner(["tmux", "has-session", "-t", session], io.cwd);
-    if (present.exitCode !== 0) throw new Error(`tmux session ${session} is not running. Resume with coord ${start.issue} first.`);
-    reportOwnerAgentClients(await tmux.openOwnerAgentClients(start.issue, start.agents), io.stdout);
+    await assertIssueCanRun(paths);
+    const loop = makeRunLoop(paths);
+    if (loop.restoreTerminals === undefined) throw new Error("This runner does not support terminal recovery.");
+    await loop.restoreTerminals();
   };
 
   const runIssue = async (paths: IssueRuntimePaths, loop = makeRunLoop(paths)): Promise<number> => {

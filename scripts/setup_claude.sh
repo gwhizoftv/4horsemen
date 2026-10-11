@@ -23,6 +23,7 @@ common_detect_project
 common_write_gitignore
 common_install_hooks
 common_write_start_sh
+common_configure_trust
 
 # ======================= Claude-specific setup below =======================
 

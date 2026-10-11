@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFi
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { findAgentLanguageViolations } from "../src/agentLanguage.js";
+import { syncAgentTrust } from "../src/agentTrust.js";
 import { assertInstallDeletionAllowed, install, uninstall } from "../src/install.js";
 import { readConfig } from "../src/state.js";
 import { nestedConfigPath } from "../src/workspace.js";
@@ -55,6 +56,100 @@ const installOnce = (
 };
 
 describe("coord install — two-mode footprint", () => {
+  it("persists parent trust for all vendors while preserving existing settings and repeat-install bytes", () => {
+    const fixture = product();
+    const home = join(fixture.workspaceRoot, "home");
+    const parent = realpathSync(fixture.workspaceRoot);
+    const codexConfig = join(home, ".codex/config.toml");
+    const claudeConfig = join(home, ".claude.json");
+    const agyConfig = join(home, ".gemini/antigravity-cli/settings.json");
+    mkdirSync(dirname(codexConfig), { recursive: true });
+    mkdirSync(dirname(agyConfig), { recursive: true });
+    writeFileSync(codexConfig, `model = "owner-model"\n[projects.'${parent}'] # keep this table\ntrust_level = "untrusted"\nowner_setting = true\n`);
+    writeFileSync(claudeConfig, JSON.stringify({ theme: "dark", projects: { [parent]: { allowedTools: ["Read"] } } }));
+    writeFileSync(agyConfig, JSON.stringify({ model: "owner-model", allowNonWorkspaceAccess: false, trustedWorkspaces: ["/owner/notes"] }));
+    const agents = ["claude", "codex", "cursor", "antigravity"];
+    installOnce(fixture, { agents });
+    const codex = readFileSync(codexConfig, "utf8");
+    expect(codex).toContain('model = "owner-model"');
+    expect(codex).toContain(`projects.'${parent}'] # keep this table\ntrust_level = "trusted"\nowner_setting = true`);
+    expect(codex).toContain(`[projects.${JSON.stringify(join(parent, "myserver-codex"))}]\ntrust_level = "trusted"`);
+    expect(JSON.parse(readFileSync(claudeConfig, "utf8"))).toMatchObject({ theme: "dark", projects: {
+      [parent]: { hasTrustDialogAccepted: true, allowedTools: ["Read"] },
+      [join(parent, "myserver-claude")]: { hasTrustDialogAccepted: true }
+    } });
+    expect(JSON.parse(readFileSync(agyConfig, "utf8"))).toMatchObject({
+      model: "owner-model", allowNonWorkspaceAccess: false, trustedWorkspaces: ["/owner/notes", parent]
+    });
+    const projects = join(home, ".cursor/projects");
+    const markers = readdirSync(projects).map((key) => join(projects, key, ".workspace-trusted"));
+    const roots = markers.map((path) => JSON.parse(readFileSync(path, "utf8")).workspacePath);
+    expect(roots).toContain(parent);
+    // This fixture's runtime is outside the product parent. Trust its stable
+    // root once, so future issue directories are covered too.
+    expect(roots).toContain(realpathSync(fixture.coordRoot));
+    expect(roots.some((root: string) => /issue-\d/.test(root))).toBe(false);
+    const paths = [codexConfig, claudeConfig, agyConfig, ...markers];
+    const bytes = paths.map((path) => readFileSync(path, "utf8"));
+    const repeated = installOnce(fixture, { agents });
+    expect(repeated.changes.filter((entry) => entry.includes("folder trust"))).toEqual([]);
+    expect(paths.map((path) => readFileSync(path, "utf8"))).toEqual(bytes);
+  });
+
+  it("shares trust with setup scripts, respects vendor homes, and makes dry-run write nothing", () => {
+    const fixture = product();
+    const parent = realpathSync(fixture.workspaceRoot);
+    const home = join(parent, "isolated-home");
+    const options = { dryRun: true, log: () => undefined, changes: [] as string[] };
+    for (const agent of ["claude", "codex", "cursor", "antigravity"]) {
+      syncAgentTrust({ agent, productRoot: realpathSync(fixture.productRoot), clone: join(parent, `myserver-${agent}`), home, options });
+      expect(readFileSync(join(repoRoot, `scripts/setup_${agent}.sh`), "utf8")).toContain("common_configure_trust\n");
+    }
+    // This artificial home is inside the parent, so Cursor cannot inherit its
+    // trust and also needs the clone's exact marker (five writes total).
+    expect(options.changes).toHaveLength(5);
+    expect(existsSync(home)).toBe(false);
+    options.dryRun = false;
+    syncAgentTrust({ agent: "cursor", productRoot: fixture.productRoot, clone: join(parent, "myserver-cursor"), home,
+      env: { CURSOR_DATA_DIR: join(parent, "cursor-data"), CURSOR_CONFIG_DIR: join(parent, "wrong-config") }, options });
+    const cursorProjects = join(parent, "cursor-data/projects");
+    expect(readdirSync(cursorProjects)).toEqual([parent, join(parent, "myserver-cursor")]
+      .map((root) => root.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "")));
+    expect(existsSync(join(parent, "wrong-config"))).toBe(false);
+    syncAgentTrust({ agent: "claude", productRoot: fixture.productRoot, clone: join(parent, "myserver-claude"), home,
+      env: { CLAUDE_CONFIG_DIR: join(parent, "claude-config") }, options });
+    expect(existsSync(join(parent, "claude-config/.claude.json"))).toBe(true);
+    // Execute the shared setup helper against an installed clone without
+    // running the rest of the legacy identity/MCP/permission setup.
+    const installed = installOnce(fixture, { agents: ["codex"], home: null });
+    const codexHome = join(parent, "codex-config");
+    const setupTrust = (dryRun: boolean) => execFileSync("bash", ["-c",
+      '. "$1"; AGENT_NAME=codex; MASTER_ROOT="$2"; CLONE_DIR="$3"; DRY_RUN="$4"; common_configure_trust',
+      "_", join(repoRoot, "scripts/setup_common.sh"), fixture.productRoot, installed.clones[0]!, String(dryRun)], {
+        env: { ...process.env, CODEX_HOME: codexHome }, stdio: "pipe"
+      });
+    setupTrust(true);
+    expect(existsSync(codexHome)).toBe(false);
+    setupTrust(false);
+    expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toContain(`[projects.${JSON.stringify(parent)}]`);
+    expect(existsSync(home)).toBe(false);
+  });
+
+  it.each([
+    ["claude", ".claude.json", '{"projects": []}'],
+    ["antigravity", ".gemini/antigravity-cli/settings.json", '{"trustedWorkspaces": "invalid"}'],
+    ["claude", ".claude.json", "not JSON"]
+  ])("refuses malformed %s trust settings without replacing them", (agent, relative, contents) => {
+    const fixture = product();
+    const home = join(fixture.workspaceRoot, "home");
+    const path = join(home, relative);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, contents);
+    expect(() => syncAgentTrust({ agent, productRoot: fixture.productRoot, clone: fixture.productRoot, home,
+      options: { dryRun: false, log: () => undefined, changes: [] } })).toThrow();
+    expect(readFileSync(path, "utf8")).toBe(contents);
+  });
+
   it("advertises owner-driven manual work after installation", () => {
     const fixture = product();
     const output: string[] = [];
@@ -489,6 +584,7 @@ describe("coord uninstall — scope", () => {
   it("decides the dirty-clone refusal before unwiring anything", () => {
     const fixture = product();
     const result = install({
+      home: null,
       installRoot: repoRoot,
       productRoot: fixture.productRoot,
       coordRoot: fixture.coordRoot,
@@ -525,6 +621,7 @@ describe("coord uninstall — scope", () => {
     const second = makeProduct("go", "otherserver");
     fixtures.push(second);
     install({
+      home: null,
       installRoot: repoRoot,
       productRoot: second.productRoot,
       coordRoot: first.coordRoot,
@@ -728,8 +825,8 @@ describe("completion mailbox wiring", () => {
     // A user-global grant of non-workspace access hands back the coordinator
     // runtime the mailbox exists to keep out; a launcher flag cannot narrow it.
     expect(settings.allowNonWorkspaceAccess).toBe(false);
-    // Peer clones this script itself added are withdrawn: Antigravity must not
-    // hold write trust on another agent's working tree.
+    // Old per-peer entries are still removed. Parent trust is now established
+    // separately by the shared setup helper; permission settings stay separate.
     expect(settings.trustedWorkspaces).not.toContain(join(fixture.workspaceRoot, "myapp-claude"));
     expect(settings.trustedWorkspaces).not.toContain(join(fixture.workspaceRoot, "myapp-codex"));
     // Its own clone stays, and owner-authored entries are not this script's to

@@ -35,6 +35,7 @@ const product = (): ProductFixture => {
 
 const vendorInstall = (fixture: ProductFixture): ReturnType<typeof install> =>
   install({
+    home: null,
     installRoot: repoRoot,
     productRoot: fixture.productRoot,
     coordRoot: fixture.coordRoot,

@@ -311,7 +311,11 @@ is a stable 10-hex fingerprint of the workspace root. Attach uses `do script`
 and sets that tab's custom title only. Detach/wipe close **only tabs whose
 title exactly matches those ids** — never bare agent names and never
 ungrouped `coord-N/<agent>`. Re-open those views
-later with `coord attach N` while the coordinator is already running. `coord detach N` closes matching Terminal windows
+later with `coord attach N`. For an unfinished issue, attach also recreates
+missing tmux windows and respawns dead panes, preserving live agents. Starting
+`coord N` restores those terminals even while paused, so you can answer login
+or other startup questions before releasing a hold. Terminal recovery does not
+prepare branches, send tasks, or clear pauses/holds. `coord detach N` closes matching Terminal windows
 (by unique title / window name) then kills the issue tmux sessions, without
 wiping runtime, clones, or branches. When `coord N` / `coord run` finishes with
 a completed workflow, it runs the same UI teardown automatically and then makes

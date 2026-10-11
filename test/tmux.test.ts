@@ -714,6 +714,9 @@ describe("tmux boundary", () => {
   });
 
   it("names the predicate that refused a prompt", () => {
+    expect(harnessPromptReadiness(`Workspace Trust Required\nDo you trust the contents of this directory?\n` +
+      `a Trust this workspace\nq Quit\n${COORD_IDLE_SENTINEL}`, "cursor"))
+      .toEqual({ ready: false, reason: "trust-dialog" });
     expect(harnessPromptReadiness("Do you trust this folder?", "claude")).toEqual({
       ready: false,
       reason: "trust-dialog"

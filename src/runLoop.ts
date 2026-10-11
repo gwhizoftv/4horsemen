@@ -1040,11 +1040,27 @@ export class CoordinatorRunLoop {
     this.authority(authority);
     await this.mirror.initialize();
     this.authority(authority);
+    await this.restoreTerminals();
+    this.authority(authority);
+  }
+
+  /** Owner startup/attach may repair terminals while workflow delivery stays held. */
+  async restoreTerminals(): Promise<void> {
+    const start = readStartState(this.paths);
+    const snapshot = readCursorsState(this.paths);
+    const assertCurrent = () => {
+      const current = readCursorsState(this.paths);
+      if (current.stateRevision !== snapshot.stateRevision || current.completed || current.abandoned) {
+        throw new StateConflictError("Issue changed or finished during terminal recovery.");
+      }
+    };
+    assertCurrent();
     if (this.tmux !== null) {
-      await this.tmux.ensureSession(start.issue, start.agents, () => this.authority(authority));
-      this.authority(authority);
-      const opened = await this.tmux.openOwnerAgentClients(start.issue, start.agents, { onlyMissing: true });
-      this.authority(authority);
+      const agents = start.agents.filter((agent) => snapshot.activeRoster.includes(agent.id));
+      await this.tmux.ensureSession(start.issue, agents, assertCurrent);
+      assertCurrent();
+      const opened = await this.tmux.openOwnerAgentClients(start.issue, agents, { onlyMissing: true });
+      assertCurrent();
       if (opened.status === "opened" && opened.count > 0) {
         this.log(`Opened ${opened.count} Terminal window(s), one per agent tmux client.`);
       } else if (opened.status === "failed") {
@@ -3268,6 +3284,7 @@ export class CoordinatorRunLoop {
     // Pauses retain the runner, not workflow authority. runTick remains
     // observation-only while held, and manual pause also stops quota reads.
     let initialized = false;
+    let terminalsRestored = false;
     let diagnosed = false;
     let lastPausedReport: string | null = null;
     while (!stopped()) {
@@ -3277,6 +3294,10 @@ export class CoordinatorRunLoop {
           if (!initialized && !cursors.paused) {
             await this.initializeEffects();
             initialized = true;
+            terminalsRestored = true;
+          } else if (!terminalsRestored) {
+            await this.restoreTerminals();
+            terminalsRestored = true;
           }
           if (!diagnosed) { await this.reportStartup(); diagnosed = true; }
           if (stopped()) return;

@@ -251,7 +251,9 @@ export const harnessPromptReadiness = (
     (agentId === "codex" ? codexSentinelAtTail(paneText) : sentinelAtTail(plain)) &&
     (actionId === undefined || idleSentinelAfterAction(plain, actionId));
   const ready = (): PromptReadiness => ({ ready: true, reason: sentinel ? "idle-sentinel" : "vendor-prompt" });
-  if (/trust this folder/i.test(plain)) return { ready: false, reason: "trust-dialog" };
+  if (/trust this (?:folder|workspace)|workspace trust required|do you trust the contents of this directory/i.test(plain)) {
+    return { ready: false, reason: "trust-dialog" };
+  }
   switch (agentId) {
     case "claude":
       if (claudeUsageWait(plain)) return { ready: false, reason: "claude-usage-wait" };

@@ -100,6 +100,10 @@ describe("coord onboard", () => {
     expect(config.profile).toBe("consensus");
     expect(config.digestPaths).toEqual([]);
     expect(config.agents.map((agent) => agent.id)).toEqual(["claude", "codex", "cursor", "antigravity"]);
+    const trust = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
+    expect(trust.projects[dirname(realpathSync(fixture.productRoot))].hasTrustDialogAccepted).toBe(true);
+    expect(readFileSync(join(home, ".codex/config.toml"), "utf8"))
+      .toContain(`[projects.${JSON.stringify(dirname(realpathSync(fixture.productRoot)))}]\ntrust_level = "trusted"`);
     expect(localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBe(realpathSync(configPath));
     for (const key of ["coord.installRoot", "coord.cliEntry", "coord.workspaceConfig"]) {
       expect(localConfigGet(fixture.productRoot, key)).toBeNull();
@@ -145,6 +149,7 @@ describe("coord onboard", () => {
     const fixture = product();
     expect(
       await runCli(["onboard", fixture.productRoot, "--agents", "claude", "--profile", "reviewed"], {
+        home: null,
         io: { stdout: () => undefined }
       })
     ).toBe(0);
@@ -194,14 +199,14 @@ describe("coord onboard", () => {
     expect(
       await runCli(
         ["onboard", first.productRoot, "--coord-runtime", sharedRoot, "--agents", "claude", "--profile", "solo"],
-        { io: { stdout: () => undefined } }
+        { home: null, io: { stdout: () => undefined } }
       )
     ).toBe(0);
     const firstConfigBytes = readFileSync(join(sharedRoot, "config.json"), "utf8");
     expect(
       await runCli(
         ["onboard", second.productRoot, "--coord-runtime", sharedRoot, "--agents", "claude", "--profile", "solo"],
-        { io: { stdout: () => undefined } }
+        { home: null, io: { stdout: () => undefined } }
       )
     ).toBe(0);
     expect(readFileSync(join(sharedRoot, "config.json"), "utf8")).toBe(firstConfigBytes);
@@ -294,6 +299,7 @@ describe("coord onboard", () => {
     try {
       process.env.PATH = "/usr/bin:/bin";
       const result = onboard({
+        home: null,
         installRoot: repoRoot,
         productRoot: fixture.productRoot,
         agents: ["claude"],
@@ -311,6 +317,7 @@ describe("coord onboard", () => {
   it("keeps a valid locator when a later re-onboard doctor check fails", () => {
     const fixture = product();
     const first = onboard({
+      home: null,
       installRoot: repoRoot,
       productRoot: fixture.productRoot,
       agents: ["claude"],
@@ -325,6 +332,7 @@ describe("coord onboard", () => {
     try {
       process.env.PATH = "/usr/bin:/bin";
       const second = onboard({
+        home: null,
         installRoot: repoRoot,
         productRoot: fixture.productRoot,
         agents: ["claude"],
