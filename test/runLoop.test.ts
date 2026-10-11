@@ -3026,6 +3026,7 @@ describe("effectful run loop", () => {
       paths,
       cursorsStateSchema.parse({
         ...current,
+        issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
         publication: {
           status: "pending",
           finalSha,
@@ -4071,4 +4072,60 @@ describe("third revision closeout", () => {
     expect(decide({ start, cursors: final })).toEqual([{ type: "advance-step", from: "R6.ballot", to: "R7.finalize", round: null }]);
     expect(deriveBoundInputs(start, final, "R7.finalize", null)[0]?.commitSha).toBe(revision.productPin);
   });
+
+  it.each([null, "https://github.com/acme/app/pull/4"])(
+    "preserves checked finalization across a late drop and retries publication with stored URL %s", async (url) => {
+      const { paths, start, cursors, mirror, now, revision } = terminalFixture();
+      writeFileSync(paths.start, JSON.stringify({ ...start, prPolicy: "coord-merged" }));
+      writeFileSync(paths.issueSnapshot, JSON.stringify({ repository: "acme/app", number: 1,
+        title: "Conclude development", body: "", url: "https://github.com/acme/app/issues/1" }));
+      const finalSha = "9".repeat(40);
+      const finalization = { stepId: "R7.finalize", agent: "codex", round: null, submissionSha: "8".repeat(40),
+        productPin: finalSha, path: ".signals/issue-1/finalization-ready-codex.json", acceptedAt: now,
+        checkResults: [{ name: "check", argv: ["pnpm", "check"], exitCode: 0 }] };
+      const publication = { status: "failed", finalSha, branch: "issue-1/codex-final", url,
+        error: url === null ? "GitHub unavailable" : "protected branch", attempts: 1 };
+      writeCursorsState(paths, cursorsStateSchema.parse({ ...cursors,
+        issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
+        derived: { ...cursors.derived, consensus: computeConsensusDerived(cursors, 3, now) },
+        accepted: [...cursors.accepted, finalization, { stepId: "R6.follow-up", agent: "claude", round: 3,
+          submissionSha: "7".repeat(40), path: ".signals/issue-1/follow-up-ready-claude-round-3.json", acceptedAt: now,
+          followUp: { number: 2, url: "https://github.com/acme/app/issues/2", revisionCommitSha: revision.productPin } }],
+        publication }));
+      const dropped = dropOwnerAgent(paths, "claude");
+      expect(dropped.publication).toEqual(publication);
+      expect(dropped.accepted).toContainEqual(finalization);
+      const batch = publishedBallotBatchFixture({ kind: "consensus-ballot-batch", activeRoster: ["codex"], round: 3,
+        commitSha: "6".repeat(40), batchId: randomUUID(), status: "pending" });
+      writeCursorsState(paths, cursorsStateSchema.parse({ ...dropped, ballotBatches: [...dropped.ballotBatches, batch] }));
+      const fetch = vi.spyOn(mirror, "fetchBranch").mockRejectedValue(new Error("network timeout"));
+      const publish = vi.spyOn(mirror, "publishBranch").mockResolvedValue(undefined);
+      const opener = vi.fn(async (input: { body: string }) => {
+        expect(input.body).toContain("Remaining active agents unanimously approved revision 3");
+        expect(input.body).toContain("Dropped agents: claude");
+        expect(input.body).toContain("https://github.com/acme/app/issues/2");
+        expect(input.body).not.toContain("not unanimous approval");
+        return { url: "https://github.com/acme/app/pull/4" };
+      });
+      const merger = vi.fn(async () => undefined);
+      const loop = () => new CoordinatorRunLoop(paths, { mirror, tmux: null, log: () => undefined,
+        pullRequestOpener: opener, pullRequestMerger: merger });
+      const waiting = await loop().runTick();
+      expect(waiting.issueCursor.stepId).toBe("R6.ballot");
+      expect(waiting.publication).toEqual(publication);
+      expect(publish).not.toHaveBeenCalled();
+      expect(opener).not.toHaveBeenCalled();
+      expect(merger).not.toHaveBeenCalled();
+      fetch.mockResolvedValue({ ok: true, ref: "refs/remotes/origin/issue-1/coordinator-evidence", tip: batch.commitSha });
+      const recovered = await loop().runTick();
+      expect(recovered.derived.consensus).toMatchObject({ algorithm: "unanimous-active-roster-v1", consensusPin: revision.productPin });
+      expect(recovered.accepted).toContainEqual(finalization);
+      expect(recovered.publication).toMatchObject({ status: "completed", finalSha, url: "https://github.com/acme/app/pull/4", attempts: 2 });
+      expect(recovered.completed).toBe(true);
+      expect(publish).toHaveBeenCalledExactlyOnceWith(finalSha, publication.branch);
+      expect(opener).toHaveBeenCalledTimes(url === null ? 1 : 0);
+      expect(merger).toHaveBeenCalledExactlyOnceWith({ url: "https://github.com/acme/app/pull/4" });
+      expect(recovered.agents.codex?.actionId).toBeNull();
+    }
+  );
 });

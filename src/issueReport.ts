@@ -98,7 +98,9 @@ export const renderIssueReport = (
   if (conclusion?.round === start.maxRevisionRounds &&
     (conclusion.algorithm === "revision-limit-active-roster-v1" || cursors.acceptedResponses.some((response) =>
       response.stepId === "R6.ballot" && response.round === conclusion.round && response.disposition !== "approve"))) {
-    lines.push(`Conclusion: revision ${conclusion.round} limit reached; objections deferred, not unanimous approval.`);
+    lines.push(conclusion.algorithm === "unanimous-active-roster-v1"
+      ? `Conclusion: remaining active agents unanimously approved revision ${conclusion.round} after agent drops; historical objections remain recorded.`
+      : `Conclusion: revision ${conclusion.round} limit reached; objections deferred, not unanimous approval.`);
     for (const agent of conclusion.objectors ?? []) {
       if (!cursors.activeRoster.includes(agent)) continue;
       const receipt = cursors.accepted.find((submission) => submission.stepId === "R6.follow-up" &&

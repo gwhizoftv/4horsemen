@@ -2728,21 +2728,22 @@ export class CoordinatorRunLoop {
           (cursors.derived.consensus.algorithm === "revision-limit-active-roster-v1" || cursors.acceptedResponses.some((response) =>
             response.stepId === "R6.ballot" && response.round === start.maxRevisionRounds && response.disposition !== "approve")) ? { closeout: {
           round: cursors.derived.consensus.round,
+          unanimousAfterDrop: cursors.derived.consensus.algorithm === "unanimous-active-roster-v1",
           followUps: cursors.accepted.filter((submission) => submission.stepId === "R6.follow-up" &&
             submission.followUp?.revisionCommitSha === cursors.derived.consensus?.consensusPin)
             .map((submission) => ({ agent: submission.agent, url: submission.followUp!.url })),
           droppedAgents: cursors.droppedAgents
         } } : {})
       });
-      this.log("[WAIT] Opening the pull request...");
-      const result = await this.pullRequestOpener({
+      this.log(openedUrl === null ? "[WAIT] Opening the pull request..." : `[WAIT] Reusing pull request ${openedUrl}...`);
+      const result = openedUrl === null ? await this.pullRequestOpener({
         repository,
         base: start.baseBranch,
         head: branch,
         title,
         body,
         draft
-      });
+      }) : { url: openedUrl };
       openedUrl = result.url;
       this.log(`[OK] Pull request: ${result.url}`);
       this.authority(authority, true);
@@ -3215,7 +3216,10 @@ export class CoordinatorRunLoop {
 
       if (observations.length > 0) cursors = await this.applyDecisions(start, cursors, decide({ start, cursors, observations }));
       if (cursors.paused) return cursors;
-      if (cursors.publication.status === "pending" || cursors.publication.status === "failed") {
+      // A late drop retains the publication record, but its reduced ballot
+      // batch and decision must be ready before publication can resume.
+      if (cursors.issueCursor.stepId === "R7.finalize" &&
+        (cursors.publication.status === "pending" || cursors.publication.status === "failed")) {
         cursors = await this.publishAcceptedFinalization(start, cursors);
         if (cursors.publication.status !== "completed") return cursors;
       }
@@ -3225,7 +3229,8 @@ export class CoordinatorRunLoop {
         if (decisions.length === 0) break;
         cursors = await this.applyDecisions(start, cursors, decisions);
         if (cursors.paused) return cursors;
-        if (cursors.publication.status === "pending" || cursors.publication.status === "failed") {
+        if (cursors.issueCursor.stepId === "R7.finalize" &&
+          (cursors.publication.status === "pending" || cursors.publication.status === "failed")) {
           cursors = await this.publishAcceptedFinalization(start, cursors);
           if (cursors.publication.status !== "completed") return cursors;
         }

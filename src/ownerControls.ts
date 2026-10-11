@@ -60,11 +60,12 @@ const rederiveAfterDrop = (
       issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: priorConsensus.round },
       // Preserve the old decision until the reduced roster's batch is published.
       derived: cursors.derived,
-      accepted: cursors.accepted.filter((submission) => submission.stepId !== "R7.finalize"),
+      // The product pin and its checked cleanup did not change. Keep any
+      // accepted finalization and PR identity while rebuilding ballot evidence.
+      accepted: cursors.accepted,
       acceptedResponses: cursors.acceptedResponses,
       ownerQuestion: null,
-      publication: { status: "not-required", finalSha: null, branch: null, url: null, error: null,
-        attempts: cursors.publication.attempts },
+      publication: cursors.publication,
       completed: false, updatedAt: now
     }));
   }

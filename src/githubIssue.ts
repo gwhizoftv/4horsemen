@@ -66,7 +66,8 @@ export const formatFinalizationPullRequest = (input: {
   draft: boolean;
   evidenceBranch?: string | null;
   evidenceTip?: string | null;
-  closeout?: { round: number; followUps: readonly { agent: string; url: string }[]; droppedAgents: readonly string[] };
+  closeout?: { round: number; followUps: readonly { agent: string; url: string }[]; droppedAgents: readonly string[];
+    unanimousAfterDrop?: boolean };
 }): { title: string; body: string } => {
   const issueTitle = input.title.trim() === "" ? "coordinated implementation" : input.title.trim();
   const lines = [
@@ -87,7 +88,9 @@ export const formatFinalizationPullRequest = (input: {
     );
   }
   if (input.closeout !== undefined) {
-    lines.push("", `Concluded after revision ${input.closeout.round}; objections were recorded (not unanimous approval). Active objectors filed the follow-up issues listed below.`);
+    lines.push("", input.closeout.unanimousAfterDrop === true
+      ? `Remaining active agents unanimously approved revision ${input.closeout.round} after agent drops; historical objections remain recorded in the evidence branch.`
+      : `Concluded after revision ${input.closeout.round}; objections were recorded (not unanimous approval). Active objectors filed the follow-up issues listed below.`);
     for (const followUp of input.closeout.followUps) lines.push(`- ${followUp.agent}: ${followUp.url}`);
     if (input.closeout.droppedAgents.length > 0) lines.push(
       `Dropped agents: ${input.closeout.droppedAgents.join(", ")}; their historical ballots remain in the evidence branch, not counted as approvals or filed objections.`);

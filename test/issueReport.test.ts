@@ -235,4 +235,13 @@ it("reports pending/filed follow-ups and authorized-reviser recovery without exp
   report = renderIssueReport(start("owner-only"), cursors);
   expect(report).toContain("Follow-up filed by cursor: https://github.com/example/project/issues/2");
   expect(report).not.toContain("Follow-up pending");
+  cursors.derived.consensus = { ...cursors.derived.consensus, algorithm: "unanimous-active-roster-v1", objectors: undefined };
+  cursors.acceptedResponses = [{ stepId: "R6.ballot", round: 3, agent: "claude", disposition: "revise",
+    actionId: "10000000-0000-4000-8000-000000000001", responseSha256: "a".repeat(64), rationale: "Historical objection",
+    path: "/runtime/claude.json", acceptedAt: cursors.updatedAt }];
+  report = renderIssueReport(start("owner-only"), cursors);
+  expect(report).toContain("remaining active agents unanimously approved revision 3 after agent drops");
+  expect(report).toContain("historical objections remain recorded");
+  expect(report).not.toContain("not unanimous approval");
+  expect(report).not.toContain("Follow-up pending");
 });
