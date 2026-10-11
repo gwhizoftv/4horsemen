@@ -1,0 +1,34 @@
+{
+  "actionId": "8794e3ae-f447-49cc-858f-0456027e3bda",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "3cf68ba1181b8e6e4d2ccdd7c46d38692adb193b",
+      "path": ".signals/issue-177/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "9d8d25436530ced335f15843350413c969af1d60",
+      "path": ".signals/issue-177/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "e1a33b92f3ff4f2b33752f3c2d54ab1b5249e9f5",
+      "path": ".signals/issue-177/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "5e7f8fee93746dc11083bca7f0029d1137982620",
+      "path": ".signals/issue-177/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "90b2485b9515ec7e30fa83a07ebb22f39169af806b4cd93d7878208dae14994e",
+  "issue": 177,
+  "issueSessionId": "issue-177:8d38734a93bc374560d2728e8cff6f9636181585",
+  "protocolVersion": 2,
+  "rationale": "Codex implements the selected plan with the smallest change and no comparison finding against it: it rejects a missing cited issue while retrying only transport failures, requires an exact backlink line, journals question retirement, and handles a late drop by republishing the reduced batch instead of reinterpreting or rewriting earlier records.",
+  "responseSha256": "e33e31c9490e34167894f97674d49ea11b04aa627e8808eaa88a68effec4666b"
+}
