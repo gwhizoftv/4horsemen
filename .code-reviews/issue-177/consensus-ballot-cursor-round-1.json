@@ -1,0 +1,14 @@
+{
+  "actionId": "11ddfc5d-e2f3-420e-ae4f-146ab11a1093",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "aa84798ea9503fe76c92f46f6196e9fbb4f6c030b7527fa393e683418786981d",
+  "issue": 177,
+  "issueSessionId": "issue-177:8d38734a93bc374560d2728e8cff6f9636181585",
+  "protocolVersion": 2,
+  "rationale": "Revise: a late drop at the third-round conclusion clears the stored pull-request URL and returns the remaining agents to the ballot, and finalization attaches capped-closeout prose when any stored round-three response is not approve, including a dropped agent's historical ballot.",
+  "responseSha256": "b3a8e0730e0bb3f29a9359da5ec6b862a0ffebb3167ef25bef276dafa273f706",
+  "revisionCommitSha": "e1a33b92f3ff4f2b33752f3c2d54ab1b5249e9f5",
+  "round": 1
+}
