@@ -432,6 +432,12 @@ export type NudgeOutcome = {
   detail?: string;
 };
 
+/** Owner `n` is transport only. It does not claim the pane was ready. */
+export type OwnerDeliveryOutcome =
+  | { status: "sent"; stage: "complete" }
+  | { status: "failed"; stage: "target"; reason: string }
+  | { status: "uncertain"; stage: "transport"; reason: string };
+
 /** Resolve macOS Terminal.app profile name for an owner attach window. */
 export const resolveTerminalProfile = (agent: AgentConfig): string =>
   agent.terminalProfile ?? agentOwnerUiDefaults(agent.id).terminalProfile;
@@ -1153,5 +1159,69 @@ export class TmuxController {
     return { status: "sent", reason: "sent", stage: "complete",
       ...(staleOverride !== undefined ? { detail: staleOverride.source }
         : harnessPromptReadiness(paneText, agent.id, actionId).reason === "idle-sentinel" ? { detail: "idle-sentinel" } : {}) };
+  }
+
+  /**
+   * Type an owner reminder into this agent's issue pane.
+   * A dead or missing pane fails before any key. A failed capture only skips
+   * vim-key selection. Send failures after the first key are uncertain.
+   */
+  async deliverOwnerNudge(
+    issue: number,
+    agent: AgentConfig,
+    text: string,
+    assertAuthority: () => void = () => undefined,
+    beforeSend: () => void = () => undefined
+  ): Promise<OwnerDeliveryOutcome> {
+    const target = this.target(issue, agent.id);
+    const pane = await this.inspectPane(target);
+    assertAuthority();
+    if (!pane.alive) return { status: "failed", stage: "target", reason: "pane-dead" };
+    let paneText = "";
+    try {
+      paneText = await this.capturePane(target);
+    } catch {
+      paneText = "";
+    }
+    assertAuthority();
+    const { prelude, submit } = resolveNudgeKeys(agent, paneText);
+    const preludeKeys = agent.id === "codex" && codexVimInsert(paneText) ? [] : prelude;
+    const uncertain = (reason: string): OwnerDeliveryOutcome => ({ status: "uncertain", stage: "transport", reason });
+    const ran = async (args: readonly string[]): Promise<OwnerDeliveryOutcome | null> => {
+      const result = await this.runner(args);
+      assertAuthority();
+      return result.exitCode === 0 ? null : uncertain(result.stderr.trim() || "tmux send-keys failed");
+    };
+    beforeSend();
+    if (agent.id === "antigravity") {
+      for (const key of preludeKeys) {
+        const refused = await ran(["send-keys", "-t", target, key]);
+        if (refused !== null) return refused;
+      }
+      const typed = await ran(["send-keys", "-l", "-t", target, text]);
+      if (typed !== null) return typed;
+      await this.sleep(NUDGE_AFTER_TEXT_MS);
+      assertAuthority();
+      for (const [index, key] of submit.entries()) {
+        if (index > 0) {
+          await this.sleep(NUDGE_BETWEEN_SUBMIT_MS);
+          assertAuthority();
+        }
+        const refused = await ran(["send-keys", "-t", target, key]);
+        if (refused !== null) return refused;
+      }
+    } else {
+      const commands = [
+        ...preludeKeys.map((key) => ["send-keys", "-t", target, key]),
+        ["send-keys", "-l", "-t", target, text],
+        ...submit.flatMap((key, index) => [
+          ["run-shell", `sleep ${(index === 0 ? NUDGE_AFTER_TEXT_MS : NUDGE_BETWEEN_SUBMIT_MS) / 1000}`],
+          ["send-keys", "-t", target, key]
+        ])
+      ];
+      const refused = await ran(commands.flatMap((command, index) => index === 0 ? command : [";", ...command]));
+      if (refused !== null) return refused;
+    }
+    return { status: "sent", stage: "complete" };
   }
 }

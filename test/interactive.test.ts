@@ -44,9 +44,14 @@ describe("foreground owner terminal", () => {
     const f = fixture();
     const request = vi.fn(() => "Reminder requested for captured action");
     Object.assign(f.commands, { reminders: () => [{ label: "codex", request }] });
-    await f.send("n"); await f.send("1"); await f.send("\r");
+    await f.send("n");
+    expect(f.printed()).toContain("Select any configured agent to remind, or all of them:");
+    await f.send("1"); await f.send("\r");
     expect(request).toHaveBeenCalledOnce();
     expect(f.printed()).toContain("Reminder requested for captured action");
+    await f.send("?");
+    expect(f.printed()).toContain("any configured agent");
+    expect(f.printed()).not.toContain("readiness checks and send limits");
     f.commands.holds = () => [{ id: "captured", agent: "codex", reason: "nudge-loop" }];
     await f.send("r"); await f.send("1"); await f.send("\r");
     expect(f.commands.releaseHold).not.toHaveBeenCalled();

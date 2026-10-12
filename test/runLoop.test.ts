@@ -192,7 +192,8 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
   writeFileSync(paths.agentLifecycle, JSON.stringify(initialAgentLifecycle([vendor], now())));
   const ui = { foreground: "harness", busy: false, dead: false, text: "❯ Antigravity Gemini >", failSubmit: false,
     failInspect: false, failCapture: false, waitAtCapture: Infinity, sends: 0, inspections: 0, captures: 0,
-    onCapture: undefined as (() => void) | undefined, onSend: undefined as (() => void) | undefined };
+    onCapture: undefined as (() => void) | undefined, onSend: undefined as (() => void) | undefined,
+    literals: [] as string[] };
   const messages: string[] = [];
   const tmux = new TmuxController(async (args) => {
     if (args[0] === "list-windows") return { exitCode: 0, stdout: `${vendor}\n`, stderr: "" };
@@ -207,7 +208,13 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
       if (ui.failCapture) throw new Error("capture unavailable");
       return { exitCode: 0, stdout: ui.captures >= ui.waitAtCapture ? "Usage limit reset · continuing automatically\n❯" : ui.text, stderr: "" };
     }
-    if (args[0] === "send-keys" && args.includes("-l")) { ui.sends++; ui.onSend?.(); }
+    if (args[0] === "send-keys" && args.includes("-l")) {
+      const at = args.indexOf("-l");
+      const text = args[at + 1] === "-t" ? args[at + 3] : args[at + 1];
+      if (text !== undefined) ui.literals.push(text);
+      ui.sends++;
+      ui.onSend?.();
+    }
     if (args[0] === "send-keys" && args.includes("Enter") && ui.sends > 0 && ui.failSubmit) throw new Error("connection lost");
     return { exitCode: 0, stdout: "", stderr: "" };
   }, undefined, undefined, undefined, async () => undefined);
@@ -227,88 +234,144 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
 };
 
 describe("owner reminders and advisory diagnostics", () => {
-  it("rejects a stale menu selection rather than reminding a replacement action", async () => {
-    const f = safetyFixture("claude"), loop = f.makeLoop();
-    await loop.runTick();
-    const selected = loop.reminders()[0]!;
-    mutateCursorsState(f.paths, (state) => ({ ...state,
-      agents: { ...state.agents, claude: { ...state.agents.claude!, actionId: randomUUID() } }
-    }));
-    expect(() => selected.request()).toThrow("no longer current");
-    expect(f.ui.sends).toBe(1);
-  });
-  it("reminds the same accepted task only on explicit request and fresh idle proof, retaining spacing and budget", async () => {
-    const f = safetyFixture("claude"), loop = f.makeLoop();
-    await loop.runTick(); f.advance(1); f.working();
-    const runtime = agentRuntimePaths(f.paths, "claude");
-    const before = readFileSync(runtime.action, "utf8");
-    const id = readCursorsState(f.paths).agents.claude!.actionId;
-    f.ui.text = `${id}\nCOORD-IDLE: waiting for the next coordinator action file`;
+  const ownerValidation = "Your submission is awaiting coordinator validation. Do not redo it.";
+  const ownerNeutral = "No current executable assignment. Remain available for operator guidance.";
+
+  it("lists every configured agent before a tick, including pull delivery and no current action", () => {
+    const { paths } = fixture();
+    const loop = new CoordinatorRunLoop(paths, { tmux: null });
+    expect(loop.reminders().map((item) => item.label)).toEqual(["claude", "codex"]);
     expect(loop.reminders()[0]!.request()).toContain("requested");
-    await loop.runTick(); // minimum spacing still applies
-    expect(f.ui.sends).toBe(1);
-    f.advance(60_000);
-    await loop.runTick(); // explicit request was consumed; automatic stale-working sends remain forbidden
-    expect(f.ui.sends).toBe(1);
-    loop.reminders()[0]!.request();
-    loop.reminders()[0]!.request(); // one queued request, not two
-    await loop.runTick();
-    expect(f.ui.sends).toBe(2);
-    expect(readCursorsState(f.paths).actionSafety.claude).toMatchObject({ sends: 2, reserved: false });
-    expect(readCursorsState(f.paths).agents.claude).toMatchObject({ actionId: id, status: "ordered" });
-    expect(readFileSync(runtime.action, "utf8")).toBe(before);
-    expect(readAgentLifecycle(f.paths).agents.claude?.execution).toBe("working");
-    expect(f.messages.join("\n")).toContain("[OK] Reminder sent");
-    for (const delay of [120_000, 240_000]) {
-      f.advance(delay); loop.reminders()[0]!.request(); await loop.runTick();
-    }
-    f.advance(240_000); loop.reminders()[0]!.request();
-    const held = await loop.runTick();
-    expect(f.ui.sends).toBe(4);
-    expect(held.holds[0]?.reason).toBe("nudge-loop");
-    expect(held.actionSafety.claude?.sends).toBe(4);
-    expect(() => loop.reminders()[0]!.request()).toThrow("Release pauses/holds");
+    expect(loop.reminders()[1]!.request()).not.toContain("check readiness");
+    mutateCursorsState(paths, (state) => dropAgent(state, "claude"));
+    expect(new CoordinatorRunLoop(paths, { tmux: null }).reminders().map((item) => item.label)).toEqual(["claude", "codex"]);
   });
 
-  it.each(["no-idle", "queued", "background", "session", "digest", "pause", "foreground", "typing", "missing-capture", "new-hook"])(
-    "refuses a queued reminder on %s without resetting its allowance", async (veto) => {
+  it.each(["working", "queued", "unknown", "pending", "background", "idle-epoch", "budget", "reserved", "manual-pause", "hold"] as const)(
+    "sends an owner reminder immediately during %s without changing automatic accounting", async (label) => {
       const f = safetyFixture("claude"), loop = f.makeLoop();
-      await loop.runTick(); f.advance(1); f.working(); f.advance(60_000);
-      const runtime = agentRuntimePaths(f.paths, "claude");
-      const id = readCursorsState(f.paths).agents.claude!.actionId;
-      f.ui.text = `${id}\nCOORD-IDLE: waiting for the next coordinator action file`;
-      if (veto === "queued" || veto === "background") observeAgentLifecycle(f.paths, "claude", {
-        kind: "status", eventName: "status", sessionId: "session", pendingInputCount: veto === "queued" ? 1 : 0,
-        backgroundActive: veto === "background"
-      }, f.now());
-      loop.reminders()[0]!.request();
-      if (veto === "no-idle") f.ui.text = "Working...\n❯ ";
-      if (veto === "session") observeAgentLifecycle(f.paths, "claude", { kind: "session-start", eventName: "SessionStart", sessionId: "new-session" }, f.now());
-      if (veto === "digest") writeFileSync(runtime.action, `${readFileSync(runtime.action, "utf8")}\nchanged\n`);
-      if (veto === "pause") mutateCursorsState(f.paths, (state) => setPaused(state, true, f.now()));
-      if (veto === "foreground") f.ui.foreground = "bash";
-      if (veto === "typing") f.ui.busy = true;
-      if (veto === "missing-capture") f.ui.failCapture = true;
-      if (veto === "new-hook") f.ui.onCapture = () => { f.working(); f.ui.onCapture = undefined; };
+      if (label === "idle-epoch") f.stop();
       await loop.runTick();
-      expect(f.ui.sends).toBe(1);
-      expect(readCursorsState(f.paths).actionSafety.claude?.sends).toBe(1);
-      expect(readCursorsState(f.paths).agents.claude?.actionId).toBe(id);
-      expect(f.messages.join("\n")).not.toContain("[OK] Reminder sent");
-    });
+      const actionId = readCursorsState(f.paths).agents.claude!.actionId!;
+      if (label === "working") f.working();
+      if (label === "queued" || label === "pending" || label === "background") observeAgentLifecycle(f.paths, "claude", {
+        kind: "status", eventName: "status", sessionId: "session",
+        pendingInputCount: label === "background" ? 0 : 1,
+        backgroundActive: label === "background"
+      }, f.now());
+      if (label === "idle-epoch") f.advance(60_000);
+      if (label === "budget") mutateCursorsState(f.paths, (state) => ({ ...state, actionSafety: { ...state.actionSafety,
+        claude: { ...state.actionSafety.claude!, sends: 4 } } }));
+      if (label === "reserved") mutateCursorsState(f.paths, (state) => ({ ...state, actionSafety: { ...state.actionSafety,
+        claude: { ...state.actionSafety.claude!, reserved: true } } }));
+      if (label === "manual-pause") mutateCursorsState(f.paths, (state) => setPaused(state, true, f.now()));
+      if (label === "hold") mutateCursorsState(f.paths, (state) => cursorsStateSchema.parse({ ...state, paused: true, holds: [...state.holds, {
+        id: "11111111-1111-4111-8111-111111111111", agent: "claude", actionId, sessionId: null, reason: "nudge-loop",
+        evidenceId: "nudge-loop:0:owner", observedAt: f.now(), resetsAt: null, confidence: "unknown", retryOwner: "owner", evidence: null
+      }] }));
+      const before = readCursorsState(f.paths);
+      const uiBefore = f.ui.sends;
+      loop.reminders()[0]!.request();
+      await loop.runTick();
+      const after = readCursorsState(f.paths);
+      expect(f.ui.sends).toBe(uiBefore + 1);
+      expect(after.actionSafety.claude).toMatchObject({
+        sends: before.actionSafety.claude!.sends,
+        lastSendAt: before.actionSafety.claude!.lastSendAt,
+        reserved: before.actionSafety.claude!.reserved
+      });
+      if (label === "reserved") expect(after.holds.map((hold) => hold.reason)).toEqual(["delivery-uncertain"]);
+      else expect(after.holds).toEqual(before.holds);
+      expect(after.manualPaused).toBe(before.manualPaused);
+      expect(after.agents.claude).toMatchObject({ actionId, status: "ordered" });
+      expect(f.ui.literals.at(-1)).toContain(actionId);
+      expect(f.messages.join("\n")).toContain("handed to tmux (task)");
+      expect(f.messages.join("\n")).not.toContain("reminder deferred by readiness");
+    }
+  );
 
-  it("keeps a charged reservation when owner authority changes after reminder text", async () => {
+  it("types every repeated selection in one tick and does not add an automatic duplicate", async () => {
     const f = safetyFixture("claude"), loop = f.makeLoop();
-    await loop.runTick(); f.advance(1); f.working(); f.advance(60_000);
-    f.ui.text = "COORD-IDLE: waiting for the next coordinator action file";
-    loop.reminders()[0]!.request();
-    f.ui.onSend = () => {
-      if (f.ui.sends === 2) mutateCursorsState(f.paths, (state) => setPaused(state, true, f.now()));
-    };
+    f.stop();
     await loop.runTick();
-    expect(f.ui.sends).toBe(2);
-    expect(readCursorsState(f.paths).actionSafety.claude).toMatchObject({ sends: 2, reserved: true });
-    expect(readCursorsState(f.paths).manualPaused).toBe(true);
+    f.advance(60_000);
+    f.ui.text = "❯ ready";
+    const sends = readCursorsState(f.paths).actionSafety.claude!.sends;
+    const uiBefore = f.ui.sends;
+    loop.reminders()[0]!.request();
+    loop.reminders()[0]!.request();
+    await loop.runTick();
+    expect(f.ui.sends).toBe(uiBefore + 2);
+    expect(readCursorsState(f.paths).actionSafety.claude!.sends).toBe(sends);
+    expect(readJournal(f.paths).filter((event) => event.type === "nudged" && event.details.owner === true)).toHaveLength(2);
+  });
+
+  it("uses a validation reminder under pause and a neutral reminder when nothing is assigned", async () => {
+    const f = safetyFixture("claude"), loop = f.makeLoop();
+    await loop.runTick();
+    const runtime = agentRuntimePaths(f.paths, "claude");
+    writeFileSync(runtime.complete, `${"ab".repeat(20)}\n`);
+    mutateCursorsState(f.paths, (state) => setPaused(state, true, f.now()));
+    loop.reminders()[0]!.request();
+    await loop.runTick();
+    expect(f.ui.literals.at(-1)).toBe(ownerValidation);
+    expect(readCursorsState(f.paths).paused).toBe(true);
+    expect(readCursorsState(f.paths).agents.claude?.status).toBe("ordered");
+    expect(readFileSync(runtime.complete, "utf8")).toBe(`${"ab".repeat(20)}\n`);
+    const fresh = safetyFixture("codex");
+    const early = fresh.makeLoop();
+    early.reminders()[0]!.request();
+    await early.runTick();
+    expect(fresh.ui.literals[0]).toBe(ownerNeutral);
+    expect(readJournal(fresh.paths).some((event) => event.type === "nudged" && event.details.messageKind === "neutral" && event.actionId === undefined)).toBe(true);
+  });
+
+  it("does not send an obsolete task when the assignment changes before the keys", async () => {
+    const f = safetyFixture("claude"), loop = f.makeLoop();
+    await loop.runTick();
+    const runtime = agentRuntimePaths(f.paths, "claude");
+    const id = readCursorsState(f.paths).agents.claude!.actionId!;
+    let rewrite = false;
+    f.ui.onCapture = () => {
+      if (!rewrite) return;
+      writeFileSync(runtime.action, `${readFileSync(runtime.action, "utf8")}\nchanged\n`);
+      rewrite = false;
+    };
+    rewrite = true;
+    loop.reminders()[0]!.request();
+    await loop.runTick();
+    expect(f.ui.literals.some((text) => text.includes("changed"))).toBe(false);
+    expect(f.ui.literals.filter((text) => text.includes(id))).toHaveLength(1);
+    expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({
+      type: "nudge-deferred", agent: "claude", details: expect.objectContaining({ owner: true, reason: "assignment-changed", status: "failed" })
+    }));
+    expect(readCursorsState(f.paths).actionSafety.claude?.sends).toBe(1);
+  });
+
+  it("sends during an issue-177 nudge-loop hold without releasing it or accepting missing work", async () => {
+    const f = safetyFixture("cursor"), loop = f.makeLoop();
+    f.stop();
+    await loop.runTick();
+    expect(readAgentLifecycle(f.paths).agents.cursor?.execution).toBe("idle");
+    f.ui.text = "❯ ready";
+    for (const delay of [60_000, 120_000, 240_000]) {
+      f.advance(delay);
+      await loop.runTick();
+    }
+    f.advance(240_000);
+    const held = await loop.runTick();
+    expect(held.holds[0]?.reason).toBe("nudge-loop");
+    expect(held.actionSafety.cursor?.sends).toBe(4);
+    const holdId = held.holds[0]!.id;
+    const uiBefore = f.ui.sends;
+    loop.reminders()[0]!.request();
+    const after = await loop.runTick();
+    expect(f.ui.sends).toBe(uiBefore + 1);
+    expect(after.holds.map((hold) => hold.id)).toEqual([holdId]);
+    expect(after.actionSafety.cursor?.sends).toBe(4);
+    expect(after.agents.cursor).toMatchObject({ status: "ordered" });
+    expect(existsSync(agentRuntimePaths(f.paths, "cursor").complete)).toBe(false);
+    expect(f.messages.join("\n")).toContain("handed to tmux (task)");
   });
 
   it("keeps startup and missing-Stop diagnostics advisory and avoids warning on every poll", async () => {
@@ -2339,7 +2402,7 @@ describe("effectful run loop", () => {
     expect(nudged[1]?.details).toMatchObject({ idle: true, actionDigest: action!.actionDigest });
   });
 
-  it("automatically overrides stale working only before the first send; owner reminders still check the Codex composer", async () => {
+  it("automatically overrides stale working only before the first send; an owner reminder still types into a busy Codex composer", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);
     writeFileSync(paths.start, `${JSON.stringify({ ...start, agents: start.agents.map((agent) =>
@@ -2402,13 +2465,10 @@ describe("effectful run loop", () => {
     draft = "owner is editing";
     loop.reminders().find((item) => item.label === "codex")!.request();
     await loop.runTick();
-    expect(literalNudges).toBe(1);
-    draft = "";
-    loop.reminders().find((item) => item.label === "codex")!.request();
-    await loop.runTick();
     expect(literalNudges).toBe(2);
+    expect(draft).toContain(action.actionId);
     expect(readJournal(paths)).toContainEqual(expect.objectContaining({ type: "nudged", agent: "codex",
-      actionId: action.actionId, details: expect.objectContaining({ owner: true }) }));
+      actionId: action.actionId, details: expect.objectContaining({ owner: true, messageKind: "task" }) }));
   });
 
   it("retries an action that a busy pane never injected", async () => {

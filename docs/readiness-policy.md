@@ -195,6 +195,47 @@ Legacy degraded states remain readable. Already persisted `unobservable` holds
 still require scoped owner recovery with `coord resume --issue N --hold HOLD_ID`;
 this change neither migrates them nor releases other holds or manual pauses.
 
+## Owner reminders are not automatic delivery
+
+`n` selects any configured agent. The next poll types into that agent's issue
+pane even during manual pause and every hold. That path does not use idle
+proof, composer checks, foreground or copy-mode gates, queue or background
+checks, delivery mode, the 60/120/240-second spacing, or the four-send budget.
+It does not release a hold, reset that budget, delete a completion, or advance
+the workflow. A successful task-specific reminder may record injection so the
+automatic path does not immediately repeat it; only a hook records acceptance.
+“Sent” means the keystrokes were handed to tmux.
+
+Automatic `idle-transition-already-used` means the activity report is idle and
+automatic delivery already used that observation; `n` is the explicit reminder.
+Automatic `working` is a lifecycle report; the owner can still remind from what
+the terminal shows.
+
+Issue 177, action `9f6923bb-5537-40e3-9a52-aa6f92ded7d2`, was prepared at
+2026-10-11 00:28:17.520Z (journal sequence 2898). Sends at 00:28:18.076,
+00:29:19.673, 00:31:20.302, and 00:35:21.813 (2900, 2954, 2987, 2995) have no
+matching prompt-submit. `prompt-ready-action-absent` (2943, 2986, 2992, 2998)
+shows lost-delivery recovery was running. At 00:36:06.447 (2999–3000) the fourth
+send opened hold `01edf7dd-e0b8-46d0-88b4-963dc4751100`, released with a budget
+reset at 16:12:03.734 (3003–3004). The overnight wait was that hold. The earlier
+Stop at 00:21:31.431 (2737) had already been recognized. After release, sends at
+16:12:06.114 and 16:13:07.161 (3006, 3009) were followed by a `beforeSubmitPrompt`
+at 16:13:28.235 (3010) and a `working` deferral (3011).
+
+Ballot `ff2e6ee7-912f-43b4-bbb5-176c50e56283` was acknowledged at 16:19:01.292
+(3123). Validation failed at 16:19:17.186 (3145) because the private response
+was missing. A resend at 16:20:02.415 (3180) was followed by
+`idle-transition-already-used` at 16:20:03.561 (3181). The next prompt-submit
+was 16:22:52.519 (3182). The same action id was still in the captured pane, so
+lost-delivery recovery did not run. The idle line did not make the missing
+response valid.
+
+The previous owner-request path did not journal which check returned first.
+These artifacts do not establish whether that particular `n` was spacing,
+readiness, or the hold. A journalled tmux send also does not establish why the
+agent did not accept the keystrokes; historical pane captures are not in this
+runtime.
+
 ## Journalling
 
 Every refusal appends a `nudge-deferred` event carrying `layer`, `code`,

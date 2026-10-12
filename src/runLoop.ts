@@ -115,7 +115,7 @@ import { holdRecoveryCommand, holdDescription, issueCommand, renderIssueReport }
 import { inspectStartupAgent } from "./doctor.js";
 import { assessFollowUpIssue, followUpKey, formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
-import { harnessPromptReadiness, TmuxController, type IdleOverride } from "./tmux.js";
+import { harnessPromptReadiness, renderNudgeText, TmuxController, type IdleOverride, type OwnerDeliveryOutcome } from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
@@ -879,8 +879,8 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "background-active": "the agent has background work running",
   unknown: "no activity confirmation has arrived yet; normal just after launch, otherwise inspect the agent's trust prompt and hook setup",
   queued: "the agent has accepted work that has not started",
-  working: "the agent is working; no intervention needed unless its terminal is visibly idle",
-  "idle-transition-already-used": "this task was already sent while the agent was idle; waiting for fresh activity"
+  working: "the activity report says working; that is a lifecycle report, so press n if the terminal shows the agent is idle",
+  "idle-transition-already-used": "the activity report is idle and automatic delivery already used that observation; press n for an explicit owner reminder"
 };
 
 const deferralRationale = (code: string): string =>
@@ -909,6 +909,16 @@ const pollSleep = (milliseconds: number, signal?: AbortSignal): Promise<void> =>
   signal?.addEventListener("abort", finish, { once: true });
 });
 
+class OwnerAssignmentChanged extends Error {
+  constructor() {
+    super("assignment-changed");
+    this.name = "OwnerAssignmentChanged";
+  }
+}
+
+const OWNER_VALIDATION_TEXT = "Your submission is awaiting coordinator validation. Do not redo it.";
+const OWNER_NEUTRAL_TEXT = "No current executable assignment. Remain available for operator guidance.";
+
 export class CoordinatorRunLoop {
   private readonly mirror: BareMirror;
   private readonly tmux: TmuxController | null;
@@ -927,30 +937,23 @@ export class CoordinatorRunLoop {
   /** Local probes are advisory; restarting may probe again without changing workflow state. */
   private readonly paneObservations = new Map<string, { identity: string; nextAt: number; available: boolean }>();
   private readonly ingestVerificationMeasurements = createVerificationIngestor();
-  private readonly ownerReminders = new Map<string, { actionId: string; digest: string; sessionId: string | null; sequence: number | undefined }>();
+  /** Each `n` selection is one attempt. Repeated selections before the next tick all run. */
+  private readonly ownerReminderQueue: { agent: string; requestId: string }[] = [];
+  /** Agents already given an owner attempt in this tick, so automatic delivery does not duplicate it. */
+  private readonly ownerAttempted = new Set<string>();
   private readonly receiptMessages = new Map<string, string>();
   private readonly stopWarnings = new Map<string, string>();
   private startupReported = false;
 
-  /** Capture menu identities now, not after the owner selects a possibly stale row. */
+  /** Every configured agent, in config order. The current assignment is resolved when the tick sends. */
   reminders(): readonly { label: string; request(): string }[] {
-    const state = readCursorsState(this.paths);
-    return state.activeRoster.flatMap((agent) => {
-      const cursor = state.agents[agent];
-      if (cursor?.actionId == null || cursor.status !== "ordered") return [];
-      const path = agentRuntimePaths(this.paths, agent).action;
-      if (!existsSync(path)) return [];
-      const entry = readAgentLifecycle(this.paths).agents[agent];
-      const request = { actionId: cursor.actionId, digest: sha256OfFile(path), sessionId: entry?.sessionId ?? null,
-        sequence: entry?.hookReceipt?.sequence };
-      return [{ label: agent, request: () => {
-        const current = readCursorsState(this.paths);
-        if (current.paused || current.completed || current.abandoned) throw new Error("Release pauses/holds before requesting a reminder; completed work cannot be reminded.");
-        if (current.agents[agent]?.actionId !== request.actionId || !current.activeRoster.includes(agent)) throw new Error("That task is no longer current; open the reminder menu again.");
-        this.ownerReminders.set(agent, request);
-        return `Reminder requested for ${agent}; the running coordinator will check readiness, not restart the task.`;
-      } }];
-    });
+    return readStartState(this.paths).agents.map((agent) => ({
+      label: agent.id,
+      request: () => {
+        this.ownerReminderQueue.push({ agent: agent.id, requestId: randomUUID() });
+        return `Reminder requested for ${agent.id}; the running coordinator will type it on the next poll, including during pauses and holds.`;
+      }
+    }));
   }
 
   private reportStopWarnings(): void {
@@ -1088,6 +1091,18 @@ export class CoordinatorRunLoop {
     return current;
   }
 
+  /** Pause and holds still allow an explicit owner reminder. Abandon and completion do not. */
+  private ownerAuthority(cursors: CursorsState): CursorsState {
+    const current = readCursorsState(this.paths);
+    if (current.stateRevision !== cursors.stateRevision) {
+      throw new StateConflictError("Coordinator authority changed during an effect.");
+    }
+    if (current.abandoned || current.completed) {
+      throw new StateConflictError("Coordinator authority no longer permits this effect.");
+    }
+    return current;
+  }
+
   private mutate(
     cursors: CursorsState,
     mutation: (current: CursorsState) => CursorsState
@@ -1210,7 +1225,7 @@ export class CoordinatorRunLoop {
   /** One reservation path for initial, idle, reissue and lost-delivery sends. */
   private async deliver(
     start: StartState, cursors: CursorsState, agent: string, actionId: string, actionDigest: string,
-    reason: "initial" | "idle" | "reissue" | "owner"
+    reason: "initial" | "idle" | "reissue"
   ): Promise<CursorsState> {
     const config = start.agents.find((candidate) => candidate.id === agent);
     if (this.tmux === null || config === undefined || !["nudge", "both"].includes(config.delivery)) return cursors;
@@ -1226,8 +1241,7 @@ export class CoordinatorRunLoop {
     const staleWorking = entry?.execution === "working" && safety.sends === 0 &&
       entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest &&
       entry.action.delivery === "ordered" && entry.action.injectedAt === null;
-    const owner = reason === "owner";
-    if ((entry?.execution === "working" && !staleWorking && !owner) || (owner && entry?.execution === "queued") || (entry?.backgroundActive === true && !hasStopReadiness(entry)) ||
+    if ((entry?.execution === "working" && !staleWorking) || (entry?.backgroundActive === true && !hasStopReadiness(entry)) ||
       (entry?.pendingInputCount ?? 0) > 0) return cursors;
     // Lifecycle hooks write without touching cursor authority, so the override
     // re-reads them immediately before the batch (or each AGY key).
@@ -1235,15 +1249,13 @@ export class CoordinatorRunLoop {
       value?.lastEventAt, value?.execution, value?.pendingInputCount, value?.backgroundActive, value?.stoppedAt]);
     const observed = lifecycleSnapshot(entry);
     const hookSequence = entry?.hookReceipt?.sequence;
-    const staleOverride: IdleOverride | undefined = hasStopReadiness(entry) || receipt !== null || staleWorking || owner ? {
+    const staleOverride: IdleOverride | undefined = hasStopReadiness(entry) || receipt !== null || staleWorking ? {
       source: hasStopReadiness(entry) ? "stop-hook" : receipt !== null ? "ready-file" : "idle-sentinel",
       lifecycle: () => {
         const latest = readAgentLifecycle(this.paths).agents[agent];
         if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
           latest.action.delivery === "accepted" && latest.hookReceipt?.sequence !== hookSequence &&
             (latest.action.acceptedAt !== entry?.action?.acceptedAt || latest.action.turnId !== entry?.action?.turnId)) return "accepted";
-        if (owner && (latest?.hookReceipt?.sequence !== hookSequence ||
-          readCompletion(agentRuntimePaths(this.paths, agent).complete).status !== "missing")) return "changed";
         if (receipt !== null && (latest?.hookReceipt?.sequence !== hookSequence ||
           readReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot)?.identity !== receipt.identity)) return "changed";
         return lifecycleSnapshot(latest) === observed ? "unchanged" : "changed";
@@ -1264,13 +1276,7 @@ export class CoordinatorRunLoop {
     let result;
     try {
       result = await this.tmux.nudge(start.issue, config, agentRuntimePaths(this.paths, agent).action,
-        () => {
-          this.authority(cursors);
-          if (owner && (!existsSync(agentRuntimePaths(this.paths, agent).action) ||
-              sha256OfFile(agentRuntimePaths(this.paths, agent).action) !== actionDigest)) {
-            throw new StateConflictError("The reminder's task changed during delivery.");
-          }
-        }, actionId, actionDigest, reserve, staleOverride);
+        () => { this.authority(cursors); }, actionId, actionDigest, reserve, staleOverride);
     } catch (error) {
       this.authority(cursors);
       if (error instanceof StateConflictError) throw error;
@@ -1290,7 +1296,6 @@ export class CoordinatorRunLoop {
         ? this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`) : cursors;
     }
     if (result.status === "sent") {
-      if (owner) this.log(`[OK] Reminder sent to ${agent} for its current task.`);
       markActionInjected(this.paths, agent, actionId, actionDigest, sentAt);
       if (receipt !== null) {
         clearReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot, receipt);
@@ -3011,18 +3016,136 @@ export class CoordinatorRunLoop {
     return next;
   }
 
+  private ownerReminderChoice(agent: string): {
+    kind: "task" | "validation" | "neutral";
+    actionId?: string;
+    digest?: string;
+    text: string;
+  } {
+    const cursors = readCursorsState(this.paths);
+    const cursor = cursors.agents[agent];
+    const actionId = cursor?.actionId ?? undefined;
+    const dropped = cursors.droppedAgents.includes(agent);
+    const runtime = agentRuntimePaths(this.paths, agent);
+    const completion = readCompletion(runtime.complete);
+    const entry = readAgentLifecycle(this.paths).agents[agent];
+    const fileReady = actionId !== undefined && existsSync(runtime.action);
+    const digest = fileReady ? sha256OfFile(runtime.action) : undefined;
+    if (!dropped && fileReady && digest !== undefined && completion.status === "missing" &&
+      entry?.action?.workflowCompleteAt == null && entry?.action?.actionId === actionId) {
+      return { kind: "task", actionId, digest, text: renderNudgeText(runtime.action, actionId, digest) };
+    }
+    if (!dropped && actionId !== undefined && completion.status !== "missing") {
+      return { kind: "validation", actionId, text: OWNER_VALIDATION_TEXT };
+    }
+    return { kind: "neutral", ...(actionId === undefined ? {} : { actionId }), text: OWNER_NEUTRAL_TEXT };
+  }
+
+  private recordOwnerReminder(
+    agent: string,
+    requestId: string,
+    choice: { kind: string; actionId?: string; digest?: string },
+    outcome: { status: "sent" | "failed" | "uncertain"; stage: string; reason: string }
+  ): void {
+    appendJournal(this.paths, {
+      type: outcome.status === "sent" ? "nudged" : "nudge-deferred",
+      agent,
+      ...(choice.actionId === undefined ? {} : { actionId: choice.actionId }),
+      details: {
+        eventId: `owner-reminder:${requestId}`,
+        owner: true,
+        requestId,
+        messageKind: choice.kind,
+        stage: outcome.stage,
+        reason: outcome.reason,
+        status: outcome.status,
+        ...(choice.digest === undefined ? {} : { actionDigest: choice.digest })
+      }
+    }, this.now());
+  }
+
+  private async deliverOwnerReminder(cursors: CursorsState, agent: string, requestId: string): Promise<void> {
+    const start = readStartState(this.paths);
+    const config = start.agents.find((candidate) => candidate.id === agent);
+    const choice = this.ownerReminderChoice(agent);
+    if (config === undefined) {
+      this.recordOwnerReminder(agent, requestId, choice, { status: "failed", stage: "target", reason: "unconfigured-agent" });
+      this.log(`[WARN] ${agent}: owner reminder failed; that agent is not configured.`);
+      return;
+    }
+    if (this.tmux === null) {
+      this.recordOwnerReminder(agent, requestId, choice, { status: "failed", stage: "target", reason: "no-terminal" });
+      this.log(`[WARN] ${agent}: reminder failed; no agent terminal.`);
+      return;
+    }
+    const beforeSend = (): void => {
+      this.ownerAuthority(cursors);
+      if (choice.kind !== "task" || choice.actionId === undefined || choice.digest === undefined) return;
+      const latest = this.ownerReminderChoice(agent);
+      if (latest.kind !== "task" || latest.actionId !== choice.actionId || latest.digest !== choice.digest) {
+        throw new OwnerAssignmentChanged();
+      }
+    };
+    let outcome: OwnerDeliveryOutcome;
+    try {
+      outcome = await this.tmux.deliverOwnerNudge(
+        start.issue, config, choice.text, () => { this.ownerAuthority(cursors); }, beforeSend
+      );
+    } catch (error) {
+      if (error instanceof OwnerAssignmentChanged) {
+        this.recordOwnerReminder(agent, requestId, choice, { status: "failed", stage: "binding", reason: "assignment-changed" });
+        this.log(`[WARN] ${agent}: owner reminder failed; the assignment changed before send.`);
+        return;
+      }
+      throw error;
+    }
+    if (outcome.status === "sent" && choice.kind === "task" && choice.actionId !== undefined && choice.digest !== undefined) {
+      const latest = this.ownerReminderChoice(agent);
+      if (latest.kind === "task" && latest.actionId === choice.actionId && latest.digest === choice.digest) {
+        markActionInjected(this.paths, agent, choice.actionId, choice.digest, this.now());
+      }
+    }
+    const reason = outcome.status === "sent" ? "handed-to-tmux" : outcome.reason;
+    this.recordOwnerReminder(agent, requestId, choice, { status: outcome.status, stage: outcome.stage, reason });
+    if (outcome.status === "sent") this.log(`[OK] ${agent}: owner reminder handed to tmux (${choice.kind}).`);
+    else if (outcome.status === "uncertain") this.log(`[WARN] ${agent}: owner reminder uncertain; ${outcome.reason}.`);
+    else this.log(`[WARN] ${agent}: owner reminder failed; ${outcome.reason}.`);
+  }
+
+  /** Each queued selection is one attempt. Pause and holds do not cancel it. */
+  private async drainOwnerReminders(cursors: CursorsState): Promise<CursorsState> {
+    this.ownerAttempted.clear();
+    while (this.ownerReminderQueue.length > 0) {
+      const request = this.ownerReminderQueue.shift()!;
+      this.ownerAttempted.add(request.agent);
+      cursors = readCursorsState(this.paths);
+      if (cursors.abandoned || cursors.completed) {
+        const reason = cursors.abandoned ? "abandoned" : "completed";
+        this.recordOwnerReminder(request.agent, request.requestId, { kind: "neutral" },
+          { status: "failed", stage: "authority", reason });
+        this.log(`[WARN] ${request.agent}: owner reminder failed; the issue is ${reason}.`);
+        continue;
+      }
+      try {
+        cursors = this.ownerAuthority(cursors);
+        await this.deliverOwnerReminder(cursors, request.agent, request.requestId);
+      } catch (error) {
+        if (error instanceof StateConflictError) throw error;
+        const reason = error instanceof Error ? error.message : String(error);
+        this.recordOwnerReminder(request.agent, request.requestId, this.ownerReminderChoice(request.agent),
+          { status: "uncertain", stage: "transport", reason });
+        this.log(`[WARN] ${request.agent}: owner reminder uncertain; ${reason}.`);
+      }
+    }
+    return readCursorsState(this.paths);
+  }
+
   async runTick(options: { observeOnly?: boolean } = {}): Promise<CursorsState> {
     const start = readStartState(this.paths);
     try {
       let cursors = readCursorsState(this.paths);
       this.reportStopWarnings();
-      for (const [agent, request] of this.ownerReminders) {
-        if (cursors.paused || cursors.abandoned || cursors.completed || !cursors.activeRoster.includes(agent) ||
-            cursors.agents[agent]?.actionId !== request.actionId) {
-          this.ownerReminders.delete(agent);
-          this.log(`[WAIT] ${agent}: reminder cancelled because its task or pause state changed; select it again when appropriate.`);
-        }
-      }
+      cursors = await this.drainOwnerReminders(cursors);
       if (cursors.abandoned || cursors.completed) return cursors;
       for (const agent of start.agents) {
         if (cursors.activeRoster.includes(agent.id)) {
@@ -3032,7 +3155,7 @@ export class CoordinatorRunLoop {
       }
       for (const agent of cursors.activeRoster) cursors = this.reconcileSubmitted(cursors, agent);
       if (cursors.paused) {
-        // Observation-only while held: no preparation, delivery, acceptance or publication.
+        // Automatic work stays observation-only while held. Owner reminders already ran.
         for (const agent of cursors.activeRoster) {
           if (!cursors.paused) break;
           cursors = await this.observeResources(start, cursors, agent);
@@ -3053,7 +3176,6 @@ export class CoordinatorRunLoop {
       const runtime = agentRuntimePaths(this.paths, agent);
       const completion = readCompletion(runtime.complete);
       if (completion.status !== "missing") {
-        this.ownerReminders.delete(agent);
         const identity = `${cursor.actionId}:${JSON.stringify(completion)}`;
         if (this.receiptMessages.get(agent) !== identity) {
           this.receiptMessages.set(agent, identity);
@@ -3068,30 +3190,9 @@ export class CoordinatorRunLoop {
         if (cursors.paused) return cursors;
       }
       if (completion.status === "missing") {
-        const request = this.ownerReminders.get(agent);
-        if (request !== undefined) {
-          this.ownerReminders.delete(agent);
-          const entry = readAgentLifecycle(this.paths).agents[agent];
-          const config = start.agents.find((candidate) => candidate.id === agent);
-          if (cursor.status !== "ordered" || request.actionId !== cursor.actionId || !existsSync(runtime.action) ||
-              request.digest !== sha256OfFile(runtime.action) || request.sessionId !== (entry?.sessionId ?? null) ||
-              request.sequence !== entry?.hookReceipt?.sequence || entry?.action?.actionId !== request.actionId ||
-              entry.action.actionDigest !== request.digest || entry.action.workflowCompleteAt !== null ||
-              this.tmux === null || config === undefined || !["nudge", "both"].includes(config.delivery)) {
-            this.log(`[WARN] ${agent}: reminder not sent; task/activity changed or terminal delivery is unavailable. Inspect the terminal and reopen n if appropriate.`);
-          } else {
-            const sends = cursors.actionSafety[agent]?.sends ?? 0;
-            cursors = await this.deliver(start, cursors, agent, request.actionId, request.digest, "owner");
-            const after = cursors.actionSafety[agent];
-            if ((after?.sends ?? 0) === sends || after?.reserved) this.log(`[WAIT] ${agent}: reminder deferred by readiness, send spacing or a hold; inspect the terminal, use r for a hold, or type directly if needed.`);
-          }
-          continue;
-        }
-        if (this.tmux !== null) {
-          if (cursor.status === "ordered") {
-            cursors = await this.maybeLifecycleNudge(start, cursors, agent, cursor.actionId);
-            if (cursors.paused) return cursors;
-          }
+        if (this.tmux !== null && cursor.status === "ordered" && !this.ownerAttempted.has(agent)) {
+          cursors = await this.maybeLifecycleNudge(start, cursors, agent, cursor.actionId);
+          if (cursors.paused) return cursors;
         }
         continue;
       }

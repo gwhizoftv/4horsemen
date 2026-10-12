@@ -688,7 +688,7 @@ not start a second tick loop. Logs clear and redraw the current edit.
 | `p` / Space | Toggle manual pause, never release holds |
 | `a` | Reopen missing agent Terminal clients using the existing attach flow |
 | `d` | Numbered active-agent menu; Enter selects, a separate `y` confirms |
-| `n` | Request a safe reminder for one agent's current task, without restarting it |
+| `n` | Send an owner reminder to any configured agent, or all of them, on the next poll |
 | `r` | Release a selected hold after inspection; a reminder-limit reset asks a separate `y/N` question |
 | `?` / `h` | Help |
 | Return | Newline and prompt redraw in hotkey mode; no state change |
@@ -707,15 +707,17 @@ other holds or manual pause. Unknown printable input is quoted with help;
 multi-character plain pastes are inert. Pasted text does not execute hotkeys or confirmations; to paste
 guidance, press `/` first. In an edit, `q` is ordinary text.
 
-`n` queues one request in the live runner, bound to the selected task, digest and
-session; “requested” does not mean “sent”. An arriving completion is checked
-first. Changed activity, assignments, pause/holds, missing files or unavailable
-terminal delivery reject the request rather than retargeting it. An explicit
-request can overcome a stale working report only with current positive terminal
-idle proof; foreground/composer, queued/background work and per-key checks still
-veto it. Spacing, four-send limits and uncertain-send reservations still apply.
-No action/response file is cleared, task restarted, or send allowance reset by
-`n`. Inspect/type directly in the agent terminal when safe proof is unavailable.
+`n` queues one request per selection in the live runner. The selection is the
+agent, not a task, digest, or session captured when the menu opened. On the next
+poll the runner types into that agent's pane, including during manual pause and
+holds. It does not consult readiness, the 60/120/240-second spacing, or the
+four-send automatic budget. A task-specific message is used only while that
+agent still has an unfinished action file and no completion; a waiting
+completion is reminded that validation is in progress; otherwise the reminder
+says there is no current executable assignment and to remain available. “Sent”
+means the keystrokes were handed to tmux. Each agent gets its own result, and
+one failure does not cancel the rest. `n` does not release a hold, reset the
+automatic allowance, delete a completion, or advance the workflow.
 
 There is no force-complete/next-stage key: a drafted plan or idle terminal is not
 validated evidence. An **action** is the assigned task in `action.md`; a **turn**
@@ -769,7 +771,7 @@ callbacks do not. These warnings neither grant readiness nor create holds.
 ### Delivery safety and unknown holds
 
 All vendors (including Antigravity) share a durable delivery budget for each
-unfinished action: one initial send and at most three repeats (including owner reminders), spaced
+unfinished action: one initial send and at most three repeats, spaced
 at least 60, 120 and 240 seconds after the previous send. These are minimum delays,
 not permission to send: lifecycle and terminal readiness must still allow it.
 The 45-second wait before checking unknown/idle lost delivery is independent of

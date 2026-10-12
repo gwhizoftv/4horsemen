@@ -1261,6 +1261,71 @@ describe("tmux boundary", () => {
   });
 });
 
+describe("owner reminder transport", () => {
+  const agent = {
+    id: "codex" as const, root: "/clone", launcher: "start-codex.sh", delivery: "pull" as const,
+    harnessProcess: "bash", nudgePrelude: [] as string[], nudgeSubmit: ["Enter"]
+  };
+  const text = `owner reminder ${"a".repeat(8)}`;
+  const controllerFor = (runner: TmuxRunner) => new TmuxController(runner, null, null, null, async () => undefined);
+  const normalize = (args: readonly string[]): string[] => {
+    const copy = [...args];
+    const at = copy.indexOf("-l");
+    if (at >= 0 && copy[at + 1] === "-t") copy[at + 3] = "<text>";
+    return copy;
+  };
+
+  it("types through copy mode, a bash foreground, input-off, composer text, capture failure, and pull delivery", async () => {
+    for (const display of ["0\tbash\t1\t1\n", "0\tcodex\t1\t0\n", "0\tcodex\t0\t1\n"]) {
+      const calls: string[][] = [];
+      const outcome = await controllerFor(async (args) => {
+        calls.push([...args]);
+        if (args[0] === "display-message") return ok(display);
+        if (args[0] === "capture-pane") throw new Error("capture unavailable");
+        return ok();
+      }).deliverOwnerNudge(1, agent, `${text}\nbusy composer`);
+      expect(outcome).toEqual({ status: "sent", stage: "complete" });
+      const sent = calls.find((args) => args.includes("-l"));
+      expect(sent).toContain("coord-1:codex.0");
+      expect(sent).toContain(`${text}\nbusy composer`);
+      expect(sent?.join(" ")).toContain("run-shell sleep 0.3");
+    }
+  });
+
+  it("uses the same literal and submit batch as an automatic nudge", async () => {
+    const collect = async (owner: boolean): Promise<string[][]> => {
+      const calls: string[][] = [];
+      const controller = controllerFor(async (args) => {
+        calls.push([...args]);
+        if (args[0] === "display-message") return ok("0\tcodex\t0\t0\n");
+        if (args[0] === "capture-pane") return ok("› draft\n");
+        return ok();
+      });
+      const ready = { ...agent, delivery: "both" as const, harnessProcess: "codex" };
+      if (owner) await controller.deliverOwnerNudge(1, ready, text);
+      else await controller.nudge(1, ready, "/action.md");
+      return calls.filter((args) => args[0] === "send-keys").map(normalize);
+    };
+    expect(await collect(true)).toEqual(await collect(false));
+  });
+
+  it("fails a missing pane before keys and reports a rejected send as uncertain", async () => {
+    const calls: string[][] = [];
+    const missing = await controllerFor(async (args) => {
+      calls.push([...args]);
+      return { exitCode: 1, stdout: "", stderr: "can't find pane" };
+    }).deliverOwnerNudge(1, agent, text);
+    expect(missing).toEqual({ status: "failed", stage: "target", reason: "pane-dead" });
+    expect(calls.some((args) => args[0] === "send-keys")).toBe(false);
+    const rejected = await controllerFor(async (args) => {
+      if (args[0] === "display-message") return ok("0\tcodex\t0\t0\n");
+      if (args[0] === "capture-pane") return ok("");
+      return { exitCode: 1, stdout: "", stderr: "tmux send-keys failed" };
+    }).deliverOwnerNudge(1, agent, text);
+    expect(rejected).toEqual({ status: "uncertain", stage: "transport", reason: "tmux send-keys failed" });
+  });
+});
+
 describe("runTmux", () => {
   it("resolves when tmux exits before reading stdin", async () => {
     const root = mkdtempSync(join(tmpdir(), "coord-tmux-epipe-"));
