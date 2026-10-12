@@ -1,0 +1,21 @@
+{
+  "protocolVersion": 1,
+  "issue": 195,
+  "issueSessionId": "issue-195:6a04d57e524ad53daa082568e146c5300e93dfeb",
+  "agent": "cursor",
+  "inputSetHash": "67ddbf6c69460e1b937468b5c3846f947cc927ad99b1ddf5b5a006ff7aaed0b7",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "61b75918d3924970935c891e50517380795266d7",
+  "scopeHash": "00b871d8aec67c6cdd13bb3719d5bb66c92f1eaf72658d7e78c1219033d00749",
+  "approvedPaths": [
+    "docs/coord-driver.md",
+    "docs/readiness-policy.md",
+    "src/cli.ts",
+    "src/interactive.ts",
+    "src/runLoop.ts",
+    "src/tmux.ts",
+    "test/interactive.test.ts",
+    "test/runLoop.test.ts",
+    "test/tmux.test.ts"
+  ]
+}
