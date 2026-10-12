@@ -1,0 +1,14 @@
+{
+  "actionId": "3b4b8345-8861-427d-af21-6af64317993b",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "7ac1ae8b54510196b63ee6119fcda1a3db01d12315277a143d9e5f0e523015f0",
+  "issue": 195,
+  "issueSessionId": "issue-195:6a04d57e524ad53daa082568e146c5300e93dfeb",
+  "protocolVersion": 2,
+  "rationale": "Revision 049c5fcd fixes the defect I raised in comparison — the same-tick owner skip now marks a suppressed first assignment retryable via markActionInjectionDeferred so a later poll still delivers it under the normal readiness gates (covered by the new 'retries first automatic delivery on a later tick' test) — and it keeps any-agent, any-time owner reminders with copy-mode exit, untouched automatic accounting, and precise sent/failed/uncertain records, so it satisfies issues 195 and 187 within the approved files.",
+  "responseSha256": "cd8b226996a94ff711d229df635bcbae4b45ed167115d6ef80cd907b574b2192",
+  "revisionCommitSha": "049c5fcdeaa63130ba6acba2e670a339e1b94cf1",
+  "round": 1
+}

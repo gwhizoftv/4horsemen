@@ -1,0 +1,14 @@
+{
+  "actionId": "c5ca7256-8d84-48ac-a5e7-2b927440251d",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "7ac1ae8b54510196b63ee6119fcda1a3db01d12315277a143d9e5f0e523015f0",
+  "issue": 195,
+  "issueSessionId": "issue-195:6a04d57e524ad53daa082568e146c5300e93dfeb",
+  "protocolVersion": 2,
+  "rationale": "The revision keeps a reminder journaled as sent after tmux accepts the keys when a completion or abandon arrives before the call returns, and it still withholds lifecycle bookkeeping and automatic budget changes.",
+  "responseSha256": "55637b9531ccde6c674eefa7d6c8f52f1f15da66ba12885e4b5b46a01be8a39c",
+  "revisionCommitSha": "049c5fcdeaa63130ba6acba2e670a339e1b94cf1",
+  "round": 1
+}

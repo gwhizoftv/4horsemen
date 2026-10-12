@@ -1,0 +1,14 @@
+{
+  "actionId": "ab0226c5-1016-4d2d-923d-8f9fea561818",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "7ac1ae8b54510196b63ee6119fcda1a3db01d12315277a143d9e5f0e523015f0",
+  "issue": 195,
+  "issueSessionId": "issue-195:6a04d57e524ad53daa082568e146c5300e93dfeb",
+  "protocolVersion": 2,
+  "rationale": "Approve revision 049c5fcdeaa63130ba6acba2e670a339e1b94cf1 because it restores guarded retries for first assignments deferred by owner reminders and preserves successful terminal delivery across completion races, with focused regression coverage and passing check:fast and test:e2e hook results recorded at journal sequences 655 and 657.",
+  "responseSha256": "b8d46335e1a81afc88dd8299f97c35b3709ec66ec2c8721f3580ace9fa4b06e0",
+  "revisionCommitSha": "049c5fcdeaa63130ba6acba2e670a339e1b94cf1",
+  "round": 1
+}
