@@ -1,0 +1,46 @@
+{
+  "actionId": "5c62e100-6894-4eaf-94cd-992618b37b87",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "cursor",
+  "inputSetHash": "d88087f37e923d9f85ca5aaa64ed2ca6c406eb65cd2eb77afb589ae1b8a20305",
+  "issue": 197,
+  "issueSessionId": "issue-197:6a04d57e524ad53daa082568e146c5300e93dfeb",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "32bf2bf47754b991784cf536a051738fd77001fe",
+      "path": ".plans/issue-197/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "fc0f7a9ade8e2b6cff2ce3d91d7a99191ff50b82",
+      "path": ".plans/issue-197/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "4a08ff99ad7ac1f7ce54e4e3c458364e04252d5b",
+      "path": ".plans/issue-197/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Cursor's plan stays inside the closed issue by requiring an empty product diff against the baseline trust and recovery implementation, while Claude's plan implements open issue 199 and Codex's Tests backticks approve test files and the historical plan document.",
+  "responseSha256": "39b41d49b861cff4f1438415523b2b7a77ebc9b96a908868b6d3023bd8c0a04b",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "b7a06f24197ab5738007b94b7c8ca8583ce14d28",
+      "path": ".plans/issue-197/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "fbea084147481bf5ebea2807d9dc14430a104d1a",
+      "path": ".plans/issue-197/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "9ce19ed287512f509be94a073b15b1dc1b938087",
+      "path": ".plans/issue-197/review.md"
+    }
+  ]
+}

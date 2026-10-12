@@ -1,0 +1,46 @@
+{
+  "actionId": "9f2e20de-662c-4971-ac2a-bc675e649400",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "d88087f37e923d9f85ca5aaa64ed2ca6c406eb65cd2eb77afb589ae1b8a20305",
+  "issue": 197,
+  "issueSessionId": "issue-197:6a04d57e524ad53daa082568e146c5300e93dfeb",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "32bf2bf47754b991784cf536a051738fd77001fe",
+      "path": ".plans/issue-197/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "fc0f7a9ade8e2b6cff2ce3d91d7a99191ff50b82",
+      "path": ".plans/issue-197/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "4a08ff99ad7ac1f7ce54e4e3c458364e04252d5b",
+      "path": ".plans/issue-197/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "I choose codex because its no-product-change plan best matches the frozen issue 197 request and avoids approving runtime edits or importing issue 199 diagnostics, with its incidental extracted test paths treated as a scope caveat rather than permission to change tests.",
+  "responseSha256": "39799bfebb1b57523ad7b8c24df353a2418dafcdf7f6980b5009ec3993ff8068",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "b7a06f24197ab5738007b94b7c8ca8583ce14d28",
+      "path": ".plans/issue-197/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "fbea084147481bf5ebea2807d9dc14430a104d1a",
+      "path": ".plans/issue-197/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "9ce19ed287512f509be94a073b15b1dc1b938087",
+      "path": ".plans/issue-197/review.md"
+    }
+  ]
+}
