@@ -401,7 +401,7 @@ Existing clones keep their old `start-codex.sh` until `coord install` rewrites i
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Claude 1 / Codex 1 / Cursor 1 / Gemini 1)
 
-A current vendor Stop allows the next prompt even while background work remains;
+For automatic delivery, a current vendor Stop allows the next prompt even while background work remains;
 no idle text, Working indicator or empty-composer confirmation is required.
 Without Stop, nudge uses pane readiness. Before the batch, the driver re-reads
 `pane_dead`, `pane_current_command`, `pane_in_mode`, and `pane_input_off`; dead,
@@ -688,7 +688,7 @@ not start a second tick loop. Logs clear and redraw the current edit.
 | `p` / Space | Toggle manual pause, never release holds |
 | `a` | Reopen missing agent Terminal clients using the existing attach flow |
 | `d` | Numbered active-agent menu; Enter selects, a separate `y` confirms |
-| `n` | Request a safe reminder for one agent's current task, without restarting it |
+| `n` | Send an owner reminder to any configured agent, or all agents, including during pauses and holds |
 | `r` | Release a selected hold after inspection; a reminder-limit reset asks a separate `y/N` question |
 | `?` / `h` | Help |
 | Return | Newline and prompt redraw in hotkey mode; no state change |
@@ -707,15 +707,30 @@ other holds or manual pause. Unknown printable input is quoted with help;
 multi-character plain pastes are inert. Pasted text does not execute hotkeys or confirmations; to paste
 guidance, press `/` first. In an edit, `q` is ordinary text.
 
-`n` queues one request in the live runner, bound to the selected task, digest and
-session; “requested” does not mean “sent”. An arriving completion is checked
-first. Changed activity, assignments, pause/holds, missing files or unavailable
-terminal delivery reject the request rather than retargeting it. An explicit
-request can overcome a stale working report only with current positive terminal
-idle proof; foreground/composer, queued/background work and per-key checks still
-veto it. Spacing, four-send limits and uncertain-send reservations still apply.
-No action/response file is cleared, task restarted, or send allowance reset by
-`n`. Inspect/type directly in the agent terminal when safe proof is unavailable.
+`n` queues each explicit selection in the live runner for direct terminal delivery
+on its next poll. The menu includes every configured agent, including busy,
+held, pull-configured, dropped and currently unassigned agents. Repeated selections
+are separate owner requests. Each request resolves the selected agent's assignment
+at dispatch: an outstanding action gets its current UUID and digest; a submission
+awaiting validation gets a message to preserve the submitted files and wait; an
+agent without executable work gets a neutral availability reminder. No action or
+completion file is deleted, and no task is restarted.
+
+Owner delivery bypasses automatic readiness, spacing, send budgets, reservations,
+and manual pause/holds. It exits tmux copy mode before typing. Pane capture is
+only a best-effort hint for vim key selection; turn chrome, a composer draft,
+foreground mismatches and dialogs do not veto the owner's request. The existing
+vendor keys and short paste/submit timing remain in use. Each result names sent,
+failed or uncertain delivery and its actual cause, such as a missing pane or a
+tmux error. Sent means handed to the terminal, not acknowledged by the vendor.
+An assignment or submission changing during dispatch is reported as failed before
+typing, or uncertain after typing begins. All agents continues after a target fails.
+
+Owner requests do not charge or reset the automatic allowance, release holds,
+or advance the workflow. No automatic send is added for the same agent on that
+poll. Explicit requests run while paused; automatic work remains paused until
+the appropriate recovery. An ambiguous owner send is journalled without queuing
+an automatic replay of that request; another explicit `n` remains available.
 
 There is no force-complete/next-stage key: a drafted plan or idle terminal is not
 validated evidence. An **action** is the assigned task in `action.md`; a **turn**
@@ -768,8 +783,8 @@ callbacks do not. These warnings neither grant readiness nor create holds.
 
 ### Delivery safety and unknown holds
 
-All vendors (including Antigravity) share a durable delivery budget for each
-unfinished action: one initial send and at most three repeats (including owner reminders), spaced
+All vendors (including Antigravity) share a durable automatic delivery budget for each
+unfinished action: one initial send and at most three automatic repeats, spaced
 at least 60, 120 and 240 seconds after the previous send. These are minimum delays,
 not permission to send: lifecycle and terminal readiness must still allow it.
 The 45-second wait before checking unknown/idle lost delivery is independent of
@@ -778,9 +793,11 @@ Reissue, coordinator restart, changing error text and fresh idle epochs do not
 reset this budget. Partial/ambiguous sends consume a reservation and hold for
 owner inspection; a refusal before any key is sent consumes nothing.
 
-Deferral journals are transition-only: each `(agent, actionId, reason code)` is
+Automatic deferral journals are transition-only: each `(agent, actionId, reason code)` is
 recorded once, including across restarts. Repeating a reason does not grow the
-journal or print another warning. Up to eight distinct unrecognized codes keep
+journal or print another warning. Owner reminders instead journal every explicit
+request outcome, with a unique request identity, message kind, stage and reason.
+Up to eight distinct unrecognized automatic codes keep
 their original diagnostics; one overflow record then signals suppression of
 further unknown codes. Status remains available on demand.
 
