@@ -401,19 +401,46 @@ describe("runner waiting and initialization", () => {
     expect(agents.map((agent) => readFileSync(agentRuntimePaths(paths, agent.id).action, "utf8"))).toEqual(actions);
   });
 
-  it("stops terminal recovery when the issue is abandoned during inspection", async () => {
+  it.each(["abandoned", "completed", "dropped"])("stops terminal recovery when the issue is %s during inspection", async (change) => {
     const { paths } = fixture();
     const calls: string[] = [];
     const tmux = new TmuxController(async (args) => {
       calls.push(args[0]!);
-      mutateCursorsState(paths, (state) => ({ ...state, abandoned: true }));
+      mutateCursorsState(paths, (state) => change === "dropped"
+        ? { ...state, activeRoster: state.activeRoster.filter((agent) => agent !== "claude") }
+        : { ...state, [change]: true });
       return { exitCode: 1, stdout: "", stderr: "" };
     }, null, null, null);
     const loop = new CoordinatorRunLoop(paths, { tmux, log: () => undefined });
-    await expect(loop.restoreTerminals()).rejects.toThrow("Issue changed or finished");
+    await expect(loop.restoreTerminals()).rejects.toThrow("Issue finished or its roster changed");
     expect(calls).toEqual(["has-session"]);
-    await expect(loop.restoreTerminals()).rejects.toThrow("Issue changed or finished");
-    expect(calls).toEqual(["has-session"]);
+    if (change !== "dropped") {
+      await expect(loop.restoreTerminals()).rejects.toThrow(change === "completed" ? "complete" : "abandoned");
+      expect(calls).toEqual(["has-session"]);
+    }
+  });
+
+  it.each(["unsupported", "failed", "already-open"])("keeps restoring during routine state changes and reports %s owner terminals", async (status) => {
+    const { paths } = fixture();
+    const before = readCursorsState(paths).stateRevision;
+    const tmux = new TmuxController(async (args) => {
+      mutateCursorsState(paths, (state) => state);
+      if (args[0] === "list-windows") return { exitCode: 0, stdout: "claude\ncodex\n", stderr: "" };
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tclaude\t0\t0\n", stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }, null, status === "unsupported" ? null : async () => { throw new Error("Terminal refused"); },
+    null, undefined, null, (titles) => status === "already-open" ? [...titles] : []);
+    const messages: string[] = [];
+    const loop = new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) });
+    await expect(loop.restoreTerminals()).resolves.toBeUndefined();
+    expect(readCursorsState(paths).stateRevision).toBeGreaterThan(before);
+    if (status === "already-open") expect(messages.join("\n")).toContain("already open");
+    else {
+      expect(messages.join("\n")).toContain(status === "failed" ? "Terminal refused" : "unavailable on this platform");
+      for (const launch of tmux.agentAttachLaunches(1, readStartState(paths).agents)) {
+        expect(messages.join("\n")).toContain(launch.command);
+      }
+    }
   });
 
   it("freezes advice before the first recipient and keeps it across partial preparation, restart and reissue", async () => {

@@ -90,13 +90,12 @@ coord onboard /path/to/app --coord-runtime /path/to/app-runtime
 Its completion mailbox then defaults to `/path/to/completes/app-runtime/`.
 
 Install/onboard persist folder trust for each selected agent in its user
-configuration. The trusted parent is the product repository's parent (`/path/to`
-above). Cursor inherits that trust for future issue subfolders; configured
-clone/runtime/mailbox roots outside that parent receive their own stable trust
+configuration. They trust the product repository's parent when it has at least
+three path components and is neither home nor an ancestor of home. Otherwise,
+they trust their own clone. Cursor inherits trust for future issue subfolders;
+configured clone/runtime/mailbox roots outside that parent receive their own stable trust
 entries. Codex and Claude also receive explicit own-clone entries for their
-repository-specific configuration. Cursor retains exact clone entries when its
-parent-trust rules exclude a broad ancestor, such as the home directory.
-The standalone `setup_<agent>.sh` scripts
+repository-specific configuration. The standalone `setup_<agent>.sh` scripts
 reuse the same trust writer. Reinstall preserves unrelated settings and does not
 rewrite unchanged trust entries; `install --dry-run` makes no trust changes.
 Launchers retain their existing sandbox and tool-permission settings.

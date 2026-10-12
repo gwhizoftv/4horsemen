@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { shellQuote } from "./agentHookSync.js";
 import { clearCompletion, clearReady, createActionId, readAction, readCompletion, readReady, writeAction, type ReadyReceipt } from "./action.js";
 import {
   AGENT_OBSERVABILITY_WATCHDOG_MS,
@@ -1048,23 +1047,32 @@ export class CoordinatorRunLoop {
   async restoreTerminals(): Promise<void> {
     const start = readStartState(this.paths);
     const snapshot = readCursorsState(this.paths);
+    if (snapshot.completed || snapshot.abandoned) {
+      throw new StateConflictError(`Issue ${start.issue} is ${snapshot.completed ? "complete" : "abandoned"}; there are no agent terminals to restore.`);
+    }
+    const agents = start.agents.filter((agent) => snapshot.activeRoster.includes(agent.id));
+    // A live runner advances stateRevision on every tick, so only the changes
+    // that make a restore wrong are fenced: finishing, or dropping an agent.
     const assertCurrent = () => {
       const current = readCursorsState(this.paths);
-      if (current.stateRevision !== snapshot.stateRevision || current.completed || current.abandoned) {
-        throw new StateConflictError("Issue changed or finished during terminal recovery.");
+      if (current.completed || current.abandoned || agents.some((agent) => !current.activeRoster.includes(agent.id))) {
+        throw new StateConflictError("Issue finished or its roster changed during terminal recovery.");
       }
     };
-    assertCurrent();
     if (this.tmux !== null) {
-      const agents = start.agents.filter((agent) => snapshot.activeRoster.includes(agent.id));
       await this.tmux.ensureSession(start.issue, agents, assertCurrent);
       assertCurrent();
       const opened = await this.tmux.openOwnerAgentClients(start.issue, agents, { onlyMissing: true });
       assertCurrent();
       if (opened.status === "opened" && opened.count > 0) {
         this.log(`Opened ${opened.count} Terminal window(s), one per agent tmux client.`);
-      } else if (opened.status === "failed") {
-        this.log(`Could not open Terminal windows (${opened.error}). Attach manually with coord attach ${start.issue} --coord-runtime ${shellQuote(start.coordRoot)}.`);
+      } else if (opened.status === "already-open") {
+        this.log(`All ${opened.count} agent Terminal window(s) are already open.`);
+      } else if (opened.status !== "opened") {
+        this.log(opened.status === "failed"
+          ? `Could not open Terminal windows (${opened.error}). Attach manually:`
+          : "Owner Terminal auto-open is unavailable on this platform. Attach manually:");
+        for (const command of opened.commands) this.log(`  ${command}`);
       }
     }
   }

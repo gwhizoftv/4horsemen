@@ -70,7 +70,8 @@ describe("coord onboard", () => {
     const output: string[] = [];
     const aliasParent = join(fixture.workspaceRoot, "aliases");
     const productAlias = join(aliasParent, "myserver");
-    const home = join(fixture.workspaceRoot, "home");
+    // Outside the product parent: a home inside it is never trusted as one.
+    const home = join(product("home-owner").workspaceRoot, "home");
     mkdirSync(aliasParent);
     symlinkSync(fixture.productRoot, productAlias, "dir");
     expect(

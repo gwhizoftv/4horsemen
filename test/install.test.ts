@@ -58,7 +58,8 @@ const installOnce = (
 describe("coord install — two-mode footprint", () => {
   it("persists parent trust for all vendors while preserving existing settings and repeat-install bytes", () => {
     const fixture = product();
-    const home = join(fixture.workspaceRoot, "home");
+    // Outside the product parent: a home inside it is never trusted as one.
+    const home = join(product().workspaceRoot, "home");
     const parent = realpathSync(fixture.workspaceRoot);
     const codexConfig = join(home, ".codex/config.toml");
     const claudeConfig = join(home, ".claude.json");
@@ -69,7 +70,7 @@ describe("coord install — two-mode footprint", () => {
     writeFileSync(claudeConfig, JSON.stringify({ theme: "dark", projects: { [parent]: { allowedTools: ["Read"] } } }));
     writeFileSync(agyConfig, JSON.stringify({ model: "owner-model", allowNonWorkspaceAccess: false, trustedWorkspaces: ["/owner/notes"] }));
     const agents = ["claude", "codex", "cursor", "antigravity"];
-    installOnce(fixture, { agents });
+    installOnce(fixture, { agents, home });
     const codex = readFileSync(codexConfig, "utf8");
     expect(codex).toContain('model = "owner-model"');
     expect(codex).toContain(`projects.'${parent}'] # keep this table\ntrust_level = "trusted"\nowner_setting = true`);
@@ -91,7 +92,7 @@ describe("coord install — two-mode footprint", () => {
     expect(roots.some((root: string) => /issue-\d/.test(root))).toBe(false);
     const paths = [codexConfig, claudeConfig, agyConfig, ...markers];
     const bytes = paths.map((path) => readFileSync(path, "utf8"));
-    const repeated = installOnce(fixture, { agents });
+    const repeated = installOnce(fixture, { agents, home });
     expect(repeated.changes.filter((entry) => entry.includes("folder trust"))).toEqual([]);
     expect(paths.map((path) => readFileSync(path, "utf8"))).toEqual(bytes);
   });
@@ -105,15 +106,14 @@ describe("coord install — two-mode footprint", () => {
       syncAgentTrust({ agent, productRoot: realpathSync(fixture.productRoot), clone: join(parent, `myserver-${agent}`), home, options });
       expect(readFileSync(join(repoRoot, `scripts/setup_${agent}.sh`), "utf8")).toContain("common_configure_trust\n");
     }
-    // This artificial home is inside the parent, so Cursor cannot inherit its
-    // trust and also needs the clone's exact marker (five writes total).
-    expect(options.changes).toHaveLength(5);
+    // This artificial home is inside the parent, so trust only each clone.
+    expect(options.changes).toHaveLength(4);
     expect(existsSync(home)).toBe(false);
     options.dryRun = false;
     syncAgentTrust({ agent: "cursor", productRoot: fixture.productRoot, clone: join(parent, "myserver-cursor"), home,
       env: { CURSOR_DATA_DIR: join(parent, "cursor-data"), CURSOR_CONFIG_DIR: join(parent, "wrong-config") }, options });
     const cursorProjects = join(parent, "cursor-data/projects");
-    expect(readdirSync(cursorProjects)).toEqual([parent, join(parent, "myserver-cursor")]
+    expect(readdirSync(cursorProjects)).toEqual([join(parent, "myserver-cursor")]
       .map((root) => root.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "")));
     expect(existsSync(join(parent, "wrong-config"))).toBe(false);
     syncAgentTrust({ agent: "claude", productRoot: fixture.productRoot, clone: join(parent, "myserver-claude"), home,
@@ -133,6 +133,71 @@ describe("coord install — two-mode footprint", () => {
     setupTrust(false);
     expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toContain(`[projects.${JSON.stringify(parent)}]`);
     expect(existsSync(home)).toBe(false);
+  });
+
+  it.each(["home", "ancestor", "filesystem root", "shallow folder"])("does not use %s as the shared trusted parent", (layout) => {
+    const fixture = product();
+    const home = realpathSync(fixture.workspaceRoot);
+    const parent = layout === "home" ? home : layout === "ancestor" ? dirname(home) : layout === "filesystem root" ? "/" : "/repos";
+    const productRoot = join(parent, "myserver");
+    const options = { dryRun: false, log: () => undefined, changes: [] as string[] };
+    for (const agent of ["claude", "codex", "cursor", "antigravity"]) {
+      syncAgentTrust({ agent, productRoot, clone: join(parent, `myserver-${agent}`), home, options });
+    }
+    const claude = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")) as { projects: Record<string, unknown> };
+    expect(Object.keys(claude.projects)).toEqual([join(parent, "myserver-claude")]);
+    const codex = readFileSync(join(home, ".codex/config.toml"), "utf8");
+    expect(codex).not.toContain(`[projects.${JSON.stringify(parent)}]`);
+    expect(codex).toContain(`[projects.${JSON.stringify(join(parent, "myserver-codex"))}]`);
+    const agy = JSON.parse(readFileSync(join(home, ".gemini/antigravity-cli/settings.json"), "utf8")) as { trustedWorkspaces: string[] };
+    expect(agy.trustedWorkspaces).toEqual([join(parent, "myserver-antigravity")]);
+    const cursorProjects = join(home, ".cursor/projects");
+    expect(readdirSync(cursorProjects).map((key) => JSON.parse(readFileSync(join(cursorProjects, key, ".workspace-trusted"), "utf8")).workspacePath))
+      .toEqual([join(parent, "myserver-cursor")]);
+  });
+
+  it.each(["missing install root", "missing trust module"])("explains setup trust failure for a %s", (scenario) => {
+    const fixture = product();
+    if (scenario === "missing trust module") git(fixture.productRoot, "config", "coord.installRoot", fixture.workspaceRoot);
+    const result = spawnSync("bash", ["-c",
+      '. "$1"; AGENT_NAME=codex; MASTER_ROOT="$2"; CLONE_DIR="$2"; common_configure_trust',
+      "_", join(repoRoot, "scripts/setup_common.sh"), fixture.productRoot], { encoding: "utf8" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("ERROR:");
+    expect(result.stderr).toContain(scenario === "missing install root" ? "coord install/onboard" : "pnpm build");
+  });
+
+  it("adds Codex trust when the same path appears only as an unrelated value", () => {
+    const fixture = product();
+    // A home outside the parent, so the parent itself is trusted and checked.
+    const home = join(product().workspaceRoot, "home");
+    const parent = realpathSync(fixture.workspaceRoot);
+    const config = join(home, ".codex/config.toml");
+    mkdirSync(dirname(config), { recursive: true });
+    const root = JSON.stringify(parent);
+    const sync = () => syncAgentTrust({ agent: "codex", productRoot: fixture.productRoot, clone: join(parent, "myserver-codex"),
+      home, options: { dryRun: false, log: () => undefined, changes: [] } });
+    for (const before of [
+      `sandbox_workspace_write.writable_roots = [${root}]\n`,
+      `[mcp_servers.example]\ncwd = ${root}\n`,
+      `[unrelated]\n${root} = "owner value"\nprojects = "owner value"\n`
+    ]) {
+      writeFileSync(config, before);
+      sync();
+      expect(readFileSync(config, "utf8")).toContain(before);
+      expect(readFileSync(config, "utf8")).toContain(`[projects.${root}]`);
+    }
+    for (const before of [
+      `projects = { ${root} = { trust_level = "untrusted" } }\n`,
+      `projects.${root}.trust_level = "untrusted"\n`,
+      `projects.${root} = { trust_level = "untrusted" }\n`,
+      `[projects]\n${root} = { trust_level = "untrusted" }\n`,
+      `[projects]\n${root}.trust_level = "untrusted"\n`
+    ]) {
+      writeFileSync(config, before);
+      expect(sync).toThrow("Cannot update Codex trust");
+      expect(readFileSync(config, "utf8")).toBe(before);
+    }
   });
 
   it.each([

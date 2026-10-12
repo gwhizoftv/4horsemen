@@ -92,15 +92,16 @@ const fs = require('fs');
 const path = require('path');
 const [,, settingsPath, cloneDir] = process.argv;
 
-// Parent-folder trust is established by common_configure_trust. Keep this
-// legacy clone entry while preserving the owner's other trusted workspaces.
+// common_configure_trust writes the product parent, or just this clone when
+// the parent is home, an ancestor of home, or too shallow. Keep the legacy
+// clone entry while preserving the owner's other trusted workspaces.
 const agentClones = [cloneDir];
 
 // Paths an earlier version of THIS script derived and trusted: the sibling
 // clones of the other agents it knew about. They are this script's own output,
-// not owner-authored entries, which is what makes removing them safe — and
-// removing them is the only way an upgraded install stops trusting a peer's
-// working tree. Anything else in trustedWorkspaces is left alone.
+// not owner-authored entries. Remove these legacy records; parent trust may
+// still cover the peer clones, so this cleanup does not isolate them.
+// Anything else in trustedWorkspaces is left alone.
 const parentDir = path.dirname(cloneDir);
 const projectName = path.basename(cloneDir).replace(/-antigravity$/, '');
 const managedPeerClones = ['claude', 'codex']
@@ -108,10 +109,8 @@ const managedPeerClones = ['claude', 'codex']
   .filter(clone => clone !== cloneDir);
 
 let settings = {
-  // The completion receipt is the only file this agent writes outside its
-  // clone, and the launcher grants exactly that directory. Blanket
-  // non-workspace access would hand back the coordinator runtime the mailbox
-  // exists to keep out.
+  // Keep blanket non-workspace access disabled. This setting does not establish
+  // a separate boundary for runtime/mailbox paths under the trusted parent.
   allowNonWorkspaceAccess: false,
   colorScheme: "tokyo night",
   enableTelemetry: false,
@@ -187,10 +186,8 @@ for (const clone of agentClones) {
   }
 }
 
-// Repair an install that predates the mailbox. A settings.json carried forward
-// from before still says true and still trusts the peer clones this script
-// used to add; a launcher grant cannot narrow what a user-global setting has
-// already widened, so both have to be withdrawn here.
+// Repair installs that predate the mailbox: disable blanket non-workspace
+// access and remove the legacy per-peer records described above.
 if (settings.allowNonWorkspaceAccess !== false) {
   settings.allowNonWorkspaceAccess = false;
 }

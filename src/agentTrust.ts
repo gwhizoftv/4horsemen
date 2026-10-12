@@ -16,8 +16,15 @@ const trustCodexProject = (text: string, root: string): string => {
   const index = lines.findIndex((line) => header.test(line));
   if (index < 0) {
     // Inline/dotted project definitions need a TOML-aware merge. Do not append
-    // a competing table or replace an owner's configuration in that case.
-    if (text.includes(quoted) || text.includes(`'${root}'`)) {
+    // a competing table. A path used as a value or in another table is unrelated.
+    const rootDefinition = new RegExp(`^\\s*projects\\s*(?:=|\\.\\s*(?:${key})\\s*[.=])`);
+    const projectDefinition = new RegExp(`^\\s*(?:${key})\\s*[.=]`);
+    let section: "root" | "projects" | "other" = "root";
+    const competing = lines.some((line) => {
+      if (/^\s*\[/.test(line)) section = /^\s*\[\s*projects\s*\]\s*(?:#.*)?$/.test(line) ? "projects" : "other";
+      return section === "root" ? rootDefinition.test(line) : section === "projects" && projectDefinition.test(line);
+    });
+    if (competing) {
       throw new Error(`Cannot update Codex trust for ${root}: use a [projects.${quoted}] table.`);
     }
     return `${text}${text.endsWith("\n") || text === "" ? "" : "\n"}\n[projects.${quoted}]\ntrust_level = "trusted"\n`;
@@ -50,6 +57,11 @@ export const syncAgentTrust = (input: {
   const canonical = (path: string) => existsSync(path) ? realpathSync(path) : resolve(path);
   const parent = dirname(canonical(input.productRoot));
   const clone = canonical(input.clone);
+  // Keep setup trust within project folders. Broad parents would also trust
+  // unrelated repositories, and Cursor refuses to inherit trust from them.
+  const inherits = (root: string) => root.split(sep).filter(Boolean).length >= 3 &&
+    !isPathInside(root, home) && !isPathInside(root, canonical(home));
+  const shared = inherits(parent) ? [parent] : [];
   const change = (path: string, effect: () => void) => {
     const description = `configure ${input.agent} folder trust in ${path}`;
     input.options.changes.push(description);
@@ -66,7 +78,7 @@ export const syncAgentTrust = (input: {
       const path = join(env.CODEX_HOME || join(home, ".codex"), "config.toml");
       const before = existsSync(path) ? readFileSync(path, "utf8") : "";
       // Own-repository entries also ensure project-local config/hooks load.
-      const after = [...new Set([parent, clone])].reduce(trustCodexProject, before);
+      const after = [...new Set([...shared, clone])].reduce(trustCodexProject, before);
       if (after !== before) change(path, () => {
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, after, { mode: 0o600 });
@@ -78,7 +90,7 @@ export const syncAgentTrust = (input: {
       const before = readDocument(path);
       if (before.projects !== undefined && !isObject(before.projects)) throw new Error(`Invalid projects object in ${path}`);
       const projects = { ...before.projects as Record<string, unknown> | undefined };
-      for (const root of new Set([parent, clone])) {
+      for (const root of new Set([...shared, clone])) {
         const entry = projects[root];
         if (entry !== undefined && !isObject(entry)) throw new Error(`Invalid project ${root} in ${path}`);
         projects[root] = { ...entry as Record<string, unknown> | undefined, hasTrustDialogAccepted: true };
@@ -89,12 +101,9 @@ export const syncAgentTrust = (input: {
     case "cursor": {
       // tmux's cwd is physical, while --add-dir may retain a /var or symlink
       // spelling. Both stable spellings must inherit trust for future issues.
-      const roots = [...new Set([parent, clone, ...input.additionalRoots ?? []]
+      const roots = [...new Set([...shared, clone, ...input.additionalRoots ?? []]
         .flatMap((root) => [resolve(root), canonical(root)]))];
-      // Cursor refuses inherited trust from home, ancestors of home, and paths
-      // shallower than three components. Keep exact clone/root markers there.
-      const inherits = (root: string) => root.split(sep).filter(Boolean).length >= 3 &&
-        !isPathInside(root, home) && !isPathInside(root, canonical(home));
+      // Keep exact clone/root markers where Cursor refuses inherited trust.
       for (const root of roots.filter((root) => !roots.some((other) => other !== root && inherits(other) && isPathInside(other, root)))) {
         // Cursor 2026.10 uses DATA_DIR (not CONFIG_DIR) and this path encoding
         // for the same persistent marker written by its workspace-trust dialog.
@@ -113,7 +122,7 @@ export const syncAgentTrust = (input: {
       if (!Array.isArray(trusted) || !trusted.every((entry) => typeof entry === "string")) {
         throw new Error(`Invalid trustedWorkspaces array in ${path}`);
       }
-      const roots = isPathInside(parent, clone) ? [parent] : [parent, clone];
+      const roots = shared.length > 0 && isPathInside(parent, clone) ? shared : [...shared, clone];
       writeJson(path, before, { ...before, trustedWorkspaces: [...new Set([...trusted, ...roots])] });
       break;
     }

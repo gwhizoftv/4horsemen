@@ -38,7 +38,7 @@ No coordinator actions, ballots, signals, or completion markers.
 
 Reuse `EffectOptions`, JSON object validation and atomic JSON writes, the existing
 home injection, installer/onboard fixtures, `TmuxController.ensureSession`,
-`openOwnerAgentClients`, and cursor revision checks. No new dependencies,
+`openOwnerAgentClients`, and issue state checks. No new dependencies,
 launcher flags, CLI commands, state schemas, or automatic login/hold release.
 
 Trust the product repository's parent once. Preserve explicit own-clone entries
@@ -48,13 +48,15 @@ parent trust covers future issue subfolders. Preserve unrelated user settings,
 make repeated setup a no-op, and honor vendor home overrides. Do not change
 tool permissions or sandbox grants.
 
-Cursor excludes home/ancestors of home and paths shallower than three components
-from inherited trust; retain exact stable clone/root markers for those layouts.
+Exclude home/ancestors of home and paths shallower than three components from
+shared parent trust for all vendors; retain exact clone/root entries instead.
+These are also the parents from which Cursor refuses inherited trust.
 
 Keep terminal restoration independent of workflow authority: it may recreate
 missing windows or respawn dead panes on owner startup/attach, but must preserve
 live panes, current actions, send budgets and all pauses/holds. Fence restoration
-against concurrent state changes and finished/abandoned issues. Recognize
+against finished/abandoned issues and removal of agents being restored, allowing
+routine state revisions from a live runner. Recognize
 Cursor's trust screen so coordinator text cannot select Quit or dismiss it.
 
 ## Tests
@@ -105,3 +107,17 @@ Cursor's marker format and parent exclusions were checked against installed CLI
 Claude's config-directory override is described in the
 [official config location documentation](https://code.claude.com/docs/en/mcp-quickstart#find-your-configuration-on-disk).
 No live vendor login/model session is part of the automated validation.
+
+## Review revision
+
+Reviewed Claude's findings at `2970b6f`. Address the seven findings within the
+existing file map: broad-parent fallback, accurate Antigravity comments,
+actionable setup refusals, attach output, recovery during routine state updates,
+dialog-only Cursor matching, and Codex conflicts limited to project definitions.
+Keep the requested project-parent trust policy; no launcher or permission changes.
+Extend the existing tests for the reported failures, including Cursor's rendered
+box/icon and recovery aborts on completion, abandonment, or roster removal.
+
+Revision checks: `pnpm build`, 13 focused trust/setup tests, 10 focused
+recovery/prompt tests, test typecheck, targeted ESLint, and shell syntax passed.
+The commit/push hooks own the full mandatory suites for the revision.
