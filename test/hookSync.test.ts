@@ -36,6 +36,7 @@ const installed = (verify: unknown = passingVerify, kind: "go" | "plain" = "go",
   const declaration: Record<string, unknown> = { checks: declaredChecks, ...extra };
   if (verify !== null) declaration.verify = verify;
   const result = install({
+    home: null,
     installRoot: repoRoot,
     productRoot: fixture.productRoot,
     coordRoot: fixture.coordRoot,
@@ -61,6 +62,7 @@ const manifestOf = (clone: string): HookManifest => {
 /** Re-run the installer against an already-installed fixture. */
 const installAgain = (fixture: ProductFixture): void => {
   install({
+    home: null,
     installRoot: repoRoot,
     productRoot: fixture.productRoot,
     coordRoot: fixture.coordRoot,
@@ -175,6 +177,7 @@ describe("agent-clone hook wiring", () => {
     const { clone, fixture } = installed();
     git(clone, "config", "--local", "core.hooksPath", "githooks");
     install({
+      home: null,
       installRoot: repoRoot,
       productRoot: fixture.productRoot,
       coordRoot: fixture.coordRoot,
@@ -367,6 +370,7 @@ describe("coordinator verification binding", () => {
 describe("vendored delivery", () => {
   const installVendored = (fixture: ProductFixture) =>
     install({
+      home: null,
       installRoot: repoRoot,
       productRoot: fixture.productRoot,
       coordRoot: fixture.coordRoot,

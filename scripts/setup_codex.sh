@@ -35,6 +35,7 @@ common_detect_project
 common_write_gitignore
 common_install_hooks
 common_write_start_sh
+common_configure_trust
 
 # ======================== Codex-specific setup below ========================
 
@@ -136,23 +137,6 @@ cat > "$CLONE_DIR/.codex/codex-instructions.md" <<'EOF'
 EOF
 echo "Wrote Codex instructions: .codex/codex-instructions.md"
 
-# --- Trust the clone in the USER config so the project .codex/ layer loads.
-#     Appended once; TOML table with a quoted absolute-path key.
-USER_CONFIG="$CODEX_HOME/config.toml"
-touch "$USER_CONFIG"
-if grep -qF "[projects.\"$CLONE_DIR\"]" "$USER_CONFIG"; then
-  echo "Clone already registered as trusted in $USER_CONFIG"
-else
-  cat >> "$USER_CONFIG" <<EOF
-
-# Added by setup_codex.sh: trust the ${PROJECT_NAME} Codex agent clone so its
-# project-level .codex/config.toml is loaded.
-[projects."$CLONE_DIR"]
-trust_level = "trusted"
-EOF
-  echo "Registered clone as trusted in $USER_CONFIG"
-fi
-
 # --- Sanity note if the codex CLI isn't installed yet.
 if ! command -v codex >/dev/null 2>&1; then
   echo "NOTE: 'codex' CLI not found on PATH. Install it (e.g. npm i -g @openai/codex"
@@ -164,5 +148,5 @@ echo "=== Codex agent ready ================================================"
 echo "Clone   : $CLONE_DIR"
 echo "Launch  : $CLONE_DIR/start-codex.sh   (or use start_isolated_codex_agents.sh)"
 echo "Identity: $GLOBAL_AGENTS (scoped block) + repo AGENTS.md (native)"
-echo "First run: codex will ask you to log in and to confirm workspace trust."
+echo "Workspace trust configured. First run may still require login."
 echo "======================================================================"

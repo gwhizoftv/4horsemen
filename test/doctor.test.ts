@@ -33,6 +33,7 @@ const installed = (
   fixtures.push(fixture);
   git(fixture.productRoot, "remote", "set-url", "origin", "https://github.com/example/myserver.git");
   const result = install({
+    home: null,
     installRoot: repoRoot,
     productRoot: fixture.productRoot,
     coordRoot: fixture.coordRoot,
@@ -48,7 +49,7 @@ const installed = (
   return { fixture, clone: result.clones[0] as string, configPath: result.configPath };
 };
 
-const report = (fixture: ProductFixture) => doctor({ coordRoot: fixture.coordRoot, productRoot: fixture.productRoot });
+const report = (fixture: ProductFixture) => doctor({ coordRoot: fixture.coordRoot, productRoot: fixture.productRoot, home: null });
 
 const editConfig = (configPath: string, mutate: (config: Record<string, unknown>) => void): void => {
   const config = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
@@ -165,6 +166,7 @@ describe("coord doctor", () => {
     const fixture = makeProduct();
     fixtures.push(fixture);
     install({
+      home: null,
       installRoot: repoRoot,
       productRoot: fixture.productRoot,
       coordRoot: fixture.coordRoot,

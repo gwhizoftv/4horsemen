@@ -7,8 +7,7 @@
 #   - Cursor reads the repo-root AGENTS.md natively: no shim file is needed.
 #   - Repository-specific guidance is supplied through Cursor rule files in
 #     <clone>/.cursor/rules/*.mdc, which are discovered automatically.
-#   - There is no equivalent of Codex's trusted-project config; the project-local
-#     rule file is the main mechanism for steering Cursor in this clone.
+#   - Persistent parent-folder trust is shared with coord install/onboard.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,6 +30,7 @@ common_detect_project
 common_write_gitignore
 common_install_hooks
 common_write_start_sh
+common_configure_trust
 
 # ======================== Cursor-specific setup below =======================
 

@@ -195,6 +195,7 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
     onCapture: undefined as (() => void) | undefined, onSend: undefined as (() => void) | undefined };
   const messages: string[] = [];
   const tmux = new TmuxController(async (args) => {
+    if (args[0] === "list-windows") return { exitCode: 0, stdout: `${vendor}\n`, stderr: "" };
     if (args[0] === "display-message") {
       ui.inspections++;
       if (ui.failInspect) throw new Error("inspection unavailable");
@@ -359,6 +360,89 @@ const quotaFixture = (results: CodexQuotaResult[], during?: () => void, validate
 };
 
 describe("runner waiting and initialization", () => {
+  it.each(["missing", "dead", "live"])("restores %s terminals during a hold without resuming workflow", async (pane) => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const agents = start.agents.map((agent) => {
+      const root = join(paths.coordRoot, "..", agent.id);
+      mkdirSync(root);
+      writeFileSync(join(root, agent.launcher), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      return { ...agent, root };
+    });
+    writeFileSync(paths.start, JSON.stringify({ ...start, agents }));
+    await new CoordinatorRunLoop(paths, { tmux: null, log: () => undefined }).runTick();
+    mutateCursorsState(paths, (current) => cursorsStateSchema.parse({ ...current, paused: true,
+      manualPaused: pane === "missing", holds: [{
+        id: "20000000-0000-4000-8000-000000000001", agent: "claude", actionId: current.agents.claude!.actionId,
+        sessionId: null, reason: "delivery-uncertain", evidenceId: "fixture", observedAt: current.updatedAt,
+        resetsAt: null, confidence: "unknown", retryOwner: "owner"
+      }] }));
+    const cursors = readFileSync(paths.cursors, "utf8");
+    const actions = agents.map((agent) => readFileSync(agentRuntimePaths(paths, agent.id).action, "utf8"));
+    const calls: string[][] = [];
+    const opened: string[] = [];
+    const tmux = new TmuxController(async (args) => {
+      calls.push([...args]);
+      if (args[0] === "has-session") return { exitCode: pane === "missing" ? 1 : 0, stdout: "", stderr: "" };
+      if (args[0] === "list-windows") return { exitCode: 0, stdout: pane === "missing" ? "" : "claude\ncodex\n", stderr: "" };
+      if (args[0] === "display-message") return { exitCode: 0, stdout: `${pane === "dead" ? 1 : 0}\tclaude\t0\t0\n`, stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }, null, async (launches) => { opened.push(...launches.map((launch) => launch.agentId)); }, null, async () => undefined, null, () => []);
+    const controller = new AbortController();
+    const loop = new CoordinatorRunLoop(paths, { tmux, log: () => undefined, sleep: async () => { controller.abort(); } });
+    const initialize = vi.spyOn(loop, "initializeEffects");
+    await loop.run(controller.signal);
+    expect(initialize).not.toHaveBeenCalled();
+    expect(opened).toEqual(["claude", "codex"]);
+    expect(calls.filter((args) => args[0] === "new-window")).toHaveLength(pane === "missing" ? 2 : 0);
+    expect(calls.filter((args) => args[0] === "respawn-pane")).toHaveLength(pane === "dead" ? 2 : 0);
+    expect(calls.some((args) => args[0] === "send-keys")).toBe(false);
+    expect(readFileSync(paths.cursors, "utf8")).toBe(cursors);
+    expect(agents.map((agent) => readFileSync(agentRuntimePaths(paths, agent.id).action, "utf8"))).toEqual(actions);
+  });
+
+  it.each(["abandoned", "completed", "dropped"])("stops terminal recovery when the issue is %s during inspection", async (change) => {
+    const { paths } = fixture();
+    const calls: string[] = [];
+    const tmux = new TmuxController(async (args) => {
+      calls.push(args[0]!);
+      mutateCursorsState(paths, (state) => change === "dropped"
+        ? { ...state, activeRoster: state.activeRoster.filter((agent) => agent !== "claude") }
+        : { ...state, [change]: true });
+      return { exitCode: 1, stdout: "", stderr: "" };
+    }, null, null, null);
+    const loop = new CoordinatorRunLoop(paths, { tmux, log: () => undefined });
+    await expect(loop.restoreTerminals()).rejects.toThrow("Issue finished or its roster changed");
+    expect(calls).toEqual(["has-session"]);
+    if (change !== "dropped") {
+      await expect(loop.restoreTerminals()).rejects.toThrow(change === "completed" ? "complete" : "abandoned");
+      expect(calls).toEqual(["has-session"]);
+    }
+  });
+
+  it.each(["unsupported", "failed", "already-open"])("keeps restoring during routine state changes and reports %s owner terminals", async (status) => {
+    const { paths } = fixture();
+    const before = readCursorsState(paths).stateRevision;
+    const tmux = new TmuxController(async (args) => {
+      mutateCursorsState(paths, (state) => state);
+      if (args[0] === "list-windows") return { exitCode: 0, stdout: "claude\ncodex\n", stderr: "" };
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tclaude\t0\t0\n", stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }, null, status === "unsupported" ? null : async () => { throw new Error("Terminal refused"); },
+    null, undefined, null, (titles) => status === "already-open" ? [...titles] : []);
+    const messages: string[] = [];
+    const loop = new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) });
+    await expect(loop.restoreTerminals()).resolves.toBeUndefined();
+    expect(readCursorsState(paths).stateRevision).toBeGreaterThan(before);
+    if (status === "already-open") expect(messages.join("\n")).toContain("already open");
+    else {
+      expect(messages.join("\n")).toContain(status === "failed" ? "Terminal refused" : "unavailable on this platform");
+      for (const launch of tmux.agentAttachLaunches(1, readStartState(paths).agents)) {
+        expect(messages.join("\n")).toContain(launch.command);
+      }
+    }
+  });
+
   it("freezes advice before the first recipient and keeps it across partial preparation, restart and reissue", async () => {
     const { paths } = fixture();
     queueOwnerGuidance(paths, "Cohort advice");

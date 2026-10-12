@@ -160,6 +160,25 @@ const fakeLoop = (paths: ReturnType<typeof issueRuntimePaths>): CliRunLoop => ({
   run: async () => undefined
 });
 
+it("attach repairs terminals for a paused issue without running or releasing it", async () => {
+  const fixture = setup();
+  await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
+    processRunner: successfulStartGit, makeRunLoop: fakeLoop, io: { stdout: () => undefined }
+  });
+  const paths = issueRuntimePaths(fixture.runtime, 1);
+  const before = readCursorsState(paths);
+  writeCursorsState(paths, cursorsStateSchema.parse({ ...before, manualPaused: true, paused: true }));
+  const bytes = readFileSync(paths.cursors, "utf8");
+  let restored = 0;
+  expect(await runCli(["attach", "1", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
+    io: { stdout: () => undefined }, sessionExists: async () => false,
+    makeRunLoop: () => ({ ...fakeLoop(paths), restoreTerminals: async () => { restored++; },
+      run: async () => { throw new Error("attach must not run workflow"); } })
+  })).toBe(0);
+  expect(restored).toBe(1);
+  expect(readFileSync(paths.cursors, "utf8")).toBe(bytes);
+});
+
 const baselineSha = "a".repeat(40);
 const trustedSourceSha = "d".repeat(40);
 const issueSnapshot = (issue: number, body = `Body for issue ${issue}`) => ({
@@ -1678,7 +1697,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
 
   it("emits a config that coord start accepts unchanged", async () => {
     const { product, declarePath } = installedWorkspace();
-    expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
+    expect(await runCli(installArgs(product, declarePath), { home: null, io: { stdout: () => undefined } })).toBe(0);
 
     const configPath = join(product.coordRoot, "config.json");
     const runtime = join(product.coordRoot, "runtime");
@@ -1748,7 +1767,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
 
   it("infers owner and registered clone context while retaining the frozen mailbox", async () => {
     const { product, declarePath } = installedWorkspace();
-    expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
+    expect(await runCli(installArgs(product, declarePath), { home: null, io: { stdout: () => undefined } })).toBe(0);
     execFileSync("git", ["config", "--local", "coord.ownerWorkspaceConfig", join(product.coordRoot, "config.json")], { cwd: product.productRoot });
     expect(await runCli(["start", "89", "--product", product.productRoot], {
       io: { stdout: () => undefined }, processRunner: successfulStartGit, makeRunLoop: fakeLoop
@@ -1785,7 +1804,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
 
   it("resolves analytics through an onboarded product", async () => {
     const { product, declarePath } = installedWorkspace();
-    expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
+    expect(await runCli(installArgs(product, declarePath), { home: null, io: { stdout: () => undefined } })).toBe(0);
     execFileSync(
       "git",
       ["config", "--local", "coord.ownerWorkspaceConfig", join(product.coordRoot, "config.json")],
@@ -1817,20 +1836,20 @@ describe("CLI — install, doctor, and the hook bridge", () => {
 
   it("returns doctor's class-specific exit code", async () => {
     const { product, declarePath } = installedWorkspace();
-    expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
+    expect(await runCli(installArgs(product, declarePath), { home: null, io: { stdout: () => undefined } })).toBe(0);
 
     const doctorArgs = ["doctor", "--coord-runtime", product.coordRoot, "--product", product.productRoot];
-    expect(await runCli(doctorArgs, { io: { stdout: () => undefined } })).toBe(0);
+    expect(await runCli(doctorArgs, { home: null, io: { stdout: () => undefined } })).toBe(0);
 
     rmSync(join(product.workspaceRoot, "myserver-claude", "start-claude.sh"));
     const errors: string[] = [];
-    expect(await runCli(doctorArgs, { io: { stderr: (message) => errors.push(message) } })).toBe(DOCTOR_CODES.launcher);
+    expect(await runCli(doctorArgs, { home: null, io: { stderr: (message) => errors.push(message) } })).toBe(DOCTOR_CODES.launcher);
     expect(errors.join("")).toContain("launcher");
   });
 
   it("serves the hook bridge from the workspace config", async () => {
     const { product, declarePath } = installedWorkspace();
-    expect(await runCli(installArgs(product, declarePath), { io: { stdout: () => undefined } })).toBe(0);
+    expect(await runCli(installArgs(product, declarePath), { home: null, io: { stdout: () => undefined } })).toBe(0);
     const clone = join(product.workspaceRoot, "myserver-claude");
 
     const scope: string[] = [];

@@ -288,3 +288,27 @@ common_write_start_sh() {
     || die "Launcher $launcher is missing. Run: coord install --product '$MASTER_ROOT' --coord-runtime <runtime> --agents $AGENT_NAME"
   echo "Launcher present: $launcher"
 }
+
+# Share persistent trust with coord install/onboard. The installed build is
+# already required by these scripts; no vendor session or model call is started.
+common_configure_trust() {
+  if $DRY_RUN; then
+    echo "DRY-RUN: would configure $AGENT_NAME trust for $CLONE_DIR and its eligible product parent"
+    return 0
+  fi
+  # Vendored clones record no install root; coord install/onboard already wrote
+  # their trust. Refuse by name instead of letting set -e exit without a word.
+  local install_root
+  install_root="$(git -C "$CLONE_DIR" config --local --get coord.installRoot || true)"
+  [[ -n "$install_root" ]] \
+    || die "Clone $CLONE_DIR records no coord.installRoot (vendored install?). Folder trust is written by coord install/onboard; re-run that instead."
+  [[ -f "$install_root/dist/agentTrust.js" ]] \
+    || die "$install_root/dist/agentTrust.js is missing. Rebuild coord there (pnpm build), then re-run this script."
+  node --input-type=module - "$install_root/dist/agentTrust.js" "$AGENT_NAME" "$MASTER_ROOT" "$CLONE_DIR" "$DRY_RUN" <<'NODE'
+import { pathToFileURL } from 'node:url';
+const [modulePath, agent, productRoot, clone, dryRun] = process.argv.slice(2);
+const { syncAgentTrust } = await import(pathToFileURL(modulePath).href);
+syncAgentTrust({ agent, productRoot, clone,
+  options: { dryRun: dryRun === 'true', log: text => process.stdout.write(text), changes: [] } });
+NODE
+}

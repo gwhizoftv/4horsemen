@@ -714,10 +714,21 @@ describe("tmux boundary", () => {
   });
 
   it("names the predicate that refused a prompt", () => {
+    expect(harnessPromptReadiness(`Workspace Trust Required\nDo you trust the contents of this directory?\n` +
+      `a Trust this workspace\nq Quit\n${COORD_IDLE_SENTINEL}`, "cursor"))
+      .toEqual({ ready: false, reason: "trust-dialog" });
+    // Cursor 2026.10 renders a rounded box, a warning icon, and keyed options.
+    expect(harnessPromptReadiness(`  │  ⚠ Workspace Trust Required  │\n` +
+      `  │  Do you trust the contents of this directory?  │\n  │  ▶ [a] Trust this workspace  │\n` +
+      `  │    [q] Quit  │\n${COORD_IDLE_SENTINEL}`, "cursor"))
+      .toEqual({ ready: false, reason: "trust-dialog" });
     expect(harnessPromptReadiness("Do you trust this folder?", "claude")).toEqual({
       ready: false,
       reason: "trust-dialog"
     });
+    // An idle agent that quoted the dialog in prose is not on the dialog.
+    expect(harnessPromptReadiness("The tmux check now matches workspace trust required screens.\n" +
+      `> \n${COORD_IDLE_SENTINEL}`, "cursor").reason).not.toBe("trust-dialog");
     expect(harnessPromptReadiness("Auto · 1%\nThinking…", "cursor")).toEqual({
       ready: false,
       reason: "cursor-turn-chrome"
