@@ -1,0 +1,46 @@
+{
+  "actionId": "eae26523-8c93-45a9-82bc-d36187e56238",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "42dd3af0e13a7472dc4f7a7e74ae863539d3f2363cab2e808bcf722c33829bf7",
+  "issue": 195,
+  "issueSessionId": "issue-195:6a04d57e524ad53daa082568e146c5300e93dfeb",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "04aeec5a2504ce5998bd3da0f752e408692314c7",
+      "path": ".plans/issue-195/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "95c3ea1c4f48148ff730cffa2a54039f3ecc7735",
+      "path": ".plans/issue-195/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "550a927a18c330a7a46d43468464e4f6e9712740",
+      "path": ".plans/issue-195/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "The claude plan is the only one that fixes the reported automatic 16:20 stall (same-UUID reissue blocking lost-delivery proof) as well as the operator n/187 restrictions, and its two reviewed defects have small agreed corrections — a paused-tolerant owner authority check and requiring the COORD-IDLE sentinel at the pane tail before old UUID scrollback counts as absent — whereas codex leaves the automatic stall unfixed and cursor also keeps the owner vetoes the issue removes.",
+  "responseSha256": "fc7506ad785d6ebe451859540bf090af1fb54f5daa185bac51594b5055937488",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "ef9922acd580750dbe1b42d1a4f76bcc150ee45d",
+      "path": ".plans/issue-195/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "db3399dd33b16b6b3a38b13e5bc98cca160667db",
+      "path": ".plans/issue-195/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "efdaf008497c4dbefa7fde26fbed124f5b6eb18f",
+      "path": ".plans/issue-195/review.md"
+    }
+  ]
+}
