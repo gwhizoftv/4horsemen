@@ -723,12 +723,17 @@ foreground mismatches and dialogs do not veto the owner's request. The existing
 vendor keys and short paste/submit timing remain in use. Each result names sent,
 failed or uncertain delivery and its actual cause, such as a missing pane or a
 tmux error. Sent means handed to the terminal, not acknowledged by the vendor.
-An assignment or submission changing during dispatch is reported as failed before
-typing, or uncertain after typing begins. All agents continues after a target fails.
+An assignment or submission changing before typing is reported as failed; a change
+between keys stops remaining keys and is uncertain. Once the complete submit
+succeeds, delivery remains sent even if the assignment or submission changed
+before tmux returned. Any skipped lifecycle update is reported separately.
+All agents continues after a target fails.
 
 Owner requests do not charge or reset the automatic allowance, release holds,
 or advance the workflow. No automatic send is added for the same agent on that
-poll. Explicit requests run while paused; automatic work remains paused until
+poll. An initial assignment suppressed by that rule remains eligible for a later
+poll under the usual automatic gates, including after restart. Explicit requests
+run while paused; automatic work remains paused until
 the appropriate recovery. An ambiguous owner send is journalled without queuing
 an automatic replay of that request; another explicit `n` remains available.
 

@@ -1070,7 +1070,8 @@ export class TmuxController {
         assertAuthority();
         if (!began) { onBegin(); began = true; }
         const result = await this.runner(args);
-        assertAuthority();
+        // Recheck before any remaining key, not after the final successful
+        // submit: a completion racing the return does not undo terminal delivery.
         if (result.exitCode !== 0) throw new Error(`tmux send-keys failed: ${result.stderr}`);
         return null;
       }, assertAuthority);

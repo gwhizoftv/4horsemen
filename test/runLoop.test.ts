@@ -303,6 +303,24 @@ describe("owner reminders and advisory diagnostics", () => {
     expect(f.ui.sends).toBe(3);
   });
 
+  it("retries first automatic delivery on a later tick after a neutral owner reminder", async () => {
+    const f = safetyFixture("claude"), loop = f.makeLoop();
+    loop.reminders()[0]!.request();
+    await loop.runTick();
+    expect(f.ui.sends).toBe(1);
+    expect(readAgentLifecycle(f.paths).agents.claude).toMatchObject({ execution: "unknown",
+      action: { delivery: "ordered", injectedAt: null } });
+    expect(readCursorsState(f.paths).actionSafety.claude!.sends).toBe(0);
+    f.ui.foreground = "bash";
+    await f.tick(); // A new runner retries, but still requires automatic pane readiness.
+    expect(f.ui.sends).toBe(1);
+    f.ui.foreground = "harness";
+    await f.tick();
+    expect(f.ui.sends).toBe(2);
+    expect(f.ui.sentTexts.at(-1)).toContain(readCursorsState(f.paths).agents.claude!.actionId!);
+    expect(readCursorsState(f.paths).actionSafety.claude!.sends).toBe(1);
+  });
+
   it("allows the owner to send after Cursor's unacknowledged retries exhaust the automatic allowance", async () => {
     const f = safetyFixture("cursor"), loop = f.makeLoop();
     await loop.runTick();
@@ -371,22 +389,41 @@ describe("owner reminders and advisory diagnostics", () => {
       if (scenario === "pending-completion") expect(readFileSync(runtime.complete, "utf8")).toBe("d".repeat(40));
     });
 
-  it.each([false, true])("reports a task change during owner delivery, after keys=%s", async (afterKeys) => {
-    const f = safetyFixture("cursor"), loop = f.makeLoop();
+  it.each(["before", "between-keys", "after-submit"])("reports a task change during owner delivery: %s", async (stage) => {
+    const vendor = stage === "between-keys" ? "antigravity" : "cursor";
+    const f = safetyFixture(vendor), loop = f.makeLoop();
     await loop.runTick(); f.advance(1); f.working();
-    const before = readCursorsState(f.paths).actionSafety.cursor;
+    const before = readCursorsState(f.paths).actionSafety[vendor];
     const change = () => {
-      const runtime = agentRuntimePaths(f.paths, "cursor");
+      const runtime = agentRuntimePaths(f.paths, vendor);
       writeFileSync(runtime.action, readFileSync(runtime.action, "utf8") + "\nchanged\n");
     };
-    if (afterKeys) f.ui.onSend = change; else f.ui.onCapture = change;
+    if (stage === "before") f.ui.onCapture = change; else f.ui.onSend = change;
     loop.reminders()[0]!.request(); await loop.runTick();
-    expect(f.ui.sends).toBe(afterKeys ? 2 : 1);
-    expect(readCursorsState(f.paths).actionSafety.cursor).toEqual(before);
-    expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudge-deferred",
-      details: expect.objectContaining({ owner: true, outcome: afterKeys ? "uncertain" : "failed",
-        detail: "The reminder's assignment or submission changed during delivery." }) }));
-    expect(f.messages.join("\n")).not.toContain("[OK] Reminder sent");
+    expect(f.ui.sends).toBe(stage === "before" ? 1 : 2);
+    expect(readCursorsState(f.paths).actionSafety[vendor]).toEqual(before);
+    expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: stage === "after-submit" ? "nudged" : "nudge-deferred",
+      details: expect.objectContaining({ owner: true, outcome: stage === "before" ? "failed" : stage === "between-keys" ? "uncertain" : "sent",
+        detail: expect.stringContaining("The reminder's assignment or submission changed during delivery.") }) }));
+    expect(f.messages.join("\n").includes("[OK] Reminder sent")).toBe(stage === "after-submit");
+  });
+
+  it.each(["completion", "finished"])("preserves owner transport success when %s arrives before tmux returns", async (change) => {
+    const f = safetyFixture("cursor"), loop = f.makeLoop();
+    await loop.runTick(); f.advance(1); f.working();
+    mutateCursorsState(f.paths, (state) => setPaused(state, true, f.now()));
+    const before = readAgentLifecycle(f.paths);
+    f.ui.onSend = () => {
+      if (change === "completion") writeFileSync(agentRuntimePaths(f.paths, "cursor").complete, "d".repeat(40));
+      else mutateCursorsState(f.paths, (state) => ({ ...state, abandoned: true }));
+    };
+    loop.reminders()[0]!.request(); await loop.runTick();
+    expect(f.ui.sends).toBe(2);
+    expect(readJournal(f.paths).filter((event) => event.details.owner === true)).toEqual([
+      expect.objectContaining({ type: "nudged", details: expect.objectContaining({ outcome: "sent" }) })
+    ]);
+    expect(readAgentLifecycle(f.paths)).toEqual(before);
+    expect(f.messages.join("\n")).toContain("[OK] Reminder sent");
   });
 
   it("records each ambiguous owner attempt without charging or automatically replaying it", async () => {

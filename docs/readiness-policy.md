@@ -25,7 +25,9 @@ current action path, UUID and digest; a pending completion receives a reminder t
 preserve the submitted files and await validation; accepted, dropped or unassigned
 work receives a neutral reminder without instructions to execute a stale or
 missing action. A concurrent assignment/submission change is reported as failed
-before typing, or uncertain if typing has already begun.
+before typing, or uncertain between keys, with remaining keys stopped. A change
+noticed after the complete submit succeeds does not undo terminal delivery: the
+result stays sent, with any skipped lifecycle update reported separately.
 
 Every selection has a unique request ID and a sent, failed or uncertain journal
 outcome using `nudged` only for successful terminal injection and `nudge-deferred`
@@ -37,7 +39,9 @@ means vendor acceptance or valid workflow completion.
 Owner sends do not spend or reset automatic send credit, clear reservations,
 release holds or remove submitted files. Successful action injection still uses
 the existing lifecycle correlation, and automatic delivery adds no send to the
-same agent in that poll. Ambiguous owner attempts are reported without queuing
+same agent in that poll. A first assignment deferred by that rule can still be
+delivered on a later poll under the usual automatic gates, including after a
+runner restart. Ambiguous owner attempts are reported without queuing
 another attempt; the owner can explicitly send again. The rules below continue
 to govern automatic sends.
 

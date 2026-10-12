@@ -971,8 +971,8 @@ export class CoordinatorRunLoop {
     let outcome: OwnerReminderOutcome;
     let began = false;
     let sentAt = this.now();
+    const config = start.agents.find((candidate) => candidate.id === agent);
     try {
-      const config = start.agents.find((candidate) => candidate.id === agent);
       if (config === undefined) throw new StateConflictError("The selected agent is no longer configured.");
       message = this.ownerReminderMessage(readCursorsState(this.paths), agent);
       const assertOwnerAuthority = (): void => {
@@ -994,11 +994,18 @@ export class CoordinatorRunLoop {
           sentAt = this.now();
         });
       if (outcome.status === "sent" && message.kind === "action") {
-        assertOwnerAuthority();
-        markActionInjected(this.paths, agent, message.actionId!, message.actionDigest!, sentAt);
+        try {
+          assertOwnerAuthority();
+          markActionInjected(this.paths, agent, message.actionId!, message.actionDigest!, sentAt);
+        } catch (error) {
+          // The terminal already received the full send. A concurrent completion
+          // can invalidate bookkeeping, but cannot undo successful transport.
+          outcome = { ...outcome, detail: `Lifecycle bookkeeping skipped after terminal delivery: ${error instanceof Error ? error.message : String(error)}` };
+        }
       }
     } catch (error) {
-      outcome = { status: began ? "uncertain" : "failed", reason: "assignment-changed",
+      outcome = { status: began ? "uncertain" : "failed",
+        reason: config === undefined ? "agent-not-configured" : error instanceof StateConflictError ? "assignment-changed" : "coordinator-error",
         stage: began ? "mid-send" : "gate", detail: error instanceof Error ? error.message : String(error) };
     }
     appendJournal(this.paths, { type: outcome.status === "sent" ? "nudged" : "nudge-deferred", agent,
@@ -1007,7 +1014,7 @@ export class CoordinatorRunLoop {
         ...(message?.actionDigest === undefined ? {} : { actionDigest: message.actionDigest }),
         readiness: "owner", outcome: outcome.status, code: outcome.reason, stage: outcome.stage,
         ...(outcome.detail === undefined ? {} : { detail: outcome.detail }) } }, this.now());
-    this.log(outcome.status === "sent" ? `[OK] Reminder sent to ${agent} (${message?.kind}); terminal delivery only.`
+    this.log(outcome.status === "sent" ? `[OK] Reminder sent to ${agent} (${message?.kind}); terminal delivery only.${outcome.detail === undefined ? "" : ` ${outcome.detail}`}`
       : `[WARN] ${agent}: reminder ${outcome.status === "uncertain" ? "delivery uncertain" : "not sent"}; ${outcome.reason}${outcome.detail === undefined ? "" : `: ${outcome.detail}`}.`);
   }
 
@@ -1270,7 +1277,13 @@ export class CoordinatorRunLoop {
     start: StartState, cursors: CursorsState, agent: string, actionId: string, actionDigest: string,
     reason: "initial" | "idle" | "reissue"
   ): Promise<CursorsState> {
-    if (this.ownerAttemptsThisTick.has(agent)) return cursors;
+    if (this.ownerAttemptsThisTick.has(agent)) {
+      // A neutral owner reminder can precede the first assignment. Preserve
+      // same-poll suppression while leaving that unsent action retryable under
+      // the ordinary automatic gates on a later poll, including after restart.
+      markActionInjectionDeferred(this.paths, agent, actionId, actionDigest, this.now());
+      return cursors;
+    }
     const config = start.agents.find((candidate) => candidate.id === agent);
     if (this.tmux === null || config === undefined || !["nudge", "both"].includes(config.delivery)) return cursors;
     cursors = this.ensureActionSafety(cursors, agent, actionId);
@@ -1934,7 +1947,7 @@ export class CoordinatorRunLoop {
       const entry = readAgentLifecycle(this.paths).agents[agent];
       if (entry === undefined) return cursors;
       // An action that is still only ordered has never been sent. Retrying a
-      // prior busy readiness rejection cannot create a duplicate; tmux
+      // prior readiness rejection or owner-poll deferral cannot create a duplicate; tmux
       // must still positively prove the pane is prompt-ready below. Once a
       // send succeeds, only a lifecycle idle transition can authorize more.
       if (entry.action?.delivery !== "ordered" || entry.action.retryableInjectionAt === null) {

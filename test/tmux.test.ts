@@ -1325,7 +1325,7 @@ describe("explicit owner reminder transport", () => {
       if (args[0] === "send-keys" && failure === "send-error") return { exitCode: 1, stdout: "", stderr: "target disappeared" };
       return ok();
     }, undefined, undefined, undefined, noopSleep);
-    const result = await controller.remind(1, { id: "cursor", root: "/clone", launcher: "agent", delivery: "both" }, "owner reminder",
+    const result = await controller.remind(1, { id: failure === "authority-change" ? "antigravity" : "cursor", root: "/clone", launcher: "agent", delivery: "both" }, "owner reminder",
       () => { if (failure === "authority-change" && began) throw new Error("task changed"); }, () => { began = true; });
     expect(result.status).toBe(["send-error", "authority-change"].includes(failure) ? "uncertain" : "failed");
     expect(result.reason).toBe(failure === "dead" ? "pane-dead" : "delivery-error");
