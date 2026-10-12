@@ -432,6 +432,12 @@ export type NudgeOutcome = {
   detail?: string;
 };
 
+/** "sent" means tmux accepted the keys, not that the agent read them. */
+export type OwnerNudgeOutcome =
+  | { status: "sent"; stage: "complete" }
+  | { status: "failed"; stage: "target" | "binding"; reason: string }
+  | { status: "uncertain"; stage: "mid-send"; reason: string };
+
 /** Resolve macOS Terminal.app profile name for an owner attach window. */
 export const resolveTerminalProfile = (agent: AgentConfig): string =>
   agent.terminalProfile ?? agentOwnerUiDefaults(agent.id).terminalProfile;
@@ -1118,9 +1124,66 @@ export class TmuxController {
       if (result.exitCode !== 0) throw new Error(`tmux send-keys failed: ${result.stderr}`);
       return null;
     };
+    const typed = await this.typeAndSubmit(target, agent, text, preludeKeys, submit, send, assertAuthority);
+    if (typed !== null) return typed;
+    // This is transport success only. A matching vendor prompt-submit hook
+    // acknowledges acceptance, even if it arrives after this method returns.
+    return { status: "sent", reason: "sent", stage: "complete",
+      ...(staleOverride !== undefined ? { detail: staleOverride.source }
+        : harnessPromptReadiness(paneText, agent.id, actionId).reason === "idle-sentinel" ? { detail: "idle-sentinel" } : {}) };
+  }
+
+  /**
+   * An explicit owner reminder (issues 187/195). The owner chose to type now, so
+   * no readiness, lifecycle, delivery-mode, spacing or send-budget rule applies:
+   * only a missing pane, a changed binding (`recheck`) or a tmux failure stops
+   * it. Copy mode is left first so the keys reach the agent rather than tmux.
+   */
+  async ownerNudge(
+    issue: number,
+    agent: AgentConfig,
+    text: string,
+    recheck: () => string | null = () => null
+  ): Promise<OwnerNudgeOutcome> {
+    const target = this.target(issue, agent.id);
+    let began = false;
+    try {
+      const pane = await this.inspectPane(target);
+      if (!pane.alive) return { status: "failed", stage: "target", reason: `no live terminal pane at ${target}` };
+      // Capture only chooses vim keys; a failed capture cannot veto the owner.
+      const paneText = await this.capturePane(target).catch(() => "");
+      const { prelude, submit } = resolveNudgeKeys(agent, paneText);
+      const preludeKeys = agent.id === "codex" && codexVimInsert(paneText) ? [] : prelude;
+      const changed = recheck();
+      if (changed !== null) return { status: "failed", stage: "binding", reason: changed };
+      const run = async (args: readonly string[]): Promise<null> => {
+        const result = await this.runner(args);
+        if (result.exitCode !== 0) throw new Error(`tmux ${args[0]} failed: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
+        return null;
+      };
+      if (pane.ownerTyping) await run(["send-keys", "-t", target, "-X", "cancel"]);
+      const send = (args: readonly string[]): Promise<null> => { began = true; return run(args); };
+      await this.typeAndSubmit(target, agent, text, preludeKeys, submit, send, () => undefined);
+      return { status: "sent", stage: "complete" };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return began ? { status: "uncertain", stage: "mid-send", reason } : { status: "failed", stage: "target", reason };
+    }
+  }
+
+  /** One key layout for coordinator and owner sends; `send` owns every check. */
+  private async typeAndSubmit<R>(
+    target: string,
+    agent: AgentConfig,
+    text: string,
+    prelude: readonly string[],
+    submit: readonly string[],
+    send: (args: readonly string[]) => Promise<R | null>,
+    assertAuthority: () => void
+  ): Promise<R | null> {
     if (agent.id === "antigravity") {
       // Preserve AGY's working delivery, which has no prompt-submit callback.
-      for (const key of preludeKeys) {
+      for (const key of prelude) {
         const refused = await send(["send-keys", "-t", target, key]);
         if (refused !== null) return refused;
       }
@@ -1133,25 +1196,19 @@ export class TmuxController {
         const refused = await send(["send-keys", "-t", target, key]);
         if (refused !== null) return refused;
       }
-    } else {
-      // Blocking run-shell commands keep the TUI's text/key gaps inside one
-      // tmux operation. Without them, Enter can join the paste as a newline,
-      // or Escape+Enter can become Alt+Enter. Never use run-shell -b here.
-      const commands = [
-        ...preludeKeys.map((key) => ["send-keys", "-t", target, key]),
-        ["send-keys", "-l", "-t", target, text],
-        ...submit.flatMap((key, index) => [
-          ["run-shell", `sleep ${(index === 0 ? NUDGE_AFTER_TEXT_MS : NUDGE_BETWEEN_SUBMIT_MS) / 1000}`],
-          ["send-keys", "-t", target, key]
-        ])
-      ];
-      const refused = await send(commands.flatMap((command, index) => index === 0 ? command : [";", ...command]));
-      if (refused !== null) return refused;
+      return null;
     }
-    // This is transport success only. A matching vendor prompt-submit hook
-    // acknowledges acceptance, even if it arrives after this method returns.
-    return { status: "sent", reason: "sent", stage: "complete",
-      ...(staleOverride !== undefined ? { detail: staleOverride.source }
-        : harnessPromptReadiness(paneText, agent.id, actionId).reason === "idle-sentinel" ? { detail: "idle-sentinel" } : {}) };
+    // Blocking run-shell commands keep the TUI's text/key gaps inside one
+    // tmux operation. Without them, Enter can join the paste as a newline,
+    // or Escape+Enter can become Alt+Enter. Never use run-shell -b here.
+    const commands = [
+      ...prelude.map((key) => ["send-keys", "-t", target, key]),
+      ["send-keys", "-l", "-t", target, text],
+      ...submit.flatMap((key, index) => [
+        ["run-shell", `sleep ${(index === 0 ? NUDGE_AFTER_TEXT_MS : NUDGE_BETWEEN_SUBMIT_MS) / 1000}`],
+        ["send-keys", "-t", target, key]
+      ])
+    ];
+    return send(commands.flatMap((command, index) => index === 0 ? command : [";", ...command]));
   }
 }

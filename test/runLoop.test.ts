@@ -191,7 +191,7 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
   writeCursorsState(paths, cursorsStateSchema.parse({ ...current, activeRoster: [vendor], agents: { [vendor]: current.agents.codex } }));
   writeFileSync(paths.agentLifecycle, JSON.stringify(initialAgentLifecycle([vendor], now())));
   const ui = { foreground: "harness", busy: false, dead: false, text: "❯ Antigravity Gemini >", failSubmit: false,
-    failInspect: false, failCapture: false, waitAtCapture: Infinity, sends: 0, inspections: 0, captures: 0,
+    failInspect: false, failCapture: false, waitAtCapture: Infinity, sends: 0, inspections: 0, captures: 0, typed: [] as string[],
     onCapture: undefined as (() => void) | undefined, onSend: undefined as (() => void) | undefined };
   const messages: string[] = [];
   const tmux = new TmuxController(async (args) => {
@@ -207,7 +207,7 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
       if (ui.failCapture) throw new Error("capture unavailable");
       return { exitCode: 0, stdout: ui.captures >= ui.waitAtCapture ? "Usage limit reset · continuing automatically\n❯" : ui.text, stderr: "" };
     }
-    if (args[0] === "send-keys" && args.includes("-l")) { ui.sends++; ui.onSend?.(); }
+    if (args[0] === "send-keys" && args.includes("-l")) { ui.sends++; ui.typed.push(args[args.indexOf("-l") + 3]!); ui.onSend?.(); }
     if (args[0] === "send-keys" && args.includes("Enter") && ui.sends > 0 && ui.failSubmit) throw new Error("connection lost");
     return { exitCode: 0, stdout: "", stderr: "" };
   }, undefined, undefined, undefined, async () => undefined);
@@ -227,88 +227,144 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
 };
 
 describe("owner reminders and advisory diagnostics", () => {
-  it("rejects a stale menu selection rather than reminding a replacement action", async () => {
-    const f = safetyFixture("claude"), loop = f.makeLoop();
-    await loop.runTick();
-    const selected = loop.reminders()[0]!;
-    mutateCursorsState(f.paths, (state) => ({ ...state,
-      agents: { ...state.agents, claude: { ...state.agents.claude!, actionId: randomUUID() } }
-    }));
-    expect(() => selected.request()).toThrow("no longer current");
-    expect(f.ui.sends).toBe(1);
-  });
-  it("reminds the same accepted task only on explicit request and fresh idle proof, retaining spacing and budget", async () => {
-    const f = safetyFixture("claude"), loop = f.makeLoop();
-    await loop.runTick(); f.advance(1); f.working();
-    const runtime = agentRuntimePaths(f.paths, "claude");
-    const before = readFileSync(runtime.action, "utf8");
-    const id = readCursorsState(f.paths).agents.claude!.actionId;
-    f.ui.text = `${id}\nCOORD-IDLE: waiting for the next coordinator action file`;
-    expect(loop.reminders()[0]!.request()).toContain("requested");
-    await loop.runTick(); // minimum spacing still applies
-    expect(f.ui.sends).toBe(1);
-    f.advance(60_000);
-    await loop.runTick(); // explicit request was consumed; automatic stale-working sends remain forbidden
-    expect(f.ui.sends).toBe(1);
-    loop.reminders()[0]!.request();
-    loop.reminders()[0]!.request(); // one queued request, not two
-    await loop.runTick();
-    expect(f.ui.sends).toBe(2);
-    expect(readCursorsState(f.paths).actionSafety.claude).toMatchObject({ sends: 2, reserved: false });
-    expect(readCursorsState(f.paths).agents.claude).toMatchObject({ actionId: id, status: "ordered" });
-    expect(readFileSync(runtime.action, "utf8")).toBe(before);
-    expect(readAgentLifecycle(f.paths).agents.claude?.execution).toBe("working");
-    expect(f.messages.join("\n")).toContain("[OK] Reminder sent");
-    for (const delay of [120_000, 240_000]) {
-      f.advance(delay); loop.reminders()[0]!.request(); await loop.runTick();
-    }
-    f.advance(240_000); loop.reminders()[0]!.request();
-    const held = await loop.runTick();
-    expect(f.ui.sends).toBe(4);
-    expect(held.holds[0]?.reason).toBe("nudge-loop");
-    expect(held.actionSafety.claude?.sends).toBe(4);
-    expect(() => loop.reminders()[0]!.request()).toThrow("Release pauses/holds");
-  });
+  const ownerHold = (f: ReturnType<typeof safetyFixture>, agent: string, reason: "nudge-loop" | "delivery-uncertain") =>
+    mutateCursorsState(f.paths, (state) => ({ ...state, paused: true, holds: [...state.holds, {
+      id: randomUUID(), agent, actionId: state.agents[agent]!.actionId!, sessionId: null, reason, evidenceId: reason,
+      observedAt: f.now(), resetsAt: null, confidence: "unknown", retryOwner: "owner", evidence: null }] }));
 
-  it.each(["no-idle", "queued", "background", "session", "digest", "pause", "foreground", "typing", "missing-capture", "new-hook"])(
-    "refuses a queued reminder on %s without resetting its allowance", async (veto) => {
+  it.each(["unknown", "working", "pending-input", "background", "exhausted-idle", "budget-hold", "reserved", "manual-pause"])(
+    "sends an owner reminder at once while %s, without touching automatic accounting", async (state) => {
       const f = safetyFixture("claude"), loop = f.makeLoop();
-      await loop.runTick(); f.advance(1); f.working(); f.advance(60_000);
-      const runtime = agentRuntimePaths(f.paths, "claude");
-      const id = readCursorsState(f.paths).agents.claude!.actionId;
-      f.ui.text = `${id}\nCOORD-IDLE: waiting for the next coordinator action file`;
-      if (veto === "queued" || veto === "background") observeAgentLifecycle(f.paths, "claude", {
-        kind: "status", eventName: "status", sessionId: "session", pendingInputCount: veto === "queued" ? 1 : 0,
-        backgroundActive: veto === "background"
-      }, f.now());
-      loop.reminders()[0]!.request();
-      if (veto === "no-idle") f.ui.text = "Working...\n❯ ";
-      if (veto === "session") observeAgentLifecycle(f.paths, "claude", { kind: "session-start", eventName: "SessionStart", sessionId: "new-session" }, f.now());
-      if (veto === "digest") writeFileSync(runtime.action, `${readFileSync(runtime.action, "utf8")}\nchanged\n`);
-      if (veto === "pause") mutateCursorsState(f.paths, (state) => setPaused(state, true, f.now()));
-      if (veto === "foreground") f.ui.foreground = "bash";
-      if (veto === "typing") f.ui.busy = true;
-      if (veto === "missing-capture") f.ui.failCapture = true;
-      if (veto === "new-hook") f.ui.onCapture = () => { f.working(); f.ui.onCapture = undefined; };
       await loop.runTick();
-      expect(f.ui.sends).toBe(1);
-      expect(readCursorsState(f.paths).actionSafety.claude?.sends).toBe(1);
-      expect(readCursorsState(f.paths).agents.claude?.actionId).toBe(id);
-      expect(f.messages.join("\n")).not.toContain("[OK] Reminder sent");
+      const id = readCursorsState(f.paths).agents.claude!.actionId!;
+      const digest = readAgentLifecycle(f.paths).agents.claude!.action!.actionDigest;
+      f.ui.text = `${id}\nThinking… (esc to interrupt)`; // keep the UUID visible: no automatic lost-delivery retry
+      if (state === "working") { f.advance(1); f.working(); }
+      if (state === "pending-input" || state === "background") observeAgentLifecycle(f.paths, "claude", {
+        kind: "status", eventName: "status", sessionId: "session", pendingInputCount: state === "pending-input" ? 1 : 0,
+        backgroundActive: state === "background" }, f.now());
+      if (state === "exhausted-idle") {
+        f.advance(1); f.working(); f.advance(1); f.stop();
+        const { markActionInjected } = await import("../src/agentLifecycle.js");
+        markActionInjected(f.paths, "claude", id, digest, f.now());
+        expect(decideLifecycleNudge(readAgentLifecycle(f.paths).agents.claude!, id, digest).code).toBe("idle-transition-already-used");
+      }
+      if (state === "budget-hold") {
+        mutateCursorsState(f.paths, (current) => ({ ...current, actionSafety: { claude: { ...current.actionSafety.claude!, sends: 4 } } }));
+        ownerHold(f, "claude", "nudge-loop");
+      }
+      if (state === "reserved") {
+        mutateCursorsState(f.paths, (current) => ({ ...current, actionSafety: { claude: { ...current.actionSafety.claude!, reserved: true } } }));
+        ownerHold(f, "claude", "delivery-uncertain");
+      }
+      if (state === "manual-pause") mutateCursorsState(f.paths, (current) => setPaused(current, true, f.now()));
+      const before = readCursorsState(f.paths);
+      loop.reminders()[0]!.request(); // no clock advance: no spacing applies
+      await loop.runTick();
+      expect(f.ui.sends).toBe(2); // one owner send and no automatic duplicate in the same tick
+      expect(f.ui.typed[1]).toContain(`coordinator action ${id} digest ${digest}`);
+      const after = readCursorsState(f.paths);
+      const charge = (state: typeof before) => {
+        const { sends, lastSendAt, reserved } = state.actionSafety.claude!;
+        return { sends, lastSendAt, reserved };
+      };
+      expect(charge(after)).toEqual(charge(before));
+      expect(after.holds).toEqual(before.holds);
+      expect([after.paused, after.manualPaused]).toEqual([before.paused, before.manualPaused]);
+      expect(after.agents.claude).toMatchObject({ actionId: id, status: "ordered" });
+      expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudged", agent: "claude", actionId: id,
+        details: expect.objectContaining({ owner: true, kind: "action", outcome: "sent", actionDigest: digest }) }));
+      expect(f.messages.join("\n")).toContain("[OK] Reminder sent to claude (its current action)");
+      expect(f.messages.join("\n")).not.toContain("send spacing");
     });
 
-  it("keeps a charged reservation when owner authority changes after reminder text", async () => {
+  it("lists every configured agent and types the reminder for its state when it is sent", async () => {
     const f = safetyFixture("claude"), loop = f.makeLoop();
-    await loop.runTick(); f.advance(1); f.working(); f.advance(60_000);
-    f.ui.text = "COORD-IDLE: waiting for the next coordinator action file";
+    // Before any assignment: listed and sent a neutral reminder; the action prepared later
+    // in the same tick still receives its own first send.
+    expect(loop.reminders().map((item) => item.label)).toEqual(["claude"]);
     loop.reminders()[0]!.request();
-    f.ui.onSend = () => {
-      if (f.ui.sends === 2) mutateCursorsState(f.paths, (state) => setPaused(state, true, f.now()));
-    };
     await loop.runTick();
+    expect(f.ui.typed).toHaveLength(2);
+    expect(f.ui.typed[0]).toMatch(/^Owner reminder from coord: you have no current executable coordinator action/);
+    expect(f.ui.typed[1]).toContain(`coordinator action ${readCursorsState(f.paths).agents.claude!.actionId} digest`);
+    expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudged", agent: "claude",
+      details: expect.objectContaining({ owner: true, kind: "no-assignment", outcome: "sent" }) }));
+    mutateCursorsState(f.paths, (current) => setPaused(current, true, f.now())); // later ticks only dispatch reminders
+    const runtime = agentRuntimePaths(f.paths, "claude");
+    const remind = async (): Promise<string | undefined> => {
+      const sends = f.ui.sends;
+      loop.reminders()[0]!.request();
+      await loop.runTick();
+      return f.ui.sends === sends ? undefined : f.ui.typed.at(-1);
+    };
+    // A menu opened before replacement reminds the current action.
+    const menu = loop.reminders()[0]!;
+    const replaced = randomUUID();
+    mutateCursorsState(f.paths, (current) => ({ ...current, agents: { claude: { ...current.agents.claude!, actionId: replaced } } }));
+    menu.request();
+    await loop.runTick();
+    expect(f.ui.typed.at(-1)).toContain(`coordinator action ${replaced} digest`);
+    // Pull delivery does not hide or refuse the agent.
+    writeFileSync(f.paths.start, JSON.stringify({ ...readStartState(f.paths),
+      agents: readStartState(f.paths).agents.map((agent) => ({ ...agent, delivery: "pull" })) }));
+    expect(await remind()).toContain(`coordinator action ${replaced}`);
+    // A pending completion is not redone, and its receipt stays for validation.
+    writeFileSync(runtime.complete, `${"d".repeat(40)}\n`);
+    expect(await remind()).toContain(`submission for coordinator action ${replaced} is waiting for coordinator validation; do not redo it`);
+    expect(existsSync(runtime.complete)).toBe(true);
+    rmSync(runtime.complete);
+    // A binding change during dispatch is reported, not typed.
+    f.ui.onCapture = () => {
+      f.ui.onCapture = undefined;
+      mutateCursorsState(f.paths, (current) => ({ ...current, agents: { claude: { ...current.agents.claude!, actionId: randomUUID() } } }));
+    };
+    expect(await remind()).toBeUndefined();
+    expect(f.messages.join("\n")).toContain("[WARN] claude: reminder not sent (binding): the agent's assignment changed");
+    expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudge-deferred", agent: "claude",
+      details: expect.objectContaining({ owner: true, outcome: "failed", stage: "binding" }) }));
+    // Accepted or dropped agents get a neutral reminder; accepted workflow state is not touched.
+    mutateCursorsState(f.paths, (current) => ({ ...current, agents: { claude: { ...current.agents.claude!, status: "waiting-peer" } } }));
+    expect(await remind()).toMatch(/^Owner reminder from coord: you have no current executable coordinator action/);
+    expect(readCursorsState(f.paths).agents.claude?.status).toBe("waiting-peer");
+    // A configured agent outside the active roster (dropped) is listed and reminded too.
+    const configured = readStartState(f.paths);
+    writeFileSync(f.paths.start, JSON.stringify({ ...configured, agents: [...configured.agents, { ...configured.agents[0]!, id: "codex" }] }));
+    const listed = loop.reminders();
+    expect(listed.map((item) => item.label)).toEqual(["claude", "codex"]);
+    listed[1]!.request();
+    await loop.runTick();
+    expect(f.ui.typed.at(-1)).toMatch(/^Owner reminder from coord: you have no current executable coordinator action/);
+    expect(f.ui.typed.at(-1)).toContain("agents/codex/action.md");
+    // Only a missing pane stops the owner; that result names its cause.
+    f.ui.dead = true;
+    expect(await remind()).toBeUndefined();
+    expect(f.messages.join("\n")).toContain("[WARN] claude: reminder not sent (target): no live terminal pane");
+  });
+
+  it("reproduces issue 177: an owner reminder reaches an idle Cursor held after lost sends", async () => {
+    const f = safetyFixture("cursor"), loop = f.makeLoop();
+    await loop.runTick();
+    const id = readCursorsState(f.paths).agents.cursor!.actionId!;
+    f.advance(1); f.working(); f.advance(1); f.stop(); // a recognized Stop
+    f.ui.text = `${id}\n→ Add a follow-up`;
+    f.advance(60_000);
+    await loop.runTick(); // Stop-authorized send, never acknowledged
     expect(f.ui.sends).toBe(2);
-    expect(readCursorsState(f.paths).actionSafety.claude).toMatchObject({ sends: 2, reserved: true });
-    expect(readCursorsState(f.paths).manualPaused).toBe(true);
+    await loop.runTick();
+    expect(f.messages.join("\n")).toContain(
+      "automatic delivery already used that idle report for this task; press n to send an owner reminder now");
+    mutateCursorsState(f.paths, (current) => ({ ...current, actionSafety: { cursor: { ...current.actionSafety.cursor!, sends: 4 } } }));
+    f.ui.text = "→ Add a follow-up"; // the lost send is absent from the ready prompt
+    f.advance(240_000);
+    const held = await loop.runTick();
+    expect(held.holds.map((hold) => hold.reason)).toEqual(["nudge-loop"]);
+    expect(f.ui.sends).toBe(2);
+    loop.reminders()[0]!.request();
+    const after = await loop.runTick();
+    expect(f.ui.sends).toBe(3);
+    expect(after.holds).toEqual(held.holds);
+    expect(after.agents.cursor).toMatchObject({ actionId: id, status: "ordered" }); // only valid evidence advances it
   });
 
   it("keeps startup and missing-Stop diagnostics advisory and avoids warning on every poll", async () => {
@@ -2339,7 +2395,7 @@ describe("effectful run loop", () => {
     expect(nudged[1]?.details).toMatchObject({ idle: true, actionDigest: action!.actionDigest });
   });
 
-  it("automatically overrides stale working only before the first send; owner reminders still check the Codex composer", async () => {
+  it("automatically overrides stale working only before the first send; an owner reminder ignores the Codex composer", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);
     writeFileSync(paths.start, `${JSON.stringify({ ...start, agents: start.agents.map((agent) =>
@@ -2402,13 +2458,10 @@ describe("effectful run loop", () => {
     draft = "owner is editing";
     loop.reminders().find((item) => item.label === "codex")!.request();
     await loop.runTick();
-    expect(literalNudges).toBe(1);
-    draft = "";
-    loop.reminders().find((item) => item.label === "codex")!.request();
-    await loop.runTick();
+    // The owner chose to type now: neither stale working nor a draft vetoes it.
     expect(literalNudges).toBe(2);
     expect(readJournal(paths)).toContainEqual(expect.objectContaining({ type: "nudged", agent: "codex",
-      actionId: action.actionId, details: expect.objectContaining({ owner: true }) }));
+      actionId: action.actionId, details: expect.objectContaining({ owner: true, kind: "action", outcome: "sent" }) }));
   });
 
   it("retries an action that a busy pane never injected", async () => {
@@ -2765,7 +2818,7 @@ describe("effectful run loop", () => {
       await fetchStarted;
       expect(progress.join("\n")).toContain("completion marker received; checking the submission");
       expect(progress.join("\n")).not.toContain("validated and accepted");
-      expect(progress.join("\n")).not.toContain("reminder not sent");
+      expect(progress.join("\n")).toContain("reminder not sent (target): this coordinator has no terminal control");
       mutateCursorsState(paths, (current) => {
         if (control === "pause") return setPaused(current, true);
         if (control === "drop") return dropAgent(current, "claude");
@@ -2868,7 +2921,8 @@ describe("effectful run loop", () => {
     const after = await loop.runTick();
     expect(progress.findIndex((message) => message.includes("completion marker received")))
       .toBeLessThan(progress.findIndex((message) => message.includes("private response validated and accepted")));
-    expect(progress.join("\n")).not.toMatch(/approve|The revision is ready|reminder not sent/);
+    expect(progress.join("\n")).not.toMatch(/approve|The revision is ready/);
+    expect(progress.join("\n")).toContain("reminder not sent (target): this coordinator has no terminal control");
     expect(after.ownerQuestion?.id).toBe("10000000-0000-4000-8000-000000000001");
     expect(after.acceptedResponses).toContainEqual(
       expect.objectContaining({

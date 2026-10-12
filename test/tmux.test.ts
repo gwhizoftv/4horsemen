@@ -200,6 +200,57 @@ describe("tmux boundary", () => {
     expect(slept).toEqual([]);
   });
 
+  it.each([
+    { condition: "in-flight turn chrome", display: "0\tagent\t0\t0\n", prompt: "Thinking…\nesc to cancel" },
+    { condition: "an unsent composer draft", display: "0\tagent\t0\t0\n", prompt: "> owner draft" },
+    { condition: "an unavailable capture", display: "0\tagent\t0\t0\n", prompt: null },
+    { condition: "automatic delivery disabled", display: "0\tagent\t0\t0\n", prompt: "", delivery: "pull" as const },
+    { condition: "a foreground mismatch", display: "0\tbash\t0\t0\n", prompt: "" },
+    { condition: "disabled input", display: "0\tagent\t0\t1\n", prompt: "" },
+    { condition: "copy mode", display: "0\tagent\t1\t0\n", prompt: "" }
+  ])("types an owner reminder despite $condition", async ({ display, prompt, delivery = "both" as "pull" | "both" }) => {
+    const calls: string[][] = [];
+    const controller = new TmuxController(async (args) => {
+      calls.push([...args]);
+      if (args[0] === "display-message") return ok(display);
+      if (args[0] === "capture-pane") { if (prompt === null) throw new Error("capture unavailable"); return ok(prompt); }
+      return ok();
+    }, null, null, null, noopSleep);
+    const agent = { id: "cursor", root: "/clone", launcher: "start-cursor.sh", delivery, harnessProcess: "agent" };
+    expect(await controller.ownerNudge(1, agent, "Owner reminder from coord: hello")).toEqual({ status: "sent", stage: "complete" });
+    const keys = calls.filter((args) => args[0] === "send-keys");
+    expect(keys.at(-1)).toEqual([
+      "send-keys", "-l", "-t", "coord-1:cursor.0", "Owner reminder from coord: hello",
+      ";", "run-shell", "sleep 0.3",
+      ";", "send-keys", "-t", "coord-1:cursor.0", "Enter"
+    ]);
+    // Copy mode is left so the keys reach the agent rather than tmux.
+    expect(keys.slice(0, -1)).toEqual(display === "0\tagent\t1\t0\n" ? [["send-keys", "-t", "coord-1:cursor.0", "-X", "cancel"]] : []);
+  });
+
+  it("reports the actual owner-reminder failure: missing pane, changed binding or a failed send", async () => {
+    const agent = { id: "cursor", root: "/clone", launcher: "start-cursor.sh", delivery: "both" as const, harnessProcess: "agent" };
+    const controller = (display: TmuxResult, send: TmuxResult) => {
+      const sent: string[][] = [];
+      return { sent, tmux: new TmuxController(async (args) => {
+        if (args[0] === "display-message") return display;
+        if (args[0] === "capture-pane") return ok("");
+        sent.push([...args]);
+        return send;
+      }, null, null, null, noopSleep) };
+    };
+    const missing = controller({ exitCode: 1, stdout: "", stderr: "can't find window" }, ok());
+    expect(await missing.tmux.ownerNudge(1, agent, "text")).toEqual({ status: "failed", stage: "target",
+      reason: "no live terminal pane at coord-1:cursor.0" });
+    const changed = controller(ok("0\tagent\t0\t0\n"), ok());
+    expect(await changed.tmux.ownerNudge(1, agent, "text", () => "assignment changed")).toEqual({ status: "failed",
+      stage: "binding", reason: "assignment changed" });
+    const failed = controller(ok("0\tagent\t0\t0\n"), { exitCode: 1, stdout: "", stderr: "lost server" });
+    expect(await failed.tmux.ownerNudge(1, agent, "text")).toEqual({ status: "uncertain", stage: "mid-send",
+      reason: "tmux send-keys failed: lost server" });
+    expect([missing.sent, changed.sent, failed.sent.length]).toEqual([[], [], 1]);
+  });
+
   it.each(["claude", "cursor"])("submits %s vim INSERT with gaps after text and Escape in one batch", async (id) => {
     const root = mkdtempSync(join(tmpdir(), "coord-cursor-vim-nudge-"));
     roots.push(root);

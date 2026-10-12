@@ -18,7 +18,8 @@ session or a known older turn is not current. New foreground activity, queued
 input, session replacement, or a new delivery revokes this readiness. No
 Working-text, idle-sentinel, or empty-composer confirmation of Stop is required.
 Process identity, pane liveness, copy mode, disabled input, trust/account dialogs,
-vendor usage waits, manual pause, holds and send budgets still apply.
+vendor usage waits, manual pause, holds and send budgets still apply to automatic
+delivery; an owner `n` reminder is outside this policy (see below).
 
 **A matching submit hook confirms acceptance.** `UserPromptSubmit` (Codex and
 Claude) or `beforeSubmitPrompt` (Cursor) must match the current action UUID,
@@ -137,6 +138,52 @@ execution also requires no lifecycle event at or after injection, so a delayed
 `SessionStart` cannot reopen delivery. Queue, background, turn-correlation and
 send-budget checks still apply. Elapsed time or a missing `complete` never
 authorize a retry on their own.
+
+## Owner reminders are instructions, not automatic delivery
+
+Everything above decides whether the coordinator may send on its own. An owner
+`n` reminder is outside that policy (issues 187 and 195):
+
+- No readiness, lifecycle, composer, foreground, delivery-mode, pause, hold,
+  spacing or send-budget rule applies to it.
+- It does not use `injectionGate` or an `IdleOverride`, and it is never recorded
+  as idle evidence.
+- It reuses the same text, keys and fixed key gaps. Those gaps make keystrokes
+  land; they are unrelated to the 60/120/240-second automatic spacing.
+- Only a missing pane, an assignment that changed before typing, or a tmux
+  failure stops it.
+- A successful send of the current action is recorded as an injection, so
+  automatic delivery does not paste a duplicate in the same idle epoch. Only a
+  matching submit hook proves acceptance.
+- `actionSafety` counts, reservations, holds and manual pause are untouched.
+
+A `working` or `idle-transition-already-used` wait is the automatic policy
+reporting what the lifecycle layer recorded. If the terminal shows the agent
+idle, `n` is the owner's override.
+
+### Issue 177 evidence and its limits
+
+Times are UTC on 2026-10-11; numbers are journal sequences.
+
+| Sequence | Time | Record |
+| --- | --- | --- |
+| 2900, 2954, 2987, 2995 | 00:28:18–00:35:21 | four sends of action `9f6923bb`, none acknowledged, each later proven absent (`prompt-ready-action-absent`) |
+| 2999 | 00:36:06 | the fourth send exhausted the budget: `nudge-loop` hold `01edf7dd`, which paused the issue overnight |
+| 3003 | 16:12:03 | the owner released the hold and reset the budget |
+| 3006, 3009 | 16:12:06, 16:13:07 | automatic sends resumed |
+| 3145 | 16:19:17 | ballot `ff2e6ee7` failed validation: its private response file was missing |
+| 3180–3181 | 16:20:02–16:20:03 | a resend, then `idle-transition-already-used`; no submit until the owner typed at 16:22:52 |
+
+The journal proves the idle transitions, the unacknowledged sends, the hold,
+and the shared owner restrictions. Before this change, owner `n` went through
+the same spacing, budget, readiness and pause checks as automatic sends, and the
+menu hid agents without an ordered action.
+
+The journal does not prove the rest. It holds no pane captures and no record of
+the owner's request or which early return refused it, so neither the reason
+Cursor dropped those keystrokes nor the specific refusal of that `n` can be
+established. Owner attempts are now journalled with their outcome, so a future
+incident can be attributed directly.
 
 ## Reason codes
 

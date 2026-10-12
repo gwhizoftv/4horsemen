@@ -688,7 +688,7 @@ not start a second tick loop. Logs clear and redraw the current edit.
 | `p` / Space | Toggle manual pause, never release holds |
 | `a` | Reopen missing agent Terminal clients using the existing attach flow |
 | `d` | Numbered active-agent menu; Enter selects, a separate `y` confirms |
-| `n` | Request a safe reminder for one agent's current task, without restarting it |
+| `n` | Type an owner reminder into any configured agent's terminal (or all of them), without restarting a task |
 | `r` | Release a selected hold after inspection; a reminder-limit reset asks a separate `y/N` question |
 | `?` / `h` | Help |
 | Return | Newline and prompt redraw in hotkey mode; no state change |
@@ -707,15 +707,30 @@ other holds or manual pause. Unknown printable input is quoted with help;
 multi-character plain pastes are inert. Pasted text does not execute hotkeys or confirmations; to paste
 guidance, press `/` first. In an edit, `q` is ordinary text.
 
-`n` queues one request in the live runner, bound to the selected task, digest and
-session; “requested” does not mean “sent”. An arriving completion is checked
-first. Changed activity, assignments, pause/holds, missing files or unavailable
-terminal delivery reject the request rather than retargeting it. An explicit
-request can overcome a stale working report only with current positive terminal
-idle proof; foreground/composer, queued/background work and per-key checks still
-veto it. Spacing, four-send limits and uncertain-send reservations still apply.
-No action/response file is cleared, task restarted, or send allowance reset by
-`n`. Inspect/type directly in the agent terminal when safe proof is unavailable.
+`n` lists every configured agent, whatever its status, delivery mode or roster
+membership, and is an owner instruction rather than an automatic send. Each
+selection queues one request in the live runner, bound only to the agent; the
+next poll types it before any pause, hold or observe-only return. It applies no
+readiness, lifecycle, composer, foreground, delivery-mode, spacing or send-budget
+check, and it neither spends nor resets the automatic budget, releases a hold or
+pause, clears an action/response/completion file, restarts a task nor advances
+the workflow. The text follows the agent's state at that moment:
+
+- an outstanding action: the usual `Read and execute coordinator action <id>
+  digest <digest> at <path>` line for the current file;
+- a completion awaiting validation: a note that the submission is waiting for
+  coordinator validation and must not be redone;
+- no executable assignment (accepted, unassigned, dropped, or no file): a neutral
+  note to stay available for operator guidance.
+
+The assignment is rechecked immediately before typing; a change is reported, not
+typed. Copy mode is left first so keys reach the agent. Only a missing pane, a
+changed assignment or a tmux failure stops the reminder, and coord prints that
+one reason. “Sent” means tmux accepted the keys, not that the agent read them; a
+partial send is reported as uncertain and is not retried. Automatic delivery does
+not repeat that action in the same poll. Each attempt is journalled with
+`owner: true`, its request id, message kind, stage and outcome: `nudged` for a
+send, `nudge-deferred` for a failure.
 
 There is no force-complete/next-stage key: a drafted plan or idle terminal is not
 validated evidence. An **action** is the assigned task in `action.md`; a **turn**
@@ -769,7 +784,7 @@ callbacks do not. These warnings neither grant readiness nor create holds.
 ### Delivery safety and unknown holds
 
 All vendors (including Antigravity) share a durable delivery budget for each
-unfinished action: one initial send and at most three repeats (including owner reminders), spaced
+unfinished action: one initial send and at most three repeats (owner `n` reminders are not counted), spaced
 at least 60, 120 and 240 seconds after the previous send. These are minimum delays,
 not permission to send: lifecycle and terminal readiness must still allow it.
 The 45-second wait before checking unknown/idle lost delivery is independent of

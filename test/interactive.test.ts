@@ -64,7 +64,11 @@ describe("foreground owner terminal", () => {
     const refused = vi.fn(() => { throw new Error("That task is no longer current"); });
     const sent = vi.fn(() => "Reminder requested for codex");
     Object.assign(f.commands, { reminders: () => [{ label: "claude", request: refused }, { label: "codex", request: sent }] });
+    await f.send("h");
+    expect(f.printed()).toContain("n: Send an owner reminder to any configured agent, or to all of them");
+    expect(f.printed()).not.toContain("readiness checks and send limits still apply");
     await f.send("n");
+    expect(f.printed()).toContain("Select an agent (or all) for an owner reminder (it does not restart any task):");
     expect(f.printed()).toContain("[3] All agents");
     await f.send("3"); await f.send("\r");
     expect(refused).toHaveBeenCalledOnce();
