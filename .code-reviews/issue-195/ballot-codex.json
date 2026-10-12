@@ -1,0 +1,29 @@
+{
+  "actionId": "e0fc4236-7de4-4879-a68c-a75a67ec41ea",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "b5372125cab35e55f695faa274db2dca0ed2f30b",
+      "path": ".signals/issue-195/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c42d14ec2da1860cc79be5e209d129025da143b7",
+      "path": ".signals/issue-195/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "61b75918d3924970935c891e50517380795266d7",
+      "path": ".signals/issue-195/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "899a08e4aa7be0cb0441a492e732b487f5c4f7f12b09e80af1e1154e9f05e3a2",
+  "issue": 195,
+  "issueSessionId": "issue-195:6a04d57e524ad53daa082568e146c5300e93dfeb",
+  "protocolVersion": 2,
+  "rationale": "Codex c42d14ec2da1860cc79be5e209d129025da143b7 follows the approved scope and shared transport design while preserving per-request outcomes, concurrent submit acknowledgements and per-agent suppression of automatic sends, avoiding the reproduced defects in the other candidates.",
+  "responseSha256": "6acd237947c39ce6b3329e176b96027f0aa14c8e152f44469fef4bf345ef973b"
+}

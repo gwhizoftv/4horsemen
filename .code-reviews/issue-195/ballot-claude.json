@@ -1,0 +1,29 @@
+{
+  "actionId": "b67fbdec-9629-4956-881c-e3b2b082ce44",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "b5372125cab35e55f695faa274db2dca0ed2f30b",
+      "path": ".signals/issue-195/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c42d14ec2da1860cc79be5e209d129025da143b7",
+      "path": ".signals/issue-195/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "61b75918d3924970935c891e50517380795266d7",
+      "path": ".signals/issue-195/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "899a08e4aa7be0cb0441a492e732b487f5c4f7f12b09e80af1e1154e9f05e3a2",
+  "issue": 195,
+  "issueSessionId": "issue-195:6a04d57e524ad53daa082568e146c5300e93dfeb",
+  "protocolVersion": 2,
+  "rationale": "The claude pin meets the selected plan with no defect found — it shares one typing path with automatic delivery, leaves tmux copy mode before typing, records every owner attempt, and limits the same-tick skip to the action the owner typed — whereas codex's skip suppresses a newly prepared action's only initial send, and cursor reports copy-mode sends as delivered, loses attempt records on a state-revision change, and duplicates the key-sending code.",
+  "responseSha256": "271105420192037c23a86cea47dbfaedd913173bf3cd764683afa72f0055b1e6"
+}

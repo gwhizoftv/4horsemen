@@ -1,0 +1,29 @@
+{
+  "actionId": "a8934df5-d233-4957-a80f-1655ae2776d7",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "b5372125cab35e55f695faa274db2dca0ed2f30b",
+      "path": ".signals/issue-195/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c42d14ec2da1860cc79be5e209d129025da143b7",
+      "path": ".signals/issue-195/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "61b75918d3924970935c891e50517380795266d7",
+      "path": ".signals/issue-195/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "899a08e4aa7be0cb0441a492e732b487f5c4f7f12b09e80af1e1154e9f05e3a2",
+  "issue": 195,
+  "issueSessionId": "issue-195:6a04d57e524ad53daa082568e146c5300e93dfeb",
+  "protocolVersion": 2,
+  "rationale": "Codex sends during an existing hold without charging the automatic budget and chooses task, validation, or neutral text from the current assignment, while Claude tells an in-progress agent to execute a different action and Cursor drops an in-flight reminder without a journal entry when cursor state changes during the send.",
+  "responseSha256": "ec0d1bf4aac4b648b4e5d5a01d45c1259cb8d6a8ef6500178a8c123416d91d87"
+}
