@@ -1,0 +1,46 @@
+{
+  "actionId": "71a3dec8-f606-4551-b1f8-bb34f989cd0a",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "a3c894323a1d2f7d435ddf864ac9135269d2a12e40b55818451732f4c20734c1",
+  "issue": 184,
+  "issueSessionId": "issue-184:0e0a07b93b61be5f76224650468d50c3bbf06d5d",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "c4056f3e7dfdf9f614dfa5ebb7b005faf0b291fd",
+      "path": ".plans/issue-184/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "7b72a1c74d198d6aba1ebf32fb66e954f08f86a4",
+      "path": ".plans/issue-184/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "bb5e9f701556f3bcb49f2a4897a52b26c210c4c3",
+      "path": ".plans/issue-184/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "The codex plan alone kills the updater's whole process group with a descendant regression test, updates after branch preparation but before start.json exists (so attach/resume cannot launch mid-update), tests the fresh-start versus resume split through the real CLI path, and yields an exact extractable file map; its remaining gaps (short 60 s update timeout, launch-environment parity) are corrections that apply equally or more to the other plans.",
+  "responseSha256": "58e90bee8ddf157a943fce1a59c76f4c2917d4b1fff85dc5f563d759d089a61f",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "825e017618479d72e7df4c3054c057697545af13",
+      "path": ".plans/issue-184/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "d1ebdbbe6e056b3ebdfc6ab77f6ece30682db8a2",
+      "path": ".plans/issue-184/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "1fd846ad4d699d35f042bd5bdac92b4e0c7eeb34",
+      "path": ".plans/issue-184/review.md"
+    }
+  ]
+}

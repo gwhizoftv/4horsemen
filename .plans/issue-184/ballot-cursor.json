@@ -1,0 +1,46 @@
+{
+  "actionId": "a496a4fc-9bb9-454c-b1e4-a501e35d87ec",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "a3c894323a1d2f7d435ddf864ac9135269d2a12e40b55818451732f4c20734c1",
+  "issue": 184,
+  "issueSessionId": "issue-184:0e0a07b93b61be5f76224650468d50c3bbf06d5d",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "c4056f3e7dfdf9f614dfa5ebb7b005faf0b291fd",
+      "path": ".plans/issue-184/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "7b72a1c74d198d6aba1ebf32fb66e954f08f86a4",
+      "path": ".plans/issue-184/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "bb5e9f701556f3bcb49f2a4897a52b26c210c4c3",
+      "path": ".plans/issue-184/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex is the only plan that finishes roster updates before start.json exists and stops the updater's process group before launch, so a pane cannot start while the binary is still being replaced.",
+  "responseSha256": "ec434e10537d3808a599a442488503bb7de32d2023d73027f48b0ad3400f54bc",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "825e017618479d72e7df4c3054c057697545af13",
+      "path": ".plans/issue-184/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "d1ebdbbe6e056b3ebdfc6ab77f6ece30682db8a2",
+      "path": ".plans/issue-184/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "1fd846ad4d699d35f042bd5bdac92b4e0c7eeb34",
+      "path": ".plans/issue-184/review.md"
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "actionId": "c5bb9933-c511-44e4-935e-3e9168bfdb3a",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "a3c894323a1d2f7d435ddf864ac9135269d2a12e40b55818451732f4c20734c1",
+  "issue": 184,
+  "issueSessionId": "issue-184:0e0a07b93b61be5f76224650468d50c3bbf06d5d",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "c4056f3e7dfdf9f614dfa5ebb7b005faf0b291fd",
+      "path": ".plans/issue-184/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "7b72a1c74d198d6aba1ebf32fb66e954f08f86a4",
+      "path": ".plans/issue-184/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "bb5e9f701556f3bcb49f2a4897a52b26c210c4c3",
+      "path": ".plans/issue-184/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Choose codex for its reuse of existing execution, state, and test seams, process-group timeout cleanup before launch, and exact file scope, with implementation required to match the launcher's nvm-selected environment and apply the reviewed longer update timeout.",
+  "responseSha256": "a0f6af659afa15fba35f4fbfbf4fee823f6392bd265e86bd54669eb561b6bbac",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "825e017618479d72e7df4c3054c057697545af13",
+      "path": ".plans/issue-184/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "d1ebdbbe6e056b3ebdfc6ab77f6ece30682db8a2",
+      "path": ".plans/issue-184/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "1fd846ad4d699d35f042bd5bdac92b4e0c7eeb34",
+      "path": ".plans/issue-184/review.md"
+    }
+  ]
+}
