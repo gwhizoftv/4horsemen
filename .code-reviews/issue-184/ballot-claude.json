@@ -1,0 +1,29 @@
+{
+  "actionId": "d147c28a-5b81-4338-88fd-bc090df9d708",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "94c9c01537d14c9d8333b37a4b41475ee310a121",
+      "path": ".signals/issue-184/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a342daa65dbeec0371b69983cb881b7b93ac6a26",
+      "path": ".signals/issue-184/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e0335ca7c88f3356403a1eba456517a56ae29723",
+      "path": ".signals/issue-184/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "52b136608039859fbc21dfc7f4a2c7f85a14c51414284c98d89ae202302114d8",
+  "issue": 184,
+  "issueSessionId": "issue-184:0e0a07b93b61be5f76224650468d50c3bbf06d5d",
+  "protocolVersion": 2,
+  "rationale": "Codex's pin is the only one with no confirmed correctness defect that also updates and records the same nvm-pinned install the launcher runs, kills the whole process group on timeout in both pipe layouts (cursor's leaks a SIGTERM-ignoring installer), and has the strongest tests, though its 180 s timeout and launcher refactor go beyond the selected plan and need explicit acceptance.",
+  "responseSha256": "1fa7ec3ff9a3d881ee31eac44c63f8ee72cd74109a683bc9c850ddd816891794"
+}

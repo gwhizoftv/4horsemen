@@ -1,0 +1,29 @@
+{
+  "actionId": "a89fbb3a-1977-4167-8bcd-a1329ad8e55c",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "94c9c01537d14c9d8333b37a4b41475ee310a121",
+      "path": ".signals/issue-184/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a342daa65dbeec0371b69983cb881b7b93ac6a26",
+      "path": ".signals/issue-184/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e0335ca7c88f3356403a1eba456517a56ae29723",
+      "path": ".signals/issue-184/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "52b136608039859fbc21dfc7f4a2c7f85a14c51414284c98d89ae202302114d8",
+  "issue": 184,
+  "issueSessionId": "issue-184:0e0a07b93b61be5f76224650468d50c3bbf06d5d",
+  "protocolVersion": 2,
+  "rationale": "Codex updates the executable the generated launcher will exec, including a clone .nvmrc, and its timeout still kills a SIGTERM-ignoring descendant after the leader exits.",
+  "responseSha256": "d63290d25c497877648cb0f5b003a2a679b3accdad51ad3fe6f75b6abb72e680"
+}

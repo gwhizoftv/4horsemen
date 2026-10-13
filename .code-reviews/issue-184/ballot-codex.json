@@ -1,0 +1,29 @@
+{
+  "actionId": "421ce100-3b11-463b-a543-3e8aa013a25f",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "94c9c01537d14c9d8333b37a4b41475ee310a121",
+      "path": ".signals/issue-184/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a342daa65dbeec0371b69983cb881b7b93ac6a26",
+      "path": ".signals/issue-184/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e0335ca7c88f3356403a1eba456517a56ae29723",
+      "path": ".signals/issue-184/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "52b136608039859fbc21dfc7f4a2c7f85a14c51414284c98d89ae202302114d8",
+  "issue": 184,
+  "issueSessionId": "issue-184:0e0a07b93b61be5f76224650468d50c3bbf06d5d",
+  "protocolVersion": 2,
+  "rationale": "Codex a342daa65dbeec0371b69983cb881b7b93ac6a26 shares the launcher environment for updates and version reads and passes the descendant-cleanup reproduction, while both peer implementations can target the wrong installation and Cursor additionally leaves a timed-out installer descendant running.",
+  "responseSha256": "9c53235d5f76ac8345a15b9bd9e73cff8ec4a2c49e34d4eb84676fc293e99c44"
+}
