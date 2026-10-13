@@ -1,10 +1,11 @@
-import { constants, accessSync, existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { constants, accessSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { homedir, platform } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { AgentConfig } from "./state.js";
 import { assertNoSymlink, containedPath, isPathInside } from "./paths.js";
 import { agentNudgeKeyDefaults, agentOwnerUiDefaults } from "./setupWorkspace.js";
+import { shellQuote } from "./agentHookSync.js";
 
 export type TmuxResult = { exitCode: number; stdout: string; stderr: string };
 export type TmuxRunner = (args: readonly string[], input?: string) => Promise<TmuxResult>;
@@ -686,6 +687,39 @@ export const resolveAgentLauncher = (agent: AgentConfig): string => {
   return launcher;
 };
 
+/** Directory that receives one agent's per-run terminal logs. */
+export type TerminalLogDir = (agentId: string) => string;
+
+/** A fresh log path per run, so a relaunch can never overwrite earlier evidence. */
+const newTerminalLog = (dir: string): string => {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  for (let suffix = 0; ; suffix += 1) {
+    const log = join(dir, `run-${stamp}${suffix === 0 ? "" : `-${suffix}`}.log`);
+    if (!existsSync(log)) return log;
+  }
+};
+
+/**
+ * Appended to the launch command in the same tmux invocation. tmux runs a
+ * command list before it services the new pane's pty, so the pane is retained
+ * on every exit and piped from the agent's first byte, even if the agent
+ * clears its startup dialogue or exits at once.
+ */
+const launchDiagnostics = (window: string, logDir: string | undefined): string[] => {
+  const retain = [";", "set-option", "-w", "-t", window, "remain-on-exit", "on"];
+  if (logDir === undefined) return retain;
+  const log = newTerminalLog(logDir);
+  return [
+    ...retain,
+    ";", "set-option", "-w", "-t", window, "@coord-log", log,
+    ";", "pipe-pane", "-t", window, `cat >> ${shellQuote(log)}`
+  ];
+};
+
+const describeExit = (status: string, signal: string): string =>
+  signal !== "" ? `signal ${signal}` : status !== "" ? `status ${status}` : "exit details unavailable";
+
 export class TmuxController {
   constructor(
     private readonly runner: TmuxRunner = runTmux,
@@ -752,6 +786,7 @@ export class TmuxController {
   async killIssueSessions(key: SessionKey, agentIds?: readonly string[]): Promise<string[]> {
     const names = await this.listIssueSessions(key, agentIds);
     for (const name of names) {
+      await this.recordPaneExits(["-s", "-t", name]);
       await this.runner(["kill-session", "-t", name]);
     }
     return names;
@@ -824,7 +859,7 @@ export class TmuxController {
       : `[WARN] Terminal session issue binding is missing or differs from ${issue}; inspect/restart the agent terminals through coord before retrying work.`;
   }
 
-  async startSession(issue: number, agents: readonly AgentConfig[]): Promise<void> {
+  async startSession(issue: number, agents: readonly AgentConfig[], terminalLogDir?: TerminalLogDir): Promise<void> {
     await this.preflight(agents);
     const session = this.sessionName(issue);
     const exists = await this.runner(["has-session", "-t", session]);
@@ -849,7 +884,8 @@ export class TmuxController {
           safeName(agent.id),
           "-c",
           resolve(agent.root),
-          launcher
+          launcher,
+          ...launchDiagnostics(target, terminalLogDir?.(agent.id))
         ]);
         if (window.exitCode !== 0) throw new Error(`cannot launch ${agent.id} in ${target}: ${window.stderr}`);
       }
@@ -876,17 +912,26 @@ export class TmuxController {
     const lines: string[] = [];
     for (const agent of agents) {
       const target = this.target(key, agent.id);
-      const result = await this.runner(["display-message", "-p", "-t", target, "#{pane_dead}\t#{pane_start_path}"])
-        .catch(() => ({ exitCode: 1, stdout: "", stderr: "" }));
-      const [dead = "1", startPath = ""] = result.stdout.replace(/\n$/, "").split("\t");
+      const result = await this.runner([
+        "display-message",
+        "-p",
+        "-t",
+        target,
+        "#{pane_dead}\t#{pane_start_path}\t#{pane_dead_status}\t#{pane_dead_signal}\t#{@coord-log}"
+      ]).catch(() => ({ exitCode: 1, stdout: "", stderr: "" }));
+      const [dead = "1", startPath = "", status = "", signal = "", log = ""] = result.stdout.replace(/\n$/, "").split("\t");
+      const logNote = log === "" ? "" : `; output log: ${log}`;
       if (result.exitCode !== 0 || result.stdout.trim() === "") {
         lines.push(`[WARN] ${agent.id}: no window in tmux session ${session}; run coord attach or restart the agent through coord.`);
       } else if (dead === "1") {
-        lines.push(`[WARN] ${agent.id}: the pane in ${target} has exited; inspect it, then restart the agent through coord.`);
+        lines.push(
+          `[WARN] ${agent.id}: the pane in ${target} has exited (${describeExit(status, signal)}; this alone does not show why)` +
+            `${logNote}; inspect it, then restart the agent through coord.`
+        );
       } else if (startPath !== "" && resolve(startPath) !== resolve(agent.root)) {
         lines.push(`[WARN] ${agent.id}: the pane in ${target} started in ${startPath}, not its clone ${resolve(agent.root)}.`);
       } else {
-        lines.push(`[OK] ${agent.id}: running in ${target}${startPath === "" ? " (start directory unknown)" : ""}.`);
+        lines.push(`[OK] ${agent.id}: running in ${target}${startPath === "" ? " (start directory unknown)" : ""}${logNote}.`);
       }
     }
     if (this.titleProbe !== null) {
@@ -902,13 +947,46 @@ export class TmuxController {
   }
 
   async stopSession(key: SessionKey): Promise<void> {
+    await this.recordPaneExits(["-s", "-t", this.sessionName(key)]);
     await this.runner(["kill-session", "-t", this.sessionName(key)]);
+  }
+
+  /**
+   * Save tmux's exit status and signal beside each dead pane's run log before
+   * the pane is respawned or destroyed. Best effort: a diagnostics failure must
+   * never block recovery, and an existing record is never overwritten.
+   */
+  private async recordPaneExits(scope: readonly string[]): Promise<void> {
+    const listed = await this.runner([
+      "list-panes",
+      ...scope,
+      "-F",
+      "#{pane_dead}\t#{pane_dead_status}\t#{pane_dead_signal}\t#{pane_dead_time}\t#{@coord-log}"
+    ]).catch(() => ({ exitCode: 1, stdout: "", stderr: "" }));
+    if (listed.exitCode !== 0) return;
+    for (const line of listed.stdout.split("\n")) {
+      const [dead, status = "", signal = "", time = "", log = ""] = line.split("\t");
+      if (dead !== "1" || !log.endsWith(".log")) continue;
+      const record = {
+        status: status === "" ? null : Number(status),
+        signal: signal === "" ? null : signal,
+        deadAt: /^\d+$/.test(time) ? new Date(Number(time) * 1000).toISOString() : null,
+        recordedAt: new Date().toISOString(),
+        note: "tmux exit details only; they do not show why the agent exited. Read the output log."
+      };
+      try {
+        writeFileSync(`${log.slice(0, -".log".length)}.exit.json`, `${JSON.stringify(record, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+      } catch {
+        // Already recorded, or the runtime is gone; never block the respawn or teardown.
+      }
+    }
   }
 
   async ensureSession(
     key: SessionKey,
     agents: readonly AgentConfig[],
-    assertAuthority: () => void = () => undefined
+    assertAuthority: () => void = () => undefined,
+    terminalLogDir?: TerminalLogDir
   ): Promise<void> {
     const session = this.sessionName(key);
     const exists = await this.runner(["has-session", "-t", session]);
@@ -957,6 +1035,8 @@ export class TmuxController {
         assertAuthority();
         if (pane.alive) continue;
         const launcher = resolveAgentLauncher(agent);
+        await this.recordPaneExits(["-t", target]);
+        assertAuthority();
         const respawned = await this.runner([
           "respawn-pane",
           "-k",
@@ -964,14 +1044,26 @@ export class TmuxController {
           target,
           "-c",
           resolve(agent.root),
-          launcher
+          launcher,
+          ...launchDiagnostics(target, terminalLogDir?.(agent.id))
         ]);
         assertAuthority();
         if (respawned.exitCode !== 0) throw new Error(`cannot relaunch ${agent.id} in ${target}: ${respawned.stderr}`);
         continue;
       }
       const launcher = resolveAgentLauncher(agent);
-      const created = await this.runner(["new-window", "-d", "-t", session, "-n", safeName(agent.id), "-c", resolve(agent.root), launcher]);
+      const created = await this.runner([
+        "new-window",
+        "-d",
+        "-t",
+        session,
+        "-n",
+        safeName(agent.id),
+        "-c",
+        resolve(agent.root),
+        launcher,
+        ...launchDiagnostics(target, terminalLogDir?.(agent.id))
+      ]);
       assertAuthority();
       if (created.exitCode !== 0) throw new Error(`cannot launch ${agent.id} in ${target}: ${created.stderr}`);
     }
