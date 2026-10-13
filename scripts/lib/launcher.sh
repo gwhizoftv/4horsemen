@@ -38,7 +38,9 @@ launcher_command() {
       # cursors.json and peers' orders along with it.
       # --no-daemon: hooks run in the shared app-server otherwise, with the
       # COORD_ISSUE of whichever launch started it, not this pane's (issue 186).
-      printf 'exec codex --ask-for-approval never --sandbox workspace-write --no-daemon ${coord_grant[@]+"${coord_grant[@]}"}\n'
+      # check_for_update_on_startup=false: coord start already updated Codex.
+      # A launch-time self-update replaces the process in the pane (issue 184).
+      printf 'exec codex -c check_for_update_on_startup=false --ask-for-approval never --sandbox workspace-write --no-daemon ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     antigravity)
       # agy installs into ~/.local/bin, which a login shell does not always

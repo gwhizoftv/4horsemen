@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
-import { dirname, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readAction } from "./action.js";
 import { handleAgentEvent, lifecycleVendorSchema } from "./agentEvent.js";
@@ -34,9 +34,11 @@ import { gitShaSchema } from "./protocol.js";
 import {
   CoordinatorRunLoop,
   runArgv,
-  type ProcessRunner
+  type ProcessRunner,
+  type ProcessRunOptions
 } from "./runLoop.js";
 import {
+  type AgentConfig,
   appendJournal,
   atomicWriteJson,
   cursorsStateSchema,
@@ -607,6 +609,102 @@ const reportOwnerAgentClients = (result: OpenOwnerAgentClientsResult, log: (mess
   for (const command of result.commands) log(`  ${command}\n`);
 };
 
+/** Vendor update argv for a fresh start. Unknown ids are not guessed from the agent name. */
+const VENDOR_UPDATE: Readonly<Record<string, readonly [string, string]>> = {
+  codex: ["codex", "update"],
+  claude: ["claude", "update"],
+  cursor: ["agent", "update"],
+  antigravity: ["agy", "update"]
+};
+const UPDATE_TIMEOUT_MS = 60_000;
+const VERSION_TIMEOUT_MS = 5_000;
+
+const antigravityEnv = (): NodeJS.ProcessEnv => {
+  const home = process.env.HOME !== undefined && process.env.HOME !== "" ? process.env.HOME : homedir();
+  const prefix = join(home, ".local", "bin");
+  const current = process.env.PATH ?? "";
+  const path = current === prefix || current.startsWith(`${prefix}${delimiter}`)
+    ? current
+    : current === "" ? prefix : `${prefix}${delimiter}${current}`;
+  return { ...process.env, PATH: path };
+};
+
+const maintenanceOptions = (agentId: string, timeoutMs: number): ProcessRunOptions =>
+  agentId === "antigravity" ? { timeoutMs, env: antigravityEnv() } : { timeoutMs };
+
+const firstDiagnostic = (text: string): string => {
+  const line = text.split(/\r?\n/).map((entry) => entry.trim()).find((entry) => entry !== "") ?? "";
+  return line.length > 200 ? `${line.slice(0, 200)}…` : line;
+};
+
+/**
+ * Update the roster that is about to run, then read the versions that will
+ * launch. Failures warn and continue. Callers must not use this on attach,
+ * resume, or pane recovery.
+ */
+const maintainSelectedAgents = async (
+  roster: readonly AgentConfig[],
+  runner: ProcessRunner,
+  log: (message: string) => void,
+  warn: (message: string) => void
+): Promise<Record<string, string | null>> => {
+  const versions: Record<string, string | null> = {};
+  for (const agent of roster) {
+    const update = VENDOR_UPDATE[agent.id];
+    if (update === undefined) {
+      versions[agent.id] = null;
+      continue;
+    }
+    log(`Updating ${agent.id} (${update[0]} ${update[1]})…\n`);
+    try {
+      const result = await runner([...update], agent.root, maintenanceOptions(agent.id, UPDATE_TIMEOUT_MS));
+      if (result.timedOut === true) {
+        warn(`[WARN] ${agent.id}: update timed out after 60s; continuing with the installed version.\n`);
+      } else if (result.exitCode !== 0) {
+        const diagnostic = firstDiagnostic(result.stderr) || firstDiagnostic(result.stdout);
+        warn(
+          `[WARN] ${agent.id}: update failed (exit ${result.exitCode})${diagnostic === "" ? "" : `: ${diagnostic}`}; continuing with the installed version.\n`
+        );
+      }
+    } catch (error) {
+      warn(
+        `[WARN] ${agent.id}: update failed (${error instanceof Error ? error.message : String(error)}); continuing with the installed version.\n`
+      );
+    }
+  }
+  for (const agent of roster) {
+    const update = VENDOR_UPDATE[agent.id];
+    if (update === undefined) {
+      warn(`[WARN] ${agent.id}: no update command for this agent; continuing with the installed version.\n`);
+      log(`Agent ${agent.id} version: unknown\n`);
+      continue;
+    }
+    let version: string | null = null;
+    try {
+      const result = await runner([update[0], "--version"], agent.root, maintenanceOptions(agent.id, VERSION_TIMEOUT_MS));
+      if (result.timedOut === true) {
+        warn(`[WARN] ${agent.id}: version command timed out after 5s; recording unknown.\n`);
+      } else if (result.exitCode !== 0) {
+        const diagnostic = firstDiagnostic(result.stderr) || firstDiagnostic(result.stdout);
+        warn(
+          `[WARN] ${agent.id}: version command failed (exit ${result.exitCode})${diagnostic === "" ? "" : `: ${diagnostic}`}; recording unknown.\n`
+        );
+      } else {
+        const reported = result.stdout.trim();
+        if (reported === "") warn(`[WARN] ${agent.id}: version command returned no output; recording unknown.\n`);
+        else version = reported;
+      }
+    } catch (error) {
+      warn(
+        `[WARN] ${agent.id}: version command failed (${error instanceof Error ? error.message : String(error)}); recording unknown.\n`
+      );
+    }
+    versions[agent.id] = version;
+    log(`Agent ${agent.id} version: ${version ?? "unknown"}\n`);
+  }
+  return versions;
+};
+
 const defaultStartEffects = async (input: {
   paths: IssueRuntimePaths;
   issue: number;
@@ -966,6 +1064,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       log: io.stdout
     });
 
+    const agentVersions = await maintainSelectedAgents(roster, runner, io.stdout, io.stderr);
+
     let effects: { cleanup: () => Promise<void> } | null = null;
     createIssueRuntime(paths, roster.map((agent) => agent.id));
     try {
@@ -998,7 +1098,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         workflowCriticalPrefixes: config.workflowCriticalPrefixes,
         workflowCriticalFiles: config.workflowCriticalFiles,
         pollIntervalMs: config.pollIntervalMs,
-        contextPaths: config.contextPaths
+        contextPaths: config.contextPaths,
+        agentVersions
       });
       initializeAgentLifecycle(paths, roster.map((agent) => agent.id));
       // Start the CLIs only after their owner runtime exists. SessionStart

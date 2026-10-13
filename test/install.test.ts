@@ -791,7 +791,7 @@ describe("completion mailbox wiring", () => {
 
     const expected = {
       claude: ["--permission-mode", "auto"],
-      codex: ["--ask-for-approval", "never", "--sandbox", "workspace-write", "--no-daemon"],
+      codex: ["-c", "check_for_update_on_startup=false", "--ask-for-approval", "never", "--sandbox", "workspace-write", "--no-daemon"],
       cursor: ["--sandbox", "enabled"],
       antigravity: ["--mode", "accept-edits", "--dangerously-skip-permissions"]
     } as const;
@@ -846,6 +846,18 @@ describe("completion mailbox wiring", () => {
       stdio: "ignore"
     });
     expect(readFileSync(manual, "utf8").trimEnd().split("\n")).toEqual(["--permission-mode", "auto"]);
+
+    const codexClone = result.clones[1] as string;
+    const empty = join(fixture.workspaceRoot, "codex-empty.args");
+    execFileSync("/bin/bash", [join(codexClone, "start-codex.sh")], {
+      cwd: codexClone,
+      env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_ISSUE: "", CAPTURE: empty },
+      stdio: "ignore"
+    });
+    expect(readFileSync(empty, "utf8").trimEnd().split("\n")).toEqual([
+      "-c", "check_for_update_on_startup=false",
+      "--ask-for-approval", "never", "--sandbox", "workspace-write", "--no-daemon"
+    ]);
   });
 
   /**

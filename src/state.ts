@@ -468,6 +468,13 @@ export const startStateSchema = z
      * strict schema; see `StartStateInput` for the construction boundary.
      */
     contextPaths: z.array(z.string().min(1)).default([]),
+    /**
+     * Versions observed after the fresh-start update attempt. Optional so a
+     * start.json written before this field existed still parses. Null means the
+     * version command failed or the agent has no known updater. Recovery does
+     * not fill it in.
+     */
+    agentVersions: z.record(agentIdSchema, z.string().min(1).nullable()).optional(),
     createdAt: timestampSchema
   })
   .strict();

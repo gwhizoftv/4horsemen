@@ -269,6 +269,18 @@ describe("operational state", () => {
     expect(readStartState(paths)).toMatchObject({ verification, verificationDigest: "d".repeat(64) });
   });
 
+  it("round-trips optional agent versions and still reads a start.json that omits them", () => {
+    const { paths, start } = initialize();
+    expect(start.agentVersions).toBeUndefined();
+    expect(readStartState(paths).agentVersions).toBeUndefined();
+    const agentVersions = { claude: "claude 1.2.3", codex: null };
+    writeFileSync(paths.start, JSON.stringify({ ...readStartState(paths), agentVersions }));
+    expect(readStartState(paths).agentVersions).toEqual(agentVersions);
+    expect(startStateSchema.safeParse({ ...readStartState(paths), agentVersions: { claude: "" } }).success).toBe(false);
+    expect(startStateSchema.safeParse({ ...readStartState(paths), agentVersions: { claude: 1 } }).success).toBe(false);
+    expect(startStateSchema.safeParse({ ...readStartState(paths), agentVersions: { "not an id": "1.0.0" } }).success).toBe(false);
+  });
+
   it("persists pause and drop state but refuses a zero-agent workflow", () => {
     const { paths, cursors } = initialize();
     let next = setPaused(cursors, true, "2026-08-11T10:01:00.000Z");

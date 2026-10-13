@@ -301,11 +301,19 @@ view N --repo owner/repo`, validates the response, and canonicalizes the title
 and body. Missing or unreadable issues fail before runtime, mirror, or tmux
 effects with create/auth remediation. It then preflights the exact origin
 baseline, the running coordinator checkout's real `HEAD` as its trusted source
-commit, digest inputs, confined non-symlink executable launchers, mirror, and tmux. It
-creates an attachable `coord-<issue>` session and invokes each configured
-`start-<agent>.sh` before committing active issue state. A failed partial tmux
-launch or later startup write is cleaned up, including the issue snapshot, and
-no apparently active issue runtime is left behind.
+commit, digest inputs, and confined non-symlink executable launchers, and
+prepares each selected clone's issue branch. Before it writes runtime state or
+launches any agent, it updates that roster in order (`codex update`,
+`claude update`, `agent update`, `agy update`), waiting up to 60 seconds per
+agent. A failed, missing, or timed-out update is a warning; startup continues
+with the installation that is already present. It then reads each supported
+CLI's `--version`, prints one line per selected agent (`unknown` when the probe
+fails), and stores that map on `start.json` as `agentVersions`. Attach, resume,
+numeric continuation, and pane recovery do not update and do not rewrite the
+snapshot. Only after that snapshot exists does start create the attachable
+`coord-<issue>` session and invoke each configured `start-<agent>.sh`. A failed
+partial tmux launch or later startup write is cleaned up, including the issue
+snapshot, and no apparently active issue runtime is left behind.
 Once state is committed, a failure in the initial tick is reported without
 deleting the resumable runtime or terminating the successfully launched panes.
 
@@ -412,6 +420,8 @@ budget or clearing other holds/manual pause. A tmux write alone is injection,
 not acceptance. AGY keeps its working delivery without a new hook requirement.
 The Codex launcher passes `--no-daemon`: the shared app-server would otherwise run
 hooks with the `COORD_ISSUE` of whichever launch started it, not this pane's.
+It also passes `-c check_for_update_on_startup=false` so a launch does not
+start a second self-update after `coord start` has already updated the roster.
 Existing clones keep their old `start-codex.sh` until `coord install` rewrites it.
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Claude 1 / Codex 1 / Cursor 1 / Gemini 1)

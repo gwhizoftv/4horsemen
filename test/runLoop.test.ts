@@ -22,6 +22,7 @@ import {
   computeConsensusDerived,
   deriveBoundInputs,
   CoordinatorRunLoop,
+  runArgv,
   derivedDecisionJournalDetails,
   deterministicWinner,
   githubRepositoryFromOrigin,
@@ -4521,4 +4522,67 @@ describe("third revision closeout", () => {
       expect(recovered.agents.codex?.actionId).toBeNull();
     }
   );
+});
+
+describe("bounded runArgv", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  it("returns successful output when no execution options are supplied", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "coord-runargv-"));
+    roots.push(cwd);
+    const result = await runArgv([process.execPath, "-e", "process.stdout.write('ok')"], cwd);
+    expect(result).toEqual({ exitCode: 0, stdout: "ok", stderr: "" });
+  });
+
+  it("reports a missing executable instead of hanging the timeout", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "coord-runargv-"));
+    roots.push(cwd);
+    await expect(runArgv(["/no/such/coord-184-binary"], cwd, { timeoutMs: 500 })).rejects.toThrow();
+  });
+
+  it("stops a hanging process and its descendant, and caps drained output", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "coord-runargv-"));
+    roots.push(cwd);
+    const marker = join(cwd, "late.txt");
+    const pidFile = join(cwd, "pid");
+    const parentScript = join(cwd, "parent.mjs");
+    const childScript = join(cwd, "child.mjs");
+    writeFileSync(childScript, `
+      import { writeFileSync } from "node:fs";
+      setTimeout(() => writeFileSync(process.env.MARKER, "late"), 500);
+      setInterval(() => {}, 1000);
+    `);
+    writeFileSync(parentScript, `
+      import { spawn } from "node:child_process";
+      import { writeFileSync } from "node:fs";
+      writeFileSync(process.env.PIDFILE, String(process.pid));
+      spawn(process.execPath, [process.env.CHILD_SCRIPT], { stdio: "ignore", env: process.env });
+      process.stdout.write("x".repeat(80_000) + "TAIL-MARKER");
+      process.on("SIGTERM", () => {});
+      setInterval(() => {}, 1000);
+    `);
+    const killTree = (): void => {
+      if (!existsSync(pidFile)) return;
+      const pid = Number(readFileSync(pidFile, "utf8"));
+      if (!Number.isInteger(pid)) return;
+      try { process.kill(-pid, "SIGKILL"); } catch { /* already gone */ }
+      try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+    };
+    try {
+      const result = await runArgv([process.execPath, parentScript], cwd, {
+        timeoutMs: 200,
+        env: { ...process.env, MARKER: marker, PIDFILE: pidFile, CHILD_SCRIPT: childScript }
+      });
+      expect(result.timedOut).toBe(true);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout.length).toBeLessThanOrEqual(64 * 1024);
+      expect(result.stdout.endsWith("TAIL-MARKER")).toBe(true);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      killTree();
+    }
+  });
 });

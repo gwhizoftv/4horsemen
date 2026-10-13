@@ -118,10 +118,25 @@ import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import { harnessPromptReadiness, renderNudgeText, TmuxController, type IdleOverride, type OwnerReminderOutcome } from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
-export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
-export type ProcessRunner = (argv: readonly string[], cwd: string) => Promise<ProcessResult>;
+export type ProcessResult = { exitCode: number; stdout: string; stderr: string; timedOut?: boolean };
+/** Opt-in limits for vendor maintenance. Absent options keep the historical spawn path. */
+export type ProcessRunOptions = { timeoutMs?: number; env?: NodeJS.ProcessEnv };
+export type ProcessRunner = (
+  argv: readonly string[],
+  cwd: string,
+  options?: ProcessRunOptions
+) => Promise<ProcessResult>;
 
-export const runArgv: ProcessRunner = (argv, cwd) =>
+const BOUNDED_OUTPUT_CAP = 64 * 1024;
+/** After SIGTERM, how long a bounded command's process group may take to exit. */
+const TERMINATION_GRACE_MS = 1_000;
+
+const appendCapped = (current: string, chunk: string): string => {
+  const next = current + chunk;
+  return next.length <= BOUNDED_OUTPUT_CAP ? next : next.slice(next.length - BOUNDED_OUTPUT_CAP);
+};
+
+const runArgvUnbounded: ProcessRunner = (argv, cwd) =>
   new Promise((resolvePromise, reject) => {
     const [command, ...args] = argv;
     if (command === undefined) {
@@ -140,6 +155,80 @@ export const runArgv: ProcessRunner = (argv, cwd) =>
     child.once("error", reject);
     child.once("close", (code) => resolvePromise({ exitCode: code ?? 1, stdout, stderr }));
   });
+
+/**
+ * Bounded spawn for fresh-start vendor maintenance. A timeout signals the
+ * child's process group, then SIGKILL, and resolves only after the child
+ * closes — never via a race that leaves the installer running.
+ */
+const runArgvBounded = (
+  argv: readonly string[],
+  cwd: string,
+  options: ProcessRunOptions
+): Promise<ProcessResult> =>
+  new Promise((resolvePromise, reject) => {
+    const [command, ...args] = argv;
+    if (command === undefined) {
+      reject(new Error("Cannot run an empty argv."));
+      return;
+    }
+    const timeoutMs = options.timeoutMs;
+    const group = timeoutMs !== undefined && process.platform !== "win32";
+    const child = spawn(command, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: options.env ?? (command === "git" ? hermeticGitEnv() : process.env),
+      detached: group
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+    const timers: NodeJS.Timeout[] = [];
+    const clearTimers = (): void => {
+      for (const timer of timers) clearTimeout(timer);
+      timers.length = 0;
+    };
+    const finish = (failed: Error | null, result?: ProcessResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      child.stdout?.removeAllListeners();
+      child.stderr?.removeAllListeners();
+      child.removeAllListeners();
+      if (failed !== null) reject(failed);
+      else resolvePromise(result as ProcessResult);
+    };
+    const signalGroup = (signal: NodeJS.Signals): void => {
+      if (child.pid === undefined) return;
+      try {
+        if (group) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch {
+        try { child.kill(signal); } catch { /* already exited */ }
+      }
+    };
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => { stdout = appendCapped(stdout, chunk); });
+    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { stderr = appendCapped(stderr, chunk); });
+    child.once("error", (error) => finish(error));
+    child.once("close", (code) => {
+      const exitCode = timedOut ? (code !== null && code !== 0 ? code : 1) : (code ?? 1);
+      finish(null, timedOut ? { exitCode, stdout, stderr, timedOut: true } : { exitCode, stdout, stderr });
+    });
+    if (timeoutMs !== undefined) {
+      timers.push(setTimeout(() => {
+        if (settled) return;
+        timedOut = true;
+        signalGroup("SIGTERM");
+        timers.push(setTimeout(() => { if (!settled) signalGroup("SIGKILL"); }, TERMINATION_GRACE_MS));
+      }, timeoutMs));
+    }
+  });
+
+export const runArgv: ProcessRunner = (argv, cwd, options) =>
+  options?.timeoutMs === undefined && options?.env === undefined
+    ? runArgvUnbounded(argv, cwd)
+    : runArgvBounded(argv, cwd, options ?? {});
 
 export type PullRequestInput = {
   repository: string;
