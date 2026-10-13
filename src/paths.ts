@@ -330,6 +330,8 @@ export type AgentRuntimePaths = {
   completeDir: string;
   /** Agent-writable ballot response directory under the issue runtime. */
   responsesDir: string;
+  /** Raw per-run terminal output and tmux exit details (`run-<time>.log`, `.exit.json`). */
+  terminalLogs: string;
 };
 
 const agentPattern = /^[a-z][a-z0-9-]{0,63}$/;
@@ -354,7 +356,8 @@ export const agentRuntimePaths = (paths: IssueRuntimePaths, agent: string): Agen
     ready: readyReceiptPath(containedPath(completeDir, "complete")),
     renderLog: containedPath(root, "render.log"),
     completeDir,
-    responsesDir: containedPath(root, "responses")
+    responsesDir: containedPath(root, "responses"),
+    terminalLogs: containedPath(root, "terminal")
   };
 };
 

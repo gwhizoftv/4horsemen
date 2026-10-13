@@ -1,4 +1,5 @@
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -50,7 +51,7 @@ it("reports per-agent tmux placement and missing Terminal windows read-only", as
   const calls: string[][] = [];
   const panes: Record<string, string> = {
     "coord-7:claude.0": "0\t/clones/claude\n",
-    "coord-7:codex.0": "1\t/clones/codex\n",
+    "coord-7:codex.0": "1\t/clones/codex\t\tKILL\t/logs/codex/run-1.log\n",
     "coord-7:cursor.0": "0\t/elsewhere\n",
     "coord-7:antigravity.0": "0\t\n"
   };
@@ -64,7 +65,9 @@ it("reports per-agent tmux placement and missing Terminal windows read-only", as
   const tmux = new TmuxController(runner, null, null, null, noopSleep, "grp", (titles) => titles.filter((title) => !title.includes("codex")));
   const lines = await tmux.agentPlacementDiagnostics(7, agents);
   expect(lines).toContain("[OK] claude: running in coord-7:claude.0.");
-  expect(lines.find((line) => line.startsWith("[WARN] codex: the pane"))).toContain("has exited");
+  const exited = lines.find((line) => line.startsWith("[WARN] codex: the pane"));
+  expect(exited).toContain("has exited (signal KILL; this alone does not show why)");
+  expect(exited).toContain("output log: /logs/codex/run-1.log");
   expect(lines.find((line) => line.startsWith("[WARN] cursor"))).toContain("started in /elsewhere, not its clone /clones/cursor");
   expect(lines).toContain("[OK] antigravity: running in coord-7:antigravity.0 (start directory unknown).");
   expect(lines.find((line) => line.startsWith("[WARN] gemini"))).toContain("no window in tmux session coord-7");
@@ -470,6 +473,11 @@ describe("tmux boundary", () => {
     const agent = { id: "claude", root: clone, launcher: "start-claude.sh", delivery: "both" as const };
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "new-window")).toBe(true);
+    // The window starts on a silent placeholder; the agent replaces it only after retention is set.
+    expect(calls.find((args) => args[0] === "new-window")!.at(-1)).toBe("sleep 60");
+    const launch = commandsIn(calls.find((args) => args.includes("respawn-pane"))!);
+    expect(launch[0]).toEqual(["set-option", "-w", "-t", "coord-3:claude", "remain-on-exit", "on"]);
+    expect(launch.at(-1)).toEqual(["respawn-pane", "-k", "-t", "coord-3:claude", "-c", clone, join(clone, "start-claude.sh")]);
     expect(calls).toContainEqual(["set-environment", "-t", "coord-3", "COORD_ISSUE", "3"]);
     // A COORD_MANUAL=1 leaked from the tmux server would disarm the git shim.
     expect(calls).toContainEqual(["set-environment", "-r", "-t", "coord-3", "COORD_MANUAL"]);
@@ -481,7 +489,10 @@ describe("tmux boundary", () => {
     expect(fresh).toContainEqual(["set-environment", "-r", "-t", "coord-4", "COORD_MANUAL"]);
     calls.length = 0;
     await controller.ensureSession(3, [agent]);
-    expect(calls.some((args) => args[0] === "respawn-pane")).toBe(true);
+    // Exit details are read before the dead pane is held on the placeholder, then relaunched.
+    expect(calls.map((args) => args[0]).filter((name) => ["list-panes", "respawn-pane", "set-option"].includes(name!)))
+      .toEqual(["list-panes", "respawn-pane", "set-option"]);
+    expect(calls.find((args) => args[0] === "respawn-pane")!.at(-1)).toBe("sleep 60");
     calls.length = 0;
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "new-window" || args[0] === "respawn-pane")).toBe(false);
@@ -530,6 +541,10 @@ describe("tmux boundary", () => {
     expect(calls.some((args) => args.includes("COORD_ISSUE") && !args.includes("-r"))).toBe(false);
     expect(calls.some((args) => args.includes("COORD_MANUAL") && args.includes("-r"))).toBe(false);
     expect(calls.filter((args) => args[0] === "new-window")).toHaveLength(1);
+    // Manual sessions have no issue runtime: panes are retained but not piped.
+    const manualLaunch = commandsIn(calls.find((args) => args.includes("respawn-pane"))!);
+    expect(manualLaunch).toContainEqual(["set-option", "-w", "-t", "coord-manual-abc12def00:claude", "remain-on-exit", "on"]);
+    expect(manualLaunch.some((command) => command[0] === "pipe-pane")).toBe(false);
 
     calls.length = 0;
     paneDead = "1";
@@ -1258,6 +1273,76 @@ describe("tmux boundary", () => {
     writeFileSync(notExecutable, "#!/bin/sh\n");
     chmodSync(notExecutable, 0o600);
     expect(() => resolveAgentLauncher({ ...base, launcher: "not-executable.sh" })).toThrow("non-executable");
+  });
+});
+
+const tmuxInstalled = spawnSync("tmux", ["-V"]).status === 0;
+
+describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
+  it("keeps cleared startup output and exit details across relaunch and teardown", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-tmux-diag-"));
+    roots.push(root);
+    const clone = join(root, "clone");
+    // A legal directory name that tmux would expand as a format if it reached pipe-pane unescaped.
+    const logs = join(root, "terminal-#{pane_id}");
+    mkdirSync(clone);
+    const socket = `coord-test-${process.pid}-${Date.now()}`;
+    const runner: TmuxRunner = (args, input) => runTmux(["-L", socket, "-f", "/dev/null", ...args], input);
+    const controller = new TmuxController(runner, null, null, null, noopSleep, "grp", null);
+    const agent = { id: "claude", root: clone, launcher: "start-claude.sh", delivery: "both" as const };
+    const logDir = () => logs;
+    const pause = (ms: number) => new Promise((resolvePause) => setTimeout(resolvePause, ms));
+    const run = async (name: string, exit: string, launch: () => Promise<void>): Promise<void> => {
+      // Print a startup dialogue, then wipe it from the screen the way a TUI does before exiting.
+      writeFileSync(
+        join(clone, "start-claude.sh"),
+        `#!/bin/sh\nexec /bin/sh -c 'printf "${name} startup dialogue\\n"; printf "\\033[?1049h\\033[2J\\033[H"; ${exit}'\n`,
+        { mode: 0o700 }
+      );
+      await launch();
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (!(await controller.inspectPane(controller.target(3, agent.id))).alive) return;
+        await pause(50);
+      }
+      throw new Error(`${name} run did not exit`);
+    };
+    const runLog = (name: string): string => {
+      const file = readdirSync(logs).find((entry) => entry.endsWith(".log") && readFileSync(join(logs, entry), "utf8").includes(`${name} startup dialogue`));
+      if (file === undefined) throw new Error(`no log for the ${name} run`);
+      return join(logs, file);
+    };
+    let advertisedLog = "";
+    const exitOf = (name: string) => JSON.parse(readFileSync(runLog(name).replace(/\.log$/, ".exit.json"), "utf8")) as { status: number | null; signal: string | null };
+    try {
+      // An inherited hook that blocks the command queue must not let a fast agent escape recording.
+      await runner(["new-session", "-d", "-s", "hook-holder"]);
+      await runner(["set-hook", "-g", "after-new-window", "run-shell 'sleep 0.2'"]);
+      await run("first", "exit 0", () => controller.startSession(3, [agent], logDir));
+      await run("second", "exit 3", () => controller.ensureSession(3, [agent], undefined, logDir));
+      await run("third", "kill -KILL $$", () => controller.ensureSession(3, [agent], undefined, logDir));
+      const advertised = (await controller.agentPlacementDiagnostics(3, [agent])).join("\n").match(/output log: (.+?\.log);/)?.[1];
+      expect(advertised).toBe(join(logs, advertised!.slice(logs.length + 1)));
+      advertisedLog = advertised!;
+      await controller.killIssueSessions(3);
+      // `cat` drains each pipe asynchronously; wait until every run's output has landed.
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        try {
+          ["first", "second", "third"].forEach(runLog);
+          break;
+        } catch {
+          await pause(50);
+        }
+      }
+    } finally {
+      await runner(["kill-server"]);
+    }
+    expect(readdirSync(logs).filter((entry) => entry.endsWith(".log"))).toHaveLength(3);
+    // Each relaunch wrote a new log; the earlier runs keep their dialogue and the clear that followed it.
+    for (const name of ["first", "second", "third"]) expect(readFileSync(runLog(name), "utf8")).toContain("\u001b[2J");
+    expect(readFileSync(advertisedLog, "utf8")).toContain("third startup dialogue");
+    expect(exitOf("first")).toMatchObject({ status: 0, signal: null });
+    expect(exitOf("second")).toMatchObject({ status: 3, signal: null });
+    expect(exitOf("third")).toMatchObject({ status: null, signal: expect.any(String) });
   });
 });
 

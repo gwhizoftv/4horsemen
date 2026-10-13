@@ -1125,7 +1125,7 @@ export class CoordinatorRunLoop {
       }
     };
     if (this.tmux !== null) {
-      await this.tmux.ensureSession(start.issue, agents, assertCurrent);
+      await this.tmux.ensureSession(start.issue, agents, assertCurrent, (agentId) => agentRuntimePaths(this.paths, agentId).terminalLogs);
       assertCurrent();
       const opened = await this.tmux.openOwnerAgentClients(start.issue, agents, { onlyMissing: true });
       assertCurrent();

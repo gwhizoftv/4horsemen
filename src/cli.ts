@@ -617,7 +617,7 @@ const defaultStartEffects = async (input: {
   const mirror = new BareMirror(input.paths.mirror, input.origin);
   await mirror.initialize();
   const tmux = new TmuxController(undefined, input.paths.tmuxNamespace, undefined, undefined, undefined, input.paths.terminalGroup);
-  await tmux.startSession(input.issue, input.agents);
+  await tmux.startSession(input.issue, input.agents, (agentId) => agentRuntimePaths(input.paths, agentId).terminalLogs);
   const opened = await tmux.openOwnerAgentClients(input.issue, input.agents);
   reportOwnerAgentClients(opened, input.log ?? ((message) => process.stdout.write(message)));
   return { cleanup: async () => tmux.stopSession(input.issue) };

@@ -49,6 +49,7 @@ describe("completion mailbox paths", () => {
     expect(runtime.completeDir).toBe(join(completesRoot, "issue-98", "claude"));
     expect(runtime.action).toBe(join(coordRoot, "issue-98", "agents", "claude", "action.md"));
     expect(runtime.renderLog).toBe(join(coordRoot, "issue-98", "agents", "claude", "render.log"));
+    expect(runtime.terminalLogs).toBe(join(coordRoot, "issue-98", "agents", "claude", "terminal"));
   });
 
   it("gives each agent its own drop so a peer cannot overwrite a receipt", () => {
