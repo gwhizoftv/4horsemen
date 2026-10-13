@@ -47,6 +47,10 @@ describe("foreground owner terminal", () => {
     await f.send("n"); await f.send("1"); await f.send("\r");
     expect(request).toHaveBeenCalledOnce();
     expect(f.printed()).toContain("Reminder requested for captured action");
+    expect(f.printed()).toContain("Select any configured agent");
+    await f.send("?");
+    expect(f.printed()).toContain("including during pauses and holds");
+    expect(f.printed()).not.toContain("readiness checks and send limits still apply");
     f.commands.holds = () => [{ id: "captured", agent: "codex", reason: "nudge-loop" }];
     await f.send("r"); await f.send("1"); await f.send("\r");
     expect(f.commands.releaseHold).not.toHaveBeenCalled();
@@ -71,11 +75,14 @@ describe("foreground owner terminal", () => {
     expect(sent).toHaveBeenCalledOnce();
     expect(f.printed()).toContain("coord: claude: That task is no longer current");
     expect(f.printed()).toContain("Reminder requested for codex");
-    await f.send("\x1b");
     Object.assign(f.commands, { reminders: () => [{ label: "codex", request: sent }] });
     const before = f.printed().length;
     await f.send("n");
     expect(f.printed().slice(before)).not.toContain("All agents");
+    await f.send("1"); await f.send("\r");
+    Object.assign(f.commands, { reminders: () => [] });
+    await f.send("n");
+    expect(f.printed()).toContain("No configured agent is available to remind.");
   });
   it("does not touch input in non-TTY mode", () => {
     const f = fixture(false);

@@ -432,6 +432,13 @@ export type NudgeOutcome = {
   detail?: string;
 };
 
+export type OwnerReminderOutcome = {
+  status: "sent" | "failed" | "uncertain";
+  reason: string;
+  stage: "gate" | "mid-send" | "complete";
+  detail?: string;
+};
+
 /** Resolve macOS Terminal.app profile name for an owner attach window. */
 export const resolveTerminalProfile = (agent: AgentConfig): string =>
   agent.terminalProfile ?? agentOwnerUiDefaults(agent.id).terminalProfile;
@@ -1035,6 +1042,46 @@ export class TmuxController {
     return harnessPromptReady(captured.stdout, agent.id, actionId) && !captured.stdout.includes(actionId);
   }
 
+  /** An explicit owner instruction uses the transport without automatic readiness policy. */
+  async remind(
+    issue: number, agent: AgentConfig, text: string,
+    assertAuthority: () => void = () => undefined,
+    onBegin: () => void = () => undefined
+  ): Promise<OwnerReminderOutcome> {
+    let began = false;
+    try {
+      const target = this.target(issue, agent.id);
+      assertAuthority();
+      const pane = await this.inspectPane(target);
+      assertAuthority();
+      if (!pane.alive) return { status: "failed", reason: "pane-dead", stage: "gate" };
+      if (pane.ownerTyping) {
+        const cancelled = await this.runner(["send-keys", "-t", target, "-X", "cancel"]);
+        assertAuthority();
+        if (cancelled.exitCode !== 0) throw new Error(`tmux copy-mode exit failed: ${cancelled.stderr}`);
+      }
+      // Capture is only a hint for vim key selection, never permission to send.
+      let paneText = "";
+      try { paneText = await this.capturePane(target); } catch { /* Use configured keys. */ }
+      assertAuthority();
+      const { prelude, submit } = resolveNudgeKeys(agent, paneText);
+      const preludeKeys = agent.id === "codex" && codexVimInsert(paneText) ? [] : prelude;
+      await this.typeAndSubmit(target, agent, text, preludeKeys, submit, async (args) => {
+        assertAuthority();
+        if (!began) { onBegin(); began = true; }
+        const result = await this.runner(args);
+        // Recheck before any remaining key, not after the final successful
+        // submit: a completion racing the return does not undo terminal delivery.
+        if (result.exitCode !== 0) throw new Error(`tmux send-keys failed: ${result.stderr}`);
+        return null;
+      }, assertAuthority);
+      return { status: "sent", reason: "sent", stage: "complete" };
+    } catch (error) {
+      return { status: began ? "uncertain" : "failed", reason: "delivery-error",
+        stage: began ? "mid-send" : "gate", detail: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   async nudge(
     issue: number,
     agent: AgentConfig,
@@ -1118,6 +1165,20 @@ export class TmuxController {
       if (result.exitCode !== 0) throw new Error(`tmux send-keys failed: ${result.stderr}`);
       return null;
     };
+    const refusedDuringSend = await this.typeAndSubmit(target, agent, text, preludeKeys, submit, send, assertAuthority);
+    if (refusedDuringSend !== null) return refusedDuringSend;
+    // This is transport success only. A matching vendor prompt-submit hook
+    // acknowledges acceptance, even if it arrives after this method returns.
+    return { status: "sent", reason: "sent", stage: "complete",
+      ...(staleOverride !== undefined ? { detail: staleOverride.source }
+        : harnessPromptReadiness(paneText, agent.id, actionId).reason === "idle-sentinel" ? { detail: "idle-sentinel" } : {}) };
+  }
+
+  /** Share vendor key layout and text/key timing between automatic and owner delivery. */
+  private async typeAndSubmit(
+    target: string, agent: AgentConfig, text: string, preludeKeys: readonly string[], submit: readonly string[],
+    send: (args: readonly string[]) => Promise<NudgeOutcome | null>, assertAuthority: () => void
+  ): Promise<NudgeOutcome | null> {
     if (agent.id === "antigravity") {
       // Preserve AGY's working delivery, which has no prompt-submit callback.
       for (const key of preludeKeys) {
@@ -1148,10 +1209,6 @@ export class TmuxController {
       const refused = await send(commands.flatMap((command, index) => index === 0 ? command : [";", ...command]));
       if (refused !== null) return refused;
     }
-    // This is transport success only. A matching vendor prompt-submit hook
-    // acknowledges acceptance, even if it arrives after this method returns.
-    return { status: "sent", reason: "sent", stage: "complete",
-      ...(staleOverride !== undefined ? { detail: staleOverride.source }
-        : harnessPromptReadiness(paneText, agent.id, actionId).reason === "idle-sentinel" ? { detail: "idle-sentinel" } : {}) };
+    return null;
   }
 }

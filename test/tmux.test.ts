@@ -1278,3 +1278,59 @@ describe("runTmux", () => {
     }
   });
 });
+
+describe("explicit owner reminder transport", () => {
+  it.each(["claude", "codex", "cursor", "antigravity"])("sends to %s despite automatic configuration and pane vetoes", async (id) => {
+    const calls: string[][] = [];
+    const controller = new TmuxController(async (args) => {
+      calls.push([...args]);
+      if (args[0] === "display-message") return ok("0\tbash\t1\t1");
+      if (args[0] === "capture-pane") return ok("trust this folder\nWorking... esc to cancel\nVerifying your account\n› unfinished draft");
+      return ok();
+    }, undefined, undefined, undefined, noopSleep);
+    const agent = { id, root: "/clone", launcher: id, delivery: "pull" as const, harnessProcess: id, nudgePrelude: [] };
+    expect(await controller.nudge(1, agent, "/action.md")).toMatchObject({ status: "disabled" });
+    const text = "The operator requested this literal reminder.";
+    expect(await controller.remind(1, agent, text)).toEqual({ status: "sent", reason: "sent", stage: "complete" });
+    const keys = calls.filter((args) => args[0] === "send-keys").flatMap(commandsIn);
+    expect(keys[0]?.slice(-2)).toEqual(["-X", "cancel"]);
+    expect(keys.filter((args) => args.includes("-l"))).toHaveLength(1);
+    expect(keys.find((args) => args.includes("-l"))?.at(-1)).toBe(text);
+    expect(keys.at(-1)?.at(-1)).toBe("Enter");
+    if (id !== "antigravity") expect(keys).toContainEqual(["run-shell", "sleep 0.3"]);
+  });
+
+  it("uses configured keys when capture is unavailable", async () => {
+    const calls: string[][] = [];
+    const controller = new TmuxController(async (args) => {
+      calls.push([...args]);
+      if (args[0] === "display-message") return ok("0\tnode\t0\t0");
+      if (args[0] === "capture-pane") throw new Error("capture unavailable");
+      return ok();
+    }, undefined, undefined, undefined, noopSleep);
+    expect(await controller.remind(1, { id: "cursor", root: "/clone", launcher: "agent", delivery: "both", nudgePrelude: ["a"] }, "owner reminder"))
+      .toMatchObject({ status: "sent" });
+    const keys = calls.filter((args) => args[0] === "send-keys").flatMap(commandsIn);
+    expect(keys[0]?.at(-1)).toBe("a");
+    expect(keys.map((args) => args.at(-1))).toEqual(["a", "owner reminder", "sleep 0.3", "Escape", "sleep 0.15", "Enter"]);
+  });
+
+  it.each(["dead", "inspection-error", "send-error", "authority-change"])("reports %s without claiming acceptance", async (failure) => {
+    let began = false;
+    const controller = new TmuxController(async (args) => {
+      if (args[0] === "display-message") {
+        if (failure === "inspection-error") throw new Error("inspection unavailable");
+        return ok(`${failure === "dead" ? 1 : 0}\tnode\t0\t0`);
+      }
+      if (args[0] === "send-keys" && failure === "send-error") return { exitCode: 1, stdout: "", stderr: "target disappeared" };
+      return ok();
+    }, undefined, undefined, undefined, noopSleep);
+    const result = await controller.remind(1, { id: failure === "authority-change" ? "antigravity" : "cursor", root: "/clone", launcher: "agent", delivery: "both" }, "owner reminder",
+      () => { if (failure === "authority-change" && began) throw new Error("task changed"); }, () => { began = true; });
+    expect(result.status).toBe(["send-error", "authority-change"].includes(failure) ? "uncertain" : "failed");
+    expect(result.reason).toBe(failure === "dead" ? "pane-dead" : "delivery-error");
+    if (failure === "inspection-error") expect(result.detail).toBe("inspection unavailable");
+    if (failure === "send-error") expect(result.detail).toContain("target disappeared");
+    if (failure === "authority-change") expect(result.detail).toBe("task changed");
+  });
+});

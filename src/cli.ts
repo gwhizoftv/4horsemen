@@ -306,9 +306,10 @@ tracked tree untouched; a fresh human clone receives no coordination hooks or me
 COORD_ISSUE and COORD_AGENT may replace their corresponding owner-control options.
 
 Foreground TTY runs accept s (status), p/Space (manual pause), a (attach),
-d (drop), n (remind one or all current tasks without restarting them), r (release a selected hold), /steer <text>, ?/h (help), and q (quit).
-For a reminder-limit hold, r asks before allowing four more sends. Reminders
-retain readiness checks and send limits; inspect/type in the agent terminal if refused.
+d (drop), n (send an owner reminder to any configured agent or all agents), r (release a selected hold), /steer <text>, ?/h (help), and q (quit).
+For a reminder-limit hold, r asks before allowing four more automatic sends. Owner
+reminders bypass readiness, spacing and send limits, including during pauses and holds;
+each attempt reports terminal delivery or its exact failure without restarting work.
 /steer queues guidance for every recipient of the next assigned cohort, not an immediate broadcast.
 An action is one assigned task; a turn is one agent prompt/reply; a pin is a commit.
 No control force-completes work: the agent must publish valid evidence first.

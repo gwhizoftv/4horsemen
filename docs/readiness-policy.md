@@ -1,14 +1,49 @@
 # Readiness policy — scrape, hooks, and workflow truth
 
 Three signals tell the coordinator about an agent. They can disagree. This file
-says which one wins for which question, and names every reason code a refusal
-can carry.
+says which one wins for automatic delivery, and names its refusal codes.
+Explicit owner reminders follow the separate contract below.
 
 | Layer | Mechanism | Authority for |
 | --- | --- | --- |
 | Delivery readiness | process/pane gates, vendor Stop, fallback pane inspection | whether the next prompt can be delivered |
 | Observability | vendor lifecycle hooks (`SessionStart`, prompt-submit, `Stop`) | whether a second send would be a duplicate |
 | Workflow truth | the `complete` file plus Git pin **or** accepted response + published batch | whether the work actually happened |
+
+## Explicit owner reminders
+
+The interactive `n` command lists every configured agent and sends each selected
+owner reminder on the next poll, even during a manual pause or hold. It bypasses
+automatic lifecycle, prompt, composer, foreground, queue/background, spacing,
+budget and reservation gates. Copy mode is cancelled before typing; capture is
+optional and used only to choose vim keys. Configured pull-only delivery does not
+prevent an explicit owner send. Existing vendor keys and the short text/key gaps
+are shared with automatic transport.
+
+The runner selects the current message at dispatch. Outstanding work receives the
+current action path, UUID and digest; a pending completion receives a reminder to
+preserve the submitted files and await validation; accepted, dropped or unassigned
+work receives a neutral reminder without instructions to execute a stale or
+missing action. A concurrent assignment/submission change is reported as failed
+before typing, or uncertain between keys, with remaining keys stopped. A change
+noticed after the complete submit succeeds does not undo terminal delivery: the
+result stays sent, with any skipped lifecycle update reported separately.
+
+Every selection has a unique request ID and a sent, failed or uncertain journal
+outcome using `nudged` only for successful terminal injection and `nudge-deferred`
+for failures/uncertainty. These owner events are not deduplicated by automatic
+reason code. A missing pane, unavailable terminal controller or transport exception
+gets a concrete result; one failed target does not stop All agents. Sent never
+means vendor acceptance or valid workflow completion.
+
+Owner sends do not spend or reset automatic send credit, clear reservations,
+release holds or remove submitted files. Successful action injection still uses
+the existing lifecycle correlation, and automatic delivery adds no send to the
+same agent in that poll. A first assignment deferred by that rule can still be
+delivered on a later poll under the usual automatic gates, including after a
+runner restart. Ambiguous owner attempts are reported without queuing
+another attempt; the owner can explicitly send again. The rules below continue
+to govern automatic sends.
 
 ## The three rules
 
@@ -197,7 +232,7 @@ this change neither migrates them nor releases other holds or manual pauses.
 
 ## Journalling
 
-Every refusal appends a `nudge-deferred` event carrying `layer`, `code`,
+Every automatic readiness refusal appends a `nudge-deferred` event carrying `layer`, `code`,
 `human`, `gateWaiting`, the hook snapshot, and `splitBrain: true` when the
 scrape refused while hooks reported idle and healthy. Both sides of a
 disagreement live on one event. `gateWaiting` is true while the action is out
@@ -216,3 +251,40 @@ File-backed sends record `readiness: "ready-file"` and the prior execution in
 Stop-authorized sends record `readiness: "stop-hook"`. A late submission hook
 that resolves uncertainty records an automatic `hold-released` event with
 `reason: "prompt-submitted"`.
+
+## Issue 177 incident evidence (issue 195)
+
+The retained issue-177 journal separates idle observation, terminal injection and
+workflow completion. These are its UTC timestamps on 2026-10-11 and journal
+`sequence` values:
+
+| Time | Sequence | Recorded event |
+| --- | --- | --- |
+| 00:21:06.554 | 2707 | Cursor implementation submission validated |
+| 00:21:31.431 | 2737 | Cursor Stop recorded as idle |
+| 00:28:18.076–00:35:21.813 | 2900, 2954, 2987, 2995 | Four comparison sends without a matching prompt-submit acknowledgement |
+| 00:36:06.447 | 2999–3000 | Automatic budget exhausted; hold `01edf7dd-e0b8-46d0-88b4-963dc4751100` paused the issue |
+| 16:12:03.734 | 3003–3004 | Owner released that hold and reset the automatic allowance |
+| 16:12:06.114, 16:13:07.161 | 3006, 3009 | Automatic sends resumed |
+| 16:13:28.235 | 3010 | Prompt-submit callback reported working |
+| 16:19:01.110, 16:19:01.292 | 3121, 3123 | Comparison ballot delivered and acknowledged |
+| 16:19:17.186 | 3145 | Ballot validation failed: private response file missing |
+| 16:19:27.034 | 3158 | Cursor Stop recorded as idle |
+| 16:20:02.415, 16:20:03.561 | 3180, 3181 | Corrected ballot action sent, then automatic idle observation reported already used |
+| 16:22:52.519, 16:23:51.203 | 3182, 3195 | Next prompt-submit callback, then valid ballot accepted |
+
+The overnight wait was the approximately 15-hour-36-minute hold, even though
+Cursor's idle transition had been recognized. The old owner path shared automatic
+readiness and the 60/120/240-second repeat delays, so the operator could not use
+`n` as an independent recovery action. Injection consumes an idle observation;
+`idle-transition-already-used` describes that automatic duplicate guard, not a
+claim that the agent is working. The status explanation now says so and points to
+`n` for owner delivery.
+
+The old journal did not record the owner's request timestamp or the exact early
+return behind its combined “readiness, send spacing or a hold” message. Nor does
+it retain the historical pane captures showing why Cursor failed to acknowledge
+the sends. Spacing and a same-action UUID remaining in scrollback are possible
+explanations for particular waits, not established terminal observations. The new
+owner outcome records provide specific causes without changing automatic
+lost-delivery proof or equating an idle line with a valid submission.
