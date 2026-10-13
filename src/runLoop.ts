@@ -119,26 +119,77 @@ import { harnessPromptReadiness, renderNudgeText, TmuxController, type IdleOverr
 import { sha256, sha256OfFile } from "./hash.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
-export type ProcessRunner = (argv: readonly string[], cwd: string) => Promise<ProcessResult>;
+export type ProcessOptions = { timeoutMs?: number; env?: NodeJS.ProcessEnv };
+export type ProcessRunner = (argv: readonly string[], cwd: string, options?: ProcessOptions) => Promise<ProcessResult>;
 
-export const runArgv: ProcessRunner = (argv, cwd) =>
+export const runArgv: ProcessRunner = (argv, cwd, options = {}) =>
   new Promise((resolvePromise, reject) => {
     const [command, ...args] = argv;
     if (command === undefined) {
       reject(new Error("Cannot run an empty argv."));
       return;
     }
+    const timeout = options.timeoutMs;
+    if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) {
+      reject(new Error("Process timeout must be positive and finite."));
+      return;
+    }
+    const grouped = timeout !== undefined && process.platform !== "win32";
     const child = spawn(command, args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: command === "git" ? hermeticGitEnv() : process.env
+      detached: grouped,
+      env: command === "git" ? hermeticGitEnv(options.env) : options.env ?? process.env
     });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
-    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
-    child.once("error", reject);
-    child.once("close", (code) => resolvePromise({ exitCode: code ?? 1, stdout, stderr }));
+    let stdout: string | Buffer = timeout === undefined ? "" : Buffer.alloc(0);
+    let stderr: string | Buffer = timeout === undefined ? "" : Buffer.alloc(0);
+    // Bound retained diagnostics, but keep draining both pipes until close.
+    const capture = (prior: string | Buffer, chunk: string): string | Buffer => {
+      if (typeof prior === "string") return prior + chunk;
+      return Buffer.concat([prior, Buffer.from(chunk)]).subarray(-32 * 1024);
+    };
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout = capture(stdout, chunk); });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr = capture(stderr, chunk); });
+    let deadline: NodeJS.Timeout | undefined, escalation: NodeJS.Timeout | undefined;
+    let closed = false, timedOut = false, cleanupFinished = false, settled = false;
+    let exitCode = 1;
+    const signal = (name: NodeJS.Signals): void => {
+      if (child.pid === undefined) return;
+      try {
+        if (grouped) process.kill(-child.pid, name);
+        else child.kill(name);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    };
+    const finish = (error?: Error): void => {
+      if (settled || (error === undefined && (!closed || (timedOut && !cleanupFinished)))) return;
+      settled = true;
+      clearTimeout(deadline);
+      clearTimeout(escalation);
+      if (error !== undefined) { reject(error); return; }
+      resolvePromise({ exitCode: timedOut ? 124 : exitCode, stdout: stdout.toString(),
+        stderr: timedOut ? `Timed out after ${timeout} ms.\n${stderr.toString()}` : stderr.toString() });
+    };
+    child.once("error", finish);
+    child.once("close", (code) => {
+      closed = true;
+      exitCode = code ?? 1;
+      finish();
+    });
+    if (timeout !== undefined) {
+      deadline = setTimeout(() => {
+        timedOut = true;
+        try { signal("SIGTERM"); } catch (error) { finish(error as Error); return; }
+        // A leader can close its pipes before an installer descendant exits.
+        // Keep the escalation even after close, and signal the entire group.
+        escalation = setTimeout(() => {
+          try { signal("SIGKILL"); } catch (error) { finish(error as Error); return; }
+          cleanupFinished = true;
+          finish();
+        }, 1_000);
+      }, timeout);
+    }
   });
 
 export type PullRequestInput = {

@@ -132,6 +132,57 @@ type ParsedArgs = { positionals: string[]; flags: Map<string, string> };
 
 const coordinatorSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+const agentExecutables = new Map([
+  ["codex", "codex"], ["claude", "claude"], ["cursor", "agent"], ["antigravity", "agy"]
+]);
+const AGENT_UPDATE_TIMEOUT_MS = 180_000;
+const AGENT_VERSION_TIMEOUT_MS = 5_000;
+
+/** Fresh-start only: share the launcher's Node/PATH setup, without starting a pane. */
+const updateAgentVersions = async (
+  agents: CoordinatorConfig["agents"], runner: ProcessRunner, io: CliIo
+): Promise<Record<string, string | null>> => {
+  const versions: Record<string, string | null> = {};
+  const warn = (id: string, step: string, detail: string): void => {
+    const summary = detail.trim().split(/\r?\n/).find((line) => line.trim() !== "")?.slice(0, 500) ?? "unknown error";
+    io.stderr(`WARNING: ${id} ${step}: ${summary}; continuing with the installed version.\n`);
+  };
+  const run = async (agent: CoordinatorConfig["agents"][number], step: "update" | "--version") => {
+    const executable = agentExecutables.get(agent.id)!;
+    try {
+      const result = await runner([
+        "bash", "-c", 'set -euo pipefail\n. "$1"\nlauncher_environment "$2" >/dev/null\nshift 2\nexec "$@"',
+        "coord-agent-maintenance", resolve(coordinatorSourceRoot, "scripts/lib/launcher.sh"), agent.id, executable, step
+      ], agent.root, { timeoutMs: step === "update" ? AGENT_UPDATE_TIMEOUT_MS : AGENT_VERSION_TIMEOUT_MS, env: io.env });
+      if (result.exitCode === 0) return result;
+      warn(agent.id, step, result.stderr || result.stdout || `exit ${result.exitCode}`);
+    } catch (error) {
+      warn(agent.id, step, error instanceof Error ? error.message : String(error));
+    }
+    return null;
+  };
+  // Finish every updater before collecting versions or launching any agent.
+  for (const agent of agents) {
+    versions[agent.id] = null;
+    if (!agentExecutables.has(agent.id)) {
+      warn(agent.id, "update skipped", "no known vendor command");
+      continue;
+    }
+    io.stdout(`Updating ${agent.id} (timeout ${AGENT_UPDATE_TIMEOUT_MS / 1_000}s)...\n`);
+    await run(agent, "update");
+  }
+  for (const agent of agents) {
+    if (agentExecutables.has(agent.id)) {
+      const result = await run(agent, "--version");
+      const version = result?.stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null;
+      if (result !== null && version === null) warn(agent.id, "--version", "empty version output");
+      versions[agent.id] = version;
+    }
+    io.stdout(`Agent ${agent.id} version: ${versions[agent.id] ?? "unknown"}\n`);
+  }
+  return versions;
+};
+
 const parseArgs = (args: readonly string[], booleans: readonly string[] = []): ParsedArgs => {
   const positionals: string[] = [];
   const flags = new Map<string, string>();
@@ -966,6 +1017,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       log: io.stdout
     });
 
+    // Do this before resumable state exists: attach/recovery must not launch a
+    // pane while a fresh-start updater is still replacing its executable.
+    const agentVersions = await updateAgentVersions(roster, runner, io);
     let effects: { cleanup: () => Promise<void> } | null = null;
     createIssueRuntime(paths, roster.map((agent) => agent.id));
     try {
@@ -988,6 +1042,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         coordRoot,
         configPath,
         agents: roster,
+        agentVersions,
         checks: config.checks,
         documentation: config.documentation,
         ...(config.verification === undefined ? {} : {

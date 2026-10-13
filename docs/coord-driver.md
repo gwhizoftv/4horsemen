@@ -301,9 +301,27 @@ view N --repo owner/repo`, validates the response, and canonicalizes the title
 and body. Missing or unreadable issues fail before runtime, mirror, or tmux
 effects with create/auth remediation. It then preflights the exact origin
 baseline, the running coordinator checkout's real `HEAD` as its trusted source
-commit, digest inputs, confined non-symlink executable launchers, mirror, and tmux. It
-creates an attachable `coord-<issue>` session and invokes each configured
-`start-<agent>.sh` before committing active issue state. A failed partial tmux
+commit, digest inputs, and confined non-symlink executable launchers. After
+preparing the selected roster's issue branches, a fresh start (including the
+first `coord N`) updates each known agent in roster order: `codex update`,
+`claude update`, `agent update` for Cursor, and `agy update` for Antigravity.
+Each attempt has a three-minute timeout, with up to one second for process-group
+termination; failures warn and continue with the available installation.
+Maintenance shares the generated launcher's nvm setup for the clone's Node pin
+and Antigravity's home-local-bin PATH precedence, so it selects the installation
+the launcher will use. Custom agent IDs without a known updater warn and skip it.
+
+After all updates finish, start probes `--version` (five-second timeout plus the
+same cleanup allowance), prints a line per agent, and freezes the results in
+the `agentVersions` map in runtime `start.json`; failed or empty version probes
+warn and record null, displayed as `unknown`. Older runs may omit the map.
+Attach, resume, numeric continuation, pane recovery, and manual mode do not
+update or replace this snapshot. It records the observed versions; it does not
+prevent an owner or an independent vendor updater from changing installations.
+
+Only then does start initialize active issue state, prepare the mirror and tmux,
+create an attachable `coord-<issue>` session, and invoke each selected
+`start-<agent>.sh`. A failed partial tmux
 launch or later startup write is cleaned up, including the issue snapshot, and
 no apparently active issue runtime is left behind.
 Once state is committed, a failure in the initial tick is reported without
@@ -412,6 +430,8 @@ budget or clearing other holds/manual pause. A tmux write alone is injection,
 not acceptance. AGY keeps its working delivery without a new hook requirement.
 The Codex launcher passes `--no-daemon`: the shared app-server would otherwise run
 hooks with the `COORD_ISSUE` of whichever launch started it, not this pane's.
+It also passes `-c check_for_update_on_startup=false`, so Codex does not perform
+another update inside the pane after the coordinator's fresh-start update.
 Existing clones keep their old `start-codex.sh` until `coord install` rewrites it.
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Claude 1 / Codex 1 / Cursor 1 / Gemini 1)

@@ -14,6 +14,24 @@
 # A second copy of this template drifted from the first within a day of being
 # written. Keep both callers on these functions.
 
+# Shared by generated launchers and coord's fresh-start maintenance command.
+# A clone's .nvmrc can select a different global CLI from coord's own PATH.
+launcher_environment() {
+  if [[ -f .nvmrc ]]; then
+    export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+    if [[ ! -s "$NVM_DIR/nvm.sh" ]]; then
+      echo "ERROR: this repo pins a Node version in .nvmrc, but nvm was not found at $NVM_DIR/nvm.sh" >&2
+      return 1
+    fi
+    . "$NVM_DIR/nvm.sh"
+    nvm use
+    echo "Node: $(node --version)"
+  fi
+  if [[ "$1" == antigravity ]]; then
+    export PATH="$HOME/.local/bin:$PATH"
+  fi
+}
+
 # launcher_command <agent>
 #
 # Emits the shell lines that launch one agent. This is the only place a vendor's
@@ -38,11 +56,12 @@ launcher_command() {
       # cursors.json and peers' orders along with it.
       # --no-daemon: hooks run in the shared app-server otherwise, with the
       # COORD_ISSUE of whichever launch started it, not this pane's (issue 186).
-      printf 'exec codex --ask-for-approval never --sandbox workspace-write --no-daemon ${coord_grant[@]+"${coord_grant[@]}"}\n'
+      # coord start updates before launch; never self-update inside the pane.
+      printf 'exec codex -c check_for_update_on_startup=false --ask-for-approval never --sandbox workspace-write --no-daemon ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     antigravity)
       # agy installs into ~/.local/bin, which a login shell does not always
-      # have on PATH; without this the launcher cannot find it.
+      # have on PATH; launcher_environment adds it before resolving the CLI.
       #
       # --mode accept-edits sets the execution mode; it does not grant tool
       # permissions, so every out-of-whitelist call became an owner prompt and
@@ -59,7 +78,7 @@ launcher_command() {
       # also contradicts --dangerously-skip-permissions on the same line. The
       # add-dir below is therefore advisory for this vendor until the sandbox
       # can be verified against a real agy run that pushes.
-      printf 'export PATH="$HOME/.local/bin:$PATH"\nexec agy --mode accept-edits --dangerously-skip-permissions ${coord_grant[@]+"${coord_grant[@]}"}\n'
+      printf 'exec agy --mode accept-edits --dangerously-skip-permissions ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     gemini)
       # No mailbox grant: gemini is not a configured coordination harness and
@@ -332,18 +351,8 @@ write_launcher() {
 set -euo pipefail
 cd "\$(dirname "\${BASH_SOURCE[0]}")"
 
-if [[ -f .nvmrc ]]; then
-  export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
-
-  if [[ ! -s "\$NVM_DIR/nvm.sh" ]]; then
-    echo "ERROR: this repo pins a Node version in .nvmrc, but nvm was not found at \$NVM_DIR/nvm.sh" >&2
-    exit 1
-  fi
-
-  . "\$NVM_DIR/nvm.sh"
-  nvm use
-  echo "Node: \$(node --version)"
-fi
+$(declare -f launcher_environment)
+launcher_environment "$agent"
 
 # Prefer pnpm via Corepack when this is a pnpm repo.
 if [[ -f pnpm-lock.yaml ]] && command -v corepack >/dev/null; then

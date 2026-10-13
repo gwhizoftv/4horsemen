@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeAction } from "../src/action.js";
 import { automationDigestMaterial, runCli, type CliRunLoop } from "../src/cli.js";
 import { agentRuntimePaths, issueRuntimePaths } from "../src/paths.js";
-import { buildOrder } from "../src/runLoop.js";
+import { buildOrder, runArgv, type ProcessRunner } from "../src/runLoop.js";
 import type { TerminalInput, TerminalOutput } from "../src/interactive.js";
 import {
   cursorsStateSchema,
@@ -21,7 +21,7 @@ import {
 import { DOCTOR_CODES } from "../src/doctor.js";
 import { observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { syncAgentLifecycleHooks } from "../src/agentHookSync.js";
-import { effectOptions, writeGitWrapper } from "../src/setupWorkspace.js";
+import { effectOptions, writeAgentLauncher, writeGitWrapper } from "../src/setupWorkspace.js";
 import { ingestContainmentProbe } from "../src/shellGuard.js";
 import { renderGitHubIssueSnapshot } from "../src/githubIssue.js";
 import { ensureBuilt, git as fixtureGit, makeProduct, repoRoot, writeDeclaration, type ProductFixture } from "./support/workspaceFixture.js";
@@ -189,6 +189,9 @@ const issueSnapshot = (issue: number, body = `Body for issue ${issue}`) => ({
   url: `https://github.com/example/fixture/issues/${issue}`
 });
 const successfulStartGit = async (argv: readonly string[]) => {
+  if (argv[3] === "coord-agent-maintenance") {
+    return { exitCode: 0, stdout: argv.at(-1) === "--version" ? `${argv.at(-2)} fixture-version\n` : "", stderr: "" };
+  }
   if (argv[0] === "gh") {
     const issue = Number(argv[3]);
     const snapshot = issueSnapshot(issue);
@@ -205,7 +208,8 @@ const successfulStartGit = async (argv: readonly string[]) => {
   return { exitCode: 1, stdout: "", stderr: `unexpected command: ${argv.join(" ")}` };
 };
 const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
-  if (argv[0] === "gh") return successfulStartGit(argv);
+  // Only Git may reach the real executable fallback; never update host vendors.
+  if (argv[0] !== "git") return successfulStartGit(argv);
   if (argv.includes("ls-remote")) {
     return { exitCode: 0, stdout: `${baselineSha}\trefs/heads/main\n`, stderr: "" };
   }
@@ -213,6 +217,143 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
   if (command === undefined) return { exitCode: 1, stdout: "", stderr: "empty command" };
   return { exitCode: 0, stdout: execFileSync(command, args, { cwd, encoding: "utf8" }), stderr: "" };
 };
+
+describe("fresh-start agent maintenance", () => {
+  it.each(["start", "numeric"])("awaits updates and records versions before %s launches", async (entry) => {
+    const f = setup();
+    const config = JSON.parse(readFileSync(f.configPath, "utf8"));
+    const agyRoot = join(f.root, "clone-antigravity");
+    mkdirSync(agyRoot);
+    writeFileSync(join(agyRoot, "start-antigravity.sh"), "#!/bin/sh\n", { mode: 0o700 });
+    config.agents.push({ id: "antigravity", root: agyRoot, launcher: "start-antigravity.sh" });
+    writeFileSync(f.configPath, JSON.stringify(config));
+    const paths = issueRuntimePaths(f.runtime, 1);
+    const profile = entry === "start" ? "consensus" : "solo";
+    const commands = profile === "solo" ? ["codex"] : ["codex", "claude", "agent", "agy"];
+    const ids = profile === "solo" ? ["codex"] : ["codex", "claude", "cursor", "antigravity"];
+    const versions = Object.fromEntries(ids.map((id, i) => [id, `${commands[i]} fixture-version`]));
+    const calls: string[] = [], output: string[] = [];
+    let release!: () => void, entered!: () => void, launched = false;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const updating = new Promise<void>((resolve) => { entered = resolve; });
+    const runner: ProcessRunner = async (argv, cwd, options) => {
+      if (argv[3] === "coord-agent-maintenance") {
+        const step = argv.at(-1)!;
+        calls.push(`${argv.at(-2)} ${step}`);
+        expect(cwd).toBe(join(f.root, `clone-${argv[5]}`));
+        expect(options?.timeoutMs).toBe(step === "update" ? 180_000 : 5_000);
+        if (calls.length === 1) { entered(); await gate; }
+      }
+      return successfulStartGit(argv);
+    };
+    const pending = runCli([...(entry === "start" ? ["start", "1"] : ["1"]), "--profile", profile,
+      "--config", f.configPath, "--coord-runtime", f.runtime], {
+      processRunner: runner, makeRunLoop: fakeLoop, io: { stdout: (line) => output.push(line) },
+      startEffects: async () => {
+        launched = true;
+        expect(readStartState(paths).agentVersions).toEqual(versions);
+        expect(calls).toEqual([...commands.map((c) => `${c} update`), ...commands.map((c) => `${c} --version`)]);
+        for (const id of ids) expect(output.join("")).toContain(`Agent ${id} version: ${versions[id]}`);
+        return { cleanup: async () => undefined };
+      }
+    });
+    await updating;
+    try {
+      expect(launched).toBe(false);
+      expect(existsSync(paths.start)).toBe(false);
+      expect(calls).toEqual(["codex update"]);
+    } finally { release(); }
+    expect(await pending).toBe(0);
+    expect(launched).toBe(true);
+  });
+
+  it.each(["exit", "timeout", "missing"])("warns and continues after %s failures without inventing versions", async (failure) => {
+    const f = setup();
+    const config = JSON.parse(readFileSync(f.configPath, "utf8"));
+    const customRoot = join(f.root, "custom");
+    mkdirSync(customRoot);
+    writeFileSync(join(customRoot, "custom.sh"), "#!/bin/sh\n", { mode: 0o700 });
+    config.agents.push({ id: "gemini", root: customRoot, launcher: "custom.sh" });
+    writeFileSync(f.configPath, JSON.stringify(config));
+    const calls: string[] = [], errors: string[] = [], output: string[] = [];
+    expect(await runCli(["start", "1", "--config", f.configPath, "--coord-runtime", f.runtime], {
+      makeRunLoop: fakeLoop, io: { stdout: (s) => output.push(s), stderr: (s) => errors.push(s) },
+      processRunner: async (argv) => {
+        if (argv[3] === "coord-agent-maintenance") {
+          calls.push(`${argv.at(-2)} ${argv.at(-1)}`);
+          if (argv[5] === "codex") {
+            if (failure === "missing") throw new Error("spawn ENOENT");
+            if (failure === "timeout" && argv.at(-1) === "--version") return { exitCode: 0, stdout: " \n", stderr: "" };
+            return { exitCode: failure === "timeout" ? 124 : 1, stdout: "", stderr: failure === "timeout" ? "Timed out" : "offline" };
+          }
+        }
+        return successfulStartGit(argv);
+      }
+    })).toBe(0);
+    expect(readStartState(issueRuntimePaths(f.runtime, 1)).agentVersions).toEqual({
+      codex: null, claude: "claude fixture-version", cursor: "agent fixture-version", gemini: null
+    });
+    expect(calls).toEqual(["codex update", "claude update", "agent update", "codex --version", "claude --version", "agent --version"]);
+    expect(errors.join("")).toContain("WARNING: codex update:");
+    expect(errors.join("")).toContain("WARNING: codex --version:");
+    expect(errors.join("")).toContain("gemini update skipped");
+    expect(output.join("")).toContain("Agent codex version: unknown");
+  });
+
+  it("does not update or replace the version snapshot on attach, resume, run, or numeric continuation", async () => {
+    const f = setup();
+    expect(await runCli(["start", "1", "--config", f.configPath, "--coord-runtime", f.runtime], {
+      processRunner: successfulStartGit, makeRunLoop: fakeLoop, io: { stdout: () => undefined }
+    })).toBe(0);
+    const paths = issueRuntimePaths(f.runtime, 1);
+    const before = readFileSync(paths.start, "utf8");
+    const processRunner = vi.fn<ProcessRunner>(async () => { throw new Error("recovery must not run maintenance"); });
+    for (const argv of [["attach", "1", "--config", f.configPath], ["resume", "--issue", "1"],
+      ["run", "--issue", "1"], ["1", "--config", f.configPath]]) {
+      expect(await runCli([...argv, "--coord-runtime", f.runtime], { processRunner,
+        makeRunLoop: (p) => ({ ...fakeLoop(p), restoreTerminals: async () => undefined }),
+        io: { stdout: () => undefined }
+      })).toBe(0);
+    }
+    expect(processRunner).not.toHaveBeenCalled();
+    expect(readFileSync(paths.start, "utf8")).toBe(before);
+  });
+
+  it.each(["codex", "antigravity"])("updates and launches the same %s installation after nvm setup", async (id) => {
+    const f = setup();
+    const clone = join(f.root, "clone-codex");
+    const home = join(f.root, "home"), nvm = join(home, ".nvm");
+    const ownerBin = join(f.root, "owner bin"), pinnedBin = join(f.root, "pinned bin"), localBin = join(home, ".local/bin");
+    for (const dir of [nvm, ownerBin, pinnedBin, localBin]) mkdirSync(dir, { recursive: true });
+    const executable = id === "codex" ? "codex" : "agy";
+    const log = join(f.root, "vendor.log");
+    for (const [dir, label] of [[ownerBin, "owner"], [pinnedBin, "pinned"], [localBin, "home"]]) {
+      writeFileSync(join(dir!, executable), `#!/bin/sh\nprintf '%s|%s\\n' '${label}' "$*" >> "$VENDOR_LOG"\n` +
+        `if [ "$1" = --version ]; then printf '%s\\n' '${label}-version'; fi\n`, { mode: 0o700 });
+    }
+    writeFileSync(join(pinnedBin, "node"), "#!/bin/sh\necho fixture-node\n", { mode: 0o700 });
+    writeFileSync(join(nvm, "nvm.sh"), 'nvm() { export PATH="$PINNED_BIN:$PATH"; echo "nvm setup noise"; }\n');
+    writeFileSync(join(clone, ".nvmrc"), "fixture-node\n");
+    writeAgentLauncher({ installRoot: repoRoot, clone, agent: id, label: id, baseBranch: "main", options: effectOptions(() => undefined, false) });
+    const config = JSON.parse(readFileSync(f.configPath, "utf8"));
+    config.agents = [{ id, root: clone, launcher: `start-${id}.sh` }];
+    writeFileSync(f.configPath, JSON.stringify(config));
+    const env = { ...process.env, HOME: home, NVM_DIR: nvm, PINNED_BIN: pinnedBin,
+      PATH: `${ownerBin}:/usr/bin:/bin`, VENDOR_LOG: log, COORD_ISSUE: "" };
+    expect(await runCli(["start", "1", "--config", f.configPath, "--coord-runtime", f.runtime], {
+      makeRunLoop: fakeLoop, io: { env, stdout: () => undefined },
+      processRunner: (argv, cwd, options) => argv[3] === "coord-agent-maintenance" ? runArgv(argv, cwd, options) : successfulStartGit(argv)
+    })).toBe(0);
+    execFileSync("/bin/bash", [join(clone, `start-${id}.sh`)], { cwd: clone, env, stdio: "pipe" });
+    const label = id === "codex" ? "pinned" : "home";
+    const lines = readFileSync(log, "utf8").trim().split("\n");
+    expect(lines.slice(0, 2)).toEqual([`${label}|update`, `${label}|--version`]);
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toMatch(new RegExp(`^${label}\\|`));
+    if (id === "codex") expect(lines[2]).toContain("-c check_for_update_on_startup=false");
+    expect(readStartState(issueRuntimePaths(f.runtime, 1)).agentVersions).toEqual({ [id]: `${label}-version` });
+  });
+});
 
 describe("CLI version", () => {
   it("never touches the default terminal under Vitest, even when both host streams are TTYs", async () => {

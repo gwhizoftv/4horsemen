@@ -791,7 +791,7 @@ describe("completion mailbox wiring", () => {
 
     const expected = {
       claude: ["--permission-mode", "auto"],
-      codex: ["--ask-for-approval", "never", "--sandbox", "workspace-write", "--no-daemon"],
+      codex: ["-c", "check_for_update_on_startup=false", "--ask-for-approval", "never", "--sandbox", "workspace-write", "--no-daemon"],
       cursor: ["--sandbox", "enabled"],
       antigravity: ["--mode", "accept-edits", "--dangerously-skip-permissions"]
     } as const;
@@ -838,14 +838,16 @@ describe("completion mailbox wiring", () => {
     }
 
     // Manual mode: no issue, so no grant — and the harness must still start.
-    const claudeClone = result.clones[0] as string;
-    const manual = join(fixture.workspaceRoot, "claude-manual.args");
-    execFileSync("/bin/bash", [join(claudeClone, "start-claude.sh")], {
-      cwd: claudeClone,
-      env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_ISSUE: "", CAPTURE: manual },
-      stdio: "ignore"
-    });
-    expect(readFileSync(manual, "utf8").trimEnd().split("\n")).toEqual(["--permission-mode", "auto"]);
+    for (const [index, agent] of ["claude", "codex"].entries()) {
+      const clone = result.clones[index] as string;
+      const manual = join(fixture.workspaceRoot, `${agent}-manual.args`);
+      execFileSync("/bin/bash", [join(clone, `start-${agent}.sh`)], {
+        cwd: clone,
+        env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_ISSUE: "", CAPTURE: manual },
+        stdio: "ignore"
+      });
+      expect(readFileSync(manual, "utf8").trimEnd().split("\n")).toEqual(expected[agent as "claude" | "codex"]);
+    }
   });
 
   /**
