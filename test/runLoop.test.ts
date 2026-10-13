@@ -1885,7 +1885,13 @@ describe("effectful run loop", () => {
         ? "## Exact File Map\n`src/product.ts`\n" : JSON.stringify(request)), stderr: "" };
       return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
     });
-    const after = await new CoordinatorRunLoop(paths, { tmux: null, mirror, log: () => undefined }).runTick();
+    const at = (seconds: number) => new Date(Date.parse(start.createdAt) + seconds * 1000).toISOString();
+    appendJournal(paths, { type: "gate-advanced", details: { from: "R3.plan-ballot", to: "R4.implement", round: null } }, at(10));
+    const messages: string[] = [];
+    let now = at(30);
+    const loop = new CoordinatorRunLoop(paths, { tmux: null, mirror, now: () => now,
+      log: (message) => messages.push(message) });
+    const after = await loop.runTick();
     if (!matches) {
       expect(after.pendingAmendment).toBeNull();
       expect(after.agents.codex.lastAcceptedActionId).toBeNull();
@@ -1897,6 +1903,20 @@ describe("effectful run loop", () => {
     expect(after.agents.codex.lastAcceptedActionId).toBe(id);
     expect(after.agents.claude.lastAcceptedActionId).toBeNull();
     expect(existsSync(runtime.ready)).toBe(true);
+    expect(messages).toContain(`Issue 1: R4.implement → R4.amend-ballot (round 1); R4.implement took 20.000s; started at ${at(30)}`);
+    const voted = mutateCursorsState(paths, (current) => ({ ...current,
+      acceptedResponses: [acceptedResponseFixture({ stepId: "R4.amend-ballot", agent: "codex", round: 1, disposition: "approve",
+        path: ".plans/issue-1/amendment-ballot-codex-1.json" })],
+      ballotBatches: [publishedBallotBatchFixture({ kind: "amendment-ballot-batch", activeRoster: ["codex"], round: 1 })]
+    })).state;
+    now = at(40);
+    const resumed = await loop["applyDecisions"](start, voted, [{ type: "resolve-amendment", approved: true }]);
+    now = at(45);
+    await loop["applyDecisions"](start, resumed, [{ type: "advance-step", from: "R4.implement", to: "R5.compare", round: null }]);
+    expect(messages.slice(-2)).toEqual([
+      `Issue 1: R4.amend-ballot (round 1) → R4.implement; R4.amend-ballot (round 1) took 10.000s; started at ${at(40)}`,
+      `Issue 1: R4.implement → R5.compare; R4.implement took 5.000s; started at ${at(45)}`
+    ]);
   });
 
   it("recovers durable amendment retirements before preparing votes and refuses delayed old markers", async () => {
@@ -2100,17 +2120,20 @@ describe("effectful run loop", () => {
     expect(action.body).toContain(`"automationDigest": "${start.automationDigest}"`);
   });
 
-  it("logs RN phase changes on the default log sink", async () => {
+  it("logs phase start timestamps and elapsed time once per transition", async () => {
     const { paths } = fixture();
+    const startedAt = readStartState(paths).createdAt;
+    const now = new Date(Date.parse(startedAt) + 65_250).toISOString();
     const messages: string[] = [];
     const loop = new CoordinatorRunLoop(paths, {
       tmux: null,
+      now: () => now,
       log: (message) => messages.push(message)
     });
     await loop.runTick();
-    expect(messages).toEqual(["Issue 1: R1.join"]);
+    await loop.runTick();
+    expect(messages).toEqual([`Issue 1: R1.join; started at ${startedAt}`]);
 
-    const now = "2026-08-11T17:00:00.000Z";
     mutateCursorsState(paths, (current) =>
       cursorsStateSchema.parse({
         ...current,
@@ -2135,7 +2158,160 @@ describe("effectful run loop", () => {
       })
     );
     await loop.runTick();
-    expect(messages).toEqual(["Issue 1: R1.join", "Issue 1: R1.join → R2.plan"]);
+    expect(messages).toEqual([
+      `Issue 1: R1.join; started at ${startedAt}`,
+      `Issue 1: R1.join → R2.plan; R1.join took 65.250s; started at ${now}`
+    ]);
+  });
+
+  it("resumes the journaled phase clock and preserves revision rounds through completion", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const at = (seconds: number) => new Date(Date.parse(start.createdAt) + seconds * 1000).toISOString();
+    let cursors = mutateCursorsState(paths, (current) => ({ ...current,
+      issueCursor: { stepId: "R6.revise", gateId: "gate-6-consensus", round: 1 }
+    })).state;
+    appendJournal(paths, { type: "gate-advanced", details: { from: "R5.compare-ballot", to: "R6.revise", round: 1 } }, at(10));
+    const messages: string[] = [];
+    const controller = new AbortController();
+    mutateCursorsState(paths, (current) => setPaused(current, true, at(11)));
+    await new CoordinatorRunLoop(paths, {
+      tmux: null, now: () => at(20), log: (message) => messages.push(message),
+      sleep: async () => { controller.abort(); }
+    }).run(controller.signal);
+    expect(messages).toContain(`Issue 1: R6.revise (round 1); started at ${at(10)}`);
+    cursors = mutateCursorsState(paths, (current) => setPaused(current, false, at(20))).state;
+    messages.length = 0;
+
+    const transitions = [
+      { from: "R6.revise", to: "R6.ballot", round: 1 },
+      { from: "R6.ballot", to: "R6.revise", round: 2 },
+      { from: "R6.revise", to: "R7.finalize", round: null },
+      { from: "R7.finalize", to: null, round: null }
+    ] as const;
+    for (const [index, transition] of transitions.entries()) {
+      // Restart before every transition; elapsed time must include downtime and pauses.
+      const loop = new CoordinatorRunLoop(paths, { tmux: null, now: () => at(30 + index * 10),
+        log: (message) => messages.push(message) });
+      cursors = await loop["applyDecisions"](start, cursors, [{ type: "advance-step", ...transition }]);
+    }
+    expect(messages).toEqual([
+      `Issue 1: R6.revise (round 1) → R6.ballot (round 1); R6.revise (round 1) took 20.000s; started at ${at(30)}`,
+      `Issue 1: R6.ballot (round 1) → R6.revise (round 2); R6.ballot (round 1) took 10.000s; started at ${at(40)}`,
+      `Issue 1: R6.revise (round 2) → R7.finalize; R6.revise (round 2) took 10.000s; started at ${at(50)}`,
+      "Issue 1: R7.finalize → complete; R7.finalize took 10.000s"
+    ]);
+  });
+
+  it.each([false, true])("times owner-answer phase changes across runner restarts (restart: %s)", async (restart) => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const at = (seconds: number) => new Date(Date.parse(start.createdAt) + seconds * 1000).toISOString();
+    const questionId = actionIdFor("codex");
+    mutateCursorsState(paths, (current) => ({ ...current,
+      issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
+      ownerQuestion: { id: questionId, kind: "ballot-escalation", round: 1,
+        allowedAnswers: ["retry", "revise", "abandon"], createdAt: at(15) }
+    }));
+    appendJournal(paths, { type: "gate-advanced", details: { from: "R6.revise", to: "R6.ballot", round: 1 } }, at(10));
+    const messages: string[] = [];
+    const makeLoop = () => new CoordinatorRunLoop(paths, { tmux: null, now: () => at(130),
+      log: (message) => messages.push(message) });
+    let loop = makeLoop();
+    loop["logPhase"](start, readCursorsState(paths));
+    messages.length = 0;
+    applyOwnerAnswer(paths, questionId, "revise", at(100));
+    // Reapplying an answer must not introduce another boundary.
+    expect(applyOwnerAnswer(paths, questionId, "revise", at(110)).alreadyApplied).toBe(true);
+    if (restart) loop = makeLoop();
+    await loop.runTick({ observeOnly: true });
+    await loop.runTick({ observeOnly: true });
+    await loop["applyDecisions"](start, readCursorsState(paths), [
+      { type: "advance-step", from: "R6.revise", to: "R6.ballot", round: 2 }
+    ]);
+    expect(messages).toEqual([
+      `Issue 1: R6.ballot (round 1) → R6.revise (round 2); R6.ballot (round 1) took 90.000s; started at ${at(100)}`,
+      `Issue 1: R6.revise (round 2) → R6.ballot (round 2); R6.revise (round 2) took 30.000s; started at ${at(130)}`
+    ]);
+  });
+
+  it.each([false, true])("times drop-triggered phase resets once (amendment: %s)", async (amendment) => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const at = (seconds: number) => new Date(Date.parse(start.createdAt) + seconds * 1000).toISOString();
+    mutateCursorsState(paths, (current) => cursorsStateSchema.parse({ ...current,
+      issueCursor: amendment
+        ? { stepId: "R4.amend-ballot", gateId: "gate-4-implementations", round: 1 }
+        : { stepId: "R5.compare", gateId: "gate-5-comparison", round: null },
+      derived: { ...current.derived, planSelection: {
+        kind: "plan-selection", algorithm: "plurality-active-roster-v1", inputSetHash: "f".repeat(64),
+        activeRoster: current.activeRoster,
+        inputs: [{ kind: "plan", agent: "claude", submissionSha: "1".repeat(40), path: ".plans/issue-1/plan.md" }],
+        decisionId: `plan-selection:${"f".repeat(64)}`,
+        supersedes: null, decidedAt: at(5), selectedAgents: ["claude"]
+      } },
+      ...(amendment ? { amendmentSequence: 1, pendingAmendment: {
+        sequence: 1, request: { agent: "codex", commitSha: "d".repeat(40), path: ".signals/issue-1/implementation-ready-codex.json" },
+        proposal: { protocolVersion: 1, artifact: "plan-amendment-request", issue: 1, issueSessionId: start.issueSessionId,
+          agent: "codex", actionId: actionIdFor("codex"), inputSetHash: "e".repeat(64), scopeHash: "f".repeat(64),
+          explanation: "Missing regression", additionalPaths: [{ path: "test/product.test.ts", reason: "Regression" }] },
+        plans: [{ agent: "claude", commitSha: "1".repeat(40), path: ".plans/issue-1/plan.md" }],
+        activeRoster: current.activeRoster, resume: { stepId: "R4.implement", round: null }, requestedAt: at(10)
+      } } : {})
+    }));
+    appendJournal(paths, { type: amendment ? "amendment-requested" : "gate-advanced", details: {} }, at(10));
+    const messages: string[] = [];
+    const loop = new CoordinatorRunLoop(paths, { tmux: null, now: () => at(130), log: (message) => messages.push(message) });
+    loop["logPhase"](start, readCursorsState(paths));
+    messages.length = 0;
+    dropOwnerAgent(paths, "claude", at(100));
+    await loop.runTick({ observeOnly: true });
+    await loop["applyDecisions"](start, readCursorsState(paths), [
+      { type: "advance-step", from: "R4.implement", to: "R5.compare", round: null }
+    ]);
+    const from = amendment ? "R4.amend-ballot (round 1)" : "R5.compare";
+    expect(messages).toEqual([
+      `Issue 1: ${from} → R4.implement; ${from} took 90.000s; started at ${at(100)}`,
+      `Issue 1: R4.implement → R5.compare; R4.implement took 30.000s; started at ${at(130)}`
+    ]);
+  });
+
+  it("keeps the phase clock when an owner retry and drop leave the cursor unchanged", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const at = (seconds: number) => new Date(Date.parse(start.createdAt) + seconds * 1000).toISOString();
+    const questionId = actionIdFor("codex");
+    mutateCursorsState(paths, (current) => ({ ...current,
+      issueCursor: { stepId: "R6.ballot", gateId: "gate-6-consensus", round: 1 },
+      ownerQuestion: { id: questionId, kind: "ballot-escalation", round: 1,
+        allowedAnswers: ["retry", "revise", "abandon"], createdAt: at(15) }
+    }));
+    appendJournal(paths, { type: "gate-advanced", details: { from: "R6.revise", to: "R6.ballot", round: 1 } }, at(10));
+    const messages: string[] = [];
+    const loop = new CoordinatorRunLoop(paths, { tmux: null, now: () => at(130), log: (message) => messages.push(message) });
+    loop["logPhase"](start, readCursorsState(paths));
+    applyOwnerAnswer(paths, questionId, "retry", at(100));
+    dropOwnerAgent(paths, "claude", at(110));
+    await loop.runTick({ observeOnly: true });
+    await loop["applyDecisions"](start, readCursorsState(paths), [
+      { type: "advance-step", from: "R6.ballot", to: "R6.revise", round: 2 }
+    ]);
+    expect(messages).toEqual([
+      `Issue 1: R6.ballot (round 1); started at ${at(10)}`,
+      `Issue 1: R6.ballot (round 1) → R6.revise (round 2); R6.ballot (round 1) took 120.000s; started at ${at(130)}`
+    ]);
+  });
+
+  it("does not announce a phase transition when the state mutation fails", async () => {
+    const { paths } = fixture();
+    const messages: string[] = [];
+    const loop = new CoordinatorRunLoop(paths, { tmux: null, log: (message) => messages.push(message) });
+    const stale = readCursorsState(paths);
+    mutateCursorsState(paths, (current) => setPaused(current, true));
+    await expect(loop["applyDecisions"](readStartState(paths), stale, [
+      { type: "advance-step", from: "R1.join", to: "R2.plan", round: null }
+    ])).rejects.toThrow(stateModule.StateConflictError);
+    expect(messages).toEqual([]);
   });
 
   it("reopens missing Terminal windows without disturbing same-branch agent WIP", async () => {

@@ -206,6 +206,21 @@ Uninstall performs the same workspace-scoped cleanup even when there are no
 
 ## Starting and running
 
+The coordinator prints each phase's start timestamp in UTC and its elapsed time
+in seconds when the phase ends, including the finalization phase. For example:
+
+```text
+Issue 42: R1.join; started at 2026-10-12T16:00:00.000Z
+Issue 42: R1.join → R2.plan; R1.join took 65.250s; started at 2026-10-12T16:01:05.250Z
+```
+
+Timing comes from the durable journal and includes waiting, pauses, and runner
+downtime. Resuming a run preserves the original phase start. Revision rounds
+are labeled separately; an amendment ballot ends the current implementation or
+revision interval, which starts a new interval when that work resumes.
+Owner answers and agent drops also end an interval when they change its step or
+round; controls that leave the phase unchanged preserve its original start.
+
 Confirm the installed driver with `coord --version` (or `-V`). Pre-1.0 releases
 use `0.0.N`, and the patch advances on every merge so a merge is visible after
 reinstall/refresh. **Nobody bumps it by hand.** The `version-bump-on-merge`

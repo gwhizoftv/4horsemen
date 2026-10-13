@@ -924,6 +924,7 @@ export class CoordinatorRunLoop {
   private readonly codexQuota: CodexQuotaReader;
   /** Last RN/round announced on `log`, so resume and first prepare do not repeat. */
   private loggedPhaseKey: string | null = null;
+  private loggedPhaseSequence: number | null = null;
   /** Local probes are advisory; restarting may probe again without changing workflow state. */
   private readonly paneObservations = new Map<string, { identity: string; nextAt: number; available: boolean }>();
   private readonly ingestVerificationMeasurements = createVerificationIngestor();
@@ -1685,16 +1686,64 @@ export class CoordinatorRunLoop {
   }
 
   private logPhase(
-    issue: number,
-    stepId: WorkflowStepId | null,
-    round: number | null,
-    from?: WorkflowStepId
+    start: StartState,
+    cursors: CursorsState,
+    previous?: CursorsState,
+    announceInitial = true
   ): void {
+    const stepId = cursors.completed ? null : cursors.issueCursor.stepId;
+    const round = stepId === null ? null : roundForStep(stepId, cursors.issueCursor.round);
     const key = `${stepId ?? "complete"}:${round ?? ""}`;
-    if (from === undefined && this.loggedPhaseKey === key) return;
+    // Use durable boundaries, so restarting the runner does not restart a phase's clock.
+    // Amendment ballots interrupt implementation/revision and have their own boundaries.
+    const boundaries = readJournal(this.paths).flatMap((event) => {
+      const ownerEvent = event.type === "owner-answer" || event.type === "agent-dropped" ||
+        event.type === "amendment-decided";
+      const from = ownerEvent ? cursorsStateSchema.shape.issueCursor.safeParse(event.details.phaseFrom) : null;
+      const to = ownerEvent ? cursorsStateSchema.shape.issueCursor.safeParse(event.details.phaseTo) : null;
+      const transition = from?.success && to?.success ? { from: from.data, to: to.data } : null;
+      return event.type === "started" || event.type === "gate-advanced" ||
+        event.type === "amendment-requested" || event.type === "amendment-decided" || transition !== null
+        ? [{ ...event, transition }] : [];
+    });
+    const sequence = boundaries.at(-1)?.sequence ?? null;
+    if (previous === undefined && this.loggedPhaseKey === key && this.loggedPhaseSequence === sequence) return;
+    const reportTransition = (
+      fromCursor: CursorsState["issueCursor"], toCursor: CursorsState["issueCursor"] | null, index: number
+    ): void => {
+      const at = boundaries[index]?.at ?? start.createdAt;
+      const from = describeWorkflowStep(fromCursor.stepId, roundForStep(fromCursor.stepId, fromCursor.round));
+      const to = toCursor === null ? describeWorkflowStep(null, null)
+        : describeWorkflowStep(toCursor.stepId, roundForStep(toCursor.stepId, toCursor.round));
+      const durationMs = Date.parse(at) - Date.parse(boundaries[index - 1]?.at ?? start.createdAt);
+      const duration = Number.isFinite(durationMs) && durationMs >= 0
+        ? `${(durationMs / 1000).toFixed(3)}s` : "unavailable";
+      this.log(`Issue ${start.issue}: ${from} → ${to}; ${from} took ${duration}${toCursor === null ? "" : `; started at ${at}`}`);
+    };
+    // Owner commands run outside this loop. Report their saved transitions on
+    // observation, including the latest transition when a runner resumes.
+    let reportedCurrent = false;
+    for (const [index, boundary] of boundaries.entries()) {
+      const unseen = this.loggedPhaseSequence === null ? index === boundaries.length - 1
+        : boundary.sequence > this.loggedPhaseSequence;
+      if (unseen && boundary.transition !== null) {
+        reportTransition(boundary.transition.from, boundary.transition.to, index);
+        reportedCurrent = index === boundaries.length - 1;
+      }
+    }
+    // A standalone observation tick need not announce ongoing work again;
+    // run() and action preparation still announce the phase on initial entry.
+    if (previous === undefined && this.loggedPhaseKey === null && !announceInitial && !reportedCurrent) return;
     this.loggedPhaseKey = key;
+    this.loggedPhaseSequence = sequence;
+    const at = boundaries.at(-1)?.at ?? start.createdAt;
     const to = describeWorkflowStep(stepId, round);
-    this.log(from === undefined ? `Issue ${issue}: ${to}` : `Issue ${issue}: ${from} → ${to}`);
+    const began = stepId === null ? "" : `; started at ${at}`;
+    if (previous === undefined) {
+      if (!reportedCurrent) this.log(`Issue ${start.issue}: ${to}${began}`);
+      return;
+    }
+    reportTransition(previous.issueCursor, stepId === null ? null : cursors.issueCursor, boundaries.length - 1);
   }
 
   /**
@@ -2889,7 +2938,6 @@ export class CoordinatorRunLoop {
   }
 
   private persistDerivedDecision(
-    start: StartState,
     cursors: CursorsState,
     kind: "plan-selection" | "implementation-selection" | "consensus",
     derive: (current: CursorsState, now: string, supersedes: string | null) => DerivedDecisionRecord | null,
@@ -2934,13 +2982,11 @@ export class CoordinatorRunLoop {
         updatedAt: record.decidedAt
       });
     });
-    this.logPhase(start.issue, advance.to, advance.round, advance.from);
     return this.advance(next, advance);
   }
 
-  private applyDerivedPlanSelection(start: StartState, cursors: CursorsState): CursorsState {
+  private applyDerivedPlanSelection(cursors: CursorsState): CursorsState {
     return this.persistDerivedDecision(
-      start,
       cursors,
       "plan-selection",
       (current, now, supersedes) => computePlanSelectionDerived(current, now, supersedes),
@@ -2953,9 +2999,8 @@ export class CoordinatorRunLoop {
     );
   }
 
-  private applyDerivedImplementationSelection(start: StartState, cursors: CursorsState): CursorsState {
+  private applyDerivedImplementationSelection(cursors: CursorsState): CursorsState {
     return this.persistDerivedDecision(
-      start,
       cursors,
       "implementation-selection",
       (current, now, supersedes) => computeImplementationSelectionDerived(current, now, supersedes),
@@ -2968,11 +3013,10 @@ export class CoordinatorRunLoop {
     );
   }
 
-  private applyDerivedConsensus(start: StartState, cursors: CursorsState, round: number): CursorsState {
+  private applyDerivedConsensus(cursors: CursorsState, round: number): CursorsState {
     const record = computeConsensusDerived(cursors, round, this.now());
     const capped = record?.algorithm === "revision-limit-active-roster-v1";
     return this.persistDerivedDecision(
-      start,
       cursors,
       "consensus",
       (current, now, supersedes) => computeConsensusDerived(current, round, now, supersedes),
@@ -2989,6 +3033,7 @@ export class CoordinatorRunLoop {
     let next = cursors;
     for (const decision of decisions) {
       if (next.paused || next.abandoned) return next;
+      const previous = next;
       if (decision.type === "prepare-action") {
         if (bindOwnerGuidance(next, decision.stepId, decision.round, this.now()) !== next) {
           next = this.mutate(next, (current) => {
@@ -3004,7 +3049,7 @@ export class CoordinatorRunLoop {
             return { ...bound, ownerGuidance: { ...bound.ownerGuidance!, bound: { ...snapshot, boundAt: event.at } } };
           });
         }
-        this.logPhase(start.issue, decision.stepId, decision.round);
+        this.logPhase(start, next);
         next = await this.prepareAction(start, next, decision.agent, decision.stepId, decision.round);
       } else if (decision.type === "begin-amendment") next = this.beginAmendment(next, decision);
       else if (decision.type === "resolve-amendment") next = this.resolveAmendment(next, decision.approved);
@@ -3018,13 +3063,12 @@ export class CoordinatorRunLoop {
           replaceCursor(current, decision.agent, { status: "intent", outstanding: [...decision.outstanding] }, this.now())
         );
       } else if (decision.type === "derive-plan-selection") {
-        next = this.applyDerivedPlanSelection(start, next);
+        next = this.applyDerivedPlanSelection(next);
       } else if (decision.type === "derive-implementation-selection") {
-        next = this.applyDerivedImplementationSelection(start, next);
+        next = this.applyDerivedImplementationSelection(next);
       } else if (decision.type === "derive-consensus") {
-        next = this.applyDerivedConsensus(start, next, decision.round);
+        next = this.applyDerivedConsensus(next, decision.round);
       } else if (decision.type === "advance-step") {
-        this.logPhase(start.issue, decision.to, decision.round, decision.from);
         next = this.advance(next, decision);
       } else if (decision.type === "retire-terminal-question") {
         next = this.mutate(next, (current) => {
@@ -3069,6 +3113,10 @@ export class CoordinatorRunLoop {
           `Owner action required: ${decision.reason}. Answer with: ${issueCommand(`answer ${next.ownerQuestion?.id ?? "<question-id>"} <${decision.allowedAnswers.join("|")}>`, start.issue, start.coordRoot)}`
         );
       }
+      if (next.issueCursor.stepId !== previous.issueCursor.stepId ||
+          next.issueCursor.round !== previous.issueCursor.round || next.completed !== previous.completed) {
+        this.logPhase(start, next, previous);
+      }
     }
     return next;
   }
@@ -3084,6 +3132,7 @@ export class CoordinatorRunLoop {
       let cursors = readCursorsState(this.paths);
       this.reportStopWarnings();
       if (cursors.abandoned || cursors.completed) return cursors;
+      this.logPhase(start, cursors, undefined, false);
       for (const agent of start.agents) {
         if (cursors.activeRoster.includes(agent.id)) {
           ingestContainmentProbe(this.paths, agent.root, agent.id);
@@ -3334,7 +3383,7 @@ export class CoordinatorRunLoop {
       this.log(renderIssueReport(start, cursors, readAgentLifecycle(this.paths)).trimEnd());
       return;
     }
-    this.logPhase(start.issue, cursors.issueCursor.stepId, cursors.issueCursor.round);
+    this.logPhase(start, cursors);
     // Pauses retain the runner, not workflow authority. runTick remains
     // observation-only while held, and manual pause also stops quota reads.
     let initialized = false;
