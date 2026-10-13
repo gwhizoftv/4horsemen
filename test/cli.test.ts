@@ -6,9 +6,9 @@ import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeAction } from "../src/action.js";
-import { automationDigestMaterial, runCli, type CliRunLoop } from "../src/cli.js";
+import { AGENT_UPDATE_TIMEOUT_MS, AGENT_VERSION_TIMEOUT_MS, automationDigestMaterial, runCli, type CliRunLoop } from "../src/cli.js";
 import { agentRuntimePaths, issueRuntimePaths } from "../src/paths.js";
-import { buildOrder } from "../src/runLoop.js";
+import { buildOrder, type ProcessOptions, type ProcessResult } from "../src/runLoop.js";
 import type { TerminalInput, TerminalOutput } from "../src/interactive.js";
 import {
   cursorsStateSchema,
@@ -188,7 +188,12 @@ const issueSnapshot = (issue: number, body = `Body for issue ${issue}`) => ({
   body,
   url: `https://github.com/example/fixture/issues/${issue}`
 });
+/** Vendor CLIs a fresh start updates; tests must never reach the installed ones. */
+const vendorExecutables = new Set(["codex", "claude", "agent", "agy"]);
 const successfulStartGit = async (argv: readonly string[]) => {
+  if (vendorExecutables.has(argv[0] ?? "")) {
+    return { exitCode: 0, stdout: argv[1] === "--version" ? `${argv[0]} 0.0.0-test\n` : "", stderr: "" };
+  }
   if (argv[0] === "gh") {
     const issue = Number(argv[3]);
     const snapshot = issueSnapshot(issue);
@@ -205,7 +210,7 @@ const successfulStartGit = async (argv: readonly string[]) => {
   return { exitCode: 1, stdout: "", stderr: `unexpected command: ${argv.join(" ")}` };
 };
 const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
-  if (argv[0] === "gh") return successfulStartGit(argv);
+  if (argv[0] === "gh" || vendorExecutables.has(argv[0] ?? "")) return successfulStartGit(argv);
   if (argv.includes("ls-remote")) {
     return { exitCode: 0, stdout: `${baselineSha}\trefs/heads/main\n`, stderr: "" };
   }
@@ -402,6 +407,138 @@ describe("CLI version", () => {
       expect(await runCli([...argv], { io: { stdout: (message) => lines.push(message) } })).toBe(0);
       expect(lines.join("").trim()).toBe(expected);
     }
+  });
+});
+
+describe("fresh-start agent maintenance", () => {
+  type Call = { argv: string; cwd: string; options: ProcessOptions | undefined };
+  /** Adds configured agents (with clones and launchers) to a `setup()` fixture. */
+  const withAgents = (fixture: ReturnType<typeof setup>, ids: readonly string[]) => {
+    const config = JSON.parse(readFileSync(fixture.configPath, "utf8")) as { agents: unknown[] };
+    for (const id of ids) {
+      mkdirSync(join(fixture.root, `clone-${id}`));
+      writeFileSync(join(fixture.root, `clone-${id}`, `start-${id}.sh`), "#!/usr/bin/env bash\n", { mode: 0o700 });
+      config.agents.push({ id, root: `clone-${id}`, launcher: `start-${id}.sh`, delivery: "pull" });
+    }
+    writeFileSync(fixture.configPath, JSON.stringify(config));
+    return fixture;
+  };
+  const vendorRunner = (calls: Call[], respond: (argv: readonly string[]) => ProcessResult | Promise<ProcessResult>) =>
+    async (argv: readonly string[], cwd: string, options?: ProcessOptions): Promise<ProcessResult> => {
+      if (!vendorExecutables.has(argv[0] ?? "")) return successfulStartGit(argv);
+      calls.push({ argv: argv.join(" "), cwd, options });
+      return respond(argv);
+    };
+  const versionOf = (argv: readonly string[]): ProcessResult =>
+    ({ exitCode: 0, stdout: argv[1] === "--version" ? `${argv[0]} 1.0.0\n` : "updated\n", stderr: "" });
+
+  it("updates every rostered agent, then reads versions, all before state exists or any agent launches", async () => {
+    const fixture = withAgents(setup(), ["antigravity"]);
+    const home = join(fixture.root, "home");
+    const calls: Call[] = [];
+    let releaseCodex = (): void => undefined;
+    const codexHeld = new Promise<void>((resolvePromise) => { releaseCodex = resolvePromise; });
+    let launchedWith: unknown = "never launched";
+    const stdout: string[] = [];
+    const started = runCli(["start", "1", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
+      io: { stdout: (message) => stdout.push(message), env: { ...process.env, HOME: home, PATH: "/usr/bin" } },
+      processRunner: vendorRunner(calls, async (argv) => {
+        if (argv.join(" ") === "codex update") await codexHeld;
+        return versionOf(argv);
+      }),
+      startEffects: async ({ paths }) => {
+        launchedWith = readStartState(paths).agentVersions;
+        calls.push({ argv: "launch", cwd: "", options: undefined });
+        return { cleanup: async () => undefined };
+      },
+      makeRunLoop: fakeLoop
+    });
+    await vi.waitFor(() => expect(calls.map((call) => call.argv)).toEqual(["codex update"]));
+    // Nothing for this issue can be attached, resumed, or launched while an update runs.
+    expect(existsSync(join(fixture.runtime, "issue-1", "start.json"))).toBe(false);
+    expect(launchedWith).toBe("never launched");
+    releaseCodex();
+    expect(await started).toBe(0);
+
+    expect(calls.map((call) => call.argv)).toEqual([
+      "codex update", "claude update", "agent update", "agy update",
+      "codex --version", "claude --version", "agent --version", "agy --version",
+      "launch"
+    ]);
+    const versions = { codex: "codex 1.0.0", claude: "claude 1.0.0", cursor: "agent 1.0.0", antigravity: "agy 1.0.0" };
+    expect(launchedWith).toEqual(versions);
+    expect(readStartState(issueRuntimePaths(fixture.runtime, 1)).agentVersions).toEqual(versions);
+    expect(stdout.join("")).toContain("Agent versions for this run:\n  codex: codex 1.0.0\n");
+    expect(calls[0]).toMatchObject({ cwd: resolve(fixture.root, "clone-codex"), options: { timeoutMs: AGENT_UPDATE_TIMEOUT_MS } });
+    expect(calls[4]?.options?.timeoutMs).toBe(AGENT_VERSION_TIMEOUT_MS);
+    // Only agy gets the launcher's ~/.local/bin precedence.
+    expect(calls[3]?.options?.env?.PATH).toBe(`${home}/.local/bin:/usr/bin`);
+    expect(calls[0]?.options?.env?.PATH).toBe("/usr/bin");
+  });
+
+  it("updates only the agent a solo run will use, through the numeric entry point", async () => {
+    const fixture = setup();
+    const calls: Call[] = [];
+    expect(await runCli(["1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
+      io: { stdout: () => undefined },
+      processRunner: vendorRunner(calls, versionOf),
+      startEffects: async () => ({ cleanup: async () => undefined }),
+      makeRunLoop: fakeLoop
+    })).toBe(0);
+    expect(calls.map((call) => call.argv)).toEqual(["codex update", "codex --version"]);
+    expect(readStartState(issueRuntimePaths(fixture.runtime, 1)).agentVersions).toEqual({ codex: "codex 1.0.0" });
+  });
+
+  it("warns and starts with installed versions when updates fail, and never guesses a command", async () => {
+    const fixture = withAgents(setup(), ["antigravity", "gemini"]);
+    const calls: Call[] = [];
+    const stderr: string[] = [];
+    expect(await runCli(["start", "1", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
+      io: { stdout: () => undefined, stderr: (message) => stderr.push(message) },
+      processRunner: vendorRunner(calls, (argv) => {
+        switch (argv.join(" ")) {
+          case "codex update": return { exitCode: 1, stdout: "", stderr: "network down\n" };
+          case "claude update": case "claude --version": throw new Error("spawn claude ENOENT");
+          case "agent update": return { exitCode: 124, stdout: "", stderr: "", timedOut: true };
+          case "agy --version": return { exitCode: 0, stdout: "\n", stderr: "" };
+          default: return versionOf(argv);
+        }
+      }),
+      startEffects: async () => ({ cleanup: async () => undefined }),
+      makeRunLoop: fakeLoop
+    })).toBe(0);
+    expect(calls.map((call) => call.argv).filter((argv) => argv.includes("gemini"))).toEqual([]);
+    expect(readStartState(issueRuntimePaths(fixture.runtime, 1)).agentVersions).toEqual({
+      codex: "codex 1.0.0", claude: null, cursor: "agent 1.0.0", antigravity: null, gemini: null
+    });
+    const warnings = stderr.join("");
+    expect(warnings).toContain("[WARN] codex: codex update failed (network down); continuing with the installed version.");
+    expect(warnings).toContain("[WARN] claude: claude update failed (spawn claude ENOENT)");
+    expect(warnings).toContain("[WARN] cursor: agent update timed out after 60s");
+    expect(warnings).toContain("[WARN] claude: could not read the version of claude.");
+    expect(warnings).toContain("[WARN] antigravity: could not read the version of agy.");
+    expect(warnings).toContain("[WARN] gemini: no update command is known for this agent");
+  });
+
+  it("never updates again on attach or resume, leaving the recorded versions untouched", async () => {
+    const fixture = setup();
+    const calls: Call[] = [];
+    await runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
+      io: { stdout: () => undefined }, processRunner: vendorRunner(calls, versionOf), makeRunLoop: fakeLoop
+    });
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const bytes = readFileSync(paths.start, "utf8");
+    calls.length = 0;
+    const refuseVendor = vendorRunner(calls, (argv) => { throw new Error(`unexpected maintenance: ${argv.join(" ")}`); });
+    expect(await runCli(["attach", "1", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
+      io: { stdout: () => undefined }, processRunner: refuseVendor, sessionExists: async () => false,
+      makeRunLoop: () => ({ ...fakeLoop(paths), restoreTerminals: async () => undefined })
+    })).toBe(0);
+    expect(await runCli(["1", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
+      io: { stdout: () => undefined }, processRunner: refuseVendor, makeRunLoop: fakeLoop
+    })).toBe(0);
+    expect(calls).toEqual([]);
+    expect(readFileSync(paths.start, "utf8")).toBe(bytes);
   });
 });
 

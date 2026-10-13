@@ -468,6 +468,13 @@ export const startStateSchema = z
      * strict schema; see `StartStateInput` for the construction boundary.
      */
     contextPaths: z.array(z.string().min(1)).default([]),
+    /**
+     * Each rostered agent's `--version` as observed after the fresh-start
+     * update, or null when it could not be read. An observation, not an
+     * automation-digest input. Optional so a start.json written before this
+     * field existed still parses.
+     */
+    agentVersions: z.record(agentIdSchema, z.string().trim().min(1).nullable()).optional(),
     createdAt: timestampSchema
   })
   .strict();

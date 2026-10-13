@@ -607,6 +607,82 @@ const reportOwnerAgentClients = (result: OpenOwnerAgentClientsResult, log: (mess
   for (const command of result.commands) log(`  ${command}\n`);
 };
 
+/**
+ * Vendor CLIs coordination updates once, at a fresh `coord start`, before any
+ * agent launches (issue 184). Keyed by agent id: neither `harnessProcess` nor a
+ * custom id is ever run as a command. Attach, resume, and pane recovery never
+ * reach this, so every agent in a run keeps the version recorded here.
+ */
+const AGENT_EXECUTABLES: Readonly<Record<string, string>> = {
+  codex: "codex",
+  claude: "claude",
+  cursor: "agent",
+  antigravity: "agy"
+};
+export const AGENT_UPDATE_TIMEOUT_MS = 60_000;
+export const AGENT_VERSION_TIMEOUT_MS = 5_000;
+
+const firstLine = (text: string): string | null =>
+  text.split("\n").map((line) => line.trim()).find((line) => line !== "") ?? null;
+
+/**
+ * Update each agent sequentially, then read the version each will run. A
+ * failed, missing, or timed-out update warns and continues with the installed
+ * version; nothing here fails the start. Returns the map recorded in start.json.
+ */
+const updateAgentsForFreshStart = async (input: {
+  agents: CoordinatorConfig["agents"];
+  runner: ProcessRunner;
+  env: NodeJS.ProcessEnv;
+  io: CliIo;
+}): Promise<Record<string, string | null>> => {
+  // agy installs into ~/.local/bin, which the launcher puts first on PATH for
+  // that vendor only; resolve the same executable the launcher will exec.
+  const environment = (agentId: string): NodeJS.ProcessEnv =>
+    agentId === "antigravity" && input.env.HOME !== undefined
+      ? { ...input.env, PATH: `${input.env.HOME}/.local/bin:${input.env.PATH ?? ""}` }
+      : input.env;
+  const run = async (agentId: string, cwd: string, argv: readonly string[], timeoutMs: number) => {
+    try {
+      return await input.runner(argv, cwd, { timeoutMs, env: environment(agentId) });
+    } catch (error) {
+      return { exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  for (const agent of input.agents) {
+    const executable = AGENT_EXECUTABLES[agent.id];
+    if (executable === undefined) {
+      input.io.stderr(`[WARN] ${agent.id}: no update command is known for this agent; launching its installed version.\n`);
+      continue;
+    }
+    input.io.stdout(`Updating ${agent.id} (${executable} update)...\n`);
+    const result = await run(agent.id, resolve(agent.root), [executable, "update"], AGENT_UPDATE_TIMEOUT_MS);
+    if (result.timedOut === true) {
+      input.io.stderr(
+        `[WARN] ${agent.id}: ${executable} update timed out after ${AGENT_UPDATE_TIMEOUT_MS / 1000}s; ` +
+          "continuing with the installed version.\n"
+      );
+    } else if (result.exitCode !== 0) {
+      const detail = firstLine(result.stderr) ?? firstLine(result.stdout) ?? `exit ${result.exitCode}`;
+      input.io.stderr(`[WARN] ${agent.id}: ${executable} update failed (${detail}); continuing with the installed version.\n`);
+    }
+  }
+  const versions: Record<string, string | null> = {};
+  for (const agent of input.agents) {
+    const executable = AGENT_EXECUTABLES[agent.id];
+    let version: string | null = null;
+    if (executable !== undefined) {
+      const result = await run(agent.id, resolve(agent.root), [executable, "--version"], AGENT_VERSION_TIMEOUT_MS);
+      version = result.exitCode === 0 && result.timedOut !== true ? firstLine(result.stdout) : null;
+      if (version === null) input.io.stderr(`[WARN] ${agent.id}: could not read the version of ${executable}.\n`);
+    }
+    versions[agent.id] = version;
+  }
+  input.io.stdout("Agent versions for this run:\n");
+  for (const agent of input.agents) input.io.stdout(`  ${agent.id}: ${versions[agent.id] ?? "unknown"}\n`);
+  return versions;
+};
+
 const defaultStartEffects = async (input: {
   paths: IssueRuntimePaths;
   issue: number;
@@ -965,6 +1041,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       installRoot: config.coordination?.installRoot ?? coordinatorSourceRoot,
       log: io.stdout
     });
+    // Before start.json exists: until it does, no attach or resume can find
+    // this issue and launch an agent while its CLI is being replaced.
+    const agentVersions = await updateAgentsForFreshStart({ agents: roster, runner, env: io.env, io });
 
     let effects: { cleanup: () => Promise<void> } | null = null;
     createIssueRuntime(paths, roster.map((agent) => agent.id));
@@ -998,7 +1077,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         workflowCriticalPrefixes: config.workflowCriticalPrefixes,
         workflowCriticalFiles: config.workflowCriticalFiles,
         pollIntervalMs: config.pollIntervalMs,
-        contextPaths: config.contextPaths
+        contextPaths: config.contextPaths,
+        agentVersions
       });
       initializeAgentLifecycle(paths, roster.map((agent) => agent.id));
       // Start the CLIs only after their owner runtime exists. SessionStart

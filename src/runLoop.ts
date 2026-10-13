@@ -118,27 +118,79 @@ import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import { harnessPromptReadiness, renderNudgeText, TmuxController, type IdleOverride, type OwnerReminderOutcome } from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
-export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
-export type ProcessRunner = (argv: readonly string[], cwd: string) => Promise<ProcessResult>;
+export type ProcessResult = { exitCode: number; stdout: string; stderr: string; timedOut?: boolean };
+/**
+ * Opt-in bounds for one call. Without them a call behaves exactly as before:
+ * no deadline, unbounded output, the caller's environment.
+ */
+export type ProcessOptions = { timeoutMs?: number; env?: NodeJS.ProcessEnv };
+export type ProcessRunner = (argv: readonly string[], cwd: string, options?: ProcessOptions) => Promise<ProcessResult>;
 
-export const runArgv: ProcessRunner = (argv, cwd) =>
+/** Diagnostics a bounded call keeps per stream; the rest is drained and dropped. */
+export const BOUNDED_OUTPUT_BYTES = 64 * 1024;
+/** Time a timed-out process group gets between SIGTERM and SIGKILL. */
+export const BOUNDED_KILL_GRACE_MS = 1_000;
+/** Exit code reported for a timed-out call, as timeout(1) does. */
+export const TIMED_OUT_EXIT_CODE = 124;
+
+export const runArgv: ProcessRunner = (argv, cwd, options = {}) =>
   new Promise((resolvePromise, reject) => {
     const [command, ...args] = argv;
     if (command === undefined) {
       reject(new Error("Cannot run an empty argv."));
       return;
     }
+    const bounded = options.timeoutMs !== undefined;
+    // A bounded call leads its own process group, so a timeout can stop the
+    // installers and downloaders it spawned, not only the direct child. Killing
+    // just the child would let a descendant keep rewriting files after the
+    // caller has moved on.
     const child = spawn(command, args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: command === "git" ? hermeticGitEnv() : process.env
+      env: options.env ?? (command === "git" ? hermeticGitEnv() : process.env),
+      ...(bounded && process.platform !== "win32" ? { detached: true } : {})
     });
     let stdout = "";
     let stderr = "";
-    child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
-    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
-    child.once("error", reject);
-    child.once("close", (code) => resolvePromise({ exitCode: code ?? 1, stdout, stderr }));
+    const keep = (current: string, chunk: string): string =>
+      !bounded ? current + chunk : current.length >= BOUNDED_OUTPUT_BYTES ? current : (current + chunk).slice(0, BOUNDED_OUTPUT_BYTES);
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout = keep(stdout, chunk)));
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr = keep(stderr, chunk)));
+    let timedOut = false;
+    const timers: NodeJS.Timeout[] = [];
+    const signalGroup = (signal: NodeJS.Signals): void => {
+      if (child.pid === undefined) return;
+      try {
+        if (process.platform === "win32") child.kill(signal);
+        else process.kill(-child.pid, signal);
+      } catch {
+        // The group is already gone.
+      }
+    };
+    if (bounded) {
+      timers.push(setTimeout(() => {
+        timedOut = true;
+        signalGroup("SIGTERM");
+        timers.push(setTimeout(() => signalGroup("SIGKILL"), BOUNDED_KILL_GRACE_MS));
+      }, options.timeoutMs));
+    }
+    const settle = (): void => {
+      for (const timer of timers) clearTimeout(timer);
+    };
+    child.once("error", (error) => {
+      settle();
+      reject(error);
+    });
+    // `close` waits for every holder of the output pipes, so a timed-out call
+    // returns only after the whole group has exited.
+    child.once("close", (code) => {
+      settle();
+      // Reap any group member that outlived the leader's SIGTERM.
+      if (timedOut) signalGroup("SIGKILL");
+      // A process that caught SIGTERM and exited 0 still did not finish.
+      resolvePromise(timedOut ? { exitCode: TIMED_OUT_EXIT_CODE, stdout, stderr, timedOut: true } : { exitCode: code ?? 1, stdout, stderr });
+    });
   });
 
 export type PullRequestInput = {

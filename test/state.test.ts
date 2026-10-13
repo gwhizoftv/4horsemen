@@ -269,6 +269,17 @@ describe("operational state", () => {
     expect(readStartState(paths)).toMatchObject({ verification, verificationDigest: "d".repeat(64) });
   });
 
+  it("records observed agent versions at start, and still parses a start.json written without them", () => {
+    const { paths, start } = initialize();
+    expect(readStartState(paths).agentVersions).toBeUndefined();
+    const agentVersions = { claude: "2.1.296 (Claude Code)", codex: null };
+    writeFileSync(paths.start, JSON.stringify({ ...start, agentVersions }));
+    expect(readStartState(paths).agentVersions).toEqual(agentVersions);
+    expect(startStateSchema.safeParse({ ...start, agentVersions: { claude: "  " } }).success).toBe(false);
+    expect(startStateSchema.safeParse({ ...start, agentVersions: { "Not An Id": "1.0" } }).success).toBe(false);
+    expect(startStateSchema.safeParse({ ...start, agentVersions: { claude: 1 } }).success).toBe(false);
+  });
+
   it("persists pause and drop state but refuses a zero-agent workflow", () => {
     const { paths, cursors } = initialize();
     let next = setPaused(cursors, true, "2026-08-11T10:01:00.000Z");

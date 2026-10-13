@@ -791,7 +791,8 @@ describe("completion mailbox wiring", () => {
 
     const expected = {
       claude: ["--permission-mode", "auto"],
-      codex: ["--ask-for-approval", "never", "--sandbox", "workspace-write", "--no-daemon"],
+      // Startup self-update replaced the pane's process; coord start updates instead.
+      codex: ["-c", "check_for_update_on_startup=false", "--ask-for-approval", "never", "--sandbox", "workspace-write", "--no-daemon"],
       cursor: ["--sandbox", "enabled"],
       antigravity: ["--mode", "accept-edits", "--dangerously-skip-permissions"]
     } as const;
@@ -846,6 +847,15 @@ describe("completion mailbox wiring", () => {
       stdio: "ignore"
     });
     expect(readFileSync(manual, "utf8").trimEnd().split("\n")).toEqual(["--permission-mode", "auto"]);
+    // Codex keeps its update suppression with an empty grant array too.
+    const codexClone = result.clones[1] as string;
+    const codexManual = join(fixture.workspaceRoot, "codex-manual.args");
+    execFileSync("/bin/bash", [join(codexClone, "start-codex.sh")], {
+      cwd: codexClone,
+      env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_ISSUE: "", CAPTURE: codexManual },
+      stdio: "ignore"
+    });
+    expect(readFileSync(codexManual, "utf8").trimEnd().split("\n")).toEqual(expected.codex);
   });
 
   /**

@@ -28,7 +28,10 @@ import {
   NUDGE_RETRY_MS,
   resolveApprovedPaths,
   resolveChangeScope,
-  CHANGE_SCOPE_PATH_LIMIT
+  CHANGE_SCOPE_PATH_LIMIT,
+  BOUNDED_OUTPUT_BYTES,
+  runArgv,
+  TIMED_OUT_EXIT_CODE
 } from "../src/runLoop.js";
 import {
   cursorsStateSchema,
@@ -491,6 +494,50 @@ const quotaFixture = (results: CodexQuotaResult[], during?: () => void, validate
     codexHome: "/owner/.codex", accountId: "acct-1", ...(validatedVersion === null ? {} : { validatedVersion }) } }] }));
   return { ...f, reads };
 };
+
+describe("bounded process runner", () => {
+  const scratch = (): string => mkdtempSync(join(tmpdir(), "coord-run-argv-"));
+  const leftovers: number[] = [];
+  afterEach(() => {
+    for (const pid of leftovers.splice(0)) {
+      try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+    }
+  });
+
+  it("keeps unbounded calls unchanged and rejects a missing executable", async () => {
+    const dir = scratch();
+    expect(await runArgv([process.execPath, "-e", "process.stdout.write('ok')"], dir))
+      .toEqual({ exitCode: 0, stdout: "ok", stderr: "" });
+    await expect(runArgv(["coord-test-no-such-executable"], dir, { timeoutMs: 1_000 })).rejects.toThrow(/ENOENT/);
+  });
+
+  it("stops a timed-out command and its descendants before returning, and caps its output", async () => {
+    const dir = scratch();
+    const marker = join(dir, "late-write");
+    const pidFile = join(dir, "descendant.pid");
+    // A parent that ignores SIGTERM, floods its output, and leaves a descendant
+    // that would write a marker after the caller has moved on.
+    const parent = join(dir, "parent.cjs");
+    writeFileSync(parent, `
+      const { spawn } = require("node:child_process");
+      const { writeFileSync } = require("node:fs");
+      process.on("SIGTERM", () => {});
+      const child = spawn(process.execPath, ["-e", ${JSON.stringify(`setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "late"), 1500)`)}], { stdio: "inherit" });
+      writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+      process.stdout.write("x".repeat(${BOUNDED_OUTPUT_BYTES * 3}));
+      setInterval(() => {}, 1000);
+    `);
+    const startedAt = Date.now();
+    const result = await runArgv([process.execPath, parent], dir, { timeoutMs: 300 });
+    const elapsed = Date.now() - startedAt;
+    if (existsSync(pidFile)) leftovers.push(Number(readFileSync(pidFile, "utf8")));
+    expect(result).toMatchObject({ exitCode: TIMED_OUT_EXIT_CODE, timedOut: true });
+    expect(result.stdout.length).toBe(BOUNDED_OUTPUT_BYTES);
+    expect(elapsed).toBeLessThan(3_000);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.max(0, 2_000 - elapsed)));
+    expect(existsSync(marker)).toBe(false);
+  });
+});
 
 describe("runner waiting and initialization", () => {
   it.each(["missing", "dead", "live"])("restores %s terminals during a hold without resuming workflow", async (pane) => {

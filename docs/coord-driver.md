@@ -301,10 +301,15 @@ view N --repo owner/repo`, validates the response, and canonicalizes the title
 and body. Missing or unreadable issues fail before runtime, mirror, or tmux
 effects with create/auth remediation. It then preflights the exact origin
 baseline, the running coordinator checkout's real `HEAD` as its trusted source
-commit, digest inputs, confined non-symlink executable launchers, mirror, and tmux. It
-creates an attachable `coord-<issue>` session and invokes each configured
-`start-<agent>.sh` before committing active issue state. A failed partial tmux
-launch or later startup write is cleaned up, including the issue snapshot, and
+commit, digest inputs, confined non-symlink executable launchers, mirror, and tmux. After
+preparing the agents' issue branches it updates each agent CLI in the run's roster, one at a time
+(`codex update`, `claude update`, `agent update`, `agy update`), waiting up to 60 seconds for
+each. A failed, missing, or timed-out update prints a warning and the agent launches with its
+installed version. It then prints each agent's `--version` and records it as `agentVersions` in
+`start.json` ("unknown"/null when it cannot be read). Attach, resume, and pane recovery never
+update, so a run keeps the versions it started with. It then writes issue state, creates an
+attachable `coord-<issue>` session, and invokes each configured `start-<agent>.sh`. A failed
+partial tmux launch or later startup write is cleaned up, including the issue snapshot, and
 no apparently active issue runtime is left behind.
 Once state is committed, a failure in the initial tick is reported without
 deleting the resumable runtime or terminating the successfully launched panes.
@@ -412,6 +417,8 @@ budget or clearing other holds/manual pause. A tmux write alone is injection,
 not acceptance. AGY keeps its working delivery without a new hook requirement.
 The Codex launcher passes `--no-daemon`: the shared app-server would otherwise run
 hooks with the `COORD_ISSUE` of whichever launch started it, not this pane's.
+It also passes `-c check_for_update_on_startup=false`: a Codex self-update at launch
+replaces the pane's process, and `coord start` has already updated it.
 Existing clones keep their old `start-codex.sh` until `coord install` rewrites it.
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Claude 1 / Codex 1 / Cursor 1 / Gemini 1)
