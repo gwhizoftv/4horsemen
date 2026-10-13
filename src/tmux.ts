@@ -701,21 +701,14 @@ const newTerminalLog = (dir: string): string => {
 };
 
 /**
- * Appended to the launch command in the same tmux invocation. tmux runs a
- * command list before it services the new pane's pty, so the pane is retained
- * on every exit and piped from the agent's first byte, even if the agent
- * clears its startup dialogue or exits at once.
+ * Holds a new or dead pane, silently, while coord configures it. Bounded so a
+ * launch interrupted before the agent replaces it leaves a pane that exits and
+ * is relaunched by the next recovery.
  */
-const launchDiagnostics = (window: string, logDir: string | undefined): string[] => {
-  const retain = [";", "set-option", "-w", "-t", window, "remain-on-exit", "on"];
-  if (logDir === undefined) return retain;
-  const log = newTerminalLog(logDir);
-  return [
-    ...retain,
-    ";", "set-option", "-w", "-t", window, "@coord-log", log,
-    ";", "pipe-pane", "-t", window, `cat >> ${shellQuote(log)}`
-  ];
-};
+const LAUNCH_PLACEHOLDER = "sleep 60";
+
+/** `pipe-pane` expands tmux formats in its command, so a literal `#` in the path must be doubled. */
+const pipeToLog = (log: string): string => `cat >> ${shellQuote(log)}`.replaceAll("#", "##");
 
 const describeExit = (status: string, signal: string): string =>
   signal !== "" ? `signal ${signal}` : status !== "" ? `status ${status}` : "exit details unavailable";
@@ -884,10 +877,10 @@ export class TmuxController {
           safeName(agent.id),
           "-c",
           resolve(agent.root),
-          launcher,
-          ...launchDiagnostics(target, terminalLogDir?.(agent.id))
+          LAUNCH_PLACEHOLDER
         ]);
-        if (window.exitCode !== 0) throw new Error(`cannot launch ${agent.id} in ${target}: ${window.stderr}`);
+        const launched = window.exitCode === 0 ? await this.launchAgent(target, agent, launcher, terminalLogDir?.(agent.id)) : window;
+        if (launched.exitCode !== 0) throw new Error(`cannot launch ${agent.id} in ${target}: ${launched.stderr}`);
       }
     } catch (error) {
       await this.runner(["kill-session", "-t", session]);
@@ -1037,22 +1030,15 @@ export class TmuxController {
         const launcher = resolveAgentLauncher(agent);
         await this.recordPaneExits(["-t", target]);
         assertAuthority();
-        const respawned = await this.runner([
-          "respawn-pane",
-          "-k",
-          "-t",
-          target,
-          "-c",
-          resolve(agent.root),
-          launcher,
-          ...launchDiagnostics(target, terminalLogDir?.(agent.id))
-        ]);
+        // tmux refuses to pipe a dead pane, so hold it on the placeholder first.
+        const held = await this.runner(["respawn-pane", "-k", "-t", target, "-c", resolve(agent.root), LAUNCH_PLACEHOLDER]);
+        const respawned = held.exitCode === 0 ? await this.launchAgent(target, agent, launcher, terminalLogDir?.(agent.id)) : held;
         assertAuthority();
         if (respawned.exitCode !== 0) throw new Error(`cannot relaunch ${agent.id} in ${target}: ${respawned.stderr}`);
         continue;
       }
       const launcher = resolveAgentLauncher(agent);
-      const created = await this.runner([
+      const window = await this.runner([
         "new-window",
         "-d",
         "-t",
@@ -1061,12 +1047,30 @@ export class TmuxController {
         safeName(agent.id),
         "-c",
         resolve(agent.root),
-        launcher,
-        ...launchDiagnostics(target, terminalLogDir?.(agent.id))
+        LAUNCH_PLACEHOLDER
       ]);
+      const created = window.exitCode === 0 ? await this.launchAgent(target, agent, launcher, terminalLogDir?.(agent.id)) : window;
       assertAuthority();
       if (created.exitCode !== 0) throw new Error(`cannot launch ${agent.id} in ${target}: ${created.stderr}`);
     }
+  }
+
+  /**
+   * Replace the placeholder running in `target` with the agent. Retention and
+   * recording are set on the placeholder first and `respawn-pane` keeps the
+   * pipe, so nothing the tmux configuration runs (a hook may block the command
+   * queue) can let the agent print or exit before both are in place.
+   */
+  private async launchAgent(target: string, agent: AgentConfig, launcher: string, logDir: string | undefined): Promise<TmuxResult> {
+    const log = logDir === undefined ? null : newTerminalLog(logDir);
+    return this.runner([
+      "set-option", "-w", "-t", target, "remain-on-exit", "on",
+      ...(log === null ? [] : [
+        ";", "set-option", "-w", "-t", target, "@coord-log", log,
+        ";", "pipe-pane", "-t", target, pipeToLog(log)
+      ]),
+      ";", "respawn-pane", "-k", "-t", target, "-c", resolve(agent.root), launcher
+    ]);
   }
 
   async inspectPane(target: string): Promise<PaneState> {

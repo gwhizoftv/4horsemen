@@ -8,12 +8,15 @@ owner-driven recovery and pause/hold paths are unchanged.
 
 - `src/tmux.ts`
   - Every agent launch (`startSession` `new-window`, `ensureSession`
-    `new-window` and `respawn-pane`) is sent as **one tmux command list**:
-    `<launch> ; set-option -w -t <win> remain-on-exit on ; set-option -w -t <win> @coord-log <log> ; pipe-pane -t <win> 'cat >> <log>'`.
-    tmux runs a command list before it services the new pane's pty, so the pipe
-    is attached before the agent's first byte is read and before its exit can
-    be processed. Without a log directory (manual sessions) only
-    `remain-on-exit on` is appended.
+    `new-window` and dead-pane relaunch) first starts the pane on a silent,
+    bounded placeholder (`sleep 60`; a dead pane is respawned onto it because
+    tmux refuses to pipe a dead pane). The new private `launchAgent` then sends
+    `set-option -w remain-on-exit on ; set-option -w @coord-log <log> ; pipe-pane 'cat >> <log>' ; respawn-pane -k <launcher>`.
+    `respawn-pane` keeps the pipe, so retention and recording are in place
+    before the agent exists, even if a tmux hook blocks the command queue.
+    Without a log directory (manual sessions) only `remain-on-exit on` is set.
+  - `#` in the `pipe-pane` command is doubled, because tmux expands formats in
+    it; the piped file is then the literal path stored in `@coord-log`.
   - Per-run log `<terminalLogDir>/run-<UTC timestamp>.log`; never reused, and
     `cat >>` only appends, so a relaunch cannot overwrite earlier evidence.
   - New private `recordPaneExits(listArgs)`: reads
@@ -69,7 +72,10 @@ No product source files are created.
   `kill -KILL` themselves. Asserts each run's log keeps the startup line, each
   `.exit.json` records the right `status`/`signal`, relaunch writes a new log
   without altering the previous one, and `killIssueSessions` records the last
-  run's exit before destroying the pane.
+  run's exit before destroying the pane. The server carries a blocking
+  `after-new-window` hook and the log directory contains `#{pane_id}`, so the
+  test fails if recording starts after the agent or the pipe path is expanded;
+  the log advertised by diagnostics must hold the run's output.
 - `test/tmux.test.ts` — mock-runner assertions: launch command lists contain
   `remain-on-exit on` and `pipe-pane` in the same invocation; `list-panes`
   exit capture runs before `respawn-pane`; manual sessions get
@@ -83,8 +89,12 @@ No product source files are created.
 
 - **`pipe-pane` as a separate tmux call after `new-window`**: the agent can
   print and clear its dialogue, or exit, between the two calls.
-- **Placeholder pane then `respawn-pane`**: starts an extra shell and adds a
-  second launch path; the single command list is already race-free.
+- **Launcher plus settings in one tmux command list** (the first revision):
+  an inherited `after-new-window` hook running a blocking `run-shell` pauses
+  the queue, so the agent can exit before retention and the pipe are set
+  (review of `3477c5a`).
+- **Placeholder that blocks forever**: an interrupted launch would leave a
+  live pane that recovery never relaunches; `sleep 60` exits and is relaunched.
 - **Global `remain-on-exit` (`set -g`)**: leaks into the owner's other tmux
   sessions on the shared server.
 - **One appended log per agent with marker lines**: mixes coordinator text into
@@ -101,6 +111,9 @@ No product source files are created.
   with it by `coord wipe`; a rotation policy is not requested.
 - *Legacy windows without `@coord-log`* (sessions started before this change):
   exit recording is skipped for them; their respawn attaches logging from then on.
+- *A coord crash between placeholder and agent launch*: the placeholder exits
+  within 60 s and the pane is dead (or gone), so the next `ensureSession`
+  relaunches it as before.
 - *Older tmux without `pane_dead_signal`*: the field records as `null`; the
   status and log are still kept.
 

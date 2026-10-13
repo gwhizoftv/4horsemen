@@ -473,10 +473,11 @@ describe("tmux boundary", () => {
     const agent = { id: "claude", root: clone, launcher: "start-claude.sh", delivery: "both" as const };
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "new-window")).toBe(true);
-    // Retention is applied in the same tmux invocation as the launch, before the pane can exit.
-    expect(commandsIn(calls.find((args) => args[0] === "new-window")!)).toContainEqual(
-      ["set-option", "-w", "-t", "coord-3:claude", "remain-on-exit", "on"]
-    );
+    // The window starts on a silent placeholder; the agent replaces it only after retention is set.
+    expect(calls.find((args) => args[0] === "new-window")!.at(-1)).toBe("sleep 60");
+    const launch = commandsIn(calls.find((args) => args.includes("respawn-pane"))!);
+    expect(launch[0]).toEqual(["set-option", "-w", "-t", "coord-3:claude", "remain-on-exit", "on"]);
+    expect(launch.at(-1)).toEqual(["respawn-pane", "-k", "-t", "coord-3:claude", "-c", clone, join(clone, "start-claude.sh")]);
     expect(calls).toContainEqual(["set-environment", "-t", "coord-3", "COORD_ISSUE", "3"]);
     // A COORD_MANUAL=1 leaked from the tmux server would disarm the git shim.
     expect(calls).toContainEqual(["set-environment", "-r", "-t", "coord-3", "COORD_MANUAL"]);
@@ -488,9 +489,10 @@ describe("tmux boundary", () => {
     expect(fresh).toContainEqual(["set-environment", "-r", "-t", "coord-4", "COORD_MANUAL"]);
     calls.length = 0;
     await controller.ensureSession(3, [agent]);
-    const respawn = calls.findIndex((args) => args[0] === "respawn-pane");
-    expect(respawn).toBeGreaterThan(calls.findIndex((args) => args[0] === "list-panes"));
-    expect(calls.findIndex((args) => args[0] === "list-panes")).toBeGreaterThanOrEqual(0);
+    // Exit details are read before the dead pane is held on the placeholder, then relaunched.
+    expect(calls.map((args) => args[0]).filter((name) => ["list-panes", "respawn-pane", "set-option"].includes(name!)))
+      .toEqual(["list-panes", "respawn-pane", "set-option"]);
+    expect(calls.find((args) => args[0] === "respawn-pane")!.at(-1)).toBe("sleep 60");
     calls.length = 0;
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "new-window" || args[0] === "respawn-pane")).toBe(false);
@@ -540,7 +542,7 @@ describe("tmux boundary", () => {
     expect(calls.some((args) => args.includes("COORD_MANUAL") && args.includes("-r"))).toBe(false);
     expect(calls.filter((args) => args[0] === "new-window")).toHaveLength(1);
     // Manual sessions have no issue runtime: panes are retained but not piped.
-    const manualLaunch = commandsIn(calls.find((args) => args[0] === "new-window")!);
+    const manualLaunch = commandsIn(calls.find((args) => args.includes("respawn-pane"))!);
     expect(manualLaunch).toContainEqual(["set-option", "-w", "-t", "coord-manual-abc12def00:claude", "remain-on-exit", "on"]);
     expect(manualLaunch.some((command) => command[0] === "pipe-pane")).toBe(false);
 
@@ -1281,7 +1283,8 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
     const root = mkdtempSync(join(tmpdir(), "coord-tmux-diag-"));
     roots.push(root);
     const clone = join(root, "clone");
-    const logs = join(root, "terminal");
+    // A legal directory name that tmux would expand as a format if it reached pipe-pane unescaped.
+    const logs = join(root, "terminal-#{pane_id}");
     mkdirSync(clone);
     const socket = `coord-test-${process.pid}-${Date.now()}`;
     const runner: TmuxRunner = (args, input) => runTmux(["-L", socket, "-f", "/dev/null", ...args], input);
@@ -1308,12 +1311,18 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
       if (file === undefined) throw new Error(`no log for the ${name} run`);
       return join(logs, file);
     };
+    let advertisedLog = "";
     const exitOf = (name: string) => JSON.parse(readFileSync(runLog(name).replace(/\.log$/, ".exit.json"), "utf8")) as { status: number | null; signal: string | null };
     try {
+      // An inherited hook that blocks the command queue must not let a fast agent escape recording.
+      await runner(["new-session", "-d", "-s", "hook-holder"]);
+      await runner(["set-hook", "-g", "after-new-window", "run-shell 'sleep 0.2'"]);
       await run("first", "exit 0", () => controller.startSession(3, [agent], logDir));
       await run("second", "exit 3", () => controller.ensureSession(3, [agent], undefined, logDir));
       await run("third", "kill -KILL $$", () => controller.ensureSession(3, [agent], undefined, logDir));
-      expect(await controller.agentPlacementDiagnostics(3, [agent])).toContainEqual(expect.stringContaining("output log: "));
+      const advertised = (await controller.agentPlacementDiagnostics(3, [agent])).join("\n").match(/output log: (.+?\.log);/)?.[1];
+      expect(advertised).toBe(join(logs, advertised!.slice(logs.length + 1)));
+      advertisedLog = advertised!;
       await controller.killIssueSessions(3);
       // `cat` drains each pipe asynchronously; wait until every run's output has landed.
       for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -1330,6 +1339,7 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
     expect(readdirSync(logs).filter((entry) => entry.endsWith(".log"))).toHaveLength(3);
     // Each relaunch wrote a new log; the earlier runs keep their dialogue and the clear that followed it.
     for (const name of ["first", "second", "third"]) expect(readFileSync(runLog(name), "utf8")).toContain("\u001b[2J");
+    expect(readFileSync(advertisedLog, "utf8")).toContain("third startup dialogue");
     expect(exitOf("first")).toMatchObject({ status: 0, signal: null });
     expect(exitOf("second")).toMatchObject({ status: 3, signal: null });
     expect(exitOf("third")).toMatchObject({ status: null, signal: expect.any(String) });
