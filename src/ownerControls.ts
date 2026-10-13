@@ -72,10 +72,6 @@ const rederiveAfterDrop = (
 
   if (cursors.pendingAmendment != null) {
     for (const agent of cursors.activeRoster) clearAgentLocalWork(paths, agent, cursors.agents[agent]?.actionId ?? null);
-    appendJournal(paths, { type: "amendment-decided", details: {
-      sequence: cursors.pendingAmendment.sequence, outcome: "cancelled", reason: `drop of ${dropped}`,
-      eventId: `amendment-cancel:${cursors.pendingAmendment.sequence}:${dropped}`
-    } }, now);
   }
   // A ballot cast for an agent who is no longer eligible must be replaced by
   // its active author. Other evidence from the dropped agent remains as
@@ -275,6 +271,13 @@ const rederiveAfterDrop = (
   return next;
 };
 
+// Owner controls can reset work without changing its phase. Only a changed
+// step or round ends the current interval; keep analytics' gate events intact.
+const phaseChangeDetails = (before: CursorsState, after: CursorsState): Record<string, unknown> =>
+  before.issueCursor.stepId === after.issueCursor.stepId && before.issueCursor.round === after.issueCursor.round
+    ? {}
+    : { phaseFrom: before.issueCursor, phaseTo: after.issueCursor };
+
 /** Shared owner controls mutate once; only the CLI decides whether to run a tick. */
 export const applyOwnerAnswer = (
   paths: IssueRuntimePaths, questionId: string, answer: "retry" | "revise" | "abandon", now = new Date().toISOString()
@@ -297,11 +300,6 @@ export const applyOwnerAnswer = (
         if (answer === "revise" && question.round + 1 > readStartState(paths).maxRevisionRounds) {
           throw new Error("Owner answer cannot enter revision round 4.");
         }
-        appendJournal(
-          paths,
-          { type: "owner-answer", details: { questionId, kind: question.kind, round: question.round, answer } },
-          now
-        );
         let next: CursorsState = cursorsStateSchema.parse({
           ...current,
           ownerQuestion: null,
@@ -347,6 +345,9 @@ export const applyOwnerAnswer = (
             );
           }
         }
+        appendJournal(paths, { type: "owner-answer", details: {
+          questionId, kind: question.kind, round: question.round, answer, ...phaseChangeDetails(current, next)
+        } }, now);
         return answer === "abandon" ? next : resetOwnerGuidance(next);
       });
   return { state: result.state, alreadyApplied };
@@ -365,8 +366,18 @@ export const dropOwnerAgent = (paths: IssueRuntimePaths, agent: string, now = ne
             `Cannot drop authorized reviser ${agent}; revision and finalization must not be rebound after the canonical implementation decision.`
           );
         }
-        appendJournal(paths, { type: "agent-dropped", agent, details: {} }, now);
         const next = rederiveAfterDrop(paths, current, agent, now);
+        const pending = current.pendingAmendment;
+        appendJournal(paths, { type: "agent-dropped", agent,
+          details: pending == null ? phaseChangeDetails(current, next) : {} }, now);
+        if (pending != null) {
+          // Cancellation already closes the amendment interval. Record its
+          // final destination after rederivation, without adding two boundaries.
+          appendJournal(paths, { type: "amendment-decided", details: {
+            sequence: pending.sequence, outcome: "cancelled", reason: `drop of ${agent}`,
+            eventId: `amendment-cancel:${pending.sequence}:${agent}`, ...phaseChangeDetails(current, next)
+          } }, now);
+        }
         return current.pendingAmendment != null ? resetOwnerGuidance(next) : next;
       }).state;
 };

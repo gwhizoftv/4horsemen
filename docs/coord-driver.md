@@ -218,6 +218,8 @@ Timing comes from the durable journal and includes waiting, pauses, and runner
 downtime. Resuming a run preserves the original phase start. Revision rounds
 are labeled separately; an amendment ballot ends the current implementation or
 revision interval, which starts a new interval when that work resumes.
+Owner answers and agent drops also end an interval when they change its step or
+round; controls that leave the phase unchanged preserve its original start.
 
 Confirm the installed driver with `coord --version` (or `-V`). Pre-1.0 releases
 use `0.0.N`, and the patch advances on every merge so a merge is visible after

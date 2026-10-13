@@ -924,6 +924,7 @@ export class CoordinatorRunLoop {
   private readonly codexQuota: CodexQuotaReader;
   /** Last RN/round announced on `log`, so resume and first prepare do not repeat. */
   private loggedPhaseKey: string | null = null;
+  private loggedPhaseSequence: number | null = null;
   /** Local probes are advisory; restarting may probe again without changing workflow state. */
   private readonly paneObservations = new Map<string, { identity: string; nextAt: number; available: boolean }>();
   private readonly ingestVerificationMeasurements = createVerificationIngestor();
@@ -1687,32 +1688,62 @@ export class CoordinatorRunLoop {
   private logPhase(
     start: StartState,
     cursors: CursorsState,
-    previous?: CursorsState
+    previous?: CursorsState,
+    announceInitial = true
   ): void {
     const stepId = cursors.completed ? null : cursors.issueCursor.stepId;
     const round = stepId === null ? null : roundForStep(stepId, cursors.issueCursor.round);
     const key = `${stepId ?? "complete"}:${round ?? ""}`;
-    if (previous === undefined && this.loggedPhaseKey === key) return;
-    this.loggedPhaseKey = key;
     // Use durable boundaries, so restarting the runner does not restart a phase's clock.
     // Amendment ballots interrupt implementation/revision and have their own boundaries.
-    const boundaries = readJournal(this.paths).filter((event) =>
-      event.type === "started" || event.type === "gate-advanced" ||
-      event.type === "amendment-requested" || event.type === "amendment-decided"
-    );
+    const boundaries = readJournal(this.paths).flatMap((event) => {
+      const ownerEvent = event.type === "owner-answer" || event.type === "agent-dropped" ||
+        event.type === "amendment-decided";
+      const from = ownerEvent ? cursorsStateSchema.shape.issueCursor.safeParse(event.details.phaseFrom) : null;
+      const to = ownerEvent ? cursorsStateSchema.shape.issueCursor.safeParse(event.details.phaseTo) : null;
+      const transition = from?.success && to?.success ? { from: from.data, to: to.data } : null;
+      return event.type === "started" || event.type === "gate-advanced" ||
+        event.type === "amendment-requested" || event.type === "amendment-decided" || transition !== null
+        ? [{ ...event, transition }] : [];
+    });
+    const sequence = boundaries.at(-1)?.sequence ?? null;
+    if (previous === undefined && this.loggedPhaseKey === key && this.loggedPhaseSequence === sequence) return;
+    const reportTransition = (
+      fromCursor: CursorsState["issueCursor"], toCursor: CursorsState["issueCursor"] | null, index: number
+    ): void => {
+      const at = boundaries[index]?.at ?? start.createdAt;
+      const from = describeWorkflowStep(fromCursor.stepId, roundForStep(fromCursor.stepId, fromCursor.round));
+      const to = toCursor === null ? describeWorkflowStep(null, null)
+        : describeWorkflowStep(toCursor.stepId, roundForStep(toCursor.stepId, toCursor.round));
+      const durationMs = Date.parse(at) - Date.parse(boundaries[index - 1]?.at ?? start.createdAt);
+      const duration = Number.isFinite(durationMs) && durationMs >= 0
+        ? `${(durationMs / 1000).toFixed(3)}s` : "unavailable";
+      this.log(`Issue ${start.issue}: ${from} → ${to}; ${from} took ${duration}${toCursor === null ? "" : `; started at ${at}`}`);
+    };
+    // Owner commands run outside this loop. Report their saved transitions on
+    // observation, including the latest transition when a runner resumes.
+    let reportedCurrent = false;
+    for (const [index, boundary] of boundaries.entries()) {
+      const unseen = this.loggedPhaseSequence === null ? index === boundaries.length - 1
+        : boundary.sequence > this.loggedPhaseSequence;
+      if (unseen && boundary.transition !== null) {
+        reportTransition(boundary.transition.from, boundary.transition.to, index);
+        reportedCurrent = index === boundaries.length - 1;
+      }
+    }
+    // A standalone observation tick need not announce ongoing work again;
+    // run() and action preparation still announce the phase on initial entry.
+    if (previous === undefined && this.loggedPhaseKey === null && !announceInitial && !reportedCurrent) return;
+    this.loggedPhaseKey = key;
+    this.loggedPhaseSequence = sequence;
     const at = boundaries.at(-1)?.at ?? start.createdAt;
     const to = describeWorkflowStep(stepId, round);
     const began = stepId === null ? "" : `; started at ${at}`;
     if (previous === undefined) {
-      this.log(`Issue ${start.issue}: ${to}${began}`);
+      if (!reportedCurrent) this.log(`Issue ${start.issue}: ${to}${began}`);
       return;
     }
-    const from = describeWorkflowStep(previous.issueCursor.stepId,
-      roundForStep(previous.issueCursor.stepId, previous.issueCursor.round));
-    const durationMs = Date.parse(at) - Date.parse(boundaries.at(-2)?.at ?? start.createdAt);
-    const duration = Number.isFinite(durationMs) && durationMs >= 0
-      ? `${(durationMs / 1000).toFixed(3)}s` : "unavailable";
-    this.log(`Issue ${start.issue}: ${from} → ${to}; ${from} took ${duration}${began}`);
+    reportTransition(previous.issueCursor, stepId === null ? null : cursors.issueCursor, boundaries.length - 1);
   }
 
   /**
@@ -3101,6 +3132,7 @@ export class CoordinatorRunLoop {
       let cursors = readCursorsState(this.paths);
       this.reportStopWarnings();
       if (cursors.abandoned || cursors.completed) return cursors;
+      this.logPhase(start, cursors, undefined, false);
       for (const agent of start.agents) {
         if (cursors.activeRoster.includes(agent.id)) {
           ingestContainmentProbe(this.paths, agent.root, agent.id);
