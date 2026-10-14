@@ -57,7 +57,8 @@ launcher_command() {
       # --no-daemon: hooks run in the shared app-server otherwise, with the
       # COORD_ISSUE of whichever launch started it, not this pane's (issue 186).
       # coord start updates before launch; never self-update inside the pane.
-      printf 'exec codex -c check_for_update_on_startup=false --ask-for-approval never --sandbox workspace-write --no-daemon ${coord_grant[@]+"${coord_grant[@]}"}\n'
+      # Inline mode keeps output in tmux history for mouse scrolling.
+      printf 'exec codex -c check_for_update_on_startup=false --ask-for-approval never --sandbox workspace-write --no-alt-screen --no-daemon ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     antigravity)
       # agy installs into ~/.local/bin, which a login shell does not always

@@ -45,6 +45,7 @@ import {
   writeCursorsState
 } from "../src/state.js";
 import { TmuxController } from "../src/tmux.js";
+import { renderIssueReport } from "../src/issueReport.js";
 import type { CodexQuotaReader, CodexQuotaResult } from "../src/codexQuota.js";
 import { readBindingRecord } from "../src/codexQuota.js";
 import { parseClaudeRateLimits, parseCodexRateLimits } from "../src/resourceEvidence.js";
@@ -1095,6 +1096,112 @@ describe("vendor resource evidence and recovery", () => {
 });
 
 describe("durable delivery safety", () => {
+  it("repeats a current scrollback wait every three minutes across restarts without sending or duplicating evidence", async () => {
+    const f = safetyFixture();
+    const notice = "the codex pane is scrolled back; scroll to the bottom to let coord send";
+    const notices = () => f.messages.filter((message) => message.includes(notice));
+    const report = () => renderIssueReport(readStartState(f.paths), readCursorsState(f.paths), readAgentLifecycle(f.paths));
+    f.ui.busy = true;
+    await f.tick();
+    expect(notices()).toHaveLength(1);
+    expect(report()).toContain(`[WAIT] ${notice}`);
+    const before = readFileSync(f.paths.cursors, "utf8");
+    await f.tick();
+    f.advance(179_999);
+    await f.tick();
+    expect(notices()).toHaveLength(1);
+    expect(readFileSync(f.paths.cursors, "utf8")).toBe(before);
+    f.advance(1);
+    await f.tick();
+    await f.tick();
+    expect(notices()).toHaveLength(2);
+    expect(f.ui.sends).toBe(0);
+    expect(readCursorsState(f.paths).actionSafety.codex?.sends).toBe(0);
+    expect(readJournal(f.paths).filter((event) => event.type === "nudge-deferred" && event.details.code === "owner-typing")).toHaveLength(1);
+
+    // Another blocker clears the current wait; returning to copy mode starts a new episode.
+    f.ui.busy = false;
+    f.ui.foreground = "bash";
+    await f.tick();
+    expect(report()).not.toContain(notice);
+    f.ui.busy = true;
+    await f.tick();
+    expect(notices()).toHaveLength(3);
+    expect(readJournal(f.paths).filter((event) => event.details.code === "owner-typing")).toHaveLength(1);
+    f.ui.busy = false;
+    f.ui.foreground = "harness";
+    await f.tick();
+    expect(f.ui.sends).toBe(1);
+    expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait).toBeUndefined();
+    expect(report()).not.toContain(notice);
+  });
+
+  it("clears scrollback waits when the owner submits the task without another coordinator nudge", async () => {
+    const f = safetyFixture();
+    f.ui.busy = true;
+    await f.tick();
+    expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait).toBeDefined();
+    f.advance(1);
+    f.ui.busy = false;
+    f.working();
+    expect(renderIssueReport(readStartState(f.paths), readCursorsState(f.paths), readAgentLifecycle(f.paths)))
+      .not.toContain("scroll to the bottom");
+    await f.tick();
+    expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait).toBeUndefined();
+    const before = readFileSync(f.paths.cursors, "utf8");
+    f.ui.busy = true; // Reading a working agent's history is not a delivery wait.
+    f.advance(180_000);
+    await f.tick();
+    expect(readFileSync(f.paths.cursors, "utf8")).toBe(before);
+    expect(f.messages.filter((message) => message.includes("scroll to the bottom"))).toHaveLength(1);
+    expect(f.ui.sends).toBe(0);
+  });
+
+  it("does not repeat a scrollback reminder when the pane cannot be observed", async () => {
+    const f = safetyFixture();
+    f.ui.busy = true;
+    await f.tick();
+    const before = readFileSync(f.paths.cursors, "utf8");
+    f.advance(180_000);
+    f.ui.failInspect = true;
+    await f.tick();
+    await f.tick();
+    expect(readFileSync(f.paths.cursors, "utf8")).toBe(before);
+    expect(f.messages.filter((message) => message.includes("scroll to the bottom"))).toHaveLength(1);
+    expect(f.ui.sends).toBe(0);
+  });
+
+  it.each(["replacement", "completion"])("retires the previous scrollback wait on action %s", async (change) => {
+    const f = safetyFixture();
+    f.ui.busy = true;
+    await f.tick();
+    const runtime = agentRuntimePaths(f.paths, "codex");
+    const previous = readCursorsState(f.paths).agents.codex!.actionId!;
+    f.advance(1);
+    if (change === "replacement") {
+      const next = randomUUID();
+      mutateCursorsState(f.paths, (state) => ({ ...state,
+        agents: { ...state.agents, codex: { ...state.agents.codex!, actionId: next } }
+      }));
+      writeFileSync(runtime.action, readFileSync(runtime.action, "utf8").replaceAll(previous, next));
+      await f.tick();
+      expect(readCursorsState(f.paths).actionSafety.codex?.actionId).toBe(next);
+      expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait).toBeUndefined();
+      expect(f.messages.filter((message) => message.includes("scroll to the bottom"))).toHaveLength(1);
+    } else {
+      // The receipt retires the wait even while remote verification remains unavailable.
+      writeFileSync(runtime.complete, `${"d".repeat(40)}\n`);
+      const mirror = new BareMirror(f.paths.mirror, "/origin.git", async () => ({
+        exitCode: 1, stdout: Buffer.alloc(0), stderr: "fatal: network timeout"
+      }));
+      await f.makeLoop({ mirror }).runTick();
+      expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait).toBeUndefined();
+      expect(f.messages.filter((message) => message.includes("scroll to the bottom"))).toHaveLength(1);
+      expect(readFileSync(runtime.complete, "utf8")).toBe(`${"d".repeat(40)}\n`);
+    }
+    expect(f.ui.sends).toBe(0);
+  });
+
   it.each(["claude", "codex"])("keeps %s minute-boundary probes out of durable cursor state", async (vendor) => {
     const f = safetyFixture(vendor);
     await f.tick(); f.advance(1); f.working();
