@@ -1,0 +1,79 @@
+# Issue 213 — Vim-off agent launches, timestamped terminal logs, and a non-empty onboard policy
+
+Future `coord` runs should start each vim-capable agent with vim off, keep raw terminal logs and add chunk timestamps, and have `coord install` / `coord onboard` write a documentation profile plus a coordinator verification block. Cache receipts already exist and are already shared across issues and agents in one workspace; this issue declares them. It does not edit the live runtime `config.json` (that file is rewritten by the next install) and it does not backfill logs for issues that predate piping.
+
+## Exact File List to be changed or deleted
+
+- `scripts/lib/launcher.sh`
+  - Claude's `launcher_command` line gains `--settings '{"editorMode":"normal"}'`. Claude 2.1.299 stores editor mode as `editorMode` (`normal` | `vim`, default `normal`). Settings sources are ordered low-to-high `userSettings`, `projectSettings`, `localSettings`, `flagSettings`, `policySettings`, and the binary's own text says the `--settings` flag overrides all settings files. Managed `policySettings` still win. The owner's `~/.claude/settings.json` is not written and does not need restoring.
+  - Codex's `launcher_command` line gains `-c tui.vim_mode_default=false`. That key is the `[tui] vim_mode_default` field (`codex --help` parses `-c` as a TOML override of `~/.codex/config.toml` and already uses `-c` for `check_for_update_on_startup`). The owner's config file is not written.
+  - Cursor has no vim CLI flag. Antigravity has no vim mode. Those two commands stay as they are.
+- `src/setupWorkspace.ts`
+  - `agentOwnerUiDefaults("codex")` uses `nudgePrelude: []`. Enter stays the submit key. A pane that still shows `Vim: Normal` is handled in `src/tmux.ts`.
+  - `ProjectPolicyProposal` gains optional `documentation` and `verification`.
+  - `proposeProjectPolicy` adds them only when it already recognizes a toolchain. An unrecognized tree still returns only empty critical-path arrays, and a recognized tree that finds no verify commands still omits `verify` (empty verify remains the operator's explicit opt-out).
+  - Node: documentation paths are the conventional root files that exist (`README.md`, `README`, `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE`, `LICENSE.md`) plus prefix `docs/` when that directory exists. No `*.md` scan. `templates/` and `AGENTS.md` stay product. If the package has a `check:docs` or `docs` script, documentation `verify` and `checks` run that script; otherwise both command lists are empty, which is an explicit skip, distinct from an absent profile. Verification `mode` is `"coordinator"`. `coordinated.precommit` is the existing proposed precommit list; `coordinated.prepush` is `[]` (manual branches still use `verify.prepush`). `candidate.checks` are the proposed final checks. For pnpm/npm/yarn, a cacheable final check (`check`, `check:fast`, `lint`, `typecheck`, `test`, `test:fast`, `test:system`, `test:e2e`) gets `cache.inputs: "tree-excluding-evidence"`, probes `node --version` and `<manager> --version`, and `dependencies: ["node_modules"]`. `dependencyExcludes` always include `node_modules/.vite` and `node_modules/.vite-temp`; pnpm also excludes `node_modules/.modules.yaml` and `node_modules/.pnpm-workspace-state-v1.json`. `install` and `build` stay uncached. `covers` copies the proposed critical prefixes and files. `maxConcurrentExpensive` is `1`.
+  - Go, cargo, and make get the same coordinator shape from their proposed verify and checks, with no `cache` field. Their dependency inputs are not the Node `node_modules` set, and an undeclared cache would be a false receipt.
+  - `buildWorkspaceConfig` uses `declared.documentation ?? proposal.documentation`. It uses `declared.verification ?? proposal.verification` only when final `checks` also come from the proposal. A `--declare` file that replaces `checks` does not receive a verification block built for different commands. Declared checks are not given a cache they did not name.
+  - New `ensureCursorAgentVimOff(cloneRoot)` merges `editor.vimMode: false` into `<clone>/.cursor/cli.json`, preserving every other key. Cursor's CLI merges that project file over `~/.cursor/cli-config.json` for the session and does not write the home file back. `.cursor/` is already in `DEFAULT_CLONE_IGNORES`. A missing file is created. A file that is not a JSON object throws rather than launching with vim still on.
+- `src/install.ts` — after the cursor clone's exclude is written, call `ensureCursorAgentVimOff`. Claude and Codex pick up vim-off only when this install rewrites `start-<agent>.sh` from `launcher.sh`.
+- `src/tmux.ts`
+  - `launchAgent`, before `respawn-pane`, calls `ensureCursorAgentVimOff` when `agent.id === "cursor"` and `agent.root` exists. Fake roots in unit tests (`/clone`, `/c`) do not exist, so those tests do not create files.
+  - `resolveNudgeKeys` / the Codex send path: the default Codex prelude `i` is sent only when the footer shows `Vim: Normal`. `Vim: Insert` and a footer with no `Vim:` marker send no prelude. An operator `nudgePrelude` other than `["i"]` is unchanged.
+  - Claude with an empty prelude calls `vimInsertPrelude` only when the pane shows `-- NORMAL --` or `-- VISUAL --`. A prompt with no mode marker gets no `a`. Visible INSERT still gets no prelude. Cursor's existing `readCursorVimMode` gate stays; after the overlay it is false, so Cursor sends Enter and no `a`. Antigravity is unchanged. Home `cli-config.json` is still not modified.
+  - `pipeToLog` keeps appending raw pane bytes to `run-<stamp>.log` and also appends one `offset<TAB>timestamp<TAB>length` line per read chunk to `run-<stamp>.log.times`. The timestamp is UTC with milliseconds. The pipe is a `perl` one-liner (`Time::HiRes`), which macOS provides, so the log does not depend on `node` being on the tmux server PATH. `#` in the path stays doubled. The raw log remains the issue 199 record; the sidecar is what joins a later pane byte to a journal `at`.
+- `src/state.ts` — `documentationProfileSchema` gains `prefixes` (default `[]`). A profile must have at least one path or prefix. `checks` may be an empty array. Empty means the same explicit skip `verify` already uses. An absent `documentation` field still classifies those paths as product.
+- `src/changeClassification.ts` — `classifyChanges` treats a path as documentation when it is an exact `documentation.paths` entry or starts with a `documentation.prefixes` entry, after the existing coordination-evidence and workflow-critical checks. Critical paths still cannot be downgraded.
+- `docs/coord-driver.md` — nudge section: agents launch vim-off (Claude `--settings`, Codex `-c`, Cursor clone overlay); preludes are positive proof only. Terminal-log section: raw `run-*.log` plus `run-*.log.times`. Verification section: install writes the block; receipts stay in `<coord-runtime>/verification/receipts/` and are shared by every issue and agent of that workspace. Hook runs still never become receipts.
+- `docs/setup-workspace.md` — replace the "review the example to opt in, or the profile stays absent" guidance for the default case. State that install writes the default documentation profile and coordinator verification block described above, that `--declare` replaces either one, that a first `pnpm run check` does not create declarations or receipts, and that receipts are per workspace runtime rather than per issue or per agent.
+- `docs/readiness-policy.md` — the Codex `i` sentence matches the send rule: `i` only when the footer shows `Vim: Normal`.
+- `test/tmux.test.ts` — update the Claude/Cursor prelude expectations that currently require `a` with no mode marker; add the Codex no-`Vim:` case; assert the pipe command names the `.times` sidecar and that the isolated tmux test's startup line is still in the raw log while `.times` contains an offset timestamp.
+- `test/verify-config.test.ts` — extend the installer-proposal tests and the classifier tests for prefixes, empty documentation checks, node cache, go verification without cache, and declared checks suppressing the proposed verification block.
+- `test/install.test.ts` — one assertion that the rendered Claude and Codex launchers contain the new flag, and that a cursor install writes `editor.vimMode: false` without changing a pre-seeded sibling key in `.cursor/cli.json`.
+
+## Exact file list to be created
+
+- `.plans/issue-213/plan.md` (this plan).
+
+No new product source file. The cursor overlay, the timestamp sidecar, and the workspace config fields are written by existing install and launch paths.
+
+## Reuse and Scope
+
+- Reuse `launcher_command` in `scripts/lib/launcher.sh`. `writeAgentLauncher` and `githooks/post-merge` both render that function; the hook tree is not edited.
+- Reuse `readCursorVimMode`, `vimInsertPrelude`, `codexVimNormal`, `codexVimInsert`, `resolveNudgeKeys`, `pipeToLog`, and `launchAgent` in `src/tmux.ts`.
+- Reuse `proposeProjectPolicy`, `buildWorkspaceConfig`, `agentOwnerUiDefaults`, and `DEFAULT_CLONE_IGNORES` (already ignores `.cursor/`).
+- Reuse `classifyChanges`, `selectVerification`, and `selectCandidateVerification`. Empty command lists already skip, which is how coordination evidence works.
+- Reuse `checkCacheSchema`, `verificationPolicySchema`, and `refineVerificationPolicy`. Receipts stay in `receiptPath` under `<coord-runtime>/verification/receipts/<key>.json`. The key already digests origin, tree identity, argv, policy, probes, env, and dependency bytes, and `verification/running/` already joins a second agent onto the same key. Nothing in `src/verificationReceipts.ts` or `src/verificationRunner.ts` needs a new store. Cache is not shared across two coord-runtime roots and is not filled by hook executions.
+- Reuse `test/verify-config.test.ts`, `test/tmux.test.ts`, and `test/install.test.ts`. No new test file.
+- Out of scope: rewriting the live runtime `config.json` (the next `coord install` does that), backfilling issues 177 and 195, hold notifications, response-mode join, profile selection, and splitting `test:fast` (#175). Antigravity stays without a vim flag.
+
+## Tests
+
+- `test/tmux.test.ts` — existing `vimInsertPrelude` cases: Claude `❯ auto mode` and Cursor text with no mode marker expect `[]`; `-- NORMAL --` still expects `["a"]`; `-- VISUAL --` still expects `["Escape", "a"]`; `-- INSERT --` still expects `[]`. Codex send with a footer that has no `Vim:` marker expects text and Enter and no `i`; `Vim: Normal` still expects `i`. The mock launch command list includes `pipe-pane` whose command writes both the `.log` and the `.times` sidecar. The existing isolated tmux test still finds `startup dialogue` in the raw `.log` and also finds a timestamp line in the sibling `.times` file.
+- `test/verify-config.test.ts` — a package.json fixture with `check:docs`, `README.md`, and `docs/` proposes a documentation profile whose prefix is `docs/`, whose paths include `README.md` and exclude `templates/product/AGENTS.protocol.md`, and whose checks argv ends in `check:docs`. The same fixture's verification mode is `coordinator`, its final `check` (or `test`) command carries `tree-excluding-evidence`, and `install`/`build` do not. A go fixture proposes coordinator verification and no `cache`. An unrecognized directory still has `verify`, `checks`, `documentation`, and `verification` undefined. `buildWorkspaceConfig` with a `--declare` checks array equal to the fixture's declared checks does not copy the proposal's verification block. `classifyChanges` on `docs/new.md` is `documentation` when the prefix is `docs/` and `product` when the profile is absent. A critical prefix `docs/` stays `product`.
+- `test/install.test.ts` — rendered `start-claude.sh` contains `editorMode` `normal`; rendered `start-codex.sh` contains `tui.vim_mode_default=false`; cursor clone `.cursor/cli.json` has `editor.vimMode: false` and keeps a pre-existing sibling key.
+- Focused command while developing: `pnpm vitest run test/tmux.test.ts test/verify-config.test.ts test/install.test.ts`. The commit hook runs `pnpm check:fast` for this mixed change. Coordinator-owned final checks are not claimed here.
+
+## Alternatives Rejected
+
+- Rewriting `~/.cursor/cli-config.json`, `~/.claude/settings.json`, or `~/.codex/config.toml` and restoring them on exit. Those files are shared with the owner's other sessions; a crash skips the restore. Process flags and the clone `.cursor/cli.json` overlay leave them untouched.
+- Leaving the Claude `a` and Codex `i` preludes in place after vim is turned off. With vim off the pane shows neither INSERT nor `Vim: Insert`, and today's "send the prelude unless insert is visible" rule would type `a` or `i` into the prompt.
+- Prefixing timestamps into the raw `run-*.log`. Issue 199 keeps that file as the pane's own bytes so a cleared startup line is still there. A sidecar records time without changing those bytes.
+- Inferring every `*.md` path as documentation. `templates/product/AGENTS.protocol.md` is product behavior. The default is a fixed root-file list plus a `docs/` prefix.
+- Writing `{ "verify": { "precommit": [], "prepush": [] } }` when no ecosystem is recognized. That is the operator's explicit opt-out; the installer must keep omitting `verify` so hooks fail closed.
+- Creating cache declarations by running `pnpm run check` once. Hook results are forbidden from becoming receipts, and a run cannot discover `node_modules` excludes or probes. The declaration is static config written at install and frozen into `start.json`.
+- Caching go, cargo, and make commands with the Node dependency list. A receipt that ignores their real inputs would reuse a stale result.
+- Injecting cache onto `--declare` checks, or attaching the proposal's verification block when declared checks replaced the proposal. `refineVerificationPolicy` requires candidate names to match the final commands; the install tests expect declared checks to round-trip unchanged.
+
+## Risks and Mitigations
+
+- A managed Claude policy that forces `editorMode: "vim"` overrides `--settings`. The pane then shows NORMAL or VISUAL, and the positive-proof prelude still sends `a`. If the indicator is missing, the nudge is not given an `a` that would corrupt a normal composer.
+- Codex `-c tui.vim_mode_default=false` applies only after `coord install` rewrites `start-codex.sh`. Until then an old launcher can still start vim, and the footer rule still sends `i` only for `Vim: Normal`.
+- `perl` missing on the tmux server PATH makes `pipe-pane` fail and the pane stay on the placeholder. The isolated tmux test runs the real pipe. This workspace is macOS, which ships perl.
+- A `docs/` tree that contains generated non-prose is exempt from product checks until the operator sets a workflow-critical prefix or replaces the profile with `--declare`. The default does not exempt `src/`, `templates/`, or `AGENTS.md`.
+- Reinstall regenerates `config.json` from the proposal, which is existing install behavior. A hand-edited verification block that was never passed via `--declare` is replaced by this default. `--declare` remains the way to keep an exact block.
+- The open issue 213 start snapshot does not gain the new policy. Only issues started after the next install freeze it.
+
+## Conclusion
+
+Launch Claude and Codex with a process-local vim-off flag, and Cursor with a clone `.cursor/cli.json` overlay, so nudges no longer type a vim prelude into a non-insert composer. Keep each run's raw terminal log and write a chunk timestamp sidecar beside it. Have install write a documentation profile and a coordinator verification block, with Node cache declarations on the cacheable checks, so the next issue freezes a policy instead of an absent one. Receipts continue to live once per workspace runtime and are reused across that workspace's issues and agents; they are not produced by the first hook run of `pnpm run check`.
