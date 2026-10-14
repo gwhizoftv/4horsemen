@@ -1,0 +1,14 @@
+{
+  "actionId": "b7619e49-694c-44ee-bb8a-75020b92f04a",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "bf152e34e1ff9c5ece71190ba1ac69cab5b5e3138b1c9e507aef485d94580f0f",
+  "issue": 209,
+  "issueSessionId": "issue-209:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "protocolVersion": 2,
+  "rationale": "The receipt at lines 952–964 posts the comment during R7.finalize and keeps the URL out of this report, but the selected plan requires the selected reviser to post the comment section during R6.revise and record the read-back URL in the receipt; the reproduction command at lines 546–551 still runs issue209.py without saying to extract the fenced script, and the baseline column at line 56 is still a 12-character prefix so the session id is not in the pin.",
+  "responseSha256": "64ef668005f6702d1a4be9eed5d4168bded0fa62a09e3fe2a4e951a452ac13b1",
+  "revisionCommitSha": "b7350303a36ae034588e51fa9d4df8b8edcd53c6",
+  "round": 1
+}

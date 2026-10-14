@@ -1,0 +1,14 @@
+{
+  "actionId": "43bd9f5b-0817-47b2-9dc9-dd021d141a33",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "bf152e34e1ff9c5ece71190ba1ac69cab5b5e3138b1c9e507aef485d94580f0f",
+  "issue": 209,
+  "issueSessionId": "issue-209:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "protocolVersion": 2,
+  "rationale": "At docs/issue-209-efficiency-analysis.md:920 in b7350303a36ae034588e51fa9d4df8b8edcd53c6, retries must require live ready-prompt/action-absent proof, the applicable delivery wait, and lifecycle/queue/send-budget checks under docs/readiness-policy.md:165–174; missing prompt-submitted confirmation after successful delivery can otherwise cause a duplicate prompt into active work, so replace the silence-based retry recommendation in both the report and comment with the existing positive-proof rule.",
+  "responseSha256": "738c7a035b07cfe716156ff300d3c239c305a92c24b9583b97969f2c78ce87db",
+  "revisionCommitSha": "b7350303a36ae034588e51fa9d4df8b8edcd53c6",
+  "round": 1
+}

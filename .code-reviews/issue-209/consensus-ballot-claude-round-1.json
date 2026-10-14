@@ -1,0 +1,14 @@
+{
+  "actionId": "4d0c6231-4a9b-45d8-8bd3-c40a3a7864b2",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "bf152e34e1ff9c5ece71190ba1ac69cab5b5e3138b1c9e507aef485d94580f0f",
+  "issue": 209,
+  "issueSessionId": "issue-209:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "protocolVersion": 2,
+  "rationale": "Revision b7350303 stays within the single approved report file, folds in the comparison feedback (pause-adjusted verification, full source hashes, final-check suite breakdown, first-send delay metric) and the owner's fix-validation guidance with a fixed-cutoff issue-209 supplement, keeps a delimited 5.7 KB comment body published once in R7 with the URL kept out of the approved document, and its embedded script reproduces every table from the bound worktree.",
+  "responseSha256": "d4025c09fb3411a8fadce6011b46657271a4b535e78dd04693c1d3828c50132e",
+  "revisionCommitSha": "b7350303a36ae034588e51fa9d4df8b8edcd53c6",
+  "round": 1
+}
