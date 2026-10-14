@@ -1,0 +1,34 @@
+{
+  "actionId": "3b9a77b5-ee93-4abe-a2c7-2daeecbbafd3",
+  "agent": "antigravity",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "2f91238869e37480e364406de7c370da2c2a31a2",
+      "path": ".signals/issue-213/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "36ed2ce76ed196bdc9f81b94d560a00e08f095d7",
+      "path": ".signals/issue-213/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "b533cb49a583b3410ad8f465973967f0cdee6fb0",
+      "path": ".signals/issue-213/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "12a121c53b47d191741ef0b6095a55903d1a3b08",
+      "path": ".signals/issue-213/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "34d0ca097b5d31e59367d8fba284dfe3fdf1abd00b8ed22ff189c893764a68f0",
+  "issue": 213,
+  "issueSessionId": "issue-213:82c47e35ae0a886746fce9759bd80776ec6a5461",
+  "protocolVersion": 2,
+  "rationale": "Claude authored the approved plan and delivered an exact, bug-free implementation with clean per-line UTC timestamping, correct root-only documentation filtering, and thorough test coverage.",
+  "responseSha256": "a88d4f80909dfa3294188e25622f58f0891e61664f10dbe448f672d3f80b552f"
+}

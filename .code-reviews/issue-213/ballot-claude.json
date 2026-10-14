@@ -1,0 +1,34 @@
+{
+  "actionId": "c4cfc09d-9156-4e99-b967-faec7d0fa70d",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "2f91238869e37480e364406de7c370da2c2a31a2",
+      "path": ".signals/issue-213/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "36ed2ce76ed196bdc9f81b94d560a00e08f095d7",
+      "path": ".signals/issue-213/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "b533cb49a583b3410ad8f465973967f0cdee6fb0",
+      "path": ".signals/issue-213/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "12a121c53b47d191741ef0b6095a55903d1a3b08",
+      "path": ".signals/issue-213/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "34d0ca097b5d31e59367d8fba284dfe3fdf1abd00b8ed22ff189c893764a68f0",
+  "issue": 213,
+  "issueSessionId": "issue-213:82c47e35ae0a886746fce9759bd80776ec6a5461",
+  "protocolVersion": 2,
+  "rationale": "All four pins implement the same selected design, but only codex's uninstall removes Claude's editorMode solely when coordination added it (preserving an owner's pre-existing normal), and its tests are the strongest, proving a newline-less prompt is logged before EOF and exercising tmux % escaping through a real %Y log path.",
+  "responseSha256": "cf743a968b77c427bc1f7244a8db25f54dcec8b4276098d4bb7d7baa7d260864"
+}

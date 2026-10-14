@@ -1,0 +1,34 @@
+{
+  "actionId": "dc854943-6e7e-4a66-9e96-0e6ab9184c13",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "cursor",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "2f91238869e37480e364406de7c370da2c2a31a2",
+      "path": ".signals/issue-213/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "36ed2ce76ed196bdc9f81b94d560a00e08f095d7",
+      "path": ".signals/issue-213/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "b533cb49a583b3410ad8f465973967f0cdee6fb0",
+      "path": ".signals/issue-213/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "12a121c53b47d191741ef0b6095a55903d1a3b08",
+      "path": ".signals/issue-213/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "34d0ca097b5d31e59367d8fba284dfe3fdf1abd00b8ed22ff189c893764a68f0",
+  "issue": 213,
+  "issueSessionId": "issue-213:82c47e35ae0a886746fce9759bd80776ec6a5461",
+  "protocolVersion": 2,
+  "rationale": "Cursor keeps tracked docs Markdown in the documentation profile and clamps each log timestamp to three millisecond digits, while Codex drops docs/AGENTS.md and docs/SKILL.md from that profile and Antigravity's onboard synopsis omits --declare.",
+  "responseSha256": "b62e5ed9bce733e7848d5272323fbff6da0f575d5f0349198642b0ddeb58c729"
+}
