@@ -211,6 +211,73 @@ describe("installer proposals", () => {
       rmSync(cargoRoot, { recursive: true, force: true });
     }
   });
+
+  it("proposes documentation profile from tracked prose files, excluding instructions and non-prose", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-propose-docs-"));
+    try {
+      git(root, "init");
+      writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app", scripts: { test: "echo ok" } }));
+      writeFileSync(join(root, "README.md"), "# Hello\n");
+      writeFileSync(join(root, "AGENTS.md"), "# Agents\n");
+      mkdirSync(join(root, "docs"), { recursive: true });
+      writeFileSync(join(root, "docs", "guide.md"), "# Guide\n");
+      mkdirSync(join(root, "templates", "product"), { recursive: true });
+      writeFileSync(join(root, "templates", "product", "AGENTS.md"), "# Template\n");
+      mkdirSync(join(root, "src"), { recursive: true });
+      writeFileSync(join(root, "src", "notes.md"), "# Notes\n");
+      git(root, "add", ".");
+      git(root, "commit", "-m", "init");
+
+      const proposal = proposeProjectPolicy(root);
+      expect(proposal.documentation).toEqual({
+        paths: ["README.md", "docs/guide.md"],
+        verify: { precommit: [], prepush: [] },
+        checks: []
+      });
+
+      const config = buildWorkspaceConfig(
+        {
+          project: "app",
+          origin: "https://github.com/example/app.git",
+          baseBranch: "main",
+          agents: ["claude"],
+          profile: "consensus",
+          cloneRoot: root,
+          workspaceDir: root,
+          declared: null,
+          proposal,
+          completesRoot: join(root, "completes")
+        },
+        {
+          installRoot: repoRoot,
+          cliEntry: join(repoRoot, "dist", "main.js"),
+          version: "0.0.1",
+          commit: "0".repeat(40),
+          canonicalDigest: "0".repeat(64),
+          installedAt: new Date().toISOString(),
+          productRoot: root,
+          cloneRoot: root,
+          vendored: false,
+          bootstrapped: false,
+          ownsInstallRoot: false,
+          wroteProductIgnore: false,
+          wroteAgentsMd: false,
+          completesRoot: join(root, "completes")
+        }
+      );
+      expect(config.documentation).toEqual(proposal.documentation);
+
+      const nonGit = mkdtempSync(join(tmpdir(), "coord-propose-nongit-"));
+      try {
+        writeFileSync(join(nonGit, "README.md"), "# Hello\n");
+        expect(proposeProjectPolicy(nonGit).documentation).toBeUndefined();
+      } finally {
+        rmSync(nonGit, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("shipped examples", () => {

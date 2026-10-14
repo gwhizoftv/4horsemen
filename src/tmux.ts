@@ -205,10 +205,6 @@ const codexSentinelAtTail = (paneText: string, requireSentinel = true): boolean 
 const codexVimNormal = (paneText: string, requireSentinel = true): boolean =>
   codexTail(paneText, requireSentinel)?.footer.some((line) => /Vim: Normal/.test(line.plain)) === true;
 
-/** In visible INSERT an `i` prelude would be typed into the message itself. */
-const codexVimInsert = (paneText: string): boolean =>
-  codexTail(paneText, false)?.footer.some((line) => /Vim: Insert/.test(line.plain)) === true;
-
 /** Active unquoted terminal lines, not prose discussing a past limit. Fail closed. */
 const claudeUsageWait = (plain: string): boolean => {
   const tail = plain.split("\n").slice(-12).join("\n");
@@ -339,6 +335,19 @@ export const readCursorVimMode = (agentRoot: string): boolean => {
   return vimMode;
 };
 
+export const readClaudeEditorMode = (agentRoot: string): string | undefined => {
+  const path = join(agentRoot, ".claude", "settings.local.json");
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const editorMode = (parsed as { editorMode?: unknown }).editorMode;
+    return typeof editorMode === "string" ? editorMode : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const cursorNudgePrelude = (agent: AgentConfig, paneText: string): readonly string[] => {
   const configured = agent.nudgePrelude;
   if (configured !== undefined && configured.length > 0) return configured;
@@ -366,7 +375,9 @@ export const resolveNudgeKeys = (
   }
   const defaults = agentOwnerUiDefaults(agent.id);
   const configuredPrelude = agent.nudgePrelude ?? defaults.nudgePrelude;
-  const prelude = configuredPrelude.length === 0 ? vimInsertPrelude(paneText, agent.id) : configuredPrelude;
+  const prelude = configuredPrelude.length === 0
+    ? (agent.id === "claude" && readClaudeEditorMode(agent.root) === "normal" ? [] : vimInsertPrelude(paneText, agent.id))
+    : configuredPrelude;
   let rawSubmit = agent.nudgeSubmit ?? defaults.nudgeSubmit;
   if (agent.id === "codex") {
     const legacy = (rawSubmit.length === 2 && rawSubmit[0] === "C-j" && rawSubmit[1] === "C-m") ||
@@ -723,8 +734,11 @@ const newTerminalLog = (dir: string): string => {
  */
 const LAUNCH_PLACEHOLDER = "sleep 60";
 
-/** `pipe-pane` expands tmux formats in its command, so a literal `#` in the path must be doubled. */
-const pipeToLog = (log: string): string => `cat >> ${shellQuote(log)}`.replaceAll("#", "##");
+/** `pipe-pane` expands tmux formats in its command, so literal `#` and `%` in the command must be doubled. */
+const pipeToLog = (log: string): string =>
+  `if command -v perl >/dev/null 2>&1; then exec perl -MPOSIX=strftime -MTime::HiRes=time -e '$|=1; my $s = 1; my $b; while (sysread(STDIN, $b, 4096)) { while ($b =~ /([^\\n]*\\n|[^\\n]+)/g) { my $c = $1; if ($s) { my $t = time; printf "%s.%03dZ ", strftime("%Y-%m-%dT%H:%M:%S", gmtime $t), int(($t - int($t)) * 1000); } print $c; $s = ($c =~ /\\n$/) ? 1 : 0; } }'; else exec cat; fi >> ${shellQuote(log)}`
+    .replaceAll("#", "##")
+    .replaceAll("%", "%%");
 
 const describeExit = (status: string, signal: string): string =>
   signal !== "" ? `signal ${signal}` : status !== "" ? `status ${status}` : "exit details unavailable";
@@ -1203,7 +1217,7 @@ export class TmuxController {
       try { paneText = await this.capturePane(target); } catch { /* Use configured keys. */ }
       assertAuthority();
       const { prelude, submit } = resolveNudgeKeys(agent, paneText);
-      const preludeKeys = agent.id === "codex" && codexVimInsert(paneText) ? [] : prelude;
+      const preludeKeys = agent.id === "codex" && !codexVimNormal(paneText, false) ? [] : prelude;
       await this.typeAndSubmit(target, agent, text, preludeKeys, submit, async (args) => {
         assertAuthority();
         if (!began) { onBegin(); began = true; }
@@ -1279,8 +1293,7 @@ export class TmuxController {
     }
     const text = renderNudgeText(actionPath, actionId, actionDigest);
     const { prelude, submit } = resolveNudgeKeys(agent, paneText);
-    const preludeKeys = agent.id === "codex" &&
-      (staleOverride !== undefined ? !codexVimNormal(paneText, requireSentinel) : codexVimInsert(paneText))
+    const preludeKeys = agent.id === "codex" && !codexVimNormal(paneText, staleOverride !== undefined && requireSentinel)
       ? [] : prelude;
     let began = false;
     const send = async (args: readonly string[]): Promise<NudgeOutcome | null> => {

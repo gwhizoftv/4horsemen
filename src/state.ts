@@ -27,6 +27,7 @@ import {
   issueSessionIdSchema,
   repositoryPathSchema
 } from "./protocol.js";
+export { repositoryPathSchema };
 import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.js";
 import { resourceEvidenceSchema } from "./resourceEvidence.js";
 import {
@@ -146,7 +147,7 @@ export const verifyPhaseSchema = z.enum(["precommit", "prepush"]);
 export const documentationProfileSchema = z.object({
   paths: z.array(repositoryPathSchema).min(1),
   verify: verifyConfigSchema,
-  checks: z.array(checkCommandSchema).min(1)
+  checks: z.array(checkCommandSchema)
 }).strict();
 
 /**

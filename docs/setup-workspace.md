@@ -66,6 +66,8 @@ integration; on other platforms use tmux without those windows.
 
 ```sh
 coord onboard /path/to/app
+# or with an explicit declaration:
+coord onboard /path/to/app --declare /path/to/declaration.json
 ```
 
 The runtime directory defaults to `coord-runtime` beside the product checkout.
@@ -440,7 +442,7 @@ coord install --product /path/to/app --coord-runtime /path/to/coord-runtime \
 coord doctor --coord-runtime /path/to/coord-runtime --product /path/to/app
 ```
 
-Use `install`, not `onboard`, for `--declare`. Install Ruff/pytest and expose
+Both `coord onboard` and `coord install` accept `--declare <file.json>`. Install Ruff/pytest and expose
 them on the PATH inherited by the agents and coordinator (including any virtual
 environment); doctor reports a `toolchain` finding when an `argv[0]` cannot be
 resolved. The same requirement applies to Go/Cargo and every declared tool.
@@ -505,8 +507,8 @@ verification, explicitly declare exact repository-relative paths and commands:
 }
 ```
 
-No profile is inferred from `*.md`: executable templates such as
-`templates/product/AGENTS.protocol.md` are product behavior, not prose.
+When `coord onboard` or `coord install` runs without a declared `documentation` block, it proposes a default `documentation` profile from tracked `.md` files at repository root or under `docs/`. It excludes root agent instructions (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`), templates, and files under workflow-critical paths. The default proposal exempts documentation from code checks with empty verify and checks (`verify: { precommit: [], prepush: [] }, checks: []`). An explicit declaration replaces this proposal.
+Executable templates such as `templates/product/AGENTS.protocol.md` are product behavior, not prose.
 The example config declares this repository's small `pnpm check:docs` profile,
 which retains README/docs content and verification-instruction assertions without
 running onboarding or the full suite. Review and install the declaration to opt
@@ -537,7 +539,17 @@ using existing verification results, adding tests only to investigate findings.
 Coordinator-owned final checks are not results an agent should claim to have run.
 Response-mode ballots continue to avoid commits and pushes entirely.
 
+### Agent vim mode configuration
+
+To prevent keystroke swallowing and stray mode-switch characters, coord runs agents without vim mode:
+- **Claude**: Coord writes `"editorMode": "normal"` into the clone-local `.claude/settings.local.json`, disabling vim mode for that clone without affecting the operator's global `~/.claude/settings.json`.
+- **Codex**: Coord passes `-c tui.vim_mode_default=false` in Codex's launcher command.
+- **Cursor**: Cursor CLI has no launch flag to disable vim and fails startup if an `editor` key is present in project `.cursor/cli.json`. Operators disable vim mode globally by setting `"editor": { "vimMode": false }` in `~/.cursor/cli-config.json`. Nudges automatically adapt to non-vim keys.
+- **Antigravity**: Has no vim mode.
+
 ### Coordinator verification mode
+
+`verification` and `cache` declarations come only from an explicit declaration via `--declare` on `coord onboard` or `coord install`. Re-running `onboard` or `install` regenerates `config.json` from detected defaults and the declaration (if supplied); hand edits directly to `config.json` in the runtime are dropped on regeneration. Verification receipts live in `<coord-runtime>/verification/receipts/` and are shared across all issues and agents of that runtime.
 
 `verification` is an opt-in declaration. Absent, or `"mode": "local"`, keeps the
 behavior above. `"mode": "coordinator"` moves the mandatory suites of automated

@@ -278,6 +278,16 @@ describe("tmux boundary", () => {
     ).toEqual({ prelude: ["a"], submit: ["Escape", "Enter"] });
   });
 
+  it("uses empty prelude for Claude when settings.local.json sets editorMode normal", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-claude-vim-"));
+    roots.push(root);
+    const agent = { id: "claude" as const, root, launcher: "start-claude.sh", delivery: "both" as const };
+    expect(resolveNudgeKeys(agent, "❯").prelude).toEqual(["a"]);
+    mkdirSync(join(root, ".claude"));
+    writeFileSync(join(root, ".claude/settings.local.json"), `${JSON.stringify({ editorMode: "normal" })}\n`);
+    expect(resolveNudgeKeys(agent, "❯").prelude).toEqual([]);
+  });
+
   it("uses per-agent nudgePrelude and nudgeSubmit for Codex vim", async () => {
     expect(nudgePreludeKeys("claude")).toEqual([]);
     expect(nudgePreludeKeys("codex")).toEqual(["i"]);
@@ -334,7 +344,7 @@ describe("tmux boundary", () => {
     const batches = calls.filter((call) => call.args[0] === "send-keys");
     expect(batches).toHaveLength(1);
     expect(commandsIn(batches[0]!.args).map((args) => args.at(-1))).toEqual([
-      "i", "sleep 0.15", " Read and execute your current coordinator action at /runtime/action.md", "sleep 0.3", "Enter"
+      "Read and execute your current coordinator action at /runtime/action.md", "sleep 0.3", "Enter"
     ]);
     for (const nudgeSubmit of [["Enter"], ["C-m"], ["C-j", "C-m"]]) {
       expect(resolveNudgeKeys({ id: "codex", root: "/c", launcher: "x", delivery: "both", nudgeSubmit }).submit).toEqual(["Enter"]);
@@ -1418,8 +1428,13 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
       await runner(["kill-server"]);
     }
     expect(readdirSync(logs).filter((entry) => entry.endsWith(".log"))).toHaveLength(3);
-    // Each relaunch wrote a new log; the earlier runs keep their dialogue and the clear that followed it.
-    for (const name of ["first", "second", "third"]) expect(readFileSync(runLog(name), "utf8")).toContain("\u001b[2J");
+    for (const name of ["first", "second", "third"]) {
+      const content = readFileSync(runLog(name), "utf8");
+      expect(content).toContain("\u001b[2J");
+      for (const line of content.split("\n").filter((l) => l.trim() !== "")) {
+        expect(line).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z /);
+      }
+    }
     expect(readFileSync(advertisedLog, "utf8")).toContain("third startup dialogue");
     expect(exitOf("first")).toMatchObject({ status: 0, signal: null });
     expect(exitOf("second")).toMatchObject({ status: 3, signal: null });

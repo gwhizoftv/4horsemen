@@ -113,6 +113,32 @@ describe("coord onboard", () => {
     expect(output.join("")).toContain("no findings");
     expect(output.join("")).toContain("coord manual");
 
+    const declareFile = join(fixture.workspaceRoot, "declaration.json");
+    writeFileSync(
+      declareFile,
+      JSON.stringify({
+        verification: {
+          mode: "coordinator",
+          coordinated: { precommit: [], prepush: [] },
+          candidate: {
+            checks: [{ name: "fast", argv: ["pnpm", "run", "check:fast"] }],
+            covers: { prefixes: ["src/"], files: [] },
+            rules: []
+          }
+        }
+      })
+    );
+    expect(
+      await runCli(["onboard", fixture.productRoot, "--declare", declareFile], {
+        home,
+        io: { stdout: (message) => output.push(message), stderr: (message) => output.push(message) }
+      })
+    ).toBe(0);
+    const declaredConfig = JSON.parse(readFileSync(configPath, "utf8")) as {
+      verification?: { mode?: string };
+    };
+    expect(declaredConfig.verification?.mode).toBe("coordinator");
+
     const manualAgents: string[][] = [];
     expect(
       await runCli(["manual"], {
@@ -144,7 +170,7 @@ describe("coord onboard", () => {
     ).toBe(2);
     expect(errors.join("")).toContain("is not onboarded in this worktree");
     expect(existsSync(issueRuntimePaths(coordRoot, 10).issueRoot)).toBe(false);
-  });
+  }, 30_000);
 
   it("persists a selected profile and numeric dispatch resumes without refetching", async () => {
     const fixture = product();

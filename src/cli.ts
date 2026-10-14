@@ -391,7 +391,7 @@ const commandDescriptions: Record<string, string> = {
   analytics: "Read recorded timing and usage without changing issue state. Example: coord analytics --issue 161.",
   next: "Read the current assignment for a registered agent without accepting it. Example: coord next --issue 161 --agent codex.",
   manual: "Open workspace agent terminals without issue automation. Example: coord manual --product /repository.",
-  onboard: "Install a coordination workspace for a repository. Example: coord onboard /repository.",
+  onboard: "Install a coordination workspace for a repository. Example: coord onboard /repository --declare declaration.json.",
   install: "Install or repair agent clones, hooks and workspace configuration. Preview changes with --dry-run; see required paths below.",
   uninstall: "Remove coordination installation; deletion options are destructive. Preview with --dry-run and explicit repository/runtime paths below.",
   doctor: "Inspect installation wiring read-only, not live harness trust. Example: coord doctor --coord-runtime /runtime --product /repository.",
@@ -1146,7 +1146,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "onboard") {
-      allowedFlags(parsed, ["coord-runtime", "completes-root", "clone-root", "agents", "profile"]);
+      allowedFlags(parsed, ["coord-runtime", "completes-root", "clone-root", "agents", "profile", "declare"]);
       if (parsed.positionals.length !== 1) throw new Error("onboard requires exactly one repository path.");
       const agents = (parsed.flags.get("agents") ?? "claude,codex,cursor,antigravity")
         .split(",")
@@ -1160,6 +1160,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         productRoot,
         agents,
         profile,
+        ...(parsed.flags.has("declare") ? { declarePath: resolve(io.cwd, requireFlag(parsed, "declare")) } : {}),
         ...(parsed.flags.has("coord-runtime") ? { coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-runtime")) } : {}),
         ...(parsed.flags.has("completes-root")
           ? { completesRoot: resolve(io.cwd, requireFlag(parsed, "completes-root")) }

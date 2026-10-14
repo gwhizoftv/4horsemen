@@ -18,6 +18,7 @@ import { DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile, clearManagedIgnoreFile }
 import {
   atomicWriteJson,
   coordinatorConfigSchema,
+  repositoryPathSchema,
   type CheckCommand,
   type CoordinatorConfig,
   type WorkspaceDeclaration
@@ -123,6 +124,7 @@ export type ProjectPolicyProposal = {
   toolchain?: string;
   verify?: { precommit: CheckCommand[]; prepush: CheckCommand[] };
   checks?: CheckCommand[];
+  documentation?: CoordinatorConfig["documentation"];
   workflowCriticalPrefixes: string[];
   workflowCriticalFiles: string[];
 };
@@ -173,67 +175,99 @@ const proposedVerify = (
 export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal => {
   const has = (relative: string): boolean => existsSync(join(productRoot, relative));
 
-  if (has("Cargo.toml")) {
-    return {
-      toolchain: "cargo",
-      verify: {
-        precommit: [{ name: "check", argv: ["cargo", "check", "--all-targets"] }],
-        prepush: [{ name: "test", argv: ["cargo", "test"] }]
-      },
-      checks: [{ name: "test", argv: ["cargo", "test"] }],
-      workflowCriticalPrefixes: ["src/", "tests/"],
-      workflowCriticalFiles: ["Cargo.toml", "Cargo.lock"]
-    };
-  }
+  const baseProposal = (): ProjectPolicyProposal => {
+    if (has("Cargo.toml")) {
+      return {
+        toolchain: "cargo",
+        verify: {
+          precommit: [{ name: "check", argv: ["cargo", "check", "--all-targets"] }],
+          prepush: [{ name: "test", argv: ["cargo", "test"] }]
+        },
+        checks: [{ name: "test", argv: ["cargo", "test"] }],
+        workflowCriticalPrefixes: ["src/", "tests/"],
+        workflowCriticalFiles: ["Cargo.toml", "Cargo.lock"]
+      };
+    }
 
-  if (has("go.mod")) {
-    return {
-      toolchain: "go",
-      verify: {
-        precommit: [{ name: "vet", argv: ["go", "vet", "./..."] }],
-        prepush: [{ name: "test", argv: ["go", "test", "./..."] }]
-      },
-      checks: [
-        { name: "build", argv: ["go", "build", "./..."] },
-        { name: "test", argv: ["go", "test", "./..."] }
-      ],
-      workflowCriticalPrefixes: ["cmd/", "internal/", "pkg/"],
-      workflowCriticalFiles: ["go.mod", "go.sum"]
-    };
-  }
+    if (has("go.mod")) {
+      return {
+        toolchain: "go",
+        verify: {
+          precommit: [{ name: "vet", argv: ["go", "vet", "./..."] }],
+          prepush: [{ name: "test", argv: ["go", "test", "./..."] }]
+        },
+        checks: [
+          { name: "build", argv: ["go", "build", "./..."] },
+          { name: "test", argv: ["go", "test", "./..."] }
+        ],
+        workflowCriticalPrefixes: ["cmd/", "internal/", "pkg/"],
+        workflowCriticalFiles: ["go.mod", "go.sum"]
+      };
+    }
 
-  if (has("package.json")) {
-    const scripts = nodeScripts(productRoot);
-    const manager = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : "npm";
-    const runScript = (name: string): CheckCommand => ({
-      name,
-      argv: manager === "npm" ? ["npm", "run", "--silent", name] : [manager, "run", name]
-    });
-    const precommit = ["check:fast", "check", "lint"].filter((name) => scripts.has(name)).slice(0, 1);
-    const prepush = ["test:e2e"].filter((name) => scripts.has(name));
-    const finalization = ["check", "test"].filter((name) => scripts.has(name)).slice(0, 1);
-    return {
-      toolchain: manager,
-      ...proposedVerify(precommit.map(runScript), prepush.map(runScript)),
-      checks: finalization.length === 0 ? undefined : finalization.map(runScript),
-      workflowCriticalPrefixes: ["src/", "test/", "scripts/", "githooks/"],
-      workflowCriticalFiles: ["package.json", has("pnpm-lock.yaml") ? "pnpm-lock.yaml" : has("yarn.lock") ? "yarn.lock" : "package-lock.json"]
-    };
-  }
+    if (has("package.json")) {
+      const scripts = nodeScripts(productRoot);
+      const manager = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : "npm";
+      const runScript = (name: string): CheckCommand => ({
+        name,
+        argv: manager === "npm" ? ["npm", "run", "--silent", name] : [manager, "run", name]
+      });
+      const precommit = ["check:fast", "check", "lint"].filter((name) => scripts.has(name)).slice(0, 1);
+      const prepush = ["test:e2e"].filter((name) => scripts.has(name));
+      const finalization = ["check", "test"].filter((name) => scripts.has(name)).slice(0, 1);
+      return {
+        toolchain: manager,
+        ...proposedVerify(precommit.map(runScript), prepush.map(runScript)),
+        checks: finalization.length === 0 ? undefined : finalization.map(runScript),
+        workflowCriticalPrefixes: ["src/", "test/", "scripts/", "githooks/"],
+        workflowCriticalFiles: ["package.json", has("pnpm-lock.yaml") ? "pnpm-lock.yaml" : has("yarn.lock") ? "yarn.lock" : "package-lock.json"]
+      };
+    }
 
-  const targets = makeTargets(productRoot);
-  if (targets.size > 0) {
-    const target = (name: string): CheckCommand => ({ name, argv: ["make", name] });
-    return {
-      toolchain: "make",
-      ...proposedVerify(targets.has("check") ? [target("check")] : [], []),
-      checks: targets.has("test") ? [target("test")] : undefined,
-      workflowCriticalPrefixes: [],
-      workflowCriticalFiles: ["Makefile"]
-    };
-  }
+    const targets = makeTargets(productRoot);
+    if (targets.size > 0) {
+      const target = (name: string): CheckCommand => ({ name, argv: ["make", name] });
+      return {
+        toolchain: "make",
+        ...proposedVerify(targets.has("check") ? [target("check")] : [], []),
+        checks: targets.has("test") ? [target("test")] : undefined,
+        workflowCriticalPrefixes: [],
+        workflowCriticalFiles: ["Makefile"]
+      };
+    }
 
-  return { workflowCriticalPrefixes: [], workflowCriticalFiles: [] };
+    return { workflowCriticalPrefixes: [], workflowCriticalFiles: [] };
+  };
+
+  const proposal = baseProposal();
+  try {
+    const lsResult = git(productRoot, "ls-files", "-z");
+    if (lsResult.exitCode === 0) {
+      const files = lsResult.stdout.split("\0").filter((p) => p !== "");
+      const instructionFiles = new Set(["AGENTS.md", "CLAUDE.md", "GEMINI.md"]);
+      const docPaths = files.filter((path) => {
+        if (!path.endsWith(".md")) return false;
+        if (path.includes("/")) {
+          if (!path.startsWith("docs/")) return false;
+        } else {
+          if (instructionFiles.has(path)) return false;
+        }
+        if (proposal.workflowCriticalFiles.includes(path)) return false;
+        if (proposal.workflowCriticalPrefixes.some((prefix) => path.startsWith(prefix))) return false;
+        return repositoryPathSchema.safeParse(path).success;
+      });
+      if (docPaths.length > 0) {
+        proposal.documentation = {
+          paths: docPaths,
+          verify: { precommit: [], prepush: [] },
+          checks: []
+        };
+      }
+    }
+  } catch {
+    // Non-git directory or git error proposes no documentation profile.
+  }
+  return proposal;
 };
 
 // ------------------------------------------------------------------ config --
@@ -274,6 +308,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
   }
   const verify = declared.verify ?? input.proposal.verify;
   const toolchain = declared.toolchain ?? input.proposal.toolchain;
+  const documentation = declared.documentation ?? input.proposal.documentation;
 
   return coordinatorConfigSchema.parse({
     project: input.project,
@@ -299,7 +334,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     pollIntervalMs: declared.pollIntervalMs ?? 1_000,
     ...(toolchain === undefined ? {} : { toolchain }),
     ...(verify === undefined ? {} : { verify }),
-    ...(declared.documentation === undefined ? {} : { documentation: declared.documentation }),
+    ...(documentation === undefined ? {} : { documentation }),
     ...(declared.verification === undefined ? {} : { verification: declared.verification }),
     workflowCriticalPrefixes: declared.workflowCriticalPrefixes ?? input.proposal.workflowCriticalPrefixes,
     workflowCriticalFiles: declared.workflowCriticalFiles ?? input.proposal.workflowCriticalFiles,
