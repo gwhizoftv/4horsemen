@@ -1,0 +1,46 @@
+{
+  "actionId": "00575d3f-248d-4e4a-b1e9-2603c685842d",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "3199446afe75d95d0154446c33e76baa755fa27e068e6adadace29a9693137dd",
+  "issue": 214,
+  "issueSessionId": "issue-214:0ead5e6ce15b6563bb6134a84997e79b0c0042cd",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "db10819fb42817204292af7add329f7ce46890df",
+      "path": ".plans/issue-214/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9ec5d2d04efc1d890625fb8b1227c84d3c13e861",
+      "path": ".plans/issue-214/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "b3171cc5d6e2f7166cc501f1a09cbce689989cde",
+      "path": ".plans/issue-214/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "The claude plan has the smallest in-scope design that keeps unproven reread pickups ordered (preserving the ready-file and missing-Stop recoveries all three reviews say cursor's reread acceptance breaks) and adds no agent-protocol receipt, and every finding against it is a local correction—retain the queued-behind guard until a distinct turn or completion, bind reread chains A→B→C to the session, protect failed and pending-input older Stops—unlike cursor's structural acceptance flaw and codex's protocol-wide receipt plus hookReceipt regression.",
+  "responseSha256": "c06db49d0e88ddd435e3776d1daffedb14f7b04a8c1e37f9213df0532b58360a",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "d9f9a52cc5360428fc7115e1f46c5a8c49798d3b",
+      "path": ".plans/issue-214/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "676ee5946531ebd4fda54a8e67c18ec6a1b25e8a",
+      "path": ".plans/issue-214/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e7c01334bb6be4342e2ae7cc16e649520030e526",
+      "path": ".plans/issue-214/review.md"
+    }
+  ]
+}

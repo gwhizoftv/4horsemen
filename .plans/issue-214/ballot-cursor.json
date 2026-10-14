@@ -1,0 +1,46 @@
+{
+  "actionId": "b10231ed-f8b1-4961-aee8-44659d7275e7",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "3199446afe75d95d0154446c33e76baa755fa27e068e6adadace29a9693137dd",
+  "issue": 214,
+  "issueSessionId": "issue-214:0ead5e6ce15b6563bb6134a84997e79b0c0042cd",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "db10819fb42817204292af7add329f7ce46890df",
+      "path": ".plans/issue-214/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9ec5d2d04efc1d890625fb8b1227c84d3c13e861",
+      "path": ".plans/issue-214/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "b3171cc5d6e2f7166cc501f1a09cbce689989cde",
+      "path": ".plans/issue-214/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude keeps an unproven reread ordered so ready-file and missing-Stop recovery still send, and its queued-behind marker and in-lock tool guard are small reducer fixes, while cursor's inferred acceptance can stall delivery or erase a real idle and codex's start receipt invalidates that same ready file and changes the protocol.",
+  "responseSha256": "3e9831e06ac8e2a4c3c27734f406f2be06218109a3b3642702f9dc5ed482e75f",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "d9f9a52cc5360428fc7115e1f46c5a8c49798d3b",
+      "path": ".plans/issue-214/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "676ee5946531ebd4fda54a8e67c18ec6a1b25e8a",
+      "path": ".plans/issue-214/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e7c01334bb6be4342e2ae7cc16e649520030e526",
+      "path": ".plans/issue-214/review.md"
+    }
+  ]
+}
