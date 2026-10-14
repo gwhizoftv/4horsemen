@@ -1,0 +1,14 @@
+{
+  "actionId": "00ae2142-d460-4920-81df-142da8d3e036",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "d805833a5cbad0b98e42bdccba16344acd255925cfcfd3b7740466f678398269",
+  "issue": 184,
+  "issueSessionId": "issue-184:0e0a07b93b61be5f76224650468d50c3bbf06d5d",
+  "protocolVersion": 2,
+  "rationale": "Codex a342daa65dbeec0371b69983cb881b7b93ac6a26 updates the executable the launcher will exec, kills a SIGTERM-ignoring descendant after the leader exits, and records nonblank versions before any pane starts.",
+  "responseSha256": "69ce8d195adc1a0a35240c160263cedd6c124d7d1e43a9453a435d2b6cf85bcc",
+  "revisionCommitSha": "a342daa65dbeec0371b69983cb881b7b93ac6a26",
+  "round": 1
+}
