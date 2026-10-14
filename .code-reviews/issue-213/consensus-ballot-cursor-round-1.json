@@ -1,0 +1,14 @@
+{
+  "actionId": "a509aa45-5914-4443-ad93-587d58136a8e",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "14cace1c04286b663579db6d09c18aa5c78e78a611de7f5db70dad3ce87cce8e",
+  "issue": 213,
+  "issueSessionId": "issue-213:82c47e35ae0a886746fce9759bd80776ec6a5461",
+  "protocolVersion": 2,
+  "rationale": "Codex b533cb49 keeps only mode 100644 Markdown and drops every AGENTS.md, CLAUDE.md, GEMINI.md, and SKILL.md by basename, so a docs-only change to docs/AGENTS.md or docs/SKILL.md still runs the product suite.",
+  "responseSha256": "9b2821724602feddd10055c0493eb3e04df991773128c72e52a2519a35d10f21",
+  "revisionCommitSha": "b533cb49a583b3410ad8f465973967f0cdee6fb0",
+  "round": 1
+}

@@ -1,0 +1,14 @@
+{
+  "actionId": "a59a16e9-4a18-4874-b61a-0d265eb32cd1",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "14cace1c04286b663579db6d09c18aa5c78e78a611de7f5db70dad3ce87cce8e",
+  "issue": 213,
+  "issueSessionId": "issue-213:82c47e35ae0a886746fce9759bd80776ec6a5461",
+  "protocolVersion": 2,
+  "rationale": "Approve b533cb49a583b3410ad8f465973967f0cdee6fb0 because the unchanged reviewed candidate stays within scope, preserves owner editor settings, restricts documentation exemptions, and has recorded passing precommit and prepush checks with no blocking finding, while the documented live-vendor smoke limitation remains outstanding.",
+  "responseSha256": "989f2b3619494cc5ea8bfcf670e3a5ac7f3c22b5f812540e0d59dbbffd35b647",
+  "revisionCommitSha": "b533cb49a583b3410ad8f465973967f0cdee6fb0",
+  "round": 1
+}
