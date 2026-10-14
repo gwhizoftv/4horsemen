@@ -1,0 +1,20 @@
+{
+  "protocolVersion": 1,
+  "issue": 206,
+  "issueSessionId": "issue-206:5217f5ccad04d7664d81529e51191e6e053e2e1a",
+  "agent": "claude",
+  "inputSetHash": "5e683873c9b8807b67bd729682c684f8b09fbb12ae2c0dfa63857670492a24ea",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "77d9dc84b24c6fcb02dbbe69587430cd8b0085c4",
+  "scopeHash": "0ea406dbfdf1fcffbdd4574a77398aed61814344a7087bd46f87fac747cdcaba",
+  "approvedPaths": [
+    ".cursor/cli.json",
+    "TmuxController.typeAndSubmit",
+    "config.json",
+    "docs/coord-driver.md",
+    "editor.vimMode",
+    "src/tmux.ts",
+    "test/runLoop.test.ts",
+    "test/tmux.test.ts"
+  ]
+}
