@@ -1,0 +1,14 @@
+{
+  "actionId": "533eba5c-5575-4685-b762-38fa9fc6d873",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "c1d795439d1ede04ca46e5557e761d5c1920bf639193e6576dae5ff461e925ba",
+  "issue": 214,
+  "issueSessionId": "issue-214:0ead5e6ce15b6563bb6134a84997e79b0c0042cd",
+  "protocolVersion": 2,
+  "rationale": "The revision records turn ids that have already stopped so a repeated Stop of a finished turn stays a no-op after the next action is ordered, while a later unseen turn can still end the queued work and a replacement session still cannot inherit a reread.",
+  "responseSha256": "f77841d9fb8a7147233bb2df6db161cbb3df5c52e8430d0acae738fe15a040e8",
+  "revisionCommitSha": "ddd8c200d381718e967f462a70f500654cac0e8d",
+  "round": 3
+}
