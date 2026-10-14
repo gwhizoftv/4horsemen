@@ -66,6 +66,7 @@ integration; on other platforms use tmux without those windows.
 
 ```sh
 coord onboard /path/to/app
+coord onboard /path/to/app --declare /path/to/declaration.json
 ```
 
 The runtime directory defaults to `coord-runtime` beside the product checkout.
@@ -114,8 +115,17 @@ keys on that product. The locator is untracked and does not appear in a fresh
 human clone.
 
 Overrides kept on the simple command are `--coord-runtime`, `--clone-root`,
-`--agents`, and `--profile`. Use advanced install for policy declarations,
-vendoring, tracked product changes, origin/base overrides, or dry runs.
+`--agents`, `--profile`, and `--declare`. Use advanced install for vendoring,
+tracked product changes, origin/base overrides, or dry runs.
+
+### Vim mode
+
+Claude and Codex start with vim off. Claude records `editorMode` as `normal` in
+the clone's `.claude/settings.local.json`, and leaves an owner value already in
+that file unchanged. Codex is started with `-c tui.vim_mode_default=false`,
+which applies to that process only. Cursor rejects an `editor` key in the
+project `.cursor/cli.json`, so vim stays an owner edit of
+`editor.vimMode` in `~/.cursor/cli-config.json`.
 
 ## Advanced install
 
@@ -440,7 +450,7 @@ coord install --product /path/to/app --coord-runtime /path/to/coord-runtime \
 coord doctor --coord-runtime /path/to/coord-runtime --product /path/to/app
 ```
 
-Use `install`, not `onboard`, for `--declare`. Install Ruff/pytest and expose
+`onboard` accepts the same `--declare <file>` as `install`. A declaration replaces the installer proposal. Install Ruff/pytest and expose
 them on the PATH inherited by the agents and coordinator (including any virtual
 environment); doctor reports a `toolchain` finding when an `argv[0]` cannot be
 resolved. The same requirement applies to Go/Cargo and every declared tool.
@@ -505,8 +515,15 @@ verification, explicitly declare exact repository-relative paths and commands:
 }
 ```
 
-No profile is inferred from `*.md`: executable templates such as
+No profile is inferred from `*.md` at check time: executable templates such as
 `templates/product/AGENTS.protocol.md` are product behavior, not prose.
+When the product is a Git worktree, onboard and install propose a documentation
+profile of the exact tracked Markdown files at the repository root and under
+`docs/`. Root `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` are left out, as are
+workflow-critical paths and any path the repository path rules reject. The
+proposed profile uses empty `verify` and `checks` lists. A declaration replaces
+that proposal. A directory that is not a worktree, or that has no matching
+files, gets no profile.
 The example config declares this repository's small `pnpm check:docs` profile,
 which retains README/docs content and verification-instruction assertions without
 running onboarding or the full suite. Review and install the declaration to opt
@@ -541,7 +558,12 @@ Response-mode ballots continue to avoid commits and pushes entirely.
 
 `verification` is an opt-in declaration. Absent, or `"mode": "local"`, keeps the
 behavior above. `"mode": "coordinator"` moves the mandatory suites of automated
-runs into coord (see `config.example.json`):
+runs into coord (see `config.example.json`). Verification and cache settings
+come only from `--declare` on `install` or `onboard`. Reinstall regenerates
+`config.json` from that declaration and the installer proposal, so a hand edit
+of the runtime config is dropped unless it is in the declaration. Receipts under
+the runtime's `verification/receipts/` directory are shared by every issue and
+agent of that one runtime:
 
 ```jsonc
 "verification": {

@@ -134,6 +134,13 @@ const plannedDocument = (input: {
         }
       ];
     }
+    if (input.vendor === "claude") {
+      return {
+        ...input.existing,
+        hooks,
+        editorMode: input.existing.editorMode ?? "normal"
+      };
+    }
     return { ...input.existing, hooks };
   }
 
@@ -256,6 +263,7 @@ export const removeAgentLifecycleHooks = (input: {
     }
   }
   if (!found) return { path, changed: false, kept: false };
+  if (vendor === "claude" && next.editorMode === "normal") delete next.editorMode;
   input.options.changes.push(`remove ${vendor} lifecycle hooks from ${input.clone}`);
   input.options.log(`${input.options.dryRun ? "would remove" : "removed"} ${vendor} lifecycle hooks from ${path}\n`);
   if (!input.options.dryRun) {

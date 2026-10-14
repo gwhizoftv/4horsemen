@@ -201,13 +201,9 @@ const codexSentinelAtTail = (paneText: string, requireSentinel = true): boolean 
   return tail !== null && tail.composer.length === 1 && codexComposerEmpty(tail.composer[0]!.raw);
 };
 
-/** Codex's footer names its vim mode; the `i` prelude is only needed to leave NORMAL. */
+/** Codex's footer names its vim mode; the `i` prelude is sent only for visible NORMAL. */
 const codexVimNormal = (paneText: string, requireSentinel = true): boolean =>
   codexTail(paneText, requireSentinel)?.footer.some((line) => /Vim: Normal/.test(line.plain)) === true;
-
-/** In visible INSERT an `i` prelude would be typed into the message itself. */
-const codexVimInsert = (paneText: string): boolean =>
-  codexTail(paneText, false)?.footer.some((line) => /Vim: Insert/.test(line.plain)) === true;
 
 /** Active unquoted terminal lines, not prose discussing a past limit. Fail closed. */
 const claudeUsageWait = (plain: string): boolean => {
@@ -311,6 +307,18 @@ export const vimInsertPrelude = (paneText: string, agentId: string): readonly st
   return ["a"];
 };
 
+/** Claude `editorMode` from the clone settings file. Missing or unreadable means unknown, which still looks like vim NORMAL. */
+export const readClaudeEditorMode = (agentRoot: string): string | undefined => {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(agentRoot, ".claude", "settings.local.json"), "utf8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const editorMode = (parsed as { editorMode?: unknown }).editorMode;
+    return typeof editorMode === "string" ? editorMode : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const readVimModeFlag = (path: string): boolean | undefined => {
   if (!existsSync(path)) return undefined;
   try {
@@ -366,7 +374,11 @@ export const resolveNudgeKeys = (
   }
   const defaults = agentOwnerUiDefaults(agent.id);
   const configuredPrelude = agent.nudgePrelude ?? defaults.nudgePrelude;
-  const prelude = configuredPrelude.length === 0 ? vimInsertPrelude(paneText, agent.id) : configuredPrelude;
+  const prelude = configuredPrelude.length === 0 && agent.id === "claude" && readClaudeEditorMode(agent.root) === "normal"
+    ? []
+    : configuredPrelude.length === 0
+      ? vimInsertPrelude(paneText, agent.id)
+      : configuredPrelude;
   let rawSubmit = agent.nudgeSubmit ?? defaults.nudgeSubmit;
   if (agent.id === "codex") {
     const legacy = (rawSubmit.length === 2 && rawSubmit[0] === "C-j" && rawSubmit[1] === "C-m") ||
@@ -723,8 +735,24 @@ const newTerminalLog = (dir: string): string => {
  */
 const LAUNCH_PLACEHOLDER = "sleep 60";
 
-/** `pipe-pane` expands tmux formats in its command, so a literal `#` in the path must be doubled. */
-const pipeToLog = (log: string): string => `cat >> ${shellQuote(log)}`.replaceAll("#", "##");
+/**
+ * `pipe-pane` expands tmux formats before the shell runs, including `#` and
+ * `%` inside quotes. Stamp each line at its first byte. Fall back to `cat`
+ * when perl is missing.
+ */
+const pipeToLog = (log: string): string => {
+  const program = [
+    "$|=1; binmode STDIN; binmode STDOUT; my $bol = 1; my $buf = \"\";",
+    "while (1) { my $n = sysread STDIN, $buf, 8192; last if !defined $n || $n == 0;",
+    "my $seconds = time; my $whole = int $seconds; my $ms = int(($seconds - $whole) * 1000);",
+    "$ms = 0 if $ms < 0; $ms = 999 if $ms > 999;",
+    "my $stamp = strftime(\"%Y-%m-%dT%H:%M:%S\", gmtime $whole) . sprintf(\".%03dZ \", $ms);",
+    "foreach my $part (split(/(\\n)/, $buf, -1)) { next if $part eq \"\";",
+    "print $stamp if $bol && $part ne \"\\n\"; print $part; $bol = $part eq \"\\n\"; } }"
+  ].join(" ");
+  const command = `if command -v perl >/dev/null 2>&1; then exec perl -MPOSIX=strftime -MTime::HiRes=time -e ${shellQuote(program)}; else exec cat; fi >> ${shellQuote(log)}`;
+  return command.replaceAll("#", "##").replaceAll("%", "%%");
+};
 
 const describeExit = (status: string, signal: string): string =>
   signal !== "" ? `signal ${signal}` : status !== "" ? `status ${status}` : "exit details unavailable";
@@ -1203,7 +1231,7 @@ export class TmuxController {
       try { paneText = await this.capturePane(target); } catch { /* Use configured keys. */ }
       assertAuthority();
       const { prelude, submit } = resolveNudgeKeys(agent, paneText);
-      const preludeKeys = agent.id === "codex" && codexVimInsert(paneText) ? [] : prelude;
+      const preludeKeys = agent.id === "codex" ? (codexVimNormal(paneText, false) ? prelude : []) : prelude;
       await this.typeAndSubmit(target, agent, text, preludeKeys, submit, async (args) => {
         assertAuthority();
         if (!began) { onBegin(); began = true; }
@@ -1279,9 +1307,9 @@ export class TmuxController {
     }
     const text = renderNudgeText(actionPath, actionId, actionDigest);
     const { prelude, submit } = resolveNudgeKeys(agent, paneText);
-    const preludeKeys = agent.id === "codex" &&
-      (staleOverride !== undefined ? !codexVimNormal(paneText, requireSentinel) : codexVimInsert(paneText))
-      ? [] : prelude;
+    const preludeKeys = agent.id === "codex"
+      ? (codexVimNormal(paneText, staleOverride !== undefined && requireSentinel) ? prelude : [])
+      : prelude;
     let began = false;
     const send = async (args: readonly string[]): Promise<NudgeOutcome | null> => {
       const gate = await this.injectionGate(target, agent, assertAuthority);

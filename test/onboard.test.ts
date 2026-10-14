@@ -144,7 +144,31 @@ describe("coord onboard", () => {
     ).toBe(2);
     expect(errors.join("")).toContain("is not onboarded in this worktree");
     expect(existsSync(issueRuntimePaths(coordRoot, 10).issueRoot)).toBe(false);
-  });
+
+    const declaration = join(fixture.workspaceRoot, "declaration.json");
+    writeFileSync(
+      declaration,
+      `${JSON.stringify({
+        verification: {
+          mode: "coordinator",
+          coordinated: { precommit: [], prepush: [] },
+          candidate: {
+            checks: [{ name: "check", argv: ["pnpm", "run", "check"] }],
+            covers: { prefixes: [], files: [] }
+          }
+        }
+      }, null, 2)}\n`
+    );
+    expect(
+      await runCli(["onboard", fixture.productRoot, "--declare", declaration], {
+        home,
+        io: { stdout: (message) => output.push(message), stderr: (message) => output.push(message) }
+      })
+    ).toBe(0);
+    expect((JSON.parse(readFileSync(configPath, "utf8")) as { verification: { mode: string } }).verification.mode).toBe(
+      "coordinator"
+    );
+  }, 45_000);
 
   it("persists a selected profile and numeric dispatch resumes without refetching", async () => {
     const fixture = product();

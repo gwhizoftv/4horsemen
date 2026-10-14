@@ -189,6 +189,55 @@ describe("installer proposals", () => {
     }
   });
 
+  it("proposes tracked root and docs markdown, and nothing untracked or outside git", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-propose-docs-"));
+    const untracked = mkdtempSync(join(tmpdir(), "coord-propose-docs-"));
+    const outside = mkdtempSync(join(tmpdir(), "coord-propose-docs-"));
+    try {
+      git(root, "init", "-q");
+      mkdirSync(join(root, "docs"));
+      mkdirSync(join(root, "templates", "product"), { recursive: true });
+      mkdirSync(join(root, "src"));
+      writeFileSync(join(root, "README.md"), "# read\n");
+      writeFileSync(join(root, "AGENTS.md"), "# agents\n");
+      writeFileSync(join(root, "docs", "guide.md"), "# guide\n");
+      writeFileSync(join(root, "templates", "product", "AGENTS.md"), "# template\n");
+      writeFileSync(join(root, "src", "notes.md"), "# notes\n");
+      git(root, "add", "-A");
+      const proposal = proposeProjectPolicy(root);
+      const documentation = {
+        paths: ["README.md", "docs/guide.md"],
+        verify: { precommit: [], prepush: [] },
+        checks: []
+      };
+      expect(proposal.documentation).toEqual(documentation);
+      const built = buildWorkspaceConfig({
+        project: "fixture",
+        origin: "https://example.com/fixture.git",
+        baseBranch: "main",
+        agents: ["codex"],
+        profile: "solo",
+        cloneRoot: "/clones",
+        workspaceDir: "/runtime",
+        completesRoot: "/completes",
+        declared: null,
+        proposal: { ...proposal, checks: [{ name: "test", argv: ["true"] }] }
+      }, undefined);
+      expect(built.documentation).toEqual(documentation);
+
+      git(untracked, "init", "-q");
+      writeFileSync(join(untracked, "README.md"), "# unread\n");
+      expect(proposeProjectPolicy(untracked).documentation).toBeUndefined();
+
+      writeFileSync(join(outside, "README.md"), "# outside\n");
+      expect(proposeProjectPolicy(outside).documentation).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(untracked, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it("proposes non-Node argument vectors for non-Node trees", () => {
     const root = mkdtempSync(join(tmpdir(), "coord-propose-"));
     try {

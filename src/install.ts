@@ -785,6 +785,7 @@ export type OnboardOptions = {
   cloneRoot?: string;
   agents?: readonly string[];
   profile?: string;
+  declarePath?: string;
   log: Logger;
   home?: string | null;
 };
@@ -808,6 +809,7 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     bootstrap: false,
     dryRun: false,
     log: options.log,
+    ...(options.declarePath === undefined ? {} : { declarePath: options.declarePath }),
     ...(options.home === undefined ? {} : { home: options.home })
   });
   const report = doctor({ coordRoot, productRoot, ...(options.home === undefined ? {} : { home: options.home }) });

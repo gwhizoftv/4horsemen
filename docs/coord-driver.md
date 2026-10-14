@@ -335,6 +335,10 @@ workspaces append the workspace hash printed by tmux/start diagnostics:
 tmux attach -t coord-42
 ```
 
+Agent terminal logs are `agents/<agent>/terminal/run-<start>.log` under the
+issue runtime. Each line is prefixed at its first byte with a UTC timestamp
+`YYYY-MM-DDTHH:MM:SS.mmmZ`.
+
 On macOS, `coord start` / `coord N` also opens one Terminal.app window per
 agent, each attached to that agent's tmux window (separate clients — no Ctrl-b n).
 A resume of `coord N` recreates missing tmux sessions and dead agent panes, and
@@ -405,8 +409,10 @@ Nudge delivery uses literal `send-keys -l` (not paste-buffer — some TUIs such
 as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`.
 Per-agent config controls owner UI:
 
-- `nudgePrelude` — tmux key names sent before the text (Codex default: `i` for
-  vim insert, skipped when Codex's footer already shows `Vim: Insert`). Each
+- `nudgePrelude` — tmux key names sent before the text. Claude and Codex launch
+  with vim off. Codex's default `i` is sent only when the footer shows
+  `Vim: Normal`. Claude's `a` is sent only when the clone is not recorded as
+  `editorMode: normal` and the pane is not already INSERT. Each
   entry is one key followed by the prelude gap, so a trailing space such as
   `"a "` adds no delay. When any prelude key is sent, the typed text starts with
   a space, so a key that lands in the composer reads `i Read and execute …`
@@ -437,7 +443,8 @@ not acceptance. AGY keeps its working delivery without a new hook requirement.
 The Codex launcher passes `--no-daemon`: the shared app-server would otherwise run
 hooks with the `COORD_ISSUE` of whichever launch started it, not this pane's.
 It also passes `-c check_for_update_on_startup=false`, so Codex does not perform
-another update inside the pane after the coordinator's fresh-start update.
+another update inside the pane after the coordinator's fresh-start update, and
+`-c tui.vim_mode_default=false`, so that pane starts with vim off.
 Existing clones keep their old `start-codex.sh` until `coord install` rewrites it.
 - `terminalProfile` — macOS Terminal.app settings-set name so each agent window
   can use a different look (defaults: Claude 1 / Codex 1 / Cursor 1 / Gemini 1)
@@ -470,7 +477,8 @@ stable idle hint. Cursor submit is Enter when vim is off (Escape dismisses
 that composer) and Escape then Enter when `editor.vimMode` is on or
 `nudgePrelude` is a non-empty override. Prelude `a` is sent only in that
 vim case, and only if the pane is not already INSERT (home
-`~/.cursor/cli-config.json`, then clone `.cursor/cli.json`). Typed nudge text
+`~/.cursor/cli-config.json`). The project `.cursor/cli.json` rejects an
+`editor` key, so it is not a vim switch. Typed nudge text
 includes both the opaque `actionId` and the SHA-256 digest of the exact
 `action.md`. A delayed hook for an older rewrite therefore cannot accept the
 current action accidentally.

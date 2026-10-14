@@ -14,6 +14,7 @@ import {
 import { liftCloneAgentsProtocol } from "./agentsProtocol.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { isPathInside } from "./paths.js";
+import { repositoryPathSchema } from "./protocol.js";
 import { DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile, clearManagedIgnoreFile } from "./productIgnore.js";
 import {
   atomicWriteJson,
@@ -123,6 +124,7 @@ export type ProjectPolicyProposal = {
   toolchain?: string;
   verify?: { precommit: CheckCommand[]; prepush: CheckCommand[] };
   checks?: CheckCommand[];
+  documentation?: CoordinatorConfig["documentation"];
   workflowCriticalPrefixes: string[];
   workflowCriticalFiles: string[];
 };
@@ -161,16 +163,32 @@ const proposedVerify = (
 ): { verify?: { precommit: CheckCommand[]; prepush: CheckCommand[] } } =>
   precommit.length === 0 && prepush.length === 0 ? {} : { verify: { precommit, prepush } };
 
-/**
- * Scaffold a project's declared policy from what its tree obviously is.
- *
- * This is the ONLY place ecosystem detection is allowed, and its output is
- * written into the workspace config for an operator to review. No hook body
- * ever sniffs: a proposal made once and recorded is reviewable, whereas a
- * decision remade silently on every commit is the drift this issue exists to
- * remove.
- */
-export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal => {
+const proposedDocumentation = (
+  productRoot: string,
+  proposal: ProjectPolicyProposal
+): CoordinatorConfig["documentation"] | undefined => {
+  let listed = "";
+  try {
+    const result = git(productRoot, "ls-files", "-z");
+    if (result.exitCode !== 0) return undefined;
+    listed = result.stdout;
+  } catch {
+    return undefined;
+  }
+  const rootInstructions = new Set(["AGENTS.md", "CLAUDE.md", "GEMINI.md"]);
+  const paths = listed
+    .split("\0")
+    .filter((path) => path.endsWith(".md") && (path === basename(path) || path.startsWith("docs/")))
+    .filter((path) => !(path === basename(path) && rootInstructions.has(path)))
+    .filter((path) => !proposal.workflowCriticalFiles.includes(path))
+    .filter((path) => !proposal.workflowCriticalPrefixes.some((prefix) => path.startsWith(prefix)))
+    .filter((path) => repositoryPathSchema.safeParse(path).success)
+    .sort();
+  if (paths.length === 0) return undefined;
+  return { paths, verify: { precommit: [], prepush: [] }, checks: [] };
+};
+
+const proposeEcosystem = (productRoot: string): ProjectPolicyProposal => {
   const has = (relative: string): boolean => existsSync(join(productRoot, relative));
 
   if (has("Cargo.toml")) {
@@ -236,6 +254,21 @@ export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal
   return { workflowCriticalPrefixes: [], workflowCriticalFiles: [] };
 };
 
+/**
+ * Scaffold a project's declared policy from what its tree obviously is.
+ *
+ * This is the ONLY place ecosystem detection is allowed, and its output is
+ * written into the workspace config for an operator to review. No hook body
+ * ever sniffs: a proposal made once and recorded is reviewable, whereas a
+ * decision remade silently on every commit is the drift this issue exists to
+ * remove.
+ */
+export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal => {
+  const proposal = proposeEcosystem(productRoot);
+  const documentation = proposedDocumentation(productRoot, proposal);
+  return documentation === undefined ? proposal : { ...proposal, documentation };
+};
+
 // ------------------------------------------------------------------ config --
 
 export type WorkspaceConfigInput = {
@@ -299,7 +332,9 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     pollIntervalMs: declared.pollIntervalMs ?? 1_000,
     ...(toolchain === undefined ? {} : { toolchain }),
     ...(verify === undefined ? {} : { verify }),
-    ...(declared.documentation === undefined ? {} : { documentation: declared.documentation }),
+    ...((declared.documentation ?? input.proposal.documentation) === undefined
+      ? {}
+      : { documentation: declared.documentation ?? input.proposal.documentation }),
     ...(declared.verification === undefined ? {} : { verification: declared.verification }),
     workflowCriticalPrefixes: declared.workflowCriticalPrefixes ?? input.proposal.workflowCriticalPrefixes,
     workflowCriticalFiles: declared.workflowCriticalFiles ?? input.proposal.workflowCriticalFiles,

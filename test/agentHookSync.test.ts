@@ -100,6 +100,7 @@ describe("agent lifecycle hook synchronization", () => {
       const effects = effectOptions(() => undefined, false);
       expect(syncAgentLifecycleHooks({ clone, agent, cliEntry, options: effects }).changed).toBe(true);
       expect(readFileSync(path, "utf8")).toContain(AGENT_LIFECYCLE_HOOK_MARKER);
+      if (agent === "claude") expect(json(path).editorMode).toBe("normal");
       expect(inspectAgentLifecycleHooks({ clone, agent, cliEntry }).kind).toBe("current");
 
       const second = effectOptions(() => undefined, false);
@@ -110,6 +111,12 @@ describe("agent lifecycle hook synchronization", () => {
       expect(removeAgentLifecycleHooks({ clone, agent, options: removal }).changed).toBe(true);
       expect(readFileSync(path, "utf8")).not.toContain(AGENT_LIFECYCLE_HOOK_MARKER);
       expect(JSON.stringify(json(path))).toContain("echo keep");
+      if (agent === "claude") {
+        expect(json(path).editorMode).toBeUndefined();
+        writeFileSync(path, `${JSON.stringify({ ...json(path), editorMode: "vim" }, null, 2)}\n`);
+        expect(syncAgentLifecycleHooks({ clone, agent, cliEntry, options: effectOptions(() => undefined, false) }).changed).toBe(true);
+        expect(json(path).editorMode).toBe("vim");
+      }
     });
   }
 

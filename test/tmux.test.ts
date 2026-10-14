@@ -276,6 +276,13 @@ describe("tmux boundary", () => {
     expect(
       resolveNudgeKeys({ ...agent, nudgePrelude: ["a"] }, "Auto ·")
     ).toEqual({ prelude: ["a"], submit: ["Escape", "Enter"] });
+    const claudeRoot = mkdtempSync(join(tmpdir(), "coord-claude-vim-"));
+    roots.push(claudeRoot);
+    mkdirSync(join(claudeRoot, ".claude"));
+    const claude = { id: "claude" as const, root: claudeRoot, launcher: "start-claude.sh", delivery: "both" as const };
+    expect(resolveNudgeKeys(claude, "❯").prelude).toEqual(["a"]);
+    writeFileSync(join(claudeRoot, ".claude", "settings.local.json"), `${JSON.stringify({ editorMode: "normal" })}\n`);
+    expect(resolveNudgeKeys(claude, "❯").prelude).toEqual([]);
   });
 
   it("uses per-agent nudgePrelude and nudgeSubmit for Codex vim", async () => {
@@ -334,7 +341,7 @@ describe("tmux boundary", () => {
     const batches = calls.filter((call) => call.args[0] === "send-keys");
     expect(batches).toHaveLength(1);
     expect(commandsIn(batches[0]!.args).map((args) => args.at(-1))).toEqual([
-      "i", "sleep 0.15", " Read and execute your current coordinator action at /runtime/action.md", "sleep 0.3", "Enter"
+      "Read and execute your current coordinator action at /runtime/action.md", "sleep 0.3", "Enter"
     ]);
     for (const nudgeSubmit of [["Enter"], ["C-m"], ["C-j", "C-m"]]) {
       expect(resolveNudgeKeys({ id: "codex", root: "/c", launcher: "x", delivery: "both", nudgeSubmit }).submit).toEqual(["Enter"]);
@@ -1421,6 +1428,11 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
     // Each relaunch wrote a new log; the earlier runs keep their dialogue and the clear that followed it.
     for (const name of ["first", "second", "third"]) expect(readFileSync(runLog(name), "utf8")).toContain("\u001b[2J");
     expect(readFileSync(advertisedLog, "utf8")).toContain("third startup dialogue");
+    for (const name of ["first", "second", "third"]) {
+      const lines = readFileSync(runLog(name), "utf8").split("\n").filter((line) => line !== "");
+      expect(lines.length).toBeGreaterThan(0);
+      for (const line of lines) expect(line).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z /);
+    }
     expect(exitOf("first")).toMatchObject({ status: 0, signal: null });
     expect(exitOf("second")).toMatchObject({ status: 3, signal: null });
     expect(exitOf("third")).toMatchObject({ status: null, signal: expect.any(String) });
