@@ -169,14 +169,30 @@ describe("installer proposals", () => {
       writeFileSync(join(root, "docs/untracked.md"), "not proposed\n");
       const proposal = proposeProjectPolicy(root);
       expect(proposal.documentation).toEqual({ paths: ["README.md", "docs/guide.md"], verify: { precommit: [], prepush: [] }, checks: [] });
-      const configured = buildWorkspaceConfig({ project: "fixture", origin: "https://example.com/fixture.git", baseBranch: "main",
+      const input = { project: "fixture", origin: "https://example.com/fixture.git", baseBranch: "main",
         agents: ["codex"], profile: "solo", cloneRoot: "/clones", workspaceDir: "/runtime", completesRoot: "/completes",
         declared: workspaceDeclarationSchema.parse({ checks: [{ name: "product", argv: ["false"] }] }), proposal
-      }, undefined);
+      };
+      const configured = buildWorkspaceConfig(input, undefined);
       expect(configured.documentation).toEqual(proposal.documentation);
+      // Owners can declare reviewed reference documents even when their names
+      // would otherwise identify agent instructions in the generated proposal.
+      const referencePaths = ["docs/AGENTS.md", "docs/SKILL.md"];
+      const explicit = buildWorkspaceConfig({ ...input, declared: workspaceDeclarationSchema.parse({
+        ...input.declared,
+        documentation: { paths: [...proposal.documentation!.paths, ...referencePaths],
+          verify: { precommit: [], prepush: [] }, checks: [] }
+      }) }, undefined);
       const changes = (paths: string[]) => ({ identity: "fixture", changes: paths.map((path) => ({ status: "M", paths: [Buffer.from(path)] })) });
       for (const phase of ["precommit", "prepush", "finalization"] as const) {
         expect(selectVerification(changes(["README.md"]), configured, phase, configured.checks).commands).toEqual([]);
+        for (const path of [...referencePaths, "docs/run.md", "docs/link.md"]) {
+          expect(selectVerification(changes([path]), configured, phase, configured.checks).commands).toEqual(configured.checks);
+        }
+        for (const path of referencePaths) {
+          expect(selectVerification(changes([path]), explicit, phase, explicit.checks).commands).toEqual([]);
+          expect(selectVerification(changes([path, "src/notes.md"]), explicit, phase, explicit.checks).commands).toEqual(explicit.checks);
+        }
       }
       expect(classifyChanges(changes(["README.md", "docs/build.ts"]), configured).kind).toBe("product");
       expect(classifyChanges(changes(["docs/untracked.md"]), configured).kind).toBe("product");

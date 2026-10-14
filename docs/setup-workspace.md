@@ -515,14 +515,35 @@ are no longer an implicit exemption for every other path.
 Install/onboard propose an exact documentation allowlist from tracked `.md`
 files at the repository root or beneath `docs/`. Agent instructions (`AGENTS.md`,
 `CLAUDE.md`, `GEMINI.md`, `SKILL.md`), executable files, symlinks and proposed
-critical paths are excluded. Templates outside those locations are not included.
+critical paths are excluded. The instruction-name exclusion applies at every
+depth: `docs/AGENTS.md` can govern agent work within `docs/`, and a `SKILL.md`
+can supply agent behavior. Their location and extension alone do not establish
+that they are prose. Templates outside those locations are not included.
 With no eligible files there is no proposed profile. This default has empty
 precommit, prepush and final check lists, so changes confined to these recorded
 paths skip code checks. Newly added docs need a new proposal or explicit
 declaration; mixed and unknown changes keep product checks.
 
-A declared `documentation` profile replaces the proposal. Products whose tests
-read documentation should declare those checks, for example:
+An owner can explicitly exempt a reviewed reference document whose name matches
+an instruction file. For example, if `docs/AGENTS.md` and `docs/SKILL.md` are
+reference material in your product, a declaration passed to
+`coord onboard <product> --declare <file>` can contain:
+
+```json
+{
+  "documentation": {
+    "paths": ["README.md", "docs/guide.md", "docs/AGENTS.md", "docs/SKILL.md"],
+    "verify": { "precommit": [], "prepush": [] },
+    "checks": []
+  }
+}
+```
+
+Changes confined to those exact paths then skip precommit, prepush and final
+code checks. This declaration replaces the proposal, so include all intended
+documentation paths. Workflow-critical paths still retain product checks.
+
+Products whose tests read documentation should declare those checks, for example:
 
 ```json
 "documentation": {
