@@ -269,6 +269,17 @@ describe("operational state", () => {
     expect(readStartState(paths)).toMatchObject({ verification, verificationDigest: "d".repeat(64) });
   });
 
+  it("reads optional fresh-start versions without invalidating older runs", () => {
+    const { paths, start } = initialize();
+    expect(readStartState(paths).agentVersions).toBeUndefined();
+    const agentVersions = { claude: "claude 2.0", codex: null };
+    writeFileSync(paths.start, JSON.stringify({ ...start, agentVersions }));
+    expect(readStartState(paths).agentVersions).toEqual(agentVersions);
+    for (const version of ["", "   ", 123, { version: "1.0" }]) {
+      expect(startStateSchema.safeParse({ ...start, agentVersions: { codex: version } }).success).toBe(false);
+    }
+  });
+
   it("persists pause and drop state but refuses a zero-agent workflow", () => {
     const { paths, cursors } = initialize();
     let next = setPaused(cursors, true, "2026-08-11T10:01:00.000Z");

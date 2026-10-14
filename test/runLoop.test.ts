@@ -17,6 +17,7 @@ import {
 } from "../src/materializedInputs.js";
 import {
   buildOrder,
+  runArgv,
   computeDerivedInputSetHash,
   computePlanSelectionDerived,
   computeConsensusDerived,
@@ -62,6 +63,56 @@ import * as stateModule from "../src/state.js";
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe("bounded process runner", () => {
+  it("preserves ordinary results and handles bounded output and missing executables", async () => {
+    const argv = [process.execPath, "-e", 'process.stdout.write("ok"); process.stderr.write("detail"); process.exitCode=3;'];
+    const expected = { exitCode: 3, stdout: "ok", stderr: "detail" };
+    expect(await runArgv(argv, process.cwd())).toEqual(expected);
+    expect(await runArgv(argv, process.cwd(), { timeoutMs: 2_000 })).toEqual(expected);
+    await expect(runArgv(["/nonexistent/coord-test-command"], process.cwd(), { timeoutMs: 50 })).rejects.toThrow();
+    const output = await runArgv([process.execPath, "-e",
+      'process.stdout.write("a".repeat(200000)); process.stderr.write("b".repeat(200000));'], process.cwd(), { timeoutMs: 2_000 });
+    expect(output.exitCode).toBe(0);
+    expect(Buffer.byteLength(output.stdout) + Buffer.byteLength(output.stderr)).toBe(64 * 1024);
+  });
+
+  it.skipIf(process.platform === "win32").each(["inherited pipes", "closed pipes"])(
+    "kills installer descendants before resolving a timeout with %s", async (mode) => {
+      const root = mkdtempSync(join(tmpdir(), "coord-process-timeout-"));
+      roots.push(root);
+      const marker = join(root, "late-write"), pids = join(root, "pids");
+      const descendant = `process.on('SIGTERM',()=>{}); setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(marker)},'alive'),2200); setInterval(()=>{},1000);`;
+      const script = `const {spawn}=require('node:child_process');
+        const child=spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:${JSON.stringify(mode === "inherited pipes" ? "inherit" : "ignore")}});
+        require('node:fs').writeFileSync(${JSON.stringify(pids)},JSON.stringify([process.pid,child.pid]));
+        ${mode === "inherited pipes" ? "process.on('SIGTERM',()=>{});" : ""}
+        setInterval(()=>{},1000);`;
+      const cleanup = () => {
+        if (!existsSync(pids)) return;
+        const [leader, child] = JSON.parse(readFileSync(pids, "utf8")) as number[];
+        for (const pid of [-leader!, leader!, child!]) {
+          try { process.kill(pid, "SIGKILL"); } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          }
+        }
+      };
+      const watchdog = setTimeout(cleanup, 5_000);
+      const started = Date.now();
+      try {
+        const result = await runArgv([process.execPath, "-e", script], root, { timeoutMs: 400 });
+        expect(result.exitCode).toBe(124);
+        expect(result.stderr).toContain("Timed out after 400 ms");
+        expect(Date.now() - started).toBeLessThan(3_000);
+        await new Promise((resolve) => setTimeout(resolve, Math.max(0, 2_500 - (Date.now() - started))));
+        expect(existsSync(marker)).toBe(false);
+      } finally {
+        clearTimeout(watchdog);
+        cleanup();
+      }
+    }
+  );
 });
 
 const responseDigestFixture = (seed: string): string =>

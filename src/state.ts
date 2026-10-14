@@ -451,6 +451,8 @@ export const startStateSchema = z
     completesRoot: z.string().min(1).optional(),
     configPath: z.string().min(1),
     agents: z.array(agentConfigSchema).min(1),
+    /** Observed after fresh-start updates, before launch; absent on older runs. */
+    agentVersions: z.record(agentIdSchema, z.string().trim().min(1).nullable()).optional(),
     checks: z.array(checkCommandSchema).min(1),
     pollIntervalMs: z.number().int().min(100).max(60_000),
     documentation: documentationProfileSchema.optional(),
