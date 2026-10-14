@@ -1,0 +1,56 @@
+{
+  "actionId": "79d5064a-04ab-4962-ace3-5b89f5fe45bb",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "a3ee0359e7c69b6a7e1c75f3cfe2bf5ec17c75a9be94b4ab60f291313660b0d1",
+  "issue": 213,
+  "issueSessionId": "issue-213:82c47e35ae0a886746fce9759bd80776ec6a5461",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "4c307345adbe457cfc21510e62e12fafc8bac279",
+      "path": ".plans/issue-213/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "a7a3dfd24fa79d2a7ce68003539116cb2114ef50",
+      "path": ".plans/issue-213/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "72d0d35408bc60cf73a810bc6b6d66342305afc0",
+      "path": ".plans/issue-213/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "f1b3bd9cb1dd3370444e4a124804a94d51ed9b1d",
+      "path": ".plans/issue-213/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Every review agrees on the corrections the claude plan already makes (clone-local settings.local.json editorMode instead of a telemetry-breaking --settings flag, no editor key in Cursor's project cli.json, exact-path docs allowlist instead of a docs/ prefix, preludes only on vim evidence, onboard --declare instead of guessed caches); its remaining findings are minor and fixable (test files missing from the file map, uninstall ownership of an owner-set editorMode), whereas every other plan carries at least one P1 blocker such as broken Claude telemetry or Cursor failing to start.",
+  "responseSha256": "8c524ecb4d17f1b4a820dd84f96b9929e792e23484747e31b07d98488f8e26a3",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "1e56cf221fabc8c97230c33720046eb949c704ab",
+      "path": ".plans/issue-213/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "6c965368710a3677d96614a6d2f0d3217c243861",
+      "path": ".plans/issue-213/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "373c3e5259d004197cb6da44c3c1a1c6c3641be3",
+      "path": ".plans/issue-213/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "dd8b6addd4895e17c7471f6169d1c9dfc2dbd5b3",
+      "path": ".plans/issue-213/review.md"
+    }
+  ]
+}

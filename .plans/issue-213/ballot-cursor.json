@@ -1,0 +1,56 @@
+{
+  "actionId": "42895e48-28c5-4bf6-90dc-5a12a92fbf0e",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "a3ee0359e7c69b6a7e1c75f3cfe2bf5ec17c75a9be94b4ab60f291313660b0d1",
+  "issue": 213,
+  "issueSessionId": "issue-213:82c47e35ae0a886746fce9759bd80776ec6a5461",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "4c307345adbe457cfc21510e62e12fafc8bac279",
+      "path": ".plans/issue-213/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "a7a3dfd24fa79d2a7ce68003539116cb2114ef50",
+      "path": ".plans/issue-213/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "72d0d35408bc60cf73a810bc6b6d66342305afc0",
+      "path": ".plans/issue-213/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "f1b3bd9cb1dd3370444e4a124804a94d51ed9b1d",
+      "path": ".plans/issue-213/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude is the only plan that turns vim off through the clone settings file coord already owns, so it does not pass launcher --settings (which disables quota telemetry) or write editor into .cursor/cli.json (which the agent rejects).",
+  "responseSha256": "75b316d2005ef238bacab33e6ab05578e91121af2bcdbc3e013240797b536459",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "1e56cf221fabc8c97230c33720046eb949c704ab",
+      "path": ".plans/issue-213/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "6c965368710a3677d96614a6d2f0d3217c243861",
+      "path": ".plans/issue-213/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "373c3e5259d004197cb6da44c3c1a1c6c3641be3",
+      "path": ".plans/issue-213/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "dd8b6addd4895e17c7471f6169d1c9dfc2dbd5b3",
+      "path": ".plans/issue-213/review.md"
+    }
+  ]
+}
