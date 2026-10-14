@@ -191,6 +191,9 @@ export const normalizeAgentEvent = (
         }
         : { kind: "stopped", ...common, backgroundActive: false };
     }
+    if (normalizedName === "posttooluse" || normalizedName === "posttoolusefailure") {
+      return { kind: "tool-activity", ...common };
+    }
     return null;
   }
 

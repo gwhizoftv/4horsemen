@@ -235,6 +235,13 @@ describe("vendor lifecycle event normalization", () => {
       })
     ).toMatchObject({ kind: "tool-used", sessionId: "conversation-1", turnId: "generation-1", toolCalls: 1 });
     expect(
+      normalizeAgentEvent("cursor", {
+        hook_event_name: "postToolUse",
+        conversation_id: "conversation-1",
+        generation_id: "generation-1"
+      })
+    ).toMatchObject({ kind: "tool-activity", sessionId: "conversation-1", turnId: "generation-1" });
+    expect(
       normalizeCursorUsageEvent("cursor", {
         hook_event_name: "afterAgentResponse",
         conversation_id: "conversation-1",

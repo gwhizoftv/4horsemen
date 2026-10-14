@@ -15,6 +15,7 @@ import {
   readAgentLifecycle,
   stopObservationWarning,
   hasStopReadiness,
+  rereadPickupPending,
   type AgentLifecycleEntry
 } from "./agentLifecycle.js";
 import {
@@ -1962,6 +1963,22 @@ export class CoordinatorRunLoop {
     return cursors;
   }
 
+  /** A never-sent completion is the agent's reread of action.md, not a missed prompt. */
+  private noteRereadPickup(start: StartState, agent: string, actionId: string, pickedUp: boolean): void {
+    if (!pickedUp) return;
+    appendJournal(
+      this.paths,
+      {
+        type: "agent-lifecycle",
+        agent,
+        actionId,
+        details: { event: "action-picked-up-by-reread", actionId }
+      },
+      this.now()
+    );
+    this.log(`Issue ${start.issue}: ${agent} picked up action ${actionId} by rereading action.md; no prompt was needed.`);
+  }
+
   /**
    * Record one delivery refusal with a machine-readable code.
    *
@@ -1997,9 +2014,11 @@ export class CoordinatorRunLoop {
     const splitBrain =
       layer === "scrape" && entry?.execution === "idle" && entry.health !== "degraded";
     // The workflow is blocked on this delivery only while the action is out and
-    // unanswered. A deferral for an agent that is verifying or waiting on a peer
-    // is background detail, so it belongs in the journal but not on stdout.
-    const gateWaiting = cursors.agents[agent]?.status === "ordered";
+    // unanswered. Accepted work and a live reread are already in progress.
+    const acceptedDelivery = entry?.action?.actionId === actionId &&
+      (entry.action.delivery === "accepted" || entry.action.workflowCompleteAt !== null);
+    const rereadPending = rereadPickupPending(entry, actionId);
+    const gateWaiting = cursors.agents[agent]?.status === "ordered" && !acceptedDelivery && !rereadPending;
     const now = this.now();
     const remind = scrollback && gateWaiting && cursors.activeRoster.includes(agent) &&
       !cursors.paused && !cursors.completed && !cursors.abandoned &&
@@ -2022,6 +2041,7 @@ export class CoordinatorRunLoop {
             human,
             ...(detail === undefined ? {} : { detail }),
             ...(splitBrain ? { splitBrain: true } : {}),
+            ...(rereadPending ? { rereadExpected: true } : {}),
             gateWaiting,
             actionDigest,
             hooks: {
@@ -2043,7 +2063,9 @@ export class CoordinatorRunLoop {
     });
     const message = splitBrain
       ? `[WARN] Issue ${start.issue}: ${agent}'s activity report says idle but its terminal refuses input; ${human}`
-      : `[WAIT] Issue ${start.issue}: waiting to send to ${agent}; ${human}`;
+      : acceptedDelivery || rereadPending
+        ? `Issue ${start.issue}: ${agent} is working; ${acceptedDelivery ? "the action was accepted" : `it is expected to pick up action ${actionId} by rereading action.md`}; no reminder needed`
+        : `[WAIT] Issue ${start.issue}: waiting to send to ${agent}; ${human}`;
     this.verbose(`Delivery diagnostic: ${code}${detail === undefined ? "" : ` (${detail})`}`);
     if (scrollback ? remind : gateWaiting || splitBrain) this.log(message);
     else this.verbose(message);
@@ -2246,6 +2268,7 @@ export class CoordinatorRunLoop {
       });
     });
     const completion = markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
+    this.noteRereadPickup(start, decision.agent, cursor.actionId, completion.pickedUpByReread);
     this.log(`[OK] ${decision.agent}: submission validated and accepted (commit ${decision.submissionSha.slice(0, 12)}).`);
     this.reportStopWarnings();
     if (completion.clearedDegraded) {
@@ -2504,6 +2527,7 @@ export class CoordinatorRunLoop {
       });
     });
     const completion = markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
+    this.noteRereadPickup(start, decision.agent, cursor.actionId as string, completion.pickedUpByReread);
     this.log(`[OK] ${decision.agent}: private response validated and accepted.`);
     this.reportStopWarnings();
     if (completion.clearedDegraded) {

@@ -2612,6 +2612,113 @@ describe("effectful run loop", () => {
     expect(messages.filter((message) => message.includes("the foreground process is not this agent's harness"))).toHaveLength(1);
   });
 
+  it("does not report a wait when accepted work or a reread is already underway", async () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(
+      paths.start,
+      `${JSON.stringify(
+        {
+          ...start,
+          agents: start.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    const messages: string[] = [];
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tbash\t0\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: "some output", stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) });
+    await loop.runTick();
+    const action = readAgentLifecycle(paths).agents.codex?.action;
+    expect(action?.delivery).toBe("ordered");
+    observeAgentLifecycle(paths, "codex", {
+      kind: "prompt-submitted",
+      eventName: "UserPromptSubmit",
+      sessionId: "sess",
+      turnId: "turn-1",
+      actionId: action!.actionId,
+      actionDigest: action!.actionDigest
+    });
+    messages.length = 0;
+    await loop.runTick();
+    const accepted = readJournal(paths).filter(
+      (event) => event.type === "nudge-deferred" && event.agent === "codex" && event.details.code === "working"
+    );
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0]?.details.gateWaiting).toBe(false);
+    expect(messages.join("\n")).not.toContain("waiting to send to codex");
+
+    const rereadRoot = fixture();
+    const rereadStart = readStartState(rereadRoot.paths);
+    writeFileSync(
+      rereadRoot.paths.start,
+      `${JSON.stringify(
+        {
+          ...rereadStart,
+          agents: rereadStart.agents.map((agent) =>
+            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
+          )
+        },
+        null,
+        2
+      )}\n`
+    );
+    const rereadMessages: string[] = [];
+    const rereadLoop = new CoordinatorRunLoop(rereadRoot.paths, {
+      tmux,
+      log: (message) => rereadMessages.push(message)
+    });
+    await rereadLoop.runTick();
+    const current = readAgentLifecycle(rereadRoot.paths);
+    const entry = current.agents.codex!;
+    writeFileSync(
+      rereadRoot.paths.agentLifecycle,
+      JSON.stringify({
+        ...current,
+        agents: {
+          ...current.agents,
+          codex: {
+            ...entry,
+            execution: "working",
+            stoppedAt: null,
+            sessionId: "sess",
+            action: { ...entry.action, rereadExpected: true }
+          }
+        }
+      })
+    );
+    rereadMessages.length = 0;
+    const journal = readFileSync(rereadRoot.paths.journal, "utf8")
+      .split("\n")
+      .filter((line) => line.length > 0 && !line.includes("\"type\":\"nudge-deferred\""))
+      .join("\n");
+    writeFileSync(rereadRoot.paths.journal, journal.length === 0 ? "" : `${journal}\n`);
+    mutateCursorsState(rereadRoot.paths, (current) => ({
+      ...current,
+      actionSafety: {
+        ...current.actionSafety,
+        codex: { ...current.actionSafety.codex!, deferrals: [] }
+      }
+    }));
+    await new CoordinatorRunLoop(rereadRoot.paths, {
+      tmux,
+      log: (message) => rereadMessages.push(message)
+    }).runTick();
+    const pending = readJournal(rereadRoot.paths).filter(
+      (event) => event.type === "nudge-deferred" && event.agent === "codex" && event.details.rereadExpected === true
+    );
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.details.gateWaiting).toBe(false);
+    expect(rereadMessages.join("\n")).not.toContain("waiting to send to codex");
+  });
+
   it("records hooks and pane on one event when they disagree", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);

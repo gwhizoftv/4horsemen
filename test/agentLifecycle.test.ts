@@ -15,6 +15,7 @@ import {
   observeAgentLifecycleWithResult,
   orderAgentAction,
   readAgentLifecycle,
+  rereadPickupPending,
   stopObservationWarning
 } from "../src/agentLifecycle.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
@@ -516,5 +517,208 @@ describe("agent lifecycle policy", () => {
     expect(agentLifecycleEntrySchema.parse({ ...entry(), hookReceipt: undefined }).hookReceipt).toBeNull();
     const restarted = observeAgentLifecycleWithResult(paths, "antigravity", { kind: "session-start", eventName: "SessionStart", sessionId: "next" }, later);
     expect(restarted.state.agents.antigravity.hookReceipt?.sequence).toBe(5);
+  });
+
+  it("keeps a newer turn working when an older Cursor Stop arrives", () => {
+    const successor = "22222222-2222-4222-8222-222222222222";
+    const successorDigest = "b".repeat(64);
+    const base = {
+      ...entry(),
+      sessionId: "conversation-1",
+      turnId: "gen-new",
+      execution: "working" as const,
+      stoppedAt: null,
+      action: {
+        actionId: successor,
+        actionDigest: successorDigest,
+        delivery: "ordered" as const,
+        orderedAt: now,
+        injectedAt: null,
+        retryableInjectionAt: null,
+        acceptedAt: null,
+        sessionId: null,
+        turnId: null,
+        lastNudgedIdleEpoch: null,
+        workflowCompleteAt: null
+      }
+    };
+    const older = applyLifecycleObservation(base, {
+      kind: "stopped", eventName: "stop", sessionId: "conversation-1", turnId: "gen-old"
+    }, now);
+    expect(older).toMatchObject({ execution: "working", turnId: "gen-new", stoppedAt: null });
+    expect(decideLifecycleNudge(older, successor, successorDigest).code).toBe("working");
+    const idle = applyLifecycleObservation(older, {
+      kind: "stopped", eventName: "stop", sessionId: "conversation-1", turnId: "gen-new"
+    }, later);
+    expect(idle).toMatchObject({ execution: "idle", stoppedAt: later });
+    const late = applyLifecycleObservation(idle, {
+      kind: "stopped", eventName: "stop", sessionId: "conversation-1", turnId: "gen-old"
+    }, "2026-01-01T00:00:02.000Z");
+    expect(late).toMatchObject({ execution: "idle", stoppedAt: later });
+    const queued = applyLifecycleObservation(
+      { ...base, pendingInputCount: 1 },
+      { kind: "stopped", eventName: "stop", sessionId: "conversation-1", turnId: "gen-old" },
+      now
+    );
+    expect(queued.execution).toBe("queued");
+  });
+
+  it("treats a same-turn prompt as queued behind the live turn", () => {
+    const successor = "22222222-2222-4222-8222-222222222222";
+    const successorDigest = "b".repeat(64);
+    const accepted = applyLifecycleObservation(
+      {
+        ...entry(),
+        sessionId: "sess",
+        turnId: "turn-1",
+        execution: "working",
+        stoppedAt: null,
+        action: {
+          actionId,
+          actionDigest: digest,
+          delivery: "injected",
+          orderedAt: now,
+          injectedAt: now,
+          retryableInjectionAt: null,
+          acceptedAt: null,
+          sessionId: null,
+          turnId: null,
+          lastNudgedIdleEpoch: null,
+          workflowCompleteAt: null
+        }
+      },
+      { kind: "prompt-submitted", eventName: "UserPromptSubmit", actionId, actionDigest: digest, sessionId: "sess", turnId: "turn-1" },
+      now
+    );
+    const injected = {
+      ...accepted,
+      action: {
+        actionId: successor,
+        actionDigest: successorDigest,
+        delivery: "injected" as const,
+        orderedAt: later,
+        injectedAt: later,
+        retryableInjectionAt: null,
+        acceptedAt: null,
+        sessionId: null,
+        turnId: null,
+        lastNudgedIdleEpoch: null,
+        workflowCompleteAt: null
+      }
+    };
+    const prompted = applyLifecycleObservation(injected, {
+      kind: "prompt-submitted", eventName: "UserPromptSubmit",
+      actionId: successor,
+      actionDigest: successorDigest,
+      sessionId: "sess", turnId: "turn-1"
+    }, later);
+    expect(prompted.action?.queuedBehindTurnId).toBe("turn-1");
+    const held = applyLifecycleObservation(prompted, {
+      kind: "stopped", eventName: "Stop", sessionId: "sess", turnId: "turn-1"
+    }, later);
+    expect(held).toMatchObject({ execution: "working", stoppedAt: null, idleEpoch: prompted.idleEpoch });
+    expect(decideLifecycleNudge(held, successor, successorDigest).code).toBe("working");
+    const finished = applyLifecycleObservation(held, {
+      kind: "stopped", eventName: "Stop", sessionId: "sess", turnId: "turn-2"
+    }, "2026-01-01T00:00:02.000Z");
+    expect(finished).toMatchObject({ execution: "idle", idleEpoch: held.idleEpoch + 1 });
+    const duplicate = applyLifecycleObservation(
+      {
+        ...entry(),
+        sessionId: "sess",
+        turnId: "turn-1",
+        execution: "working",
+        stoppedAt: null,
+        action: {
+          actionId,
+          actionDigest: digest,
+          delivery: "accepted",
+          orderedAt: now,
+          injectedAt: now,
+          retryableInjectionAt: null,
+          acceptedAt: now,
+          sessionId: "sess",
+          turnId: "turn-1",
+          lastNudgedIdleEpoch: null,
+          workflowCompleteAt: null
+        }
+      },
+      { kind: "prompt-submitted", eventName: "UserPromptSubmit", actionId, actionDigest: digest, sessionId: "sess", turnId: "turn-1" },
+      later
+    );
+    const duplicateStop = applyLifecycleObservation(duplicate, {
+      kind: "stopped", eventName: "Stop", sessionId: "sess", turnId: "turn-1"
+    }, later);
+    expect(duplicateStop.execution).toBe("idle");
+  });
+
+  it("repairs queued execution from a tool event for the newest turn only", () => {
+    const queued = {
+      ...entry(),
+      sessionId: "conversation-1",
+      turnId: "g1",
+      execution: "queued" as const,
+      stoppedAt: null,
+      stopObservation: { turns: ["g1", "g2"], stoppedActionId: null, completedActions: [] }
+    };
+    const repaired = applyLifecycleObservation(queued, {
+      kind: "tool-activity", eventName: "postToolUse", sessionId: "conversation-1", turnId: "g2"
+    }, now);
+    expect(repaired.execution).toBe("working");
+    for (const observation of [
+      { kind: "tool-activity" as const, eventName: "postToolUse", sessionId: "conversation-1", turnId: "g1" },
+      { kind: "tool-activity" as const, eventName: "postToolUse", sessionId: "other", turnId: "g2" }
+    ]) {
+      expect(applyLifecycleObservation(queued, observation, now)).toBe(queued);
+    }
+    const stopped = applyLifecycleObservation(repaired, {
+      kind: "stopped", eventName: "stop", sessionId: "conversation-1", turnId: "g2"
+    }, later);
+    expect(applyLifecycleObservation(stopped, {
+      kind: "tool-activity", eventName: "postToolUse", sessionId: "conversation-1", turnId: "g2"
+    }, later)).toBe(stopped);
+  });
+
+  it("does not advance hookReceipt for a no-op tool event", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-tool-receipt-")); roots.push(root);
+    const paths = issueRuntimePaths(root, 214);
+    createIssueRuntime(paths, ["cursor"]);
+    initializeAgentLifecycle(paths, ["cursor"], now);
+    const started = observeAgentLifecycleWithResult(paths, "cursor", {
+      kind: "session-start", eventName: "sessionStart", sessionId: "conversation-1"
+    }, now);
+    const receipt = started.state.agents.cursor?.hookReceipt;
+    const tool = observeAgentLifecycleWithResult(paths, "cursor", {
+      kind: "tool-activity", eventName: "postToolUse", sessionId: "other", turnId: "g1"
+    }, later);
+    expect(tool.changed).toBe(false);
+    expect(tool.state.agents.cursor?.hookReceipt).toEqual(receipt);
+  });
+
+  it("marks a successor action for reread only while the predecessor's session is still working", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-reread-")); roots.push(root);
+    const paths = issueRuntimePaths(root, 214);
+    createIssueRuntime(paths, ["cursor"]);
+    initializeAgentLifecycle(paths, ["cursor"], now);
+    orderAgentAction(paths, "cursor", actionId, digest, now);
+    markActionInjected(paths, "cursor", actionId, digest, now);
+    observeAgentLifecycleWithResult(paths, "cursor", {
+      kind: "prompt-submitted", eventName: "UserPromptSubmit", actionId, actionDigest: digest, sessionId: "sess", turnId: "turn-1"
+    }, now);
+    markActionWorkflowComplete(paths, "cursor", actionId, now);
+    const successor = "22222222-2222-4222-8222-222222222222";
+    const ordered = orderAgentAction(paths, "cursor", successor, "b".repeat(64), later);
+    expect(ordered.agents.cursor?.action?.rereadExpected).toBe(true);
+    expect(rereadPickupPending(ordered.agents.cursor, successor)).toBe(true);
+    const completion = markActionWorkflowComplete(paths, "cursor", successor, later);
+    expect(completion.pickedUpByReread).toBe(true);
+    observeAgentLifecycleWithResult(paths, "cursor", {
+      kind: "stopped", eventName: "Stop", sessionId: "sess", turnId: "turn-1"
+    }, later);
+    const idleSuccessor = "33333333-3333-4333-8333-333333333333";
+    const idleOrder = orderAgentAction(paths, "cursor", idleSuccessor, "c".repeat(64), later);
+    expect(idleOrder.agents.cursor?.action?.rereadExpected).toBeUndefined();
+    markActionInjected(paths, "cursor", idleSuccessor, "c".repeat(64), later);
+    expect(markActionWorkflowComplete(paths, "cursor", idleSuccessor, later).pickedUpByReread).toBe(false);
   });
 });
