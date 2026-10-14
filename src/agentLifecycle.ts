@@ -122,6 +122,8 @@ export const agentLifecycleEntrySchema = z
     turnId: z.string().min(1).nullable(),
     /** Turn ids this session has reported by submit or Stop; a queued prompt's own turn is never among them. */
     recentTurnIds: z.array(z.string().min(1)).max(32).optional(),
+    /** Turn ids whose Stop or failure this session already reported; a repeat changes nothing. */
+    stoppedTurnIds: z.array(z.string().min(1)).max(32).optional(),
     pendingInputCount: z.number().int().nonnegative().nullable(),
     backgroundActive: z.boolean().nullable(),
     /** Current Stop readiness; background activity does not revoke it. */
@@ -615,13 +617,17 @@ export const applyLifecycleObservation = (
   const endsTurn = observation.kind === "stopped" || observation.kind === "failed";
   const stoppedTurn = observation.turnId ?? null;
   const currentActionTurn = entry.action?.turnId ?? entry.stopObservation.turns.at(-1) ?? entry.turnId;
+  // A repeated Stop or failure of an already-ended turn (including after the
+  // action completed or was replaced) never changes the live turn's state.
+  const repeatedStop = endsTurn && stoppedTurn !== null && !sessionChanged &&
+    (entry.stoppedTurnIds ?? []).includes(stoppedTurn);
   const queuedBehindTurn = entry.action?.queuedBehindTurnId;
-  const queuedBehind = entry.action?.workflowCompleteAt === null ? queuedBehindTurn : undefined;
-  // The turn this action's prompt was queued into (or an indistinguishable
-  // repeat of its Stop or failure) ended; the queued prompt runs next, so this
-  // is neither idle nor a failure of the queued action.
-  const queuedIntoTurnStop = endsTurn && queuedBehind !== undefined &&
-    (stoppedTurn === null || stoppedTurn === queuedBehind);
+  // The turn this action's prompt was queued into ended; the queued prompt
+  // runs next, so this is neither idle nor a failure of the queued action.
+  // Completing the action does not end its execution turn, so this holds
+  // after workflow completion too.
+  const queuedIntoTurnStop = endsTurn && !repeatedStop && queuedBehindTurn !== undefined &&
+    (stoppedTurn === null || stoppedTurn === queuedBehindTurn);
   // After that, a distinct turn's Stop or failure is the queued work's own
   // end, including when its completion was accepted before that Stop arrived.
   // A queued prompt's own turn never reported a submit, so a turn id already
@@ -629,8 +635,8 @@ export const applyLifecycleObservation = (
   const queuedWorkStop = endsTurn && queuedBehindTurn !== undefined && !queuedIntoTurnStop &&
     entry.action?.queuedBehindStopped === true && stoppedTurn !== queuedBehindTurn &&
     (stoppedTurn === null || !(sessionChanged ? [] : entry.recentTurnIds ?? []).includes(stoppedTurn));
-  const stoppingOlderTurn = endsTurn && !queuedIntoTurnStop && !queuedWorkStop &&
-    currentActionTurn !== null && stoppedTurn !== null && currentActionTurn !== stoppedTurn;
+  const stoppingOlderTurn = endsTurn && (repeatedStop || (!queuedIntoTurnStop && !queuedWorkStop &&
+    currentActionTurn !== null && stoppedTurn !== null && currentActionTurn !== stoppedTurn));
 
   let stopObservation = sessionChanged || (entry.sessionId === null && incomingSession !== null)
     ? emptyStopObservation() : entry.stopObservation;
@@ -766,6 +772,9 @@ export const applyLifecycleObservation = (
     (observation.kind === "prompt-submitted" || observation.kind === "stopped" || observation.kind === "failed")
     ? [...new Set([...(sessionChanged ? [] : entry.recentTurnIds ?? []), observation.turnId])].slice(-32)
     : sessionChanged ? undefined : entry.recentTurnIds;
+  const stoppedTurnIds = endsTurn && stoppedTurn !== null
+    ? [...new Set([...(entry.stoppedTurnIds ?? []), stoppedTurn])].slice(-32)
+    : sessionChanged ? undefined : entry.stoppedTurnIds;
   const idleEpoch = positiveIdle(entry, execution);
   const lastFailure = observation.failure === undefined
     ? entry.lastFailure
@@ -782,6 +791,7 @@ export const applyLifecycleObservation = (
     retiredSessionIds,
     turnId,
     recentTurnIds,
+    stoppedTurnIds,
     pendingInputCount,
     backgroundActive,
     stoppedAt,

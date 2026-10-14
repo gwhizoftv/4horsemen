@@ -287,6 +287,12 @@ describe("agent lifecycle policy", () => {
     // Completion is usually accepted before the queued work's own Stop arrives.
     const completed = { ...queuedRunning, action: { ...queuedRunning.action!, workflowCompleteAt: later } };
     expect(applyLifecycleObservation(completed, { ...stop, turnId: "u" }, later)).toMatchObject({ execution: "idle", stoppedAt: later });
+    // Completion does not end the execution turn: a repeated Stop of the
+    // queued-into turn stays a no-op, even after the next action is ordered.
+    const repeatedAfterCompletion = applyLifecycleObservation(completed, stop, later);
+    expect(repeatedAfterCompletion).toMatchObject({ execution: "working", stoppedAt: null, idleEpoch: epoch });
+    const nextOrdered = { ...repeatedAfterCompletion, action: { ...injectedAction(epoch), delivery: "ordered" as const, injectedAt: null } };
+    expect(applyLifecycleObservation(nextOrdered, stop, later)).toMatchObject({ execution: "working", idleEpoch: epoch });
 
     // A failure of the queued-into turn is the preceding work's: advisory, not a send.
     const failure = { kind: "failed" as const, eventName: "StopFailure", sessionId: "s", turnId: "t", backgroundActive: false,
