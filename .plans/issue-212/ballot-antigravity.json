@@ -1,0 +1,56 @@
+{
+  "actionId": "afb69527-7c70-4ea0-9a19-141d19be0dbf",
+  "agent": "antigravity",
+  "artifact": "plan-ballot",
+  "choice": "cursor",
+  "inputSetHash": "5d8b01f154657c0c78e7960e2e607ed956b089ed5d4bb96a58ab12359fd59a19",
+  "issue": 212,
+  "issueSessionId": "issue-212:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "0fa218a0ff2dddff8161e070744abd8384bde180",
+      "path": ".plans/issue-212/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "6d5e64afa09bd489cf54653e35bdf47fbb4334c5",
+      "path": ".plans/issue-212/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "8648fd54c3ee81799d16ac745086b78a0b368e44",
+      "path": ".plans/issue-212/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "9d37c3f9db5c3b25ffe2f7bdb1cfd17880288ef9",
+      "path": ".plans/issue-212/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Cursor provides the most complete implementation plan by addressing binding, materialization, product ancestry filtering, and the driver documentation update.",
+  "responseSha256": "4fc7170c7e0fccc93c4c22f79ab38c7a6968e0fa747442958caf168a3a28a9e4",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "843ec9d7af07f9ff0e48de655c11038a37e5fc71",
+      "path": ".plans/issue-212/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "a9592a1eeb2ebe25b5336ae59f5a1143a830f12c",
+      "path": ".plans/issue-212/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "d4ffbd6b5a443124c131ba915c350a899bdf765b",
+      "path": ".plans/issue-212/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "92315766f22eca6b4c9841907deb122ee10ca6cc",
+      "path": ".plans/issue-212/review.md"
+    }
+  ]
+}
