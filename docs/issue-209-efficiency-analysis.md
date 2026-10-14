@@ -51,13 +51,13 @@ issue 209 is the active run. The workspace's older, pre-4horsemen
 coord runtime root has nothing newer than issue 186 (`createdAt` 2026-10-09T18:39:24Z). Issue
 numbers do not follow run order: 184 started after 195.
 
-| Issue | Start (UTC) | Profile | Roster | Baseline | Events | Terminal gate seq | `journal.jsonl` SHA-256 |
+| Issue | Start (UTC) | Profile | Roster | Session id (`issue-<n>:<baseline>`) | Events | Terminal gate seq | `journal.jsonl` SHA-256 |
 | --- | --- | --- | --- | --- | ---: | ---: | --- |
-| 177 | 2026-10-10T22:48:18.145Z | consensus | claude, codex, cursor, antigravity | `8d38734a93bc` | 3,420 | 3,418 | `36bcaddf0125205122803bfab15eb4f4eec60a2cad2e7749217e91c077690d86` |
-| 195 | 2026-10-12T22:43:41.151Z | consensus | claude, codex, cursor | `6a04d57e524a` | 725 | 723 | `652a589df2786f373daadf2c45aea03e9f4d82a022540826cfc9a90fffcc0f16` |
-| 184 | 2026-10-13T20:31:20.486Z | consensus | claude, codex, cursor | `0e0a07b93b61` | 627 | 625 | `6d4c349f512c1d5ad68b1f7d21736647518097de1d60bbd6c83cc6f803243c49` |
-| 204 | 2026-10-14T01:55:48.449Z | consensus | claude, codex, cursor | `855982b3f163` | 770 | 768 | `22964e3682553800c51fc83a43c7c51ae342c8f61176826d8a76ce4473211016` |
-| 206 | 2026-10-14T03:24:28.568Z | solo | claude | `5217f5ccad04` | 73 | 71 | `67f0cdef40d1803bb2aa5763d2c46512e4ef6c2009ec394a27cf604f6f5d254e` |
+| 177 | 2026-10-10T22:48:18.145Z | consensus | claude, codex, cursor, antigravity | `issue-177:8d38734a93bc374560d2728e8cff6f9636181585` | 3,420 | 3,418 | `36bcaddf0125205122803bfab15eb4f4eec60a2cad2e7749217e91c077690d86` |
+| 195 | 2026-10-12T22:43:41.151Z | consensus | claude, codex, cursor | `issue-195:6a04d57e524ad53daa082568e146c5300e93dfeb` | 725 | 723 | `652a589df2786f373daadf2c45aea03e9f4d82a022540826cfc9a90fffcc0f16` |
+| 184 | 2026-10-13T20:31:20.486Z | consensus | claude, codex, cursor | `issue-184:0e0a07b93b61be5f76224650468d50c3bbf06d5d` | 627 | 625 | `6d4c349f512c1d5ad68b1f7d21736647518097de1d60bbd6c83cc6f803243c49` |
+| 204 | 2026-10-14T01:55:48.449Z | consensus | claude, codex, cursor | `issue-204:855982b3f1639ec5bac7891f1c67f1e100dc2ab3` | 770 | 768 | `22964e3682553800c51fc83a43c7c51ae342c8f61176826d8a76ce4473211016` |
+| 206 | 2026-10-14T03:24:28.568Z | solo | claude | `issue-206:5217f5ccad04d7664d81529e51191e6e053e2e1a` | 73 | 71 | `67f0cdef40d1803bb2aa5763d2c46512e4ef6c2009ec394a27cf604f6f5d254e` |
 
 Additional source files, with SHA-256, relative to `<coord-runtime>/issue-<n>/`:
 
@@ -86,7 +86,7 @@ Additional source files, with SHA-256, relative to `<coord-runtime>/issue-<n>/`:
 | 206 | `verification-logs/c68134a7-854a-4da2-830b-9cdc1d91a235.log` | `c94aa7c49f6cf6e3a2092d40ab597f551d028de1c7f1b308e877912f6388e02b` |
 | 206 | `agents/claude/terminal/run-2026-10-14T03-24-28-637Z.log` | `5314690246c4746af216276f2c58192dc92fd114863437ee118bc96ea67da98d` |
 
-The session id of every run is `issue-<n>:<baseline>`. All five share
+All five runs share
 `pollIntervalMs` 1000, `maxRevisionRounds` 3, `prPolicy` `coord-open-unmerged`,
 a single final check `pnpm run check` with no cache declaration, and no frozen
 `verification` block. The runtime `config.json` has no `documentation`
@@ -458,18 +458,23 @@ them.
      - first sends more than 10 s after preparation;
      - cursor's holds.
 
-     Only if cursor's landing rate falls below the other agents' again should
-     a follow-up treat a send with no `prompt-submitted` within a few seconds
-     as lost, and repeat it promptly instead of after the 61/182/423 s
-     back-off.
+     If cursor's landing rate falls below the other agents' again, a
+     follow-up should find out why sends that passed every readiness gate
+     did not start a turn (the 61/182/423 s resends above also failed). It
+     should not add a faster retry: under `docs/readiness-policy.md` ("Lost
+     delivery is retried only on positive proof"), a resend needs
+     `actionAbsentAtReadyPrompt` on a live ready prompt, the 45-second
+     delivery wait, and the queue, background, turn-correlation and
+     send-budget checks. A missing `prompt-submitted` is diagnostic evidence,
+     not permission to send.
    - *Estimated saving.* Up to 13.3–15.2 unpaused minutes per consensus run,
      plus the avoided holds. This assumes cursor's work time is unchanged once
      it is delivered.
    - *Validation.* The landing rate and lost-delivery minutes from
      [Delivery to cursor](#delivery-to-cursor), the delayed-first-send count,
      and `nudge-loop`/`delivery-uncertain` holds.
-   - *Risk.* A duplicate prompt. Resend only on positive hook evidence that no
-     prompt was submitted, and keep the same-action duplicate guard.
+   - *Risk.* A duplicate prompt into active work if a retry rule were
+     loosened. Keep the existing positive-proof retry rule unchanged.
 2. **Notify the owner when a whole-issue hold is created.**
    - *Evidence.* The time from hold to release was 17.01, 16.50, 935.95, 2.68,
      56.62 and 176.01 min. That is 1,204.8 elapsed minutes, or 78% of the
@@ -547,6 +552,8 @@ Measured but not recommended for action:
 for n in 177 195 184 204 206; do
   coord analytics --issue "$n" --coord-runtime "<coord-runtime>"
 done
+# Extract the fenced Python block below into issue209.py, then run it:
+python3 -I -c 'import sys; t = open(sys.argv[1]).read(); open("issue209.py", "w").write(t.split("```python\n", 1)[1].split("```\n", 1)[0])' docs/issue-209-efficiency-analysis.md
 python3 -I issue209.py "<coord-runtime>"
 ```
 
@@ -658,8 +665,8 @@ m = lambda s: f"{s / 60:.2f}"
 print("## Inventory")
 for i, r in R.items():
     s = r["st"]
-    print(f"| {i} | {s['createdAt']} | {s['profile']} | {','.join(s['originalRoster'])} | `{s['baselineSha'][:12]}` | "
-          f"{len(r['ev'])} | {r['ph'][-1]['seqs'][1]} | `{r['sha'][:16]}` |")
+    print(f"| {i} | {s['createdAt']} | {s['profile']} | {', '.join(s['originalRoster'])} | `{s['issueSessionId']}` | "
+          f"{len(r['ev']):,} | {r['ph'][-1]['seqs'][1]:,} | `{r['sha']}` |")
 
 print("\n## Phases (elapsed / paused / unpaused minutes)")
 for i, r in R.items():
@@ -828,8 +835,9 @@ print("first sends later than 10 s after preparation:", slow, "; without any rec
 
 ## Comment body
 
-This section is posted to #209 once, by the coordinator-selected reviser, after
-consensus approves the revision. The posted text is everything strictly between
+This section is posted to #209 once, by the coordinator-selected reviser during
+R6.revise, as the selected plan requires; later rounds update that same comment
+(see [Publication receipt](#publication-receipt)). The posted text is everything strictly between
 the `comment-body:start` and `comment-body:end` lines. It begins with the
 `coord-issue-209-analysis` marker so an existing comment can be found and
 updated instead of duplicated.
@@ -916,11 +924,13 @@ which 969.47 min were paused.
    - first sends more than 10 s after preparation;
    - cursor's holds.
 
-   This issue's early figures are 21 of 21, 1 and 0. Only if cursor regresses
-   should a follow-up treat a send with no `prompt-submitted` within a few
-   seconds as lost, and repeat it promptly instead of after the
-   ~61/182/423 s back-off. Keep the duplicate guard. The upper bound on the
-   saving is ~13–15 unpaused minutes per consensus run, plus the avoided holds.
+   This issue's early figures are 21 of 21, 1 and 0. If cursor regresses, the
+   follow-up should diagnose why sends that passed every readiness gate did
+   not start a turn. It should not retry on silence: the existing rule in
+   `docs/readiness-policy.md` allows a resend only on positive proof (action
+   absent at a live ready prompt, after the 45 s delivery wait, with queue and
+   send-budget checks). The upper bound on the saving is ~13–15 unpaused
+   minutes per consensus run, plus the avoided holds.
 2. **Notify the owner when a whole-issue hold starts.** Hold-to-release time
    was 78% of the cohort's elapsed time (1,204.8 of 1,536.35 min), including a
    936-minute overnight hold. Holds appear only in `coord status` today.
@@ -951,14 +961,21 @@ Not worth pursuing on this evidence:
 
 ## Publication receipt
 
-Not posted yet. The comment body above is posted once, after the revision
-ballot approves this revision, during R7.finalize:
-- extract the text between the delimiters into a temporary file;
-- check the existing comments on `gwhizoftv/4horsemen#209` for the
-  `coord-issue-209-analysis` marker, and update that comment instead of adding
-  one if it exists;
-- post with `gh issue comment 209 --repo gwhizoftv/4horsemen --body-file <file>`;
-- read the posted body back and compare it with the file.
+Posted once by the coordinator-selected reviser (claude) during R6.revise
+round 2, as the selected plan requires.
 
-The resulting URL is reported in the finalization evidence and the pull
-request body, not by editing this approved document.
+| Field | Value |
+| --- | --- |
+| Comment | <https://github.com/gwhizoftv/4horsemen/issues/209#issuecomment-6161070036> |
+| Comment id | `6161070036` |
+| Created | 2026-10-14T04:43:14Z |
+| Command | `gh issue comment 209 --repo gwhizoftv/4horsemen --body-file <extracted body>` |
+| Payload | the text strictly between `comment-body:start` and `comment-body:end` above, 5,868 characters |
+| Read-back | `gh api repos/gwhizoftv/4horsemen/issues/comments/6161070036 --jq .body` equals the payload except for trailing newlines, which GitHub strips |
+| Payload SHA-256 (trailing newlines removed) | `1e02a4d6dbe3d73d701e8d74c2a4eeb104f4c1701706b74bedef1df6b4daa249` |
+| Duplicate check | before posting, a paginated listing of the issue's comments found none; afterwards exactly one comment carries the `coord-issue-209-analysis` marker |
+
+If a later revision round changes the comment body, the reviser must update
+this same comment with `gh api -X PATCH repos/gwhizoftv/4horsemen/issues/comments/6161070036 -F body=@<file>`,
+read it back again, and update this receipt. Posting a second comment is not
+allowed. Unrelated discussion on the issue must never be edited.
