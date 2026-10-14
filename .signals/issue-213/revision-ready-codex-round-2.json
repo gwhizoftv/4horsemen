@@ -1,0 +1,14 @@
+{
+  "protocolVersion": 1,
+  "issue": 213,
+  "issueSessionId": "issue-213:82c47e35ae0a886746fce9759bd80776ec6a5461",
+  "agent": "codex",
+  "inputSetHash": "c873533cc08d15d4b19b080920d1e36b3a917225f65903215388c03f17788a80",
+  "artifact": "revision-ready",
+  "round": 2,
+  "revisedBranchHead": "59200a13bbc8f26d84a1d2280ea59c9317a48a17",
+  "scopeHash": "5a54a85b7e017a7073bc25b4a54945bd9f8b7134afd5850ab46f5b843c46c0ae",
+  "basedOn": [
+    "b533cb49a583b3410ad8f465973967f0cdee6fb0"
+  ]
+}
