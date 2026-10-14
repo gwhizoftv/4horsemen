@@ -1,0 +1,29 @@
+{
+  "actionId": "ec0e00f1-2207-4fcf-a688-9a225344533e",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "f5b1085136ab54505b4c63a4aca8a7a96f4bee67",
+      "path": ".signals/issue-204/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ce71b24b540206d01c0c035d692bab85c846057d",
+      "path": ".signals/issue-204/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "b32cccf1d91eedf8f48cb834586070f06b25fe21",
+      "path": ".signals/issue-204/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "fbd0ac3868d43b2dd2ecc505129c447c70648fe9b30d18e2ca08f05989b30e3f",
+  "issue": 204,
+  "issueSessionId": "issue-204:855982b3f1639ec5bac7891f1c67f1e100dc2ab3",
+  "protocolVersion": 2,
+  "rationale": "Codex's pin is the only one that limits pane scrollbars and client mouse to the agents the issue names, matches existing clients exactly with has-session -t =<client>, and clears the scrollback wait on receipt, early returns and status ineligibility, leaving only a cosmetic observedAt reset, whereas claude's pin widens scope and misses receipt clearing and cursor's widens scope, uses non-exact session matching and adds unneeded exports.",
+  "responseSha256": "25e79ec7085ad636e549a471213a3910b570e92a64366689b1a5d3a36eebae7a"
+}

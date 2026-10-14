@@ -1,0 +1,29 @@
+{
+  "actionId": "b6088bc8-d7db-4f56-b775-a59626fc84f1",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "f5b1085136ab54505b4c63a4aca8a7a96f4bee67",
+      "path": ".signals/issue-204/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ce71b24b540206d01c0c035d692bab85c846057d",
+      "path": ".signals/issue-204/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "b32cccf1d91eedf8f48cb834586070f06b25fe21",
+      "path": ".signals/issue-204/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "fbd0ac3868d43b2dd2ecc505129c447c70648fe9b30d18e2ca08f05989b30e3f",
+  "issue": 204,
+  "issueSessionId": "issue-204:855982b3f1639ec5bac7891f1c67f1e100dc2ab3",
+  "protocolVersion": 2,
+  "rationale": "Codex ce71b24b540206d01c0c035d692bab85c846057d best satisfies the issue with exact linked-session matching and lifecycle-correlated notices, passing both focused review regressions that exposed defects in the other candidates while retaining recorded passing commit and push checks.",
+  "responseSha256": "21941e6d169666f2e1e0292a825cb7395cf3186696a352106c411e235e30b943"
+}
