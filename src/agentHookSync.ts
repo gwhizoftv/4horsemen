@@ -6,6 +6,9 @@ import type { LifecycleVendor } from "./agentEvent.js";
 
 export const AGENT_LIFECYCLE_HOOK_MARKER = "coord-managed-agent-lifecycle-v1";
 const ANTIGRAVITY_HOOK_NAME = "coord-agent-lifecycle";
+// Store ownership on the managed hook, using a valid shell assignment rather
+// than an extra vendor settings key. Uninstall must preserve an owner's normal.
+const CLAUDE_EDITOR_MODE_MARKER = "COORD_CLAUDE_EDITOR_MODE=normal";
 
 const vendorForAgent = (agent: string): LifecycleVendor | null =>
   agent === "codex" || agent === "claude" || agent === "cursor" || agent === "antigravity" ? agent : null;
@@ -72,6 +75,15 @@ const hooksObject = (document: JsonObject, path: string): JsonObject => {
 const commandOf = (value: unknown): string | null =>
   isObject(value) && typeof value.command === "string" ? value.command : null;
 
+const ownsClaudeEditorMode = (document: JsonObject, path: string): boolean =>
+  eventArray(hooksObject(document, path), "SessionStart", path).some((entry) =>
+    isObject(entry) && Array.isArray(entry.hooks) && entry.hooks.some((handler) => {
+      const command = commandOf(handler);
+      return command?.includes(AGENT_LIFECYCLE_HOOK_MARKER) === true &&
+        command.startsWith(`${CLAUDE_EDITOR_MODE_MARKER} `);
+    })
+  );
+
 /** Remove only marked handlers, retaining owner handlers even in the same matcher group. */
 const withoutManagedNestedHandlers = (value: unknown): { value: unknown | null; found: boolean } => {
   if (!isObject(value) || !Array.isArray(value.hooks)) return { value, found: false };
@@ -112,6 +124,8 @@ const plannedDocument = (input: {
   existing: JsonObject;
 }): JsonObject => {
   if (input.vendor === "codex" || input.vendor === "claude") {
+    const managesEditorMode = input.vendor === "claude" &&
+      (!Object.hasOwn(input.existing, "editorMode") || ownsClaudeEditorMode(input.existing, input.path));
     const hooks = { ...hooksObject(input.existing, input.path) };
     for (const event of nestedEvents[input.vendor]) {
       const existing = eventArray(hooks, event, input.path).flatMap((entry) => {
@@ -127,14 +141,18 @@ const plannedDocument = (input: {
               type: "command",
               command: event === "PreToolUse"
                 ? renderShellGuardHookCommand(input.cliEntry, input.clone, input.vendor)
-                : renderAgentLifecycleHookCommand(input.cliEntry, input.clone, input.vendor, event),
+                : `${managesEditorMode && event === "SessionStart" ? `${CLAUDE_EDITOR_MODE_MARKER} ` : ""}${renderAgentLifecycleHookCommand(input.cliEntry, input.clone, input.vendor, event)}`,
               timeout: event === "PreToolUse" ? 10 : 5
             }
           ]
         }
       ];
     }
-    return { ...input.existing, hooks };
+    return {
+      ...input.existing,
+      hooks,
+      ...(input.vendor === "claude" && !Object.hasOwn(input.existing, "editorMode") ? { editorMode: "normal" } : {})
+    };
   }
 
   if (input.vendor === "cursor") {
@@ -256,6 +274,9 @@ export const removeAgentLifecycleHooks = (input: {
     }
   }
   if (!found) return { path, changed: false, kept: false };
+  if (vendor === "claude" && next.editorMode === "normal" && ownsClaudeEditorMode(existing, path)) {
+    delete next.editorMode;
+  }
   input.options.changes.push(`remove ${vendor} lifecycle hooks from ${input.clone}`);
   input.options.log(`${input.options.dryRun ? "would remove" : "removed"} ${vendor} lifecycle hooks from ${path}\n`);
   if (!input.options.dryRun) {

@@ -783,6 +783,7 @@ export type OnboardOptions = {
   /** Owner override for the completion mailbox root; see InstallOptions. */
   completesRoot?: string;
   cloneRoot?: string;
+  declarePath?: string;
   agents?: readonly string[];
   profile?: string;
   log: Logger;
@@ -801,6 +802,7 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     coordRoot,
     ...(options.completesRoot === undefined ? {} : { completesRoot: resolve(options.completesRoot) }),
     cloneRoot: resolve(options.cloneRoot ?? parent),
+    ...(options.declarePath === undefined ? {} : { declarePath: resolve(options.declarePath) }),
     agents: options.agents ?? ["claude", "codex", "cursor", "antigravity"],
     profile: options.profile ?? "consensus",
     writeProduct: false,

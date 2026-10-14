@@ -22,6 +22,7 @@ import {
   type CoordinatorConfig,
   type WorkspaceDeclaration
 } from "./state.js";
+import { repositoryPathSchema } from "./protocol.js";
 import type { WorkspaceLocation } from "./workspace.js";
 
 /** Pane command names that `tmux display-message` reports for each harness. */
@@ -123,6 +124,7 @@ export type ProjectPolicyProposal = {
   toolchain?: string;
   verify?: { precommit: CheckCommand[]; prepush: CheckCommand[] };
   checks?: CheckCommand[];
+  documentation?: CoordinatorConfig["documentation"];
   workflowCriticalPrefixes: string[];
   workflowCriticalFiles: string[];
 };
@@ -170,7 +172,7 @@ const proposedVerify = (
  * decision remade silently on every commit is the drift this issue exists to
  * remove.
  */
-export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal => {
+const proposeToolchainPolicy = (productRoot: string): ProjectPolicyProposal => {
   const has = (relative: string): boolean => existsSync(join(productRoot, relative));
 
   if (has("Cargo.toml")) {
@@ -236,6 +238,26 @@ export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal
   return { workflowCriticalPrefixes: [], workflowCriticalFiles: [] };
 };
 
+export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal => {
+  const proposal = proposeToolchainPolicy(productRoot);
+  const tracked = git(productRoot, "ls-files", "--stage", "-z");
+  if (tracked.exitCode !== 0) return proposal;
+  const paths = tracked.stdout.split("\0").flatMap((entry) => {
+    // Only ordinary, non-executable files: symlinks and program files are not
+    // prose merely because their names end in .md.
+    const match = /^100644 [a-f0-9]+ 0\t([\s\S]+)$/.exec(entry);
+    const path = match?.[1];
+    if (path === undefined || !repositoryPathSchema.safeParse(path).success ||
+      !path.endsWith(".md") || (path.includes("/") && !path.startsWith("docs/")) ||
+      ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "SKILL.md"].includes(basename(path)) ||
+      proposal.workflowCriticalFiles.includes(path) ||
+      proposal.workflowCriticalPrefixes.some((prefix) => path.startsWith(prefix))) return [];
+    return [path];
+  });
+  if (paths.length === 0) return proposal;
+  return { ...proposal, documentation: { paths, verify: { precommit: [], prepush: [] }, checks: [] } };
+};
+
 // ------------------------------------------------------------------ config --
 
 export type WorkspaceConfigInput = {
@@ -274,6 +296,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
   }
   const verify = declared.verify ?? input.proposal.verify;
   const toolchain = declared.toolchain ?? input.proposal.toolchain;
+  const documentation = declared.documentation ?? input.proposal.documentation;
 
   return coordinatorConfigSchema.parse({
     project: input.project,
@@ -299,7 +322,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     pollIntervalMs: declared.pollIntervalMs ?? 1_000,
     ...(toolchain === undefined ? {} : { toolchain }),
     ...(verify === undefined ? {} : { verify }),
-    ...(declared.documentation === undefined ? {} : { documentation: declared.documentation }),
+    ...(documentation === undefined ? {} : { documentation }),
     ...(declared.verification === undefined ? {} : { verification: declared.verification }),
     workflowCriticalPrefixes: declared.workflowCriticalPrefixes ?? input.proposal.workflowCriticalPrefixes,
     workflowCriticalFiles: declared.workflowCriticalFiles ?? input.proposal.workflowCriticalFiles,

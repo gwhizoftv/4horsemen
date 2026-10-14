@@ -335,6 +335,13 @@ workspaces append the workspace hash printed by tmux/start diagnostics:
 tmux attach -t coord-42
 ```
 
+Each automated agent run records terminal output under
+`issue-N/agents/<agent>/terminal/run-<start>.log`. New logs prefix each line with
+an ISO-8601 UTC timestamp with milliseconds, taken when its first byte arrives;
+prompts without a newline are flushed immediately. Existing logs are unchanged.
+These are timestamped diagnostic streams, not raw terminal replay files. If
+Perl is unavailable the recorder falls back to the prior untimestamped stream.
+
 On macOS, `coord start` / `coord N` also opens one Terminal.app window per
 agent, each attached to that agent's tmux window (separate clients — no Ctrl-b n).
 A resume of `coord N` recreates missing tmux sessions and dead agent panes, and
@@ -406,7 +413,11 @@ as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`
 Per-agent config controls owner UI:
 
 - `nudgePrelude` — tmux key names sent before the text (Codex default: `i` for
-  vim insert, skipped when Codex's footer already shows `Vim: Insert`). Each
+  vim insert, sent only when its footer shows `Vim: Normal`). Generated Codex
+  launchers disable vim per process; Claude's installed clone-local
+  `editorMode: "normal"` also suppresses its default `a`. An explicit Claude
+  prelude still overrides that default. Without that local setting Claude keeps
+  its legacy vim handling, since vim NORMAL may have no visible indicator. Each
   entry is one key followed by the prelude gap, so a trailing space such as
   `"a "` adds no delay. When any prelude key is sent, the typed text starts with
   a space, so a key that lands in the composer reads `i Read and execute …`
@@ -469,8 +480,9 @@ Cursor panes that report as `node` are treated as ready when
 stable idle hint. Cursor submit is Enter when vim is off (Escape dismisses
 that composer) and Escape then Enter when `editor.vimMode` is on or
 `nudgePrelude` is a non-empty override. Prelude `a` is sent only in that
-vim case, and only if the pane is not already INSERT (home
-`~/.cursor/cli-config.json`, then clone `.cursor/cli.json`). Typed nudge text
+vim case, and only if the pane is not already INSERT. Set the owner editor
+preference in global `~/.cursor/cli-config.json`; project `.cursor/cli.json`
+accepts permissions, not editor settings. Typed nudge text
 includes both the opaque `actionId` and the SHA-256 digest of the exact
 `action.md`. A delayed hook for an older rewrite therefore cannot accept the
 current action accidentally.
