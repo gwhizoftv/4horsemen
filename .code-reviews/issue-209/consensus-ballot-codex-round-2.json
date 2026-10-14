@@ -1,0 +1,14 @@
+{
+  "actionId": "2f2e7db4-4dda-4c26-b2d2-8346c003dc0b",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "baf15224383cf5daa10f6b5b8ebaa7f0b92bd4295420df62b49d3093aaf888ae",
+  "issue": 209,
+  "issueSessionId": "issue-209:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "protocolVersion": 2,
+  "rationale": "Revision c92c577435a3aa149f842f0bc3e044ab14294bd2 resolves the retry finding by preserving positive ready-prompt/action-absent proof and existing delivery safeguards in both report and comment, retains the corrected measurements, and records a publication receipt whose payload hash matches locally; independent GitHub readback was unavailable.",
+  "responseSha256": "7869fe93fedaaded4bcfaf4947c8c778882bc4f215471ff54503a6417f524091",
+  "revisionCommitSha": "c92c577435a3aa149f842f0bc3e044ab14294bd2",
+  "round": 2
+}

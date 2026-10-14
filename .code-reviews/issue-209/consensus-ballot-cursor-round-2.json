@@ -1,0 +1,14 @@
+{
+  "actionId": "5606ca52-a52d-47ea-b728-518d1ec694ca",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "baf15224383cf5daa10f6b5b8ebaa7f0b92bd4295420df62b49d3093aaf888ae",
+  "issue": 209,
+  "issueSessionId": "issue-209:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "protocolVersion": 2,
+  "rationale": "The revision records full session ids, tells the reader to extract the fenced script before running it, and posts the comment during R6.revise; the receipt URL read back to the same payload, SHA-256 1e02a4d6dbe3d73d701e8d74c2a4eeb104f4c1701706b74bedef1df6b4daa249 after trailing newlines are removed.",
+  "responseSha256": "8783e164d342c85831a28d2d8620cf4fd9c6b973465cb2b0fdca461c05ae433d",
+  "revisionCommitSha": "c92c577435a3aa149f842f0bc3e044ab14294bd2",
+  "round": 2
+}

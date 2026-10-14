@@ -1,0 +1,14 @@
+{
+  "actionId": "ace9ab02-9f04-4352-84d2-d72e8d96b564",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "baf15224383cf5daa10f6b5b8ebaa7f0b92bd4295420df62b49d3093aaf888ae",
+  "issue": 209,
+  "issueSessionId": "issue-209:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "protocolVersion": 2,
+  "rationale": "Revision c92c5774 resolves both round-1 objections within the single approved report file: the retry recommendation now follows the positive-proof rule in docs/readiness-policy.md, the inventory carries full session ids, the documented extraction step reproduces every table, and the comment was posted once during R6.revise per the selected plan with a receipt whose URL, payload hash, and read-back still match the single marked comment on #209.",
+  "responseSha256": "428f27754385e368b861b23572c1a33bacc47b4a4f59b8510592c4f6f8f0d9d0",
+  "revisionCommitSha": "c92c577435a3aa149f842f0bc3e044ab14294bd2",
+  "round": 2
+}
