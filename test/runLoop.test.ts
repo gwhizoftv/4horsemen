@@ -4007,6 +4007,40 @@ describe("materialized bound inputs", () => {
     };
   };
 
+  it("exports a consensus ballot into the packet and records it in the manifest", async () => {
+    const { paths } = fixture();
+    const mirror = readingMirror();
+    const ballot = {
+      agent: "codex",
+      commitSha: "a".repeat(40),
+      path: ".code-reviews/issue-1/consensus-ballot-codex-round-1.json",
+      kind: "consensus-ballot"
+    };
+    const result = await materializeBoundInputs({
+      mirror,
+      paths,
+      inputs: [
+        ballot,
+        {
+          agent: "codex", commitSha: "b".repeat(40),
+          path: ".signals/issue-1/revision-ready-codex-round-1.json", kind: "prior-revision"
+        }
+      ]
+    });
+    expect(result.omitted).toEqual([]);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]).toMatchObject({ kind: "consensus-ballot", commitSha: ballot.commitSha, agent: "codex" });
+    expect(readFileSync(result.entries[0]!.localPath, "utf8")).toBe(`body of ${ballot.commitSha}:${ballot.path}\n`);
+    expect(result.worktrees).toEqual([expect.objectContaining({ kind: "prior-revision", commitSha: "b".repeat(40) })]);
+    const manifest = JSON.parse(readFileSync(result.manifestPath as string, "utf8")) as {
+      entries: { localPath: string; sha256: string }[];
+    };
+    expect(manifest.entries).toEqual([expect.objectContaining({
+      localPath: result.entries[0]!.localPath,
+      sha256: result.entries[0]!.sha256
+    })]);
+  });
+
   it("writes one content-addressed packet with a manifest that matches the files", async () => {
     const { paths } = fixture();
     const mirror = readingMirror();
@@ -4558,6 +4592,59 @@ describe("third revision closeout", () => {
     expect(recovered.accepted).toContainEqual(receipt);
     expect(recovered.issueCursor.stepId).toBe("R7.finalize");
     expect(readJournal(paths).filter((entry) => entry.type === "decision-derived")).toHaveLength(1);
+  });
+
+  it("binds the previous round's published ballots on a later revision", () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const base = readCursorsState(paths);
+    const now = base.updatedAt;
+    const productPin = "e".repeat(40);
+    const implementationPin = "f".repeat(40);
+    const revision = {
+      stepId: "R6.revise" as const, agent: "codex", round: 1, submissionSha: "d".repeat(40),
+      productPin, path: ".signals/issue-1/revision-ready-codex-round-1.json", acceptedAt: now
+    };
+    const implementation = {
+      stepId: "R4.implement" as const, agent: "codex", round: null, submissionSha: "c".repeat(40),
+      productPin: implementationPin, path: ".signals/issue-1/implementation-ready-codex.json", acceptedAt: now
+    };
+    const batch = publishedBallotBatchFixture({
+      kind: "consensus-ballot-batch", activeRoster: base.activeRoster, round: 1
+    });
+    const cursors = cursorsStateSchema.parse({
+      ...base,
+      accepted: [implementation, revision],
+      derived: {
+        ...base.derived,
+        implementationSelection: {
+          kind: "implementation-selection", algorithm: "plurality-active-roster-v1", inputSetHash: "b".repeat(64),
+          activeRoster: base.activeRoster,
+          inputs: [{
+            kind: "implementation", agent: "codex", submissionSha: implementation.submissionSha,
+            path: implementation.path, productPin: implementationPin
+          }],
+          decisionId: `implementation-selection:${"b".repeat(64)}`, supersedes: null, decidedAt: now,
+          winner: "codex", reviser: "codex", implementationPin
+        }
+      },
+      acceptedResponses: base.activeRoster.map((agent) => acceptedResponseFixture({
+        stepId: "R6.ballot", agent, round: 1, disposition: "revise"
+      })),
+      ballotBatches: [batch]
+    });
+    const prior = { agent: "codex", commitSha: productPin, path: revision.path, kind: "prior-revision" };
+    const ballots = batch.responses.map((response, index) => ({
+      agent: response.agent, commitSha: batch.commitSha, path: batch.paths[index], kind: "consensus-ballot"
+    }));
+    expect(deriveBoundInputs(start, cursors, "R6.revise", 2)).toEqual([prior, ...ballots]);
+    expect(deriveBoundInputs(start, cursors, "R6.revise", 1)).toEqual([{
+      agent: "codex", commitSha: implementationPin, path: implementation.path, kind: "implementation"
+    }]);
+    const missing = cursorsStateSchema.parse({ ...cursors, ballotBatches: [] });
+    const unbound = deriveBoundInputs(start, missing, "R6.revise", 2);
+    expect(unbound).toEqual([prior]);
+    expect(unbound.some((input) => input.kind === "consensus-ballot")).toBe(false);
   });
 
   it.each(["outage", "pause"] as const)("preserves a receipt through %s and restart, then finalizes the same revision", async (interruption) => {

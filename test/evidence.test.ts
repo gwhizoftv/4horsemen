@@ -730,6 +730,31 @@ Implement it.
         mirror(JSON.stringify(artifact), { changedPaths: async () => ["src/product.ts"] })
       )
     ).toMatchObject({ status: "satisfied", productPin: artifact.revisedBranchHead });
+
+    const prior = {
+      agent: "codex", commitSha: sha("2"), path: ".signals/issue-1/revision-ready-codex-round-1.json", kind: "prior-revision"
+    };
+    const ballots = ["claude", "cursor"].map((agent) => ({
+      agent, commitSha: sha("9"), path: `.code-reviews/issue-1/consensus-ballot-${agent}-round-1.json`, kind: "consensus-ballot"
+    }));
+    const later = order({
+      stepId: "R6.revise", evidenceId: "revision-pinned",
+      requiredPath: ".signals/issue-1/revision-ready-codex-round-2.json", round: 2,
+      inputs: [prior, ...ballots], approvedPaths: ["src/product.ts"]
+    });
+    const laterArtifact = {
+      protocolVersion: 1, artifact: "revision-ready", issue: 1, issueSessionId: later.issueSessionId,
+      agent: "codex", inputSetHash: computeInputSetHash(later.inputs), round: 2,
+      revisedBranchHead: sha("d"), basedOn: [prior.commitSha]
+    };
+    expect(await evaluateEvidence(later, sha("e"), mirror(JSON.stringify(laterArtifact), {
+      changedPaths: async () => ["src/product.ts"]
+    }))).toMatchObject({ status: "satisfied", productPin: laterArtifact.revisedBranchHead });
+    const extraParent = await evaluateEvidence(later, sha("e"), mirror(JSON.stringify({
+      ...laterArtifact, basedOn: [prior.commitSha, sha("9")]
+    }), { changedPaths: async () => ["src/product.ts"] }));
+    expect(extraParent.status).toBe("rejected");
+    expect(extraParent.outstanding.join(" ")).toContain("revision basedOn pins do not equal bound inputs");
   });
 });
 

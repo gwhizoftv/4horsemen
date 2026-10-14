@@ -1,4 +1,4 @@
-import { computeInputSetHash } from "./evidence.js";
+import { computeInputSetHash, revisionProductParentInputs } from "./evidence.js";
 import type { BoundInput, WorkflowStepId } from "./steps.js";
 
 export type ArtifactScaffoldContext = {
@@ -72,7 +72,7 @@ export const artifactScaffoldValue = (ctx: ArtifactScaffoldContext): Record<stri
         round: ctx.round ?? 1,
         revisedBranchHead: PLACEHOLDER_SHA,
         ...(ctx.scopeHash === undefined ? {} : { scopeHash: ctx.scopeHash }),
-        basedOn: ctx.inputs.map((input) => input.commitSha)
+        basedOn: revisionProductParentInputs(ctx.inputs).map((input) => input.commitSha)
       };
     case "R4.amend-ballot":
     case "R6.ballot":
