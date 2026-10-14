@@ -1,0 +1,14 @@
+{
+  "actionId": "1687b927-5171-402f-9521-42ad18a9f498",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "200f66d6bf5b98125af94d18d11c1a99b352d704e87d1bb2b606a7e3e7b1a641",
+  "issue": 214,
+  "issueSessionId": "issue-214:0ead5e6ce15b6563bb6134a84997e79b0c0042cd",
+  "protocolVersion": 2,
+  "rationale": "src/agentLifecycle.ts:619 must retain preceding-turn Stop protection after workflow completion because completing an action does not end its execution turn, but queueing B into T, receiving Stop(T), calling markActionWorkflowComplete(B), then receiving duplicate Stop(T) changes working to idle and increments idleEpoch, so orderAgentAction(C) loses rereadExpected and returns send eligibility while the queued execution is still live, as reproduced through the lifecycle APIs at 92e2b5c1d41830a065c3b5d571c48a25cd23a482.",
+  "responseSha256": "221b9f68c0c45e0f8102f67139fad30b017ecd78ef318f77f414180c1003f06d",
+  "revisionCommitSha": "92e2b5c1d41830a065c3b5d571c48a25cd23a482",
+  "round": 2
+}

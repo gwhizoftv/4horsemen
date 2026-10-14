@@ -1,0 +1,14 @@
+{
+  "actionId": "3fd54cec-9566-416f-82b6-50c2cf802f65",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "200f66d6bf5b98125af94d18d11c1a99b352d704e87d1bb2b606a7e3e7b1a641",
+  "issue": 214,
+  "issueSessionId": "issue-214:0ead5e6ce15b6563bb6134a84997e79b0c0042cd",
+  "protocolVersion": 2,
+  "rationale": "The revision binds a reread pickup to the session that completed it and requires that same session before the next order is marked rereadExpected, so a working status from a replacement session no longer suppresses the send.",
+  "responseSha256": "8fd83f69bdc0c6e76e808dba1b07c4b39431beb7e8ef8cbc422d2fe03e0f3bd3",
+  "revisionCommitSha": "92e2b5c1d41830a065c3b5d571c48a25cd23a482",
+  "round": 2
+}

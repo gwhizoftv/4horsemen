@@ -1,0 +1,14 @@
+{
+  "actionId": "d738b00a-e0e2-4c7b-9f6a-7d75da58e3fc",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "200f66d6bf5b98125af94d18d11c1a99b352d704e87d1bb2b606a7e3e7b1a641",
+  "issue": 214,
+  "issueSessionId": "issue-214:0ead5e6ce15b6563bb6134a84997e79b0c0042cd",
+  "protocolVersion": 2,
+  "rationale": "The bound revision 92e2b5c1 matches the pushed sources and resolves both round-1 revise findings—a delayed Stop of an already-seen turn now leaves queued work working (probe: working/working) while its own unseen-turn Stop still ends it, and a replacement session no longer inherits a reread chain (covered at test/agentLifecycle.test.ts:353)—with every earlier scenario unchanged.",
+  "responseSha256": "96af073a0354c5df5d6b85edb00e595da4354659150e0c6b1632c3098907d3f1",
+  "revisionCommitSha": "92e2b5c1d41830a065c3b5d571c48a25cd23a482",
+  "round": 2
+}
