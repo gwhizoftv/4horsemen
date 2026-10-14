@@ -1,0 +1,14 @@
+{
+  "actionId": "6be5232c-6c13-4245-9169-548cc9b67282",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "0f6b07957d0dd9b796101b5e4c81c93463f5befded0ebc23eb6d0ec05b68ee3e",
+  "issue": 213,
+  "issueSessionId": "issue-213:82c47e35ae0a886746fce9759bd80776ec6a5461",
+  "protocolVersion": 2,
+  "rationale": "Approve unchanged revision 59200a13bbc8f26d84a1d2280ea59c9317a48a17 because the prose-only default deliberately retains product checks for behavioral instruction files, executable Markdown, and symlinks while documented owner declarations exempt reviewed references, with focused and mandatory checks already passed and the live-vendor smoke limitation still documented.",
+  "responseSha256": "79ed567bb9b063270006f0a7299a047d9e0f5536fcddfd8511eeaa68b62d72c9",
+  "revisionCommitSha": "59200a13bbc8f26d84a1d2280ea59c9317a48a17",
+  "round": 3
+}

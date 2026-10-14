@@ -1,0 +1,14 @@
+{
+  "actionId": "b13a3200-9d54-4d1c-a85c-8a48f96827fd",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "0f6b07957d0dd9b796101b5e4c81c93463f5befded0ebc23eb6d0ec05b68ee3e",
+  "issue": 213,
+  "issueSessionId": "issue-213:82c47e35ae0a886746fce9759bd80776ec6a5461",
+  "protocolVersion": 2,
+  "rationale": "Codex 59200a13 is unchanged at round 3 and still leaves docs/AGENTS.md, docs/SKILL.md, executable Markdown, and Markdown symlinks off the default documentation profile, so those prose commits still run the product suite.",
+  "responseSha256": "f515d8fea5ba5941f3ec91f84baad704913ba1ba7d31503d05902d071d6f44cf",
+  "revisionCommitSha": "59200a13bbc8f26d84a1d2280ea59c9317a48a17",
+  "round": 3
+}
