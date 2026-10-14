@@ -1,0 +1,46 @@
+{
+  "actionId": "7a4d4ebd-9cb6-446b-a894-05857945a88c",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "ab2971eb9c136d6a4dbd5ad5457bceddeea5c9ac82e91042e880855b21a1bbb2",
+  "issue": 204,
+  "issueSessionId": "issue-204:855982b3f1639ec5bac7891f1c67f1e100dc2ab3",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "d821fa9ca5100663b76132c7d81da928ecc6ddf2",
+      "path": ".plans/issue-204/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "367d46951b2365419c6ced0fa72cdaaca32ff7ed",
+      "path": ".plans/issue-204/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "595a8c11fb79af5cd76599262dbd7b88c6dd9fad",
+      "path": ".plans/issue-204/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "The Codex plan is the strongest base because it combines durable elapsed-time reminders, correlated status, compatible tmux options and an exact scope map, with the reviewed corrections to configure existing linked clients on resume, avoid observation-only refresh writes and limit scrollbars to the intended agent windows.",
+  "responseSha256": "298fabb4f3d1499b7bd6ee8f1bcd694331251b451d346133dca5b6a2d8013b84",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "d8df9704cf2de66737a08a9b77f53b77c4c4f87e",
+      "path": ".plans/issue-204/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "cf8975bd8fdcc4cd4f2d1a7fee2d75a19a3a887c",
+      "path": ".plans/issue-204/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e4edcb9434450596fa9a410f3fda475fc50f19dc",
+      "path": ".plans/issue-204/review.md"
+    }
+  ]
+}

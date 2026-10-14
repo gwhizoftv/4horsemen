@@ -1,0 +1,46 @@
+{
+  "actionId": "e4c9e56a-ad0c-43b0-8d92-9c7a56d2e5ba",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "ab2971eb9c136d6a4dbd5ad5457bceddeea5c9ac82e91042e880855b21a1bbb2",
+  "issue": 204,
+  "issueSessionId": "issue-204:855982b3f1639ec5bac7891f1c67f1e100dc2ab3",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "d821fa9ca5100663b76132c7d81da928ecc6ddf2",
+      "path": ".plans/issue-204/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "367d46951b2365419c6ced0fa72cdaaca32ff7ed",
+      "path": ".plans/issue-204/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "595a8c11fb79af5cd76599262dbd7b88c6dd9fad",
+      "path": ".plans/issue-204/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex's plan alone re-applies options on resume, uses -q for pane-scrollbars, correlates the persisted wait with current delivery state, extracts to exactly its declared file map, and runs install.test.ts under the system config; its remaining gaps (probe-only clearing, client mouse on resume, scrollbar scope, test breadth) are smaller corrections than the stale-status and missed-resume defects in claude's or the false-wait status and broken repeat in cursor's.",
+  "responseSha256": "15265c660c421f8244b82423b2b8f421eb6b43c053dd2d8592e35ac99270f260",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "d8df9704cf2de66737a08a9b77f53b77c4c4f87e",
+      "path": ".plans/issue-204/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "cf8975bd8fdcc4cd4f2d1a7fee2d75a19a3a887c",
+      "path": ".plans/issue-204/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e4edcb9434450596fa9a410f3fda475fc50f19dc",
+      "path": ".plans/issue-204/review.md"
+    }
+  ]
+}
