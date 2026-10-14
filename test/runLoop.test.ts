@@ -45,6 +45,7 @@ import {
   writeCursorsState
 } from "../src/state.js";
 import { TmuxController } from "../src/tmux.js";
+import { renderIssueReport } from "../src/issueReport.js";
 import type { CodexQuotaReader, CodexQuotaResult } from "../src/codexQuota.js";
 import { readBindingRecord } from "../src/codexQuota.js";
 import { parseClaudeRateLimits, parseCodexRateLimits } from "../src/resourceEvidence.js";
@@ -1132,6 +1133,53 @@ describe("durable delivery safety", () => {
     f.makeLoop()["journalDeferral"](start, current, "codex", action.actionId, action.actionDigest,
       "scrape", "new-reason-1", "changed wording", "changed diagnostic");
     expect(readFileSync(f.paths.cursors, "utf8")).toBe(before);
+  });
+
+  it("repeats a scrolled-back wait every three minutes across restarts, then clears it", async () => {
+    const f = safetyFixture();
+    const notices = () => f.messages.filter((message) => message ===
+      "[WAIT] Issue 1: waiting to send to codex; the codex pane is scrolled back; scroll to the bottom to let coord send");
+    const refusals = () => readJournal(f.paths).filter((event) => event.type === "nudge-deferred" && event.details.code === "owner-typing");
+    const wait = () => readCursorsState(f.paths).actionSafety.codex?.scrollbackWait;
+    f.ui.busy = true;
+    await f.tick();
+    const observedAt = f.now();
+    expect(notices()).toHaveLength(1);
+    expect(wait()).toEqual({ observedAt, lastReminderAt: observedAt });
+    f.advance(60_000); await f.tick(); // each tick is a fresh coordinator, as after a restart
+    f.advance(119_999); await f.tick();
+    expect(notices()).toHaveLength(1);
+    f.advance(1); await f.tick();
+    expect(notices()).toHaveLength(2);
+    expect(wait()).toEqual({ observedAt, lastReminderAt: f.now() });
+    expect(refusals()).toHaveLength(1); // the journal keeps one refusal; only the reminder repeats
+    expect(f.ui.sends).toBe(0);
+    // Another blocker replaces the wait; scrolling back again is a new episode, reported at once.
+    f.ui.busy = false; f.ui.foreground = "bash";
+    await f.tick();
+    expect(wait()).toBeUndefined();
+    f.ui.busy = true; f.ui.foreground = "harness";
+    f.advance(1); await f.tick();
+    expect(notices()).toHaveLength(3);
+    expect(wait()).toEqual({ observedAt: f.now(), lastReminderAt: f.now() });
+    f.ui.busy = false;
+    f.advance(1); await f.tick();
+    expect(f.ui.sends).toBe(1);
+    expect(wait()).toBeUndefined();
+    expect(refusals()).toHaveLength(1);
+  });
+
+  it("drops a scrolled-back wait once the owner submits the action from the still-scrolled pane", async () => {
+    const f = safetyFixture();
+    f.ui.busy = true;
+    await f.tick();
+    const status = () => renderIssueReport(readStartState(f.paths), readCursorsState(f.paths), readAgentLifecycle(f.paths));
+    expect(status()).toContain("[WAIT] the codex pane is scrolled back; scroll to the bottom to let coord send.");
+    f.advance(1); f.working();
+    expect(status()).not.toContain("scrolled back"); // accepted work is not waiting to be sent
+    await f.tick();
+    expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait).toBeUndefined();
+    expect(f.ui.sends).toBe(0);
   });
 
   it("deduplicates A/B/A and append-before-cursor recovery without repeated writes", async () => {

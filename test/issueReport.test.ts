@@ -109,6 +109,39 @@ const complete = (overrides: Partial<CursorsState["publication"]> = {}): Cursors
   }) as CursorsState;
 
 describe("issue report", () => {
+  it("shows a scrollback wait only while it still blocks this agent's current delivery", () => {
+    const actionId = "10000000-0000-4000-8000-000000000001";
+    const now = "2026-08-13T00:00:00.000Z";
+    const notice = "[WAIT] the cursor pane is scrolled back; scroll to the bottom to let coord send.";
+    const waiting = (): CursorsState => ({ ...complete(), completed: false,
+      agents: { cursor: { actionId, status: "ordered" } } as unknown as CursorsState["agents"],
+      actionSafety: { cursor: { actionId, sends: 0, lastSendAt: null, reserved: false, deferrals: ["owner-typing"],
+        holdGeneration: 0, observationChecks: 0, nextObservationAt: null, activityAt: now,
+        resource: { starts: 0, failures: 0, inFlight: null, nextAt: null, consumedDeadlines: [], terminal: null, episode: null },
+        scrollbackWait: { observedAt: now, lastReminderAt: now } } } });
+    const lifecycle = initialAgentLifecycle(["cursor"]);
+    expect(renderIssueReport(start("owner-only"), waiting(), lifecycle)).toContain(notice);
+    const paused = { ...waiting(), paused: true };
+    expect(renderIssueReport(start("owner-only"), paused))
+      .toContain(`[WAIT] Last observed at ${now}: the cursor pane is scrolled back; scroll to the bottom to let coord send;`);
+    const cleared = waiting();
+    cleared.actionSafety.cursor!.scrollbackWait = undefined;
+    const accepted = initialAgentLifecycle(["cursor"]);
+    accepted.agents.cursor!.action = { actionId, actionDigest: "a".repeat(64), delivery: "accepted", orderedAt: now,
+      injectedAt: now, retryableInjectionAt: null, acceptedAt: now, sessionId: "s", turnId: "t", lastNudgedIdleEpoch: null,
+      workflowCompleteAt: null };
+    for (const [cursors, agentLifecycle] of [
+      [cleared, lifecycle],
+      [{ ...waiting(), agents: { cursor: { actionId: "20000000-0000-4000-8000-000000000002", status: "ordered" } } }, lifecycle],
+      [{ ...waiting(), agents: { cursor: { actionId, status: "verifying" } } }, lifecycle],
+      [{ ...waiting(), activeRoster: [] }, lifecycle],
+      [{ ...waiting(), completed: true }, lifecycle],
+      [waiting(), accepted]
+    ] as [CursorsState, typeof lifecycle][]) {
+      expect(renderIssueReport(start("owner-only"), cursors, agentLifecycle)).not.toContain("scrolled back");
+    }
+  });
+
   it("reports unknown holds and scoped recovery without implying capacity or auto-resume", () => {
     const cursors = complete();
     cursors.completed = false; cursors.paused = true; cursors.manualPaused = true;

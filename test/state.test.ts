@@ -167,6 +167,21 @@ describe("operational state", () => {
     expect(after.agents.codex?.actionId).toBeNull();
   });
 
+  it("keeps a scrollback wait optional and round-trips it with the action safety record", () => {
+    const { paths, cursors } = initialize();
+    const now = "2026-09-22T12:00:00.000Z";
+    const actionId = "10000000-0000-4000-8000-000000000001";
+    const legacy = cursorsStateSchema.parse({ ...cursors, actionSafety: { claude: { actionId, activityAt: now } } });
+    expect(legacy.actionSafety.claude?.scrollbackWait).toBeUndefined();
+    const wait = { observedAt: now, lastReminderAt: "2026-09-22T12:03:00.000Z" };
+    writeCursorsState(paths, { ...legacy, actionSafety: { claude: { ...legacy.actionSafety.claude!, scrollbackWait: wait } } });
+    expect(readCursorsState(paths).actionSafety.claude?.scrollbackWait).toEqual(wait);
+    for (const invalid of [{ observedAt: "later", lastReminderAt: now }, { ...wait, reason: "scroll" }]) {
+      expect(() => cursorsStateSchema.parse({ ...cursors, actionSafety: { claude: { actionId, activityAt: now, scrollbackWait: invalid } } }))
+        .toThrow();
+    }
+  });
+
   it("keeps manual and independent holds separate and requires an explicit breaker reset", () => {
     const { paths } = initialize();
     const now = "2026-09-22T12:00:00.000Z";

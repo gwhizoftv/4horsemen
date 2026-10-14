@@ -723,7 +723,9 @@ const actionSafetySchema = z.object({
   observationChecks: z.number().int().nonnegative().default(0),
   nextObservationAt: timestampSchema.nullable().default(null),
   activityAt: timestampSchema,
-  resource: resourceObservationSchema.default(emptyResourceObservation)
+  resource: resourceObservationSchema.default(emptyResourceObservation),
+  /** Delivery is currently refused because the owner scrolled the pane back; absent when not. Display timing only. */
+  scrollbackWait: z.object({ observedAt: timestampSchema, lastReminderAt: timestampSchema }).strict().optional()
 }).strict();
 
 const holdSchema = z.object({

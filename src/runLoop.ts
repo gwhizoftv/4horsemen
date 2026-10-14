@@ -111,7 +111,7 @@ import {
   type WorkflowStepId
 } from "./steps.js";
 import { containmentPolicy, ingestContainmentProbe } from "./shellGuard.js";
-import { holdRecoveryCommand, holdDescription, issueCommand, renderIssueReport } from "./issueReport.js";
+import { holdRecoveryCommand, holdDescription, issueCommand, renderIssueReport, scrolledBackNotice } from "./issueReport.js";
 import { inspectStartupAgent } from "./doctor.js";
 import { assessFollowUpIssue, followUpKey, formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
@@ -909,7 +909,7 @@ const candidateResultsFor = (cursors: CursorsState, inputs: readonly BoundInput[
  */
 const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "pane-dead": "the agent terminal is gone; restore it before retrying",
-  "owner-typing": "the pane is in copy mode or the owner is typing in it",
+  "owner-typing": "the pane is scrolled back; scroll to the bottom to let coord send",
   "input-off": "the pane has input disabled",
   "foreground-mismatch": "the foreground process is not this agent's harness",
   "trust-dialog": "the application is waiting for you to answer its folder-trust prompt; inspect its terminal",
@@ -934,8 +934,13 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "idle-transition-already-used": "activity reports say idle, but automatic delivery already used this idle observation; use n to send an owner reminder"
 };
 
-const deferralRationale = (code: string): string =>
-  DEFERRAL_RATIONALE[code] ?? "the terminal or lifecycle layer refused delivery";
+const deferralRationale = (code: string, agent?: string): string =>
+  code === "owner-typing" && agent !== undefined
+    ? scrolledBackNotice(agent)
+    : DEFERRAL_RATIONALE[code] ?? "the terminal or lifecycle layer refused delivery";
+
+/** A pane left scrolled back is announced again this often while it still blocks delivery. */
+const SCROLLBACK_REMINDER_MS = 180_000;
 
 // Delivery protection is independent of the wait before checking for lost delivery.
 const NUDGE_REPEAT_DELAYS_MS = [60_000, 120_000, 240_000];
@@ -1222,6 +1227,13 @@ export class CoordinatorRunLoop {
     } }));
   }
 
+  private clearScrollbackWait(cursors: CursorsState, agent: string): CursorsState {
+    if (cursors.actionSafety[agent]?.scrollbackWait === undefined) return cursors;
+    return this.mutate(cursors, (current) => ({ ...current, actionSafety: { ...current.actionSafety, [agent]: {
+      ...current.actionSafety[agent]!, scrollbackWait: undefined
+    } } }));
+  }
+
   private hold(
     cursors: CursorsState, agent: string, reason: Hold["reason"], evidenceId: string, enrichment?: HoldEnrichment
   ): CursorsState {
@@ -1350,8 +1362,9 @@ export class CoordinatorRunLoop {
     const staleWorking = entry?.execution === "working" && safety.sends === 0 &&
       entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest &&
       entry.action.delivery === "ordered" && entry.action.injectedAt === null;
+    // The agent has input of its own now, so a scrolled-back pane is no longer what holds delivery.
     if ((entry?.execution === "working" && !staleWorking) || (entry?.backgroundActive === true && !hasStopReadiness(entry)) ||
-      (entry?.pendingInputCount ?? 0) > 0) return cursors;
+      (entry?.pendingInputCount ?? 0) > 0) return this.clearScrollbackWait(cursors, agent);
     // Lifecycle hooks write without touching cursor authority, so the override
     // re-reads them immediately before the batch (or each AGY key).
     const lifecycleSnapshot = (value: typeof entry): string => JSON.stringify([value?.sessionId, value?.turnId,
@@ -1394,6 +1407,7 @@ export class CoordinatorRunLoop {
         ? this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`) : cursors;
     }
     this.authority(cursors);
+    if (result.reason !== "owner-typing") cursors = this.clearScrollbackWait(cursors, agent);
     // Native retry ownership remains known even if earlier keys were ambiguous.
     // Leave any reservation charged until explicit owner recovery.
     if (result.status === "busy" && result.reason === "claude-usage-wait") {
@@ -1429,7 +1443,7 @@ export class CoordinatorRunLoop {
     if (result.status === "busy") {
       if (entry?.action?.retryableInjectionAt === null) markActionInjectionDeferred(this.paths, agent, actionId, actionDigest, this.now());
       return this.journalDeferral(start, cursors, agent, actionId, actionDigest, "scrape", result.reason,
-        deferralRationale(result.reason), result.detail);
+        deferralRationale(result.reason, agent), result.detail);
     }
     return cursors;
   }
@@ -1478,6 +1492,8 @@ export class CoordinatorRunLoop {
     this.authority(cursors);
     if (pane === null) return cursors;
     if (!pane.alive) return this.hold(cursors, agent, "harness-gone", evidence);
+    // An observation only ends a scrollback wait; only a refused delivery starts one.
+    if (!pane.ownerTyping) cursors = this.clearScrollbackWait(cursors, agent);
     if (agent === "claude") {
       const text = await this.tmux.capturePane(target).catch((error) => {
         this.verbose(`Issue ${start.issue}: ${agent} pane capture failed: ${error}`);
@@ -1952,7 +1968,9 @@ export class CoordinatorRunLoop {
    * it so status and debug do not have to be reconciled across two axes. The
    * line reaches normal stdout when the workflow is actually waiting on this
    * agent or when the two layers disagree. Already-seen codes stay silent in
-   * both the journal and stdout, including across restarts.
+   * both the journal and stdout, including across restarts. The one exception
+   * is a pane scrolled back: while that keeps blocking delivery its line is
+   * repeated every few minutes, on stdout only, timed from durable state.
    */
   private journalDeferral(
     start: StartState,
@@ -1966,13 +1984,20 @@ export class CoordinatorRunLoop {
     detail?: string
   ): CursorsState {
     cursors = this.ensureActionSafety(cursors, agent, actionId);
+    const scrolledBack = code === "owner-typing";
+    if (!scrolledBack) cursors = this.clearScrollbackWait(cursors, agent);
     const safety = cursors.actionSafety[agent]!;
-    if (safety.deferrals.includes(code)) return cursors;
+    const now = this.now();
+    const wait = safety.scrollbackWait;
+    const remind = scrolledBack && safety.deferrals.includes(code) &&
+      (wait === undefined || Date.parse(now) - Date.parse(wait.lastReminderAt) >= SCROLLBACK_REMINDER_MS);
+    if (safety.deferrals.includes(code) && !remind) return cursors;
     const unknown = !Object.hasOwn(DEFERRAL_RATIONALE, code);
     const unknownCount = safety.deferrals.filter((key) => !Object.hasOwn(DEFERRAL_RATIONALE, key)).length;
     // Keep distinct unexpected diagnostics, then emit one explicit overflow row.
     const key = unknown && unknownCount >= UNKNOWN_DEFERRAL_LIMIT ? "unrecognized-overflow" : code;
-    if (safety.deferrals.includes(key)) return cursors;
+    if (safety.deferrals.includes(key) && !remind) return cursors;
+    const scrollbackWait = scrolledBack ? { observedAt: wait?.observedAt ?? now, lastReminderAt: now } : safety.scrollbackWait;
     const entry = readAgentLifecycle(this.paths).agents[agent];
     const splitBrain =
       layer === "scrape" && entry?.execution === "idle" && entry.health !== "degraded";
@@ -1980,7 +2005,10 @@ export class CoordinatorRunLoop {
     // unanswered. A deferral for an agent that is verifying or waiting on a peer
     // is background detail, so it belongs in the journal but not on stdout.
     const gateWaiting = cursors.agents[agent]?.status === "ordered";
-    const next = this.mutate(cursors, (current) => {
+    // The journal keeps one event per refusal code; a repeat only moves the reminder clock.
+    const next = remind ? this.mutate(cursors, (current) => ({ ...current, actionSafety: { ...current.actionSafety, [agent]: {
+      ...current.actionSafety[agent]!, scrollbackWait
+    } } })) : this.mutate(cursors, (current) => {
       appendJournal(
         this.paths,
         {
@@ -2008,13 +2036,13 @@ export class CoordinatorRunLoop {
         this.now()
       );
       return { ...current, actionSafety: { ...current.actionSafety, [agent]: {
-        ...safety, deferrals: [...safety.deferrals, key]
+        ...safety, deferrals: [...safety.deferrals, key], scrollbackWait
       } } };
     });
     const message = splitBrain
       ? `[WARN] Issue ${start.issue}: ${agent}'s activity report says idle but its terminal refuses input; ${human}`
       : `[WAIT] Issue ${start.issue}: waiting to send to ${agent}; ${human}`;
-    this.verbose(`Delivery diagnostic: ${code}${detail === undefined ? "" : ` (${detail})`}`);
+    if (!remind) this.verbose(`Delivery diagnostic: ${code}${detail === undefined ? "" : ` (${detail})`}`);
     if (gateWaiting || splitBrain) this.log(message);
     else this.verbose(message);
     return next;

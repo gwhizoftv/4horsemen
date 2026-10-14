@@ -23,6 +23,10 @@ export const holdDescription = (reason: CursorsState["holds"][number]["reason"])
   unobservable: "the terminal cannot be inspected; restore terminal access before releasing this hold"
 })[reason];
 
+/** The one sentence for a delivery refused because the owner scrolled the pane back, in the log and in status. */
+export const scrolledBackNotice = (agent: string): string =>
+  `the ${agent} pane is scrolled back; scroll to the bottom to let coord send`;
+
 const finalization = (cursors: CursorsState) =>
   [...cursors.accepted].reverse().find((submission) => submission.stepId === "R7.finalize");
 
@@ -147,6 +151,19 @@ export const renderIssueReport = (
     } else {
       lines.push(`Resource observation (${agent}): none scheduled; owner release required. Quota reads ${resource.starts}/6.`);
     }
+  }
+  for (const agent of cursors.activeRoster) {
+    const safety = cursors.actionSafety[agent];
+    const wait = safety?.scrollbackWait;
+    const cursor = cursors.agents[agent];
+    if (wait === undefined || cursors.completed || cursors.abandoned ||
+      cursor?.actionId !== safety?.actionId || cursor?.status !== "ordered") continue;
+    // Accepted work is no longer waiting to be sent, whatever the pane shows.
+    const action = lifecycle?.agents[agent]?.action;
+    if (action?.actionId === cursor.actionId && (action.delivery === "accepted" || action.workflowCompleteAt != null)) continue;
+    lines.push(cursors.paused
+      ? `[WAIT] Last observed at ${wait.lastReminderAt}: ${scrolledBackNotice(agent)}; delivery also waits for the pause to clear.`
+      : `[WAIT] ${scrolledBackNotice(agent)}.`);
   }
   if (url !== null) lines.push(`Pull request: ${url}`);
   else if (pin !== null && cursors.publication.status === "not-required") {

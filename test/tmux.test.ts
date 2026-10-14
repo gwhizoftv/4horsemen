@@ -356,14 +356,18 @@ describe("tmux boundary", () => {
       {
         agentId: "claude",
         command:
-          "tmux new-session -A -s coord-7-claude -t coord-7 ';' select-window -t claude ';' set-option destroy-unattached on",
+          "tmux new-session -A -s coord-7-claude -t coord-7 ';' select-window -t claude ';' set-option destroy-unattached on ';' " +
+          "set-option -t coord-7-claude history-limit 50000 ';' set-option -t coord-7-claude mouse on ';' " +
+          "set-option -w -q -t coord-7-claude:claude pane-scrollbars on",
         terminalProfile: "Pro",
         windowTitle: "coord-7/claude"
       },
       {
         agentId: "codex",
         command:
-          "tmux new-session -A -s coord-7-codex -t coord-7 ';' select-window -t codex ';' set-option destroy-unattached on",
+          "tmux new-session -A -s coord-7-codex -t coord-7 ';' select-window -t codex ';' set-option destroy-unattached on ';' " +
+          "set-option -t coord-7-codex history-limit 50000 ';' set-option -t coord-7-codex mouse on ';' " +
+          "set-option -w -q -t coord-7-codex:codex pane-scrollbars on",
         terminalProfile: "Grass",
         windowTitle: "coord-7/codex"
       }
@@ -457,6 +461,7 @@ describe("tmux boundary", () => {
     const runner: TmuxRunner = async (args) => {
       calls.push([...args]);
       if (args[0] === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "list-sessions") return ok("coord-3\ncoord-3-claude\ncoord-30-claude\ncoord-3-other\n");
       if (args[0] === "list-windows") return ok(windows);
       if (args[0] === "display-message") return ok(`${paneDead}\tclaude\t0\n`);
       if (args[0] === "new-window") {
@@ -477,6 +482,12 @@ describe("tmux boundary", () => {
     expect(calls.find((args) => args[0] === "new-window")!.at(-1)).toBe("sleep 60");
     const launch = commandsIn(calls.find((args) => args.includes("respawn-pane"))!);
     expect(launch[0]).toEqual(["set-option", "-w", "-t", "coord-3:claude", "remain-on-exit", "on"]);
+    expect(launch[1]).toEqual(["set-option", "-w", "-q", "-t", "coord-3:claude", "pane-scrollbars", "on"]);
+    // Repair scrolls the session and the already-open client for this agent only, never server-wide.
+    const scrolling = (session: string) => [
+      "set-option", "-t", session, "history-limit", "50000", ";", "set-option", "-t", session, "mouse", "on"];
+    expect(calls.filter((args) => args.includes("history-limit"))).toEqual([scrolling("coord-3"), scrolling("coord-3-claude")]);
+    expect(calls.some((args) => args.includes("-g") || args.includes("bind-key"))).toBe(false);
     expect(launch.at(-1)).toEqual(["respawn-pane", "-k", "-t", "coord-3:claude", "-c", clone, join(clone, "start-claude.sh")]);
     expect(calls).toContainEqual(["set-environment", "-t", "coord-3", "COORD_ISSUE", "3"]);
     // A COORD_MANUAL=1 leaked from the tmux server would disarm the git shim.
@@ -487,15 +498,30 @@ describe("tmux boundary", () => {
       return args[0] === "has-session" ? { exitCode: 1, stdout: "", stderr: "missing" } : ok();
     }, null, null, null).startSession(4, [agent]);
     expect(fresh).toContainEqual(["set-environment", "-r", "-t", "coord-4", "COORD_MANUAL"]);
+    // Pane history is sized when the pane is created, so the limit comes before any agent window.
+    expect(fresh.findIndex((args) => args.includes("history-limit")))
+      .toBeLessThan(fresh.findIndex((args) => args[0] === "new-window"));
+    expect(fresh).toContainEqual(scrolling("coord-4"));
+    // Only the scrollbar is optional (`-q`); a refused session option still fails startup and cleans up.
+    const refused: string[][] = [];
+    await expect(new TmuxController(async (args) => {
+      refused.push([...args]);
+      if (args[0] === "has-session") return { exitCode: 1, stdout: "", stderr: "missing" };
+      return args.includes("history-limit") ? { exitCode: 1, stdout: "", stderr: "denied" } : ok();
+    }, null, null, null).startSession(5, [agent])).rejects.toThrow("cannot set scrolling options on coord-5: denied");
+    expect(refused.at(-1)).toEqual(["kill-session", "-t", "coord-5"]);
     calls.length = 0;
     await controller.ensureSession(3, [agent]);
     // Exit details are read before the dead pane is held on the placeholder, then relaunched.
-    expect(calls.map((args) => args[0]).filter((name) => ["list-panes", "respawn-pane", "set-option"].includes(name!)))
+    expect(calls.filter((args) => !args.includes("history-limit")).map((args) => args[0])
+      .filter((name) => ["list-panes", "respawn-pane", "set-option"].includes(name!)))
       .toEqual(["list-panes", "respawn-pane", "set-option"]);
     expect(calls.find((args) => args[0] === "respawn-pane")!.at(-1)).toBe("sleep 60");
     calls.length = 0;
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "new-window" || args[0] === "respawn-pane")).toBe(false);
+    // A live agent window from before this build still gets its scrollbar on resume.
+    expect(calls).toContainEqual(["set-option", "-w", "-q", "-t", "coord-3:claude", "pane-scrollbars", "on"]);
   });
 
   it("creates and repairs manual sessions without exposing COORD_ISSUE", async () => {
@@ -541,6 +567,8 @@ describe("tmux boundary", () => {
     expect(calls.some((args) => args.includes("COORD_ISSUE") && !args.includes("-r"))).toBe(false);
     expect(calls.some((args) => args.includes("COORD_MANUAL") && args.includes("-r"))).toBe(false);
     expect(calls.filter((args) => args[0] === "new-window")).toHaveLength(1);
+    expect(calls).toContainEqual(["set-option", "-t", "coord-manual-abc12def00", "history-limit", "50000",
+      ";", "set-option", "-t", "coord-manual-abc12def00", "mouse", "on"]);
     // Manual sessions have no issue runtime: panes are retained but not piped.
     const manualLaunch = commandsIn(calls.find((args) => args.includes("respawn-pane"))!);
     expect(manualLaunch).toContainEqual(["set-option", "-w", "-t", "coord-manual-abc12def00:claude", "remain-on-exit", "on"]);
@@ -1318,6 +1346,15 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
       await runner(["new-session", "-d", "-s", "hook-holder"]);
       await runner(["set-hook", "-g", "after-new-window", "run-shell 'sleep 0.2'"]);
       await run("first", "exit 0", () => controller.startSession(3, [agent], logDir));
+      // Scrolling is local to coord's session and agent window; the server defaults are untouched.
+      const shown = async (...args: string[]) => (await runner(["show-options", "-v", ...args])).stdout.trim();
+      expect(await shown("-t", "coord-3", "history-limit")).toBe("50000");
+      expect(await shown("-t", "coord-3", "mouse")).toBe("on");
+      expect(await shown("-w", "-t", "coord-3:claude", "pane-scrollbars")).toBe("on");
+      expect((await runner(["display-message", "-p", "-t", "coord-3:claude", "#{history_limit}"])).stdout.trim()).toBe("50000");
+      expect([await shown("-g", "history-limit"), await shown("-g", "mouse"), await shown("-gw", "pane-scrollbars")])
+        .toEqual(["2000", "off", "off"]);
+      expect(await shown("-t", "hook-holder", "mouse")).toBe("");
       await run("second", "exit 3", () => controller.ensureSession(3, [agent], undefined, logDir));
       await run("third", "kill -KILL $$", () => controller.ensureSession(3, [agent], undefined, logDir));
       const advertised = (await controller.agentPlacementDiagnostics(3, [agent])).join("\n").match(/output log: (.+?\.log);/)?.[1];

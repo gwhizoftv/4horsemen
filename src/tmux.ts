@@ -448,12 +448,26 @@ export const resolveTerminalProfile = (agent: AgentConfig): string =>
 export const nudgePreludeKeys = (agentId: string): readonly string[] => agentNudgeKeyDefaults(agentId).nudgePrelude;
 
 /**
+ * Wheel and trackpad scrolling for one coord session. Always targeted, never
+ * `-g`, so the owner's other tmux sessions keep their own settings. tmux sizes
+ * a pane's history when the pane is created, so set this before agent windows.
+ */
+const sessionScrollOptions = (session: string): string[] => [
+  "set-option", "-t", session, "history-limit", "50000",
+  ";", "set-option", "-t", session, "mouse", "on"
+];
+
+/** `-q`: tmux before 3.6 has no pane scrollbars, and must still launch the agent. */
+const windowScrollbarOption = (target: string): string[] => ["set-option", "-w", "-q", "-t", target, "pane-scrollbars", "on"];
+
+/**
  * Shell command that attaches a dedicated tmux client focused on one agent window.
  *
  * Uses a linked session name per agent so each Terminal keeps its own current
  * window. Semicolons are single-quoted (`';`) so macOS Terminal/do-script
  * cannot turn them into shell command separators (which would skip select-window
- * and leave every client on the last window, usually antigravity).
+ * and leave every client on the last window, usually antigravity). A linked
+ * session has its own session options, so scrolling is set on the client too.
  */
 export const agentClientAttachCommand = (session: string, agentId: string): string => {
   const window = safeName(agentId);
@@ -461,7 +475,8 @@ export const agentClientAttachCommand = (session: string, agentId: string): stri
   return [
     `tmux new-session -A -s ${client} -t ${session}`,
     `select-window -t ${window}`,
-    "set-option destroy-unattached on"
+    "set-option destroy-unattached on",
+    ...[...sessionScrollOptions(client), ";", ...windowScrollbarOption(`${client}:${window}`)].join(" ").split(" ; ")
   ].join(" ';' ");
 };
 
@@ -860,6 +875,7 @@ export class TmuxController {
     const created = await this.runner(["new-session", "-d", "-s", session, "-n", "control"]);
     if (created.exitCode !== 0) throw new Error(`tmux session creation failed: ${created.stderr}`);
     try {
+      await this.applySessionScrolling(session);
       const environment = await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(issue)]);
       if (environment.exitCode !== 0) {
         throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
@@ -886,6 +902,11 @@ export class TmuxController {
       await this.runner(["kill-session", "-t", session]);
       throw error;
     }
+  }
+
+  private async applySessionScrolling(session: string): Promise<void> {
+    const applied = await this.runner(sessionScrollOptions(session));
+    if (applied.exitCode !== 0) throw new Error(`cannot set scrolling options on ${session}: ${applied.stderr}`);
   }
 
   /** The git shim disarms on COORD_MANUAL=1, so an automated session must never pass one on. */
@@ -989,6 +1010,18 @@ export class TmuxController {
       assertAuthority();
       if (created.exitCode !== 0) throw new Error(`tmux session creation failed: ${created.stderr}`);
     }
+    // Resume reopens only missing Terminals, so linked clients that are already
+    // open get their scrolling options here rather than from the attach command.
+    const clients = new Set(agents.map((agent) => `${session}-${safeName(agent.id)}`));
+    const listed = await this.runner(["list-sessions", "-F", "#{session_name}"]);
+    assertAuthority();
+    const openClients = listed.exitCode === 0
+      ? listed.stdout.split("\n").map((name) => name.trim()).filter((name) => clients.has(name))
+      : [];
+    for (const name of [session, ...openClients]) {
+      await this.applySessionScrolling(name);
+      assertAuthority();
+    }
     // `-r` removes the variable from every process the session starts, even one
     // the tmux server's global environment still carries; `-u` would only drop
     // the session value and let that global value through.
@@ -1026,7 +1059,12 @@ export class TmuxController {
       if (windowNames.includes(safeName(agent.id))) {
         const pane = await this.inspectPane(target);
         assertAuthority();
-        if (pane.alive) continue;
+        if (pane.alive) {
+          const scrollbar = await this.runner(windowScrollbarOption(target));
+          assertAuthority();
+          if (scrollbar.exitCode !== 0) throw new Error(`cannot set the pane scrollbar in ${target}: ${scrollbar.stderr}`);
+          continue;
+        }
         const launcher = resolveAgentLauncher(agent);
         await this.recordPaneExits(["-t", target]);
         assertAuthority();
@@ -1065,6 +1103,7 @@ export class TmuxController {
     const log = logDir === undefined ? null : newTerminalLog(logDir);
     return this.runner([
       "set-option", "-w", "-t", target, "remain-on-exit", "on",
+      ";", ...windowScrollbarOption(target),
       ...(log === null ? [] : [
         ";", "set-option", "-w", "-t", target, "@coord-log", log,
         ";", "pipe-pane", "-t", target, pipeToLog(log)
