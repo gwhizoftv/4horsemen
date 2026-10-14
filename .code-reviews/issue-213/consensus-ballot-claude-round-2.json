@@ -1,0 +1,14 @@
+{
+  "actionId": "3ba9e13c-679b-4f71-92d3-5ff9f712d782",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "0295fa8f2dbefac62fdc46e289912eafb982d3dc3fea8adea6132d0a97b95d39",
+  "issue": 213,
+  "issueSessionId": "issue-213:82c47e35ae0a886746fce9759bd80776ec6a5461",
+  "protocolVersion": 2,
+  "rationale": "Round 2 (59200a13) changes no product source relative to the round 1 pin b533cb49 I compared and approved; it only documents and tests that an owner declaration can explicitly exempt instruction-named reference files such as docs/AGENTS.md while the generated proposal and mixed changes keep product checks, which is accurate and stays within the approved paths.",
+  "responseSha256": "27c6087467d55057616a066e0053c5586ac425332f6988fb5573327607082f32",
+  "revisionCommitSha": "59200a13bbc8f26d84a1d2280ea59c9317a48a17",
+  "round": 2
+}

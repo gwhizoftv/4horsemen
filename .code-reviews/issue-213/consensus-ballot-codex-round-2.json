@@ -1,0 +1,14 @@
+{
+  "actionId": "eed3cbea-520e-40b2-96b0-d3bc8a148e9a",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "0295fa8f2dbefac62fdc46e289912eafb982d3dc3fea8adea6132d0a97b95d39",
+  "issue": 213,
+  "issueSessionId": "issue-213:82c47e35ae0a886746fce9759bd80776ec6a5461",
+  "protocolVersion": 2,
+  "rationale": "Approve 59200a13bbc8f26d84a1d2280ea59c9317a48a17 because it documents and tests explicit owner exemptions for the disputed reference paths while preserving the prose-only default and mixed-change product checks, with focused and mandatory precommit/prepush checks passed during revision and the prior live-vendor smoke limitation still documented.",
+  "responseSha256": "562424990e484dbf5365de95cecb8bac1804ff8f4cdaff80e209b520323839a4",
+  "revisionCommitSha": "59200a13bbc8f26d84a1d2280ea59c9317a48a17",
+  "round": 2
+}

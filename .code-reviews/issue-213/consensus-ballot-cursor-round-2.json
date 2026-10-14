@@ -1,0 +1,14 @@
+{
+  "actionId": "175c7111-8f78-45cd-8c38-8ca3e89517a0",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "0295fa8f2dbefac62fdc46e289912eafb982d3dc3fea8adea6132d0a97b95d39",
+  "issue": 213,
+  "issueSessionId": "issue-213:82c47e35ae0a886746fce9759bd80776ec6a5461",
+  "protocolVersion": 2,
+  "rationale": "Codex 59200a13 still omits docs/AGENTS.md, docs/SKILL.md, executable Markdown, and Markdown symlinks from the default documentation profile, so those prose commits keep running the product suite unless an owner writes an explicit declaration.",
+  "responseSha256": "7e0c73f010eee3629724619af6a7801a536ba07cbbb077cc22f5ee4db0c78ea2",
+  "revisionCommitSha": "59200a13bbc8f26d84a1d2280ea59c9317a48a17",
+  "round": 2
+}
