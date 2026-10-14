@@ -7,6 +7,10 @@ import { shellQuote } from "./agentHookSync.js";
 export const issueCommand = (command: string, issue: number, coordRoot: string): string =>
   `coord ${command} --issue ${issue} --coord-runtime ${shellQuote(coordRoot)}`;
 
+/** The operator sentence for a pane coord will not type into until it is back at the bottom. */
+export const scrollbackWaitNotice = (agent: string): string =>
+  `the ${agent} pane is scrolled back; scroll to the bottom to let coord send`;
+
 const stageNames: Record<WorkflowStepId, string> = {
   "R1.join": "checking agent readiness", "R2.plan": "writing plans", "R3.review": "reviewing plans",
   "R3.plan-ballot": "choosing a plan", "R4.implement": "implementing", "R4.amend-ballot": "reviewing scope changes",
@@ -226,6 +230,21 @@ export const renderIssueReport = (
       if (coverage.hook !== "active") lines.push(`  [WARN] ${agent.id}: runtime hook trust/activity not yet verified; inspect the terminal's trust prompt and hook setup.`);
       const warning = stopObservationWarning(agent.id, entry);
       if (warning !== null) lines.push(`  [WARN] ${warning}`);
+    }
+  }
+  if (!cursors.completed && !cursors.abandoned) {
+    for (const agentId of cursors.activeRoster) {
+      const cursor = cursors.agents[agentId];
+      const safety = cursors.actionSafety[agentId];
+      const wait = safety?.scrollbackWait;
+      if (wait === undefined || cursor === undefined || safety === undefined) continue;
+      if (cursor.status !== "ordered" || cursor.actionId !== safety.actionId) continue;
+      const entry = lifecycle?.agents[agentId];
+      if (entry?.action?.delivery === "accepted" || entry?.action?.workflowCompleteAt != null) continue;
+      const sentence = scrollbackWaitNotice(agentId);
+      lines.push(cursors.paused || cursors.manualPaused
+        ? `[WAIT] ${sentence} (last observed ${wait.observedAt}; scrolling does not resume delivery while coord is paused).`
+        : `[WAIT] ${sentence}`);
     }
   }
   lines.push(`Active step: ${stageNames[cursors.issueCursor.stepId]} (${describeWorkflowStep(cursors.issueCursor.stepId, cursors.issueCursor.round)})`,

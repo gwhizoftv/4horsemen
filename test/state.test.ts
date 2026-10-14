@@ -167,6 +167,25 @@ describe("operational state", () => {
     expect(after.agents.codex?.actionId).toBeNull();
   });
 
+  it("keeps a missing scrollback wait absent and round-trips one that is current", () => {
+    const { paths } = initialize();
+    const now = "2026-09-22T12:00:00.000Z";
+    const actionId = "10000000-0000-4000-8000-000000000001";
+    const original = readCursorsState(paths);
+    const legacy = cursorsStateSchema.parse({
+      ...original,
+      actionSafety: { codex: { actionId, sends: 0, lastSendAt: null, activityAt: now } }
+    });
+    expect(legacy.actionSafety.codex?.scrollbackWait).toBeUndefined();
+    const wait = { observedAt: now, lastReminderAt: now };
+    const withWait = cursorsStateSchema.parse({
+      ...legacy,
+      actionSafety: { codex: { ...legacy.actionSafety.codex, scrollbackWait: wait } }
+    });
+    writeCursorsState(paths, withWait);
+    expect(readCursorsState(paths).actionSafety.codex?.scrollbackWait).toEqual(wait);
+  });
+
   it("keeps manual and independent holds separate and requires an explicit breaker reset", () => {
     const { paths } = initialize();
     const now = "2026-09-22T12:00:00.000Z";
@@ -192,6 +211,7 @@ describe("operational state", () => {
     expect(released.manualPaused).toBe(true);
     expect(released.holds.map((entry) => entry.id)).toEqual([otherId]);
     expect(released.actionSafety.codex).toMatchObject({ sends: 0, reserved: false, holdGeneration: 1 });
+    expect(released.actionSafety.codex?.scrollbackWait).toBeUndefined();
     expect(released.agents).toEqual(held.agents);
     const last = releaseHold(released, otherId, false, now);
     expect(last.paused).toBe(true); // still manually paused

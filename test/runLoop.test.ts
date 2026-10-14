@@ -7,7 +7,7 @@ import { readAction, writeAction } from "../src/action.js";
 import { computeInputSetHash } from "../src/evidence.js";
 import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
 import { git, repoRoot } from "./support/workspaceFixture.js";
-import { decideLifecycleNudge, initialAgentLifecycle, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
+import { decideLifecycleNudge, initialAgentLifecycle, mutateAgentLifecycle, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentResponsePath, agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
@@ -1154,6 +1154,89 @@ describe("durable delivery safety", () => {
     await f.tick(); // journal append already durable; cursor replacement had not happened
     expect(events()).toHaveLength(2);
     expect(readCursorsState(f.paths).actionSafety.codex?.sends).toBe(0);
+  });
+
+  it("repeats a scrolled pane every three minutes and clears it when delivery can proceed", async () => {
+    const f = safetyFixture();
+    const sentence = "the codex pane is scrolled back; scroll to the bottom to let coord send";
+    const scrollLogs = () => f.messages.filter((message) => message.includes(sentence));
+    const scrollRows = () => readJournal(f.paths).filter((event) => event.type === "nudge-deferred" && event.details.code === "owner-typing");
+    f.ui.busy = true;
+    await f.tick();
+    expect(scrollLogs()).toEqual([
+      `[WAIT] Issue 1: waiting to send to codex; ${sentence}`
+    ]);
+    expect(scrollRows()).toHaveLength(1);
+    expect(f.ui.sends).toBe(0);
+    const firstWait = readCursorsState(f.paths).actionSafety.codex?.scrollbackWait;
+    expect(firstWait?.observedAt).toBe(f.now());
+    f.advance(179_999);
+    await f.tick();
+    await f.tick();
+    expect(scrollLogs()).toHaveLength(1);
+    expect(scrollRows()).toHaveLength(1);
+    f.advance(1);
+    await f.tick();
+    expect(scrollLogs()).toHaveLength(2);
+    expect(scrollRows()).toHaveLength(1);
+    expect(readCursorsState(f.paths).actionSafety.codex?.deferrals.filter((code) => code === "owner-typing")).toEqual(["owner-typing"]);
+    expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait?.observedAt).toBe(firstWait?.observedAt);
+    await f.tick();
+    expect(scrollLogs()).toHaveLength(2);
+    f.ui.busy = false;
+    f.ui.foreground = "bash";
+    await f.tick();
+    expect(f.ui.sends).toBe(0);
+    expect(scrollLogs()).toHaveLength(2);
+    expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait).toBeUndefined();
+    expect(readJournal(f.paths).some((event) => event.details.code === "foreground-mismatch")).toBe(true);
+    f.ui.busy = true;
+    f.ui.foreground = "harness";
+    await f.tick();
+    expect(scrollLogs()).toHaveLength(3);
+    expect(scrollRows()).toHaveLength(1);
+    expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait?.observedAt).toBe(f.now());
+    f.ui.busy = false;
+    await f.tick();
+    expect(f.ui.sends).toBe(1);
+    expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait).toBeUndefined();
+  });
+
+  it("starts a new scrollback episode when the ordered action changes and drops it on a receipt or a failed inspect", async () => {
+    const f = safetyFixture();
+    const sentence = "the codex pane is scrolled back; scroll to the bottom to let coord send";
+    const scrollLogs = () => f.messages.filter((message) => message.includes(sentence));
+    f.ui.busy = true;
+    await f.tick();
+    const previous = readCursorsState(f.paths).agents.codex!.actionId!;
+    const remindedAt = readCursorsState(f.paths).actionSafety.codex?.scrollbackWait?.lastReminderAt;
+    const next = randomUUID();
+    const actionPath = agentRuntimePaths(f.paths, "codex").action;
+    writeFileSync(actionPath, readFileSync(actionPath, "utf8").replaceAll(previous, next));
+    const actionDigest = createHash("sha256").update(readFileSync(actionPath)).digest("hex");
+    mutateCursorsState(f.paths, (state) => ({ ...state,
+      agents: { ...state.agents, codex: { ...state.agents.codex!, actionId: next, actionDigest } }
+    }));
+    mutateAgentLifecycle(f.paths, (state) => ({ ...state, agents: { ...state.agents, codex: { ...state.agents.codex!, action: {
+      ...state.agents.codex!.action!, actionId: next, actionDigest, delivery: "ordered", injectedAt: null,
+      retryableInjectionAt: f.now(), workflowCompleteAt: null
+    } } } }));
+    f.advance(1);
+    await f.tick();
+    expect(scrollLogs()).toHaveLength(2);
+    expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait?.lastReminderAt).not.toBe(remindedAt);
+    expect(readJournal(f.paths).filter((event) => event.type === "nudge-deferred" && event.details.code === "owner-typing")).toHaveLength(2);
+    const observedAt = readCursorsState(f.paths).actionSafety.codex?.scrollbackWait?.observedAt;
+    f.ui.failInspect = true;
+    f.advance(180_000);
+    await f.tick();
+    expect(scrollLogs()).toHaveLength(2);
+    expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait?.observedAt).toBe(observedAt);
+    f.ui.failInspect = false;
+    f.ui.busy = false;
+    writeFileSync(agentRuntimePaths(f.paths, "codex").complete, `${"d".repeat(40)}\n`);
+    await f.tick();
+    expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait).toBeUndefined();
   });
 
   it.each(["codex", "claude", "cursor", "antigravity"])("bounds %s across restarts, fresh idle epochs and the diagnostic knob", async (vendor) => {

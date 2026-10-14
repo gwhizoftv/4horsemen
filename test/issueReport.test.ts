@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderIssueReport } from "../src/issueReport.js";
 import { initialAgentLifecycle } from "../src/agentLifecycle.js";
-import type { CursorsState, StartState } from "../src/state.js";
+import { emptyResourceObservation, type CursorsState, type StartState } from "../src/state.js";
 
 const pin = "f".repeat(40);
 const impl = "e".repeat(40);
@@ -244,4 +244,95 @@ it("reports pending/filed follow-ups and authorized-reviser recovery without exp
   expect(report).toContain("historical objections remain recorded");
   expect(report).not.toContain("not unanimous approval");
   expect(report).not.toContain("Follow-up pending");
+});
+
+it("shows a scrollback wait only while that ordered action is still unanswered", () => {
+  const actionId = "10000000-0000-4000-8000-000000000009";
+  const observedAt = "2026-08-13T00:00:00.000Z";
+  const sentence = "the cursor pane is scrolled back; scroll to the bottom to let coord send";
+  const waiting = (): CursorsState => {
+    const cursors = complete();
+    cursors.completed = false;
+    cursors.abandoned = false;
+    cursors.paused = false;
+    cursors.manualPaused = false;
+    cursors.activeRoster = ["cursor"];
+    cursors.agents = {
+      cursor: {
+        lastAcceptedActionId: null,
+        stepId: "R4.implement",
+        evidenceId: "implementation-pinned",
+        actionId,
+        submissionMode: "git",
+        actionDigest: "a".repeat(64),
+        status: "ordered",
+        attempt: 1,
+        submissionSha: null,
+        outstanding: [],
+        updatedAt: observedAt
+      }
+    };
+    cursors.actionSafety = {
+      cursor: {
+        actionId,
+        sends: 0,
+        lastSendAt: null,
+        reserved: false,
+        deferrals: ["owner-typing"],
+        holdGeneration: 0,
+        observationChecks: 0,
+        nextObservationAt: null,
+        activityAt: observedAt,
+        resource: emptyResourceObservation(),
+        scrollbackWait: { observedAt, lastReminderAt: observedAt }
+      }
+    };
+    return cursors;
+  };
+  const active = waiting();
+  expect(renderIssueReport(start("owner-only"), active)).toContain(`[WAIT] ${sentence}`);
+  expect(renderIssueReport(start("owner-only"), active)).not.toContain("scrolling does not resume");
+
+  const completed = waiting();
+  completed.completed = true;
+  expect(renderIssueReport(start("owner-only"), completed)).not.toContain(sentence);
+
+  const stale = waiting();
+  stale.agents.cursor!.actionId = "10000000-0000-4000-8000-000000000010";
+  expect(renderIssueReport(start("owner-only"), stale)).not.toContain(sentence);
+
+  const verifying = waiting();
+  verifying.agents.cursor!.status = "verifying";
+  expect(renderIssueReport(start("owner-only"), verifying)).not.toContain(sentence);
+
+  const accepted = waiting();
+  const lifecycle = initialAgentLifecycle(["cursor"], observedAt);
+  lifecycle.agents.cursor!.action = {
+    actionId,
+    actionDigest: "a".repeat(64),
+    delivery: "accepted",
+    orderedAt: observedAt,
+    injectedAt: observedAt,
+    retryableInjectionAt: null,
+    acceptedAt: observedAt,
+    sessionId: null,
+    turnId: null,
+    lastNudgedIdleEpoch: null,
+    workflowCompleteAt: null
+  };
+  expect(renderIssueReport(start("owner-only"), accepted, lifecycle)).not.toContain(sentence);
+
+  const elsewhere = waiting();
+  elsewhere.activeRoster = ["codex"];
+  expect(renderIssueReport(start("owner-only"), elsewhere)).not.toContain(sentence);
+
+  const inferred = waiting();
+  delete inferred.actionSafety.cursor!.scrollbackWait;
+  expect(renderIssueReport(start("owner-only"), inferred)).not.toContain(sentence);
+
+  const paused = waiting();
+  paused.paused = true;
+  expect(renderIssueReport(start("owner-only"), paused)).toContain(
+    `[WAIT] ${sentence} (last observed ${observedAt}; scrolling does not resume delivery while coord is paused).`
+  );
 });

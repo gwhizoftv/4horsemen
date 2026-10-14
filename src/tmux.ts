@@ -455,13 +455,34 @@ export const nudgePreludeKeys = (agentId: string): readonly string[] => agentNud
  * cannot turn them into shell command separators (which would skip select-window
  * and leave every client on the last window, usually antigravity).
  */
+/** Session option. Grouped clients do not inherit it from the base session. */
+export const SCROLL_HISTORY_LIMIT = "50000";
+
+/**
+ * History and mouse for one coord session or one linked Terminal client.
+ * Never `-g`: that would change every other session on the server.
+ */
+export const sessionScrollArguments = (session: string): string[] => [
+  "set-option", "-t", session, "history-limit", SCROLL_HISTORY_LIMIT,
+  ";", "set-option", "-t", session, "mouse", "on"
+];
+
+/** Window option. `-q` lets tmux before 3.6, which has no pane-scrollbars, continue. */
+export const scrollbarArguments = (target: string): string[] => [
+  "set-option", "-w", "-q", "-t", target, "pane-scrollbars", "on"
+];
+
 export const agentClientAttachCommand = (session: string, agentId: string): string => {
   const window = safeName(agentId);
   const client = `${session}-${window}`;
+  const pane = `${session}:${window}`;
   return [
     `tmux new-session -A -s ${client} -t ${session}`,
     `select-window -t ${window}`,
-    "set-option destroy-unattached on"
+    "set-option destroy-unattached on",
+    `set-option -t ${client} history-limit ${SCROLL_HISTORY_LIMIT}`,
+    `set-option -t ${client} mouse on`,
+    `set-option -w -q -t ${pane} pane-scrollbars on`
   ].join(" ';' ");
 };
 
@@ -865,6 +886,7 @@ export class TmuxController {
         throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
       }
       await this.removeInheritedMode(session, "COORD_MANUAL");
+      await this.applySessionScroll(session);
       for (const agent of agents) {
         const launcher = resolveAgentLauncher(agent);
         const target = `${session}:${safeName(agent.id)}`;
@@ -989,6 +1011,8 @@ export class TmuxController {
       assertAuthority();
       if (created.exitCode !== 0) throw new Error(`tmux session creation failed: ${created.stderr}`);
     }
+    await this.applySessionScroll(session);
+    assertAuthority();
     // `-r` removes the variable from every process the session starts, even one
     // the tmux server's global environment still carries; `-u` would only drop
     // the session value and let that global value through.
@@ -1026,7 +1050,13 @@ export class TmuxController {
       if (windowNames.includes(safeName(agent.id))) {
         const pane = await this.inspectPane(target);
         assertAuthority();
-        if (pane.alive) continue;
+        if (pane.alive) {
+          await this.applyWindowScrollbar(target);
+          assertAuthority();
+          await this.applyLinkedClientScroll(session, agent.id);
+          assertAuthority();
+          continue;
+        }
         const launcher = resolveAgentLauncher(agent);
         await this.recordPaneExits(["-t", target]);
         assertAuthority();
@@ -1035,6 +1065,8 @@ export class TmuxController {
         const respawned = held.exitCode === 0 ? await this.launchAgent(target, agent, launcher, terminalLogDir?.(agent.id)) : held;
         assertAuthority();
         if (respawned.exitCode !== 0) throw new Error(`cannot relaunch ${agent.id} in ${target}: ${respawned.stderr}`);
+        await this.applyLinkedClientScroll(session, agent.id);
+        assertAuthority();
         continue;
       }
       const launcher = resolveAgentLauncher(agent);
@@ -1052,7 +1084,36 @@ export class TmuxController {
       const created = window.exitCode === 0 ? await this.launchAgent(target, agent, launcher, terminalLogDir?.(agent.id)) : window;
       assertAuthority();
       if (created.exitCode !== 0) throw new Error(`cannot launch ${agent.id} in ${target}: ${created.stderr}`);
+      await this.applyLinkedClientScroll(session, agent.id);
+      assertAuthority();
     }
+  }
+
+  /** Required session options. A failure here must not be ignored. */
+  private async applySessionScroll(session: string): Promise<void> {
+    const applied = await this.runner(sessionScrollArguments(session));
+    if (applied.exitCode !== 0) {
+      throw new Error(`cannot set scrollback options on ${session}: ${applied.stderr}`);
+    }
+  }
+
+  /** Optional window chrome. `-q` is the only reason an unknown option exits 0. */
+  private async applyWindowScrollbar(target: string): Promise<void> {
+    const applied = await this.runner(scrollbarArguments(target));
+    if (applied.exitCode !== 0) {
+      throw new Error(`cannot set pane scrollbars on ${target}: ${applied.stderr}`);
+    }
+  }
+
+  /**
+   * Mouse and history on a Terminal the operator already has open. A missing
+   * client is the normal case before the first attach and is not an error.
+   */
+  private async applyLinkedClientScroll(session: string, agentId: string): Promise<void> {
+    const client = `${session}-${safeName(agentId)}`;
+    const exists = await this.runner(["has-session", "-t", client]);
+    if (exists.exitCode !== 0) return;
+    await this.applySessionScroll(client);
   }
 
   /**
@@ -1065,6 +1126,7 @@ export class TmuxController {
     const log = logDir === undefined ? null : newTerminalLog(logDir);
     return this.runner([
       "set-option", "-w", "-t", target, "remain-on-exit", "on",
+      ";", ...scrollbarArguments(target),
       ...(log === null ? [] : [
         ";", "set-option", "-w", "-t", target, "@coord-log", log,
         ";", "pipe-pane", "-t", target, pipeToLog(log)

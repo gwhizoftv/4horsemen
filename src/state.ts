@@ -713,6 +713,12 @@ export const emptyResourceObservation = (): z.infer<typeof resourceObservationSc
   starts: 0, failures: 0, inFlight: null, nextAt: null, consumedDeadlines: [], terminal: null, episode: null
 });
 
+/** Current copy-mode delivery wait. Absence means coord is not waiting on scrollback. */
+const scrollbackWaitSchema = z.object({
+  observedAt: timestampSchema,
+  lastReminderAt: timestampSchema
+}).strict();
+
 const actionSafetySchema = z.object({
   actionId: z.string().uuid(),
   sends: z.number().int().nonnegative().default(0),
@@ -723,7 +729,8 @@ const actionSafetySchema = z.object({
   observationChecks: z.number().int().nonnegative().default(0),
   nextObservationAt: timestampSchema.nullable().default(null),
   activityAt: timestampSchema,
-  resource: resourceObservationSchema.default(emptyResourceObservation)
+  resource: resourceObservationSchema.default(emptyResourceObservation),
+  scrollbackWait: scrollbackWaitSchema.optional()
 }).strict();
 
 const holdSchema = z.object({
