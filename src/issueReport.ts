@@ -1,6 +1,6 @@
 import type { BallotBatch, CursorsState, StartState } from "./state.js";
 import { coordMergesPullRequest, describeWorkflowStep, type WorkflowStepId } from "./steps.js";
-import { containmentCoverage, stopObservationWarning } from "./agentLifecycle.js";
+import { containmentCoverage, rereadPickupPending, stopObservationWarning } from "./agentLifecycle.js";
 import { containmentPolicy } from "./shellGuard.js";
 import { shellQuote } from "./agentHookSync.js";
 import type { AgentLifecycleState } from "./agentLifecycle.js";
@@ -238,8 +238,11 @@ export const renderIssueReport = (
         accepted: "agent acknowledged the task" };
       const execution = { unknown: "activity not yet known", queued: "input queued", working: "working; no intervention needed",
         idle: "idle", failed: "agent reported a failure" };
+      const task = entry.action === null ? "no current task"
+        : rereadPickupPending(entry, entry.action.actionId) ? "task file published; agent expected to pick it up by rereading action.md"
+        : delivery[entry.action.delivery];
       lines.push(
-        `Agent ${agent.id}: ${entry.action === null ? "no current task" : delivery[entry.action.delivery]}; ${execution[entry.execution]}; activity reports ${entry.health}${queue}${background}${alert}` +
+        `Agent ${agent.id}: ${task}; ${execution[entry.execution]}; activity reports ${entry.health}${queue}${background}${alert}` +
         `, containment hook=${coverage.hook} shim=${coverage.shim}` +
         (entry.sessionId === null ? " (session identity unavailable)" : "") +
         (probe ? ` (agent-observed ${probe.at}, session=${probe.sessionId}, vendor=${probe.vendorVersion}, policy=${probe.policyRevision})` : "")

@@ -7,7 +7,7 @@ import { readAction, writeAction } from "../src/action.js";
 import { computeInputSetHash } from "../src/evidence.js";
 import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
 import { git, repoRoot } from "./support/workspaceFixture.js";
-import { decideLifecycleNudge, initialAgentLifecycle, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
+import { decideLifecycleNudge, initialAgentLifecycle, markActionWorkflowComplete, observeAgentLifecycle, orderAgentAction, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentResponsePath, agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
@@ -1665,6 +1665,102 @@ const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], fina
 };
 
 describe("effectful run loop", () => {
+  it.each(["accepted", "reread"])("does not describe %s work as waiting to send across restarts", async (mode) => {
+    const verbose: string[] = [];
+    const f = safetyFixture("claude", { verbose: (message) => verbose.push(message) });
+    if (mode === "reread") {
+      const previous = actionIdFor("claude", 42), digest = "a".repeat(64);
+      orderAgentAction(f.paths, "claude", previous, digest, f.now());
+      observeAgentLifecycle(f.paths, "claude", { kind: "prompt-submitted", eventName: "prompt", sessionId: "session",
+        turnId: "old", actionId: previous, actionDigest: digest }, f.now());
+      markActionWorkflowComplete(f.paths, "claude", previous, f.now());
+      f.ui.foreground = "bash";
+    }
+    await f.tick();
+    if (mode === "accepted") { f.working(); f.messages.length = 0; verbose.length = 0; }
+    await f.tick();
+    await f.tick();
+    const currentId = readCursorsState(f.paths).agents.claude.actionId;
+    const deferrals = readJournal(f.paths).filter((event) => event.type === "nudge-deferred" && event.actionId === currentId &&
+      event.details.code === (mode === "accepted" ? "working" : "foreground-mismatch"));
+    expect(deferrals).toHaveLength(1);
+    expect(deferrals[0].details).toMatchObject({ gateWaiting: false, ...(mode === "reread" ? { rereadExpected: true } : {}) });
+    expect([...f.messages, ...verbose].join("\n")).not.toContain("waiting to send");
+    expect(verbose.join("\n")).toContain("working");
+    expect(f.ui.sends).toBe(mode === "accepted" ? 1 : 0);
+  });
+
+  it("preserves late Cursor ready proof after its own post-tool callback and a reread expectation", async () => {
+    const f = safetyFixture("cursor");
+    const previous = actionIdFor("cursor", 42), digest = "a".repeat(64);
+    orderAgentAction(f.paths, "cursor", previous, digest, f.now());
+    observeAgentLifecycle(f.paths, "cursor", { kind: "prompt-submitted", eventName: "prompt", sessionId: "session",
+      turnId: "previous", actionId: previous, actionDigest: digest }, f.now());
+    markActionWorkflowComplete(f.paths, "cursor", previous, f.now());
+    mutateCursorsState(f.paths, (state) => ({ ...state, agents: { ...state.agents,
+      cursor: { ...state.agents.cursor, lastAcceptedActionId: previous } } }));
+    f.ui.foreground = "bash";
+    f.advance(10); await f.tick();
+    const before = readAgentLifecycle(f.paths);
+    expect(before.agents.cursor.action).toMatchObject({ delivery: "ordered", rereadExpected: true });
+    const ready = agentRuntimePaths(f.paths, "cursor").ready;
+    f.advance(10);
+    writeFileSync(ready, `ready ${previous}\n`);
+    utimesSync(ready, new Date(f.now()), new Date(f.now()));
+    f.advance(10);
+    observeAgentLifecycle(f.paths, "cursor", { kind: "tool-activity", eventName: "postToolUse", sessionId: "session",
+      turnId: "previous" }, f.now());
+    expect(readAgentLifecycle(f.paths)).toEqual(before);
+    f.ui.foreground = "harness";
+    f.ui.text = "Auto · 1%"; // ready prompt, with no COORD-IDLE sentinel and no Stop callback
+    await f.tick();
+    expect(f.ui.sends).toBe(1);
+    expect(existsSync(ready)).toBe(false);
+    expect(readAgentLifecycle(f.paths).agents.cursor.action?.rereadExpected).toBeUndefined();
+    await f.tick();
+    expect(f.ui.sends).toBe(1);
+  });
+
+  it("does not resend queued work or create a resource hold for repeated preceding Stops", async () => {
+    const f = safetyFixture("claude");
+    const previous = actionIdFor("claude", 42), digest = "a".repeat(64);
+    orderAgentAction(f.paths, "claude", previous, digest, f.now());
+    observeAgentLifecycle(f.paths, "claude", { kind: "prompt-submitted", eventName: "prompt", sessionId: "session",
+      turnId: "shared", actionId: previous, actionDigest: digest }, f.now());
+    markActionWorkflowComplete(f.paths, "claude", previous, f.now());
+    f.ui.foreground = "bash";
+    await f.tick();
+    const action = readAgentLifecycle(f.paths).agents.claude.action!;
+    observeAgentLifecycle(f.paths, "claude", { kind: "prompt-submitted", eventName: "prompt", sessionId: "session",
+      turnId: "shared", actionId: action.actionId, actionDigest: action.actionDigest }, f.now());
+    for (let i = 0; i < 2; i++) observeAgentLifecycle(f.paths, "claude", { kind: "stopped", eventName: "Stop",
+      sessionId: "session", turnId: "shared" }, f.now());
+    observeAgentLifecycle(f.paths, "claude", { kind: "failed", eventName: "StopFailure", sessionId: "session",
+      turnId: "shared", failure: { vendor: "claude", error: "rate_limit", errorDetails: null, lastAssistantMessage: null } }, f.now());
+    f.ui.foreground = "harness";
+    f.ui.text = "Working... esc to cancel";
+    f.advance(60_000);
+    expect((await f.tick()).holds).toEqual([]);
+    expect(f.ui.sends).toBe(0);
+    expect(readAgentLifecycle(f.paths).agents.claude.execution).toBe("working");
+  });
+
+  it("acknowledges a never-sent action at validated completion only once", async () => {
+    const f = safetyFixture("claude");
+    f.ui.foreground = "bash";
+    await f.tick();
+    const cursors = readCursorsState(f.paths), actionId = cursors.agents.claude.actionId!;
+    f.makeLoop()["accept"](readStartState(f.paths), cursors, {
+      type: "accept-submission", agent: "claude", submissionSha: "d".repeat(40)
+    });
+    await f.tick();
+    const pickups = readJournal(f.paths).filter((event) => event.type === "agent-lifecycle" &&
+      event.actionId === actionId && event.details.event === "action-picked-up-by-reread");
+    expect(pickups).toHaveLength(1);
+    expect(f.messages.filter((message) => message.includes(`picked up action ${actionId} by rereading`))).toHaveLength(1);
+    expect(f.ui.sends).toBe(0);
+  });
+
   it.each(["idle", "working", "pending", "background"] as const)(
     "revalidates ready against duplicate %s status during delivery", async (status) => {
       const f = safetyFixture("antigravity");

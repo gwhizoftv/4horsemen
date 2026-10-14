@@ -70,6 +70,10 @@ export const lifecycleActionSchema = z
     acceptedAt: timestampSchema.nullable(),
     sessionId: z.string().min(1).nullable(),
     turnId: z.string().min(1).nullable(),
+    /** Input accepted while this preceding turn was still executing. */
+    queuedBehindTurnId: z.string().min(1).optional(),
+    /** Reporting only: the preceding completed action was in the same live session. */
+    rereadExpected: z.literal(true).optional(),
     lastNudgedIdleEpoch: z.number().int().nonnegative().nullable(),
     workflowCompleteAt: timestampSchema.nullable()
   })
@@ -154,7 +158,7 @@ export type LifecycleFailure = z.infer<typeof lifecycleFailureSchema>;
 export type ObservedFailure = FailureFields & { vendor: "claude" | "cursor"; status?: string };
 
 export type LifecycleObservation = {
-  kind: "session-start" | "session-end" | "prompt-submitted" | "working" | "stopped" | "failed" | "status" | "telemetry";
+  kind: "session-start" | "session-end" | "prompt-submitted" | "working" | "tool-activity" | "stopped" | "failed" | "status" | "telemetry";
   eventName: string;
   sessionId?: string;
   turnId?: string;
@@ -300,6 +304,10 @@ export const orderAgentAction = (
     ) {
       return state;
     }
+    const rereadExpected = current.execution === "working" && current.stoppedAt === null &&
+      (current.action?.actionId === actionId ? current.action.rereadExpected === true
+        : current.action?.workflowCompleteAt != null && current.sessionId !== null &&
+          current.action.sessionId === current.sessionId);
     return replaceEntry(
       state,
       agent,
@@ -315,6 +323,7 @@ export const orderAgentAction = (
           acceptedAt: null,
           sessionId: null,
           turnId: null,
+          ...(rereadExpected ? { rereadExpected: true } : {}),
           lastNudgedIdleEpoch: null,
           workflowCompleteAt: null
         }
@@ -352,6 +361,8 @@ export const markActionInjected = (
         degradedCause: null,
         action: {
           ...action,
+          rereadExpected: undefined,
+          queuedBehindTurnId: acceptedDuringAttempt ? action.queuedBehindTurnId : undefined,
           delivery: acceptedDuringAttempt ? "accepted" : "injected",
           injectedAt: now,
           retryableInjectionAt: null,
@@ -393,6 +404,7 @@ export const markInjectedActionAbsent = (
         ...current,
         action: {
           ...action,
+          rereadExpected: undefined,
           delivery: "ordered",
           injectedAt: null,
           retryableInjectionAt: now,
@@ -433,7 +445,7 @@ export const markActionInjectionDeferred = (
     );
   });
 
-export type WorkflowCompleteResult = { state: AgentLifecycleState; clearedDegraded: boolean };
+export type WorkflowCompleteResult = { state: AgentLifecycleState; clearedDegraded: boolean; pickedUpByReread: boolean };
 
 /**
  * Workflow truth outranks observability. The agent published and pushed, so a
@@ -447,10 +459,13 @@ export const markActionWorkflowComplete = (
   now = new Date().toISOString()
 ): WorkflowCompleteResult => {
   let clearedDegraded = false;
+  let pickedUpByReread = false;
   const state = mutateAgentLifecycle(paths, (current0) => {
     const current = current0.agents[agent];
     if (current?.action?.actionId !== actionId) return current0;
     clearedDegraded = current.health === "degraded";
+    pickedUpByReread = current.action.workflowCompleteAt === null &&
+      current.action.delivery === "ordered" && current.action.injectedAt === null;
     return replaceEntry(
       current0,
       agent,
@@ -461,13 +476,22 @@ export const markActionWorkflowComplete = (
           : current.stopObservation,
         health: clearedDegraded ? "healthy" : current.health,
         degradedCause: clearedDegraded ? null : current.degradedCause,
-        action: { ...current.action, workflowCompleteAt: now }
+        action: { ...current.action, workflowCompleteAt: now,
+          // Completion proves pickup; retain its live-session association for
+          // a third (or later) action discovered during the same turn.
+          ...(pickedUpByReread && current.action.rereadExpected === true ? { sessionId: current.sessionId } : {}) }
       },
       now
     );
   });
-  return { state, clearedDegraded };
+  return { state, clearedDegraded, pickedUpByReread };
 };
+
+/** An expectation is not delivery acceptance and must not disable first-send recovery. */
+export const rereadPickupPending = (entry: AgentLifecycleEntry | undefined, actionId: string): boolean =>
+  entry?.action?.actionId === actionId && entry.action.rereadExpected === true &&
+  entry.action.delivery === "ordered" && entry.action.injectedAt === null &&
+  entry.action.workflowCompleteAt === null && entry.execution === "working";
 
 const positiveIdle = (entry: AgentLifecycleEntry, nextExecution: AgentLifecycleEntry["execution"]): number =>
   (nextExecution === "idle" || nextExecution === "failed") &&
@@ -573,6 +597,34 @@ export const applyLifecycleObservation = (
 
   if (observation.kind === "telemetry") return applyTelemetry(entry, observation, now);
 
+  // Post-tool callbacks describe completed tool calls, not new turn starts.
+  // Check inside the lifecycle lock so a concurrent Stop cannot be undone by
+  // a precondition read in another hook process.
+  if (observation.kind === "tool-activity") {
+    const currentTurn = entry.stopObservation.turns.at(-1) ?? entry.turnId;
+    if (incomingSession === null || incomingSession !== entry.sessionId ||
+        observation.turnId === undefined || observation.turnId !== currentTurn ||
+        entry.stoppedAt !== null || !["queued", "unknown"].includes(entry.execution)) return entry;
+  }
+
+  const terminal = observation.kind === "stopped" || observation.kind === "failed";
+  const currentTurn = entry.action?.turnId ?? entry.stopObservation.turns.at(-1) ?? entry.turnId;
+  const olderTurn = currentTurn !== null && observation.turnId !== undefined && currentTurn !== observation.turnId;
+  const queuedBehind = entry.action?.workflowCompleteAt === null ? entry.action.queuedBehindTurnId : undefined;
+  const precedingQueuedTurn = queuedBehind !== undefined &&
+    (observation.turnId === undefined || observation.turnId === queuedBehind);
+  if (!sessionChanged && terminal && (olderTurn || precedingQueuedTurn)) {
+    // Keep the joined-turn identity until a new execution identity or workflow
+    // completion resolves it. Clearing it on the first Stop makes a duplicate
+    // old Stop (including StopFailure) look like the queued work has ended.
+    if (observation.failure === undefined || (entry.lastFailure?.actionId != null &&
+        entry.lastFailure.actionId === entry.action?.actionId)) return entry;
+    const lastFailure = recordFailure(entry, observation.failure, {
+      action: null, sessionId: incomingSession ?? entry.sessionId, turnId: observation.turnId ?? null, now
+    });
+    return lastFailure === entry.lastFailure ? entry : agentLifecycleEntrySchema.parse({ ...entry, lastFailure });
+  }
+
   let stopObservation = sessionChanged || (entry.sessionId === null && incomingSession !== null)
     ? emptyStopObservation() : entry.stopObservation;
   if (observation.kind === "prompt-submitted") {
@@ -608,6 +660,8 @@ export const applyLifecycleObservation = (
         acceptedAt: null,
         sessionId: null,
         turnId: null,
+        queuedBehindTurnId: undefined,
+        rereadExpected: undefined,
         lastNudgedIdleEpoch: null
       };
     }
@@ -637,17 +691,24 @@ export const applyLifecycleObservation = (
       observation.actionId === action.actionId &&
       observation.actionDigest === action.actionDigest
     ) {
+      const sameLiveTurn = !sessionChanged && entry.execution === "working" && entry.stoppedAt === null &&
+        observation.turnId !== undefined && observation.turnId === entry.turnId;
+      const duplicate = action.delivery === "accepted" && action.turnId === observation.turnId;
       action = {
         ...action,
         delivery: "accepted",
         acceptedAt: now,
         sessionId,
-        turnId: observation.turnId ?? null
+        turnId: observation.turnId ?? null,
+        queuedBehindTurnId: sameLiveTurn && !duplicate ? observation.turnId
+          : action.queuedBehindTurnId === observation.turnId ? action.queuedBehindTurnId : undefined,
+        rereadExpected: undefined
       };
     }
   }
 
   if (observation.kind === "working") { execution = "working"; stoppedAt = null; }
+  if (observation.kind === "tool-activity") execution = "working";
   if (["failed", "session-end", "session-start"].includes(observation.kind)) stoppedAt = null;
   if (observation.kind === "failed") {
     const injectedAwaitingAcceptance =
@@ -660,14 +721,7 @@ export const applyLifecycleObservation = (
   if (observation.kind === "session-end") execution = "failed";
 
   if (observation.kind === "stopped") {
-    const currentActionTurn = action?.turnId ?? entry.stopObservation.turns.at(-1) ?? entry.turnId;
-    const stoppedTurn = observation.turnId ?? null;
-    const stoppingOlderTurn =
-      currentActionTurn !== null && stoppedTurn !== null && currentActionTurn !== stoppedTurn;
-    if (
-      (pendingInputCount ?? 0) > 0 ||
-      stoppingOlderTurn
-    ) {
+    if ((pendingInputCount ?? 0) > 0) {
       execution = "queued";
       stoppedAt = null;
     } else {
@@ -681,6 +735,10 @@ export const applyLifecycleObservation = (
     if ((pendingInputCount ?? 0) > 0 || observation.execution === "working" || observation.execution === "unknown") stoppedAt = null;
     if (stoppedAt !== null) execution = "idle";
     else if ((pendingInputCount ?? 0) > 0 || backgroundActive === true) execution = "queued";
+  }
+
+  if (action !== null && (execution === "idle" || execution === "failed")) {
+    action = { ...action, rereadExpected: undefined };
   }
 
   const idleEpoch = positiveIdle(entry, execution);
@@ -749,7 +807,9 @@ export const observeAgentLifecycleWithResult = (
     // Status-bar telemetry is not an activity hook: idle renders must not revoke
     // ready. Every remaining callback counts even when semantic deduplication (or
     // stale-session rejection) leaves execution unchanged.
-    const hookReceipt = observation.kind === "telemetry" ? current.hookReceipt : {
+    // In particular, postToolUse for the command writing ready arrives after
+    // the file. A no-op completion callback must not invalidate that receipt.
+    const hookReceipt = observation.kind === "telemetry" || observation.kind === "tool-activity" ? current.hookReceipt : {
       at: new Date(Math.max(Date.parse(now), Date.parse(current.hookReceipt?.at ?? current.lastEventAt ?? now))).toISOString(),
       sequence: (current.hookReceipt?.sequence ?? 0) + 1
     };

@@ -9,6 +9,7 @@ import {
   initialAgentLifecycle,
   applyLifecycleObservation,
   markActionInjected,
+  observeAgentLifecycle,
   orderAgentAction,
   readAgentLifecycle
 } from "../src/agentLifecycle.js";
@@ -226,6 +227,11 @@ describe("vendor lifecycle event normalization", () => {
   });
 
   it("normalizes Cursor analytics hooks for tools and token usage", () => {
+    for (const hook_event_name of ["postToolUse", "postToolUseFailure"]) {
+      expect(normalizeAgentEvent("cursor", { hook_event_name,
+        conversation_id: "conversation-1", generation_id: "generation-1" }))
+        .toEqual({ kind: "tool-activity", eventName: hook_event_name, sessionId: "conversation-1", turnId: "generation-1" });
+    }
     expect(
       normalizeCursorUsageEvent("cursor", {
         hook_event_name: "postToolUse",
@@ -432,5 +438,31 @@ describe("vendor lifecycle event normalization", () => {
       details: { kind: "tool-used", sessionId: "conversation-1", turnId: "generation-1" }
     });
     expect(readAgentLifecycle(paths).agents.cursor?.execution).toBe("unknown");
+  });
+
+  it.each(["postToolUse", "postToolUseFailure"])("uses correlated %s for execution repair and preserves usage accounting", (event) => {
+    const { clone, paths } = runtimeFixture("cursor");
+    const now = "2026-08-18T00:00:00.000Z", later = "2026-08-18T00:00:01.000Z";
+    observeAgentLifecycle(paths, "cursor", { kind: "status", eventName: "status", sessionId: "s", turnId: "current",
+      execution: "queued", pendingInputCount: 0 }, now);
+    const call = (generation_id: string, hook_event_name = event) => handleAgentEvent({ vendor: "cursor", clone,
+      environmentIssue: "86", now: later, raw: { hook_event_name, conversation_id: "s", generation_id } });
+    const queued = readAgentLifecycle(paths);
+    call("old");
+    expect(readAgentLifecycle(paths)).toEqual(queued);
+    call("current");
+    const working = readAgentLifecycle(paths);
+    expect(working.agents.cursor.execution).toBe("working");
+    expect(working.agents.cursor.hookReceipt).toEqual(queued.agents.cursor.hookReceipt);
+    call("current");
+    expect(readAgentLifecycle(paths)).toEqual(working);
+    const usage = readJournal(paths).filter((row) => row.type === "agent-usage");
+    expect(usage).toHaveLength(3);
+    expect(usage[1].details).toMatchObject({ kind: event === "postToolUse" ? "tool-used" : "tool-failed",
+      toolCalls: event === "postToolUse" ? 1 : 0, sessionId: "s", turnId: "current" });
+    observeAgentLifecycle(paths, "cursor", { kind: "stopped", eventName: "Stop", sessionId: "s", turnId: "current" }, later);
+    const stopped = readAgentLifecycle(paths);
+    call("current"); // delayed final-tool completion must not resurrect a stopped turn
+    expect(readAgentLifecycle(paths)).toEqual(stopped);
   });
 });

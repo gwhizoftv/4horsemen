@@ -13,6 +13,7 @@ import {
   mutateAgentLifecycle,
   orderAgentAction,
   readAgentLifecycle,
+  rereadPickupPending,
   stopObservationWarning,
   hasStopReadiness,
   type AgentLifecycleEntry
@@ -1999,14 +2000,23 @@ export class CoordinatorRunLoop {
     // The workflow is blocked on this delivery only while the action is out and
     // unanswered. A deferral for an agent that is verifying or waiting on a peer
     // is background detail, so it belongs in the journal but not on stdout.
-    const gateWaiting = cursors.agents[agent]?.status === "ordered";
+    const matchingAction = entry?.action?.actionId === actionId && entry.action.actionDigest === actionDigest;
+    const accepted = matchingAction && entry.action!.delivery === "accepted";
+    const completed = matchingAction && entry.action!.workflowCompleteAt !== null;
+    const rereadExpected = matchingAction && rereadPickupPending(entry, actionId);
+    const gateWaiting = cursors.agents[agent]?.status === "ordered" && !accepted && !completed && !rereadExpected;
     const now = this.now();
     const remind = scrollback && gateWaiting && cursors.activeRoster.includes(agent) &&
       !cursors.paused && !cursors.completed && !cursors.abandoned &&
-      !(entry?.action?.actionId === actionId && (entry.action.delivery === "accepted" || entry.action.workflowCompleteAt !== null)) &&
       (safety.scrollbackWait === undefined || Date.parse(now) - Date.parse(safety.scrollbackWait.lastReminderAt) >= SCROLLBACK_REMINDER_MS);
     if (recorded && !remind) return cursors;
     if (scrollback) human = scrollbackWaitMessage(agent);
+    if (!splitBrain && (accepted || completed || rereadExpected)) {
+      human = completed ? "the submission has been validated"
+        : rereadExpected ? "the agent is working and is expected to pick up this action by rereading action.md; no reminder needed"
+        : entry?.execution === "working" ? "the agent acknowledged the action and is working; no reminder needed"
+        : `the agent acknowledged the action; activity reports ${entry?.execution ?? "unknown"}`;
+    }
     const next = this.mutate(cursors, (current) => {
       if (!recorded) appendJournal(
         this.paths,
@@ -2023,6 +2033,7 @@ export class CoordinatorRunLoop {
             ...(detail === undefined ? {} : { detail }),
             ...(splitBrain ? { splitBrain: true } : {}),
             gateWaiting,
+            ...(rereadExpected ? { rereadExpected: true } : {}),
             actionDigest,
             hooks: {
               execution: entry?.execution ?? "unknown",
@@ -2043,6 +2054,7 @@ export class CoordinatorRunLoop {
     });
     const message = splitBrain
       ? `[WARN] Issue ${start.issue}: ${agent}'s activity report says idle but its terminal refuses input; ${human}`
+      : accepted || completed || rereadExpected ? `Issue ${start.issue}: ${agent}: ${human}`
       : `[WAIT] Issue ${start.issue}: waiting to send to ${agent}; ${human}`;
     this.verbose(`Delivery diagnostic: ${code}${detail === undefined ? "" : ` (${detail})`}`);
     if (scrollback ? remind : gateWaiting || splitBrain) this.log(message);
@@ -2150,6 +2162,13 @@ export class CoordinatorRunLoop {
     return this.deliver(start, cursors, agent, actionId, actionDigest, reason);
   }
 
+  private reportRereadPickup(start: StartState, agent: string, actionId: string, pickedUpByReread: boolean): void {
+    if (!pickedUpByReread) return;
+    appendJournal(this.paths, { type: "agent-lifecycle", agent, actionId,
+      details: { event: "action-picked-up-by-reread" } }, this.now());
+    this.log(`Issue ${start.issue}: ${agent} picked up action ${actionId} by rereading action.md; no prompt was needed.`);
+  }
+
   private accept(start: StartState, cursors: CursorsState, decision: Extract<MachineDecision, { type: "accept-submission" }>): CursorsState {
     const cursor = cursors.agents[decision.agent];
     if (cursor === undefined || cursor.stepId === null || cursor.actionId === null) return cursors;
@@ -2246,6 +2265,7 @@ export class CoordinatorRunLoop {
       });
     });
     const completion = markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
+    this.reportRereadPickup(start, decision.agent, cursor.actionId, completion.pickedUpByReread);
     this.log(`[OK] ${decision.agent}: submission validated and accepted (commit ${decision.submissionSha.slice(0, 12)}).`);
     this.reportStopWarnings();
     if (completion.clearedDegraded) {
@@ -2504,6 +2524,7 @@ export class CoordinatorRunLoop {
       });
     });
     const completion = markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
+    this.reportRereadPickup(start, decision.agent, cursor.actionId, completion.pickedUpByReread);
     this.log(`[OK] ${decision.agent}: private response validated and accepted.`);
     this.reportStopWarnings();
     if (completion.clearedDegraded) {

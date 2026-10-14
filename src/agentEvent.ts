@@ -182,6 +182,9 @@ export const normalizeAgentEvent = (
           : { actionId: action.actionId, actionDigest: action.actionDigest, actionPath: action.actionPath })
       };
     }
+    if (normalizedName === "posttooluse" || normalizedName === "posttoolusefailure") {
+      return { kind: "tool-activity", ...common };
+    }
     if (normalizedName === "stop") {
       const status = stringField(raw, "status", "reason", "final_status")?.toLowerCase();
       return status === "error" || status === "aborted"

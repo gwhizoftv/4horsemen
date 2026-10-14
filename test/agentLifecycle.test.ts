@@ -15,6 +15,7 @@ import {
   observeAgentLifecycleWithResult,
   orderAgentAction,
   readAgentLifecycle,
+  rereadPickupPending,
   stopObservationWarning
 } from "../src/agentLifecycle.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
@@ -32,6 +33,116 @@ const digest = "a".repeat(64);
 const entry = () => initialAgentLifecycle(["codex"], now).agents.codex!;
 
 describe("agent lifecycle policy", () => {
+  it.each(["stopped", "failed"] as const)("preserves newer work and readiness against an older %s even with pending input", (kind) => {
+    const root = mkdtempSync(join(tmpdir(), "coord-handoff-")); roots.push(root);
+    const paths = issueRuntimePaths(root, 1); createIssueRuntime(paths, ["codex"]);
+    initializeAgentLifecycle(paths, ["codex"], now);
+    orderAgentAction(paths, "codex", actionId, digest, now);
+    const working = applyLifecycleObservation(readAgentLifecycle(paths).agents.codex!, {
+      kind: "prompt-submitted", eventName: "prompt", sessionId: "s", turnId: "new", actionId, actionDigest: digest
+    }, now);
+    const oldStop = { kind, eventName: "Stop", sessionId: "s", turnId: "old", backgroundActive: false,
+      ...(kind === "failed" ? { failure: { vendor: "cursor" as const, status: "aborted",
+        error: null, errorDetails: null, lastAssistantMessage: null } } : {}) };
+    for (const current of [working, { ...working, pendingInputCount: 1, backgroundActive: true },
+      applyLifecycleObservation(working, { kind: "stopped", eventName: "Stop", sessionId: "s", turnId: "new" }, later),
+      applyLifecycleObservation(working, { kind: "failed", eventName: "StopFailure", sessionId: "s", turnId: "new",
+        failure: { vendor: "cursor", status: "error", error: null, errorDetails: null, lastAssistantMessage: null } }, later)]) {
+      const after = applyLifecycleObservation(current, oldStop, later);
+      expect(after).toMatchObject({ execution: current.execution, turnId: current.turnId, action: current.action,
+        stoppedAt: current.stoppedAt, idleEpoch: current.idleEpoch, pendingInputCount: current.pendingInputCount,
+        backgroundActive: current.backgroundActive });
+      if (current.lastFailure?.actionId != null) expect(after.lastFailure).toEqual(current.lastFailure);
+      else if (kind === "failed") expect(after.lastFailure?.actionId).toBeNull();
+      expect(applyLifecycleObservation(after, oldStop, later)).toEqual(after);
+    }
+  });
+
+  it("keeps repeated preceding Stops from ending input accepted in the same live turn", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-handoff-")); roots.push(root);
+    const paths = issueRuntimePaths(root, 1); createIssueRuntime(paths, ["codex"]);
+    initializeAgentLifecycle(paths, ["codex"], now);
+    orderAgentAction(paths, "codex", actionId, digest, now);
+    observeAgentLifecycleWithResult(paths, "codex", { kind: "prompt-submitted", eventName: "prompt",
+      sessionId: "s", turnId: "shared", actionId, actionDigest: digest }, now);
+    markActionWorkflowComplete(paths, "codex", actionId, now);
+    const nextId = "22222222-2222-4222-8222-222222222222";
+    orderAgentAction(paths, "codex", nextId, digest, now);
+    markActionInjected(paths, "codex", nextId, digest, now);
+    const prompt = { kind: "prompt-submitted" as const, eventName: "prompt", sessionId: "s", turnId: "shared",
+      actionId: nextId, actionDigest: digest };
+    let current = applyLifecycleObservation(readAgentLifecycle(paths).agents.codex!, prompt, now);
+    expect(current.action?.queuedBehindTurnId).toBe("shared");
+    current = applyLifecycleObservation(current, prompt, now); // duplicate acceptance must retain the guard
+    const epoch = current.idleEpoch;
+    for (let i = 0; i < 2; i++) current = applyLifecycleObservation(current, {
+      kind: "stopped", eventName: "Stop", sessionId: "s", turnId: "shared"
+    }, later);
+    current = applyLifecycleObservation(current, { kind: "failed", eventName: "StopFailure", sessionId: "s",
+      turnId: "shared", failure: { vendor: "claude", error: "rate_limit", errorDetails: null, lastAssistantMessage: null } }, later);
+    expect(current).toMatchObject({ execution: "working", stoppedAt: null, idleEpoch: epoch });
+    expect(current.lastFailure?.actionId).toBeNull();
+    expect(decideLifecycleNudge(current, nextId, digest).kind).toBe("wait");
+    const newPrompt = { ...prompt, turnId: "next" };
+    current = applyLifecycleObservation(current, newPrompt, later);
+    current = applyLifecycleObservation(current, newPrompt, later); // ordinary duplicate is not queued input
+    expect(current.action?.queuedBehindTurnId).toBeUndefined();
+    current = applyLifecycleObservation(current, { kind: "stopped", eventName: "Stop", sessionId: "s", turnId: "next" }, later);
+    expect(current).toMatchObject({ execution: "idle", idleEpoch: epoch + 1 });
+    expect(decideLifecycleNudge(current, nextId, digest).kind).toBe("send");
+    const restarted = applyLifecycleObservation({ ...current, action: { ...current.action!, queuedBehindTurnId: "shared", rereadExpected: true } },
+      { kind: "session-start", eventName: "SessionStart", sessionId: "new-session" }, later);
+    expect(restarted.action?.queuedBehindTurnId).toBeUndefined();
+    expect(restarted.action?.rereadExpected).toBeUndefined();
+  });
+
+  it("repairs only current queued tool activity and leaves readiness clocks alone on no-op completion callbacks", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-tools-")); roots.push(root);
+    const paths = issueRuntimePaths(root, 1); createIssueRuntime(paths, ["codex"]);
+    initializeAgentLifecycle(paths, ["codex"], now);
+    const queued = observeAgentLifecycleWithResult(paths, "codex", { kind: "status", eventName: "status",
+      sessionId: "s", turnId: "current", execution: "queued", pendingInputCount: 0 }, now).state.agents.codex!;
+    const activity = { kind: "tool-activity" as const, eventName: "postToolUse", sessionId: "s", turnId: "current" };
+    for (const observation of [{ ...activity, turnId: "old" }, { ...activity, sessionId: "old" },
+      { ...activity, sessionId: undefined }, { ...activity, turnId: undefined }]) {
+      expect(applyLifecycleObservation(queued, observation, later)).toBe(queued);
+    }
+    const repaired = observeAgentLifecycleWithResult(paths, "codex", activity, later);
+    expect(repaired.state.agents.codex).toMatchObject({ execution: "working", turnId: "current", idleEpoch: queued.idleEpoch });
+    expect(repaired.state.agents.codex.hookReceipt).toEqual(queued.hookReceipt);
+    const repeated = observeAgentLifecycleWithResult(paths, "codex", activity, "2026-08-18T00:01:00.000Z");
+    expect(repeated.state).toEqual(repaired.state);
+    const stopped = applyLifecycleObservation(repaired.state.agents.codex, { kind: "stopped", eventName: "Stop",
+      sessionId: "s", turnId: "current" }, later);
+    expect(applyLifecycleObservation(stopped, activity, later)).toBe(stopped);
+    expect(applyLifecycleObservation(entry(), activity, later)).toEqual(entry());
+  });
+
+  it("tracks consecutive reread handoffs without accepting delivery or replaying completion acknowledgments", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-reread-")); roots.push(root);
+    const paths = issueRuntimePaths(root, 1); createIssueRuntime(paths, ["codex"]);
+    initializeAgentLifecycle(paths, ["codex"], now);
+    orderAgentAction(paths, "codex", actionId, digest, now);
+    observeAgentLifecycleWithResult(paths, "codex", { kind: "prompt-submitted", eventName: "prompt",
+      sessionId: "s", turnId: "live", actionId, actionDigest: digest }, now);
+    expect(markActionWorkflowComplete(paths, "codex", actionId, now).pickedUpByReread).toBe(false);
+    for (const id of ["22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"]) {
+      const state = orderAgentAction(paths, "codex", id, digest, later);
+      expect(rereadPickupPending(state.agents.codex, id)).toBe(true);
+      expect(state.agents.codex.action).toMatchObject({ delivery: "ordered", acceptedAt: null, injectedAt: null });
+      const rewritten = orderAgentAction(paths, "codex", id, "b".repeat(64), later);
+      expect(rereadPickupPending(rewritten.agents.codex, id)).toBe(true);
+      const completed = markActionWorkflowComplete(paths, "codex", id, later);
+      expect(completed.pickedUpByReread).toBe(true);
+      expect(completed.state.agents.codex.action?.sessionId).toBe("s");
+      expect(markActionWorkflowComplete(paths, "codex", id, later).pickedUpByReread).toBe(false);
+    }
+    observeAgentLifecycleWithResult(paths, "codex", { kind: "stopped", eventName: "Stop", sessionId: "s", turnId: "live" }, later);
+    const idle = orderAgentAction(paths, "codex", actionId, digest, later).agents.codex;
+    expect(rereadPickupPending(idle, actionId)).toBe(false);
+    expect(idle.action?.rereadExpected).toBeUndefined();
+  });
+
   it("counts distinct observed turns without treating other hooks or stale Stop as recovery", () => {
     let current = applyLifecycleObservation(entry(), { kind: "session-start", eventName: "SessionStart", sessionId: "s" }, now);
     for (const turnId of ["one", "one", "two"]) current = applyLifecycleObservation(current,
