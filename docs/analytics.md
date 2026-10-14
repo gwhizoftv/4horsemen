@@ -120,12 +120,13 @@ this step accepted" but not "how long did each attempt take".
 delivery chain per action:
 
 ```
-orderedAt → injectedAt → retryableInjectionAt → acceptedAt → workflowCompleteAt
+orderedAt → injectedAt → acceptedAt → workflowCompleteAt
 ```
 
 That is precisely the breakdown issue 89 needs to know whether nudge delivery or
 agent thinking dominates. **It is overwritten on every new action** and only the
-coarse `{vendor, event, kind, execution, health}` projection reaches the journal
+coarse `{vendor, event, kind, health}` projection reaches the journal (journals
+written before issue 222 also carry `execution`)
 (`src/agentEvent.ts:291`). The four-timestamp delivery chain is therefore
 unrecoverable for any action but the current one.
 
@@ -321,8 +322,7 @@ remain projections.
 
 ### 3.4 The delivery chain is never journaled
 
-§1.3: `orderedAt / injectedAt / retryableInjectionAt / acceptedAt /
-workflowCompleteAt` exist per-action in `agent-lifecycle.json` and are discarded
+§1.3: `orderedAt / injectedAt / acceptedAt / workflowCompleteAt` exist per-action in `agent-lifecycle.json` and are discarded
 on the next action. The §2.3 table therefore measures nudge→intent as one opaque
 number, and cannot say how much of a 19-minute wait was delivery failure versus
 agent work.

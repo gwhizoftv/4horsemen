@@ -1,23 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, statSync, unlinkSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { spawn } from "node:child_process";
-import { clearCompletion, clearReady, createActionId, readAction, readCompletion, readReady, writeAction, type ReadyReceipt } from "./action.js";
+import { clearCompletion, clearReady, createActionId, readAction, readCompletion, readReady, writeAction } from "./action.js";
 import {
-  AGENT_OBSERVABILITY_WATCHDOG_MS,
   containmentCoverage,
-  decideLifecycleNudge,
-  markActionInjectionDeferred,
   markActionInjected,
   markActionWorkflowComplete,
-  markInjectedActionAbsent,
   mutateAgentLifecycle,
   orderAgentAction,
   readAgentLifecycle,
-  stopObservationWarning,
-  hasStopReadiness,
-  rereadPickupPending,
-  type AgentLifecycleEntry
+  recordAgentReady,
+  updateActionWatch
 } from "./agentLifecycle.js";
+import { locateTranscript, type TranscriptVendor } from "./transcriptRead.js";
 import {
   archiveAcceptedResponse,
   clearAgentResponse,
@@ -116,7 +113,7 @@ import { currentScrollbackWait, holdRecoveryCommand, holdDescription, issueComma
 import { inspectStartupAgent } from "./doctor.js";
 import { assessFollowUpIssue, followUpKey, formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
-import { harnessPromptReadiness, renderNudgeText, TmuxController, type IdleOverride, type OwnerReminderOutcome } from "./tmux.js";
+import { harnessPromptReadiness, paneActivityDigest, renderNudgeText, TmuxController, type OwnerReminderOutcome } from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
@@ -262,14 +259,11 @@ export type RunLoopDependencies = {
   actionId?: () => string;
   log?: (message: string) => void;
   verbose?: (message: string) => void;
-  /** @deprecated Minimum wait before checking for lost delivery, never resend authority. */
-  nudgeRetryMs?: number;
+  /** Vendor roots (`~/.claude`, `~/.codex`) whose session transcripts are watchdog activity. */
+  transcriptRoots?: Partial<Record<TranscriptVendor, string | null>>;
   /** One-shot Codex quota read for an owner-bound home (#140). */
   codexQuota?: CodexQuotaReader;
 };
-
-/** Kept as a public compatibility alias; elapsed time no longer authorizes a nudge. */
-export const NUDGE_RETRY_MS = AGENT_OBSERVABILITY_WATCHDOG_MS;
 
 const inputFromSubmission = (submission: AcceptedSubmission, kind: string, usePin = false): BoundInput => ({
   agent: submission.agent,
@@ -912,8 +906,8 @@ const candidateResultsFor = (cursors: CursorsState, inputs: readonly BoundInput[
 
 /**
  * The operator-facing sentence for each refusal code. Every code in
- * `GateReason`, `PromptBlockedReason`, and `NudgeWaitCode` has an entry, so a
- * journal line always says what was actually observed.
+ * `GateReason` and `PromptBlockedReason` has an entry, so a journal line
+ * always says what was actually observed.
  */
 const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "pane-dead": "the agent terminal is gone; restore it before retrying",
@@ -928,22 +922,11 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "antigravity-verify-overlay": "the account-verify overlay is up and discards keystrokes",
   "antigravity-no-prompt": "no idle prompt is visible in the pane",
   "codex-turn-chrome": "the agent is still working; no intervention needed",
-  "no-idle-sentinel": "coord cannot confirm the agent is ready for input; inspect its terminal, and type there if it is idle",
-  "codex-composer-not-ready": "the Codex composer is not empty or no longer holds exactly this action's message",
-  "pane-capture-unavailable": "coord cannot read the terminal to check whether input is safe; inspect the agent terminal",
-  "lifecycle-changed": "new agent activity or completion interrupted the readiness check; waiting rather than typing",
-  "unmatched-action": "activity reports refer to a different task; inspect the agent's current assignment",
-  "workflow-complete": "this agent already published its work for this action",
-  "pending-input": "the agent has queued input of its own",
-  "background-active": "the agent has background work running",
-  unknown: "no activity confirmation has arrived yet; normal just after launch, otherwise inspect the agent's trust prompt and hook setup",
-  queued: "the agent has accepted work that has not started",
-  working: "activity reports say the agent is working; use n to send an owner reminder if needed",
-  "idle-transition-already-used": "activity reports say idle, but automatic delivery already used this idle observation; use n to send an owner reminder"
+  "codex-composer-not-ready": "the Codex composer holds a draft that is not this action's message"
 };
 
 const deferralRationale = (code: string): string =>
-  DEFERRAL_RATIONALE[code] ?? "the terminal or lifecycle layer refused delivery";
+  DEFERRAL_RATIONALE[code] ?? "the terminal refused delivery";
 
 // Delivery protection is independent of the wait before checking for lost delivery.
 const NUDGE_REPEAT_DELAYS_MS = [60_000, 120_000, 240_000];
@@ -980,7 +963,7 @@ export class CoordinatorRunLoop {
   private readonly actionId: () => string;
   private readonly log: (message: string) => void;
   private readonly verbose: (message: string) => void;
-  private readonly lostDeliveryDelayMs: number;
+  private readonly transcriptRoots: Partial<Record<TranscriptVendor, string | null>>;
   private readonly codexQuota: CodexQuotaReader;
   /** Last RN/round announced on `log`, so resume and first prepare do not repeat. */
   private loggedPhaseKey: string | null = null;
@@ -991,7 +974,6 @@ export class CoordinatorRunLoop {
   private readonly ownerReminders: { agent: string; requestId: string }[] = [];
   private readonly ownerAttemptsThisTick = new Set<string>();
   private readonly receiptMessages = new Map<string, string>();
-  private readonly stopWarnings = new Map<string, string>();
   private startupReported = false;
 
   /** The owner selects an agent; its current assignment is resolved at dispatch. */
@@ -1002,27 +984,19 @@ export class CoordinatorRunLoop {
     } }));
   }
 
+  /** Owner `n` resends the outstanding action; an agent that owes nothing is sent nothing. */
   private ownerReminderMessage(cursors: CursorsState, agent: string): {
-    kind: "action" | "submission-pending" | "unassigned"; text: string; actionId?: string; actionDigest?: string
-  } {
+    text: string; actionId: string; actionDigest: string
+  } | null {
     const cursor = cursors.agents[agent];
     const runtime = agentRuntimePaths(this.paths, agent);
-    if (!cursors.activeRoster.includes(agent) || cursor?.actionId == null ||
-        !["ordered", "intent", "verifying"].includes(cursor.status)) {
-      return { kind: "unassigned", text: "The operator requested a reminder. You have no current executable coordinator assignment; remain available for operator guidance without restarting completed or dropped work." };
-    }
-    if (readCompletion(runtime.complete).status !== "missing") {
-      return { kind: "submission-pending", actionId: cursor.actionId,
-        text: "The operator requested a reminder. Your submission is awaiting coordinator validation; preserve the submitted files and wait for its result or a new action." };
-    }
-    if (!existsSync(runtime.action)) {
-      return { kind: "unassigned", text: "The operator requested a reminder. No coordinator action file is currently available; remain available for operator guidance without recreating an action." };
-    }
+    if (!cursors.activeRoster.includes(agent) || cursor?.actionId == null || cursor.status !== "ordered" ||
+        readCompletion(runtime.complete).status !== "missing" || !existsSync(runtime.action)) return null;
     const action = readAction(runtime.action);
     if (action.actionId !== cursor.actionId || action.agent !== agent) throw new StateConflictError("The reminder's action file does not match the current assignment.");
     const actionDigest = sha256OfFile(runtime.action);
-    return { kind: "action", actionId: action.actionId, actionDigest,
-      text: renderNudgeText(runtime.action, action.actionId, actionDigest) };
+    return { actionId: action.actionId, actionDigest,
+      text: renderNudgeText(runtime.action, action.actionId, actionDigest, true) };
   }
 
   /** Owner delivery neither needs paused workflow authority nor spends automatic send credit. */
@@ -1036,6 +1010,13 @@ export class CoordinatorRunLoop {
     try {
       if (config === undefined) throw new StateConflictError("The selected agent is no longer configured.");
       message = this.ownerReminderMessage(readCursorsState(this.paths), agent);
+      if (message === null) {
+        appendJournal(this.paths, { type: "nudge-deferred", agent, details: { owner: true, requestId,
+          eventId: `owner-reminder:${requestId}`, readiness: "owner", outcome: "skipped", code: "no-owed-action" } }, this.now());
+        this.log(`[OK] ${agent} has no outstanding action; nothing sent.`);
+        return;
+      }
+      const owed = message;
       const assertOwnerAuthority = (): void => {
         const latestStart = readStartState(this.paths);
         const current = readCursorsState(this.paths);
@@ -1050,14 +1031,14 @@ export class CoordinatorRunLoop {
       };
       assertOwnerAuthority();
       outcome = this.tmux === null ? { status: "failed", reason: "terminal-unavailable", stage: "gate" }
-        : await this.tmux.remind(start.issue, config, message.text, assertOwnerAuthority, () => {
+        : await this.tmux.remind(start.issue, config, owed.text, assertOwnerAuthority, () => {
           began = true;
           sentAt = this.now();
         });
-      if (outcome.status === "sent" && message.kind === "action") {
+      if (outcome.status === "sent") {
         try {
           assertOwnerAuthority();
-          markActionInjected(this.paths, agent, message.actionId!, message.actionDigest!, sentAt);
+          markActionInjected(this.paths, agent, owed.actionId, owed.actionDigest, sentAt);
         } catch (error) {
           // The terminal already received the full send. A concurrent completion
           // can invalidate bookkeeping, but cannot undo successful transport.
@@ -1070,25 +1051,13 @@ export class CoordinatorRunLoop {
         stage: began ? "mid-send" : "gate", detail: error instanceof Error ? error.message : String(error) };
     }
     appendJournal(this.paths, { type: outcome.status === "sent" ? "nudged" : "nudge-deferred", agent,
-      ...(message?.actionId === undefined ? {} : { actionId: message.actionId }),
-      details: { owner: true, requestId, eventId: `owner-reminder:${requestId}`, messageKind: message?.kind ?? "unavailable",
-        ...(message?.actionDigest === undefined ? {} : { actionDigest: message.actionDigest }),
+      ...(message == null ? {} : { actionId: message.actionId }),
+      details: { owner: true, requestId, eventId: `owner-reminder:${requestId}`, messageKind: message == null ? "unavailable" : "action",
+        ...(message == null ? {} : { actionDigest: message.actionDigest }),
         readiness: "owner", outcome: outcome.status, code: outcome.reason, stage: outcome.stage,
         ...(outcome.detail === undefined ? {} : { detail: outcome.detail }) } }, this.now());
-    this.log(outcome.status === "sent" ? `[OK] Reminder sent to ${agent} (${message?.kind}); terminal delivery only.${outcome.detail === undefined ? "" : ` ${outcome.detail}`}`
+    this.log(outcome.status === "sent" ? `[OK] Current action resent to ${agent}; terminal delivery only.${outcome.detail === undefined ? "" : ` ${outcome.detail}`}`
       : `[WARN] ${agent}: reminder ${outcome.status === "uncertain" ? "delivery uncertain" : "not sent"}; ${outcome.reason}${outcome.detail === undefined ? "" : `: ${outcome.detail}`}.`);
-  }
-
-  private reportStopWarnings(): void {
-    const state = readAgentLifecycle(this.paths);
-    for (const agent of readCursorsState(this.paths).activeRoster) {
-      const entry = state.agents[agent];
-      const warning = entry === undefined ? null : stopObservationWarning(agent, entry);
-      const identity = warning === null ? null : `${entry?.sessionId}:${warning}`;
-      if (identity !== null && this.stopWarnings.get(agent) !== identity) this.log(`[WARN] ${warning}`);
-      if (identity === null) this.stopWarnings.delete(agent);
-      else this.stopWarnings.set(agent, identity);
-    }
   }
 
   /** Installation is not runtime trust; this diagnostic never grants delivery authority. */
@@ -1124,7 +1093,9 @@ export class CoordinatorRunLoop {
     this.actionId = dependencies.actionId ?? createActionId;
     this.log = dependencies.log ?? ((message) => process.stdout.write(`${message}\n`));
     this.verbose = dependencies.verbose ?? (() => undefined);
-    this.lostDeliveryDelayMs = dependencies.nudgeRetryMs ?? AGENT_OBSERVABILITY_WATCHDOG_MS;
+    this.transcriptRoots = dependencies.transcriptRoots ?? {
+      claude: resolve(homedir(), ".claude"), codex: resolve(homedir(), ".codex")
+    };
     this.codexQuota = dependencies.codexQuota ?? ((input) => readCodexQuota(input));
   }
 
@@ -1322,22 +1293,25 @@ export class CoordinatorRunLoop {
     return `${actionId}:observation:${entry?.sessionId ?? "none"}:${entry?.lastEventAt ?? "none"}`;
   }
 
-  /** A receipt proves only readiness for a never-sent action, never completion. */
-  private readyForNextAction(
-    cursors: CursorsState, agent: string, actionId: string, actionDigest: string, entry: AgentLifecycleEntry | undefined
-  ): ReadyReceipt | null {
-    const safety = cursors.actionSafety[agent];
-    if (safety?.actionId !== actionId || safety.sends !== 0 || safety.reserved || entry === undefined ||
-      entry.action?.actionId !== actionId || entry.action.actionDigest !== actionDigest ||
-      entry.action.delivery !== "ordered" || entry.action.injectedAt !== null || entry.action.workflowCompleteAt !== null ||
-      entry.execution === "queued" || (entry.backgroundActive === true && !hasStopReadiness(entry)) || (entry.pendingInputCount ?? 0) > 0) return null;
-    const receipt = readReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot);
-    if (receipt === null || receipt.actionId !== cursors.agents[agent]?.lastAcceptedActionId || receipt.actionId === actionId) return null;
-    const lastHook = Math.max(Date.parse(entry.hookReceipt?.at ?? "") || 0, Date.parse(entry.lastEventAt ?? "") || 0);
-    // Hook timestamps have millisecond precision; do not infer ordering within
-    // that millisecond from the filesystem's finer-grained timestamp.
-    const writtenAt = Math.floor(receipt.mtimeMs);
-    return writtenAt > lastHook && writtenAt <= Date.parse(this.now()) ? receipt : null;
+  /**
+   * Turn the agent's ready file into internal state and delete it. A receipt
+   * names the current or last accepted action; once the current action was
+   * sent, a receipt for an earlier one predates that send and is stale.
+   */
+  private consumeReady(cursors: CursorsState, agent: string): void {
+    const path = agentRuntimePaths(this.paths, agent).ready;
+    const receipt = readReady(path, this.paths.completesRoot);
+    if (receipt === null) return;
+    const cursor = cursors.agents[agent];
+    const action = readAgentLifecycle(this.paths).agents[agent]?.action;
+    const currentSent = action?.actionId === cursor?.actionId && action?.delivery !== "ordered";
+    const valid = cursor !== undefined && (receipt.actionId === cursor.actionId ||
+      (receipt.actionId === cursor.lastAcceptedActionId && !currentSent));
+    if (valid) recordAgentReady(this.paths, agent, receipt.actionId, this.now());
+    clearReady(path, this.paths.completesRoot, receipt);
+    appendJournal(this.paths, { type: "agent-lifecycle", agent, actionId: receipt.actionId,
+      details: { event: valid ? "ready-consumed" : "ready-ignored" } }, this.now());
+    this.verbose(`${agent}: ready ${receipt.actionId} ${valid ? "recorded" : "ignored as stale"}`);
   }
 
   /** A completed action that was never sent was found by rereading action.md. */
@@ -1348,55 +1322,22 @@ export class CoordinatorRunLoop {
     this.log(`Issue ${start.issue}: ${agent} picked up action ${actionId} by rereading action.md; no prompt was needed.`);
   }
 
-  /** One reservation path for initial, idle, reissue and lost-delivery sends. */
+  /** One reservation path for every automatic send: initial, ready, reissue and watchdog resend. */
   private async deliver(
     start: StartState, cursors: CursorsState, agent: string, actionId: string, actionDigest: string,
-    reason: "initial" | "idle" | "reissue"
+    reason: "initial" | "idle" | "reissue" | "resend"
   ): Promise<CursorsState> {
-    if (this.ownerAttemptsThisTick.has(agent)) {
-      // A neutral owner reminder can precede the first assignment. Preserve
-      // same-poll suppression while leaving that unsent action retryable under
-      // the ordinary automatic gates on a later poll, including after restart.
-      markActionInjectionDeferred(this.paths, agent, actionId, actionDigest, this.now());
-      return cursors;
-    }
+    // An owner send this poll already reached the terminal.
+    if (this.ownerAttemptsThisTick.has(agent)) return cursors;
     const config = start.agents.find((candidate) => candidate.id === agent);
     if (this.tmux === null || config === undefined || !["nudge", "both"].includes(config.delivery)) return cursors;
     cursors = this.ensureActionSafety(cursors, agent, actionId);
     const safety = cursors.actionSafety[agent]!;
     if (safety.reserved) return this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends}`);
-    // A current Stop permits queued delivery even while background tasks remain.
-    const entry = readAgentLifecycle(this.paths).agents[agent];
-    const receipt = this.readyForNextAction(cursors, agent, actionId, actionDigest, entry);
-    // Before the first send there is nothing to duplicate, so a `working`
-    // record left by a Stop that never reached this issue may be overruled —
-    // but only with current file or terminal idle proof.
-    const staleWorking = entry?.execution === "working" && safety.sends === 0 &&
-      entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest &&
-      entry.action.delivery === "ordered" && entry.action.injectedAt === null;
-    if ((entry?.execution === "working" && !staleWorking) || (entry?.backgroundActive === true && !hasStopReadiness(entry)) ||
-      (entry?.pendingInputCount ?? 0) > 0) return this.clearScrollbackWait(cursors, agent);
-    // Lifecycle hooks write without touching cursor authority, so the override
-    // re-reads them immediately before the batch (or each AGY key).
-    const lifecycleSnapshot = (value: typeof entry): string => JSON.stringify([value?.sessionId, value?.turnId,
-      value?.lastEventAt, value?.execution, value?.pendingInputCount, value?.backgroundActive, value?.stoppedAt]);
-    const observed = lifecycleSnapshot(entry);
-    const hookSequence = entry?.hookReceipt?.sequence;
-    const staleOverride: IdleOverride | undefined = hasStopReadiness(entry) || receipt !== null || staleWorking ? {
-      source: hasStopReadiness(entry) ? "stop-hook" : receipt !== null ? "ready-file" : "idle-sentinel",
-      lifecycle: () => {
-        const latest = readAgentLifecycle(this.paths).agents[agent];
-        if (latest?.action?.actionId === actionId && latest.action.actionDigest === actionDigest &&
-          latest.action.delivery === "accepted" && latest.hookReceipt?.sequence !== hookSequence &&
-            (latest.action.acceptedAt !== entry?.action?.acceptedAt || latest.action.turnId !== entry?.action?.turnId)) return "accepted";
-        if (receipt !== null && (latest?.hookReceipt?.sequence !== hookSequence ||
-          readReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot)?.identity !== receipt.identity)) return "changed";
-        return lifecycleSnapshot(latest) === observed ? "unchanged" : "changed";
-      }
-    } : undefined;
     if (safety.sends >= 4) return this.hold(cursors, agent, "nudge-loop", `${actionId}:budget:${safety.lastSendAt}`);
     const delay = NUDGE_REPEAT_DELAYS_MS[safety.sends - 1] ?? 0;
     if (safety.lastSendAt !== null && Date.parse(this.now()) - Date.parse(safety.lastSendAt) < delay) return cursors;
+    const ready = readAgentLifecycle(this.paths).agents[agent]?.ready ?? null;
     let sentAt = this.now();
     const reserve = (): void => {
       this.authority(cursors);
@@ -1409,7 +1350,7 @@ export class CoordinatorRunLoop {
     let result;
     try {
       result = await this.tmux.nudge(start.issue, config, agentRuntimePaths(this.paths, agent).action,
-        () => { this.authority(cursors); }, actionId, actionDigest, reserve, staleOverride);
+        () => { this.authority(cursors); }, actionId, actionDigest, reserve, { resend: reason === "resend" });
     } catch (error) {
       this.authority(cursors);
       if (error instanceof StateConflictError) throw error;
@@ -1430,21 +1371,15 @@ export class CoordinatorRunLoop {
         ? this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`) : cursors;
     }
     if (result.status === "sent") {
-      markActionInjected(this.paths, agent, actionId, actionDigest, sentAt);
-      if (receipt !== null) {
-        clearReady(agentRuntimePaths(this.paths, agent).ready, this.paths.completesRoot, receipt);
-        this.log(`Issue ${start.issue}: ${agent}'s ready file for its last accepted action confirmed readiness; delivered action ${actionId}.`);
-      } else if (staleWorking) {
-        this.log(
-          `Issue ${start.issue}: ${agent}'s lifecycle hooks still report it mid-turn, but its pane shows COORD-IDLE; ` +
-            `delivered action ${actionId}. No Stop event from ${agent} reached this issue — ` +
-            `check that its hooks run with COORD_ISSUE=${start.issue}.`
-        );
+      markActionInjected(this.paths, agent, actionId, actionDigest, sentAt,
+        { holdGeneration: safety.holdGeneration, resent: reason === "resend" });
+      if (ready !== null && reason !== "resend") {
+        this.log(`Issue ${start.issue}: ${agent} is ready after action ${ready.actionId}; sent action ${actionId}.`);
       }
       return this.mutate(cursors, (current) => {
         appendJournal(this.paths, { type: "nudged", agent, actionId,
           details: { actionDigest, readiness: result.detail ?? "vendor-prompt", [reason]: true,
-            ...(staleOverride !== undefined ? { lifecycleOverride: entry?.execution } : {}) } }, this.now());
+            ...(ready !== null && reason !== "resend" ? { readyFor: ready.actionId } : {}) } }, this.now());
         return { ...current, actionSafety: { ...current.actionSafety, [agent]: {
           ...current.actionSafety[agent]!, reserved: false, lastSendAt: this.now()
         } } };
@@ -1452,7 +1387,6 @@ export class CoordinatorRunLoop {
     }
     if (result.status === "gone") return this.hold(cursors, agent, "harness-gone", this.observationEvidence(agent, actionId));
     if (result.status === "busy") {
-      if (entry?.action?.retryableInjectionAt === null) markActionInjectionDeferred(this.paths, agent, actionId, actionDigest, this.now());
       return this.journalDeferral(start, cursors, agent, actionId, actionDigest, "scrape", result.reason,
         deferralRationale(result.reason), result.detail);
     }
@@ -1513,7 +1447,7 @@ export class CoordinatorRunLoop {
       this.authority(cursors);
       if (text === null) return cursors;
       const config = start.agents.find((candidate) => candidate.id === agent);
-      const readiness = harnessPromptReadiness(text, config?.id ?? agent, actionId);
+      const readiness = harnessPromptReadiness(text, config?.id ?? agent);
       if (!readiness.ready && readiness.reason === "claude-usage-wait") return this.hold(cursors, agent, "vendor-wait", evidence);
     }
     observation.available = true;
@@ -1887,7 +1821,7 @@ export class CoordinatorRunLoop {
       materialized
     );
     const runtime = agentRuntimePaths(this.paths, agent);
-    let next = this.mutate(cursors, (current) => {
+    const next = this.mutate(cursors, (current) => {
       writeAction(this.paths.coordRoot, runtime.action, order);
       const preparedDigest = sha256OfFile(runtime.action);
       appendJournal(
@@ -1923,10 +1857,7 @@ export class CoordinatorRunLoop {
         this.now()
       );
     });
-    const actionDigest = sha256OfFile(runtime.action);
-    orderAgentAction(this.paths, agent, order.actionId, actionDigest, this.now());
-    next = this.ensureActionSafety(next, agent, order.actionId);
-    return this.deliver(start, next, agent, order.actionId, actionDigest, "initial");
+    return this.maybeLifecycleNudge(start, next, agent, order.actionId, "initial");
   }
 
   /** Refresh bound paths on an in-flight implement/revise order after extractor upgrades. */
@@ -1972,14 +1903,10 @@ export class CoordinatorRunLoop {
   }
 
   /**
-   * Record one delivery refusal with a machine-readable code.
-   *
-   * Both sides of the disagreement go on a single event: when the pane scrape
-   * refuses while hooks say the agent is idle and healthy, `splitBrain` marks
-   * it so status and debug do not have to be reconciled across two axes. The
-   * line reaches normal stdout when the workflow is actually waiting on this
-   * agent or when the two layers disagree. Already-seen codes stay silent in
-   * the journal; a continuing scrollback wait gets a bounded console reminder.
+   * Record one delivery refusal with a machine-readable code. The line reaches
+   * normal stdout when the workflow is actually waiting on this agent.
+   * Already-seen codes stay silent in the journal; a continuing scrollback
+   * wait gets a bounded console reminder.
    */
   private journalDeferral(
     start: StartState,
@@ -1987,7 +1914,7 @@ export class CoordinatorRunLoop {
     agent: string,
     actionId: string,
     actionDigest: string,
-    layer: "scrape" | "lifecycle",
+    layer: "scrape",
     code: string,
     human: string,
     detail?: string
@@ -2003,17 +1930,12 @@ export class CoordinatorRunLoop {
     const key = unknown && unknownCount >= UNKNOWN_DEFERRAL_LIMIT ? "unrecognized-overflow" : code;
     const recorded = safety.deferrals.includes(key);
     const entry = readAgentLifecycle(this.paths).agents[agent];
-    const splitBrain =
-      layer === "scrape" && entry?.execution === "idle" && entry.health !== "degraded";
     // The workflow is blocked on this delivery only while the action is out and
     // unanswered. A deferral for an agent that is verifying or waiting on a peer
-    // is background detail, so it belongs in the journal but not on stdout. An
-    // ordered cursor can also describe accepted work, or a live turn expected to
-    // pick the action up by rereading; neither is waiting to be sent.
+    // is background detail, so it belongs in the journal but not on stdout.
     const delivered = entry?.action?.actionId === actionId &&
       (entry.action.delivery === "accepted" || entry.action.workflowCompleteAt !== null);
-    const rereadPending = rereadPickupPending(entry, actionId);
-    const gateWaiting = cursors.agents[agent]?.status === "ordered" && !delivered && !rereadPending;
+    const gateWaiting = cursors.agents[agent]?.status === "ordered" && !delivered;
     const now = this.now();
     const remind = scrollback && gateWaiting && cursors.activeRoster.includes(agent) &&
       !cursors.paused && !cursors.completed && !cursors.abandoned &&
@@ -2034,16 +1956,9 @@ export class CoordinatorRunLoop {
             ...(key === "unrecognized-overflow" ? { furtherUnknownCodesSuppressed: true } : {}),
             human,
             ...(detail === undefined ? {} : { detail }),
-            ...(splitBrain ? { splitBrain: true } : {}),
-            ...(rereadPending ? { rereadExpected: true } : {}),
             gateWaiting,
             actionDigest,
-            hooks: {
-              execution: entry?.execution ?? "unknown",
-              health: entry?.health ?? "unknown",
-              pendingInputCount: entry?.pendingInputCount ?? null,
-              backgroundActive: entry?.backgroundActive ?? null
-            }
+            hooks: { health: entry?.health ?? "unknown" }
           }
         },
         now
@@ -2055,116 +1970,112 @@ export class CoordinatorRunLoop {
         } } : {})
       } } };
     });
-    const message = splitBrain
-      ? `[WARN] Issue ${start.issue}: ${agent}'s activity report says idle but its terminal refuses input; ${human}`
-      : delivered || rereadPending
-        ? `Issue ${start.issue}: ${agent} is working; ${delivered ? "the action was accepted"
-          : `it is expected to pick up action ${actionId} by rereading action.md`}; no reminder needed`
-        : `[WAIT] Issue ${start.issue}: waiting to send to ${agent}; ${human}`;
+    const message = delivered
+      ? `Issue ${start.issue}: ${agent} is working; the action was accepted; no reminder needed`
+      : `[WAIT] Issue ${start.issue}: waiting to send to ${agent}; ${human}`;
     this.verbose(`Delivery diagnostic: ${code}${detail === undefined ? "" : ` (${detail})`}`);
-    if (scrollback ? remind : gateWaiting || splitBrain) this.log(message);
+    if (scrollback ? remind : gateWaiting) this.log(message);
     else this.verbose(message);
     return next;
   }
 
+  /**
+   * Send the current action when it is unsent and authorized: the agent is
+   * ready, has never had an action accepted (JOIN), started a fresh session, or
+   * had a hold released since the last send. No hook execution state takes part.
+   */
   private async maybeLifecycleNudge(
     start: StartState,
     cursors: CursorsState,
     agent: string,
     actionId: string,
-    reason: "idle" | "reissue" = "idle"
+    reason: "initial" | "idle" | "reissue" = "idle"
   ): Promise<CursorsState> {
-    const config = start.agents.find((candidate) => candidate.id === agent);
-    if (config === undefined) return cursors;
-    if (config.delivery !== "nudge" && config.delivery !== "both") return cursors;
     const runtime = agentRuntimePaths(this.paths, agent);
-    if (!existsSync(runtime.action)) return cursors;
-    // An unavailable observation must not trigger another pane probe through lost-delivery recovery.
-    const observation = this.paneObservations.get(agent);
-    if (observation?.identity === `${actionId}:${cursors.actionSafety[agent]?.holdGeneration}` &&
-      !observation.available && Date.parse(this.now()) < observation.nextAt) return cursors;
-
+    const config = start.agents.find((candidate) => candidate.id === agent);
+    if (config === undefined || !existsSync(runtime.action)) return cursors;
+    if (config.delivery !== "nudge" && config.delivery !== "both") {
+      orderAgentAction(this.paths, agent, actionId, sha256OfFile(runtime.action), this.now());
+      return this.ensureActionSafety(cursors, agent, actionId);
+    }
     if (reason === "idle") {
       cursors = await this.rewriteOrderedAction(start, cursors, agent, actionId);
     }
     const actionDigest = sha256OfFile(runtime.action);
     orderAgentAction(this.paths, agent, actionId, actionDigest, this.now());
-
-    if (reason === "idle") {
-      const entry = readAgentLifecycle(this.paths).agents[agent];
-      if (entry === undefined) return cursors;
-      // An action that is still only ordered has never been sent. Retrying a
-      // prior readiness rejection or owner-poll deferral cannot create a duplicate; tmux
-      // must still positively prove the pane is prompt-ready below. Once a
-      // send succeeds, only a lifecycle idle transition can authorize more.
-      if (entry.action?.delivery !== "ordered" || entry.action.retryableInjectionAt === null) {
-        const decision = decideLifecycleNudge(entry, actionId, actionDigest);
-        // A never-sent action against `working` is decided by deliver(), on current idle proof.
-        const neverSentWorking = decision.code === "working" &&
-          entry.action?.delivery === "ordered" && entry.action.injectedAt === null;
-        const fileReady = this.readyForNextAction(cursors, agent, actionId, actionDigest, entry) !== null;
-        if (decision.kind === "wait" && !neverSentWorking && !fileReady) {
-          const injected = entry.action;
-          const observedAfterInjection =
-            injected !== null &&
-            injected !== undefined &&
-            injected.injectedAt !== null &&
-            entry.lastEventAt !== null &&
-            Date.parse(entry.lastEventAt) >= Date.parse(injected.injectedAt);
-          const tmux = this.tmux;
-          // A send that was never accepted and whose delivery delay has elapsed can be
-          // retried, but only on the positive scrape proof below. Elapsed time
-          // and a missing `complete` never authorize a retry on their own.
-          const deliveryDelayElapsed =
-            injected !== null &&
-            injected !== undefined &&
-            injected.injectedAt !== null &&
-            Date.parse(this.now()) - Date.parse(injected.injectedAt) >= this.lostDeliveryDelayMs;
-          const canProveLostInjection =
-            tmux !== null &&
-            injected?.delivery === "injected" &&
-            injected.turnId === null &&
-            (entry.pendingInputCount ?? 0) === 0 &&
-            entry.backgroundActive !== true &&
-            ((entry.execution === "queued" && observedAfterInjection) ||
-              (entry.execution === "unknown" && deliveryDelayElapsed && !observedAfterInjection) ||
-              (entry.execution === "idle" &&
-                decision.code === "idle-transition-already-used" &&
-                deliveryDelayElapsed));
-          if (
-            !canProveLostInjection ||
-            tmux === null ||
-            !(await tmux.actionAbsentAtReadyPrompt(start.issue, config, actionId, () => this.authority(cursors)))
-          ) {
-            return this.journalDeferral(
-              start,
-              cursors,
-              agent,
-              actionId,
-              actionDigest,
-              "lifecycle",
-              decision.code,
-              deferralRationale(decision.code)
-            );
-          }
-          this.authority(cursors);
-          markInjectedActionAbsent(this.paths, agent, actionId, actionDigest, this.now());
-          appendJournal(
-            this.paths,
-            {
-              type: "agent-lifecycle",
-              agent,
-              actionId,
-              details: { actionDigest, event: "prompt-ready-action-absent", execution: entry.execution }
-            },
-            this.now()
-          );
-          this.verbose(`retrying ${agent}: ready prompt no longer contains action ${actionId}`);
-        }
-      }
+    cursors = this.ensureActionSafety(cursors, agent, actionId);
+    const holdGeneration = cursors.actionSafety[agent]!.holdGeneration;
+    const entry = readAgentLifecycle(this.paths).agents[agent];
+    const action = entry?.action;
+    if (entry === undefined || action?.actionId !== actionId || action.actionDigest !== actionDigest) return cursors;
+    const released = action.sentHoldGeneration !== null && action.sentHoldGeneration !== holdGeneration;
+    if (action.delivery !== "ordered" && !released) return cursors;
+    const authorized = entry.ready !== null || entry.freshSession || released ||
+      cursors.agents[agent]?.lastAcceptedActionId == null;
+    if (!authorized) {
+      this.verbose(`${agent}: action ${actionId} is published; waiting for its ready file before sending`);
+      return cursors;
     }
-
     return this.deliver(start, cursors, agent, actionId, actionDigest, reason);
+  }
+
+  /** Busy-evidence fingerprint: transcript growth, tool hooks and pane repaint. */
+  private transcriptStamp(agent: string, sessionId: string | null): string {
+    if ((agent !== "claude" && agent !== "codex") || sessionId === null) return "none";
+    const root = this.transcriptRoots[agent];
+    try {
+      const path = root == null ? null : locateTranscript(agent, root, sessionId);
+      if (path === null) return "none";
+      const stat = statSync(path);
+      return `${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      return "none";
+    }
+  }
+
+  /**
+   * Stall watchdog for an agent that owes work. Once a minute it compares
+   * transcript, tool-hook and pane activity. A quiet minute earns one resend;
+   * still quiet after that, one `[WAIT]` line. Hook silence alone never counts
+   * as quiet, because the pane and transcript must also be static.
+   */
+  private async watchOwedWork(start: StartState, cursors: CursorsState, agent: string, actionId: string): Promise<CursorsState> {
+    if (this.tmux === null) return cursors;
+    const entry = readAgentLifecycle(this.paths).agents[agent];
+    const action = entry?.action;
+    if (entry === undefined || action == null || action.actionId !== actionId || action.workflowCompleteAt !== null) return cursors;
+    const now = this.now();
+    if (action.watch !== null && Date.parse(now) - Date.parse(action.watch.checkedAt) < OBSERVATION_INTERVAL_MS) return cursors;
+    const text = await this.tmux.capturePane(this.tmux.target(start.issue, agent)).catch((error) => {
+      this.verbose(`Issue ${start.issue}: ${agent} stall watchdog could not read the pane: ${error}`);
+      return null;
+    });
+    this.authority(cursors);
+    // A failed observation is checked but never quiet, so it stays bounded and cannot trigger a resend.
+    if (text === null) {
+      updateActionWatch(this.paths, agent, actionId, action.actionDigest,
+        { watch: { checkedAt: now, quietSince: now, fingerprint: `unavailable:${now}` } }, now);
+      return cursors;
+    }
+    const fingerprint = sha256(JSON.stringify([this.transcriptStamp(agent, entry.sessionId),
+      entry.toolActivity.sequence, paneActivityDigest(text)]));
+    const previous = action.watch;
+    const quiet = previous !== null && previous.fingerprint === fingerprint && entry.toolActivity.pending === 0;
+    const quietSince = quiet ? previous.quietSince : now;
+    updateActionWatch(this.paths, agent, actionId, action.actionDigest, { watch: { checkedAt: now, quietSince, fingerprint } }, now);
+    if (!quiet) return cursors;
+    if (action.resentAt === null) {
+      this.verbose(`${agent}: quiet for a minute while owing action ${actionId}; resending once`);
+      return this.deliver(start, cursors, agent, actionId, action.actionDigest, "resend");
+    }
+    if (action.waitReportedAt !== null) return cursors;
+    const minutes = Math.max(1, Math.round((Date.parse(now) - Date.parse(quietSince)) / 60_000));
+    updateActionWatch(this.paths, agent, actionId, action.actionDigest, { waitReportedAt: now }, now);
+    appendJournal(this.paths, { type: "nudge-deferred", agent, actionId, details: {
+      eventId: `stalled:${start.issueSessionId}:${agent}:${actionId}:${action.actionDigest}`, code: "stalled",
+      actionDigest: action.actionDigest, quietSince } }, now);
+    this.log(`[WAIT] Issue ${start.issue}: ${agent} owes action ${actionId} and has been quiet for ${minutes} min; inspect its terminal.`);
+    return cursors;
   }
 
   private accept(start: StartState, cursors: CursorsState, decision: Extract<MachineDecision, { type: "accept-submission" }>): CursorsState {
@@ -2265,7 +2176,6 @@ export class CoordinatorRunLoop {
     const completion = markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
     this.acknowledgeRereadPickup(start, decision.agent, cursor.actionId, completion.pickedUpByReread);
     this.log(`[OK] ${decision.agent}: submission validated and accepted (commit ${decision.submissionSha.slice(0, 12)}).`);
-    this.reportStopWarnings();
     if (completion.clearedDegraded) {
       // The agent published and pushed, so the earlier watchdog warning is
       // disproven. Retract it explicitly rather than leaving it standing.
@@ -2524,7 +2434,6 @@ export class CoordinatorRunLoop {
     const completion = markActionWorkflowComplete(this.paths, decision.agent, cursor.actionId, this.now());
     this.acknowledgeRereadPickup(start, decision.agent, cursor.actionId, completion.pickedUpByReread);
     this.log(`[OK] ${decision.agent}: private response validated and accepted.`);
-    this.reportStopWarnings();
     if (completion.clearedDegraded) {
       appendJournal(
         this.paths,
@@ -3230,8 +3139,7 @@ export class CoordinatorRunLoop {
         await this.sendOwnerReminder(start, request);
       }
       let cursors = readCursorsState(this.paths);
-      this.reportStopWarnings();
-      if (cursors.abandoned || cursors.completed) return cursors;
+        if (cursors.abandoned || cursors.completed) return cursors;
       this.logPhase(start, cursors, undefined, false);
       for (const agent of start.agents) {
         if (cursors.activeRoster.includes(agent.id)) {
@@ -3241,6 +3149,8 @@ export class CoordinatorRunLoop {
       }
       for (const agent of cursors.activeRoster) {
         if (!this.ownerAttemptsThisTick.has(agent)) cursors = this.reconcileSubmitted(cursors, agent);
+        // Observation only, so it also runs while held.
+        this.consumeReady(cursors, agent);
       }
       if (cursors.paused) {
         // Observation-only while held: no preparation, delivery, acceptance or publication.
@@ -3287,6 +3197,8 @@ export class CoordinatorRunLoop {
         if (this.tmux !== null) {
           if (cursor.status === "ordered") {
             cursors = await this.maybeLifecycleNudge(start, cursors, agent, cursor.actionId);
+            if (cursors.paused) return cursors;
+            cursors = await this.watchOwedWork(start, cursors, agent, cursor.actionId);
             if (cursors.paused) return cursors;
           }
         }

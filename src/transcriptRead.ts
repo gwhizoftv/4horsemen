@@ -479,6 +479,16 @@ const aggregateSamples = (samples: readonly UsageSample[]): Pick<TranscriptReadR
   };
 };
 
+const validSessionId = (sessionId: string): boolean =>
+  /^[A-Za-z0-9._-]+$/.test(sessionId) && basename(sessionId) === sessionId;
+
+/** The vendor session transcript under `root`, or null for an invalid or unknown session. */
+export const locateTranscript = (vendor: TranscriptVendor, root: string, sessionId: string): string | null => {
+  if (!validSessionId(sessionId)) return null;
+  const resolved = resolve(root);
+  return vendor === "claude" ? locateClaudeTranscript(resolved, sessionId) : locateCodexTranscript(resolved, sessionId);
+};
+
 export type ReadTranscriptInput = {
   vendor: TranscriptVendor;
   sessionId: string;
@@ -501,17 +511,11 @@ export const readTranscript = (input: ReadTranscriptInput): TranscriptReadResult
     unattributed: []
   });
   if (input.root === null) return unavailable("vendor transcript root is unavailable");
-  if (!/^[A-Za-z0-9._-]+$/.test(input.sessionId) || basename(input.sessionId) !== input.sessionId) {
-    return unavailable("invalid session identifier");
-  }
+  if (!validSessionId(input.sessionId)) return unavailable("invalid session identifier");
 
   let path: string | null;
   try {
-    const root = resolve(input.root);
-    path =
-      input.vendor === "claude"
-        ? locateClaudeTranscript(root, input.sessionId)
-        : locateCodexTranscript(root, input.sessionId);
+    path = locateTranscript(input.vendor, input.root, input.sessionId);
   } catch (error) {
     return unavailable(`cannot locate transcript: ${error instanceof Error ? error.message : String(error)}`);
   }

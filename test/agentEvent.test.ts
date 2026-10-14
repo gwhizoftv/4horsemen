@@ -106,18 +106,17 @@ describe("vendor lifecycle event normalization", () => {
     ).toMatchObject({ kind: "stopped", sessionId: "thread-1", turnId: "turn-1" });
   });
 
-  it("retains Claude background task and failure state", () => {
-    expect(
-      normalizeAgentEvent("claude", {
-        hook_event_name: "Stop",
-        session_id: "claude-1",
-        background_tasks: [{ id: "task-1" }],
-        session_crons: []
-      })
-    ).toMatchObject({ kind: "stopped", backgroundActive: true });
+  it("maps Claude and Codex tool hooks to watchdog activity and keeps Stop free of execution state", () => {
+    for (const vendor of ["claude", "codex"] as const) {
+      expect(normalizeAgentEvent(vendor, { hook_event_name: "PreToolUse", session_id: "s" })).toEqual({ kind: "tool-start", eventName: "PreToolUse", sessionId: "s" });
+      expect(normalizeAgentEvent(vendor, { hook_event_name: "PostToolUse", session_id: "s" })).toEqual({ kind: "tool-activity", eventName: "PostToolUse", sessionId: "s" });
+    }
+    expect(normalizeAgentEvent("claude", { hook_event_name: "PostToolUseFailure", session_id: "s" })).toMatchObject({ kind: "tool-activity" });
+    const stop = normalizeAgentEvent("claude", { hook_event_name: "Stop", session_id: "claude-1", background_tasks: [{ id: "task-1" }] });
+    expect(stop).toEqual({ kind: "stopped", eventName: "Stop", sessionId: "claude-1" });
     expect(
       normalizeAgentEvent("claude", { hook_event_name: "StopFailure", session_id: "claude-1" })
-    ).toMatchObject({ kind: "failed", backgroundActive: false });
+    ).toMatchObject({ kind: "failed" });
   });
 
   it("classifies Claude failures without inferring a deadline from anything but a fresh matching epoch", () => {
@@ -173,7 +172,7 @@ describe("vendor lifecycle event normalization", () => {
     for (let index = 0; index < 100; index++) route(render, `2026-09-22T12:0${index < 50 ? 1 : 3}:00.000Z`, "status-line");
     const cached = readAgentLifecycle(paths).agents.claude!;
     expect(readJournal(paths)).toHaveLength(journal);
-    expect(cached).toMatchObject({ execution: before.execution, lastEventAt: before.lastEventAt, sessionId: "s1" });
+    expect(cached).toMatchObject({ lastEvent: before.lastEvent, lastEventAt: before.lastEventAt, sessionId: "s1" });
     // An identical re-render does not refresh the original observation age.
     expect(cached.claudeRateLimits).toMatchObject({ sessionId: "s1", observedAt: "2026-09-22T12:01:00.000Z" });
     route({ session_id: "other", rate_limits: render.rate_limits }, "2026-09-22T12:04:00.000Z", "status-line");
@@ -254,39 +253,35 @@ describe("vendor lifecycle event normalization", () => {
     });
   });
 
-  it.each(["codex", "claude", "cursor", "antigravity"] as const)("uses %s Stop as readiness despite background work", (vendor) => {
-    const current = { ...initialAgentLifecycle([vendor]).agents[vendor]!, execution: "working" as const,
-      sessionId: "session", backgroundActive: true };
+  it.each(["codex", "claude", "cursor", "antigravity"] as const)("ends %s tool calls on Stop without any idle state", (vendor) => {
+    const current = { ...initialAgentLifecycle([vendor]).agents[vendor]!, sessionId: "session",
+      toolActivity: { sequence: 3, pending: 1, at: null } };
     const stop = normalizeAgentEvent(vendor, { session_id: "session", conversation_id: "session",
       background_tasks: [{ id: "task" }], fullyIdle: false }, "Stop")!;
-    expect(applyLifecycleObservation(current, stop)).toMatchObject({ execution: "idle", stoppedAt: expect.any(String) });
+    expect(applyLifecycleObservation(current, stop).toolActivity).toEqual({ sequence: 3, pending: 0, at: null });
   });
 
-  it("retains Antigravity activity telemetry while accepting every Stop", () => {
-    expect(
-      normalizeAgentEvent(
-        "antigravity",
-        {
-          conversation_id: "agy-1",
-          agent_state: "working",
-          pending_input_count: 2,
-          task_count: 1,
-          tool_confirmation_pending: true
-        },
-        "status-line"
-      )
-    ).toMatchObject({
-      kind: "status",
-      execution: "queued",
-      pendingInputCount: 2,
-      backgroundActive: true
-    });
-    expect(
-      normalizeAgentEvent("antigravity", { conversationId: "agy-1", fullyIdle: false }, "Stop")
-    ).toMatchObject({ kind: "stopped", backgroundActive: true, allowInjectedIdle: false });
-    expect(
-      normalizeAgentEvent("antigravity", { conversationId: "agy-1", fullyIdle: true }, "Stop")
-    ).toMatchObject({ kind: "stopped", backgroundActive: false, allowInjectedIdle: true });
+  it("reduces Antigravity status to session identity and invocations to activity", () => {
+    expect(normalizeAgentEvent("antigravity", { conversation_id: "agy-1", agent_state: "working", pending_input_count: 2,
+      task_count: 1, tool_confirmation_pending: true }, "status-line")).toEqual({ kind: "status", eventName: "status-line", sessionId: "agy-1" });
+    for (const event of ["PreInvocation", "PostInvocation"]) {
+      expect(normalizeAgentEvent("antigravity", { conversationId: "agy-1" }, event)).toEqual({ kind: "tool-activity", eventName: event, sessionId: "agy-1" });
+    }
+    expect(normalizeAgentEvent("antigravity", { conversationId: "agy-1", fullyIdle: false }, "Stop"))
+      .toEqual({ kind: "stopped", eventName: "Stop", sessionId: "agy-1" });
+  });
+
+  it("never journals tool hooks, which only count as watchdog activity", () => {
+    const { clone, paths } = runtimeFixture("claude");
+    const route = (hook_event_name: string) => handleAgentEvent({ vendor: "claude", clone, environmentIssue: "86",
+      raw: { hook_event_name, session_id: "s1", tool_name: "Bash" } });
+    route("SessionStart");
+    const journal = readJournal(paths).length;
+    route("PreToolUse");
+    route("PreToolUse");
+    route("PostToolUse");
+    expect(readJournal(paths)).toHaveLength(journal);
+    expect(readAgentLifecycle(paths).agents.claude!.toolActivity).toMatchObject({ sequence: 3, pending: 1 });
   });
 
   it("routes a hook through clone identity into the separate lifecycle state", () => {
@@ -307,7 +302,6 @@ describe("vendor lifecycle event normalization", () => {
     });
     expect(result.observed).toBe(true);
     expect(readAgentLifecycle(paths).agents.codex).toMatchObject({
-      execution: "working",
       health: "healthy",
       action: { delivery: "accepted", sessionId: "session-1", turnId: "turn-1" }
     });
@@ -395,7 +389,7 @@ describe("vendor lifecycle event normalization", () => {
     expect(codexDetails).not.toHaveProperty("turnId");
   });
 
-  it("routes Antigravity status-line queue depth from payload cwd without flags or issue env", () => {
+  it("routes Antigravity status-line session identity from payload cwd without flags or issue env", () => {
     const { clone, paths } = runtimeFixture("antigravity");
     const result = handleAgentEvent({
       vendor: "antigravity",
@@ -409,14 +403,10 @@ describe("vendor lifecycle event normalization", () => {
       }
     });
     expect(result.observed).toBe(true);
-    expect(readAgentLifecycle(paths).agents.antigravity).toMatchObject({
-      execution: "queued",
-      sessionId: "agy-1",
-      pendingInputCount: 2
-    });
+    expect(readAgentLifecycle(paths).agents.antigravity).toMatchObject({ sessionId: "agy-1", freshSession: true });
   });
 
-  it("journals Cursor tool and token usage without mutating lifecycle on analytics-only hooks", () => {
+  it("journals Cursor tool usage and counts the tool only as watchdog activity", () => {
     const { clone, paths } = runtimeFixture("cursor");
     const result = handleAgentEvent({
       vendor: "cursor",
@@ -435,6 +425,6 @@ describe("vendor lifecycle event normalization", () => {
       agent: "cursor",
       details: { kind: "tool-used", sessionId: "conversation-1", turnId: "generation-1" }
     });
-    expect(readAgentLifecycle(paths).agents.cursor?.execution).toBe("unknown");
+    expect(readAgentLifecycle(paths).agents.cursor).toMatchObject({ lastEvent: null, toolActivity: { sequence: 1, pending: 0 } });
   });
 });

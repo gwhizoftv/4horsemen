@@ -29,7 +29,7 @@ s: Show status, accepted commits, warnings and recovery commands.
 p / Space: Toggle your manual pause; this never releases an agent hold.
 a: Open missing agent terminal windows so you can inspect them or type directly.
 d: Select an agent to drop; a separate confirmation is required.
-n: Send an owner reminder to any configured agent or all agents, including during pauses and holds; automatic readiness and send limits do not apply.
+n: Resend the current outstanding action to any configured agent or all agents, including during pauses and holds; agents with no outstanding action are skipped, and automatic readiness and send limits do not apply.
 r: Release one inspected hold; resetting its reminder allowance requires confirmation.
 /steer <text>: Queue guidance for every recipient of the next assigned cohort, not an immediate broadcast.
 q: Stop this foreground coordinator only; agent terminals remain open.

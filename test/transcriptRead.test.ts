@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { readTranscript, type TranscriptVendor } from "../src/transcriptRead.js";
+import { locateTranscript, readTranscript, type TranscriptVendor } from "../src/transcriptRead.js";
 
 const fixtureRoot = join(dirname(fileURLToPath(import.meta.url)), "support", "fixtures");
 const roots: string[] = [];
@@ -27,6 +27,14 @@ const installFixture = (vendor: TranscriptVendor, sessionId: string): { root: st
 };
 
 describe("vendor transcript reader", () => {
+  it.each(["claude", "codex"] as const)("locates the %s session transcript the reader uses", (vendor) => {
+    const { root, path } = installFixture(vendor, `session-${vendor}`);
+    expect(locateTranscript(vendor, root, `session-${vendor}`)).toBe(path);
+    expect(readTranscript({ vendor, sessionId: `session-${vendor}`, root }).path).toBe(path);
+    expect(locateTranscript(vendor, root, "missing")).toBeNull();
+    expect(locateTranscript(vendor, root, "../escape")).toBeNull();
+  });
+
   it("attributes Claude usage and tool blocks through the parent chain and de-duplicates message usage", () => {
     const { root } = installFixture("claude", "session-claude");
     const result = readTranscript({ vendor: "claude", sessionId: "session-claude", root });

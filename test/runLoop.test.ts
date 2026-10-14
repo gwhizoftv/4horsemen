@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -7,7 +7,7 @@ import { readAction, writeAction } from "../src/action.js";
 import { computeInputSetHash } from "../src/evidence.js";
 import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
 import { git, repoRoot } from "./support/workspaceFixture.js";
-import { decideLifecycleNudge, initialAgentLifecycle, mutateAgentLifecycle, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
+import { initialAgentLifecycle, markActionInjected, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentResponsePath, agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
@@ -26,7 +26,6 @@ import {
   derivedDecisionJournalDetails,
   deterministicWinner,
   githubRepositoryFromOrigin,
-  NUDGE_RETRY_MS,
   resolveApprovedPaths,
   resolveChangeScope,
   CHANGE_SCOPE_PATH_LIMIT
@@ -231,6 +230,9 @@ const fixture = (options: { prPolicy?: "owner-only" | "coord-open-unmerged" | "c
   return { root, paths };
 };
 
+/** An idle prompt every vendor check accepts, including an empty Codex composer. */
+const IDLE_PANE = "❯ Antigravity Gemini >\n› \n? for shortcuts";
+
 const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {}) => {
   const { paths } = fixture();
   let nowMs = Date.parse("2026-09-22T12:00:00.000Z");
@@ -242,7 +244,8 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
   const current = readCursorsState(paths);
   writeCursorsState(paths, cursorsStateSchema.parse({ ...current, activeRoster: [vendor], agents: { [vendor]: current.agents.codex } }));
   writeFileSync(paths.agentLifecycle, JSON.stringify(initialAgentLifecycle([vendor], now())));
-  const ui = { foreground: "harness", busy: false, dead: false, text: "❯ Antigravity Gemini >", failSubmit: false,
+  // `quiet: false` repaints a line above the composer on every capture, as a working harness does.
+  const ui = { foreground: "harness", busy: false, dead: false, text: IDLE_PANE, quiet: false, failSubmit: false,
     failInspect: false, failCapture: false, waitAtCapture: Infinity, sends: 0, inspections: 0, captures: 0,
     sentTexts: [] as string[],
     onCapture: undefined as (() => void) | undefined, onSend: undefined as (() => void) | undefined };
@@ -258,15 +261,15 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
       ui.captures++;
       ui.onCapture?.();
       if (ui.failCapture) throw new Error("capture unavailable");
-      return { exitCode: 0, stdout: ui.captures >= ui.waitAtCapture ? "Usage limit reset · continuing automatically\n❯" : ui.text, stderr: "" };
+      return { exitCode: 0, stdout: ui.captures >= ui.waitAtCapture ? "Usage limit reset · continuing automatically\n❯"
+        : ui.quiet ? ui.text : `· ${ui.captures}\n${ui.text}`, stderr: "" };
     }
     if (args[0] === "send-keys" && args.includes("-l")) { ui.sends++; ui.sentTexts.push(args[args.indexOf("-l") + 3]!); ui.onSend?.(); }
     if (args[0] === "send-keys" && args.includes("Enter") && ui.sends > 0 && ui.failSubmit) throw new Error("connection lost");
     return { exitCode: 0, stdout: "", stderr: "" };
   }, undefined, undefined, undefined, async () => undefined);
   // Every tick uses a new coordinator: all protections must be durable.
-  const makeLoop = (extra: RunLoopDependencies = {}) => new CoordinatorRunLoop(paths, { tmux, now, nudgeRetryMs: 1,
-    log: (message) => messages.push(message), ...dependencies, ...extra });
+  const makeLoop = (extra: RunLoopDependencies = {}) => new CoordinatorRunLoop(paths, { tmux, now, log: (message) => messages.push(message), ...dependencies, ...extra });
   const tick = () => makeLoop().runTick();
   let turn = 0;
   const working = () => {
@@ -275,7 +278,7 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
       actionId: action.actionId, actionDigest: action.actionDigest }, now());
   };
   const stop = () => observeAgentLifecycle(paths, vendor, { kind: "stopped", eventName: "stop", sessionId: "session",
-    turnId: `turn-${turn}`, backgroundActive: false }, now());
+    turnId: `turn-${turn}` }, now());
   return { paths, ui, messages, now, tick, makeLoop, working, stop, advance: (ms: number) => { nowMs += ms; } };
 };
 
@@ -306,8 +309,7 @@ describe("owner reminders and advisory diagnostics", () => {
       await loop.runTick(); f.advance(1); f.working();
       f.ui.text = "Working...\n> unfinished draft";
       if (scenario === "queued" || scenario === "background" || scenario === "unknown") observeAgentLifecycle(f.paths, "cursor", {
-        kind: "status", eventName: "status", sessionId: "session", execution: scenario === "unknown" ? "unknown" : "queued",
-        pendingInputCount: scenario === "queued" ? 1 : 0, backgroundActive: scenario === "background"
+        kind: "tool-start", eventName: "postToolUse", sessionId: "session"
       }, f.now());
       if (scenario === "session") observeAgentLifecycle(f.paths, "cursor", { kind: "session-start", eventName: "SessionStart", sessionId: "new-session" }, f.now());
       if (scenario === "pause") mutateCursorsState(f.paths, (state) => setPaused(state, true, f.now()));
@@ -355,51 +357,25 @@ describe("owner reminders and advisory diagnostics", () => {
     expect(f.ui.sends).toBe(3);
   });
 
-  it("retries first automatic delivery on a later tick after a neutral owner reminder", async () => {
+  it("sends nothing for an owner selection before the first assignment, then delivers it automatically", async () => {
     const f = safetyFixture("claude"), loop = f.makeLoop();
     loop.reminders()[0]!.request();
     await loop.runTick();
-    expect(f.ui.sends).toBe(1);
-    expect(readAgentLifecycle(f.paths).agents.claude).toMatchObject({ execution: "unknown",
-      action: { delivery: "ordered", injectedAt: null } });
+    expect(f.ui.sends).toBe(0);
+    expect(f.messages).toContain("[OK] claude has no outstanding action; nothing sent.");
+    expect(readAgentLifecycle(f.paths).agents.claude).toMatchObject({ action: { delivery: "ordered", injectedAt: null } });
     expect(readCursorsState(f.paths).actionSafety.claude!.sends).toBe(0);
     f.ui.foreground = "bash";
     await f.tick(); // A new runner retries, but still requires automatic pane readiness.
-    expect(f.ui.sends).toBe(1);
+    expect(f.ui.sends).toBe(0);
     f.ui.foreground = "harness";
     await f.tick();
-    expect(f.ui.sends).toBe(2);
+    expect(f.ui.sends).toBe(1);
     expect(f.ui.sentTexts.at(-1)).toContain(readCursorsState(f.paths).agents.claude!.actionId!);
     expect(readCursorsState(f.paths).actionSafety.claude!.sends).toBe(1);
   });
 
-  it("allows the owner to send after Cursor's unacknowledged retries exhaust the automatic allowance", async () => {
-    const f = safetyFixture("cursor"), loop = f.makeLoop();
-    await loop.runTick();
-    f.advance(1); f.working(); f.stop();
-    for (const delay of [60_000, 120_000, 240_000]) {
-      f.advance(delay);
-      await loop.runTick();
-      const entry = readAgentLifecycle(f.paths).agents.cursor!;
-      expect(entry.action).toMatchObject({ delivery: "injected", acceptedAt: null });
-      expect(decideLifecycleNudge(entry, entry.action!.actionId, entry.action!.actionDigest).code)
-        .toBe("idle-transition-already-used");
-    }
-    f.advance(1);
-    const held = await loop.runTick();
-    expect(f.ui.sends).toBe(4);
-    expect(held.holds).toContainEqual(expect.objectContaining({ reason: "nudge-loop" }));
-    loop.reminders()[0]!.request();
-    const after = await loop.runTick();
-    expect(f.ui.sends).toBe(5);
-    expect(after.actionSafety).toEqual(held.actionSafety);
-    expect(after.holds).toEqual(held.holds);
-    expect(after.agents).toEqual(held.agents);
-    expect(after.issueCursor).toEqual(held.issueCursor);
-    expect(existsSync(agentRuntimePaths(f.paths, "cursor").complete)).toBe(false);
-  });
-
-  it("lists every configured agent, reminds a dropped agent, and reports a missing pane", async () => {
+  it("lists every configured agent and types nothing to agents with no outstanding action", async () => {
     const { paths } = fixture();
     mutateCursorsState(paths, (state) => setPaused(dropAgent(state, "claude"), true));
     const sent: string[] = [], messages: string[] = [];
@@ -414,16 +390,18 @@ describe("owner reminders and advisory diagnostics", () => {
     expect(menu.map((item) => item.label)).toEqual(["claude", "codex"]);
     for (const item of menu) item.request();
     await loop.runTick();
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("no current executable coordinator assignment");
-    expect(messages.join("\n")).toContain("codex: reminder not sent; pane-dead");
-    expect(messages.join("\n")).toContain("Reminder sent to claude");
-    expect(readJournal(paths).filter((event) => event.details.owner === true)).toHaveLength(2);
+    expect(sent).toHaveLength(0);
+    expect(messages).toContain("[OK] claude has no outstanding action; nothing sent.");
+    expect(messages).toContain("[OK] codex has no outstanding action; nothing sent.");
+    expect(readJournal(paths).filter((event) => event.details.owner === true)).toEqual([
+      expect.objectContaining({ type: "nudge-deferred", agent: "claude", details: expect.objectContaining({ code: "no-owed-action", outcome: "skipped" }) }),
+      expect.objectContaining({ type: "nudge-deferred", agent: "codex", details: expect.objectContaining({ code: "no-owed-action", outcome: "skipped" }) })
+    ]);
     expect(readCursorsState(paths).manualPaused).toBe(true);
   });
 
   it.each(["missing-action", "accepted", "pending-completion"])(
-    "uses a neutral owner message for %s and preserves submitted evidence", async (scenario) => {
+    "sends nothing to an agent with %s and preserves submitted evidence", async (scenario) => {
       const f = safetyFixture("cursor"), loop = f.makeLoop();
       await loop.runTick(); f.advance(1); f.working();
       const runtime = agentRuntimePaths(f.paths, "cursor");
@@ -433,9 +411,8 @@ describe("owner reminders and advisory diagnostics", () => {
         { ...state, agents: { ...state.agents, cursor: { ...state.agents.cursor!, status: "waiting-peer" } } } : state, true, f.now()));
       const before = readCursorsState(f.paths), lifecycle = readAgentLifecycle(f.paths);
       loop.reminders()[0]!.request(); await loop.runTick();
-      expect(f.ui.sends).toBe(2);
-      expect(f.ui.sentTexts.at(-1)).not.toContain("Read and execute");
-      expect(f.ui.sentTexts.at(-1)).toContain(scenario === "pending-completion" ? "preserve the submitted files" : "remain available");
+      expect(f.ui.sends).toBe(1);
+      expect(f.messages).toContain("[OK] cursor has no outstanding action; nothing sent.");
       expect(readCursorsState(f.paths).agents).toEqual(before.agents);
       expect(readAgentLifecycle(f.paths)).toEqual(lifecycle);
       if (scenario === "pending-completion") expect(readFileSync(runtime.complete, "utf8")).toBe("d".repeat(40));
@@ -457,7 +434,7 @@ describe("owner reminders and advisory diagnostics", () => {
     expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: stage === "after-submit" ? "nudged" : "nudge-deferred",
       details: expect.objectContaining({ owner: true, outcome: stage === "before" ? "failed" : stage === "between-keys" ? "uncertain" : "sent",
         detail: expect.stringContaining("The reminder's assignment or submission changed during delivery.") }) }));
-    expect(f.messages.join("\n").includes("[OK] Reminder sent")).toBe(stage === "after-submit");
+    expect(f.messages.join("\n").includes("[OK] Current action resent")).toBe(stage === "after-submit");
   });
 
   it.each(["completion", "finished"])("preserves owner transport success when %s arrives before tmux returns", async (change) => {
@@ -475,7 +452,7 @@ describe("owner reminders and advisory diagnostics", () => {
       expect.objectContaining({ type: "nudged", details: expect.objectContaining({ outcome: "sent" }) })
     ]);
     expect(readAgentLifecycle(f.paths)).toEqual(before);
-    expect(f.messages.join("\n")).toContain("[OK] Reminder sent");
+    expect(f.messages.join("\n")).toContain("[OK] Current action resent to cursor");
   });
 
   it("records each ambiguous owner attempt without charging or automatically replaying it", async () => {
@@ -496,7 +473,7 @@ describe("owner reminders and advisory diagnostics", () => {
     expect(f.ui.sends).toBe(3);
   });
 
-  it("keeps startup and missing-Stop diagnostics advisory and avoids warning on every poll", async () => {
+  it("keeps startup diagnostics advisory and never warns about missing Stop hooks", async () => {
     const f = safetyFixture("claude"), loop = f.makeLoop();
     await loop.reportStartup();
     await loop.reportStartup(); // the foreground run reuses the already-diagnosed startup instance
@@ -506,9 +483,9 @@ describe("owner reminders and advisory diagnostics", () => {
     expect(f.messages.filter((message) => /^\[(OK|WARN)\] claude: (running in|the pane in) coord-/.test(message))).toHaveLength(1);
     await loop.runTick(); f.advance(1); f.working(); f.advance(1); f.working();
     await loop.runTick(); await loop.runTick();
-    expect(f.messages.filter((message) => message.includes("No Stop hook from claude after 2 observed turns"))).toHaveLength(1);
+    expect(f.messages.join("\n")).not.toContain("No Stop hook");
     expect(readCursorsState(f.paths).holds).toEqual([]);
-    expect(readAgentLifecycle(f.paths).agents.claude).toMatchObject({ health: "healthy", execution: "working" });
+    expect(readAgentLifecycle(f.paths).agents.claude).toMatchObject({ health: "healthy" });
     expect(f.ui.sends).toBe(1);
   });
 });
@@ -812,7 +789,7 @@ describe("vendor resource evidence and recovery", () => {
     observeAgentLifecycle(f.paths, "claude", { kind: "telemetry", eventName: "status-line", sessionId: "session",
       rateLimits: parseClaudeRateLimits({ rate_limits: { five_hour: { used_percentage: fiveHour, resets_at: hoursFromBase(2) } } })! }, f.now());
     f.advance(1_000);
-    observeAgentLifecycle(f.paths, "claude", { kind: "failed", eventName: "StopFailure", sessionId: "session", backgroundActive: false,
+    observeAgentLifecycle(f.paths, "claude", { kind: "failed", eventName: "StopFailure", sessionId: "session",
       failure: { vendor: "claude", error, errorDetails: details, lastAssistantMessage: null } }, f.now());
   };
 
@@ -1187,8 +1164,9 @@ describe("durable delivery safety", () => {
     f.advance(1);
     if (change === "replacement") {
       const next = randomUUID();
+      // A later action, not JOIN: it waits for a ready receipt instead of meeting the scrollback again.
       mutateCursorsState(f.paths, (state) => ({ ...state,
-        agents: { ...state.agents, codex: { ...state.agents.codex!, actionId: next } }
+        agents: { ...state.agents, codex: { ...state.agents.codex!, actionId: next, lastAcceptedActionId: previous } }
       }));
       writeFileSync(runtime.action, readFileSync(runtime.action, "utf8").replaceAll(previous, next));
       await f.tick();
@@ -1270,12 +1248,16 @@ describe("durable delivery safety", () => {
     expect(readCursorsState(f.paths).actionSafety.codex?.sends).toBe(0);
   });
 
-  it.each(["codex", "claude", "cursor", "antigravity"])("bounds %s across restarts, fresh idle epochs and the diagnostic knob", async (vendor) => {
+  it.each(["codex", "claude", "cursor", "antigravity"])("bounds %s across restarts, fresh sessions and the diagnostic knob", async (vendor) => {
     const f = safetyFixture(vendor);
+    // A replacement session never received the prompt, so it may be sent again, within spacing and budget.
+    const restart = (sessionId: string) => observeAgentLifecycle(f.paths, vendor,
+      { kind: "session-start", eventName: "SessionStart", sessionId }, f.now());
+    restart("session");
     await f.tick();
     expect(f.ui.sends).toBe(1);
     for (const [i, delay] of [60_000, 120_000, 240_000].entries()) {
-      f.advance(1); f.working(); f.stop();
+      f.advance(1); restart(`session-${i}`);
       f.advance(delay - 2);
       await f.tick();
       expect(f.ui.sends).toBe(i + 1);
@@ -1284,8 +1266,8 @@ describe("durable delivery safety", () => {
       expect(f.ui.sends).toBe(i + 2);
     }
     f.advance(1); f.working();
-    expect((await f.tick()).paused).toBe(false); // do not interrupt the last working attempt
-    f.advance(1); f.stop();
+    expect((await f.tick()).paused).toBe(false); // an accepted send needs nothing more
+    f.advance(1); restart("session-last");
     const held = await f.tick();
     expect(held.holds).toEqual([expect.objectContaining({ reason: "nudge-loop", agent: vendor, confidence: "unknown", resetsAt: null })]);
     const journal = readFileSync(f.paths.journal, "utf8");
@@ -1370,21 +1352,6 @@ describe("durable delivery safety", () => {
     expect(after.holds.map((hold) => hold.reason)).toEqual(["vendor-wait"]);
     expect(after.actionSafety.codex).toMatchObject({ sends: 1, reserved: false });
     expect(f.ui.sends).toBe(1);
-  });
-
-  it.each(["codex", "claude", "cursor", "antigravity"])("delivers after %s Stop with background work and stale busy pane text", async (vendor) => {
-    const f = safetyFixture(vendor);
-    await f.tick(); f.advance(1); f.working();
-    observeAgentLifecycle(f.paths, vendor, { kind: "stopped", eventName: "Stop", sessionId: "session", turnId: "turn-1", backgroundActive: true }, f.now());
-    f.ui.text = "Working... esc to cancel";
-    f.advance(60_000);
-    const after = await f.tick();
-    expect(after.holds).toEqual([]);
-    expect(f.ui.sends).toBe(2);
-    expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudged", agent: vendor,
-      details: expect.objectContaining({ readiness: "stop-hook" }) }));
-    await f.tick();
-    expect(f.ui.sends).toBe(2);
   });
 
   it("restores a crashed reservation as a hold instead of authorizing another send", async () => {
@@ -1476,7 +1443,7 @@ describe("durable delivery safety", () => {
 
   it.each(["claude", "codex", "cursor", "antigravity"].flatMap((vendor) =>
     [false, true].flatMap((working) => [false, true].map((changingOutput) => ({ vendor, working, changingOutput })))
-  ))("waits for quiet $vendor work with accepted=$working and changing output=$changingOutput", async ({ vendor, working, changingOutput }) => {
+  ))("waits for unreported $vendor work with accepted=$working and changing output=$changingOutput", async ({ vendor, working, changingOutput }) => {
     const f = safetyFixture(vendor);
     await f.tick();
     const actionId = readCursorsState(f.paths).agents[vendor]!.actionId!;
@@ -1485,14 +1452,13 @@ describe("durable delivery safety", () => {
     if (working) { f.advance(1); f.working(); await f.tick(); }
     await f.tick(); // record the ordinary delivery deferral before advancing time
     const messages = [...f.messages];
-    const execution = readAgentLifecycle(f.paths).agents[vendor]!.execution;
     for (const delay of [300_000, 60_000, 60_000, 30 * 60_000]) {
       f.advance(delay);
       if (changingOutput) f.ui.text = `${actionId}\nRunning tests at ${f.now()}`;
       const after = await f.tick();
       expect(after.paused).toBe(false);
       expect(after.holds).toEqual([]);
-      expect(readAgentLifecycle(f.paths).agents[vendor]).toMatchObject({ execution, degradedCause: null });
+      expect(readAgentLifecycle(f.paths).agents[vendor]).toMatchObject({ degradedCause: null });
     }
     expect(readAgentLifecycle(f.paths).agents[vendor]?.health).not.toBe("degraded");
     expect(readJournal(f.paths).some((event) => event.type === "agent-observability-degraded")).toBe(false);
@@ -1528,7 +1494,8 @@ describe("durable delivery safety", () => {
       f.advance(50_000);
       expect((await loop.runTick()).holds).toEqual([]);
       expect(f.ui.inspections).toBe(before.inspections + 1);
-      expect(f.ui.captures).toBe(before.captures + (vendor === "claude" && failure === "capture" ? 1 : 0));
+      // One advisory probe plus one stall-watchdog read per minute.
+      expect(f.ui.captures).toBe(before.captures + (vendor === "claude" && failure === "capture" ? 1 : 0) + 1);
       expect(failures()).toHaveLength(2);
       expect(f.messages.join("\n")).not.toContain(`pane ${operation} failed`);
       f.ui.failInspect = false; f.ui.failCapture = false; f.ui.dead = true;
@@ -1665,81 +1632,7 @@ const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], fina
 };
 
 describe("effectful run loop", () => {
-  it.each(["idle", "working", "pending", "background"] as const)(
-    "revalidates ready against duplicate %s status during delivery", async (status) => {
-      const f = safetyFixture("antigravity");
-      const observation = { kind: "status" as const, eventName: "status-line", sessionId: "session",
-        execution: status === "working" ? status : "idle" as const,
-        pendingInputCount: status === "pending" ? 1 : 0, backgroundActive: status === "background" };
-      observeAgentLifecycle(f.paths, "antigravity", observation, f.now());
-      f.advance(10);
-      f.ui.foreground = "bash";
-      await f.tick();
-      const previous = actionIdFor("antigravity", 42);
-      mutateCursorsState(f.paths, (state) => ({ ...state, agents: { ...state.agents,
-        antigravity: { ...state.agents.antigravity, lastAcceptedActionId: previous } } }));
-      f.advance(10);
-      const ready = agentRuntimePaths(f.paths, "antigravity").ready;
-      writeFileSync(ready, `ready ${previous}`);
-      utimesSync(ready, new Date(f.now()), new Date(f.now()));
-      const receipt = readAgentLifecycle(f.paths).agents.antigravity.hookReceipt;
-      f.advance(10);
-      f.ui.foreground = "harness";
-      // Reproduce an idle render between paste and submit, not only before delivery.
-      f.ui.onCapture = () => {
-        if (f.ui.sends > 0) observeAgentLifecycle(f.paths, "antigravity", observation, f.now());
-      };
-      // Newer activity reports must revoke the file before the first key.
-      if (status !== "idle") observeAgentLifecycle(f.paths, "antigravity", observation, f.now());
-      const after = await f.tick();
-      expect(f.ui.sends).toBe(status === "idle" ? 1 : 0);
-      expect(after.holds).toEqual([]);
-      expect(existsSync(ready)).toBe(status !== "idle");
-      if (status === "idle") {
-        expect(readAgentLifecycle(f.paths).agents.antigravity.hookReceipt).toEqual(receipt);
-        expect(after.actionSafety.antigravity.reserved).toBe(false);
-        expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudged",
-          details: expect.objectContaining({ readiness: "ready-file" }) }));
-        await f.tick();
-        expect(f.ui.sends).toBe(1);
-      } else expect(readAgentLifecycle(f.paths).agents.antigravity.hookReceipt!.sequence).toBeGreaterThan(receipt!.sequence);
-    }
-  );
-
-  it.each(["hook", "receipt"].flatMap((change) => [false, true].map((afterPaste) => ({ change, afterPaste }))))(
-    "revokes $change proof during sending, afterPaste=$afterPaste", async ({ change, afterPaste }) => {
-      const f = safetyFixture("antigravity");
-      f.ui.foreground = "bash";
-      await f.tick();
-      const previous = actionIdFor("antigravity", 42);
-      mutateCursorsState(f.paths, (state) => ({ ...state, agents: { ...state.agents,
-        antigravity: { ...state.agents.antigravity, lastAcceptedActionId: previous } } }));
-      f.advance(10);
-      const hook = { kind: "working" as const, eventName: "tool", sessionId: "session" };
-      observeAgentLifecycle(f.paths, "antigravity", hook, f.now());
-      const hookAt = f.now();
-      f.advance(10);
-      const ready = agentRuntimePaths(f.paths, "antigravity").ready;
-      writeFileSync(ready, `ready ${previous}`);
-      utimesSync(ready, new Date(f.now()), new Date(f.now()));
-      f.advance(10);
-      f.ui.foreground = "harness";
-      // AGY retains rechecks between text and submit.
-      f.ui.text = "Antigravity Gemini >";
-      const changeAt = f.ui.captures + 2;
-      f.ui.onCapture = () => {
-        if (afterPaste ? f.ui.sends === 0 : f.ui.captures !== changeAt) return;
-        if (change === "hook") observeAgentLifecycle(f.paths, "antigravity", hook, hookAt); // same timestamp, new receipt sequence
-        else writeFileSync(ready, `ready ${actionIdFor("antigravity", 43)}`);
-      };
-      const after = await f.tick();
-      expect(f.ui.sends).toBe(afterPaste ? 1 : 0);
-      expect(after.holds.map((hold) => hold.reason)).toEqual(afterPaste ? ["delivery-uncertain"] : []);
-      expect(existsSync(ready)).toBe(true);
-    }
-  );
-
-  it("keeps ready through actual acceptance and startup refusal, then sends once across restart without a sentinel", async () => {
+  it("records ready before verification and sends the next action exactly once after acceptance", async () => {
     const f = safetyFixture("claude");
     await f.tick(); f.advance(10); f.working();
     const runtime = agentRuntimePaths(f.paths, "claude");
@@ -1755,67 +1648,59 @@ describe("effectful run loop", () => {
       return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
     });
     writeFileSync(runtime.complete, sha);
-    f.advance(10);
     writeFileSync(runtime.ready, `ready ${completedId}\n`);
-    utimesSync(runtime.ready, new Date(f.now()), new Date(f.now()));
-    f.advance(10);
-    // An idle status render is not a new activity hook and must not revoke ready.
-    observeAgentLifecycle(f.paths, "claude", { kind: "telemetry", eventName: "status-line", sessionId: "session",
-      rateLimits: { fiveHour: null, sevenDay: null } }, f.now());
+    // The receipt is consumed into state before verification; the pane refuses the next action's first send.
     f.ui.foreground = "bash";
-    const accepted = await f.makeLoop({ mirror }).runTick();
-    expect(accepted.agents.claude.lastAcceptedActionId).toBe(completedId);
-    expect(existsSync(runtime.complete)).toBe(false);
-    expect(existsSync(runtime.ready)).toBe(true);
-    await f.tick();
-    expect(f.ui.sends).toBe(1);
-    expect(existsSync(runtime.ready)).toBe(true);
-    f.ui.foreground = "harness";
-    f.ui.text = "❯ \nauto mode on";
-    await f.tick(); // a new CoordinatorRunLoop each tick
-    expect(f.ui.sends).toBe(2);
+    const loop = f.makeLoop({ mirror });
+    await loop.runTick();
     expect(existsSync(runtime.ready)).toBe(false);
-    expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudged",
-      details: expect.objectContaining({ readiness: "ready-file", lifecycleOverride: "working" }) }));
-    expect(readAgentLifecycle(f.paths).agents.claude.execution).toBe("working");
-    await f.tick();
+    expect(readAgentLifecycle(f.paths).agents.claude.ready).toEqual({ actionId: completedId, at: f.now() });
+    expect(f.ui.sends).toBe(1);
+    f.ui.foreground = "harness";
+    for (let tick = 0; tick < 5; tick++) { f.advance(1_000); await loop.runTick(); }
+    const next = readCursorsState(f.paths).agents.claude;
+    expect(next.lastAcceptedActionId).toBe(completedId);
+    expect(next.actionId).not.toBe(completedId);
     expect(f.ui.sends).toBe(2);
+    expect(f.ui.sentTexts.at(-1)).toContain(next.actionId!);
+    expect(readAgentLifecycle(f.paths).agents.claude.ready).toBeNull();
+    expect(readJournal(f.paths).filter((event) => event.type === "nudged" && event.actionId === next.actionId)).toEqual([
+      expect.objectContaining({ details: expect.objectContaining({ readyFor: completedId }) })
+    ]);
   });
 
-  it.each(["valid", "unknown", "wrong-id", "current-id", "unaccepted", "malformed", "missing", "old", "tie", "future", "duplicate-hook", "background", "pending", "charged"])(
-    "uses only eligible ready proof: %s", async (scenario) => {
+  it.each(["valid", "current-id", "hook-after", "wrong-id", "malformed", "missing", "stale"])(
+    "consumes ready receipts by action identity only: %s", async (scenario) => {
       const f = safetyFixture("claude");
       f.ui.foreground = "bash";
       await f.tick(); // order, but never send
       const cursor = readCursorsState(f.paths).agents.claude;
       const previous = actionIdFor("claude", 42);
       mutateCursorsState(f.paths, (state) => ({ ...state, agents: { ...state.agents,
-        claude: { ...state.agents.claude, lastAcceptedActionId: scenario === "unaccepted" ? null : previous } } }));
-      f.advance(10);
-      const hook = { kind: "working" as const, eventName: "tool", sessionId: "session" };
-      if (scenario !== "unknown") observeAgentLifecycle(f.paths, "claude", hook, f.now());
-      const hookTime = new Date(f.now());
-      f.advance(10);
+        claude: { ...state.agents.claude, lastAcceptedActionId: previous } } }));
       const runtime = agentRuntimePaths(f.paths, "claude");
       const id = scenario === "wrong-id" ? actionIdFor("claude", 43) : scenario === "current-id" ? cursor.actionId : previous;
-      if (scenario !== "missing") {
-        writeFileSync(runtime.ready, scenario === "malformed" ? "ready nope" : `ready ${id}\n`);
-        const written = scenario === "old" ? new Date(hookTime.getTime() - 1) : scenario === "tie" ? hookTime
-          : scenario === "future" ? new Date(Date.parse(f.now()) + 100_000) : new Date(f.now());
-        utimesSync(runtime.ready, written, written);
+      if (scenario === "stale") {
+        // The current action was already sent, so a receipt for the previous one predates that send.
+        const action = readAgentLifecycle(f.paths).agents.claude.action!;
+        markActionInjected(f.paths, "claude", action.actionId, action.actionDigest, f.now());
       }
+      if (scenario !== "missing") writeFileSync(runtime.ready, scenario === "malformed" ? "ready nope" : `ready ${id}\n`);
       f.advance(10);
-      if (scenario === "duplicate-hook") observeAgentLifecycle(f.paths, "claude", hook, f.now());
-      if (scenario === "background" || scenario === "pending") observeAgentLifecycle(f.paths, "claude", {
-        ...hook, backgroundActive: scenario === "background", pendingInputCount: scenario === "pending" ? 1 : 0
-      }, hookTime.toISOString());
-      if (scenario === "charged") mutateCursorsState(f.paths, (state) => ({ ...state, actionSafety: { ...state.actionSafety,
-        claude: { ...state.actionSafety.claude, sends: 1 } } }));
+      // Issue 396: a hook after the ready write no longer vetoes the send.
+      if (scenario === "hook-after") observeAgentLifecycle(f.paths, "claude",
+        { kind: "stopped", eventName: "Stop", sessionId: "session" }, f.now());
       f.ui.foreground = "harness";
-      f.ui.text = "❯ \nauto mode on";
       await f.tick();
-      expect(f.ui.sends).toBe(["valid", "unknown"].includes(scenario) ? 1 : 0);
-      if (["valid", "unknown"].includes(scenario)) expect(existsSync(runtime.ready)).toBe(false);
+      const sent = ["valid", "current-id", "hook-after"].includes(scenario);
+      expect(f.ui.sends).toBe(sent ? 1 : 0);
+      expect(existsSync(runtime.ready)).toBe(scenario === "malformed");
+      const consumed = readJournal(f.paths).filter((event) => event.type === "agent-lifecycle" &&
+        ["ready-consumed", "ready-ignored"].includes(String(event.details.event))).map((event) => event.details.event);
+      expect(consumed).toEqual(sent ? ["ready-consumed"] : ["wrong-id", "stale"].includes(scenario) ? ["ready-ignored"] : []);
+      expect(readJournal(f.paths).some((event) => event.details.code === "no-idle-sentinel" || event.details.code === "working")).toBe(false);
+      await f.tick();
+      expect(f.ui.sends).toBe(sent ? 1 : 0);
     }
   );
 
@@ -2021,7 +1906,7 @@ describe("effectful run loop", () => {
     expect(buildOrder(paths, readStartState(paths), replaced, "codex", "R4.implement", null).scopeInputs).toEqual([]);
   });
 
-  it.each([true, false])("binds only a matching accepted amendment request (matches=%s) and preserves ready", async (matches) => {
+  it.each([true, false])("binds only a matching accepted amendment request (matches=%s) and records ready", async (matches) => {
     const { paths } = fixture();
     const start = readStartState(paths);
     const base = readCursorsState(paths);
@@ -2061,13 +1946,15 @@ describe("effectful run loop", () => {
       expect(after.pendingAmendment).toBeNull();
       expect(after.agents.codex.lastAcceptedActionId).toBeNull();
       expect(after.agents.codex.outstanding).toContain("amendment request actionId does not match the current action");
-      expect(existsSync(runtime.ready)).toBe(true);
+      expect(existsSync(runtime.ready)).toBe(false);
+      expect(readAgentLifecycle(paths).agents.codex.ready?.actionId).toBe(id);
       return;
     }
     expect(after.pendingAmendment?.proposal.actionId).toBe(id);
     expect(after.agents.codex.lastAcceptedActionId).toBe(id);
     expect(after.agents.claude.lastAcceptedActionId).toBeNull();
-    expect(existsSync(runtime.ready)).toBe(true);
+    expect(existsSync(runtime.ready)).toBe(false);
+    expect(readAgentLifecycle(paths).agents.codex.ready?.actionId).toBe(id);
     expect(messages).toContain(`Issue 1: R4.implement → R4.amend-ballot (round 1); R4.implement took 20.000s; started at ${at(30)}`);
     const voted = mutateCursorsState(paths, (current) => ({ ...current,
       acceptedResponses: [acceptedResponseFixture({ stepId: "R4.amend-ballot", agent: "codex", round: 1, disposition: "approve",
@@ -2129,7 +2016,7 @@ describe("effectful run loop", () => {
     expect(readCursorsState(paths).amendments).toEqual([]);
   });
 
-  it("refreshes in-flight approved paths and reinjects only after positive idle evidence", async () => {
+  it("refreshes in-flight approved paths and sends the refreshed action to a fresh session", async () => {
     const { paths } = fixture();
     const plan = `# Plan
 ## Exact File Map
@@ -2255,6 +2142,7 @@ describe("effectful run loop", () => {
     let literalNudges = 0;
     const tmux = new TmuxController(async (args) => {
       if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: "› \n? for shortcuts\n", stderr: "" };
       if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
       return { exitCode: 0, stdout: "", stderr: "" };
     });
@@ -2540,6 +2428,7 @@ describe("effectful run loop", () => {
     let literalNudges = 0;
     const tmux = new TmuxController(async (args) => {
       if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: IDLE_PANE, stderr: "" };
       if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
       return { exitCode: 0, stdout: "", stderr: "" };
     });
@@ -2632,81 +2521,19 @@ describe("effectful run loop", () => {
       observeAgentLifecycle(paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session-1",
         turnId: "turn-1", actionId: action.actionId, actionDigest: action.actionDigest });
     } else {
-      // The turn that completed the previous action is still live.
-      mutateAgentLifecycle(paths, (current) => ({ ...current, agents: { ...current.agents, codex: { ...current.agents.codex!,
-        execution: "working", sessionId: "session-1", action: { ...action, rereadExpected: true } } } }));
+      // Not JOIN and no ready receipt: the agent may pick the action up by rereading, so nothing is sent or reported.
+      mutateCursorsState(paths, (current) => ({ ...current, agents: { ...current.agents,
+        codex: { ...current.agents.codex!, lastAcceptedActionId: actionIdFor("codex", 9) } } }));
     }
     foreground = "codex";
     messages.length = 0;
     await loop.runTick();
     const deferred = readJournal(paths).filter((event) => event.type === "nudge-deferred" && event.agent === "codex");
-    expect(deferred).toHaveLength(2);
-    expect(deferred[1]?.details).toMatchObject({ code: state === "accepted" ? "working" : "no-idle-sentinel", gateWaiting: false,
-      ...(state === "reread" ? { rereadExpected: true } : {}) });
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0]?.details).toMatchObject({ code: "foreground-mismatch", gateWaiting: true });
     expect(messages.join("\n")).not.toContain("waiting to send to codex");
+    expect(readJournal(paths).filter((event) => event.type === "nudged")).toHaveLength(0);
     expect(readCursorsState(paths).agents.codex?.status).toBe("ordered");
-  });
-
-  it("records hooks and pane on one event when they disagree", async () => {
-    const { paths } = fixture();
-    const start = readStartState(paths);
-    writeFileSync(
-      paths.start,
-      `${JSON.stringify(
-        {
-          ...start,
-          agents: start.agents.map((agent) =>
-            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
-          )
-        },
-        null,
-        2
-      )}\n`
-    );
-    const messages: string[] = [];
-    let paneReady = true;
-    const tmux = new TmuxController(async (args) => {
-      if (args[0] === "display-message") {
-        return { exitCode: 0, stdout: `0\t${paneReady ? "codex" : "bash"}\t0\t0\n`, stderr: "" };
-      }
-      if (args[0] === "capture-pane") return { exitCode: 0, stdout: "❯ ", stderr: "" };
-      return { exitCode: 0, stdout: "", stderr: "" };
-    });
-    let nowMs = Date.now();
-    const loop = new CoordinatorRunLoop(paths, { now: () => new Date(nowMs).toISOString(), tmux, log: (message) => messages.push(message) });
-    await loop.runTick();
-    const action = readAgentLifecycle(paths).agents.codex?.action;
-    expect(action).not.toBeNull();
-    // Hooks say the agent finished and is idle; the pane says it cannot be typed into.
-    observeAgentLifecycle(paths, "codex", {
-      kind: "prompt-submitted",
-      eventName: "UserPromptSubmit",
-      sessionId: "session-1",
-      turnId: "turn-1",
-      actionId: action!.actionId,
-      actionDigest: action!.actionDigest
-    });
-    observeAgentLifecycle(paths, "codex", {
-      kind: "stopped",
-      eventName: "Stop",
-      sessionId: "session-1",
-      turnId: "turn-1",
-      backgroundActive: false
-    });
-    expect(readAgentLifecycle(paths).agents.codex).toMatchObject({ execution: "idle", health: "healthy" });
-    paneReady = false;
-    nowMs += 60_000;
-    await loop.runTick();
-    const split = readJournal(paths).filter(
-      (event) => event.type === "nudge-deferred" && event.details.splitBrain === true
-    );
-    expect(split).toHaveLength(1);
-    expect(split[0]?.details).toMatchObject({
-      layer: "scrape",
-      code: "foreground-mismatch",
-      hooks: { execution: "idle", health: "healthy" }
-    });
-    expect(messages.some((message) => message.includes("activity report says idle but its terminal refuses input"))).toBe(true);
   });
 
   it("does not turn delayed correlation into a health warning when lifecycle hooks are live", async () => {
@@ -2726,7 +2553,7 @@ describe("effectful run loop", () => {
       )}\n`
     );
     let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
-    let paneText = "";
+    let paneText = IDLE_PANE;
     const messages: string[] = [];
     const tmux = new TmuxController(async (args) => {
       if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\t0\n", stderr: "" };
@@ -2736,7 +2563,6 @@ describe("effectful run loop", () => {
     const loop = new CoordinatorRunLoop(paths, {
       tmux,
       now: () => new Date(nowMs).toISOString(),
-      nudgeRetryMs: NUDGE_RETRY_MS,
       log: (message) => messages.push(message)
     });
     // The session announced itself, so the bridge is demonstrably up.
@@ -2750,7 +2576,7 @@ describe("effectful run loop", () => {
     await loop.runTick();
     const actionId = readCursorsState(paths).agents.codex?.actionId;
     paneText = actionId as string;
-    nowMs += NUDGE_RETRY_MS + 1;
+    nowMs += 45_000 + 1;
     await loop.runTick();
     expect(readAgentLifecycle(paths).agents.codex).toMatchObject({
       health: "unknown",
@@ -2763,7 +2589,7 @@ describe("effectful run loop", () => {
     expect(degraded).toBeUndefined();
   });
 
-  it("does not warn at 45 seconds and nudges once after a positive idle transition", async () => {
+  it("does not warn at 45 seconds and never treats Stop as authority to resend", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);
     writeFileSync(
@@ -2781,7 +2607,7 @@ describe("effectful run loop", () => {
     );
     let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
     let literalNudges = 0;
-    let paneText = "";
+    let paneText = IDLE_PANE;
     const messages: string[] = [];
     const tmux = new TmuxController(async (args) => {
       if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
@@ -2792,7 +2618,6 @@ describe("effectful run loop", () => {
     const loop = new CoordinatorRunLoop(paths, {
       tmux,
       now: () => new Date(nowMs).toISOString(),
-      nudgeRetryMs: NUDGE_RETRY_MS,
       log: (message) => messages.push(message)
     });
     await loop.runTick();
@@ -2802,7 +2627,7 @@ describe("effectful run loop", () => {
     paneText = actionId as string;
     await loop.runTick();
     expect(literalNudges).toBe(1);
-    nowMs += NUDGE_RETRY_MS - 1;
+    nowMs += 45_000 - 1;
     await loop.runTick();
     expect(literalNudges).toBe(1);
     nowMs += 1;
@@ -2832,74 +2657,45 @@ describe("effectful run loop", () => {
         kind: "stopped",
         eventName: "Stop",
         sessionId: "session-1",
-        turnId: "turn-1",
-        backgroundActive: false
+        turnId: "turn-1"
       },
       new Date(nowMs + 2).toISOString()
     );
-    nowMs += 15_000;
+    nowMs += 10_000;
     await loop.runTick();
-    expect(literalNudges).toBe(2);
     await loop.runTick();
-    expect(literalNudges).toBe(2);
+    expect(literalNudges).toBe(1);
     expect(readCursorsState(paths).agents.codex).toMatchObject({ actionId, status: "ordered" });
+    expect(readAgentLifecycle(paths).agents.codex?.action).toMatchObject({ delivery: "accepted", turnId: "turn-1" });
     const nudged = readJournal(paths).filter((event) => event.type === "nudged" && event.agent === "codex");
-    expect(nudged).toHaveLength(2);
-    expect(nudged[1]?.details).toMatchObject({ idle: true, actionDigest: action!.actionDigest });
+    expect(nudged).toHaveLength(1);
   });
 
-  it("automatically overrides stale working only before the first send; owner reminders bypass the composer veto", async () => {
+  it("sends JOIN despite a stale working report and lets owner reminders bypass the composer veto", async () => {
     const { paths } = fixture();
     const start = readStartState(paths);
     writeFileSync(paths.start, `${JSON.stringify({ ...start, agents: start.agents.map((agent) =>
       agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent) }, null, 2)}\n`);
-    // The previous turn's Stop never reached this issue, so lifecycle still says working.
+    // The previous turn's Stop never reached this issue; that no longer matters to delivery.
     observeAgentLifecycle(paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session-1", turnId: "turn-0" });
     let literalNudges = 0;
     let body = "• done";
     let draft = "";
     let nowMs = Date.now();
-    // Captures to let pass before a hook reports a new turn; -1 disables the race.
-    let raceAfterCaptures = -1;
-    const messages: string[] = [];
     const tmux = new TmuxController(async (args) => {
       if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
-      if (args[0] === "capture-pane") {
-        if (raceAfterCaptures >= 0 && raceAfterCaptures-- === 0) {
-          // A hook reports a new turn while the pane still looks idle.
-          observeAgentLifecycle(paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session-1", turnId: "turn-1" });
-        }
-        return { exitCode: 0, stdout: `${body}\n\n› ${draft}\n\n  ? for shortcuts`, stderr: "" };
-      }
-      if (args[0] === "send-keys" && args.includes("-l")) {
-        literalNudges += 1;
-        draft = args[args.indexOf("-l") + 3]!;
-      }
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: `${body}\n\n› ${draft}\n\n  ? for shortcuts`, stderr: "" };
+      if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
       return { exitCode: 0, stdout: "", stderr: "" };
     });
-    const loop = new CoordinatorRunLoop(paths, { tmux, now: () => new Date(nowMs).toISOString(), log: (message) => messages.push(message) });
-    await loop.runTick();
-    expect(literalNudges).toBe(0);
-    expect(readAgentLifecycle(paths).agents.codex?.action?.delivery).toBe("ordered");
-    expect(readJournal(paths).some((event) =>
-      event.type === "nudge-deferred" && event.agent === "codex" && event.details.code === "no-idle-sentinel")).toBe(true);
-
-    body = "• done\n\n• COORD-IDLE: waiting for the next coordinator action file";
-    raceAfterCaptures = 1; // after the unfinished-work probe, during the nudge's readiness capture
-    await loop.runTick();
-    expect(literalNudges).toBe(0);
-    expect(readJournal(paths).some((event) =>
-      event.type === "nudge-deferred" && event.agent === "codex" && event.details.code === "lifecycle-changed")).toBe(true);
-
+    const loop = new CoordinatorRunLoop(paths, { tmux, now: () => new Date(nowMs).toISOString() });
     await loop.runTick();
     expect(literalNudges).toBe(1);
-    expect(readAgentLifecycle(paths).agents.codex).toMatchObject({ execution: "working", action: { delivery: "injected" } });
+    expect(readAgentLifecycle(paths).agents.codex?.action?.delivery).toBe("injected");
     const nudged = readJournal(paths).filter((event) => event.type === "nudged" && event.agent === "codex");
     expect(nudged).toHaveLength(1);
-    expect(nudged[0]?.details).toMatchObject({ readiness: "idle-sentinel", lifecycleOverride: "working" });
-    expect(messages.join("\n")).toContain("No Stop event from codex reached this issue");
-
-    // After the first send, a stale working record again blocks: no duplicate.
+    expect(nudged[0]?.details).toMatchObject({ readiness: "vendor-prompt" });
+    expect(nudged[0]?.details).not.toHaveProperty("lifecycleOverride");
     await loop.runTick();
     expect(literalNudges).toBe(1);
 
@@ -2907,7 +2703,7 @@ describe("effectful run loop", () => {
     observeAgentLifecycle(paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session-1",
       turnId: "turn-2", actionId: action.actionId, actionDigest: action.actionDigest }, new Date(++nowMs).toISOString());
     nowMs += 60_000;
-    body = `• ${action.actionId} done\n\n• COORD-IDLE: waiting for the next coordinator action file`;
+    body = `• ${action.actionId} done`;
     draft = "owner is editing";
     loop.reminders().find((item) => item.label === "codex")!.request();
     await loop.runTick();
@@ -2942,6 +2738,7 @@ describe("effectful run loop", () => {
       if (args[0] === "display-message") {
         return { exitCode: 0, stdout: busy ? "0\tcodex\t1\n" : "0\tcodex\t0\n", stderr: "" };
       }
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: IDLE_PANE, stderr: "" };
       if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
       return { exitCode: 0, stdout: "", stderr: "" };
     });
@@ -2958,106 +2755,12 @@ describe("effectful run loop", () => {
     expect(literalNudges).toBe(1);
   });
 
-  it("retries an idle-exhausted action only when the pane proves the action is absent", async () => {
-    const { paths } = fixture();
-    const start = readStartState(paths);
-    writeFileSync(
-      paths.start,
-      `${JSON.stringify(
-        {
-          ...start,
-          agents: start.agents.map((agent) =>
-            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
-          )
-        },
-        null,
-        2
-      )}\n`
-    );
-    let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
-    let literalNudges = 0;
-    let paneText = "";
-    const tmux = new TmuxController(async (args) => {
-      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\t0\n", stderr: "" };
-      if (args[0] === "capture-pane") return { exitCode: 0, stdout: paneText, stderr: "" };
-      if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
-      return { exitCode: 0, stdout: "", stderr: "" };
-    });
-    const loop = new CoordinatorRunLoop(paths, {
-      tmux,
-      now: () => new Date(nowMs).toISOString(),
-      nudgeRetryMs: NUDGE_RETRY_MS
-    });
-    await loop.runTick();
-    expect(literalNudges).toBe(1);
-    const action = readAgentLifecycle(paths).agents.codex?.action;
-    const actionId = action!.actionId;
-    paneText = `❯ ${actionId}`;
-
-    // A real turn ran and stopped: that positive idle transition authorizes the
-    // one ordinary resend, which spends it.
-    observeAgentLifecycle(
-      paths,
-      "codex",
-      {
-        kind: "prompt-submitted",
-        eventName: "UserPromptSubmit",
-        sessionId: "session-1",
-        turnId: "turn-1",
-        actionId,
-        actionDigest: action!.actionDigest
-      },
-      new Date(nowMs + 1).toISOString()
-    );
-    observeAgentLifecycle(
-      paths,
-      "codex",
-      {
-        kind: "stopped",
-        eventName: "Stop",
-        sessionId: "session-1",
-        turnId: "turn-1",
-        backgroundActive: false
-      },
-      new Date(nowMs + 2).toISOString()
-    );
-    // The resend happens after that acceptance, so it is a fresh delivery
-    // awaiting acceptance rather than an already-accepted one.
-    nowMs += 60_000;
-    await loop.runTick();
-    expect(literalNudges).toBe(2);
-    expect(readAgentLifecycle(paths).agents.codex?.action).toMatchObject({
-      delivery: "injected",
-      turnId: null
-    });
-    const exhausted = readAgentLifecycle(paths).agents.codex!;
-    expect(decideLifecycleNudge(exhausted, actionId, action!.actionDigest).code).toBe(
-      "idle-transition-already-used"
-    );
-
-    // Elapsed time alone is not authority: the action is still on screen, so
-    // the send was not lost and nothing may resend.
-    nowMs += NUDGE_RETRY_MS + 1;
-    await loop.runTick();
-    expect(literalNudges).toBe(2);
-
-    // A ready prompt with no trace of the action is the positive proof.
-    nowMs += 120_000 - NUDGE_RETRY_MS - 1;
-    paneText = "❯ ready";
-    await loop.runTick();
-    expect(literalNudges).toBe(3);
-
-    // The opportunity is consumed; a further tick sends nothing more.
-    await loop.runTick();
-    expect(literalNudges).toBe(3);
-  });
-
   it("still clears a legacy degraded state when work reaches completion", async () => {
     const f = safetyFixture();
     await f.tick();
     const actionId = readCursorsState(f.paths).agents.codex!.actionId!;
     f.ui.text = actionId;
-    f.advance(NUDGE_RETRY_MS + 1);
+    f.advance(45_001);
     const { markActionWorkflowComplete, markObservabilityDegraded } = await import("../src/agentLifecycle.js");
     markObservabilityDegraded(f.paths, "codex", f.now()); // persisted by an older coordinator
     await f.tick();
@@ -3068,17 +2771,16 @@ describe("effectful run loop", () => {
   });
 
   it.each(["claude", "codex"])("does not resend to %s after a delayed SessionStart", async (vendor) => {
-    const f = safetyFixture(vendor, { nudgeRetryMs: NUDGE_RETRY_MS });
+    const f = safetyFixture(vendor);
     await f.tick();
     expect(f.ui.sends).toBe(1);
-    expect(readAgentLifecycle(f.paths).agents[vendor]).toMatchObject({
-      execution: "unknown", action: { delivery: "injected" }
-    });
+    expect(readAgentLifecycle(f.paths).agents[vendor]).toMatchObject({ action: { delivery: "injected" } });
     f.advance(1_000);
     observeAgentLifecycle(f.paths, vendor, {
       kind: "session-start", eventName: "SessionStart", sessionId: "session-1"
     }, f.now());
-    expect(readAgentLifecycle(f.paths).agents[vendor]?.execution).toBe("unknown");
+    // The prompt may already be running in this first-seen session: it is not fresh.
+    expect(readAgentLifecycle(f.paths).agents[vendor]?.freshSession).toBe(false);
     f.ui.text = "❯ ready"; // The action UUID has scrolled out of the captured viewport.
     f.advance(120_000);
     await f.tick();
@@ -3088,75 +2790,31 @@ describe("effectful run loop", () => {
     expect(readJournal(f.paths).some((event) => event.details?.event === "prompt-ready-action-absent")).toBe(false);
   });
 
-  it.each(["claude", "codex"])("recovers lost %s delivery without a degraded-health flag", async (vendor) => {
-    const f = safetyFixture(vendor, { nudgeRetryMs: NUDGE_RETRY_MS });
-    await f.tick();
-    // A ready prompt without the UUID is positive evidence; time alone is insufficient.
-    f.ui.text = "❯ ready";
-    f.advance(NUDGE_RETRY_MS - 1);
-    await f.tick();
-    expect(readAgentLifecycle(f.paths).agents[vendor]?.action?.delivery).toBe("injected");
+  it.each(["claude", "codex"])("resends a lost %s prompt once after a quiet minute, then reports [WAIT], with no ack timer", async (vendor) => {
+    const f = safetyFixture(vendor);
+    f.ui.quiet = true;
+    const loop = f.makeLoop();
+    await loop.runTick();
     expect(f.ui.sends).toBe(1);
-    f.advance(1);
-    await f.tick();
-    expect(readAgentLifecycle(f.paths).agents[vendor]?.action?.delivery).toBe("ordered");
-    expect(f.ui.sends).toBe(1); // the independent minimum send spacing still applies
-    f.advance(60_000 - NUDGE_RETRY_MS);
-    await f.tick();
+    // No prompt-submit ever arrives; neither 30 nor 60 seconds is a retry. The
+    // first check after the send is the baseline; a quiet minute after it resends.
+    for (const sends of [1, 1]) {
+      f.advance(30_000);
+      await loop.runTick();
+      expect(f.ui.sends).toBe(sends);
+    }
+    f.advance(30_000);
+    await loop.runTick();
     expect(f.ui.sends).toBe(2);
+    expect(f.ui.sentTexts.at(-1)).toMatch(/^ ?If you already wrote complete for this action, only write its ready file\. Read and execute coordinator action /);
+    expect(readAgentLifecycle(f.paths).agents[vendor]?.action?.resentAt).toBe(f.now());
+    for (let minute = 0; minute < 15; minute++) { f.advance(60_000); await loop.runTick(); }
+    expect(f.ui.sends).toBe(2);
+    const actionId = readCursorsState(f.paths).agents[vendor]!.actionId!;
+    expect(f.messages.filter((message) => message.startsWith(`[WAIT] Issue 1: ${vendor} owes action ${actionId} and has been quiet for`))).toHaveLength(1);
+    expect(readJournal(f.paths).filter((event) => event.details.code === "stalled")).toHaveLength(1);
     expect(readAgentLifecycle(f.paths).agents[vendor]?.health).toBe("unknown");
     expect(readJournal(f.paths).some((event) => event.type === "agent-observability-degraded")).toBe(false);
-    await f.tick();
-    expect(f.ui.sends).toBe(2);
-  });
-
-  it("uses Stop readiness after an injection without a submit callback", async () => {
-    const { paths } = fixture();
-    const start = readStartState(paths);
-    writeFileSync(
-      paths.start,
-      `${JSON.stringify(
-        {
-          ...start,
-          agents: start.agents.map((agent) =>
-            agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent
-          )
-        },
-        null,
-        2
-      )}\n`
-    );
-    let literalNudges = 0;
-    const tmux = new TmuxController(async (args) => {
-      if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\n", stderr: "" };
-      if (args[0] === "capture-pane") return { exitCode: 0, stdout: "Codex\nready\n", stderr: "" };
-      if (args[0] === "send-keys" && args.includes("-l")) literalNudges += 1;
-      return { exitCode: 0, stdout: "", stderr: "" };
-    });
-    let nowMs = Date.now();
-    const loop = new CoordinatorRunLoop(paths, { now: () => new Date(nowMs).toISOString(), tmux });
-    await loop.runTick();
-    expect(literalNudges).toBe(1);
-    const action = readAgentLifecycle(paths).agents.codex!.action!;
-    observeAgentLifecycle(paths, "codex", {
-      kind: "stopped",
-      eventName: "Stop",
-      sessionId: "session-1",
-      turnId: "unrelated-turn",
-      backgroundActive: false
-    });
-    expect(readAgentLifecycle(paths).agents.codex?.execution).toBe("idle");
-    nowMs += 60_000;
-
-    await loop.runTick();
-    expect(literalNudges).toBe(2);
-    expect(readAgentLifecycle(paths).agents.codex?.action).toMatchObject({
-      actionId: action.actionId,
-      actionDigest: action.actionDigest,
-      delivery: "injected"
-    });
-    await loop.runTick();
-    expect(literalNudges).toBe(2);
   });
 
   it("does not degrade pull-only agents that are intentionally never injected", async () => {
@@ -3169,7 +2827,7 @@ describe("effectful run loop", () => {
     );
     const loop = new CoordinatorRunLoop(paths, { tmux, now: () => new Date(nowMs).toISOString() });
     await loop.runTick();
-    nowMs += NUDGE_RETRY_MS;
+    nowMs += 45_000;
     await loop.runTick();
     expect(readAgentLifecycle(paths).agents.codex?.health).toBe("unknown");
     expect(readJournal(paths).some((event) => event.type === "agent-observability-degraded")).toBe(false);
@@ -3274,7 +2932,7 @@ describe("effectful run loop", () => {
       await fetchStarted;
       expect(progress.join("\n")).toContain("completion marker received; checking the submission");
       expect(progress.join("\n")).not.toContain("validated and accepted");
-      expect(progress.join("\n")).toContain("reminder not sent; terminal-unavailable");
+      expect(progress.join("\n")).toContain("codex has no outstanding action; nothing sent.");
       mutateCursorsState(paths, (current) => {
         if (control === "pause") return setPaused(current, true);
         if (control === "drop") return dropAgent(current, "claude");
@@ -3390,7 +3048,9 @@ describe("effectful run loop", () => {
     );
     expect(after.agents.claude?.status).toBe("waiting-peer");
     expect(after.agents.claude?.lastAcceptedActionId).toBe(actionId);
-    expect(existsSync(agentRuntimePaths(paths, "claude").ready)).toBe(true);
+    // The receipt is consumed into lifecycle state, ready for the agent's next action.
+    expect(existsSync(agentRuntimePaths(paths, "claude").ready)).toBe(false);
+    expect(readAgentLifecycle(paths).agents.claude?.ready?.actionId).toBe(actionId);
     expect(existsSync(agentRuntimePaths(paths, "claude").complete)).toBe(false);
     expect(existsSync(responsePath)).toBe(false);
   });
@@ -4749,4 +4409,152 @@ describe("third revision closeout", () => {
       expect(recovered.agents.codex?.actionId).toBeNull();
     }
   );
+});
+
+describe("ready-driven delivery and stall watchdog", () => {
+  /** Replace the agent's current action with a new one, as the coordinator does after accepting the previous. */
+  const nextAction = (f: ReturnType<typeof safetyFixture>, vendor: string): { previous: string; next: string } => {
+    const runtime = agentRuntimePaths(f.paths, vendor);
+    const previous = readCursorsState(f.paths).agents[vendor]!.actionId!;
+    const next = randomUUID();
+    mutateCursorsState(f.paths, (state) => ({ ...state, agents: { ...state.agents,
+      [vendor]: { ...state.agents[vendor]!, actionId: next, lastAcceptedActionId: previous } } }));
+    writeFileSync(runtime.action, readFileSync(runtime.action, "utf8").replaceAll(previous, next));
+    return { previous, next };
+  };
+
+  it("issue 415: sends each of six actions exactly once to a Codex turn that never stops", async () => {
+    const f = safetyFixture("codex");
+    const loop = f.makeLoop();
+    await loop.runTick();
+    const acknowledge = () => {
+      const action = readAgentLifecycle(f.paths).agents.codex!.action!;
+      observeAgentLifecycle(f.paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session",
+        turnId: "01a13ad6-turn", actionId: action.actionId, actionDigest: action.actionDigest }, f.now());
+    };
+    acknowledge();
+    const sent = [readCursorsState(f.paths).agents.codex!.actionId!];
+    for (let index = 1; index < 6; index++) {
+      f.advance(5_000);
+      const { previous, next } = nextAction(f, "codex");
+      // Without ready the published action is not sent: the agent may pick it up by rereading.
+      await loop.runTick();
+      expect(f.ui.sends).toBe(index);
+      writeFileSync(agentRuntimePaths(f.paths, "codex").ready, `ready ${previous}\n`);
+      await loop.runTick();
+      expect(f.ui.sends).toBe(index + 1);
+      expect(existsSync(agentRuntimePaths(f.paths, "codex").ready)).toBe(false);
+      acknowledge();
+      sent.push(next);
+    }
+    for (let tick = 0; tick < 10; tick++) { f.advance(5_000); await loop.runTick(); }
+    expect(f.ui.sends).toBe(6);
+    expect(sent.map((id) => f.ui.sentTexts.filter((text) => text.includes(id)).length)).toEqual([1, 1, 1, 1, 1, 1]);
+  });
+
+  it("issue 413: a prompt acknowledged into the live Claude turn is never sent again across that turn's Stops", async () => {
+    const f = safetyFixture("claude");
+    const loop = f.makeLoop();
+    await loop.runTick();
+    const action = readAgentLifecycle(f.paths).agents.claude!.action!;
+    const stop = (turnId: string) => observeAgentLifecycle(f.paths, "claude",
+      { kind: "stopped", eventName: "Stop", sessionId: "session", turnId }, f.now());
+    observeAgentLifecycle(f.paths, "claude", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session",
+      turnId: "live-turn", actionId: action.actionId, actionDigest: action.actionDigest }, f.now());
+    for (const turnId of ["live-turn", "live-turn", "later-turn"]) {
+      f.advance(20_000); stop(turnId); await loop.runTick();
+    }
+    for (let minute = 0; minute < 5; minute++) { f.advance(60_000); await loop.runTick(); }
+    expect(f.ui.sends).toBe(1);
+  });
+
+  it.each([true, false])("sends a same-action reissue only when the agent is ready (ready=%s)", async (ready) => {
+    const f = safetyFixture("claude");
+    mutateCursorsState(f.paths, (state) => ({ ...state, agents: { ...state.agents,
+      claude: { ...state.agents.claude!, lastAcceptedActionId: actionIdFor("claude", 7) } } }));
+    observeAgentLifecycle(f.paths, "claude", { kind: "session-start", eventName: "SessionStart", sessionId: "session" }, f.now());
+    await f.tick(); f.advance(1); f.working();
+    expect(f.ui.sends).toBe(1);
+    const runtime = agentRuntimePaths(f.paths, "claude");
+    const actionId = readCursorsState(f.paths).agents.claude!.actionId!;
+    const digest = readAgentLifecycle(f.paths).agents.claude!.action!.actionDigest;
+    writeFileSync(runtime.complete, "not-a-sha\n");
+    if (ready) writeFileSync(runtime.ready, `ready ${actionId}\n`);
+    f.advance(60_000);
+    await f.tick();
+    expect(readCursorsState(f.paths).agents.claude).toMatchObject({ actionId, status: "ordered", attempt: 2 });
+    expect(readAgentLifecycle(f.paths).agents.claude!.action!.actionDigest).not.toBe(digest);
+    expect(f.ui.sends).toBe(ready ? 2 : 1);
+    await f.tick();
+    expect(f.ui.sends).toBe(ready ? 2 : 1);
+  });
+
+  it("resends the current action once after an owner hold release, without ready", async () => {
+    const f = safetyFixture("claude");
+    await f.tick();
+    f.ui.dead = true;
+    f.advance(60_000);
+    const held = await f.tick();
+    expect(held.holds).toEqual([expect.objectContaining({ reason: "harness-gone" })]);
+    f.ui.dead = false;
+    writeCursorsState(f.paths, releaseHold(held, held.holds[0]!.id, false, f.now()));
+    f.advance(1);
+    await f.tick();
+    expect(f.ui.sends).toBe(2);
+    expect(readAgentLifecycle(f.paths).agents.claude!.action).toMatchObject({ delivery: "injected", sentHoldGeneration: 1 });
+    await f.tick();
+    expect(f.ui.sends).toBe(2);
+  });
+
+  it("issue 415: never resends while the Codex rollout grows, even with a static pane and no hooks", async () => {
+    const f = safetyFixture("codex");
+    f.ui.quiet = true;
+    const root = mkdtempSync(join(tmpdir(), "coord-codex-home-"));
+    const day = join(root, "sessions", "2026", "09", "22");
+    mkdirSync(day, { recursive: true });
+    const rollout = join(day, "rollout-2026-09-22T12-00-00-session.jsonl");
+    writeFileSync(rollout, "{}\n");
+    const loop = f.makeLoop({ transcriptRoots: { codex: root } });
+    await loop.runTick(); f.advance(1); f.working();
+    const gaps = [50_000, 66_000, 58_000, 62_000];
+    for (let elapsed = 0, index = 0; elapsed < 18 * 60_000; index++) {
+      const gap = gaps[index % gaps.length]!;
+      f.advance(gap); elapsed += gap;
+      writeFileSync(rollout, `{"n":${index}}\n`, { flag: "a" });
+      await loop.runTick();
+    }
+    expect(f.ui.sends).toBe(1);
+    expect(f.messages.join("\n")).not.toContain("[WAIT]");
+    expect(readJournal(f.paths).some((event) => event.details.code === "stalled")).toBe(false);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("never resends during a long tool call, then resends once after it ends and the agent goes quiet", async () => {
+    const f = safetyFixture("claude");
+    f.ui.quiet = true;
+    const loop = f.makeLoop();
+    await loop.runTick(); f.advance(1); f.working();
+    observeAgentLifecycle(f.paths, "claude", { kind: "tool-start", eventName: "PreToolUse", sessionId: "session" }, f.now());
+    for (let minute = 0; minute < 10; minute++) { f.advance(60_000); await loop.runTick(); }
+    expect(f.ui.sends).toBe(1);
+    observeAgentLifecycle(f.paths, "claude", { kind: "tool-activity", eventName: "PostToolUse", sessionId: "session" }, f.now());
+    f.advance(60_000); await loop.runTick();
+    expect(f.ui.sends).toBe(1);
+    f.advance(60_000); await loop.runTick();
+    expect(f.ui.sends).toBe(2);
+  });
+
+  it("submits a resent Codex prompt still sitting in the composer instead of typing it again", async () => {
+    const f = safetyFixture("codex");
+    f.ui.quiet = true;
+    const loop = f.makeLoop();
+    await loop.runTick();
+    expect(f.ui.sends).toBe(1);
+    f.ui.text = `• done\n› ${f.ui.sentTexts[0]}\n? for shortcuts`;
+    for (let check = 0; check < 3; check++) { f.advance(60_000); await loop.runTick(); }
+    expect(f.ui.sends).toBe(1);
+    expect(readAgentLifecycle(f.paths).agents.codex!.action!.resentAt).not.toBeNull();
+    expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudged",
+      details: expect.objectContaining({ resend: true, readiness: "pending-prompt-submitted" }) }));
+  });
 });

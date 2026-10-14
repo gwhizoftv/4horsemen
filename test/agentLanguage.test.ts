@@ -18,7 +18,6 @@ import { renderAgentsProtocolBlock } from "../src/agentsProtocol.js";
 import { HookPolicyError, resolveWorkspaceConfig, runVerifyPhase, verifyCommands } from "../src/hookPolicy.js";
 import { AGENTS_PROTOCOL_MARKERS, removeManagedBlock } from "../src/productIgnore.js";
 import { coordinatorConfigSchema } from "../src/state.js";
-import { COORD_IDLE_SENTINEL } from "../src/tmux.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder } from "../src/runLoop.js";
 import {
@@ -447,15 +446,13 @@ describe("agent-facing language", () => {
     ).toEqual([]);
   });
 
-  it("installs the exact idle line the terminal readiness check matches", () => {
-    // The sentinel is a contract between the protocol block an agent reads and
-    // the matcher in src/tmux.ts. A reword on either side must fail here rather
-    // than silently stop proving that a pane is idle.
+  it("installs the ready handshake without the retired idle line", () => {
+    // Coordination sends on the ready file; nothing reads a terminal sentinel.
     const block = renderAgentsProtocolBlock(repoRoot);
-    expect(block).toContain(COORD_IDLE_SENTINEL);
+    expect(block).not.toContain("COORD-IDLE");
     expect(block).toContain("write `ready <actionId>`");
     expect(block).toContain("file is missing because");
-    expect(findAgentLanguageViolations(COORD_IDLE_SENTINEL)).toEqual([]);
+    expect(block).toContain("Coordination sends your next action when it reads the ready file.");
   });
 
   it("reports the leaks issue 88 removed", () => {

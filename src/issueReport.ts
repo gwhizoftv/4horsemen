@@ -1,6 +1,6 @@
 import type { BallotBatch, CursorsState, StartState } from "./state.js";
 import { coordMergesPullRequest, describeWorkflowStep, type WorkflowStepId } from "./steps.js";
-import { containmentCoverage, rereadPickupPending, stopObservationWarning } from "./agentLifecycle.js";
+import { containmentCoverage } from "./agentLifecycle.js";
 import { containmentPolicy } from "./shellGuard.js";
 import { shellQuote } from "./agentHookSync.js";
 import type { AgentLifecycleState } from "./agentLifecycle.js";
@@ -94,7 +94,7 @@ export const renderIssueReport = (
   const uncertain = lifecycle !== undefined && cursors.activeRoster.some((id) => {
     const entry = lifecycle.agents[id];
     const root = start.agents.find((agent) => agent.id === id)?.root;
-    return entry === undefined || entry.health !== "healthy" || stopObservationWarning(id, entry) !== null ||
+    return entry === undefined || entry.health !== "healthy" ||
       containmentCoverage(entry, root === undefined ? null : containmentPolicy(root, id)?.binding ?? null).hook !== "active";
   });
   const cue = needsAction ? "[ACTION]" : uncertain ? "[WARN]" : cursors.completed ? "[OK]" : "[WAIT]";
@@ -229,27 +229,22 @@ export const renderIssueReport = (
       const entry = lifecycle.agents[agent.id];
       if (!cursors.activeRoster.includes(agent.id)) continue;
       if (entry === undefined) { lines.push(`[WARN] Agent ${agent.id}: no activity report yet; inspect the terminal and hook setup.`); continue; }
-      const queue = entry.pendingInputCount === null ? "" : `, pending=${entry.pendingInputCount}`;
-      const background = entry.backgroundActive === true ? ", background-active" : "";
       const alert = entry.degradedCause === null ? "" : `, alert=${entry.degradedCause}`;
       const coverage = containmentCoverage(entry, containmentPolicy(agent.root, agent.id)?.binding ?? null);
       const probe = entry.containment?.probe;
-      const delivery = { ordered: "task file published; not yet sent", injected: "task message sent; waiting for acknowledgment",
+      const delivery = { ordered: "task file published; not yet sent", injected: "task message sent",
         accepted: "agent acknowledged the task" };
-      const execution = { unknown: "activity not yet known", queued: "input queued", working: "working; no intervention needed",
-        idle: "idle", failed: "agent reported a failure" };
+      const watchdog = entry.action?.waitReportedAt != null ? "; quiet, waiting on the owner"
+        : entry.action?.resentAt != null ? "; resent after a quiet minute" : "";
       lines.push(
-        `Agent ${agent.id}: ${entry.action === null ? "no current task"
-          : rereadPickupPending(entry, entry.action.actionId) ? "task file published; agent expected to pick it up by rereading action.md"
-            : delivery[entry.action.delivery]}; ${execution[entry.execution]}; activity reports ${entry.health}${queue}${background}${alert}` +
+        `Agent ${agent.id}: ${entry.action === null ? "no current task" : delivery[entry.action.delivery]}` +
+        `${entry.ready === null ? "" : "; ready for its next action"}${watchdog}; activity reports ${entry.health}${alert}` +
         `, containment hook=${coverage.hook} shim=${coverage.shim}` +
         (entry.sessionId === null ? " (session identity unavailable)" : "") +
         (probe ? ` (agent-observed ${probe.at}, session=${probe.sessionId}, vendor=${probe.vendorVersion}, policy=${probe.policyRevision})` : "")
       );
       if (entry.action?.workflowCompleteAt != null) lines.push(`  [OK] ${agent.id}: submission validated and accepted.`);
       if (coverage.hook !== "active") lines.push(`  [WARN] ${agent.id}: runtime hook trust/activity not yet verified; inspect the terminal's trust prompt and hook setup.`);
-      const warning = stopObservationWarning(agent.id, entry);
-      if (warning !== null) lines.push(`  [WARN] ${warning}`);
     }
   }
   lines.push(`Active step: ${stageNames[cursors.issueCursor.stepId]} (${describeWorkflowStep(cursors.issueCursor.stepId, cursors.issueCursor.round)})`,

@@ -66,27 +66,23 @@ export const lifecycleActionSchema = z
     delivery: z.enum(["ordered", "injected", "accepted"]),
     orderedAt: timestampSchema,
     injectedAt: timestampSchema.nullable(),
-    retryableInjectionAt: timestampSchema.nullable().default(null),
     acceptedAt: timestampSchema.nullable(),
     sessionId: z.string().min(1).nullable(),
     turnId: z.string().min(1).nullable(),
-    lastNudgedIdleEpoch: z.number().int().nonnegative().nullable(),
     workflowCompleteAt: timestampSchema.nullable(),
-    /** The live turn this action's prompt was queued into; that turn's Stop is not this action's end. */
-    queuedBehindTurnId: z.string().min(1).optional(),
-    /** The queued-into turn has stopped; only a distinct later turn's Stop ends this action. */
-    queuedBehindStopped: z.literal(true).optional(),
-    /** Ordered while the turn that completed the previous action was live: a reread pickup is expected. */
-    rereadExpected: z.literal(true).optional()
-  })
-  .strict();
+    /** Cursor hold generation of the last send; an owner hold release makes the action sendable again. */
+    sentHoldGeneration: z.number().int().nonnegative().nullable().default(null),
+    /** The stall watchdog's one resend for this action. */
+    resentAt: timestampSchema.nullable().default(null),
+    /** The stall watchdog's one `[WAIT]` report for this action. */
+    waitReportedAt: timestampSchema.nullable().default(null),
+    /** Last watchdog activity fingerprint and when it last changed. */
+    watch: z.object({ checkedAt: timestampSchema, quietSince: timestampSchema, fingerprint: z.string() })
+      .strict().nullable().default(null)
+  });
+// Not strict: runtimes written before issue 222 carry removed turn-tracking keys, which are dropped on read.
 
 const diagnosticSchema = z.string().max(DIAGNOSTIC_MAX_BYTES).nullable();
-
-const emptyStopObservation = () => ({ turns: [] as string[], completedActions: [] as string[], stoppedActionId: null as string | null });
-const stopObservationSchema = z.object({
-  turns: z.array(z.string()).max(128), completedActions: z.array(z.string()).max(128), stoppedActionId: z.string().nullable()
-}).default(emptyStopObservation);
 
 /** Latest correlated vendor failure; `actionId: null` is advisory and cannot hold or release work. */
 export const lifecycleFailureSchema = z
@@ -116,34 +112,28 @@ export const claudeRateLimitsSchema = z
 export const agentLifecycleEntrySchema = z
   .object({
     action: lifecycleActionSchema.nullable(),
-    execution: z.enum(["unknown", "queued", "working", "idle", "failed"]),
     sessionId: z.string().min(1).nullable(),
     retiredSessionIds: z.array(z.string().min(1)).max(16).default([]),
-    turnId: z.string().min(1).nullable(),
-    /** Turn ids this session has reported by submit or Stop; a queued prompt's own turn is never among them. */
-    recentTurnIds: z.array(z.string().min(1)).max(32).optional(),
-    /** Turn ids whose Stop or failure this session already reported; a repeat changes nothing. */
-    stoppedTurnIds: z.array(z.string().min(1)).max(32).optional(),
-    pendingInputCount: z.number().int().nonnegative().nullable(),
-    backgroundActive: z.boolean().nullable(),
-    /** Current Stop readiness; background activity does not revoke it. */
-    stoppedAt: timestampSchema.nullable().default(null),
-    idleEpoch: z.number().int().nonnegative(),
+    /** A new session was established and no prompt has been submitted since: it may be sent its action. */
+    freshSession: z.boolean().default(false),
+    /** A consumed ready receipt: the agent is idle after this action and may be sent the next one. */
+    ready: z.object({ actionId: z.string().uuid(), at: timestampSchema }).strict().nullable().default(null),
+    /** Tool hooks seen; `pending` counts tool starts without a matching end in the current turn. */
+    toolActivity: z.object({
+      sequence: z.number().int().nonnegative(), pending: z.number().int().nonnegative(), at: timestampSchema.nullable()
+    }).strict().default({ sequence: 0, pending: 0, at: null }),
     health: z.enum(["unknown", "healthy", "degraded"]),
     /** Why health degraded, so the operator message names what was observed. */
     degradedCause: z.enum(["hooks-never-seen", "correlation-lagged"]).nullable().default(null),
     lastEvent: z.string().min(1).nullable(),
     lastEventAt: timestampSchema.nullable(),
-    /** Advisory only: never used to decide readiness or workflow authority. */
-    stopObservation: stopObservationSchema,
     /** Activity-hook receipt, independent of semantic deduplication and telemetry. */
     hookReceipt: z.object({ at: timestampSchema, sequence: z.number().int().nonnegative() }).nullable().default(null),
     lastFailure: lifecycleFailureSchema.nullable().default(null),
     claudeRateLimits: claudeRateLimitsSchema.nullable().default(null),
     containment: containmentSchema.nullable().default(null),
     updatedAt: timestampSchema
-  })
-  .strict();
+  });
 
 export const agentLifecycleStateSchema = z
   .object({
@@ -164,19 +154,14 @@ export type LifecycleFailure = z.infer<typeof lifecycleFailureSchema>;
 export type ObservedFailure = FailureFields & { vendor: "claude" | "cursor"; status?: string };
 
 export type LifecycleObservation = {
-  /** `tool-activity` only repairs a stale `queued`/`unknown` for the newest submitted turn. */
-  kind: "session-start" | "session-end" | "prompt-submitted" | "working" | "tool-activity" | "stopped" | "failed" | "status" | "telemetry";
+  /** `tool-start` opens a tool call and `tool-activity` closes one (or reports other activity); neither is a turn boundary. */
+  kind: "session-start" | "session-end" | "prompt-submitted" | "tool-start" | "tool-activity" | "stopped" | "failed" | "status" | "telemetry";
   eventName: string;
   sessionId?: string;
   turnId?: string;
   actionId?: string;
   actionDigest?: string;
   actionPath?: string;
-  execution?: "unknown" | "queued" | "working" | "idle" | "failed";
-  pendingInputCount?: number;
-  backgroundActive?: boolean;
-  /** Vendor proves a fully-idle stop even without a prompt-submit hook. */
-  allowInjectedIdle?: boolean;
   failure?: ObservedFailure;
   /** Claude statusline rate limits; a render is telemetry, never activity. */
   rateLimits?: ClaudeRateLimits;
@@ -184,19 +169,15 @@ export type LifecycleObservation = {
 
 const emptyEntry = (now: string): AgentLifecycleEntry => ({
   action: null,
-  execution: "unknown",
   sessionId: null,
   retiredSessionIds: [],
-  turnId: null,
-  pendingInputCount: null,
-  backgroundActive: null,
-  stoppedAt: null,
-  idleEpoch: 0,
+  freshSession: false,
+  ready: null,
+  toolActivity: { sequence: 0, pending: 0, at: null },
   health: "unknown",
   degradedCause: null,
   lastEvent: null,
   lastEventAt: null,
-  stopObservation: emptyStopObservation(),
   hookReceipt: null,
   lastFailure: null,
   claudeRateLimits: null,
@@ -294,6 +275,22 @@ export const recordContainmentEvidence = (
   }, now);
 });
 
+const unsentAction = (actionId: string, actionDigest: string, orderedAt: string): LifecycleAction => ({
+  actionId,
+  actionDigest,
+  delivery: "ordered",
+  orderedAt,
+  injectedAt: null,
+  acceptedAt: null,
+  sessionId: null,
+  turnId: null,
+  workflowCompleteAt: null,
+  sentHoldGeneration: null,
+  resentAt: null,
+  waitReportedAt: null,
+  watch: null
+});
+
 export const orderAgentAction = (
   paths: IssueRuntimePaths,
   agent: string,
@@ -311,45 +308,17 @@ export const orderAgentAction = (
     ) {
       return state;
     }
-    const previous = current.action;
-    // The protocol has the agent reread action.md after `complete`, so an order
-    // published while that same turn is still live is expected to be picked up
-    // without a prompt. A reread-picked predecessor binds its session at completion.
-    const rereadExpected = previous?.actionId === actionId
-      ? previous.rereadExpected === true
-      : previous !== null && previous.workflowCompleteAt !== null &&
-        current.sessionId !== null && current.execution === "working" && current.stoppedAt === null &&
-        previous.sessionId === current.sessionId;
-    return replaceEntry(
-      state,
-      agent,
-      {
-        ...current,
-        action: {
-          actionId,
-          actionDigest,
-          delivery: "ordered",
-          orderedAt: now,
-          injectedAt: null,
-          retryableInjectionAt: null,
-          acceptedAt: null,
-          sessionId: null,
-          turnId: null,
-          lastNudgedIdleEpoch: null,
-          workflowCompleteAt: null,
-          ...(rereadExpected ? { rereadExpected: true as const } : {})
-        }
-      },
-      now
-    );
+    return replaceEntry(state, agent, { ...current, action: unsentAction(actionId, actionDigest, now) }, now);
   });
 
+/** A send consumes the authority that allowed it: the ready receipt and a fresh session. */
 export const markActionInjected = (
   paths: IssueRuntimePaths,
   agent: string,
   actionId: string,
   actionDigest: string,
-  now = new Date().toISOString()
+  now = new Date().toISOString(),
+  options: { holdGeneration?: number; resent?: boolean } = {}
 ): AgentLifecycleState =>
   mutateAgentLifecycle(paths, (state) => {
     const current = state.agents[agent];
@@ -358,7 +327,7 @@ export const markActionInjected = (
     if (action.actionId !== actionId || action.actionDigest !== actionDigest) return state;
     // A prompt hook can win the race with tmux returning. Keep only an
     // acceptance observed during this injection attempt; an acceptance from a
-    // prior stopped turn must not stand in for the newly queued copy.
+    // prior send must not stand in for the newly typed copy.
     const acceptedDuringAttempt =
       action.delivery === "accepted" &&
       action.acceptedAt !== null &&
@@ -368,92 +337,52 @@ export const markActionInjected = (
       agent,
       {
         ...current,
-        stoppedAt: current.stoppedAt !== null && Date.parse(current.stoppedAt) >= Date.parse(now) ? current.stoppedAt : null,
+        ready: null,
+        freshSession: false,
         health: acceptedDuringAttempt ? "healthy" : "unknown",
         degradedCause: null,
         action: {
           ...action,
-          // Coord typed this prompt itself; a reread is no longer the expected pickup.
-          rereadExpected: undefined,
           delivery: acceptedDuringAttempt ? "accepted" : "injected",
           injectedAt: now,
-          retryableInjectionAt: null,
           acceptedAt: acceptedDuringAttempt ? action.acceptedAt : null,
           sessionId: acceptedDuringAttempt ? action.sessionId : null,
           turnId: acceptedDuringAttempt ? action.turnId : null,
-          lastNudgedIdleEpoch: current.idleEpoch
+          sentHoldGeneration: options.holdGeneration ?? action.sentHoldGeneration,
+          resentAt: options.resent === true ? now : action.resentAt
         }
       },
       now
     );
   });
 
-/** A ready pane that no longer contains the correlated prompt proves the send was lost. */
-export const markInjectedActionAbsent = (
+/** Record a consumed ready receipt; the file itself is deleted by the caller. */
+export const recordAgentReady = (
   paths: IssueRuntimePaths,
   agent: string,
   actionId: string,
-  actionDigest: string,
   now = new Date().toISOString()
 ): AgentLifecycleState =>
   mutateAgentLifecycle(paths, (state) => {
     const current = state.agents[agent];
-    const action = current?.action;
-    if (
-      current === undefined ||
-      action === null ||
-      action.actionId !== actionId ||
-      action.actionDigest !== actionDigest ||
-      action.delivery !== "injected" ||
-      action.turnId !== null
-    ) {
-      return state;
-    }
-    return replaceEntry(
-      state,
-      agent,
-      {
-        ...current,
-        action: {
-          ...action,
-          delivery: "ordered",
-          injectedAt: null,
-          retryableInjectionAt: now,
-          acceptedAt: null,
-          sessionId: null,
-          turnId: null
-        }
-      },
-      now
-    );
+    if (current === undefined || current.ready?.actionId === actionId) return state;
+    return replaceEntry(state, agent, { ...current, ready: { actionId, at: now } }, now);
   });
 
-/** Record a tmux readiness rejection; unlike elapsed time, this permits retry. */
-export const markActionInjectionDeferred = (
+/** Durable stall-watchdog bookkeeping for the current action only. */
+export const updateActionWatch = (
   paths: IssueRuntimePaths,
   agent: string,
   actionId: string,
   actionDigest: string,
+  patch: Partial<Pick<LifecycleAction, "watch" | "waitReportedAt">>,
   now = new Date().toISOString()
 ): AgentLifecycleState =>
   mutateAgentLifecycle(paths, (state) => {
     const current = state.agents[agent];
     const action = current?.action;
-    if (
-      current === undefined ||
-      action === null ||
-      action.actionId !== actionId ||
-      action.actionDigest !== actionDigest ||
-      action.delivery !== "ordered"
-    ) {
-      return state;
-    }
-    return replaceEntry(
-      state,
-      agent,
-      { ...current, action: { ...action, retryableInjectionAt: now } },
-      now
-    );
+    if (current === undefined || action == null || action.actionId !== actionId || action.actionDigest !== actionDigest) return state;
+    return replaceEntry(state, agent, { ...current, action: { ...action, ...patch } }, now);
   });
 
 /** `pickedUpByReread`: completed without any sent prompt, so the agent found it by rereading action.md. */
@@ -483,28 +412,15 @@ export const markActionWorkflowComplete = (
       agent,
       {
         ...current,
-        stopObservation: current.action.workflowCompleteAt === null && current.stopObservation.stoppedActionId !== actionId
-          ? { ...current.stopObservation, completedActions: [...new Set([...current.stopObservation.completedActions, actionId])].slice(-128) }
-          : current.stopObservation,
         health: clearedDegraded ? "healthy" : current.health,
         degradedCause: clearedDegraded ? null : current.degradedCause,
-        // A reread pickup belongs to the session that completed it, so a
-        // replacement session cannot inherit the reread expectation.
-        action: { ...current.action, workflowCompleteAt: now,
-          ...(pickedUpByReread && current.action.rereadExpected === true ? { sessionId: current.sessionId } : {}) }
+        action: { ...current.action, workflowCompleteAt: now }
       },
       now
     );
   });
   return { state, clearedDegraded, pickedUpByReread };
 };
-
-const positiveIdle = (entry: AgentLifecycleEntry, nextExecution: AgentLifecycleEntry["execution"]): number =>
-  (nextExecution === "idle" || nextExecution === "failed") &&
-  entry.execution !== "idle" &&
-  entry.execution !== "failed"
-    ? entry.idleEpoch + 1
-    : entry.idleEpoch;
 
 const applyTelemetry = (
   entry: AgentLifecycleEntry,
@@ -603,213 +519,63 @@ export const applyLifecycleObservation = (
 
   if (observation.kind === "telemetry") return applyTelemetry(entry, observation, now);
 
-  // Tool activity only repairs a stale record for the newest submitted turn.
-  // It never revokes a Stop, starts a turn, or touches the action.
-  if (observation.kind === "tool-activity") {
-    if (incomingSession === null || incomingSession !== entry.sessionId || observation.turnId === undefined ||
-      observation.turnId !== (entry.stopObservation.turns.at(-1) ?? entry.turnId) || entry.stoppedAt !== null ||
-      (entry.execution !== "queued" && entry.execution !== "unknown")) return entry;
-    return agentLifecycleEntrySchema.parse({ ...entry, execution: "working", health: "healthy", degradedCause: null,
-      lastEvent: observation.eventName, lastEventAt: now, updatedAt: now });
+  // Tool hooks are watchdog activity only: they never touch delivery or health.
+  if (observation.kind === "tool-start" || observation.kind === "tool-activity") {
+    const { sequence, pending } = entry.toolActivity;
+    return agentLifecycleEntrySchema.parse({ ...entry, toolActivity: {
+      sequence: sequence + 1,
+      pending: observation.kind === "tool-start" ? pending + 1 : Math.max(0, pending - 1),
+      at: now
+    } });
   }
 
-  // A Stop (or failed Stop) is classified against the turns known before it.
-  const endsTurn = observation.kind === "stopped" || observation.kind === "failed";
-  const stoppedTurn = observation.turnId ?? null;
-  const currentActionTurn = entry.action?.turnId ?? entry.stopObservation.turns.at(-1) ?? entry.turnId;
-  // A repeated Stop or failure of an already-ended turn (including after the
-  // action completed or was replaced) never changes the live turn's state.
-  const repeatedStop = endsTurn && stoppedTurn !== null && !sessionChanged &&
-    (entry.stoppedTurnIds ?? []).includes(stoppedTurn);
-  const queuedBehindTurn = entry.action?.queuedBehindTurnId;
-  // The turn this action's prompt was queued into ended; the queued prompt
-  // runs next, so this is neither idle nor a failure of the queued action.
-  // Completing the action does not end its execution turn, so this holds
-  // after workflow completion too.
-  const queuedIntoTurnStop = endsTurn && !repeatedStop && queuedBehindTurn !== undefined &&
-    (stoppedTurn === null || stoppedTurn === queuedBehindTurn);
-  // After that, a distinct turn's Stop or failure is the queued work's own
-  // end, including when its completion was accepted before that Stop arrived.
-  // A queued prompt's own turn never reported a submit, so a turn id already
-  // seen (a delayed older Stop) cannot be it.
-  const queuedWorkStop = endsTurn && queuedBehindTurn !== undefined && !queuedIntoTurnStop &&
-    entry.action?.queuedBehindStopped === true && stoppedTurn !== queuedBehindTurn &&
-    (stoppedTurn === null || !(sessionChanged ? [] : entry.recentTurnIds ?? []).includes(stoppedTurn));
-  const stoppingOlderTurn = endsTurn && (repeatedStop || (!queuedIntoTurnStop && !queuedWorkStop &&
-    currentActionTurn !== null && stoppedTurn !== null && currentActionTurn !== stoppedTurn));
-
-  let stopObservation = sessionChanged || (entry.sessionId === null && incomingSession !== null)
-    ? emptyStopObservation() : entry.stopObservation;
-  if (observation.kind === "prompt-submitted") {
-    stopObservation = { ...stopObservation, stoppedActionId: null,
-      turns: observation.turnId === undefined ? stopObservation.turns
-        : [...new Set([...stopObservation.turns, observation.turnId])].slice(-128) };
-  }
-  if (queuedWorkStop && observation.kind === "stopped") {
-    stopObservation = { ...emptyStopObservation(), stoppedActionId: entry.action?.actionId ?? null };
-  } else if (observation.kind === "stopped" && !queuedIntoTurnStop && incomingSession !== null && incomingSession === entry.sessionId &&
-      ((stopObservation.turns.at(-1) ?? entry.turnId) === null ||
-        observation.turnId === (stopObservation.turns.at(-1) ?? entry.turnId)) &&
-      (entry.action?.turnId == null || observation.turnId === entry.action.turnId)) {
-    stopObservation = { ...emptyStopObservation(), stoppedActionId: entry.action?.actionId ?? null };
-  }
-
-  let stoppedAt = sessionChanged ? null : entry.stoppedAt;
-  let action = entry.action;
-  let execution = observation.execution ?? entry.execution;
-  // An older or queued-into turn's Stop must not replace the live turn's identity.
-  let turnId = stoppingOlderTurn || queuedIntoTurnStop ? entry.turnId : observation.turnId ?? (sessionChanged ? null : entry.turnId);
+  const newSession = sessionChanged || (entry.sessionId === null && incomingSession !== null);
   const sessionId = incomingSession ?? entry.sessionId;
   const retiredSessionIds = sessionChanged
     ? [...new Set([...entry.retiredSessionIds, entry.sessionId as string])].slice(-16)
     : entry.retiredSessionIds;
-  let pendingInputCount = observation.pendingInputCount ?? entry.pendingInputCount;
-  let backgroundActive = stoppingOlderTurn ? entry.backgroundActive : observation.backgroundActive ?? entry.backgroundActive;
-
-  if (sessionChanged) {
-    if (action !== null && action.workflowCompleteAt === null) {
-      action = {
-        ...action,
-        delivery: "ordered",
-        injectedAt: null,
-        retryableInjectionAt: null,
-        acceptedAt: null,
-        sessionId: null,
-        turnId: null,
-        lastNudgedIdleEpoch: null,
-        queuedBehindTurnId: undefined,
-        queuedBehindStopped: undefined,
-        rereadExpected: undefined
-      };
-    }
-    // SessionStart carries no activity fields and therefore establishes idle.
-    // Antigravity status-line does carry them; never erase the queue/activity
-    // values from the very observation that announced the replacement.
-    execution = observation.execution ?? "idle";
-    pendingInputCount = observation.pendingInputCount ?? 0;
-    backgroundActive = observation.backgroundActive ?? false;
-  } else if (observation.kind === "session-start") {
-    // A delayed startup callback may arrive after tmux already injected the
-    // first prompt. Establish health/session identity without reopening that
-    // delivery for a duplicate nudge.
-    if (action === null || action.delivery === "ordered") {
-      execution = "idle";
-      pendingInputCount = 0;
-      backgroundActive = false;
-    }
+  let action = entry.action;
+  // A replacement process never received the previous session's prompt.
+  if (sessionChanged && action !== null && action.workflowCompleteAt === null) {
+    action = unsentAction(action.actionId, action.actionDigest, action.orderedAt);
   }
+  // A delayed first SessionStart after a send is not a fresh session: that prompt may already be running in it.
+  const sentUnfinished = action !== null && action.delivery !== "ordered" && action.workflowCompleteAt === null;
+  let freshSession = beginsSession && newSession && !sentUnfinished ? true : entry.freshSession;
 
   if (observation.kind === "prompt-submitted") {
-    stoppedAt = null;
-    execution = "working";
-    pendingInputCount = Math.max(0, (pendingInputCount ?? 1) - 1);
+    freshSession = false;
     if (
       action !== null &&
       observation.actionId === action.actionId &&
       observation.actionDigest === action.actionDigest
     ) {
-      // A repeat of this action's own submit callback keeps what is known.
-      const repeated = action.delivery === "accepted" && observation.turnId !== undefined && action.turnId === observation.turnId;
-      // A submit carrying the still-running turn's id is input queued into
-      // that turn, not a new execution turn.
-      const queuedInto = !repeated && entry.execution === "working" && entry.stoppedAt === null &&
-        observation.turnId !== undefined && observation.turnId === entry.turnId;
-      action = {
-        ...action,
-        delivery: "accepted",
-        acceptedAt: now,
-        sessionId,
-        turnId: observation.turnId ?? null,
-        queuedBehindTurnId: repeated ? action.queuedBehindTurnId : queuedInto ? observation.turnId : undefined,
-        queuedBehindStopped: repeated ? action.queuedBehindStopped : undefined
-      };
+      // Delivery acknowledgment is recorded for display; it never gates a send.
+      action = { ...action, delivery: "accepted", acceptedAt: now, sessionId, turnId: observation.turnId ?? null };
     }
   }
 
-  if (observation.kind === "working") { execution = "working"; stoppedAt = null; }
-  // The queued work's own turn is now known; it ends here.
-  if (queuedWorkStop && action !== null) {
-    action = { ...action, turnId: stoppedTurn, queuedBehindTurnId: undefined, queuedBehindStopped: undefined };
-  }
-  const failsCurrentTurn = observation.kind === "failed" && !stoppingOlderTurn && !queuedIntoTurnStop;
-  if (["session-end", "session-start"].includes(observation.kind) || failsCurrentTurn) stoppedAt = null;
-  if (failsCurrentTurn) {
-    const injectedAwaitingAcceptance =
-      action?.delivery === "injected" && action.turnId === null && observation.allowInjectedIdle !== true;
-    execution =
-      injectedAwaitingAcceptance || (pendingInputCount ?? 0) > 0 || backgroundActive === true
-        ? "queued"
-        : "failed";
-  }
-  if (observation.kind === "session-end") execution = "failed";
-
-  if (queuedIntoTurnStop && action !== null) {
-    execution = "working";
-    stoppedAt = null;
-    action = { ...action, queuedBehindStopped: true };
-  } else if (observation.kind === "stopped" && !stoppingOlderTurn) {
-    if ((pendingInputCount ?? 0) > 0) {
-      execution = "queued";
-      stoppedAt = null;
-    } else {
-      execution = "idle";
-      stoppedAt = now;
-      turnId = null;
-    }
-  }
-
-  if (observation.kind === "status") {
-    if ((pendingInputCount ?? 0) > 0 || observation.execution === "working" || observation.execution === "unknown") stoppedAt = null;
-    if (stoppedAt !== null) execution = "idle";
-    else if ((pendingInputCount ?? 0) > 0 || backgroundActive === true) execution = "queued";
-  }
-
-  // The turn a reread pickup depended on has ended.
-  if ((execution === "idle" || execution === "failed") && action?.rereadExpected === true) {
-    action = { ...action, rereadExpected: undefined };
-  }
-  const recentTurnIds = observation.turnId !== undefined &&
-    (observation.kind === "prompt-submitted" || observation.kind === "stopped" || observation.kind === "failed")
-    ? [...new Set([...(sessionChanged ? [] : entry.recentTurnIds ?? []), observation.turnId])].slice(-32)
-    : sessionChanged ? undefined : entry.recentTurnIds;
-  const stoppedTurnIds = endsTurn && stoppedTurn !== null
-    ? [...new Set([...(entry.stoppedTurnIds ?? []), stoppedTurn])].slice(-32)
-    : sessionChanged ? undefined : entry.stoppedTurnIds;
-  const idleEpoch = positiveIdle(entry, execution);
+  // A tool call cannot outlive its turn or process, even when its end hook never fired.
+  const endsTools = ["stopped", "failed", "session-start", "session-end"].includes(observation.kind);
+  const toolActivity = endsTools || sessionChanged ? { ...entry.toolActivity, pending: 0 } : entry.toolActivity;
   const lastFailure = observation.failure === undefined
     ? entry.lastFailure
-    // A failure of the queued-into turn belongs to the preceding work: advisory.
-    : recordFailure(entry, observation.failure, { action: queuedIntoTurnStop ? null : action, sessionId, turnId: observation.turnId ?? null, now });
+    : recordFailure(entry, observation.failure, { action, sessionId, turnId: observation.turnId ?? null, now });
   return agentLifecycleEntrySchema.parse({
     ...entry,
     lastFailure,
-    stopObservation,
     containment: sessionChanged || observation.kind === "session-end" ? null : entry.containment,
     action,
-    execution,
     sessionId,
     retiredSessionIds,
-    turnId,
-    recentTurnIds,
-    stoppedTurnIds,
-    pendingInputCount,
-    backgroundActive,
-    stoppedAt,
-    idleEpoch,
+    freshSession,
+    toolActivity,
     health: "healthy",
     degradedCause: null,
     lastEvent: observation.eventName,
     lastEventAt: now,
     updatedAt: now
   });
-};
-
-/** Missing Stop callbacks are an observability warning, not evidence of failure or idle. */
-export const stopObservationWarning = (agent: string, entry: AgentLifecycleEntry): string | null => {
-  const observed = entry.stopObservation;
-  if (observed.turns.length >= 2) return `No Stop hook from ${agent} after ${observed.turns.length === 128 ? "at least " : ""}${observed.turns.length} observed turns; inspect its hook setup and current issue environment.`;
-  if (observed.completedActions.length >= 2) return `No Stop confirmation from ${agent} after ${observed.completedActions.length === 128 ? "at least " : ""}${observed.completedActions.length} completed actions; turn identity may be unavailable; inspect its hook setup.`;
-  return null;
 };
 
 const semanticallyEqual = (left: AgentLifecycleEntry, right: AgentLifecycleEntry): boolean => {
@@ -830,22 +596,17 @@ export const observeAgentLifecycleWithResult = (
     const current = state.agents[agent];
     if (current === undefined) throw new Error(`Unknown lifecycle agent ${agent}.`);
     const next = applyLifecycleObservation(current, observation, now);
-    // An unchanged, explicitly fully idle status is a render, not activity or
-    // a heartbeat for a newly ordered action. Other statuses (including repeated
-    // working/unknown reports) still revoke ready, as do session/queue changes.
-    if (observation.kind === "status" && observation.execution === "idle" &&
-      observation.pendingInputCount === 0 && observation.backgroundActive === false &&
-      next !== current && semanticallyEqual(current, next)) return state;
+    // An unchanged status render is not activity.
+    if (observation.kind === "status" && next !== current && semanticallyEqual(current, next)) return state;
     const expectedAfter = current.action?.injectedAt ?? current.action?.orderedAt ?? null;
     const heartbeatNeeded =
       expectedAfter !== null &&
       (current.lastEventAt === null || Date.parse(current.lastEventAt) < Date.parse(expectedAfter));
     changed = next !== current && (!semanticallyEqual(current, next) || heartbeatNeeded);
-    // Status-bar telemetry is not an activity hook: idle renders must not revoke
-    // ready. Nor is a tool callback, which can describe the very command that
-    // wrote ready. Every remaining callback counts even when semantic
-    // deduplication (or stale-session rejection) leaves execution unchanged.
-    const hookReceipt = observation.kind === "telemetry" || observation.kind === "tool-activity" ? current.hookReceipt : {
+    // Status-bar telemetry and tool callbacks are not lifecycle hooks: a tool
+    // callback can describe the very command that wrote ready.
+    const toolOrTelemetry = observation.kind === "telemetry" || observation.kind === "tool-start" || observation.kind === "tool-activity";
+    const hookReceipt = toolOrTelemetry ? current.hookReceipt : {
       at: new Date(Math.max(Date.parse(now), Date.parse(current.hookReceipt?.at ?? current.lastEventAt ?? now))).toISOString(),
       sequence: (current.hookReceipt?.sequence ?? 0) + 1
     };
@@ -862,59 +623,6 @@ export const observeAgentLifecycle = (
   observation: LifecycleObservation,
   now = new Date().toISOString()
 ): AgentLifecycleState => observeAgentLifecycleWithResult(paths, agent, observation, now).state;
-
-export const hasStopReadiness = (entry: AgentLifecycleEntry | undefined): boolean =>
-  entry?.stoppedAt != null && entry.execution === "idle";
-
-/** A never-sent action the live turn is expected to pick up by rereading action.md. */
-export const rereadPickupPending = (entry: AgentLifecycleEntry | undefined, actionId: string): boolean => {
-  const action = entry?.action;
-  return action?.actionId === actionId && action.rereadExpected === true && action.delivery === "ordered" &&
-    action.injectedAt === null && action.workflowCompleteAt === null && entry?.execution === "working";
-};
-
-/** Every reason delivery can be held back, as a closed union. */
-export type NudgeWaitCode =
-  | "unmatched-action"
-  | "workflow-complete"
-  | "pending-input"
-  | "background-active"
-  | "unknown"
-  | "queued"
-  | "working"
-  | "idle-transition-already-used";
-
-export type NudgeDecision =
-  | { kind: "send"; reason: "eligible-idle"; code: "eligible-idle" }
-  | { kind: "wait"; reason: string; code: NudgeWaitCode };
-
-export const decideLifecycleNudge = (
-  entry: AgentLifecycleEntry,
-  actionId: string,
-  actionDigest: string
-): NudgeDecision => {
-  const action = entry.action;
-  if (action === null || action.actionId !== actionId || action.actionDigest !== actionDigest) {
-    return { kind: "wait", reason: "unmatched-action", code: "unmatched-action" };
-  }
-  if (action.workflowCompleteAt !== null) {
-    return { kind: "wait", reason: "workflow-complete", code: "workflow-complete" };
-  }
-  if (entry.pendingInputCount !== null && entry.pendingInputCount > 0) {
-    return { kind: "wait", reason: "pending-input", code: "pending-input" };
-  }
-  if (entry.backgroundActive === true && !hasStopReadiness(entry)) {
-    return { kind: "wait", reason: "background-active", code: "background-active" };
-  }
-  if (entry.execution !== "idle" && entry.execution !== "failed") {
-    // `failed` is an eligible idle state below; the rest are wait codes.
-    return { kind: "wait", reason: entry.execution, code: entry.execution };
-  }
-  if (action.lastNudgedIdleEpoch === entry.idleEpoch) {
-    return { kind: "wait", reason: "idle-transition-already-used", code: "idle-transition-already-used" };
-  }
-  return { kind: "send", reason: "eligible-idle", code: "eligible-idle" };
-};
 
 export type DegradedCause = "hooks-never-seen" | "correlation-lagged";
 
