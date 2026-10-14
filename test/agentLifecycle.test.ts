@@ -15,6 +15,7 @@ import {
   observeAgentLifecycleWithResult,
   orderAgentAction,
   readAgentLifecycle,
+  rereadPickupPending,
   stopObservationWarning
 } from "../src/agentLifecycle.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
@@ -227,6 +228,102 @@ describe("agent lifecycle policy", () => {
       pendingInputCount: 2,
       backgroundActive: true
     });
+  });
+
+  const injectedAction = (lastNudgedIdleEpoch: number) => ({
+    actionId, actionDigest: digest, delivery: "injected" as const, orderedAt: now, injectedAt: now, retryableInjectionAt: null,
+    acceptedAt: null, sessionId: null, turnId: null, lastNudgedIdleEpoch, workflowCompleteAt: null
+  });
+
+  it("keeps a newer turn when an older Stop or failed Stop arrives", () => {
+    let current = applyLifecycleObservation(entry(), { kind: "session-start", eventName: "sessionStart", sessionId: "c" }, now);
+    current = applyLifecycleObservation(current, { kind: "prompt-submitted", eventName: "beforeSubmitPrompt", sessionId: "c", turnId: "gen-old" }, now);
+    current = { ...current, action: injectedAction(current.idleEpoch) };
+    current = applyLifecycleObservation(current, { kind: "prompt-submitted", eventName: "beforeSubmitPrompt", sessionId: "c",
+      turnId: "gen-new", actionId, actionDigest: digest }, now);
+    const oldStop = { kind: "stopped" as const, eventName: "stop", sessionId: "c", turnId: "gen-old", backgroundActive: false };
+    const working = { execution: "working", turnId: "gen-new", stoppedAt: null, idleEpoch: current.idleEpoch };
+    expect(applyLifecycleObservation(current, oldStop, later)).toMatchObject(working);
+    expect(decideLifecycleNudge(applyLifecycleObservation(current, oldStop, later), actionId, digest).code).toBe("working");
+    expect(applyLifecycleObservation({ ...current, pendingInputCount: 1 }, oldStop, later)).toMatchObject(working);
+    const oldFailure = applyLifecycleObservation(current, { kind: "failed", eventName: "stop", sessionId: "c", turnId: "gen-old",
+      backgroundActive: false, failure: { vendor: "cursor", status: "aborted", error: null, errorDetails: null, lastAssistantMessage: null } }, later);
+    expect(oldFailure).toMatchObject(working);
+    expect(oldFailure.lastFailure?.actionId).toBeNull();
+    const idle = applyLifecycleObservation(current, { ...oldStop, turnId: "gen-new" }, later);
+    expect(idle).toMatchObject({ execution: "idle", stoppedAt: later });
+    expect(applyLifecycleObservation(idle, oldStop, "2026-08-18T00:01:00.000Z")).toMatchObject({ execution: "idle", stoppedAt: later });
+  });
+
+  it("does not let the Stop of the turn a prompt was queued into end the queued action", () => {
+    let current = applyLifecycleObservation(entry(), { kind: "session-start", eventName: "SessionStart", sessionId: "s" }, now);
+    current = applyLifecycleObservation(current, { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "s", turnId: "t" }, now);
+    current = { ...current, action: injectedAction(current.idleEpoch) };
+    const submit = { kind: "prompt-submitted" as const, eventName: "UserPromptSubmit", sessionId: "s", turnId: "t", actionId, actionDigest: digest };
+    current = applyLifecycleObservation(current, submit, now);
+    expect(current.action).toMatchObject({ delivery: "accepted", queuedBehindTurnId: "t" });
+    const epoch = current.idleEpoch;
+    const stop = { kind: "stopped" as const, eventName: "Stop", sessionId: "s", turnId: "t", backgroundActive: false };
+    for (let repeat = 0; repeat < 2; repeat += 1) {
+      current = applyLifecycleObservation(current, stop, later);
+      expect(current).toMatchObject({ execution: "working", stoppedAt: null, idleEpoch: epoch });
+      expect(decideLifecycleNudge(current, actionId, digest).code).toBe("working");
+    }
+    current = applyLifecycleObservation(current, { ...stop, turnId: "u" }, later);
+    expect(current).toMatchObject({ execution: "idle", stoppedAt: later, idleEpoch: epoch + 1 });
+    expect(current.action?.queuedBehindTurnId).toBeUndefined();
+
+    // A repeated submit for an action accepted on an idle agent is not queued input.
+    let fresh = applyLifecycleObservation(entry(), { kind: "session-start", eventName: "SessionStart", sessionId: "s" }, now);
+    fresh = { ...fresh, action: injectedAction(fresh.idleEpoch) };
+    fresh = applyLifecycleObservation(applyLifecycleObservation(fresh, submit, now), submit, now);
+    expect(fresh.action?.queuedBehindTurnId).toBeUndefined();
+    expect(applyLifecycleObservation(fresh, stop, later)).toMatchObject({ execution: "idle", stoppedAt: later });
+  });
+
+  it("lets current-turn tool activity repair only stale queued or unknown execution", () => {
+    let current = applyLifecycleObservation(entry(), { kind: "session-start", eventName: "sessionStart", sessionId: "c" }, now);
+    for (const turnId of ["g1", "g2"]) current = applyLifecycleObservation(current,
+      { kind: "prompt-submitted", eventName: "beforeSubmitPrompt", sessionId: "c", turnId }, now);
+    const queued = { ...current, execution: "queued" as const };
+    const tool = { kind: "tool-activity" as const, eventName: "postToolUse", sessionId: "c", turnId: "g2" };
+    expect(applyLifecycleObservation(queued, tool, later).execution).toBe("working");
+    expect(applyLifecycleObservation(queued, { ...tool, turnId: "g1" }, later)).toBe(queued);
+    expect(applyLifecycleObservation(queued, { ...tool, sessionId: "other" }, later)).toBe(queued);
+    const stopped = applyLifecycleObservation(current, { kind: "stopped", eventName: "stop", sessionId: "c", turnId: "g2" }, later);
+    expect(applyLifecycleObservation(stopped, tool, later)).toBe(stopped);
+
+    const root = mkdtempSync(join(tmpdir(), "coord-tool-activity-")); roots.push(root);
+    const paths = issueRuntimePaths(root, 1); createIssueRuntime(paths, ["codex"]);
+    initializeAgentLifecycle(paths, ["codex"], now);
+    observeAgentLifecycleWithResult(paths, "codex", { kind: "session-start", eventName: "sessionStart", sessionId: "c" }, now);
+    const before = readAgentLifecycle(paths).agents.codex!.hookReceipt;
+    // A tool callback (e.g. for the command that wrote ready) is not a later hook.
+    expect(observeAgentLifecycleWithResult(paths, "codex", tool, later).changed).toBe(false);
+    expect(readAgentLifecycle(paths).agents.codex!.hookReceipt).toEqual(before);
+  });
+
+  it("expects a reread pickup only while the completing turn is live, and acknowledges it on completion", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-reread-")); roots.push(root);
+    const paths = issueRuntimePaths(root, 1); createIssueRuntime(paths, ["codex"]);
+    initializeAgentLifecycle(paths, ["codex"], now);
+    const [b, c, d] = ["22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"];
+    observeAgentLifecycleWithResult(paths, "codex", { kind: "session-start", eventName: "SessionStart", sessionId: "s" }, now);
+    orderAgentAction(paths, "codex", actionId, digest, now);
+    markActionInjected(paths, "codex", actionId, digest, now);
+    observeAgentLifecycleWithResult(paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "s",
+      turnId: "t", actionId, actionDigest: digest }, now);
+    expect(markActionWorkflowComplete(paths, "codex", actionId, later).pickedUpByReread).toBe(false);
+    for (const next of [b, c]) {
+      orderAgentAction(paths, "codex", next, digest, later);
+      const current = readAgentLifecycle(paths).agents.codex!;
+      expect(current.action?.rereadExpected).toBe(true);
+      expect(rereadPickupPending(current, next)).toBe(true);
+      expect(markActionWorkflowComplete(paths, "codex", next, later).pickedUpByReread).toBe(true);
+    }
+    observeAgentLifecycleWithResult(paths, "codex", { kind: "stopped", eventName: "Stop", sessionId: "s", turnId: "t" }, later);
+    orderAgentAction(paths, "codex", d, digest, later);
+    expect(readAgentLifecycle(paths).agents.codex!.action?.rereadExpected).toBeUndefined();
   });
 
   it("allows one nudge for each positive transition into idle", () => {

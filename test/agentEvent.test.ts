@@ -234,6 +234,10 @@ describe("vendor lifecycle event normalization", () => {
         tool_name: "Read"
       })
     ).toMatchObject({ kind: "tool-used", sessionId: "conversation-1", turnId: "generation-1", toolCalls: 1 });
+    for (const hook_event_name of ["postToolUse", "postToolUseFailure"]) {
+      expect(normalizeAgentEvent("cursor", { hook_event_name, conversation_id: "conversation-1", generation_id: "generation-1" }))
+        .toEqual({ kind: "tool-activity", eventName: hook_event_name, sessionId: "conversation-1", turnId: "generation-1" });
+    }
     expect(
       normalizeCursorUsageEvent("cursor", {
         hook_event_name: "afterAgentResponse",
