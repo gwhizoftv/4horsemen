@@ -1,0 +1,34 @@
+{
+  "actionId": "9bcbe465-4d84-4b63-b2a1-679e06bce281",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "3efad6dc505f58f73561c9daad385fbccaa385c2",
+      "path": ".signals/issue-209/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "f274b186713f325492a93579e07f7b6c8fdab2b4",
+      "path": ".signals/issue-209/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "15a02a905425b5da3c891f274302f9a3c0a7ef2e",
+      "path": ".signals/issue-209/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "048135d9144c7bd8b87a1e86c78bd28b86ee27f0",
+      "path": ".signals/issue-209/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "03c1d42f1eb66b48346cadbd92f09ffe3992abe9981436ca06612066bad7bf57",
+  "issue": 209,
+  "issueSessionId": "issue-209:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "protocolVersion": 2,
+  "rationale": "Claude's report is the only one that measures per-vendor send-to-prompt delivery (cursor 11/22 first sends and 1/29 resends landing versus 37/37 and 40/40) and ties it to #206, giving the owner a metric that can verify the stated prelude/idle fix, while its embedded script reproduces every table and it posts only a delimited body; codex is a strong second whose provenance details should be folded in during revision, cursor mislocates receipt reuse, and antigravity proposes bypassing required final checks on a false classification premise.",
+  "responseSha256": "2a654c09029d1be34b9f717ee8e3fc557a5da562e5dfc65f2ed4bdcdd3b59b8b"
+}

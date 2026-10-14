@@ -1,0 +1,34 @@
+{
+  "actionId": "d6212ac8-c6c5-49a2-ba8b-def04dc98a76",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "3efad6dc505f58f73561c9daad385fbccaa385c2",
+      "path": ".signals/issue-209/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "f274b186713f325492a93579e07f7b6c8fdab2b4",
+      "path": ".signals/issue-209/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "15a02a905425b5da3c891f274302f9a3c0a7ef2e",
+      "path": ".signals/issue-209/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "048135d9144c7bd8b87a1e86c78bd28b86ee27f0",
+      "path": ".signals/issue-209/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "03c1d42f1eb66b48346cadbd92f09ffe3992abe9981436ca06612066bad7bf57",
+  "issue": 209,
+  "issueSessionId": "issue-209:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "protocolVersion": 2,
+  "rationale": "Codex 15a02a905425b5da3c891f274302f9a3c0a7ef2e provides the strongest reproducible pause and verification accounting while preserving review and trusted verification requirements; revise it with the owner's recent-fix validation guidance and Claude's concise publication format.",
+  "responseSha256": "6b2d1a3d7fa4c6611d16ce3d79ac7f65b1255724b60ec84d358990b5cd32fc5a"
+}

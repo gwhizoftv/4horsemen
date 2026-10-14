@@ -1,0 +1,34 @@
+{
+  "actionId": "7a0b200f-4ef5-4d36-83dc-20777a1a84c9",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "3efad6dc505f58f73561c9daad385fbccaa385c2",
+      "path": ".signals/issue-209/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "f274b186713f325492a93579e07f7b6c8fdab2b4",
+      "path": ".signals/issue-209/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "15a02a905425b5da3c891f274302f9a3c0a7ef2e",
+      "path": ".signals/issue-209/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "048135d9144c7bd8b87a1e86c78bd28b86ee27f0",
+      "path": ".signals/issue-209/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "03c1d42f1eb66b48346cadbd92f09ffe3992abe9981436ca06612066bad7bf57",
+  "issue": 209,
+  "issueSessionId": "issue-209:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "protocolVersion": 2,
+  "rationale": "Claude is the revision base because its report uses the analytics upper-middle median, includes a reproducible calculation, measures cursor prompt delivery against the prelude and idle failures, and keeps a separable comment body, while cursor omits the runnable calculation, codex defers the comment URL to R7 and averages the two middle phase values, and antigravity advances gates by quorum or sideline and would post the whole file.",
+  "responseSha256": "b13f93a078d89e267f864b89ddb8156437dfb0be258a1b59070c4d2f4fe698be"
+}
