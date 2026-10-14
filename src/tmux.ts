@@ -397,6 +397,8 @@ export const resolveNudgeKeys = (
 export const NUDGE_AFTER_TEXT_MS = 300;
 /** Keep Escape and Enter separate so the TUI does not interpret Alt+Enter. */
 export const NUDGE_BETWEEN_SUBMIT_MS = 150;
+/** Let a vim mode key (`i`, `a`, Escape) land as its own event before the next key or text. */
+export const NUDGE_AFTER_PRELUDE_MS = 150;
 /**
  * Antigravity under tmux often paints `⚠ Verifying your account...` a beat after
  * the idle `>` prompt. Typing then discards the nudge. Wait, then recapture.
@@ -1332,11 +1334,16 @@ export class TmuxController {
       }
     } else {
       // Blocking run-shell commands keep the TUI's text/key gaps inside one
-      // tmux operation. Without them, Enter can join the paste as a newline,
+      // tmux operation. Without them, a vim prelude key joins the text burst
+      // and INSERT is missed (issue 206), Enter can join the paste as a newline,
       // or Escape+Enter can become Alt+Enter. Never use run-shell -b here.
       const commands = [
-        ...preludeKeys.map((key) => ["send-keys", "-t", target, key]),
-        ["send-keys", "-l", "-t", target, text],
+        ...preludeKeys.flatMap((key) => [
+          ["send-keys", "-t", target, key],
+          ["run-shell", `sleep ${NUDGE_AFTER_PRELUDE_MS / 1000}`]
+        ]),
+        // If a prelude key lands in the composer anyway, keep it apart from the prompt.
+        ["send-keys", "-l", "-t", target, preludeKeys.length > 0 ? ` ${text}` : text],
         ...submit.flatMap((key, index) => [
           ["run-shell", `sleep ${(index === 0 ? NUDGE_AFTER_TEXT_MS : NUDGE_BETWEEN_SUBMIT_MS) / 1000}`],
           ["send-keys", "-t", target, key]

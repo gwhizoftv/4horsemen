@@ -405,8 +405,12 @@ Nudge delivery uses literal `send-keys -l` (not paste-buffer — some TUIs such
 as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`.
 Per-agent config controls owner UI:
 
-- `nudgePrelude` — tmux keys before the text (Codex default: `i` for vim insert,
-  skipped when Codex's footer already shows `Vim: Insert`)
+- `nudgePrelude` — tmux key names sent before the text (Codex default: `i` for
+  vim insert, skipped when Codex's footer already shows `Vim: Insert`). Each
+  entry is one key followed by the prelude gap, so a trailing space such as
+  `"a "` adds no delay. When any prelude key is sent, the typed text starts with
+  a space, so a key that lands in the composer reads `i Read and execute …`
+  rather than running into the prompt
 - `nudgeSubmit` — tmux keys after the text (Claude default: `Escape` then
   `Enter` to leave vim INSERT and dismiss autocomplete; Cursor without vim and
   Antigravity default:
@@ -419,9 +423,11 @@ Per-agent config controls owner UI:
 
 Codex, Claude and Cursor receive one tmux command batch containing literal
 text followed by real submit-key events. Blocking `run-shell 'sleep …'` commands
-inside the batch wait 300 ms after text and 150 ms between submit keys. The text
-gap keeps Enter out of paste detection; the Escape/Enter gap prevents Alt+Enter
-in vim mode. These commands must not use `-b`, which would let the following key
+inside the batch wait 150 ms after each prelude key, 300 ms after text and 150 ms
+between submit keys. The prelude gap lets the vim mode switch (`i`, `a`) land
+before the text instead of joining its burst (issue 206); the text gap keeps
+Enter out of paste detection; the Escape/Enter gap prevents Alt+Enter in vim
+mode. These commands must not use `-b`, which would let the following key
 run before the sleep finishes. The coordinator does not poll for the
 pasted prompt or send fallback submit keys. A matching `UserPromptSubmit` or
 `beforeSubmitPrompt` hook is sufficient acceptance evidence; delayed hooks also
