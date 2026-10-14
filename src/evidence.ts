@@ -41,6 +41,10 @@ const canonicalInputs = (inputs: readonly BoundInput[]): string =>
 
 export const computeInputSetHash = (inputs: readonly BoundInput[]): string => sha256(canonicalInputs(inputs));
 
+/** Revision feedback is hashed with the inputs, but does not authorize product ancestry. */
+export const revisionProductInputs = (inputs: readonly BoundInput[]): BoundInput[] =>
+  inputs.filter((input) => input.kind === "implementation" || input.kind === "prior-revision");
+
 const markdownSection = (raw: string, alternatives: readonly string[]): boolean =>
   alternatives.some((heading) => new RegExp(`^#{1,6}\\s+${heading}\\s*$`, "im").test(raw));
 
@@ -360,7 +364,7 @@ export const evaluateEvidence = async (
     ];
     if (parsed.value.round !== order.round) errors.push(`revision round must be ${order.round ?? 1}`);
     if (order.approvedPaths.length === 0) errors.push("no selected plan file map is available");
-    const expectedPins = order.inputs.map((input) => input.commitSha).sort();
+    const expectedPins = revisionProductInputs(order.inputs).map((input) => input.commitSha).sort();
     if (JSON.stringify([...parsed.value.basedOn].sort()) !== JSON.stringify(expectedPins)) errors.push("revision basedOn pins do not equal bound inputs");
     if (expectedPins.length !== 1) errors.push("revision must be based on exactly one authorized product pin");
     const inputPin = expectedPins[0];

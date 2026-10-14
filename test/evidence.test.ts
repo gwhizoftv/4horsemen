@@ -671,19 +671,23 @@ Implement it.
     expect(result.outstanding).toContain("ballot steps cannot be satisfied through a repository artifact");
   });
 
-  it("requires revision lineage, approved paths, and immutable phase separation", async () => {
+  it.each([1, 2])("requires revision lineage, approved paths, and immutable phase separation in round %s", async (round) => {
     const input = {
       agent: "claude",
       commitSha: sha("2"),
-      path: ".signals/issue-1/implementation-ready-claude.json",
-      kind: "implementation"
+      path: round === 1 ? ".signals/issue-1/implementation-ready-claude.json" : ".signals/issue-1/revision-ready-claude-round-1.json",
+      kind: round === 1 ? "implementation" : "prior-revision"
     };
+    const ballots = round === 1 ? [] : ["claude", "codex"].map((agent) => ({
+      agent, kind: "consensus-ballot", commitSha: sha("3"),
+      path: `.code-reviews/issue-1/consensus-ballot-${agent}-round-1.json`
+    }));
     const action = order({
       stepId: "R6.revise",
       evidenceId: "revision-pinned",
-      requiredPath: ".signals/issue-1/revision-ready-codex-round-1.json",
-      round: 1,
-      inputs: [input],
+      requiredPath: `.signals/issue-1/revision-ready-codex-round-${round}.json`,
+      round,
+      inputs: [input, ...ballots],
       approvedPaths: ["src/product.ts"]
     });
     const artifact = {
@@ -693,7 +697,7 @@ Implement it.
       issueSessionId: action.issueSessionId,
       agent: "codex",
       inputSetHash: computeInputSetHash(action.inputs),
-      round: 1,
+      round,
       revisedBranchHead: sha("d"),
       basedOn: [input.commitSha]
     };
@@ -727,9 +731,20 @@ Implement it.
       await evaluateEvidence(
         action,
         sha("e"),
-        mirror(JSON.stringify(artifact), { changedPaths: async () => ["src/product.ts"] })
+        mirror(JSON.stringify(artifact), {
+          isAncestor: async (base) => base !== sha("3"),
+          changedPaths: async () => ["src/product.ts"]
+        })
       )
     ).toMatchObject({ status: "satisfied", productPin: artifact.revisedBranchHead });
+    if (ballots.length > 0) {
+      const extraParent = await evaluateEvidence(action, sha("e"), mirror(JSON.stringify({
+        ...artifact, basedOn: [input.commitSha, ballots[0]!.commitSha]
+      })));
+      expect(extraParent.status).toBe("rejected");
+      expect(extraParent.outstanding).toContain("revision basedOn pins do not equal bound inputs");
+      expect(extraParent.outstanding).not.toContain("revision must be based on exactly one authorized product pin");
+    }
   });
 });
 

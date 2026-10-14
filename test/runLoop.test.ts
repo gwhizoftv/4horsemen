@@ -4009,25 +4009,28 @@ describe("materialized bound inputs", () => {
 
   it("writes one content-addressed packet with a manifest that matches the files", async () => {
     const { paths } = fixture();
-    const mirror = readingMirror();
-    const inputs = documents([
+    const ballot = { kind: "consensus-ballot", agent: "codex", commitSha: "4".repeat(40),
+      path: ".code-reviews/issue-1/consensus-ballot-codex-round-1.json" };
+    const ballotJson = JSON.stringify({ disposition: "revise", rationale: "Preserve the authorized product parent." });
+    const mirror = readingMirror({ [`${ballot.commitSha}:${ballot.path}`]: ballotJson });
+    const inputs = [...documents([
       ["claude", "1".repeat(40), "plan"],
       ["codex", "2".repeat(40), "plan"],
       ["codex", "3".repeat(40), "review"]
-    ]);
+    ]), ballot];
 
     const result = await materializeBoundInputs({ mirror, paths, inputs });
 
     expect(result.inputSetHash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.packetDir).toBe(join(paths.issueInputsRoot, result.inputSetHash as string));
-    expect(result.entries).toHaveLength(3);
+    expect(result.entries).toHaveLength(4);
     expect(result.omitted).toEqual([]);
 
     for (const entry of result.entries) {
       // Every path the action will list has to exist, and hold exactly the
       // bytes the cited pin holds.
       const onDisk = readFileSync(entry.localPath, "utf8");
-      expect(onDisk).toBe(`body of ${entry.commitSha}:${entry.path}\n`);
+      expect(onDisk).toBe(entry.kind === "consensus-ballot" ? ballotJson : `body of ${entry.commitSha}:${entry.path}\n`);
       expect(entry.sha256).toBe(createHash("sha256").update(onDisk).digest("hex"));
     }
 
@@ -4500,6 +4503,31 @@ describe("third revision closeout", () => {
     const mirror = new BareMirror(paths.mirror, start.origin, async () => ({ exitCode: 0, stdout: Buffer.alloc(0), stderr: "" }));
     return { paths, start, cursors, mirror, now, revision };
   };
+
+  it.each([2, 3])("binds the previous published ballots for revision round %s", (round) => {
+    const { paths, start, cursors, revision } = terminalFixture();
+    const priorRevision = { ...revision, round: round - 1,
+      path: `.signals/issue-1/revision-ready-codex-round-${round - 1}.json` };
+    const implementation = { ...revision, stepId: "R4.implement", round: null,
+      submissionSha: "c".repeat(40), productPin: "f".repeat(40), path: ".signals/issue-1/implementation-ready-codex.json" };
+    const batch = publishedBallotBatchFixture({ kind: "consensus-ballot-batch", activeRoster: cursors.activeRoster,
+      round: round - 1 });
+    const seeded = cursorsStateSchema.parse({ ...cursors,
+      accepted: [implementation, priorRevision],
+      acceptedResponses: cursors.acceptedResponses.map((response) => ({ ...response, round: round - 1 })),
+      ballotBatches: [...cursors.ballotBatches, batch]
+    });
+    const priorInput = { kind: "prior-revision", agent: priorRevision.agent,
+      commitSha: priorRevision.productPin, path: priorRevision.path };
+    const order = buildOrder(paths, start, seeded, "codex", "R6.revise", round);
+    expect(order.inputs).toEqual([priorInput, ...batch.responses.map((response, index) => ({
+      kind: "consensus-ballot", agent: response.agent, commitSha: batch.commitSha, path: batch.paths[index]
+    }))]);
+    expect(deriveBoundInputs(start, { ...seeded, ballotBatches: [] }, "R6.revise", round)).toEqual([priorInput]);
+    expect(deriveBoundInputs(start, seeded, "R6.revise", 1)).toEqual([{
+      kind: "implementation", agent: implementation.agent, commitSha: implementation.productPin, path: implementation.path
+    }]);
+  });
 
   it.each(["revise", "escalate", "approve"] as const)("derives exact published terminal evidence for %s", (disposition) => {
     const { cursors, now, revision } = terminalFixture(disposition);
