@@ -1,0 +1,14 @@
+{
+  "actionId": "e2e8f4cd-4f28-4941-8c3f-870f57f22679",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "c9c9d6175ebdcbd72f3789a3bd0d84b7cc869734fc41adc7cf5ce71199b2ba97",
+  "issue": 214,
+  "issueSessionId": "issue-214:0ead5e6ce15b6563bb6134a84997e79b0c0042cd",
+  "protocolVersion": 2,
+  "rationale": "A session-replacing status that reports working still leaves rereadExpected on a workflow-complete action, so the next order treats the new session as a reread and does not send.",
+  "responseSha256": "f414b060f968cdf2fcfaed1b88b992d4a2092c431b5fc030749cde9dd04f960d",
+  "revisionCommitSha": "d7badcc2ad3b10c164204061f00f80fc99f79e13",
+  "round": 1
+}

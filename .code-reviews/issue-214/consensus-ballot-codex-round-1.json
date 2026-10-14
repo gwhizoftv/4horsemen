@@ -1,0 +1,14 @@
+{
+  "actionId": "d07cc3cb-823a-4005-8d40-c8ffe16862bf",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "c9c9d6175ebdcbd72f3789a3bd0d84b7cc869734fc41adc7cf5ce71199b2ba97",
+  "issue": 214,
+  "issueSessionId": "issue-214:0ead5e6ce15b6563bb6134a84997e79b0c0042cd",
+  "protocolVersion": 2,
+  "rationale": "src/agentLifecycle.ts:622 in d7badcc2ad3b10c164204061f00f80fc99f79e13 must preserve newer work when a known older terminal ID arrives, but observing O then T, accepting B queued into T, receiving Stop(T), then delayed Stop(O) still classifies O as queuedWorkStop, increments idleEpoch and returns send for still-running B, as reproduced by the focused revision probe.",
+  "responseSha256": "0aa88a54429d2bb8993ddfbf468587c0af6e77498048e466b103e3da4243e406",
+  "revisionCommitSha": "d7badcc2ad3b10c164204061f00f80fc99f79e13",
+  "round": 1
+}

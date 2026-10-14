@@ -1,0 +1,14 @@
+{
+  "actionId": "b39fa128-6a44-4b2a-a4ce-9f2665724327",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "c9c9d6175ebdcbd72f3789a3bd0d84b7cc869734fc41adc7cf5ce71199b2ba97",
+  "issue": 214,
+  "issueSessionId": "issue-214:0ead5e6ce15b6563bb6134a84997e79b0c0042cd",
+  "protocolVersion": 2,
+  "rationale": "The bound revision d7badcc2 matches the pushed sources and, in the same scenario probe used for the comparison, now ends queued work on its own distinct-turn Stop even after completion (C1), keeps a failure of the queued-into turn advisory and non-sending (C5), and still holds repeated, older, and older-failed Stops as working, resolving every finding raised against this pin.",
+  "responseSha256": "56fea79edbcda9824f78049be927665ae0a72a763127b9cf43afe9505741bfc3",
+  "revisionCommitSha": "d7badcc2ad3b10c164204061f00f80fc99f79e13",
+  "round": 1
+}
