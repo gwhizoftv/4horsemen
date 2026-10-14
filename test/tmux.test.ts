@@ -252,7 +252,7 @@ describe("tmux boundary", () => {
     expect(commandsIn(sent[0]!.args)).toEqual([
       ["send-keys", "-t", "coord-1:cursor.0", "a"],
       ["run-shell", "sleep 0.15"],
-      ["send-keys", "-l", "-t", "coord-1:cursor.0", "Read and execute your current coordinator action at /runtime/action.md"],
+      ["send-keys", "-l", "-t", "coord-1:cursor.0", " Read and execute your current coordinator action at /runtime/action.md"],
       ["run-shell", "sleep 0.3"],
       ["send-keys", "-t", "coord-1:cursor.0", "Escape"],
       ["run-shell", "sleep 0.15"],
@@ -334,7 +334,7 @@ describe("tmux boundary", () => {
     const batches = calls.filter((call) => call.args[0] === "send-keys");
     expect(batches).toHaveLength(1);
     expect(commandsIn(batches[0]!.args).map((args) => args.at(-1))).toEqual([
-      "i", "sleep 0.15", "Read and execute your current coordinator action at /runtime/action.md", "sleep 0.3", "Enter"
+      "i", "sleep 0.15", " Read and execute your current coordinator action at /runtime/action.md", "sleep 0.3", "Enter"
     ]);
     for (const nudgeSubmit of [["Enter"], ["C-m"], ["C-j", "C-m"]]) {
       expect(resolveNudgeKeys({ id: "codex", root: "/c", launcher: "x", delivery: "both", nudgeSubmit }).submit).toEqual(["Enter"]);
@@ -1461,7 +1461,8 @@ describe("explicit owner reminder transport", () => {
     const keys = calls.filter((args) => args[0] === "send-keys").flatMap(commandsIn);
     expect(keys[0]?.slice(-2)).toEqual(["-X", "cancel"]);
     expect(keys.filter((args) => args.includes("-l"))).toHaveLength(1);
-    expect(keys.find((args) => args.includes("-l"))?.at(-1)).toBe(text);
+    // Only Claude gets a vim prelude here (`a`), so only its text is space-separated.
+    expect(keys.find((args) => args.includes("-l"))?.at(-1)).toBe(id === "claude" ? ` ${text}` : text);
     expect(keys.at(-1)?.at(-1)).toBe("Enter");
     if (id !== "antigravity") expect(keys).toContainEqual(["run-shell", "sleep 0.3"]);
   });
@@ -1478,7 +1479,7 @@ describe("explicit owner reminder transport", () => {
       .toMatchObject({ status: "sent" });
     const keys = calls.filter((args) => args[0] === "send-keys").flatMap(commandsIn);
     expect(keys[0]?.at(-1)).toBe("a");
-    expect(keys.map((args) => args.at(-1))).toEqual(["a", "sleep 0.15", "owner reminder", "sleep 0.3", "Escape", "sleep 0.15", "Enter"]);
+    expect(keys.map((args) => args.at(-1))).toEqual(["a", "sleep 0.15", " owner reminder", "sleep 0.3", "Escape", "sleep 0.15", "Enter"]);
   });
 
   it.each(["dead", "inspection-error", "send-error", "authority-change"])("reports %s without claiming acceptance", async (failure) => {

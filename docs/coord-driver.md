@@ -407,8 +407,10 @@ Per-agent config controls owner UI:
 
 - `nudgePrelude` — tmux key names sent before the text (Codex default: `i` for
   vim insert, skipped when Codex's footer already shows `Vim: Insert`). Each
-  entry is one key followed by the prelude gap; a trailing space such as `"a "`
-  types a space into the prompt rather than adding delay
+  entry is one key followed by the prelude gap, so a trailing space such as
+  `"a "` adds no delay. When any prelude key is sent, the typed text starts with
+  a space, so a key that lands in the composer reads `i Read and execute …`
+  rather than running into the prompt
 - `nudgeSubmit` — tmux keys after the text (Claude default: `Escape` then
   `Enter` to leave vim INSERT and dismiss autocomplete; Cursor without vim and
   Antigravity default:

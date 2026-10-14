@@ -1342,7 +1342,8 @@ export class TmuxController {
           ["send-keys", "-t", target, key],
           ["run-shell", `sleep ${NUDGE_AFTER_PRELUDE_MS / 1000}`]
         ]),
-        ["send-keys", "-l", "-t", target, text],
+        // If a prelude key lands in the composer anyway, keep it apart from the prompt.
+        ["send-keys", "-l", "-t", target, preludeKeys.length > 0 ? ` ${text}` : text],
         ...submit.flatMap((key, index) => [
           ["run-shell", `sleep ${(index === 0 ? NUDGE_AFTER_TEXT_MS : NUDGE_BETWEEN_SUBMIT_MS) / 1000}`],
           ["send-keys", "-t", target, key]
