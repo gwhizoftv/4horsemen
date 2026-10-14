@@ -101,6 +101,18 @@ describe("coord onboard", () => {
     expect(config.profile).toBe("consensus");
     expect(config.digestPaths).toEqual([]);
     expect(config.agents.map((agent) => agent.id)).toEqual(["claude", "codex", "cursor", "antigravity"]);
+    const declaration = join(fixture.workspaceRoot, "policy.json");
+    const verification = {
+      mode: "coordinator",
+      coordinated: { precommit: [], prepush: [] },
+      candidate: { checks: [{ name: "check", argv: ["pnpm", "run", "check"] }], covers: { files: [], prefixes: ["src/"] }, rules: [] }
+    };
+    writeFileSync(declaration, JSON.stringify({ verification }));
+    expect(await runCli(["onboard", fixture.productRoot, "--declare", "policy.json"], {
+      home,
+      io: { cwd: fixture.workspaceRoot, stdout: (message) => output.push(message), stderr: (message) => output.push(message) }
+    })).toBe(0);
+    expect(JSON.parse(readFileSync(configPath, "utf8")).verification).toMatchObject(verification);
     const trust = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
     expect(trust.projects[dirname(realpathSync(fixture.productRoot))].hasTrustDialogAccepted).toBe(true);
     expect(readFileSync(join(home, ".codex/config.toml"), "utf8"))

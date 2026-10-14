@@ -101,6 +101,7 @@ describe("agent lifecycle hook synchronization", () => {
       expect(syncAgentLifecycleHooks({ clone, agent, cliEntry, options: effects }).changed).toBe(true);
       expect(readFileSync(path, "utf8")).toContain(AGENT_LIFECYCLE_HOOK_MARKER);
       expect(inspectAgentLifecycleHooks({ clone, agent, cliEntry }).kind).toBe("current");
+      if (agent === "claude") expect(json(path).editorMode).toBe("normal");
 
       const second = effectOptions(() => undefined, false);
       expect(syncAgentLifecycleHooks({ clone, agent, cliEntry, options: second }).changed).toBe(false);
@@ -110,8 +111,33 @@ describe("agent lifecycle hook synchronization", () => {
       expect(removeAgentLifecycleHooks({ clone, agent, options: removal }).changed).toBe(true);
       expect(readFileSync(path, "utf8")).not.toContain(AGENT_LIFECYCLE_HOOK_MARKER);
       expect(JSON.stringify(json(path))).toContain("echo keep");
+      if (agent === "claude") expect(json(path).editorMode).toBeUndefined();
     });
   }
+
+  it.each(["normal", "vim"])("preserves an owner's Claude editorMode %s through install and uninstall", (editorMode) => {
+    const { clone, cliEntry } = fixture();
+    const path = agentLifecycleHookPath(clone, "claude")!;
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ editorMode }));
+    const options = effectOptions(() => undefined, false);
+    syncAgentLifecycleHooks({ clone, agent: "claude", cliEntry, options });
+    expect(json(path).editorMode).toBe(editorMode);
+    expect(syncAgentLifecycleHooks({ clone, agent: "claude", cliEntry, options }).changed).toBe(false);
+    removeAgentLifecycleHooks({ clone, agent: "claude", options });
+    expect(json(path)).toEqual({ editorMode });
+  });
+
+  it("preserves a later owner edit to the managed Claude editor mode", () => {
+    const { clone, cliEntry } = fixture();
+    const options = effectOptions(() => undefined, false);
+    syncAgentLifecycleHooks({ clone, agent: "claude", cliEntry, options });
+    const path = agentLifecycleHookPath(clone, "claude")!;
+    writeFileSync(path, JSON.stringify({ ...json(path), editorMode: "vim" }));
+    syncAgentLifecycleHooks({ clone, agent: "claude", cliEntry, options });
+    removeAgentLifecycleHooks({ clone, agent: "claude", options });
+    expect(json(path)).toEqual({ editorMode: "vim" });
+  });
 
   it("installs all managed Cursor lifecycle and analytics hooks", () => {
     const { clone, cliEntry } = fixture();

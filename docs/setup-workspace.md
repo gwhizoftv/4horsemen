@@ -89,6 +89,11 @@ coord onboard /path/to/app --coord-runtime /path/to/app-runtime
 
 Its completion mailbox then defaults to `/path/to/completes/app-runtime/`.
 
+Both `onboard` and `install` accept `--declare /path/to/policy.json` for
+verification, caching, documentation and other policy overrides. Keep that
+declaration and pass it again when reinstalling: setup regenerates `config.json`
+from the declaration and current proposals, so hand-edited policy is not retained.
+
 Install/onboard persist folder trust for each selected agent in its user
 configuration. They trust the product repository's parent when it has at least
 three path components and is neither home nor an ancestor of home. Otherwise,
@@ -99,6 +104,22 @@ repository-specific configuration. The standalone `setup_<agent>.sh` scripts
 reuse the same trust writer. Reinstall preserves unrelated settings and does not
 rewrite unchanged trust entries; `install --dry-run` makes no trust changes.
 Launchers retain their existing sandbox and tool-permission settings.
+
+### Agent editor modes
+
+Install/onboard set Claude's clone-local `.claude/settings.local.json` to
+`"editorMode": "normal"` when the owner has not already set a value there.
+This overrides home vim settings without interfering with quota telemetry.
+Uninstall removes this default only when coordination created it and it still
+has that value; existing owner settings and later edits are preserved. Codex
+launchers pass `-c tui.vim_mode_default=false` for that process. Reinstall to
+refresh launchers and settings, then restart the agent panes to apply them.
+
+Cursor's editor mode remains an owner setting: set `editor.vimMode` to `false`
+in the global `~/.cursor/cli-config.json` (or the `cli-config.json` under your
+`CURSOR_CONFIG_DIR`). Do not put `editor` in project `.cursor/cli.json`; that
+file accepts permissions only. Coordination does not copy Cursor credentials or
+rewrite home editor settings. Antigravity has no vim mode.
 
 Login or account prompts can still require owner input. Use the agent terminal
 to answer them. If a terminal has exited or disappeared, `coord attach N`
@@ -440,7 +461,8 @@ coord install --product /path/to/app --coord-runtime /path/to/coord-runtime \
 coord doctor --coord-runtime /path/to/coord-runtime --product /path/to/app
 ```
 
-Use `install`, not `onboard`, for `--declare`. Install Ruff/pytest and expose
+Alternatively, use `coord onboard /path/to/app --declare /path/to/declaration.json`.
+Install Ruff/pytest and expose
 them on the PATH inherited by the agents and coordinator (including any virtual
 environment); doctor reports a `toolchain` finding when an `argv[0]` cannot be
 resolved. The same requirement applies to Go/Cargo and every declared tool.
@@ -468,7 +490,7 @@ paths are placeholders to replace, not shell variables or real install stamps.
   explicit: `"verify": { "precommit": [], "prepush": [] }`. This applies only
   where coordination hooks are installed — that is, agent clones. A human clone
   has no coordination hooks and is unaffected whether or not `verify` exists.
-- The installer never writes that opt-out on your behalf. When its proposal
+- The installer never writes that product-wide opt-out on your behalf. When its proposal
   finds no command to run, it omits `verify` entirely, so the hooks fail closed
   and name the fix rather than recording a decision nobody made.
 - `coord doctor` fails when a declared `argv[0]` is not on PATH, at install time
@@ -488,8 +510,19 @@ recorded. Hooks never sniff.
 
 Critical paths always retain product checks, even if also listed as documentation.
 Unknown paths and indeterminate diffs run product checks too: critical-path lists
-are no longer an implicit exemption for every other path. To narrow prose/image
-verification, explicitly declare exact repository-relative paths and commands:
+are no longer an implicit exemption for every other path.
+
+Install/onboard propose an exact documentation allowlist from tracked `.md`
+files at the repository root or beneath `docs/`. Agent instructions (`AGENTS.md`,
+`CLAUDE.md`, `GEMINI.md`, `SKILL.md`), executable files, symlinks and proposed
+critical paths are excluded. Templates outside those locations are not included.
+With no eligible files there is no proposed profile. This default has empty
+precommit, prepush and final check lists, so changes confined to these recorded
+paths skip code checks. Newly added docs need a new proposal or explicit
+declaration; mixed and unknown changes keep product checks.
+
+A declared `documentation` profile replaces the proposal. Products whose tests
+read documentation should declare those checks, for example:
 
 ```json
 "documentation": {
@@ -505,8 +538,9 @@ verification, explicitly declare exact repository-relative paths and commands:
 }
 ```
 
-No profile is inferred from `*.md`: executable templates such as
-`templates/product/AGENTS.protocol.md` are product behavior, not prose.
+Hooks and finalization never infer a profile from an extension: they use the
+recorded exact paths. Executable templates such as
+`templates/product/AGENTS.protocol.md` are product behavior.
 The example config declares this repository's small `pnpm check:docs` profile,
 which retains README/docs content and verification-instruction assertions without
 running onboarding or the full suite. Review and install the declaration to opt
@@ -604,6 +638,23 @@ runs into coord (see `config.example.json`):
 The policy and its digest are frozen into `start.json`, so changing the
 declaration affects only issues started afterwards. Switch modes between
 issues.
+
+Onboarding does not guess `verification` or command caches: script names cannot
+prove which environment, services or Git data a command reads. To adopt this
+repository's reviewed policy, copy the policy fields from `config.example.json`
+(including ordered setup/check commands, `verify`, `verification` and
+`documentation`) into a declaration and run `coord onboard <product> --declare
+<file>`. Do not pass the whole generated workspace config as a declaration.
+Fresh verification worktrees need their declared dependency setup command before
+checks; leave installation and build commands uncached.
+
+Receipts live under the workspace runtime's `verification/receipts/` directory,
+shared across its agents and issues. Reuse still requires equivalent command,
+policy, tree, toolchain, environment and dependency identities. Candidate and
+final checks should share names and argv for the same work; a single aggregate
+`pnpm run check` is not interchangeable with its component checks. Passing the
+declaration on later onboard/install runs preserves the chosen policy; it does
+not change a running issue's frozen policy.
 
 The unit suite (`test:fast`) excludes the filesystem/process suites now in
 `test:system`. `pnpm check:fast` runs both, so existing local `verify` lists

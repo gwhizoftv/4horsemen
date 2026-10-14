@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -334,7 +334,7 @@ describe("tmux boundary", () => {
     const batches = calls.filter((call) => call.args[0] === "send-keys");
     expect(batches).toHaveLength(1);
     expect(commandsIn(batches[0]!.args).map((args) => args.at(-1))).toEqual([
-      "i", "sleep 0.15", " Read and execute your current coordinator action at /runtime/action.md", "sleep 0.3", "Enter"
+      "Read and execute your current coordinator action at /runtime/action.md", "sleep 0.3", "Enter"
     ]);
     for (const nudgeSubmit of [["Enter"], ["C-m"], ["C-j", "C-m"]]) {
       expect(resolveNudgeKeys({ id: "codex", root: "/c", launcher: "x", delivery: "both", nudgeSubmit }).submit).toEqual(["Enter"]);
@@ -369,6 +369,23 @@ describe("tmux boundary", () => {
       ["run-shell", "sleep 0.3"],
       ["send-keys", "-t", "coord-1:codex.0", "Enter"]
     ]);
+  });
+
+  it("uses Claude's installed editor mode without typing a literal prelude in normal mode", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-claude-editor-"));
+    roots.push(root);
+    const agent = { id: "claude", root, launcher: "start-claude.sh", delivery: "both" as const };
+    const path = join(root, ".claude/settings.local.json");
+    expect(resolveNudgeKeys(agent, "❯").prelude).toEqual(["a"]);
+    mkdirSync(join(root, ".claude"));
+    writeFileSync(path, JSON.stringify({ editorMode: "normal" }));
+    expect(resolveNudgeKeys(agent, "❯")).toEqual({ prelude: [], submit: ["Escape", "Enter"] });
+    expect(resolveNudgeKeys({ ...agent, nudgePrelude: ["Escape"] }, "❯").prelude).toEqual(["Escape"]);
+    writeFileSync(path, JSON.stringify({ editorMode: "vim" }));
+    expect(resolveNudgeKeys(agent, "❯").prelude).toEqual(["a"]);
+    expect(resolveNudgeKeys(agent, "❯\n-- INSERT --").prelude).toEqual([]);
+    writeFileSync(path, "invalid json");
+    expect(resolveNudgeKeys(agent, "❯").prelude).toEqual(["a"]);
   });
 
   it("builds one attach command per agent window with terminal profiles", () => {
@@ -1348,13 +1365,47 @@ describe("tmux boundary", () => {
 
 const tmuxInstalled = spawnSync("tmux", ["-V"]).status === 0;
 
+it("flushes partial terminal chunks and keeps bytes ordered between timestamp prefixes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "coord-log-chunks-"));
+  roots.push(root);
+  writeFileSync(join(root, "start-claude.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  let pipe = "";
+  const controller = new TmuxController(async (args) => {
+    if (args[0] === "has-session") return { exitCode: 1, stdout: "", stderr: "" };
+    for (const command of commandsIn(args)) {
+      if (command[0] === "pipe-pane") pipe = command.at(-1)!;
+    }
+    return ok();
+  }, null, null, null, noopSleep);
+  const logs = join(root, "logs");
+  await controller.startSession(3, [{ id: "claude", root, launcher: "start-claude.sh", delivery: "both" }], () => logs);
+  // Exercise the actual recorder command after tmux's quoting expansion. The
+  // isolated tmux test below checks that expansion through the real server.
+  const child = spawn("/bin/sh", ["-c", pipe.replaceAll("%%", "%").replaceAll("##", "#")]);
+  const closed = new Promise<number | null>((resolveClose) => child.on("close", resolveClose));
+  const output = () => readFileSync(join(logs, readdirSync(logs)[0]!), "utf8");
+  try {
+    child.stdin.write("prompt without newline");
+    await expect.poll(output).toMatch(/\.\d{3}Z prompt without newline$/);
+    child.stdin.write(" continued\r\nnext\n\n\u001b[2J");
+    child.stdin.end();
+    expect(await closed).toBe(0);
+    const recorded = output();
+    const stamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /gm;
+    expect(recorded.match(stamp)).toHaveLength(4);
+    expect(recorded.replace(stamp, "")).toBe("prompt without newline continued\r\nnext\n\n\u001b[2J");
+  } finally {
+    child.kill();
+  }
+});
+
 describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
   it("keeps cleared startup output and exit details across relaunch and teardown", async () => {
     const root = mkdtempSync(join(tmpdir(), "coord-tmux-diag-"));
     roots.push(root);
     const clone = join(root, "clone");
     // A legal directory name that tmux would expand as a format if it reached pipe-pane unescaped.
-    const logs = join(root, "terminal-#{pane_id}");
+    const logs = join(root, "terminal-#{pane_id}-%Y");
     mkdirSync(clone);
     const socket = `coord-test-${process.pid}-${Date.now()}`;
     const runner: TmuxRunner = (args, input) => runTmux(["-L", socket, "-f", "/dev/null", ...args], input);
@@ -1366,10 +1417,14 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
       // Print a startup dialogue, then wipe it from the screen the way a TUI does before exiting.
       writeFileSync(
         join(clone, "start-claude.sh"),
-        `#!/bin/sh\nexec /bin/sh -c 'printf "${name} startup dialogue\\n"; printf "\\033[?1049h\\033[2J\\033[H"; ${exit}'\n`,
+        `#!/bin/sh\nexec /bin/sh -c 'printf "${name} startup dialogue"; while [ ! -f "${root}/${name}.continue" ]; do sleep 0.05; done; printf "\\n\\033[?1049h\\033[2J\\033[H"; ${exit}'\n`,
         { mode: 0o700 }
       );
       await launch();
+      // A live prompt must reach the log before a newline or process exit.
+      await expect.poll(() => readFileSync(runLog(name), "utf8"), { timeout: 4000 })
+        .toMatch(new RegExp(`\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z ${name} startup dialogue$`));
+      writeFileSync(join(root, `${name}.continue`), "");
       for (let attempt = 0; attempt < 100; attempt += 1) {
         if (!(await controller.inspectPane(controller.target(3, agent.id))).alive) return;
         await pause(50);
@@ -1405,7 +1460,7 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
       expect(advertised).toBe(join(logs, advertised!.slice(logs.length + 1)));
       advertisedLog = advertised!;
       await controller.killIssueSessions(3);
-      // `cat` drains each pipe asynchronously; wait until every run's output has landed.
+      // The recorder drains each pipe asynchronously; wait for all three runs.
       for (let attempt = 0; attempt < 40; attempt += 1) {
         try {
           ["first", "second", "third"].forEach(runLog);
@@ -1419,7 +1474,13 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
     }
     expect(readdirSync(logs).filter((entry) => entry.endsWith(".log"))).toHaveLength(3);
     // Each relaunch wrote a new log; the earlier runs keep their dialogue and the clear that followed it.
-    for (const name of ["first", "second", "third"]) expect(readFileSync(runLog(name), "utf8")).toContain("\u001b[2J");
+    for (const name of ["first", "second", "third"]) {
+      const contents = readFileSync(runLog(name), "utf8");
+      expect(contents).toContain("\u001b[2J");
+      for (const line of contents.split("\n").filter(Boolean)) {
+        expect(line).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /);
+      }
+    }
     expect(readFileSync(advertisedLog, "utf8")).toContain("third startup dialogue");
     expect(exitOf("first")).toMatchObject({ status: 0, signal: null });
     expect(exitOf("second")).toMatchObject({ status: 3, signal: null });
@@ -1446,6 +1507,17 @@ describe("runTmux", () => {
 });
 
 describe("explicit owner reminder transport", () => {
+  it.each([undefined, "Insert", "Normal"])("sends Codex's insert key only with a visible Normal footer (%s)", async (mode) => {
+    const calls: Array<{ args: readonly string[] }> = [];
+    const pane = `› \n? for shortcuts${mode === undefined ? "" : ` · Vim: ${mode}`}\n`;
+    const controller = new TmuxController(runnerWithPrompt(calls, "0\tcodex\t0\t0\n", pane), null, null, null, noopSleep);
+    const agent = { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" as const };
+    expect(await controller.remind(1, agent, "owner reminder")).toMatchObject({ status: "sent" });
+    const keys = calls.filter((call) => call.args[0] === "send-keys").flatMap((call) => commandsIn(call.args));
+    expect(keys.some((args) => args.at(-1) === "i")).toBe(mode === "Normal");
+    expect(keys.find((args) => args.includes("-l"))?.at(-1)).toBe(mode === "Normal" ? " owner reminder" : "owner reminder");
+  });
+
   it.each(["claude", "codex", "cursor", "antigravity"])("sends to %s despite automatic configuration and pane vetoes", async (id) => {
     const calls: string[][] = [];
     const controller = new TmuxController(async (args) => {

@@ -1,6 +1,6 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, matchesGlob } from "node:path";
+import { dirname, join, matchesGlob } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   HookPolicyError,
@@ -153,6 +153,39 @@ describe("pre-push scope", () => {
 });
 
 describe("installer proposals", () => {
+  it("proposes an exact tracked prose allowlist with empty checks and product fallback", () => {
+    const fixture = makeProduct("plain");
+    try {
+      const root = fixture.productRoot;
+      const files = ["README.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md", "docs/guide.md", "docs/AGENTS.md",
+        "docs/SKILL.md", "templates/product/AGENTS.md", "src/notes.md", "docs/build.ts", "docs/run.md"];
+      for (const path of files) {
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        writeFileSync(join(root, path), "fixture\n");
+      }
+      chmodSync(join(root, "docs/run.md"), 0o755);
+      symlinkSync("guide.md", join(root, "docs/link.md"));
+      git(root, "add", ...files, "docs/link.md");
+      writeFileSync(join(root, "docs/untracked.md"), "not proposed\n");
+      const proposal = proposeProjectPolicy(root);
+      expect(proposal.documentation).toEqual({ paths: ["README.md", "docs/guide.md"], verify: { precommit: [], prepush: [] }, checks: [] });
+      const configured = buildWorkspaceConfig({ project: "fixture", origin: "https://example.com/fixture.git", baseBranch: "main",
+        agents: ["codex"], profile: "solo", cloneRoot: "/clones", workspaceDir: "/runtime", completesRoot: "/completes",
+        declared: workspaceDeclarationSchema.parse({ checks: [{ name: "product", argv: ["false"] }] }), proposal
+      }, undefined);
+      expect(configured.documentation).toEqual(proposal.documentation);
+      const changes = (paths: string[]) => ({ identity: "fixture", changes: paths.map((path) => ({ status: "M", paths: [Buffer.from(path)] })) });
+      for (const phase of ["precommit", "prepush", "finalization"] as const) {
+        expect(selectVerification(changes(["README.md"]), configured, phase, configured.checks).commands).toEqual([]);
+      }
+      expect(classifyChanges(changes(["README.md", "docs/build.ts"]), configured).kind).toBe("product");
+      expect(classifyChanges(changes(["docs/untracked.md"]), configured).kind).toBe("product");
+      expect(() => config({ checks: [] })).toThrow();
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it("proposes from the project's own tree, and proposes nothing it cannot recognise", () => {
     // The coordination repo is a pnpm project, so its own proposal says so.
     const own = proposeProjectPolicy(repoRoot);
@@ -174,6 +207,8 @@ describe("installer proposals", () => {
     try {
       writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { test: "echo ok" } }));
       expect(proposeProjectPolicy(root).verify).toBeUndefined();
+      writeFileSync(join(root, "README.md"), "not in git\n");
+      expect(proposeProjectPolicy(root).documentation).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -402,7 +437,8 @@ describe("shared change classification", () => {
     const result = buildWorkspaceConfig({ project: "fixture", origin: "https://example.com/fixture.git", baseBranch: "main",
       agents: ["codex"], profile: "solo", cloneRoot: "/clones", workspaceDir: "/runtime", completesRoot: "/completes",
       declared: workspaceDeclarationSchema.parse({ documentation: docs }),
-      proposal: { toolchain: "node", checks: [{ name: "product", argv: ["false"] }], workflowCriticalFiles: [], workflowCriticalPrefixes: [] }
+      proposal: { toolchain: "node", checks: [{ name: "product", argv: ["false"] }], workflowCriticalFiles: [], workflowCriticalPrefixes: [],
+        documentation: { paths: ["README.md"], verify: { precommit: [], prepush: [] }, checks: [] } }
     }, undefined);
     expect(result.documentation).toEqual(docs);
   });
