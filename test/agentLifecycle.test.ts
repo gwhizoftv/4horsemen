@@ -269,9 +269,27 @@ describe("agent lifecycle policy", () => {
       expect(current).toMatchObject({ execution: "working", stoppedAt: null, idleEpoch: epoch });
       expect(decideLifecycleNudge(current, actionId, digest).code).toBe("working");
     }
+    const queuedRunning = current;
     current = applyLifecycleObservation(current, { ...stop, turnId: "u" }, later);
     expect(current).toMatchObject({ execution: "idle", stoppedAt: later, idleEpoch: epoch + 1 });
     expect(current.action?.queuedBehindTurnId).toBeUndefined();
+    // Completion is usually accepted before the queued work's own Stop arrives.
+    const completed = { ...queuedRunning, action: { ...queuedRunning.action!, workflowCompleteAt: later } };
+    expect(applyLifecycleObservation(completed, { ...stop, turnId: "u" }, later)).toMatchObject({ execution: "idle", stoppedAt: later });
+
+    // A failure of the queued-into turn is the preceding work's: advisory, not a send.
+    const failure = { kind: "failed" as const, eventName: "StopFailure", sessionId: "s", turnId: "t", backgroundActive: false,
+      failure: { vendor: "claude" as const, error: "server_error", errorDetails: null, lastAssistantMessage: null } };
+    const queuedOnly = applyLifecycleObservation(applyLifecycleObservation(entry(), { kind: "session-start", eventName: "SessionStart", sessionId: "s" }, now),
+      { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "s", turnId: "t" }, now);
+    const queuedFailed = applyLifecycleObservation(applyLifecycleObservation({ ...queuedOnly, action: injectedAction(queuedOnly.idleEpoch) }, submit, now), failure, later);
+    expect(queuedFailed).toMatchObject({ execution: "working", stoppedAt: null, idleEpoch: queuedOnly.idleEpoch });
+    expect(queuedFailed.lastFailure?.actionId).toBeNull();
+    expect(decideLifecycleNudge(queuedFailed, actionId, digest).code).toBe("working");
+    // The queued work's own failure, on a distinct turn, is current and correlated.
+    const ownFailure = applyLifecycleObservation(queuedFailed, { ...failure, turnId: "u" }, later);
+    expect(ownFailure.execution).toBe("failed");
+    expect(ownFailure.lastFailure?.actionId).toBe(actionId);
 
     // A repeated submit for an action accepted on an idle agent is not queued input.
     let fresh = applyLifecycleObservation(entry(), { kind: "session-start", eventName: "SessionStart", sessionId: "s" }, now);

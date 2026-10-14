@@ -610,14 +610,17 @@ export const applyLifecycleObservation = (
   const endsTurn = observation.kind === "stopped" || observation.kind === "failed";
   const stoppedTurn = observation.turnId ?? null;
   const currentActionTurn = entry.action?.turnId ?? entry.stopObservation.turns.at(-1) ?? entry.turnId;
-  const queuedBehind = entry.action?.workflowCompleteAt === null ? entry.action.queuedBehindTurnId : undefined;
+  const queuedBehindTurn = entry.action?.queuedBehindTurnId;
+  const queuedBehind = entry.action?.workflowCompleteAt === null ? queuedBehindTurn : undefined;
   // The turn this action's prompt was queued into (or an indistinguishable
-  // repeat of its Stop) ended; the queued prompt runs next, so this is not idle.
-  const queuedIntoTurnStop = observation.kind === "stopped" && queuedBehind !== undefined &&
+  // repeat of its Stop or failure) ended; the queued prompt runs next, so this
+  // is neither idle nor a failure of the queued action.
+  const queuedIntoTurnStop = endsTurn && queuedBehind !== undefined &&
     (stoppedTurn === null || stoppedTurn === queuedBehind);
-  // After that, a distinct turn's Stop is the queued work's own end.
-  const queuedWorkStop = observation.kind === "stopped" && queuedBehind !== undefined && !queuedIntoTurnStop &&
-    entry.action?.queuedBehindStopped === true;
+  // After that, a distinct turn's Stop or failure is the queued work's own
+  // end, including when its completion was accepted before that Stop arrived.
+  const queuedWorkStop = endsTurn && queuedBehindTurn !== undefined && !queuedIntoTurnStop &&
+    entry.action?.queuedBehindStopped === true && stoppedTurn !== queuedBehindTurn;
   const stoppingOlderTurn = endsTurn && !queuedIntoTurnStop && !queuedWorkStop &&
     currentActionTurn !== null && stoppedTurn !== null && currentActionTurn !== stoppedTurn;
 
@@ -628,7 +631,7 @@ export const applyLifecycleObservation = (
       turns: observation.turnId === undefined ? stopObservation.turns
         : [...new Set([...stopObservation.turns, observation.turnId])].slice(-128) };
   }
-  if (queuedWorkStop) {
+  if (queuedWorkStop && observation.kind === "stopped") {
     stopObservation = { ...emptyStopObservation(), stoppedActionId: entry.action?.actionId ?? null };
   } else if (observation.kind === "stopped" && !queuedIntoTurnStop && incomingSession !== null && incomingSession === entry.sessionId &&
       ((stopObservation.turns.at(-1) ?? entry.turnId) === null ||
@@ -710,8 +713,13 @@ export const applyLifecycleObservation = (
   }
 
   if (observation.kind === "working") { execution = "working"; stoppedAt = null; }
-  if (["session-end", "session-start"].includes(observation.kind) || (observation.kind === "failed" && !stoppingOlderTurn)) stoppedAt = null;
-  if (observation.kind === "failed" && !stoppingOlderTurn) {
+  // The queued work's own turn is now known; it ends here.
+  if (queuedWorkStop && action !== null) {
+    action = { ...action, turnId: stoppedTurn, queuedBehindTurnId: undefined, queuedBehindStopped: undefined };
+  }
+  const failsCurrentTurn = observation.kind === "failed" && !stoppingOlderTurn && !queuedIntoTurnStop;
+  if (["session-end", "session-start"].includes(observation.kind) || failsCurrentTurn) stoppedAt = null;
+  if (failsCurrentTurn) {
     const injectedAwaitingAcceptance =
       action?.delivery === "injected" && action.turnId === null && observation.allowInjectedIdle !== true;
     execution =
@@ -721,12 +729,11 @@ export const applyLifecycleObservation = (
   }
   if (observation.kind === "session-end") execution = "failed";
 
-  if (observation.kind === "stopped" && queuedIntoTurnStop && action !== null) {
+  if (queuedIntoTurnStop && action !== null) {
     execution = "working";
     stoppedAt = null;
     action = { ...action, queuedBehindStopped: true };
   } else if (observation.kind === "stopped" && !stoppingOlderTurn) {
-    if (queuedWorkStop && action !== null) action = { ...action, queuedBehindTurnId: undefined, queuedBehindStopped: undefined };
     if ((pendingInputCount ?? 0) > 0) {
       execution = "queued";
       stoppedAt = null;
@@ -750,7 +757,8 @@ export const applyLifecycleObservation = (
   const idleEpoch = positiveIdle(entry, execution);
   const lastFailure = observation.failure === undefined
     ? entry.lastFailure
-    : recordFailure(entry, observation.failure, { action, sessionId, turnId: observation.turnId ?? null, now });
+    // A failure of the queued-into turn belongs to the preceding work: advisory.
+    : recordFailure(entry, observation.failure, { action: queuedIntoTurnStop ? null : action, sessionId, turnId: observation.turnId ?? null, now });
   return agentLifecycleEntrySchema.parse({
     ...entry,
     lastFailure,
