@@ -1,0 +1,29 @@
+{
+  "actionId": "3d9a81c2-f202-454f-83f3-4b44676006aa",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "dff89f8eb3ce9739574e6186e88fe6719ed98ae3",
+      "path": ".signals/issue-214/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "810672de6fe3d5344459cc22ca5dd4ba70062000",
+      "path": ".signals/issue-214/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "283f89b1e913c77d9f98075ad480cc8b7ccfee4a",
+      "path": ".signals/issue-214/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "ee84d33450ef623d296bb7b2a94cc64de14e8b52a6e1772fd92fd447b885d7b5",
+  "issue": 214,
+  "issueSessionId": "issue-214:0ead5e6ce15b6563bb6134a84997e79b0c0042cd",
+  "protocolVersion": 2,
+  "rationale": "In scenario probes run identically against all three pins, claude's implementation avoids cursor's two duplicate-send paths (a repeated queued-into Stop and an older failed Stop both yield eligible-idle there) and, unlike codex, lets a queued action's own distinct-turn Stop end it as idle instead of stalling until owner recovery, while carrying reread expectations across A→B→C chains with the smallest change; its remaining gap (a distinct-turn Stop after completion, shared with codex) is a one-line fix.",
+  "responseSha256": "1c84c04db3cafdb63b51eed58ca021c68960a0fb8c8de54e1560503a5a15e4aa"
+}

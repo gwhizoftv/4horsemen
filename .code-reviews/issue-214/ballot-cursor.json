@@ -1,0 +1,29 @@
+{
+  "actionId": "81adf769-500c-41c7-8866-31c6ce99b33e",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "dff89f8eb3ce9739574e6186e88fe6719ed98ae3",
+      "path": ".signals/issue-214/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "810672de6fe3d5344459cc22ca5dd4ba70062000",
+      "path": ".signals/issue-214/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "283f89b1e913c77d9f98075ad480cc8b7ccfee4a",
+      "path": ".signals/issue-214/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "ee84d33450ef623d296bb7b2a94cc64de14e8b52a6e1772fd92fd447b885d7b5",
+  "issue": 214,
+  "issueSessionId": "issue-214:0ead5e6ce15b6563bb6134a84997e79b0c0042cd",
+  "protocolVersion": 2,
+  "rationale": "Claude keeps a newer turn working through older and failed Stops, holds a repeated Stop of a queued-into turn until a later turn ends it, and still chains a reread to the next action in that session, while Codex never releases that handoff on a Stop alone and Cursor idles on a duplicate Stop and drops the second reread.",
+  "responseSha256": "79c793e0e9b9109ece0ae802ca49e89c281c97afe41675d7cd2b2c1e6cfd839e"
+}

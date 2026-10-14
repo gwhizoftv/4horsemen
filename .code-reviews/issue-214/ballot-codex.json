@@ -1,0 +1,29 @@
+{
+  "actionId": "5a3e5474-b714-4fe1-8183-50351e709a24",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "dff89f8eb3ce9739574e6186e88fe6719ed98ae3",
+      "path": ".signals/issue-214/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "810672de6fe3d5344459cc22ca5dd4ba70062000",
+      "path": ".signals/issue-214/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "283f89b1e913c77d9f98075ad480cc8b7ccfee4a",
+      "path": ".signals/issue-214/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "ee84d33450ef623d296bb7b2a94cc64de14e8b52a6e1772fd92fd447b885d7b5",
+  "issue": 214,
+  "issueSessionId": "issue-214:0ead5e6ce15b6563bb6134a84997e79b0c0042cd",
+  "protocolVersion": 2,
+  "rationale": "Codex best preserves newer activity, advisory failure correlation, ready-marker recovery, and consecutive reread handoffs, but revision must recognize the queued work's eventual distinct Stop without requiring another prompt-submission callback while retaining duplicate and stale Stop protection.",
+  "responseSha256": "12af0f139f17d6cee5d0303ebe1c0d88f2764f1f1944372de17543c4491d4b4e"
+}
