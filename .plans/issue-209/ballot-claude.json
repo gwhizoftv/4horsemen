@@ -1,0 +1,56 @@
+{
+  "actionId": "a24e8b3d-09c3-4279-a1ce-905b8e6cfec7",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "539572c79012eef5b440138a862c3980268ca83ef47b0eff452c6252188fd717",
+  "issue": 209,
+  "issueSessionId": "issue-209:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "d9d40a1ad4771af09a1838b3209f35a4abeedb72",
+      "path": ".plans/issue-209/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "fd898740835d2f037c8675f930f038c5d0cb4ece",
+      "path": ".plans/issue-209/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "fd399021665fab51a1621f5921537bfe313f4239",
+      "path": ".plans/issue-209/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e87d29faec1035954c1738980a71b1a6194f566e",
+      "path": ".plans/issue-209/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex's plan has the soundest reproducible method (sequence-cited per-action joins without summing concurrent waits, clipped pause and runner unions, a check for existing features before recommending them, and a marker-plus-readback guard on the single comment), and its remaining defects (posting before the R6.ballot approval and needing an R1.join breakdown) are smaller than the mislabeled intent-seen intervals and non-additive decomposition reviewers found in my plan, cursor's per-implementer posting, and antigravity's out-of-map test and precommitted figures.",
+  "responseSha256": "e5749073fa3f1e30b89ea3cc10dd9846633ea478b9f855b1c59a0d1a9afdc3d8",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "79cb8c99434cd7c18c6ca208161778413e4f6f1c",
+      "path": ".plans/issue-209/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "e74bdd4804a7075d17a8535a79742ad3f6930c77",
+      "path": ".plans/issue-209/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "d4f0c9474faed958ad82047c9f217bcd4ca8b6bc",
+      "path": ".plans/issue-209/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "dc32fd88a2501ce8145636fb3a2fb5716b1b5b1a",
+      "path": ".plans/issue-209/review.md"
+    }
+  ]
+}
