@@ -1,0 +1,14 @@
+{
+  "actionId": "6c3734be-8c14-444b-a3dd-48ac5b1cc974",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "6909e1d98b4545bbfbac248d927008a361e3f731dbd28a1e1108c86eff3bf4c2",
+  "issue": 212,
+  "issueSessionId": "issue-212:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "protocolVersion": 2,
+  "rationale": "The unchanged reviewed revision binds and materializes the previous published ballots for rounds 2 and 3 while preserving a single product parent, full input hashing, lineage and scope checks, with focused regression coverage and recorded passing commit and push checks.",
+  "responseSha256": "fd9c59ef6301d5eecb41c49252592bfef62fb74e1e7ce81c738533f2db5497e4",
+  "revisionCommitSha": "57cc186f930f0841b22f89a754b3d2bfbf946190",
+  "round": 1
+}

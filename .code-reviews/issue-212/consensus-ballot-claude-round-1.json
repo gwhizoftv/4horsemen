@@ -1,0 +1,14 @@
+{
+  "actionId": "ab76490e-3278-43be-9e25-22f06ba097b0",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "6909e1d98b4545bbfbac248d927008a361e3f731dbd28a1e1108c86eff3bf4c2",
+  "issue": 212,
+  "issueSessionId": "issue-212:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "protocolVersion": 2,
+  "rationale": "The revision pin 57cc186f is the codex implementation I compared line by line: round-2+ R6.revise binds the prior revision plus the previous round's published consensus ballots, ballots are exported as files, basedOn and ancestry use only the product parent, the stale doc sentence is fixed, and focused tests cover rounds 2 and 3, the missing-batch fallback, and ballot exclusion from ancestry.",
+  "responseSha256": "6838d01a3739e81fd51b325427d905c224c6680783e201f6b0e83a9461c5d23e",
+  "revisionCommitSha": "57cc186f930f0841b22f89a754b3d2bfbf946190",
+  "round": 1
+}
