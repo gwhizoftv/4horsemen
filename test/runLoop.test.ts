@@ -7,7 +7,7 @@ import { readAction, writeAction } from "../src/action.js";
 import { computeInputSetHash } from "../src/evidence.js";
 import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
 import { git, repoRoot } from "./support/workspaceFixture.js";
-import { decideLifecycleNudge, initialAgentLifecycle, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
+import { decideLifecycleNudge, initialAgentLifecycle, mutateAgentLifecycle, observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentResponsePath, agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import {
@@ -2610,6 +2610,41 @@ describe("effectful run loop", () => {
     await new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) }).runTick();
     expect(readJournal(paths).filter((event) => event.type === "nudge-deferred" && event.agent === "codex")).toHaveLength(1);
     expect(messages.filter((message) => message.includes("the foreground process is not this agent's harness"))).toHaveLength(1);
+  });
+
+  it.each(["accepted", "reread"] as const)("does not report %s work as waiting to send", async (state) => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    writeFileSync(paths.start, `${JSON.stringify({ ...start, agents: start.agents.map((agent) =>
+      agent.id === "codex" ? { ...agent, delivery: "both", harnessProcess: "codex" } : agent) }, null, 2)}\n`);
+    const messages: string[] = [];
+    let foreground = "bash";
+    const tmux = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return { exitCode: 0, stdout: `0\t${foreground}\t0\t0\n`, stderr: "" };
+      if (args[0] === "capture-pane") return { exitCode: 0, stdout: "• working", stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const loop = new CoordinatorRunLoop(paths, { tmux, log: (message) => messages.push(message) });
+    await loop.runTick();
+    expect(messages.join("\n")).toContain("waiting to send to codex");
+    const action = readAgentLifecycle(paths).agents.codex!.action!;
+    if (state === "accepted") {
+      observeAgentLifecycle(paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session-1",
+        turnId: "turn-1", actionId: action.actionId, actionDigest: action.actionDigest });
+    } else {
+      // The turn that completed the previous action is still live.
+      mutateAgentLifecycle(paths, (current) => ({ ...current, agents: { ...current.agents, codex: { ...current.agents.codex!,
+        execution: "working", sessionId: "session-1", action: { ...action, rereadExpected: true } } } }));
+    }
+    foreground = "codex";
+    messages.length = 0;
+    await loop.runTick();
+    const deferred = readJournal(paths).filter((event) => event.type === "nudge-deferred" && event.agent === "codex");
+    expect(deferred).toHaveLength(2);
+    expect(deferred[1]?.details).toMatchObject({ code: state === "accepted" ? "working" : "no-idle-sentinel", gateWaiting: false,
+      ...(state === "reread" ? { rereadExpected: true } : {}) });
+    expect(messages.join("\n")).not.toContain("waiting to send to codex");
+    expect(readCursorsState(paths).agents.codex?.status).toBe("ordered");
   });
 
   it("records hooks and pane on one event when they disagree", async () => {

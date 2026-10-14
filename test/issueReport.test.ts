@@ -225,6 +225,13 @@ describe("issue report", () => {
     expect(renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle)).toContain(
       "Agent cursor: no current task; input queued; activity reports healthy, pending=2, background-active"
     );
+    lifecycle.agents.cursor = { ...lifecycle.agents.cursor!, execution: "working", pendingInputCount: null, backgroundActive: null,
+      action: { actionId: "11111111-1111-4111-8111-111111111111", actionDigest: "a".repeat(64), delivery: "ordered",
+        orderedAt: "2026-08-13T00:00:00.000Z", injectedAt: null, retryableInjectionAt: null, acceptedAt: null, sessionId: null,
+        turnId: null, lastNudgedIdleEpoch: null, workflowCompleteAt: null, rereadExpected: true } };
+    expect(renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle)).toContain(
+      "Agent cursor: task file published; agent expected to pick it up by rereading action.md; working; no intervention needed"
+    );
   });
 
   it("frames the whole report and quotes recovery paths without changing control vocabulary", () => {
