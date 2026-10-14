@@ -134,7 +134,7 @@ export const renderIssueReport = (
     const wait = currentScrollbackWait(cursors, agent, lifecycle);
     if (wait === undefined) continue;
     lines.push(cursors.paused
-      ? `[WAIT] Last observed scrollback wait for ${agent} at ${wait.observedAt}; automatic delivery is paused.`
+      ? `[WAIT] Last observed scrollback wait for ${agent} at ${wait.lastReminderAt}; automatic delivery is paused.`
       : `[WAIT] ${scrollbackWaitMessage(agent)}`);
   }
   for (const hold of cursors.holds) {

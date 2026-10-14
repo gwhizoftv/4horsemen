@@ -2029,7 +2029,9 @@ export class CoordinatorRunLoop {
       );
       return { ...current, actionSafety: { ...current.actionSafety, [agent]: {
         ...safety, deferrals: recorded ? safety.deferrals : [...safety.deferrals, key],
-        ...(remind ? { scrollbackWait: { observedAt: now, lastReminderAt: now } } : {})
+        ...(remind ? { scrollbackWait: {
+          observedAt: safety.scrollbackWait?.observedAt ?? now, lastReminderAt: now
+        } } : {})
       } } };
     });
     const message = splitBrain

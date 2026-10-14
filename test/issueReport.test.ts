@@ -114,10 +114,11 @@ describe("issue report", () => {
     const config = start("owner-only");
     const cursors = initialCursors(config);
     const actionId = "10000000-0000-4000-8000-000000000001";
+    const lastReminderAt = new Date(Date.parse(cursors.updatedAt) + 180_000).toISOString();
     cursors.agents.cursor = { ...cursors.agents.cursor!, actionId, status: "ordered" };
     cursors.actionSafety = cursorsStateSchema.parse({ ...cursors, actionSafety: { cursor: {
       actionId, activityAt: cursors.updatedAt,
-      scrollbackWait: { observedAt: cursors.updatedAt, lastReminderAt: cursors.updatedAt }
+      scrollbackWait: { observedAt: cursors.updatedAt, lastReminderAt }
     } } }).actionSafety;
     const notice = "the cursor pane is scrolled back; scroll to the bottom to let coord send";
     expect(renderIssueReport(config, cursors)).toContain(`[WAIT] ${notice}`);
@@ -126,7 +127,7 @@ describe("issue report", () => {
       { agents: { cursor: { ...cursors.agents.cursor!, actionId: "20000000-0000-4000-8000-000000000002" } } }
     ]) expect(renderIssueReport(config, { ...cursors, ...patch })).not.toContain(notice);
     const paused = renderIssueReport(config, { ...cursors, paused: true, manualPaused: true });
-    expect(paused).toContain("Last observed scrollback wait for cursor");
+    expect(paused).toContain(`Last observed scrollback wait for cursor at ${lastReminderAt}; automatic delivery is paused.`);
     expect(paused).not.toContain(notice);
   });
 

@@ -1105,6 +1105,7 @@ describe("durable delivery safety", () => {
     await f.tick();
     expect(notices()).toHaveLength(1);
     expect(report()).toContain(`[WAIT] ${notice}`);
+    const firstObservedAt = f.now();
     const before = readFileSync(f.paths.cursors, "utf8");
     await f.tick();
     f.advance(179_999);
@@ -1115,6 +1116,9 @@ describe("durable delivery safety", () => {
     await f.tick();
     await f.tick();
     expect(notices()).toHaveLength(2);
+    expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait).toEqual({
+      observedAt: firstObservedAt, lastReminderAt: f.now()
+    });
     expect(f.ui.sends).toBe(0);
     expect(readCursorsState(f.paths).actionSafety.codex?.sends).toBe(0);
     expect(readJournal(f.paths).filter((event) => event.type === "nudge-deferred" && event.details.code === "owner-typing")).toHaveLength(1);
@@ -1127,6 +1131,9 @@ describe("durable delivery safety", () => {
     f.ui.busy = true;
     await f.tick();
     expect(notices()).toHaveLength(3);
+    expect(readCursorsState(f.paths).actionSafety.codex?.scrollbackWait).toEqual({
+      observedAt: f.now(), lastReminderAt: f.now()
+    });
     expect(readJournal(f.paths).filter((event) => event.details.code === "owner-typing")).toHaveLength(1);
     f.ui.busy = false;
     f.ui.foreground = "harness";
