@@ -1,0 +1,22 @@
+{
+  "protocolVersion": 1,
+  "issue": 204,
+  "issueSessionId": "issue-204:855982b3f1639ec5bac7891f1c67f1e100dc2ab3",
+  "agent": "claude",
+  "inputSetHash": "193b81639bfc240beddd11e7543f18956e3e6e5be9b363f72c32ba937e45367c",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "f5b1085136ab54505b4c63a4aca8a7a96f4bee67",
+  "scopeHash": "2b891ec628857cbd7f850aae4f9da3b45795210c674598c89389381bd8005327",
+  "approvedPaths": [
+    "scripts/lib/launcher.sh",
+    "src/issueReport.ts",
+    "src/runLoop.ts",
+    "src/state.ts",
+    "src/tmux.ts",
+    "test/install.test.ts",
+    "test/issueReport.test.ts",
+    "test/runLoop.test.ts",
+    "test/state.test.ts",
+    "test/tmux.test.ts"
+  ]
+}
