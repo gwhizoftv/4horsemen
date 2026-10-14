@@ -1,0 +1,25 @@
+{
+  "protocolVersion": 1,
+  "issue": 212,
+  "issueSessionId": "issue-212:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "agent": "codex",
+  "inputSetHash": "e884d19cbf6c38d42fbf454c64621190287e8a412c6ce7c65cd15e31120d7db3",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "57cc186f930f0841b22f89a754b3d2bfbf946190",
+  "scopeHash": "e22ebf2303ccda2b360420b9b51e00de4e8367314730711213c7e0f7b3738800",
+  "approvedPaths": [
+    "R6.follow-up",
+    "R6.revise",
+    "batch.commitSha",
+    "batch.paths",
+    "docs/coord-driver.md",
+    "orderScaffold.ts",
+    "src/evidence.ts",
+    "src/materializedInputs.ts",
+    "src/orderScaffold.ts",
+    "src/runLoop.ts",
+    "test/evidence.test.ts",
+    "test/orderScaffold.test.ts",
+    "test/runLoop.test.ts"
+  ]
+}
