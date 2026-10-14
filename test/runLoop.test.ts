@@ -4041,6 +4041,27 @@ describe("materialized bound inputs", () => {
     );
   });
 
+  it("materializes consensus-ballot documents into the packet", async () => {
+    const { paths } = fixture();
+    const mirror = readingMirror();
+    const ballotInput = {
+      agent: "codex",
+      commitSha: "4".repeat(40),
+      path: ".code-reviews/issue-1/consensus-ballot-codex-round-1.json",
+      kind: "consensus-ballot"
+    };
+    const result = await materializeBoundInputs({ mirror, paths, inputs: [ballotInput] });
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]?.kind).toBe("consensus-ballot");
+    expect(result.entries[0]?.path).toBe(ballotInput.path);
+    const onDisk = readFileSync(result.entries[0]!.localPath, "utf8");
+    expect(onDisk).toBe(`body of ${ballotInput.commitSha}:${ballotInput.path}\n`);
+    const manifest = JSON.parse(readFileSync(result.manifestPath as string, "utf8")) as {
+      entries: { localPath: string }[];
+    };
+    expect(manifest.entries).toContainEqual(expect.objectContaining({ localPath: result.entries[0]!.localPath }));
+  });
+
   /**
    * A packet is immutable and named by what it holds, so re-preparing the same
    * action must cost nothing. Re-reading the blobs would move the very
@@ -4606,6 +4627,49 @@ describe("third revision closeout", () => {
     await restored.runTick();
     expect(calls).toHaveLength(1);
     expect(calls[0]!.slice(0, 3)).toEqual(["gh", "issue", "view"]);
+  });
+
+  it("binds the previous round's published consensus ballot batch for R6.revise round 2+", () => {
+    const { paths, start, cursors, revision } = terminalFixture();
+    const batch = publishedBallotBatchFixture({ kind: "consensus-ballot-batch", activeRoster: cursors.activeRoster, round: 1 });
+    // Round 2 with published round-1 batch
+    const round2Cursors = cursorsStateSchema.parse({
+      ...cursors,
+      issueCursor: { stepId: "R6.revise", gateId: "gate-6-consensus", round: 2 },
+      accepted: [
+        { ...revision, round: 1 },
+        { stepId: "R4.implement", agent: "codex", round: null, submissionSha: "c".repeat(40), productPin: "f".repeat(40), path: ".signals/issue-1/implementation-ready-codex.json", acceptedAt: cursors.updatedAt }
+      ],
+      acceptedResponses: cursors.activeRoster.map((agent) => acceptedResponseFixture({ stepId: "R6.ballot", agent, round: 1, disposition: "revise" })),
+      ballotBatches: [batch]
+    });
+    const order = buildOrder(paths, start, round2Cursors, "codex", "R6.revise", 2);
+    expect(order.inputs).toEqual([
+      { agent: "codex", commitSha: revision.productPin, path: revision.path, kind: "prior-revision" },
+      ...batch.responses.map((response, index) => ({
+        agent: response.agent,
+        commitSha: batch.commitSha,
+        path: batch.paths[index]!,
+        kind: "consensus-ballot"
+      }))
+    ]);
+    expect(order.inputs.filter((input) => input.kind === "consensus-ballot")).toHaveLength(cursors.activeRoster.length);
+
+    // Round 1 binds only the selected implementation pin
+    const round1Order = buildOrder(paths, start, round2Cursors, "codex", "R6.revise", 1);
+    expect(round1Order.inputs).toHaveLength(1);
+    expect(round1Order.inputs[0]?.kind).toBe("implementation");
+    expect(round1Order.inputs[0]?.commitSha).toBe(round2Cursors.derived.implementationSelection?.implementationPin);
+
+    // Round 2 without published batch keeps prior-revision and adds no ballots
+    const noBatchCursors = cursorsStateSchema.parse({
+      ...round2Cursors,
+      ballotBatches: []
+    });
+    const noBatchOrder = buildOrder(paths, start, noBatchCursors, "codex", "R6.revise", 2);
+    expect(noBatchOrder.inputs).toEqual([
+      { agent: "codex", commitSha: revision.productPin, path: revision.path, kind: "prior-revision" }
+    ]);
   });
 
   it("drops only a late non-reviser, republishes the reduced final batch and preserves the revision with one survivor", () => {

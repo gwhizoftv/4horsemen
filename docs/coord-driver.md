@@ -576,7 +576,7 @@ fast-forward commit on `issue-<n>/coordinator-evidence`, and only then derives
 selection or advances. The highest vote count wins; ties use persisted
 active-roster order. Selected plans, the implementation owner/pin, and the
 authorized reviser are stored separately. Round 1 binds only the selected
-implementation, and later rounds bind only the preceding accepted revision.
+implementation, and later rounds bind that preceding revision as the single product parent and also bind the previous round's published consensus ballot batch.
 
 When drops leave one active agent, future unresolved work degrades to the solo
 sequence. Completed historical gates and immutable product pins are retained.

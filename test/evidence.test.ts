@@ -731,6 +731,73 @@ Implement it.
       )
     ).toMatchObject({ status: "satisfied", productPin: artifact.revisedBranchHead });
   });
+
+  it("accepts round-2 revision whose inputs include consensus-ballot evidence", async () => {
+    const priorRevision = {
+      agent: "claude",
+      commitSha: sha("2"),
+      path: ".signals/issue-1/revision-ready-claude-round-1.json",
+      kind: "prior-revision"
+    };
+    const ballot1 = {
+      agent: "claude",
+      commitSha: sha("3"),
+      path: ".code-reviews/issue-1/consensus-ballot-claude-round-1.json",
+      kind: "consensus-ballot"
+    };
+    const ballot2 = {
+      agent: "codex",
+      commitSha: sha("3"),
+      path: ".code-reviews/issue-1/consensus-ballot-codex-round-1.json",
+      kind: "consensus-ballot"
+    };
+    const action = order({
+      stepId: "R6.revise",
+      evidenceId: "revision-pinned",
+      requiredPath: ".signals/issue-1/revision-ready-codex-round-2.json",
+      round: 2,
+      inputs: [priorRevision, ballot1, ballot2],
+      approvedPaths: ["src/product.ts"]
+    });
+    const artifact = {
+      protocolVersion: 1,
+      artifact: "revision-ready",
+      issue: 1,
+      issueSessionId: action.issueSessionId,
+      agent: "codex",
+      inputSetHash: computeInputSetHash(action.inputs),
+      round: 2,
+      revisedBranchHead: sha("d"),
+      basedOn: [priorRevision.commitSha]
+    };
+    const satisfied = await evaluateEvidence(
+      action,
+      sha("e"),
+      mirror(JSON.stringify(artifact), { changedPaths: async () => ["src/product.ts"] })
+    );
+    expect(satisfied).toMatchObject({ status: "satisfied", productPin: artifact.revisedBranchHead });
+
+    // Rejected when basedOn also includes the ballot batch commit SHA
+    const leakedBasedOn = { ...artifact, basedOn: [priorRevision.commitSha, sha("3")] };
+    const rejected = await evaluateEvidence(
+      action,
+      sha("e"),
+      mirror(JSON.stringify(leakedBasedOn), { changedPaths: async () => ["src/product.ts"] })
+    );
+    expect(rejected.status).toBe("rejected");
+    expect(rejected.outstanding.join(" ")).toContain("revision basedOn pins do not equal bound inputs");
+
+    // Rejected when multiple product pins exist
+    const multiProductAction = { ...action, inputs: [priorRevision, { ...priorRevision, agent: "cursor", commitSha: sha("4") }] };
+    const multiProductArtifact = { ...artifact, inputSetHash: computeInputSetHash(multiProductAction.inputs), basedOn: [priorRevision.commitSha, sha("4")] };
+    const multiRejected = await evaluateEvidence(
+      multiProductAction,
+      sha("e"),
+      mirror(JSON.stringify(multiProductArtifact), { changedPaths: async () => ["src/product.ts"] })
+    );
+    expect(multiRejected.status).toBe("rejected");
+    expect(multiRejected.outstanding.join(" ")).toContain("revision must be based on exactly one authorized product pin");
+  });
 });
 
 

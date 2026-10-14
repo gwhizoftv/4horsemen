@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { computeInputSetHash } from "../src/evidence.js";
 import { artifactScaffoldValue, renderArtifactScaffold } from "../src/orderScaffold.js";
 import { followUpIssueArtifactSchema, planAmendmentRequestSchema } from "../src/protocol.js";
 import { BUILD_DISCIPLINE_NOTE, STEP_DEFINITIONS } from "../src/steps.js";
@@ -12,6 +13,19 @@ describe("orderScaffold", () => {
       eligibleChoices: [], round: 2, approvedPaths: ["src/product.ts"], scopeHash: "d".repeat(64)
     };
     expect(artifactScaffoldValue(ctx)).toMatchObject({ scopeHash: ctx.scopeHash, basedOn: ["c".repeat(40)], round: 2 });
+    const ballotInput = {
+      kind: "consensus-ballot",
+      agent: "claude",
+      commitSha: "e".repeat(40),
+      path: ".code-reviews/issue-1/consensus-ballot-claude-round-1.json"
+    };
+    const ctxWithBallots = { ...ctx, inputs: [...ctx.inputs, ballotInput] };
+    expect(artifactScaffoldValue(ctxWithBallots)).toMatchObject({
+      scopeHash: ctx.scopeHash,
+      basedOn: ["c".repeat(40)],
+      round: 2
+    });
+    expect(renderArtifactScaffold(ctxWithBallots)).toContain('"inputSetHash": "' + computeInputSetHash(ctxWithBallots.inputs) + '"');
     const rendered = renderArtifactScaffold(ctx);
     expect(rendered).toContain('"artifact": "plan-amendment-request"');
     expect(rendered).toContain('"scopeHash": "' + ctx.scopeHash + '"');

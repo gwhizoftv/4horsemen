@@ -24,11 +24,11 @@ import {
 import type { BoundInput, MaterializedInputEntry, MaterializedInputs, MaterializedWorktree } from "./steps.js";
 
 /**
- * Bound inputs whose `commitSha`/`path` names a coordination document. These are
- * small, and are exported as files.
+ * Bound inputs whose `commitSha`/`path` names a coordination document (Markdown
+ * or JSON). These are small, and are exported as files.
  */
 export const MATERIALIZED_MARKDOWN_KINDS: ReadonlySet<string> = new Set([
-  "plan", "review", "selected-plan", "amendment-request", "approved-amendment-request", "amendment-approval"
+  "plan", "review", "selected-plan", "amendment-request", "approved-amendment-request", "amendment-approval", "consensus-ballot"
 ]);
 
 /**
