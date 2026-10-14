@@ -14,6 +14,7 @@ import {
 import { liftCloneAgentsProtocol } from "./agentsProtocol.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { isPathInside } from "./paths.js";
+import { repositoryPathSchema } from "./protocol.js";
 import { DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile, clearManagedIgnoreFile } from "./productIgnore.js";
 import {
   atomicWriteJson,
@@ -123,6 +124,7 @@ export type ProjectPolicyProposal = {
   toolchain?: string;
   verify?: { precommit: CheckCommand[]; prepush: CheckCommand[] };
   checks?: CheckCommand[];
+  documentation?: CoordinatorConfig["documentation"];
   workflowCriticalPrefixes: string[];
   workflowCriticalFiles: string[];
 };
@@ -171,6 +173,36 @@ const proposedVerify = (
  * remove.
  */
 export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal => {
+  const ecosystem = proposeEcosystemPolicy(productRoot);
+  const documentation = proposeDocumentation(productRoot, ecosystem);
+  return documentation === undefined ? ecosystem : { ...ecosystem, documentation };
+};
+
+/** Agent instructions are protocol, not prose, even though they are Markdown. */
+const AGENT_INSTRUCTION_FILES = new Set(["AGENTS.md", "CLAUDE.md", "GEMINI.md"]);
+
+/**
+ * Exact tracked prose files — root `*.md` and `docs/**\/*.md` — that need no
+ * code checks. Recorded once for review; templates and agent instructions stay
+ * product, and the classifier never widens this list.
+ */
+const proposeDocumentation = (
+  productRoot: string,
+  policy: Pick<ProjectPolicyProposal, "workflowCriticalPrefixes" | "workflowCriticalFiles">
+): ProjectPolicyProposal["documentation"] => {
+  const listed = git(productRoot, "ls-files", "-z");
+  if (listed.exitCode !== 0) return undefined;
+  const paths = listed.stdout.split("\0").filter((path) =>
+    path.endsWith(".md") &&
+    (path.startsWith("docs/") || (!path.includes("/") && !AGENT_INSTRUCTION_FILES.has(path))) &&
+    !policy.workflowCriticalFiles.includes(path) &&
+    !policy.workflowCriticalPrefixes.some((prefix) => path.startsWith(prefix)) &&
+    repositoryPathSchema.safeParse(path).success
+  ).sort();
+  return paths.length === 0 ? undefined : { paths, verify: { precommit: [], prepush: [] }, checks: [] };
+};
+
+const proposeEcosystemPolicy = (productRoot: string): ProjectPolicyProposal => {
   const has = (relative: string): boolean => existsSync(join(productRoot, relative));
 
   if (has("Cargo.toml")) {
@@ -274,6 +306,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
   }
   const verify = declared.verify ?? input.proposal.verify;
   const toolchain = declared.toolchain ?? input.proposal.toolchain;
+  const documentation = declared.documentation ?? input.proposal.documentation;
 
   return coordinatorConfigSchema.parse({
     project: input.project,
@@ -299,7 +332,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     pollIntervalMs: declared.pollIntervalMs ?? 1_000,
     ...(toolchain === undefined ? {} : { toolchain }),
     ...(verify === undefined ? {} : { verify }),
-    ...(declared.documentation === undefined ? {} : { documentation: declared.documentation }),
+    ...(documentation === undefined ? {} : { documentation }),
     ...(declared.verification === undefined ? {} : { verification: declared.verification }),
     workflowCriticalPrefixes: declared.workflowCriticalPrefixes ?? input.proposal.workflowCriticalPrefixes,
     workflowCriticalFiles: declared.workflowCriticalFiles ?? input.proposal.workflowCriticalFiles,

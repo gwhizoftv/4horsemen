@@ -114,7 +114,8 @@ keys on that product. The locator is untracked and does not appear in a fresh
 human clone.
 
 Overrides kept on the simple command are `--coord-runtime`, `--clone-root`,
-`--agents`, and `--profile`. Use advanced install for policy declarations,
+`--agents`, `--profile`, and `--declare <file>` (see
+[Declaring verification](#declaring-verification)). Use advanced install for
 vendoring, tracked product changes, origin/base overrides, or dry runs.
 
 ## Advanced install
@@ -349,6 +350,8 @@ local vendor configuration:
 ```
 
 Existing documents and unrelated hook entries are merged, never replaced.
+The Claude document also sets `"editorMode": "normal"` unless it already names
+a mode, so coord panes start without vim (see [Vim mode](#vim-mode)).
 Invalid JSON and a third-party Antigravity hook already using coordination's
 reserved name are refused. Reinstall repairs only marked entries; uninstall
 removes only those entries. These clone-local directories are already excluded
@@ -372,6 +375,28 @@ configuration; if the hook environment has no issue number, exactly one active
 issue containing that agent may supply it, while an ambiguous match is ignored.
 The previous setting is kept in coordinator-owned recovery metadata and
 restored on uninstall only while the managed command is still selected.
+
+### Vim mode
+
+A vim composer in NORMAL mode swallows the first characters of a nudge, so
+coord starts each agent without vim and never edits the owner's home
+configuration:
+
+- **Claude** reads `"editorMode": "normal"` from the clone-local
+  `.claude/settings.local.json`, which outranks `~/.claude/settings.json`. A
+  launcher `--settings` flag is not used because it would disable the Claude
+  status-line tee.
+- **Codex** is launched with `-c tui.vim_mode_default=false`.
+- **Cursor** has no per-process option, and rejects an `editor` key in a
+  project `.cursor/cli.json`. Set `editor.vimMode` to `false` in
+  `~/.cursor/cli-config.json` yourself; coord reads that file and sends plain
+  Enter instead of vim keys.
+- **Antigravity** has no vim mode.
+
+Nudges send a vim prelude key only on evidence that vim is on: Codex's
+`Vim: Normal` footer, or Claude without coord's `editorMode`. Re-run
+`coord onboard` (or install) to regenerate launchers and settings, then restart
+the agents.
 
 Restart Codex/Claude after install if their current session predates the hook
 file. Codex may also require reviewing the new project hook in `/hooks`.
@@ -440,9 +465,9 @@ coord install --product /path/to/app --coord-runtime /path/to/coord-runtime \
 coord doctor --coord-runtime /path/to/coord-runtime --product /path/to/app
 ```
 
-Use `install`, not `onboard`, for `--declare`. Install Ruff/pytest and expose
-them on the PATH inherited by the agents and coordinator (including any virtual
-environment); doctor reports a `toolchain` finding when an `argv[0]` cannot be
+`coord onboard <product> --declare <file>` accepts the same file. Install
+Ruff/pytest and expose them on the PATH inherited by the agents and coordinator
+(including any virtual environment); doctor reports a `toolchain` finding when an `argv[0]` cannot be
 resolved. The same requirement applies to Go/Cargo and every declared tool.
 Arguments are passed directly, not interpreted as shell syntax.
 
@@ -505,8 +530,15 @@ verification, explicitly declare exact repository-relative paths and commands:
 }
 ```
 
-No profile is inferred from `*.md`: executable templates such as
-`templates/product/AGENTS.protocol.md` are product behavior, not prose.
+The classifier never infers a profile from `*.md`: executable templates such
+as `templates/product/AGENTS.protocol.md` are product behavior, not prose.
+Instead, onboard and install propose a default profile once, from tracked
+files: root `*.md` (except `AGENTS.md`, `CLAUDE.md` and `GEMINI.md`) and
+`docs/**/*.md`, minus critical paths. Its `verify` lists and final `checks`
+are empty, so a change to only those files runs no code checks. A declared
+`documentation` replaces the default; declare one when product tests read your
+docs. A new document is listed after the next onboard or install. An empty
+`checks` list is allowed only in a documentation profile.
 The example config declares this repository's small `pnpm check:docs` profile,
 which retains README/docs content and verification-instruction assertions without
 running onboarding or the full suite. Review and install the declaration to opt
@@ -604,6 +636,17 @@ runs into coord (see `config.example.json`):
 The policy and its digest are frozen into `start.json`, so changing the
 declaration affects only issues started afterwards. Switch modes between
 issues.
+
+`verification` and every `cache` come only from a declaration. Coord does not
+infer them, and running `pnpm check` once creates neither a policy nor a
+receipt, because a receipt is safe only when the owner names every input. Onboard
+and install rebuild `config.json` from the declaration plus the proposal, so
+keep hand edits in the declaration file and pass it with `--declare`. Receipts
+live in `<coord-runtime>/verification/receipts/`, shared by every issue and
+agent of that runtime. A single uncached final check is reused only by an
+identical re-run; reuse across revisions needs coordinator mode, where
+candidate checks share names and argv with final checks (see
+`config.example.json`).
 
 The unit suite (`test:fast`) excludes the filesystem/process suites now in
 `test:system`. `pnpm check:fast` runs both, so existing local `verify` lists

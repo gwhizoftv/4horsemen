@@ -110,8 +110,20 @@ describe("agent lifecycle hook synchronization", () => {
       expect(removeAgentLifecycleHooks({ clone, agent, options: removal }).changed).toBe(true);
       expect(readFileSync(path, "utf8")).not.toContain(AGENT_LIFECYCLE_HOOK_MARKER);
       expect(JSON.stringify(json(path))).toContain("echo keep");
+      if (agent === "claude") expect(json(path)).not.toHaveProperty("editorMode");
     });
   }
+
+  it("starts Claude without vim through clone-local settings, keeping an explicit owner value", () => {
+    const { clone, cliEntry } = fixture();
+    const path = agentLifecycleHookPath(clone, "claude")!;
+    syncAgentLifecycleHooks({ clone, agent: "claude", cliEntry, options: effectOptions(() => undefined, false) });
+    expect(json(path).editorMode).toBe("normal");
+    expect(inspectAgentLifecycleHooks({ clone, agent: "claude", cliEntry }).kind).toBe("current");
+    writeFileSync(path, `${JSON.stringify({ ...json(path), editorMode: "vim" }, null, 2)}\n`);
+    expect(syncAgentLifecycleHooks({ clone, agent: "claude", cliEntry, options: effectOptions(() => undefined, false) }).changed).toBe(false);
+    expect(json(path).editorMode).toBe("vim");
+  });
 
   it("installs all managed Cursor lifecycle and analytics hooks", () => {
     const { clone, cliEntry } = fixture();

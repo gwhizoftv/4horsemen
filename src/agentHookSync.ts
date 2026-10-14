@@ -134,7 +134,11 @@ const plannedDocument = (input: {
         }
       ];
     }
-    return { ...input.existing, hooks };
+    // Claude starts without vim in coord panes: a vim composer swallows nudges.
+    // Local settings outrank the owner's user settings; an explicit value stays.
+    return input.vendor === "claude"
+      ? { ...input.existing, hooks, editorMode: input.existing.editorMode ?? "normal" }
+      : { ...input.existing, hooks };
   }
 
   if (input.vendor === "cursor") {
@@ -236,6 +240,7 @@ export const removeAgentLifecycleHooks = (input: {
     }
     if (Object.keys(hooks).length === 0) delete next.hooks;
     else next.hooks = hooks;
+    if (vendor === "claude" && next.editorMode === "normal") delete next.editorMode;
     if (vendor === "cursor" && Object.keys(next).length === 1 && next.version === 1) next = {};
   } else {
     const value = next[ANTIGRAVITY_HOOK_NAME];

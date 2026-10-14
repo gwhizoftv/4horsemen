@@ -189,6 +189,30 @@ describe("installer proposals", () => {
     }
   });
 
+  it("proposes an exact prose allowlist that needs no code checks", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-propose-docs-"));
+    try {
+      git(root, "init", "-q");
+      for (const path of ["README.md", "AGENTS.md", "docs/guide.md", "templates/product/AGENTS.md", "src/notes.md", "untracked.md"]) {
+        mkdirSync(join(root, path, ".."), { recursive: true });
+        writeFileSync(join(root, path), "text\n");
+      }
+      git(root, "add", "--", ".", ":!untracked.md");
+      const documentation = { paths: ["README.md", "docs/guide.md"], verify: { precommit: [], prepush: [] }, checks: [] };
+      expect(proposeProjectPolicy(root).documentation).toEqual(documentation);
+      const config = buildWorkspaceConfig({ project: "fixture", origin: "https://example.com/fixture.git", baseBranch: "main",
+        agents: ["codex"], profile: "solo", cloneRoot: "/clones", workspaceDir: "/runtime", completesRoot: "/completes", declared: null,
+        proposal: { checks: [{ name: "test", argv: ["true"] }], documentation, workflowCriticalFiles: [], workflowCriticalPrefixes: [] }
+      }, undefined);
+      expect(config.documentation).toEqual(documentation);
+      // Outside a Git worktree nothing is tracked, so nothing is exempted.
+      rmSync(join(root, ".git"), { recursive: true, force: true });
+      expect(proposeProjectPolicy(root).documentation).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("proposes non-Node argument vectors for non-Node trees", () => {
     const root = mkdtempSync(join(tmpdir(), "coord-propose-"));
     try {

@@ -785,6 +785,8 @@ export type OnboardOptions = {
   cloneRoot?: string;
   agents?: readonly string[];
   profile?: string;
+  /** Owner policy (verification, cache, documentation…) kept across re-onboards. */
+  declarePath?: string;
   log: Logger;
   home?: string | null;
 };
@@ -803,6 +805,7 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     cloneRoot: resolve(options.cloneRoot ?? parent),
     agents: options.agents ?? ["claude", "codex", "cursor", "antigravity"],
     profile: options.profile ?? "consensus",
+    ...(options.declarePath === undefined ? {} : { declarePath: options.declarePath }),
     writeProduct: false,
     vendor: false,
     bootstrap: false,

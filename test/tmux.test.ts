@@ -15,6 +15,7 @@ import {
   ownerTerminalOpenAppleScript,
   ownerTerminalWindowTitle,
   ownerTerminalTitlesToClose,
+  readClaudeEditorMode,
   readCursorVimMode,
   resolveAgentLauncher,
   NUDGE_BEFORE_ANTIGRAVITY_MS,
@@ -278,6 +279,18 @@ describe("tmux boundary", () => {
     ).toEqual({ prelude: ["a"], submit: ["Escape", "Enter"] });
   });
 
+  it("sends no vim a to Claude when coord's clone-local settings turn vim off", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-claude-vim-"));
+    roots.push(root);
+    const agent = { id: "claude" as const, root, launcher: "start-claude.sh", delivery: "both" as const };
+    // Claude's vim NORMAL shows no indicator, so without the setting `a` is still sent.
+    expect(resolveNudgeKeys(agent, "❯").prelude).toEqual(["a"]);
+    mkdirSync(join(root, ".claude"));
+    writeFileSync(join(root, ".claude/settings.local.json"), `${JSON.stringify({ editorMode: "normal" })}\n`);
+    expect(readClaudeEditorMode(root)).toBe("normal");
+    expect(resolveNudgeKeys(agent, "❯")).toEqual({ prelude: [], submit: ["Escape", "Enter"] });
+  });
+
   it("uses per-agent nudgePrelude and nudgeSubmit for Codex vim", async () => {
     expect(nudgePreludeKeys("claude")).toEqual([]);
     expect(nudgePreludeKeys("codex")).toEqual(["i"]);
@@ -333,8 +346,9 @@ describe("tmux boundary", () => {
     ).toMatchObject({ status: "sent" });
     const batches = calls.filter((call) => call.args[0] === "send-keys");
     expect(batches).toHaveLength(1);
+    // No `Vim:` footer means vim is off: a configured `i` would be typed into the message.
     expect(commandsIn(batches[0]!.args).map((args) => args.at(-1))).toEqual([
-      "i", "sleep 0.15", " Read and execute your current coordinator action at /runtime/action.md", "sleep 0.3", "Enter"
+      "Read and execute your current coordinator action at /runtime/action.md", "sleep 0.3", "Enter"
     ]);
     for (const nudgeSubmit of [["Enter"], ["C-m"], ["C-j", "C-m"]]) {
       expect(resolveNudgeKeys({ id: "codex", root: "/c", launcher: "x", delivery: "both", nudgeSubmit }).submit).toEqual(["Enter"]);
@@ -1420,6 +1434,13 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
     expect(readdirSync(logs).filter((entry) => entry.endsWith(".log"))).toHaveLength(3);
     // Each relaunch wrote a new log; the earlier runs keep their dialogue and the clear that followed it.
     for (const name of ["first", "second", "third"]) expect(readFileSync(runLog(name), "utf8")).toContain("\u001b[2J");
+    // Every line carries the UTC time of its first byte; tmux strftime would turn an unescaped `%s` into epoch digits.
+    const stamp = String.raw`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z `;
+    for (const name of ["first", "second", "third"]) {
+      const lines = readFileSync(runLog(name), "utf8").split("\n").filter((line) => line !== "");
+      expect(lines[0]).toMatch(new RegExp(`${stamp}${name} startup dialogue`));
+      for (const line of lines) expect(line).toMatch(new RegExp(stamp));
+    }
     expect(readFileSync(advertisedLog, "utf8")).toContain("third startup dialogue");
     expect(exitOf("first")).toMatchObject({ status: 0, signal: null });
     expect(exitOf("second")).toMatchObject({ status: 3, signal: null });

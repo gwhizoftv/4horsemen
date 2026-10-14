@@ -58,7 +58,8 @@ launcher_command() {
       # COORD_ISSUE of whichever launch started it, not this pane's (issue 186).
       # coord start updates before launch; never self-update inside the pane.
       # Inline mode keeps output in tmux history for mouse scrolling.
-      printf 'exec codex -c check_for_update_on_startup=false --ask-for-approval never --sandbox workspace-write --no-alt-screen --no-daemon ${coord_grant[@]+"${coord_grant[@]}"}\n'
+      # Vim off for this process only: a vim composer can swallow nudges.
+      printf 'exec codex -c check_for_update_on_startup=false -c tui.vim_mode_default=false --ask-for-approval never --sandbox workspace-write --no-alt-screen --no-daemon ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     antigravity)
       # agy installs into ~/.local/bin, which a login shell does not always

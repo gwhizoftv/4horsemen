@@ -335,6 +335,12 @@ workspaces append the workspace hash printed by tmux/start diagnostics:
 tmux attach -t coord-42
 ```
 
+Each agent launch records its pane output to
+`<issue-root>/agents/<agent>/terminal/run-<start>.log`, a new file per run.
+Every line starts with the UTC time (milliseconds) at which its first byte
+arrived, so the log can be joined to journal timestamps. Without `perl` the log
+is kept unstamped.
+
 On macOS, `coord start` / `coord N` also opens one Terminal.app window per
 agent, each attached to that agent's tmux window (separate clients — no Ctrl-b n).
 A resume of `coord N` recreates missing tmux sessions and dead agent panes, and
@@ -406,7 +412,11 @@ as Antigravity ignore paste). Every onboarded agent defaults to `delivery: both`
 Per-agent config controls owner UI:
 
 - `nudgePrelude` — tmux key names sent before the text (Codex default: `i` for
-  vim insert, skipped when Codex's footer already shows `Vim: Insert`). Each
+  vim insert, sent only when Codex's footer shows `Vim: Normal`; coord launches
+  Codex with vim off, so normally no footer and no `i`). Claude's default `a`
+  is skipped when INSERT is shown or when the clone-local
+  `.claude/settings.local.json` sets `editorMode` to `normal`, as install
+  does. Each
   entry is one key followed by the prelude gap, so a trailing space such as
   `"a "` adds no delay. When any prelude key is sent, the typed text starts with
   a space, so a key that lands in the composer reads `i Read and execute …`
@@ -470,7 +480,8 @@ stable idle hint. Cursor submit is Enter when vim is off (Escape dismisses
 that composer) and Escape then Enter when `editor.vimMode` is on or
 `nudgePrelude` is a non-empty override. Prelude `a` is sent only in that
 vim case, and only if the pane is not already INSERT (home
-`~/.cursor/cli-config.json`, then clone `.cursor/cli.json`). Typed nudge text
+`~/.cursor/cli-config.json`; Cursor rejects an `editor` key in a project
+`.cursor/cli.json`, so set it in the home file). Typed nudge text
 includes both the opaque `actionId` and the SHA-256 digest of the exact
 `action.md`. A delayed hook for an older rewrite therefore cannot accept the
 current action accidentally.

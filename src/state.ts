@@ -142,11 +142,14 @@ export const verifyConfigSchema = z
 
 export const verifyPhaseSchema = z.enum(["precommit", "prepush"]);
 
-/** Opt-in prose/image allowlist; never infer documentation from an extension. */
+/**
+ * Opt-in prose/image allowlist; never infer documentation from an extension.
+ * Empty `checks` is the explicit "documentation needs no final command".
+ */
 export const documentationProfileSchema = z.object({
   paths: z.array(repositoryPathSchema).min(1),
   verify: verifyConfigSchema,
-  checks: z.array(checkCommandSchema).min(1)
+  checks: z.array(checkCommandSchema)
 }).strict();
 
 /**

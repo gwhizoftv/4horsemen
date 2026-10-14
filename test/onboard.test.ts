@@ -85,8 +85,21 @@ describe("coord onboard", () => {
     const configPath = join(coordRoot, "config.json");
     expect(existsSync(configPath)).toBe(true);
     expect(existsSync(join(aliasParent, "coord-runtime"))).toBe(false);
+    // Verification and cache policy come only from the owner's declaration; onboarding accepts it.
+    const declaration = join(fixture.workspaceRoot, "declaration.json");
+    writeFileSync(declaration, `${JSON.stringify({
+      checks: [{ name: "check", argv: ["true"] }],
+      verification: {
+        mode: "coordinator",
+        coordinated: { precommit: [], prepush: [] },
+        candidate: {
+          checks: [{ name: "lint", argv: ["true"], cache: { inputs: "tree-excluding-evidence" } }],
+          covers: { prefixes: ["src/"] }
+        }
+      }
+    })}\n`);
     expect(
-      await runCli(["onboard", fixture.productRoot], {
+      await runCli(["onboard", fixture.productRoot, "--declare", declaration], {
         home,
         io: { stdout: (message) => output.push(message), stderr: (message) => output.push(message) }
       })
@@ -96,7 +109,9 @@ describe("coord onboard", () => {
       profile: string;
       digestPaths: string[];
       agents: Array<{ id: string; nudgeSubmit: string[] }>;
+      verification?: { mode: string };
     };
+    expect(config.verification?.mode).toBe("coordinator");
     expect(config.agents.find((agent) => agent.id === "codex")?.nudgeSubmit).toEqual(["Enter"]);
     expect(config.profile).toBe("consensus");
     expect(config.digestPaths).toEqual([]);

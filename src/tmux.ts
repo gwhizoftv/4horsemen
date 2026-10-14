@@ -205,10 +205,6 @@ const codexSentinelAtTail = (paneText: string, requireSentinel = true): boolean 
 const codexVimNormal = (paneText: string, requireSentinel = true): boolean =>
   codexTail(paneText, requireSentinel)?.footer.some((line) => /Vim: Normal/.test(line.plain)) === true;
 
-/** In visible INSERT an `i` prelude would be typed into the message itself. */
-const codexVimInsert = (paneText: string): boolean =>
-  codexTail(paneText, false)?.footer.some((line) => /Vim: Insert/.test(line.plain)) === true;
-
 /** Active unquoted terminal lines, not prose discussing a past limit. Fail closed. */
 const claudeUsageWait = (plain: string): boolean => {
   const tail = plain.split("\n").slice(-12).join("\n");
@@ -301,7 +297,8 @@ export const harnessPromptReady = (paneText: string, agentId: string, actionId?:
  * `a` when INSERT is not visible. Codex keeps its configured `i` prelude.
  * Antigravity has no vim mode. Cursor uses `a` only when `editor.vimMode` is on
  * (see `readCursorVimMode`). Claude often omits a mode indicator — still send
- * `a` unless INSERT is shown. Do not toggle the operator's vim setting.
+ * `a` unless INSERT is shown, except when coord's clone-local settings turn
+ * vim off (`readClaudeEditorMode`). Do not toggle the operator's vim setting.
  */
 export const vimInsertPrelude = (paneText: string, agentId: string): readonly string[] => {
   if (agentId === "antigravity" || agentId === "codex") return [];
@@ -339,6 +336,23 @@ export const readCursorVimMode = (agentRoot: string): boolean => {
   return vimMode;
 };
 
+/**
+ * Claude `editorMode` from the clone-local settings coord writes. Claude's vim
+ * NORMAL shows no indicator, so pane text cannot tell it from vim off.
+ */
+export const readClaudeEditorMode = (agentRoot: string): string | undefined => {
+  const path = join(agentRoot, ".claude/settings.local.json");
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const editorMode = (parsed as { editorMode?: unknown }).editorMode;
+    return typeof editorMode === "string" ? editorMode : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const cursorNudgePrelude = (agent: AgentConfig, paneText: string): readonly string[] => {
   const configured = agent.nudgePrelude;
   if (configured !== undefined && configured.length > 0) return configured;
@@ -366,7 +380,9 @@ export const resolveNudgeKeys = (
   }
   const defaults = agentOwnerUiDefaults(agent.id);
   const configuredPrelude = agent.nudgePrelude ?? defaults.nudgePrelude;
-  const prelude = configuredPrelude.length === 0 ? vimInsertPrelude(paneText, agent.id) : configuredPrelude;
+  const prelude = configuredPrelude.length > 0 ? configuredPrelude
+    : agent.id === "claude" && readClaudeEditorMode(agent.root) === "normal" ? []
+      : vimInsertPrelude(paneText, agent.id);
   let rawSubmit = agent.nudgeSubmit ?? defaults.nudgeSubmit;
   if (agent.id === "codex") {
     const legacy = (rawSubmit.length === 2 && rawSubmit[0] === "C-j" && rawSubmit[1] === "C-m") ||
@@ -723,8 +739,22 @@ const newTerminalLog = (dir: string): string => {
  */
 const LAUNCH_PLACEHOLDER = "sleep 60";
 
-/** `pipe-pane` expands tmux formats in its command, so a literal `#` in the path must be doubled. */
-const pipeToLog = (log: string): string => `cat >> ${shellQuote(log)}`.replaceAll("#", "##");
+/**
+ * Prefix each output line with the UTC time of its first byte, flushing every
+ * chunk so a prompt without a newline is still recorded when it arrives.
+ */
+const TIMESTAMP_FILTER = "perl -MPOSIX=strftime -MTime::HiRes=time -e '$|=1; my $s=1; " +
+  "while (sysread(STDIN, my $b, 65536)) { for my $p (split /(?<=\\n)/, $b) { " +
+  "if ($s) { my $t=time; printf \"%s.%03dZ \", strftime(\"%Y-%m-%dT%H:%M:%S\", gmtime $t), ($t-int $t)*1000 } " +
+  "print $p; $s = substr($p,-1) eq \"\\n\" } }'";
+
+/**
+ * `pipe-pane` expands tmux formats and strftime in its command, so a literal
+ * `#` or `%` must be doubled. Without perl the log is still kept, unstamped.
+ */
+const pipeToLog = (log: string): string =>
+  `if command -v perl >/dev/null 2>&1; then exec ${TIMESTAMP_FILTER}; else exec cat; fi >> ${shellQuote(log)}`
+    .replaceAll("#", "##").replaceAll("%", "%%");
 
 const describeExit = (status: string, signal: string): string =>
   signal !== "" ? `signal ${signal}` : status !== "" ? `status ${status}` : "exit details unavailable";
@@ -1203,7 +1233,7 @@ export class TmuxController {
       try { paneText = await this.capturePane(target); } catch { /* Use configured keys. */ }
       assertAuthority();
       const { prelude, submit } = resolveNudgeKeys(agent, paneText);
-      const preludeKeys = agent.id === "codex" && codexVimInsert(paneText) ? [] : prelude;
+      const preludeKeys = agent.id === "codex" && !codexVimNormal(paneText, false) ? [] : prelude;
       await this.typeAndSubmit(target, agent, text, preludeKeys, submit, async (args) => {
         assertAuthority();
         if (!began) { onBegin(); began = true; }
@@ -1279,8 +1309,8 @@ export class TmuxController {
     }
     const text = renderNudgeText(actionPath, actionId, actionDigest);
     const { prelude, submit } = resolveNudgeKeys(agent, paneText);
-    const preludeKeys = agent.id === "codex" &&
-      (staleOverride !== undefined ? !codexVimNormal(paneText, requireSentinel) : codexVimInsert(paneText))
+    // Codex shows its vim mode whenever vim is on; without `Vim: Normal`, `i` would be typed.
+    const preludeKeys = agent.id === "codex" && !codexVimNormal(paneText, requireSentinel)
       ? [] : prelude;
     let began = false;
     const send = async (args: readonly string[]): Promise<NudgeOutcome | null> => {
