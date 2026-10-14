@@ -120,6 +120,8 @@ export const agentLifecycleEntrySchema = z
     sessionId: z.string().min(1).nullable(),
     retiredSessionIds: z.array(z.string().min(1)).max(16).default([]),
     turnId: z.string().min(1).nullable(),
+    /** Turn ids this session has reported by submit or Stop; a queued prompt's own turn is never among them. */
+    recentTurnIds: z.array(z.string().min(1)).max(32).optional(),
     pendingInputCount: z.number().int().nonnegative().nullable(),
     backgroundActive: z.boolean().nullable(),
     /** Current Stop readiness; background activity does not revoke it. */
@@ -310,12 +312,12 @@ export const orderAgentAction = (
     const previous = current.action;
     // The protocol has the agent reread action.md after `complete`, so an order
     // published while that same turn is still live is expected to be picked up
-    // without a prompt. A reread-picked predecessor never bound a session.
+    // without a prompt. A reread-picked predecessor binds its session at completion.
     const rereadExpected = previous?.actionId === actionId
       ? previous.rereadExpected === true
       : previous !== null && previous.workflowCompleteAt !== null &&
         current.sessionId !== null && current.execution === "working" && current.stoppedAt === null &&
-        (previous.rereadExpected === true || previous.sessionId === current.sessionId);
+        previous.sessionId === current.sessionId;
     return replaceEntry(
       state,
       agent,
@@ -484,7 +486,10 @@ export const markActionWorkflowComplete = (
           : current.stopObservation,
         health: clearedDegraded ? "healthy" : current.health,
         degradedCause: clearedDegraded ? null : current.degradedCause,
-        action: { ...current.action, workflowCompleteAt: now }
+        // A reread pickup belongs to the session that completed it, so a
+        // replacement session cannot inherit the reread expectation.
+        action: { ...current.action, workflowCompleteAt: now,
+          ...(pickedUpByReread && current.action.rereadExpected === true ? { sessionId: current.sessionId } : {}) }
       },
       now
     );
@@ -619,8 +624,11 @@ export const applyLifecycleObservation = (
     (stoppedTurn === null || stoppedTurn === queuedBehind);
   // After that, a distinct turn's Stop or failure is the queued work's own
   // end, including when its completion was accepted before that Stop arrived.
+  // A queued prompt's own turn never reported a submit, so a turn id already
+  // seen (a delayed older Stop) cannot be it.
   const queuedWorkStop = endsTurn && queuedBehindTurn !== undefined && !queuedIntoTurnStop &&
-    entry.action?.queuedBehindStopped === true && stoppedTurn !== queuedBehindTurn;
+    entry.action?.queuedBehindStopped === true && stoppedTurn !== queuedBehindTurn &&
+    (stoppedTurn === null || !(sessionChanged ? [] : entry.recentTurnIds ?? []).includes(stoppedTurn));
   const stoppingOlderTurn = endsTurn && !queuedIntoTurnStop && !queuedWorkStop &&
     currentActionTurn !== null && stoppedTurn !== null && currentActionTurn !== stoppedTurn;
 
@@ -754,6 +762,10 @@ export const applyLifecycleObservation = (
   if ((execution === "idle" || execution === "failed") && action?.rereadExpected === true) {
     action = { ...action, rereadExpected: undefined };
   }
+  const recentTurnIds = observation.turnId !== undefined &&
+    (observation.kind === "prompt-submitted" || observation.kind === "stopped" || observation.kind === "failed")
+    ? [...new Set([...(sessionChanged ? [] : entry.recentTurnIds ?? []), observation.turnId])].slice(-32)
+    : sessionChanged ? undefined : entry.recentTurnIds;
   const idleEpoch = positiveIdle(entry, execution);
   const lastFailure = observation.failure === undefined
     ? entry.lastFailure
@@ -769,6 +781,7 @@ export const applyLifecycleObservation = (
     sessionId,
     retiredSessionIds,
     turnId,
+    recentTurnIds,
     pendingInputCount,
     backgroundActive,
     stoppedAt,

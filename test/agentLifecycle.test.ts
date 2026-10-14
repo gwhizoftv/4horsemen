@@ -255,6 +255,14 @@ describe("agent lifecycle policy", () => {
     expect(applyLifecycleObservation(idle, oldStop, "2026-08-18T00:01:00.000Z")).toMatchObject({ execution: "idle", stoppedAt: later });
   });
 
+  // An injected action whose agent has submitted turns `earlier`, then `t`, still running.
+  const queuedOnlyFor = (...earlier: string[]) => {
+    let current = applyLifecycleObservation(entry(), { kind: "session-start", eventName: "SessionStart", sessionId: "s" }, now);
+    for (const turnId of [...earlier, "t"]) current = applyLifecycleObservation(current,
+      { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "s", turnId }, now);
+    return { ...current, action: injectedAction(current.idleEpoch) };
+  };
+
   it("does not let the Stop of the turn a prompt was queued into end the queued action", () => {
     let current = applyLifecycleObservation(entry(), { kind: "session-start", eventName: "SessionStart", sessionId: "s" }, now);
     current = applyLifecycleObservation(current, { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "s", turnId: "t" }, now);
@@ -270,6 +278,9 @@ describe("agent lifecycle policy", () => {
       expect(decideLifecycleNudge(current, actionId, digest).code).toBe("working");
     }
     const queuedRunning = current;
+    // A delayed Stop of a turn already seen in this session is not the queued work's own Stop.
+    const withOlder = applyLifecycleObservation(applyLifecycleObservation(queuedOnlyFor("o"), submit, now), stop, later);
+    expect(decideLifecycleNudge(applyLifecycleObservation(withOlder, { ...stop, turnId: "o" }, later), actionId, digest).code).toBe("working");
     current = applyLifecycleObservation(current, { ...stop, turnId: "u" }, later);
     expect(current).toMatchObject({ execution: "idle", stoppedAt: later, idleEpoch: epoch + 1 });
     expect(current.action?.queuedBehindTurnId).toBeUndefined();
@@ -339,7 +350,9 @@ describe("agent lifecycle policy", () => {
       expect(rereadPickupPending(current, next)).toBe(true);
       expect(markActionWorkflowComplete(paths, "codex", next, later).pickedUpByReread).toBe(true);
     }
-    observeAgentLifecycleWithResult(paths, "codex", { kind: "stopped", eventName: "Stop", sessionId: "s", turnId: "t" }, later);
+    // A replacement session that reports working does not inherit the reread chain.
+    observeAgentLifecycleWithResult(paths, "codex", { kind: "status", eventName: "status-line", sessionId: "next", execution: "working",
+      pendingInputCount: 0, backgroundActive: false }, later);
     orderAgentAction(paths, "codex", d, digest, later);
     expect(readAgentLifecycle(paths).agents.codex!.action?.rereadExpected).toBeUndefined();
   });
