@@ -1,0 +1,14 @@
+{
+  "actionId": "64eae19a-a721-4e55-9992-7994de429ce8",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "3c09b6320e8dd25803283288193fcc7ab29943d9008dea7c213821256e724f60",
+  "issue": 204,
+  "issueSessionId": "issue-204:855982b3f1639ec5bac7891f1c67f1e100dc2ab3",
+  "protocolVersion": 2,
+  "rationale": "Revision 95969a50 keeps the selected implementation's per-agent tmux scope and exact client matching, and resolves the only remaining comparison finding by preserving the episode's observedAt across reminders (asserted in test/runLoop.test.ts:1120), with the paused status now reporting lastReminderAt.",
+  "responseSha256": "133b0f9abab56bcb3d1505d6998f8f1b7177a07988aeaa0595c0000aa9f62218",
+  "revisionCommitSha": "95969a5065a8506a21bec42f0998789938637c6a",
+  "round": 1
+}

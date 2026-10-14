@@ -1,0 +1,14 @@
+{
+  "actionId": "6ed7cf34-0ffd-4ce9-af59-142ac867fad6",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "3c09b6320e8dd25803283288193fcc7ab29943d9008dea7c213821256e724f60",
+  "issue": 204,
+  "issueSessionId": "issue-204:855982b3f1639ec5bac7891f1c67f1e100dc2ab3",
+  "protocolVersion": 2,
+  "rationale": "The revision keeps the first scrollback observation time while reminders advance lastReminderAt, and paused status reports that latest confirmation without treating a repeat as a new episode.",
+  "responseSha256": "915b28b82ad5322c2c89665e304c15a3f076b0cb763e736e727d1044f9d2b56f",
+  "revisionCommitSha": "95969a5065a8506a21bec42f0998789938637c6a",
+  "round": 1
+}
