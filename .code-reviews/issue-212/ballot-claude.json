@@ -1,0 +1,34 @@
+{
+  "actionId": "90e8f42c-a26b-4f71-a3ac-fb3a474c4636",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "ff20570dee7d7fa6800c16b423360833ae78f74a",
+      "path": ".signals/issue-212/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "cadc99bd74a32882534cdc43f7fd668e415e49f4",
+      "path": ".signals/issue-212/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "57cc186f930f0841b22f89a754b3d2bfbf946190",
+      "path": ".signals/issue-212/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "b34cde7dda51655a1fc10ea245218f584bb3002a",
+      "path": ".signals/issue-212/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "26a883ed3ffb9aa5e06d12d68fb01d49d969f1bbf306a15c91cfd459958557fb",
+  "issue": 212,
+  "issueSessionId": "issue-212:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "protocolVersion": 2,
+  "rationale": "All four pins are functionally equivalent in product code, and codex has the strongest and leanest coverage: rounds 2 and 3 through buildOrder with a wrong-round batch present, ancestry excluding the ballot commit, and extensions of existing tests rather than parallel cases.",
+  "responseSha256": "e594bed8e316a5b10ba8220eb00acb5e001d0573b5d463e3f0ecc98103287e63"
+}

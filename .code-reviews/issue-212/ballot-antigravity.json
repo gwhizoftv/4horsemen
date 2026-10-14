@@ -1,0 +1,34 @@
+{
+  "actionId": "e8a7dd14-eb89-40d2-b629-c64cdc5e26c2",
+  "agent": "antigravity",
+  "artifact": "comparison-ballot",
+  "choice": "cursor",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "ff20570dee7d7fa6800c16b423360833ae78f74a",
+      "path": ".signals/issue-212/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "cadc99bd74a32882534cdc43f7fd668e415e49f4",
+      "path": ".signals/issue-212/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "57cc186f930f0841b22f89a754b3d2bfbf946190",
+      "path": ".signals/issue-212/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "b34cde7dda51655a1fc10ea245218f584bb3002a",
+      "path": ".signals/issue-212/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "26a883ed3ffb9aa5e06d12d68fb01d49d969f1bbf306a15c91cfd459958557fb",
+  "issue": 212,
+  "issueSessionId": "issue-212:3b09828c41afb14f3366f2f35f54e7337ec93e26",
+  "protocolVersion": 2,
+  "rationale": "Cursor faithfully implements the approved plan across all required files with focused tests and accurate documentation.",
+  "responseSha256": "a778a6da18bf0dc20e1234733d4757dd85338d97937606d4c16ce12aea99e8db"
+}
