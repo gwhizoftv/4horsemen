@@ -3,6 +3,21 @@ import { coordMergesPullRequest, describeWorkflowStep, type WorkflowStepId } fro
 import { containmentCoverage, stopObservationWarning } from "./agentLifecycle.js";
 import { containmentPolicy } from "./shellGuard.js";
 import { shellQuote } from "./agentHookSync.js";
+import type { AgentLifecycleState } from "./agentLifecycle.js";
+
+export const scrollbackWaitMessage = (agent: string): string =>
+  `the ${agent} pane is scrolled back; scroll to the bottom to let coord send`;
+
+/** A recorded delivery refusal, never merely an operator reading a working pane. */
+export const currentScrollbackWait = (cursors: CursorsState, agent: string, lifecycle?: AgentLifecycleState) => {
+  const safety = cursors.actionSafety[agent];
+  const cursor = cursors.agents[agent];
+  if (cursors.completed || cursors.abandoned || !cursors.activeRoster.includes(agent) ||
+      cursor?.status !== "ordered" || cursor.actionId !== safety?.actionId) return undefined;
+  const action = lifecycle?.agents[agent]?.action;
+  if (action?.actionId === cursor.actionId && (action.delivery === "accepted" || action.workflowCompleteAt !== null)) return undefined;
+  return safety?.scrollbackWait;
+};
 
 export const issueCommand = (command: string, issue: number, coordRoot: string): string =>
   `coord ${command} --issue ${issue} --coord-runtime ${shellQuote(coordRoot)}`;
@@ -115,6 +130,13 @@ export const renderIssueReport = (
     if (cursors.droppedAgents.length > 0) lines.push(`Dropped agents: ${cursors.droppedAgents.join(", ")}; historical objections are not approvals or filing receipts.`);
   }
   if (cursors.manualPaused) lines.push(`Manual pause: active (${issueCommand("resume", start.issue, start.coordRoot)} clears only this pause).`);
+  for (const agent of cursors.activeRoster) {
+    const wait = currentScrollbackWait(cursors, agent, lifecycle);
+    if (wait === undefined) continue;
+    lines.push(cursors.paused
+      ? `[WAIT] Last observed scrollback wait for ${agent} at ${wait.lastReminderAt}; automatic delivery is paused.`
+      : `[WAIT] ${scrollbackWaitMessage(agent)}`);
+  }
   for (const hold of cursors.holds) {
     const sends = cursors.actionSafety[hold.agent]?.sends ?? 0;
     const evidence = hold.evidence ?? null;

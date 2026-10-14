@@ -76,6 +76,17 @@ const initialize = () => {
 };
 
 describe("operational state", () => {
+  it("reads legacy action safety and preserves scrollback reminder timing across restart", () => {
+    const { paths, cursors } = initialize();
+    const actionId = "10000000-0000-4000-8000-000000000001";
+    const legacy = cursorsStateSchema.parse({ ...cursors, actionSafety: { codex: { actionId, activityAt: cursors.updatedAt } } });
+    expect(legacy.actionSafety.codex?.scrollbackWait).toBeUndefined();
+    const scrollbackWait = { observedAt: cursors.updatedAt, lastReminderAt: "2026-08-11T10:03:00.000Z" };
+    legacy.actionSafety.codex!.scrollbackWait = scrollbackWait;
+    writeCursorsState(paths, legacy);
+    expect(readCursorsState(paths).actionSafety.codex?.scrollbackWait).toEqual(scrollbackWait);
+  });
+
   it("defaults legacy accepted action identity and preserves it across ordering and restart", () => {
     const { paths, cursors } = initialize();
     const legacy = JSON.parse(JSON.stringify(cursors));

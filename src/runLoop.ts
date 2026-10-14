@@ -111,7 +111,7 @@ import {
   type WorkflowStepId
 } from "./steps.js";
 import { containmentPolicy, ingestContainmentProbe } from "./shellGuard.js";
-import { holdRecoveryCommand, holdDescription, issueCommand, renderIssueReport } from "./issueReport.js";
+import { currentScrollbackWait, holdRecoveryCommand, holdDescription, issueCommand, renderIssueReport, scrollbackWaitMessage } from "./issueReport.js";
 import { inspectStartupAgent } from "./doctor.js";
 import { assessFollowUpIssue, followUpKey, formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
@@ -909,7 +909,7 @@ const candidateResultsFor = (cursors: CursorsState, inputs: readonly BoundInput[
  */
 const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "pane-dead": "the agent terminal is gone; restore it before retrying",
-  "owner-typing": "the pane is in copy mode or the owner is typing in it",
+  "owner-typing": "the pane is scrolled back; scroll to the bottom to let coord send",
   "input-off": "the pane has input disabled",
   "foreground-mismatch": "the foreground process is not this agent's harness",
   "trust-dialog": "the application is waiting for you to answer its folder-trust prompt; inspect its terminal",
@@ -940,6 +940,7 @@ const deferralRationale = (code: string): string =>
 // Delivery protection is independent of the wait before checking for lost delivery.
 const NUDGE_REPEAT_DELAYS_MS = [60_000, 120_000, 240_000];
 const OBSERVATION_INTERVAL_MS = 60_000;
+const SCROLLBACK_REMINDER_MS = 180_000;
 const UNKNOWN_DEFERRAL_LIMIT = 8;
 /** A provider deadline authorizes one recheck this long after it, never a resume. */
 const DEADLINE_RECHECK_MS = 30_000;
@@ -1222,6 +1223,13 @@ export class CoordinatorRunLoop {
     } }));
   }
 
+  private clearScrollbackWait(cursors: CursorsState, agent: string): CursorsState {
+    if (cursors.actionSafety[agent]?.scrollbackWait === undefined) return cursors;
+    return this.mutate(cursors, (current) => ({ ...current, actionSafety: {
+      ...current.actionSafety, [agent]: { ...current.actionSafety[agent]!, scrollbackWait: undefined }
+    } }));
+  }
+
   private hold(
     cursors: CursorsState, agent: string, reason: Hold["reason"], evidenceId: string, enrichment?: HoldEnrichment
   ): CursorsState {
@@ -1351,7 +1359,7 @@ export class CoordinatorRunLoop {
       entry.action?.actionId === actionId && entry.action.actionDigest === actionDigest &&
       entry.action.delivery === "ordered" && entry.action.injectedAt === null;
     if ((entry?.execution === "working" && !staleWorking) || (entry?.backgroundActive === true && !hasStopReadiness(entry)) ||
-      (entry?.pendingInputCount ?? 0) > 0) return cursors;
+      (entry?.pendingInputCount ?? 0) > 0) return this.clearScrollbackWait(cursors, agent);
     // Lifecycle hooks write without touching cursor authority, so the override
     // re-reads them immediately before the batch (or each AGY key).
     const lifecycleSnapshot = (value: typeof entry): string => JSON.stringify([value?.sessionId, value?.turnId,
@@ -1394,6 +1402,7 @@ export class CoordinatorRunLoop {
         ? this.hold(cursors, agent, "delivery-uncertain", `${actionId}:uncertain:${safety.sends + 1}`) : cursors;
     }
     this.authority(cursors);
+    if (result.status !== "busy" || result.reason !== "owner-typing") cursors = this.clearScrollbackWait(cursors, agent);
     // Native retry ownership remains known even if earlier keys were ambiguous.
     // Leave any reservation charged until explicit owner recovery.
     if (result.status === "busy" && result.reason === "claude-usage-wait") {
@@ -1477,6 +1486,8 @@ export class CoordinatorRunLoop {
     });
     this.authority(cursors);
     if (pane === null) return cursors;
+    // Advisory probes only clear an observed wait; they never refresh durable timing.
+    if (!pane.alive || !pane.ownerTyping) cursors = this.clearScrollbackWait(cursors, agent);
     if (!pane.alive) return this.hold(cursors, agent, "harness-gone", evidence);
     if (agent === "claude") {
       const text = await this.tmux.capturePane(target).catch((error) => {
@@ -1952,7 +1963,7 @@ export class CoordinatorRunLoop {
    * it so status and debug do not have to be reconciled across two axes. The
    * line reaches normal stdout when the workflow is actually waiting on this
    * agent or when the two layers disagree. Already-seen codes stay silent in
-   * both the journal and stdout, including across restarts.
+   * the journal; a continuing scrollback wait gets a bounded console reminder.
    */
   private journalDeferral(
     start: StartState,
@@ -1966,13 +1977,15 @@ export class CoordinatorRunLoop {
     detail?: string
   ): CursorsState {
     cursors = this.ensureActionSafety(cursors, agent, actionId);
+    const scrollback = layer === "scrape" && code === "owner-typing";
+    if (!scrollback) cursors = this.clearScrollbackWait(cursors, agent);
     const safety = cursors.actionSafety[agent]!;
-    if (safety.deferrals.includes(code)) return cursors;
+    if (!scrollback && safety.deferrals.includes(code)) return cursors;
     const unknown = !Object.hasOwn(DEFERRAL_RATIONALE, code);
     const unknownCount = safety.deferrals.filter((key) => !Object.hasOwn(DEFERRAL_RATIONALE, key)).length;
     // Keep distinct unexpected diagnostics, then emit one explicit overflow row.
     const key = unknown && unknownCount >= UNKNOWN_DEFERRAL_LIMIT ? "unrecognized-overflow" : code;
-    if (safety.deferrals.includes(key)) return cursors;
+    const recorded = safety.deferrals.includes(key);
     const entry = readAgentLifecycle(this.paths).agents[agent];
     const splitBrain =
       layer === "scrape" && entry?.execution === "idle" && entry.health !== "degraded";
@@ -1980,8 +1993,15 @@ export class CoordinatorRunLoop {
     // unanswered. A deferral for an agent that is verifying or waiting on a peer
     // is background detail, so it belongs in the journal but not on stdout.
     const gateWaiting = cursors.agents[agent]?.status === "ordered";
+    const now = this.now();
+    const remind = scrollback && gateWaiting && cursors.activeRoster.includes(agent) &&
+      !cursors.paused && !cursors.completed && !cursors.abandoned &&
+      !(entry?.action?.actionId === actionId && (entry.action.delivery === "accepted" || entry.action.workflowCompleteAt !== null)) &&
+      (safety.scrollbackWait === undefined || Date.parse(now) - Date.parse(safety.scrollbackWait.lastReminderAt) >= SCROLLBACK_REMINDER_MS);
+    if (recorded && !remind) return cursors;
+    if (scrollback) human = scrollbackWaitMessage(agent);
     const next = this.mutate(cursors, (current) => {
-      appendJournal(
+      if (!recorded) appendJournal(
         this.paths,
         {
           type: "nudge-deferred",
@@ -2005,17 +2025,20 @@ export class CoordinatorRunLoop {
             }
           }
         },
-        this.now()
+        now
       );
       return { ...current, actionSafety: { ...current.actionSafety, [agent]: {
-        ...safety, deferrals: [...safety.deferrals, key]
+        ...safety, deferrals: recorded ? safety.deferrals : [...safety.deferrals, key],
+        ...(remind ? { scrollbackWait: {
+          observedAt: safety.scrollbackWait?.observedAt ?? now, lastReminderAt: now
+        } } : {})
       } } };
     });
     const message = splitBrain
       ? `[WARN] Issue ${start.issue}: ${agent}'s activity report says idle but its terminal refuses input; ${human}`
       : `[WAIT] Issue ${start.issue}: waiting to send to ${agent}; ${human}`;
     this.verbose(`Delivery diagnostic: ${code}${detail === undefined ? "" : ` (${detail})`}`);
-    if (gateWaiting || splitBrain) this.log(message);
+    if (scrollback ? remind : gateWaiting || splitBrain) this.log(message);
     else this.verbose(message);
     return next;
   }
@@ -3215,6 +3238,10 @@ export class CoordinatorRunLoop {
       if (cursor === undefined || cursor.actionId === null || cursor.stepId === null) continue;
       const runtime = agentRuntimePaths(this.paths, agent);
       const completion = readCompletion(runtime.complete);
+      if (cursors.actionSafety[agent]?.scrollbackWait !== undefined &&
+          (completion.status !== "missing" || currentScrollbackWait(cursors, agent, readAgentLifecycle(this.paths)) === undefined)) {
+        cursors = this.clearScrollbackWait(cursors, agent);
+      }
       if (completion.status !== "missing") {
         const identity = `${cursor.actionId}:${JSON.stringify(completion)}`;
         if (this.receiptMessages.get(agent) !== identity) {

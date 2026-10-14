@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  agentClientAttachCommand,
   harnessLooksReady,
   harnessPromptReady,
   harnessPromptReadiness,
@@ -356,18 +357,27 @@ describe("tmux boundary", () => {
       {
         agentId: "claude",
         command:
-          "tmux new-session -A -s coord-7-claude -t coord-7 ';' select-window -t claude ';' set-option destroy-unattached on",
+          "tmux new-session -A -s coord-7-claude -t coord-7 ';' select-window -t claude ';' set-option destroy-unattached on" +
+          " ';' set-option -t coord-7-claude history-limit 50000 ';' set-option -t coord-7-claude mouse on" +
+          " ';' set-option -w -q -t coord-7-claude:claude pane-scrollbars on",
         terminalProfile: "Pro",
         windowTitle: "coord-7/claude"
       },
       {
         agentId: "codex",
         command:
-          "tmux new-session -A -s coord-7-codex -t coord-7 ';' select-window -t codex ';' set-option destroy-unattached on",
+          "tmux new-session -A -s coord-7-codex -t coord-7 ';' select-window -t codex ';' set-option destroy-unattached on" +
+          " ';' set-option -t coord-7-codex history-limit 50000 ';' set-option -t coord-7-codex mouse on",
         terminalProfile: "Grass",
         windowTitle: "coord-7/codex"
       }
     ]);
+    expect(agentClientAttachCommand("coord-7", "cursor")).toContain("set-option -w -q -t coord-7-cursor:cursor pane-scrollbars on");
+    for (const id of ["antigravity", "gemini"]) {
+      const command = agentClientAttachCommand("coord-7", id);
+      expect(command).toContain(`set-option -t coord-7-${id} history-limit 50000`);
+      expect(command).not.toMatch(/mouse|pane-scrollbars| -g /);
+    }
   });
 
   it("opens owner terminals through the injected opener", async () => {
@@ -477,6 +487,7 @@ describe("tmux boundary", () => {
     expect(calls.find((args) => args[0] === "new-window")!.at(-1)).toBe("sleep 60");
     const launch = commandsIn(calls.find((args) => args.includes("respawn-pane"))!);
     expect(launch[0]).toEqual(["set-option", "-w", "-t", "coord-3:claude", "remain-on-exit", "on"]);
+    expect(launch).toContainEqual(["set-option", "-w", "-q", "-t", "coord-3:claude", "pane-scrollbars", "on"]);
     expect(launch.at(-1)).toEqual(["respawn-pane", "-k", "-t", "coord-3:claude", "-c", clone, join(clone, "start-claude.sh")]);
     expect(calls).toContainEqual(["set-environment", "-t", "coord-3", "COORD_ISSUE", "3"]);
     // A COORD_MANUAL=1 leaked from the tmux server would disarm the git shim.
@@ -487,15 +498,50 @@ describe("tmux boundary", () => {
       return args[0] === "has-session" ? { exitCode: 1, stdout: "", stderr: "missing" } : ok();
     }, null, null, null).startSession(4, [agent]);
     expect(fresh).toContainEqual(["set-environment", "-r", "-t", "coord-4", "COORD_MANUAL"]);
+    expect(fresh.findIndex((args) => args.includes("history-limit"))).toBeLessThan(fresh.findIndex((args) => args[0] === "new-window"));
+    expect(fresh.flatMap(commandsIn)).toContainEqual(["set-option", "-t", "coord-4", "history-limit", "50000"]);
     calls.length = 0;
     await controller.ensureSession(3, [agent]);
     // Exit details are read before the dead pane is held on the placeholder, then relaunched.
-    expect(calls.map((args) => args[0]).filter((name) => ["list-panes", "respawn-pane", "set-option"].includes(name!)))
+    expect(calls.filter((args) => ["list-panes", "respawn-pane"].includes(args[0]!) || args.includes("remain-on-exit")).map((args) => args[0]))
       .toEqual(["list-panes", "respawn-pane", "set-option"]);
     expect(calls.find((args) => args[0] === "respawn-pane")!.at(-1)).toBe("sleep 60");
     calls.length = 0;
     await controller.ensureSession(3, [agent]);
     expect(calls.some((args) => args[0] === "new-window" || args[0] === "respawn-pane")).toBe(false);
+    expect(calls.flatMap(commandsIn)).toEqual(expect.arrayContaining([
+      ["set-option", "-t", "coord-3", "history-limit", "50000"],
+      ["set-option", "-t", "coord-3", "mouse", "on"],
+      ["set-option", "-t", "coord-3-claude", "history-limit", "50000"],
+      ["set-option", "-t", "coord-3-claude", "mouse", "on"],
+      ["set-option", "-w", "-q", "-t", "coord-3:claude", "pane-scrollbars", "on"]
+    ]));
+    expect(calls.some((args) => args.includes("-g") || args[0] === "bind-key")).toBe(false);
+  });
+
+  it("ignores unavailable scrollbars but fails required scrolling options", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-scroll-"));
+    roots.push(root);
+    writeFileSync(join(root, "start-claude.sh"), "#!/bin/sh\n", { mode: 0o700 });
+    const agent = { id: "claude", root, launcher: "start-claude.sh", delivery: "both" as const };
+    const calls: string[][] = [];
+    let failHistory = false;
+    const controller = new TmuxController(async (args) => {
+      calls.push([...args]);
+      if (args[0] === "has-session") return { exitCode: 1, stdout: "", stderr: "missing" };
+      if (args.includes("history-limit") && failHistory) return { exitCode: 1, stdout: "", stderr: "cannot set history" };
+      for (const command of commandsIn(args)) {
+        if (command.includes("pane-scrollbars") && !command.includes("-q")) return { exitCode: 1, stdout: "", stderr: "invalid option" };
+      }
+      return ok();
+    }, null, null, null);
+    await controller.startSession(4, [agent]);
+    expect(calls.some((args) => args.includes("respawn-pane"))).toBe(true);
+    calls.length = 0;
+    failHistory = true;
+    await expect(controller.startSession(5, [agent])).rejects.toThrow("cannot set history");
+    expect(calls).toContainEqual(["kill-session", "-t", "coord-5"]);
+    expect(calls.some((args) => args[0] === "new-window")).toBe(false);
   });
 
   it("creates and repairs manual sessions without exposing COORD_ISSUE", async () => {
@@ -524,6 +570,7 @@ describe("tmux boundary", () => {
     const controller = new TmuxController(runner, null, null, null, noopSleep, "abc12def00");
     const agent = { id: "claude", root: clone, launcher: "start-claude.sh", delivery: "both" as const };
     await controller.ensureSession("manual", [agent]);
+    expect(calls.flatMap(commandsIn)).toContainEqual(["set-option", "-t", "coord-manual-abc12def00", "history-limit", "50000"]);
     expect(calls).toContainEqual([
       "set-environment",
       "-r",
@@ -1316,9 +1363,20 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
     try {
       // An inherited hook that blocks the command queue must not let a fast agent escape recording.
       await runner(["new-session", "-d", "-s", "hook-holder"]);
+      const unrelated = ["display-message", "-p", "-t", "hook-holder", "#{mouse} #{history_limit} #{pane-scrollbars}"];
+      const unrelatedBefore = await runner(unrelated);
       await runner(["set-hook", "-g", "after-new-window", "run-shell 'sleep 0.2'"]);
       await run("first", "exit 0", () => controller.startSession(3, [agent], logDir));
+      expect((await runner(["display-message", "-p", "-t", "coord-3:claude", "#{mouse} #{history_limit}"])).stdout.trim()).toBe("1 50000");
+      // A pre-upgrade linked client stays open during resume and must be repaired too.
+      await runner(["new-session", "-d", "-s", "coord-3-claude", "-t", "coord-3"]);
+      await runner(["set-option", "-t", "coord-3-claude", "mouse", "off"]);
       await run("second", "exit 3", () => controller.ensureSession(3, [agent], undefined, logDir));
+      expect((await runner(["show-options", "-v", "-t", "coord-3-claude", "mouse"])).stdout.trim()).toBe("on");
+      expect((await runner(["show-options", "-v", "-t", "coord-3-claude", "history-limit"])).stdout.trim()).toBe("50000");
+      const scrollbar = await runner(["show-options", "-wqv", "-t", "coord-3:claude", "pane-scrollbars"]);
+      if (scrollbar.stdout.trim() !== "") expect(scrollbar.stdout.trim()).toBe("on");
+      expect(await runner(unrelated)).toEqual(unrelatedBefore);
       await run("third", "kill -KILL $$", () => controller.ensureSession(3, [agent], undefined, logDir));
       const advertised = (await controller.agentPlacementDiagnostics(3, [agent])).join("\n").match(/output log: (.+?\.log);/)?.[1];
       expect(advertised).toBe(join(logs, advertised!.slice(logs.length + 1)));

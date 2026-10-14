@@ -719,6 +719,7 @@ const actionSafetySchema = z.object({
   lastSendAt: timestampSchema.nullable().default(null),
   reserved: z.boolean().default(false),
   deferrals: z.array(z.string()).default([]),
+  scrollbackWait: z.object({ observedAt: timestampSchema, lastReminderAt: timestampSchema }).strict().optional(),
   holdGeneration: z.number().int().nonnegative().default(0),
   observationChecks: z.number().int().nonnegative().default(0),
   nextObservationAt: timestampSchema.nullable().default(null),
