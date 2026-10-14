@@ -4085,6 +4085,21 @@ describe("materialized bound inputs", () => {
     expect(result.omitted[0]).toContain("unreadable");
   });
 
+  it("exports bound consensus ballots as files beside the revision worktree", async () => {
+    const { paths } = fixture();
+    const mirror = { ...readingMirror(), materializeWorktree: async (target: string) => { mkdirSync(target, { recursive: true }); } };
+    const ballot = { agent: "codex", commitSha: "8".repeat(40), path: ".code-reviews/issue-1/consensus-ballot-codex-round-1.json",
+      kind: "consensus-ballot" };
+    const result = await materializeBoundInputs({ mirror, paths, inputs: [
+      { agent: "codex", commitSha: "9".repeat(40), path: ".signals/issue-1/revision-ready-codex-round-1.json", kind: "prior-revision" },
+      ballot
+    ] });
+    expect(result.omitted).toEqual([]);
+    expect(result.worktrees.map((worktree) => worktree.kind)).toEqual(["prior-revision"]);
+    expect(result.entries.map((entry) => entry.kind)).toEqual(["consensus-ballot"]);
+    expect(readFileSync(result.entries[0]!.localPath, "utf8")).toBe(`body of ${ballot.commitSha}:${ballot.path}\n`);
+  });
+
   it("materializes one worktree per distinct pin and prunes superseded ones", async () => {
     const { paths } = fixture();
     const created: [string, string][] = [];
@@ -4520,6 +4535,21 @@ describe("third revision closeout", () => {
       ballotBatches: [publishedBallotBatchFixture({ kind: "consensus-ballot-batch", activeRoster: cursors.activeRoster, round: 2 })] });
     expect(computeConsensusDerived(earlier, 2, now)?.algorithm ?? null)
       .toBe(disposition === "approve" ? "unanimous-active-roster-v1" : null);
+  });
+
+  it("binds the previous round's published ballot batch to a later revision", () => {
+    const { start, cursors, revision } = terminalFixture();
+    const batch = publishedBallotBatchFixture({ kind: "consensus-ballot-batch", activeRoster: cursors.activeRoster, round: 1 });
+    const previous = cursorsStateSchema.parse({ ...cursors,
+      issueCursor: { stepId: "R6.revise", gateId: "gate-6-consensus", round: 2 },
+      accepted: [{ ...revision, round: 1 }],
+      acceptedResponses: cursors.acceptedResponses.map((entry) => ({ ...entry, round: 1 })),
+      ballotBatches: [batch] });
+    const prior = { agent: "codex", commitSha: revision.productPin, path: revision.path, kind: "prior-revision" };
+    expect(deriveBoundInputs(start, previous, "R6.revise", 2)).toEqual([prior,
+      ...cursors.activeRoster.map((agent, index) =>
+        ({ agent, commitSha: batch.commitSha, path: batch.paths[index], kind: "consensus-ballot" }))]);
+    expect(deriveBoundInputs(start, { ...previous, ballotBatches: [] }, "R6.revise", 2)).toEqual([prior]);
   });
 
   it.each(["revision-limit", "ballot-escalation"] as const)("retires a legacy %s question once without recording a human answer", async (kind) => {

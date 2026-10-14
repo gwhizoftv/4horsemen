@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { computeInputSetHash } from "../src/evidence.js";
 import { artifactScaffoldValue, renderArtifactScaffold } from "../src/orderScaffold.js";
 import { followUpIssueArtifactSchema, planAmendmentRequestSchema } from "../src/protocol.js";
 import { BUILD_DISCIPLINE_NOTE, STEP_DEFINITIONS } from "../src/steps.js";
@@ -22,6 +23,12 @@ describe("orderScaffold", () => {
     expect(planAmendmentRequestSchema.parse({ ...JSON.parse(requestJson),
       additionalPaths: [{ path: "test/product.test.ts", reason: "Regression coverage" }]
     })).toMatchObject({ explanation: "<discovered omission>" });
+    const withBallots = { ...ctx, inputs: [{ ...ctx.inputs[0]!, kind: "prior-revision" },
+      ...["claude", "codex"].map((agent) => ({ kind: "consensus-ballot", agent, commitSha: "9".repeat(40),
+        path: `.code-reviews/issue-1/consensus-ballot-${agent}-round-1.json` }))] };
+    expect(artifactScaffoldValue(withBallots)).toMatchObject({
+      basedOn: ["c".repeat(40)], inputSetHash: computeInputSetHash(withBallots.inputs)
+    });
     const ballot = artifactScaffoldValue({ ...ctx, stepId: "R4.amend-ballot" });
     expect(ballot).toEqual({ actionId: ctx.actionId, disposition: "approve", rationale: "<one sentence>" });
   });

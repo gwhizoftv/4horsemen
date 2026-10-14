@@ -585,6 +585,13 @@ export const derivedDecisionJournalDetails = (record: DerivedDecisionRecord): Re
       : { round: record.round, consensusPin: record.consensusPin, ...(record.objectors === undefined ? {} : { objectors: record.objectors }) })
 });
 
+/** Cite each published consensus ballot at the batch commit that holds it. */
+const consensusBallotInputs = (batch: BallotBatch): BoundInput[] =>
+  batch.responses.flatMap((response, index) => {
+    const path = batch.paths[index];
+    return path === undefined ? [] : [{ agent: response.agent, commitSha: batch.commitSha, path, kind: "consensus-ballot" }];
+  });
+
 export const deriveBoundInputs = (
   start: StartState,
   cursors: CursorsState,
@@ -624,9 +631,14 @@ export const deriveBoundInputs = (
   }
   if (stepId === "R6.revise") {
     if ((round ?? 1) > 1) {
-      return acceptedAt(cursors, "R6.revise", true, (round ?? 1) - 1).map((value) =>
-        inputFromSubmission(value, "prior-revision", true)
-      );
+      const previous = (round ?? 1) - 1;
+      const batch = publishedBallotBatch(cursors, "R6.ballot", previous);
+      return [
+        ...acceptedAt(cursors, "R6.revise", true, previous).map((value) =>
+          inputFromSubmission(value, "prior-revision", true)
+        ),
+        ...(batch === null ? [] : consensusBallotInputs(batch))
+      ];
     }
     const derived = cursors.derived.implementationSelection;
     const selected = acceptedAt(cursors, "R4.implement").find(
@@ -644,9 +656,7 @@ export const deriveBoundInputs = (
     const revision = acceptedAt(cursors, "R6.revise", false, round).find((submission) =>
       submission.productPin === conclusion.consensusPin && submission.agent === cursors.derived.implementationSelection?.reviser);
     if (revision === undefined) return [];
-    return [inputFromSubmission(revision, "revision", true), ...batch.responses.map((response, index) => ({
-      agent: response.agent, commitSha: batch.commitSha, path: batch.paths[index]!, kind: "consensus-ballot"
-    }))];
+    return [inputFromSubmission(revision, "revision", true), ...consensusBallotInputs(batch)];
   }
   if (stepId === "R7.finalize") {
     const consensus = cursors.derived.consensus;

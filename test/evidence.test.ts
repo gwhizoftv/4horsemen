@@ -731,6 +731,23 @@ Implement it.
       )
     ).toMatchObject({ status: "satisfied", productPin: artifact.revisedBranchHead });
   });
+
+  it("bases a later revision on its product parent, not the bound ballot batch", async () => {
+    const prior = { agent: "codex", kind: "prior-revision", commitSha: sha("2"), path: ".signals/issue-1/revision-ready-codex-round-1.json" };
+    const ballots = ["claude", "codex"].map((agent) => ({ agent, kind: "consensus-ballot", commitSha: sha("9"),
+      path: `.code-reviews/issue-1/consensus-ballot-${agent}-round-1.json` }));
+    const action = order({ stepId: "R6.revise", evidenceId: "revision-pinned", round: 2,
+      requiredPath: ".signals/issue-1/revision-ready-codex-round-2.json", inputs: [prior, ...ballots], approvedPaths: ["src/product.ts"] });
+    const artifact = { protocolVersion: 1, artifact: "revision-ready", issue: 1, issueSessionId: action.issueSessionId, agent: "codex",
+      inputSetHash: computeInputSetHash(action.inputs), round: 2, revisedBranchHead: sha("d"), basedOn: [prior.commitSha] };
+    const productOnly = mirror(JSON.stringify(artifact), { isAncestor: async (base) => base !== sha("9") });
+    expect(await evaluateEvidence(action, sha("e"), productOnly))
+      .toMatchObject({ status: "satisfied", productPin: artifact.revisedBranchHead });
+
+    const withBallot = await evaluateEvidence(action, sha("e"),
+      mirror(JSON.stringify({ ...artifact, basedOn: [prior.commitSha, sha("9")] })));
+    expect(withBallot.outstanding).toContain("revision basedOn pins do not equal bound inputs");
+  });
 });
 
 
