@@ -6,6 +6,7 @@ import { runCli, type CliRunLoop } from "../src/cli.js";
 import { localConfigGet } from "../src/gitExec.js";
 import { onboard, uninstall } from "../src/install.js";
 import { issueRuntimePaths } from "../src/paths.js";
+import { agentCloneDirectory } from "../src/setupWorkspace.js";
 import { readCursorsState, readStartState } from "../src/state.js";
 import { nestedConfigPath, OWNER_WORKSPACE_CONFIG_KEY } from "../src/workspace.js";
 import {
@@ -304,6 +305,51 @@ describe("coord onboard", () => {
     expect(existsSync(nestedConfigPath(sharedRoot, "beta"))).toBe(false);
     expect(readFileSync(join(sharedRoot, "config.json"), "utf8")).toBe(firstConfigBytes);
     expect(localConfigGet(second.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBeNull();
+  });
+
+  it("re-onboarding without --coord-runtime keeps the registered custom runtime", async () => {
+    const fixture = product();
+    const parent = dirname(fixture.productRoot);
+    const customRoot = join(parent, "myserver-runtime");
+    const solo = ["--agents", "claude", "--profile", "solo"];
+    const quiet = { home: null, io: { stdout: () => undefined } };
+    expect(await runCli(["onboard", fixture.productRoot, "--coord-runtime", customRoot, ...solo], quiet)).toBe(0);
+    const customConfig = join(customRoot, "config.json");
+    const clone = agentCloneDirectory(parent, "myserver", "claude");
+    expect(localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBe(customConfig);
+    const cloneLocator = localConfigGet(clone, "coord.workspaceConfig");
+    expect(cloneLocator).not.toBeNull();
+    mkdirSync(join(customRoot, "issue-7"));
+
+    expect(await runCli(["onboard", fixture.productRoot, ...solo], quiet)).toBe(0);
+    expect(existsSync(join(parent, "coord-runtime"))).toBe(false);
+    expect(localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBe(customConfig);
+    expect(localConfigGet(clone, "coord.workspaceConfig")).toBe(cloneLocator);
+    expect(existsSync(customConfig)).toBe(true);
+    expect(existsSync(join(customRoot, "issue-7"))).toBe(true);
+
+    const otherRoot = join(parent, "other-runtime");
+    expect(await runCli(["onboard", fixture.productRoot, "--coord-runtime", otherRoot, ...solo], quiet)).toBe(0);
+    expect(localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBe(join(otherRoot, "config.json"));
+  });
+
+  it("re-onboarding a registered nested workspace keeps the shared runtime", async () => {
+    const first = product("alpha");
+    const second = product("beta");
+    const sharedRoot = first.coordRoot;
+    const solo = ["--agents", "claude", "--profile", "solo"];
+    const quiet = { home: null, io: { stdout: () => undefined } };
+    for (const fixture of [first, second]) {
+      expect(await runCli(["onboard", fixture.productRoot, "--coord-runtime", sharedRoot, ...solo], quiet)).toBe(0);
+    }
+    const firstConfigBytes = readFileSync(join(sharedRoot, "config.json"), "utf8");
+    const nested = nestedConfigPath(sharedRoot, "beta");
+    expect(localConfigGet(second.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBe(nested);
+
+    expect(await runCli(["onboard", second.productRoot, ...solo], quiet)).toBe(0);
+    expect(localConfigGet(second.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBe(nested);
+    expect(existsSync(join(dirname(second.productRoot), "coord-runtime"))).toBe(false);
+    expect(readFileSync(join(sharedRoot, "config.json"), "utf8")).toBe(firstConfigBytes);
   });
 
   it("does not publish the owner locator when doctor fails", () => {

@@ -89,6 +89,9 @@ coord onboard /path/to/app --coord-runtime /path/to/app-runtime
 
 Its completion mailbox then defaults to `/path/to/completes/app-runtime/`.
 
+Re-running `coord onboard` without `--coord-runtime` reuses the runtime the
+repository is already registered to, so a custom runtime keeps its issue state.
+
 Both `onboard` and `install` accept `--declare /path/to/policy.json` for
 verification, caching, documentation and other policy overrides. Keep that
 declaration and pass it again when reinstalling: setup regenerates `config.json`
