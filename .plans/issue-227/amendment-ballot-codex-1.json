@@ -1,0 +1,26 @@
+{
+  "actionId": "2d4928e7-e56f-4362-a110-a2354d1ec662",
+  "agent": "codex",
+  "artifact": "amendment-ballot",
+  "disposition": "revise",
+  "inputSetHash": "fbbdf1c9ed875ac316d2cf7d5e06708193b226eeb4b00e27a7e5ff3eb891a381",
+  "issue": 227,
+  "issueSessionId": "issue-227:fcc3cbcda53a8e130b5366e6e623891b3c0c46ed",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "c63770ff1e4bac4c85709af0397b461298863bf4",
+      "path": ".plans/issue-227/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "The selected plan explicitly excludes private driver bootstrap, so adding the bootstrap script and its tests expands that plan rather than completing its approved onboard/install behavior and requires a separate scope decision.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "0d1e594c047de02d6b559537a2d8680a42804198",
+    "path": ".signals/issue-227/implementation-ready-codex.json"
+  },
+  "responseSha256": "2ecd0fda1bc7a523b2f5bf631c4b4fbfde3194236f925f4660f8efa467e129bc",
+  "sequence": 1
+}
