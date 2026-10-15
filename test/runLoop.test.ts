@@ -4199,6 +4199,33 @@ describe("third revision closeout", () => {
     return { paths, start, cursors, mirror, now, revision };
   };
 
+  it("binds comparison ballots and comparisons on revision round 1", () => {
+    const { paths, start, cursors, revision, now } = terminalFixture();
+    const implementation = { ...revision, stepId: "R4.implement", round: null,
+      submissionSha: "c".repeat(40), productPin: "f".repeat(40), path: ".signals/issue-1/implementation-ready-codex.json" };
+    const comparisons = cursors.activeRoster.map((agent) => ({ stepId: "R5.compare" as const, agent, round: null,
+      submissionSha: gitShaFixture(`comparison-${agent}`), path: ".code-reviews/issue-1/comparison.md", acceptedAt: now }));
+    const batch = publishedBallotBatchFixture({ kind: "comparison-ballot-batch", activeRoster: cursors.activeRoster });
+    const seeded = cursorsStateSchema.parse({ ...cursors,
+      accepted: [implementation, ...comparisons, { ...comparisons[0], agent: "dropped" }],
+      acceptedResponses: cursors.activeRoster.map((agent) => acceptedResponseFixture({
+        stepId: "R5.compare-ballot", agent, choice: "codex"
+      })),
+      ballotBatches: [batch]
+    });
+    const productInput = { kind: "implementation", agent: implementation.agent,
+      commitSha: implementation.productPin, path: implementation.path };
+    const reviews = comparisons.map((comparison) => ({ kind: "review", agent: comparison.agent,
+      commitSha: comparison.submissionSha, path: comparison.path }));
+    const expected = [productInput, ...batch.responses.map((response, index) => ({
+      kind: "consensus-ballot", agent: response.agent, commitSha: batch.commitSha, path: batch.paths[index]
+    })), ...reviews];
+    expect(buildOrder(paths, start, seeded, "codex", "R6.revise", 1).inputs).toEqual(expected);
+    expect(deriveBoundInputs(start, seeded, "R6.revise", null)).toEqual(expected);
+    expect(deriveBoundInputs(start, { ...seeded, ballotBatches: [] }, "R6.revise", 1)).toEqual([productInput, ...reviews]);
+    expect(deriveBoundInputs(start, { ...seeded, accepted: comparisons }, "R6.revise", 1)).toEqual([]);
+  });
+
   it.each([2, 3])("binds the previous published ballots for revision round %s", (round) => {
     const { paths, start, cursors, revision } = terminalFixture();
     const priorRevision = { ...revision, round: round - 1,

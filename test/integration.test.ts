@@ -393,6 +393,28 @@ Implement the selected product files.
       expect(existsSync(agentRuntimePaths(paths, "claude").action)).toBe(false);
       expect(existsSync(agentRuntimePaths(paths, "codex").action)).toBe(false);
       const revisionBefore = currentOrder("cursor");
+      expect(revisionBefore.inputs.map(({ kind, agent }) => ({ kind, agent }))).toEqual([
+        { kind: "implementation", agent: "cursor" },
+        ...activeAfterDrop.map((agent) => ({ kind: "consensus-ballot", agent })),
+        ...activeAfterDrop.map((agent) => ({ kind: "review", agent }))
+      ]);
+      const revisionAction = readFileSync(agentRuntimePaths(paths, "cursor").action, "utf8");
+      expect(revisionAction).toContain("## Bound input files");
+      const manifestPath = JSON.parse(revisionAction.match(/^Manifest: (".*")$/m)![1]) as string;
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+        entries: { kind: string; agent: string; commitSha: string; path: string; localPath: string }[];
+        omitted: string[];
+      };
+      expect(manifest.omitted).toEqual([]);
+      const feedback = manifest.entries.filter((entry) => entry.kind === "review" || entry.kind === "consensus-ballot");
+      expect(feedback.map(({ kind, agent, commitSha, path }) => ({ kind, agent, commitSha, path })))
+        .toEqual(revisionBefore.inputs.filter((input) => input.kind !== "implementation"));
+      for (const entry of feedback) {
+        expect(revisionAction).toContain(JSON.stringify(entry.localPath));
+        expect(readFileSync(entry.localPath, "utf8")).toBe(await mirror.readBlob(entry.commitSha, entry.path));
+      }
+      const worktreePath = JSON.parse(revisionAction.match(/^- implementation worktree .*: (".*")$/m)![1]) as string;
+      expect(git(worktreePath, "rev-parse", "HEAD")).toBe(revisionBefore.inputs[0].commitSha);
       request("cursor", "test/unnecessary.test.ts");
       await loop.runTick();
       expectStep("R4.amend-ballot");
@@ -405,7 +427,7 @@ Implement the selected product files.
       expectStep("R6.revise");
       expect(currentOrder("cursor").round).toBe(1);
       expect(currentOrder("cursor").inputs).toEqual(revisionBefore.inputs);
-      expect(currentOrder("cursor").inputs).toHaveLength(1);
+      expect(currentOrder("cursor").inputs).toHaveLength(1 + 2 * activeAfterDrop.length);
       expect(currentOrder("cursor").scopeHash).toBe(revisionBefore.scopeHash);
       expect(currentOrder("cursor").approvedPaths).not.toContain("test/unnecessary.test.ts");
       expect(currentOrder("cursor").task).toContain("last amendment was rejected");
@@ -433,7 +455,7 @@ Implement the selected product files.
             scopeHash: order.scopeHash,
             round: 1,
             revisedBranchHead: revisionPin,
-            basedOn: order.inputs.map((input) => input.commitSha)
+            basedOn: order.inputs.filter((input) => input.kind === "implementation").map((input) => input.commitSha)
           })
         );
       }
