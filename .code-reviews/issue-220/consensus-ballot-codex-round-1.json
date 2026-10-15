@@ -1,0 +1,14 @@
+{
+  "actionId": "6abe3ef7-28a8-4786-b8d5-3c850fd331e6",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "d1d871208fe949542dc79ee6302bad541e1996d8ed9901f0b9618e7dd048eccc",
+  "issue": 220,
+  "issueSessionId": "issue-220:e5ec3f6d664d3967a15130337f91b4d193579555",
+  "protocolVersion": 2,
+  "rationale": "The unchanged revision supplies readable comparison ballots and reviews in round one, preserves single-pin ancestry and later-round behavior, and has passing regression tests and recorded mandatory hook checks.",
+  "responseSha256": "60d9d18f895be1a72caccfa6f1f5ad74ee1353a88c4a147488bd789b6799df85",
+  "revisionCommitSha": "b71317bc0b11164a217e91f2c608eeb4d8616af1",
+  "round": 1
+}
