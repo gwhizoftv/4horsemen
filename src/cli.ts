@@ -922,7 +922,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     if (start.githubAccount !== undefined) {
       await verifyGitHubAccess({ account: start.githubAccount, origin: start.origin, runner, cwd: io.cwd, env: io.env });
     }
-    assertCloneGitHubWiring(start.githubAccount, start.agents.map((agent) => agent.root));
+    const active = readCursorsState(paths).activeRoster;
+    assertCloneGitHubWiring(start.githubAccount, start.agents.filter((agent) => active.includes(agent.id)).map((agent) => agent.root));
     const workspace = workspaceLocationFromConfig(configPath);
     const manualWorkspaceRoot =
       workspace.layout === "nested" && resolve(paths.coordRoot) === resolve(workspace.coordRoot)

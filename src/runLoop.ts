@@ -1112,7 +1112,8 @@ export class CoordinatorRunLoop {
     const start = readStartState(this.paths);
     if (start.githubAccount === undefined) return;
     await verifyGitHubAccess({ account: start.githubAccount, origin: start.origin, runner: this.processRunner });
-    assertCloneGitHubWiring(start.githubAccount, start.agents.map((agent) => agent.root));
+    const active = readCursorsState(this.paths).activeRoster;
+    assertCloneGitHubWiring(start.githubAccount, start.agents.filter((agent) => active.includes(agent.id)).map((agent) => agent.root));
   }
 
   async initializeEffects(): Promise<void> {

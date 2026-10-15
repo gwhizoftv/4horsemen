@@ -99,6 +99,7 @@ export const verifyGitHubAccess = async (input: {
 };
 
 export const assertCloneGitHubWiring = (account: string | null | undefined, clones: readonly string[]): void => {
+  if (account == null) return;
   for (const clone of clones) {
     if ((localConfigGet(clone, "coord.githubAccount") ?? null)?.toLowerCase() !== (account ?? null)?.toLowerCase()) {
       throw new GitHubAuthError(`GitHub account wiring in ${clone} differs from this issue's selection. Run coord install with the issue's --github-account before resuming.`);

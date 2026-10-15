@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { gitCredentialArgs, gitCredentialResponse, readGitHubAccounts, resolveGitHubToken,
+import { assertCloneGitHubWiring, gitCredentialArgs, gitCredentialResponse, readGitHubAccounts, resolveGitHubToken,
   verifyGitHubAccess, withGitHubAccount } from "../src/githubAuth.js";
 import type { ProcessRunner } from "../src/runLoop.js";
 
@@ -7,6 +7,9 @@ const ok = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" });
 afterEach(() => vi.unstubAllEnvs());
 
 describe("named GitHub credentials", () => {
+  it("leaves unconfigured workspaces' missing-clone handling unchanged", () => {
+    expect(() => assertCloneGitHubWiring(undefined, ["/missing-unconfigured-clone"])).not.toThrow();
+  });
   it("isolates simultaneous accounts, refreshes tokens, and leaves product subprocess environments alone", async () => {
     for (const key of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"]) vi.stubEnv(key, "ambient-secret");
     let generation = 0;
