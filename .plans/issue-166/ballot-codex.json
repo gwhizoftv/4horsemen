@@ -1,0 +1,46 @@
+{
+  "actionId": "4d243efd-3e05-40e8-b8ad-af3eac792610",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "d70dcf8709aab8d7940ecc0e7bfa4ff4b453e6619111262c53e564e049410807",
+  "issue": 166,
+  "issueSessionId": "issue-166:b824e845b83925c7adeaf471b4966e24d2f00b8a",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "bfdbea3dad76aae161deb94bf149e771fc7e6ef5",
+      "path": ".plans/issue-166/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "6f1f787705d486db2f1dfadc56232ecece81e182",
+      "path": ".plans/issue-166/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "1ae7ee369bb82a8a3271dcae17f75c81e76576e0",
+      "path": ".plans/issue-166/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex is the strongest implementation base for its semantic Flutter detection, pytest default without mandatory Ruff, effective-policy reporting and exact file scope, with the reviewed Make-gate compatibility and announcement coverage issues still requiring correction.",
+  "responseSha256": "3e7e8ab7300fb4512a91d892474b7b61907c49c55a56d0ac89815a0774e9fa4b",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "e15be1f84235d1522c02a98f8eaa5648fc310865",
+      "path": ".plans/issue-166/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "244f8052b29f89f4e72c648384c8cb44097eecbc",
+      "path": ".plans/issue-166/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "59d0a10cbbab94e2e1b57798fbfdea499f773153",
+      "path": ".plans/issue-166/review.md"
+    }
+  ]
+}

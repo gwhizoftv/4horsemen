@@ -1,0 +1,46 @@
+{
+  "actionId": "a95aa2fa-923a-4a34-b50c-8cca77027cc1",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "d70dcf8709aab8d7940ecc0e7bfa4ff4b453e6619111262c53e564e049410807",
+  "issue": 166,
+  "issueSessionId": "issue-166:b824e845b83925c7adeaf471b4966e24d2f00b8a",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "bfdbea3dad76aae161deb94bf149e771fc7e6ef5",
+      "path": ".plans/issue-166/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "6f1f787705d486db2f1dfadc56232ecece81e182",
+      "path": ".plans/issue-166/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "1ae7ee369bb82a8a3271dcae17f75c81e76576e0",
+      "path": ".plans/issue-166/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex's plan has the fewest and smallest defects: a doctor-visible bare pytest default with no speculative Ruff, an announcement rendered from the effective config with per-field provenance, YAML-correct Flutter detection, Node matches still refusing, and an approved path map of exactly its eight files, so only the Make-with-test precedence, flutter analyze --no-fatal-infos, and dropping coordinator-mode labeling need correcting, whereas the claude and cursor plans over-authorize scope, mis-detect Flutter via line regexes, and (cursor) fail onboarding without Ruff and misreport declared policy.",
+  "responseSha256": "6e37beef157b950eee278fa21ebc0a86be7d13f42e40c2bc8d93c593f9984ed9",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "e15be1f84235d1522c02a98f8eaa5648fc310865",
+      "path": ".plans/issue-166/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "244f8052b29f89f4e72c648384c8cb44097eecbc",
+      "path": ".plans/issue-166/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "59d0a10cbbab94e2e1b57798fbfdea499f773153",
+      "path": ".plans/issue-166/review.md"
+    }
+  ]
+}
