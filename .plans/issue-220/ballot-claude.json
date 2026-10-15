@@ -1,0 +1,46 @@
+{
+  "actionId": "f12f2f45-b49d-4d42-95d1-9d479e283096",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "cursor",
+  "inputSetHash": "9c1871adf6fb661b47e39a08a1e01309dfd501673f7a4826e030bb6034a65ef6",
+  "issue": 220,
+  "issueSessionId": "issue-220:e5ec3f6d664d3967a15130337f91b4d193579555",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "c9ff31f8c9eb3a4b913519f0cb97f9001bb09efa",
+      "path": ".plans/issue-220/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c8f9ad31a0a575c4fea3f57c77eabd89f1eb4fc2",
+      "path": ".plans/issue-220/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "d5e5c507f775d4ff141eff9e64551cbb8a32879d",
+      "path": ".plans/issue-220/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Cursor's plan is the only one whose file map includes the test/integration.test.ts canary updates (lines 408 and 436) that the round-1 binding change forces, so it can pass e2e and final pnpm check without an amendment, while its remaining scaffold red-before gap is fixable within its already-listed test files.",
+  "responseSha256": "e5a889032010ea54e9e326611f2e48718089e11fd860a7dae3bbb6473be802ed",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "8a1308bbfb8b9b32c5f9f5cbd7025bbaaca27f1b",
+      "path": ".plans/issue-220/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "42559eaf54568318b1c257d9291586cad8238d2f",
+      "path": ".plans/issue-220/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "41aaeea2d320e483d400a6fc62f50a513bd30027",
+      "path": ".plans/issue-220/review.md"
+    }
+  ]
+}
