@@ -1,0 +1,20 @@
+{
+  "protocolVersion": 1,
+  "issue": 166,
+  "issueSessionId": "issue-166:b824e845b83925c7adeaf471b4966e24d2f00b8a",
+  "agent": "claude",
+  "inputSetHash": "06f9666e38da74d47ae1617c1c479ef2231fa850e092779e06a1ac4020f4bf81",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "ab1393881936df212f1649bc17e5804bf8cb80d7",
+  "scopeHash": "a62e5e373f5717ea85cce2ad5fd89cd79d8dc823099b4840bba412b8ea37c5e7",
+  "approvedPaths": [
+    "README.md",
+    "docs/setup-workspace.md",
+    "package.json",
+    "pnpm-lock.yaml",
+    "src/install.ts",
+    "src/setupWorkspace.ts",
+    "test/onboard.test.ts",
+    "test/verify-config.test.ts"
+  ]
+}
