@@ -1,0 +1,14 @@
+{
+  "actionId": "107467f8-c2d1-40d6-8cdb-3e0e8b084e95",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "ffa58ec0e930a56ab374d93b4653d7c0a638494cb381f15c90b0e08caa6e1de5",
+  "issue": 210,
+  "issueSessionId": "issue-210:cb7ed092cb8a5d15f651387651df7c631e4596e6",
+  "protocolVersion": 2,
+  "rationale": "Codex's revision 6b76bbb resolves the comparison findings: it adds the reproduced unknown-id nudge-key override evidence at src/tmux.ts:341 and :362 with Muse's documented Enter-steer/Esc-interrupt semantics, replaces the unreproducible /1.4 provenance with /next/ values I re-fetched and confirmed (commit 4c63a693, fingerprint e8b3d24f), and keeps the cleared-hook-environment blocker, all within the two approved documentation files.",
+  "responseSha256": "56e5fc8552a8f394d8f83bb1273372a9778dfd7b38ede5baa75f6ee64d350a4a",
+  "revisionCommitSha": "6b76bbb192d98e8f72b6d511b6ea5f3337742b91",
+  "round": 1
+}

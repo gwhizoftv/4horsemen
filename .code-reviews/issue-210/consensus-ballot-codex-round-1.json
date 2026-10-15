@@ -1,0 +1,14 @@
+{
+  "actionId": "36a8f2a3-c361-42c2-b67c-bac45d5a947f",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "ffa58ec0e930a56ab374d93b4653d7c0a638494cb381f15c90b0e08caa6e1de5",
+  "issue": 210,
+  "issueSessionId": "issue-210:cb7ed092cb8a5d15f651387651df7c631e4596e6",
+  "protocolVersion": 2,
+  "rationale": "The revision addresses the nudge-key override and documentation-provenance findings, preserves the approved documentation scope, and passed the focused docs check and mandatory commit/push checks.",
+  "responseSha256": "4c05106ab47472d1bf90ced8fe104aee554b78f21fba8e281e6863cfc0236191",
+  "revisionCommitSha": "6b76bbb192d98e8f72b6d511b6ea5f3337742b91",
+  "round": 1
+}

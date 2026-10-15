@@ -1,0 +1,14 @@
+{
+  "actionId": "d89482c0-94c2-40e2-b71f-10a882c75a14",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "ffa58ec0e930a56ab374d93b4653d7c0a638494cb381f15c90b0e08caa6e1de5",
+  "issue": 210,
+  "issueSessionId": "issue-210:cb7ed092cb8a5d15f651387651df7c631e4596e6",
+  "protocolVersion": 2,
+  "rationale": "Codex revision 6b76bbb1 keeps the selected docs-only scope while fixing the comparison gaps: unknown-id nudge/vim and Esc hazards with tmux:341/:362 change-map rows, documented AGENTS.md loading, cleared-env versus COORD_ISSUE fail-open, and honest Muse 1.4.9 / hooks 1.3.0 provenance.",
+  "responseSha256": "c93d41ecaf2e6cce20cb630c463a990efd32fa43b6401e6a95acadc71c4314ca",
+  "revisionCommitSha": "6b76bbb192d98e8f72b6d511b6ea5f3337742b91",
+  "round": 1
+}
