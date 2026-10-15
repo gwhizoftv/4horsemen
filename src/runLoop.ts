@@ -636,7 +636,11 @@ export const deriveBoundInputs = (
     const selected = acceptedAt(cursors, "R4.implement").find(
       (value) => value.agent === derived?.winner && value.productPin === derived.implementationPin
     );
-    return selected === undefined ? [] : [inputFromSubmission(selected, "implementation", true)];
+    return selected === undefined ? [] : [
+      inputFromSubmission(selected, "implementation", true),
+      ...consensusBallotInputs(publishedBallotBatch(cursors, "R5.compare-ballot", null)),
+      ...acceptedAt(cursors, "R5.compare").map((value) => inputFromSubmission(value, "review"))
+    ];
   }
   if (stepId === "R6.ballot") {
     return acceptedAt(cursors, "R6.revise", true, round).map((value) => inputFromSubmission(value, "revision", true));

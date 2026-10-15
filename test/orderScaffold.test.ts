@@ -3,8 +3,58 @@ import { artifactScaffoldValue, renderArtifactScaffold } from "../src/orderScaff
 import { computeInputSetHash } from "../src/evidence.js";
 import { followUpIssueArtifactSchema, planAmendmentRequestSchema } from "../src/protocol.js";
 import { BUILD_DISCIPLINE_NOTE, STEP_DEFINITIONS } from "../src/steps.js";
+import { computeImplementationSelectionDerived, deriveBoundInputs } from "../src/runLoop.js";
+import { cursorsStateSchema, initialCursors, RUNTIME_FORMAT_VERSION, startStateSchema } from "../src/state.js";
 
 describe("orderScaffold", () => {
+  it("keeps round-1 basedOn on the selected implementation pin while hashing comparison feedback", () => {
+    const now = "2026-08-11T12:00:00.000Z";
+    const agents = ["claude", "codex"];
+    const start = startStateSchema.parse({
+      formatVersion: RUNTIME_FORMAT_VERSION, issue: 1, issueSessionId: `issue-1:${"a".repeat(40)}`,
+      baselineSha: "a".repeat(40), profile: "consensus", originalRoster: agents,
+      branchTemplate: "issue-{issue}/{agent}", baseBranch: "main", maxRevisionRounds: 3, prPolicy: "owner-only",
+      automationDigest: "b".repeat(64), automationDigestScheme: "sha256-length-prefixed-v1",
+      automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }], trustedSourceCommit: "a".repeat(40),
+      origin: "/origin.git", coordRoot: "/runtime", configPath: "/runtime/config.json",
+      agents: agents.map((id) => ({ id, root: `/clones/${id}`, launcher: `start-${id}.sh`, delivery: "pull" })),
+      checks: [{ name: "check", argv: ["true"] }], pollIntervalMs: 100, createdAt: now
+    });
+    const implementation = { stepId: "R4.implement", agent: "codex", round: null, submissionSha: "d".repeat(40),
+      productPin: "c".repeat(40), path: ".signals/issue-1/implementation-ready-codex.json", acceptedAt: now };
+    const comparisons = agents.map((agent, index) => ({ stepId: "R5.compare", agent, round: null,
+      submissionSha: String(index + 1).repeat(40), path: ".code-reviews/issue-1/comparison.md", acceptedAt: now }));
+    const responses = agents.map((agent, index) => ({ stepId: "R5.compare-ballot", agent, round: null,
+      actionId: `10000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+      responseSha256: String(index + 1).repeat(64), choice: "codex", rationale: "Use the comparison findings.",
+      path: `/runtime/accepted-responses/${agent}.json`, acceptedAt: now }));
+    const batch = {
+      batchId: "20000000-0000-4000-8000-000000000001", kind: "comparison-ballot-batch", round: null,
+      inputSetHash: "e".repeat(64), activeRoster: agents,
+      responses: responses.map(({ agent, actionId, responseSha256 }) => ({ agent, actionId, responseSha256 })),
+      paths: agents.map((agent) => `.code-reviews/issue-1/ballot-${agent}.json`),
+      branch: "issue-1/coordinator-evidence", parentSha: "a".repeat(40), commitSha: "e".repeat(40),
+      status: "published", attempts: 1, error: null, supersedes: null, createdAt: now, updatedAt: now
+    };
+    const cursors = cursorsStateSchema.parse({ ...initialCursors(start, now),
+      accepted: [implementation, ...comparisons], acceptedResponses: responses, ballotBatches: [batch] });
+    cursors.derived.implementationSelection = computeImplementationSelectionDerived(cursors, now);
+    const expectedInputs = [
+      { kind: "implementation", agent: "codex", commitSha: implementation.productPin, path: implementation.path },
+      ...agents.map((agent, index) => ({ kind: "consensus-ballot", agent, commitSha: batch.commitSha, path: batch.paths[index] })),
+      ...comparisons.map((comparison) => ({ kind: "review", agent: comparison.agent,
+        commitSha: comparison.submissionSha, path: comparison.path }))
+    ];
+    const ctx = {
+      stepId: "R6.revise" as const, issue: start.issue, issueSessionId: start.issueSessionId, agent: "codex",
+      baselineSha: start.baselineSha, automationDigest: start.automationDigest,
+      inputs: deriveBoundInputs(start, cursors, "R6.revise", 1), eligibleChoices: [], round: 1, approvedPaths: ["src/product.ts"]
+    };
+    expect(artifactScaffoldValue(ctx)).toMatchObject({ round: 1, basedOn: [implementation.productPin],
+      inputSetHash: computeInputSetHash(expectedInputs) });
+    expect(ctx.inputs).toEqual(expectedInputs);
+  });
+
   it("offers a request without a product pin and keeps revision ancestry separate", () => {
     const ctx = {
       stepId: "R6.revise" as const, issue: 1, issueSessionId: "s", agent: "codex",
