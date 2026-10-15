@@ -1,0 +1,14 @@
+{
+  "protocolVersion": 1,
+  "issue": 210,
+  "issueSessionId": "issue-210:cb7ed092cb8a5d15f651387651df7c631e4596e6",
+  "agent": "cursor",
+  "inputSetHash": "4706828281dfd956a704d3ee502c6ca27a0acf4e84dbcb9ef975fe5951e14404",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "86dd06eb7761e863dd2e69825f80ea9082f917bb",
+  "scopeHash": "c4625c9ea51e78bbb46940fc99eb8f1778ffadf20e85c302c18bace07723850b",
+  "approvedPaths": [
+    "README.md",
+    "docs/issue-210-agent-cli-analysis.md"
+  ]
+}
