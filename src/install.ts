@@ -61,7 +61,9 @@ import {
   clearOwnerWorkspace,
   flatConfigPath,
   listIssueNumbersInWorkspace,
+  OWNER_WORKSPACE_CONFIG_KEY,
   recordOwnerWorkspace,
+  resolveWorkspaceFromProduct,
   resolveWorkspaceLocation,
   selectWorkspaceLocation
 } from "./workspace.js";
@@ -792,10 +794,25 @@ export type OnboardOptions = {
 
 export type OnboardResult = { install: InstallResult; doctor: DoctorReport };
 
+/** The runtime this product is already registered to, or null on first onboarding. */
+const registeredCoordRoot = (productRoot: string): string | null => {
+  if (localConfigGet(productRoot, OWNER_WORKSPACE_CONFIG_KEY) === null) return null;
+  try {
+    return resolveWorkspaceFromProduct(productRoot).coordRoot;
+  } catch (error) {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)} ` +
+        "Pass --coord-runtime to choose the runtime for this onboarding explicitly."
+    );
+  }
+};
+
 export const onboard = (options: OnboardOptions): OnboardResult => {
   const productRoot = requireWorktree(resolve(options.productRoot), "The product");
   const parent = dirname(productRoot);
-  const coordRoot = resolve(options.coordRoot ?? join(parent, "coord-runtime"));
+  // An explicit runtime wins; otherwise re-onboarding refreshes the registered
+  // one instead of silently re-pointing the owner and clones at a new default.
+  const coordRoot = resolve(options.coordRoot ?? registeredCoordRoot(productRoot) ?? join(parent, "coord-runtime"));
   const installed = install({
     installRoot: options.installRoot,
     productRoot,
