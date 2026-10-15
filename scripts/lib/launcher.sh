@@ -416,6 +416,23 @@ if [[ -n "\$coord_workspace_config" && -f "\$coord_workspace_config" && "\${COOR
   done
 fi
 
+# The workspace's selected GitHub account (#227): gh in this harness uses its
+# token, read now from gh's credential storage by account name (never the
+# active account, never an inherited token). Nothing is written to this file;
+# every launch and restart re-reads it. Git uses the clone's credential helper.
+coord_github_account="\$(git config --local --get coord.githubAccount 2>/dev/null || true)"
+if [[ -n "\$coord_github_account" ]]; then
+  if ! GH_TOKEN="\$(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN \\
+      gh auth token --hostname github.com --user "\$coord_github_account" 2>/dev/null)" || [[ -z "\$GH_TOKEN" ]]; then
+    echo "GitHub authentication for \$coord_github_account is unavailable." >&2
+    echo "Run: coord auth login" >&2
+    exit 1
+  fi
+  export GH_TOKEN GH_PROMPT_DISABLED=1
+  unset GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+  echo "GitHub account: \$coord_github_account"
+fi
+
 echo "=== $label agent | branches issue-<n>/$agent or $agent/<name> | shared: $shared ==="
 echo "Automated issue mode: fetch your coordinator action with:"
 echo "  coord next --issue <n>"

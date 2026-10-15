@@ -329,6 +329,37 @@ describe("coord install — two-mode footprint", () => {
     expect(git(clone, "rev-parse", "HEAD")).toBe(git(fixture.originPath, "rev-parse", "refs/heads/main"));
     expect(git(clone, "remote", "get-url", "origin")).toBe(fixture.originPath);
   });
+
+  it("binds clones to a selected GitHub account without storing a token, keeps it on reinstall, and removes it on uninstall", () => {
+    const fixture = product();
+    const origin = "https://acct@github.com/example/myserver.git";
+    const helper = "credential.https://github.com.helper";
+    const result = installOnce(fixture, { origin, githubAccount: "acct" });
+    const clone = result.clones[0] as string;
+    expect(readConfig(result.configPath).github).toEqual({ account: "acct" });
+    expect(git(clone, "config", "--local", "--get", "coord.githubAccount")).toBe("acct");
+    expect(tryGit(clone, "config", "--local", "--get-all", helper).stdout.split("\n").slice(0, -1)).toEqual([
+      "",
+      `!/usr/bin/env node '${join(repoRoot, "dist", "main.js")}' auth git-credential --account acct`
+    ]);
+    const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
+    expect(launcher).toContain('gh auth token --hostname github.com --user "$coord_github_account"');
+    expect(launcher).not.toMatch(/GH_TOKEN=["']?[A-Za-z0-9_]{8,}/);
+
+    // A repair run without the option keeps the selection (dry run: no fetch from github.com).
+    expect(installOnce(fixture, { origin, dryRun: true }).changes).toEqual([]);
+
+    uninstallOnce(fixture);
+    expect(tryGit(clone, "config", "--local", "--get", "coord.githubAccount").exitCode).not.toBe(0);
+    expect(tryGit(clone, "config", "--local", "--get-all", helper).exitCode).not.toBe(0);
+  });
+
+  it("refuses a selected GitHub account on an SSH origin before creating any clone", () => {
+    const fixture = product();
+    expect(() => installOnce(fixture, { origin: "git@github.com:example/myserver.git", githubAccount: "acct" }))
+      .toThrow("needs an https://github.com/");
+    expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(false);
+  });
 });
 
 describe("coord install — idempotence", () => {

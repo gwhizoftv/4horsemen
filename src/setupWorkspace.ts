@@ -13,6 +13,13 @@ import {
   worktreeRoot
 } from "./gitExec.js";
 import { liftCloneAgentsProtocol } from "./agentsProtocol.js";
+import {
+  GITHUB_ACCOUNT_KEY,
+  GITHUB_CREDENTIAL_HELPER_KEY,
+  GITHUB_CREDENTIAL_HELPER_MARKER,
+  gitCredentialArgs,
+  gitCredentialHelperCommand
+} from "./githubAuth.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { isPathInside } from "./paths.js";
 import { DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile, clearManagedIgnoreFile } from "./productIgnore.js";
@@ -322,6 +329,8 @@ export type WorkspaceConfigInput = {
    * workspace that cannot use the derived sibling still has a stated root.
    */
   completesRoot: string;
+  /** Selected GitHub account name; absent or null for ambient credentials. */
+  githubAccount?: string | null;
 };
 
 /**
@@ -373,6 +382,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     workflowCriticalPrefixes: declared.workflowCriticalPrefixes ?? input.proposal.workflowCriticalPrefixes,
     workflowCriticalFiles: declared.workflowCriticalFiles ?? input.proposal.workflowCriticalFiles,
     completesRoot: input.completesRoot,
+    ...(input.githubAccount === null || input.githubAccount === undefined ? {} : { github: { account: input.githubAccount } }),
     coordination: stamp
   });
 };
@@ -410,9 +420,13 @@ export const writeWorkspaceConfig = (
 
 export type CloneOutcome = { clone: string; created: boolean; synced: boolean };
 
-/** Normalise remote URLs enough to compare a local path against its clone's. */
+/**
+ * Normalise remote URLs enough to compare a local path against its clone's.
+ * An https username is not part of the repository's identity.
+ */
 const sameRemote = (left: string, right: string): boolean => {
-  const strip = (value: string): string => value.replace(/\.git$/, "").replace(/\/+$/, "");
+  const strip = (value: string): string =>
+    value.replace(/^https:\/\/[^/@:]+@/, "https://").replace(/\.git$/, "").replace(/\/+$/, "");
   return strip(left) === strip(right) || strip(resolve(left)) === strip(resolve(right));
 };
 
@@ -438,7 +452,19 @@ export const ensureAgentClone = (input: {
   clone: string;
   baseBranch: string;
   options: EffectOptions;
+  /** Selected GitHub account; its helper is wired before any fetch from origin. */
+  githubAccount?: string | null;
+  cliEntry?: string;
 }): CloneOutcome => {
+  const account = input.githubAccount ?? null;
+  const authArgs = account === null || input.cliEntry === undefined ? [] : gitCredentialArgs(account, input.cliEntry);
+  // Without a selection there is nothing to wire; a stale helper is removed
+  // with coord.githubAccount by configureCloneIdentity.
+  const wireCredential = (): void => {
+    if (account !== null && input.cliEntry !== undefined && existsSync(input.clone)) {
+      configureCloneGitHubCredential(input.clone, account, input.cliEntry, input.options);
+    }
+  };
   if (existsSync(input.clone)) {
     const toplevel = worktreeRoot(input.clone);
     if (toplevel === null || resolve(toplevel) !== resolve(input.clone)) {
@@ -455,6 +481,7 @@ export const ensureAgentClone = (input: {
       );
     }
     input.options.log(`clone already present at ${input.clone} (worktree left untouched)\n`);
+    wireCredential();
     return { clone: input.clone, created: false, synced: syncAgentClone(input) };
   }
   act(input.options, `clone origin/${input.baseBranch} into ${input.clone}`, () => {
@@ -477,6 +504,7 @@ export const ensureAgentClone = (input: {
     }
     const reachable = git(
       dirname(input.clone),
+      ...authArgs,
       "-c",
       "gc.auto=0",
       "ls-remote",
@@ -490,8 +518,9 @@ export const ensureAgentClone = (input: {
           `and origin '${input.origin}' is unreachable.`
       );
     }
-    gitOrThrow(dirname(input.clone), "clone", "--branch", input.baseBranch, input.origin, input.clone);
+    gitOrThrow(dirname(input.clone), ...authArgs, "clone", "--branch", input.baseBranch, input.origin, input.clone);
   });
+  wireCredential();
   return { clone: input.clone, created: true, synced: false };
 };
 
@@ -723,6 +752,8 @@ export type CloneIdentity = {
   workspaceConfig: string;
   /** Absolute mailbox root; the launcher adds the issue and agent segments. */
   completesRoot: string;
+  /** Selected GitHub account the launcher exports GH_TOKEN for; null for ambient credentials. */
+  githubAccount: string | null;
 };
 
 /**
@@ -743,7 +774,8 @@ const IDENTITY_KEYS: readonly string[] = [
   INSTALL_ROOT_KEY,
   CLI_ENTRY_KEY,
   WORKSPACE_CONFIG_KEY,
-  COMPLETES_ROOT_KEY
+  COMPLETES_ROOT_KEY,
+  GITHUB_ACCOUNT_KEY
 ];
 
 export const configureCloneIdentity = (clone: string, identity: CloneIdentity, options: EffectOptions): void => {
@@ -755,7 +787,8 @@ export const configureCloneIdentity = (clone: string, identity: CloneIdentity, o
     [INSTALL_ROOT_KEY, identity.installRoot],
     [CLI_ENTRY_KEY, identity.cliEntry],
     [WORKSPACE_CONFIG_KEY, identity.workspaceConfig],
-    [COMPLETES_ROOT_KEY, identity.completesRoot]
+    [COMPLETES_ROOT_KEY, identity.completesRoot],
+    [GITHUB_ACCOUNT_KEY, identity.githubAccount]
   ];
   const stale = desired.filter(([key, value]) => localConfigGet(clone, key) !== value);
   if (stale.length === 0) {
@@ -768,6 +801,8 @@ export const configureCloneIdentity = (clone: string, identity: CloneIdentity, o
       else localConfigSet(clone, key, value);
     }
   });
+  // The helper is only ever written with the account, so it goes with it.
+  if (stale.some(([key, value]) => key === GITHUB_ACCOUNT_KEY && value === null)) clearCloneGitHubCredential(clone, options);
 };
 
 export const clearCloneIdentity = (clone: string, options: EffectOptions): void => {
@@ -776,6 +811,55 @@ export const clearCloneIdentity = (clone: string, options: EffectOptions): void 
   act(options, `clear ${present.join(", ")} in ${clone}`, () => {
     for (const key of present) localConfigUnset(clone, key);
   });
+};
+
+const cloneCredentialHelpers = (clone: string): string[] => {
+  const result = git(clone, "config", "--local", "--get-all", GITHUB_CREDENTIAL_HELPER_KEY);
+  return result.exitCode === 0 ? result.stdout.replace(/\n$/, "").split("\n") : [];
+};
+
+const ownsCredentialHelpers = (values: readonly string[]): boolean =>
+  values.some((value) => value.includes(GITHUB_CREDENTIAL_HELPER_MARKER));
+
+/**
+ * Wire the clone's github.com credential helper to the selected account: an
+ * empty value resets inherited helpers, then coord's helper answers with the
+ * account's token from gh's storage. No token is written.
+ */
+export const configureCloneGitHubCredential = (
+  clone: string,
+  account: string,
+  cliEntry: string,
+  options: EffectOptions
+): void => {
+  const current = cloneCredentialHelpers(clone);
+  const desired = ["", gitCredentialHelperCommand(account, cliEntry)];
+  if (JSON.stringify(current) === JSON.stringify(desired)) {
+    options.log(`GitHub credential helper for ${account} already current in ${clone}\n`);
+    return;
+  }
+  act(options, `record the GitHub credential helper for ${account} in ${clone}`, () => {
+    localConfigUnset(clone, GITHUB_CREDENTIAL_HELPER_KEY);
+    for (const value of desired) gitOrThrow(clone, "config", "--local", "--add", GITHUB_CREDENTIAL_HELPER_KEY, value);
+  });
+};
+
+export const clearCloneGitHubCredential = (clone: string, options: EffectOptions): void => {
+  if (!ownsCredentialHelpers(cloneCredentialHelpers(clone))) return;
+  act(options, `clear the GitHub credential helper in ${clone}`, () => localConfigUnset(clone, GITHUB_CREDENTIAL_HELPER_KEY));
+};
+
+/** Why a clone cannot use the selected account, or null when its wiring is current. */
+export const cloneGitHubWiringProblem = (clone: string, account: string): string | null => {
+  const recorded = localConfigGet(clone, GITHUB_ACCOUNT_KEY);
+  if (recorded !== account) {
+    return `Agent clone ${clone} is not wired for GitHub account ${account} (${GITHUB_ACCOUNT_KEY} is ${recorded ?? "unset"}).`;
+  }
+  const helpers = cloneCredentialHelpers(clone);
+  if (helpers[0] !== "" || !helpers.slice(1).some((value) => value.endsWith(`${GITHUB_CREDENTIAL_HELPER_MARKER}${account}`))) {
+    return `Agent clone ${clone} has no GitHub credential helper for ${account}.`;
+  }
+  return null;
 };
 
 export type CloneDeletion = { clone: string; deleted: boolean; reason?: string };

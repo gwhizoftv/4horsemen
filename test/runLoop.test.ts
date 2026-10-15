@@ -4310,6 +4310,31 @@ describe("third revision closeout", () => {
     expect(readJournal(paths).filter((entry) => entry.type === "decision-derived")).toHaveLength(1);
   });
 
+  it("verifies follow-up issues as the GitHub account frozen into start state", async () => {
+    const { paths } = fixture({ origin: "https://github.com/acme/app.git" });
+    writeFileSync(paths.start, JSON.stringify({ ...readStartState(paths), githubAccount: "acct" }));
+    const start = readStartState(paths);
+    const calls: { argv: readonly string[]; env: NodeJS.ProcessEnv | undefined }[] = [];
+    const loop = new CoordinatorRunLoop(paths, { tmux: null, log: () => undefined,
+      mirror: new BareMirror(paths.mirror, start.origin, async () => ({ exitCode: 0, stdout: Buffer.alloc(0), stderr: "" })),
+      processRunner: async (argv, _cwd, options) => {
+        calls.push({ argv, env: options?.env });
+        return argv[2] === "token" ? { exitCode: 0, stdout: "tok-acct\n", stderr: "" }
+          : { exitCode: 1, stdout: "", stderr: "HTTP 401: Bad credentials" };
+      } });
+    type FollowUpOrder = Parameters<CoordinatorRunLoop["verifyFollowUpIssue"]>[1];
+    type Observation = Parameters<CoordinatorRunLoop["verifyFollowUpIssue"]>[2];
+    const observed = await loop.verifyFollowUpIssue(start, { stepId: "R6.follow-up", agent: "claude" } as FollowUpOrder, {
+      agent: "claude", actionId: randomUUID(), submissionSha: "a".repeat(40), status: "satisfied", outstanding: [],
+      followUpRequest: { revisionCommitSha: "e".repeat(40), followUpIssueUrl: "https://github.com/acme/app/issues/2" } as Observation["followUpRequest"]
+    });
+    const view = calls.find((call) => call.argv[1] === "issue")!;
+    expect(view.argv.slice(0, 3)).toEqual(["gh", "issue", "view"]);
+    expect(view.env?.GH_TOKEN).toBe("tok-acct");
+    expect(observed.status).toBe("retry");
+    expect(observed.outstanding.join("\n")).toContain("GitHub authentication for acct has expired or been revoked.\nRun: coord auth login");
+  });
+
   it.each(["outage", "pause"] as const)("preserves a receipt through %s and restart, then finalizes the same revision", async (interruption) => {
     const { paths, start, mirror, revision } = terminalFixture();
     await new CoordinatorRunLoop(paths, { mirror, tmux: null, log: () => undefined }).runTick();

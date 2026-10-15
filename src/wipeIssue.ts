@@ -29,6 +29,11 @@ export type WipeIssueOptions = {
   deleteEvidence?: boolean;
   log?: WipeIssueLogger;
   terminalCloser?: OwnerTerminalCloser | null;
+  /**
+   * The workspace's selected GitHub account (#227): `gitArgs` bind remote Git
+   * to its credential helper and `ghEnv` carries its token for the gh fallback.
+   */
+  github?: { gitArgs: readonly string[]; ghEnv: NodeJS.ProcessEnv };
 };
 
 export type WipeIssueResult = {
@@ -83,8 +88,8 @@ const isAncestor = (cwd: string, ancestor: string, descendant: string): boolean 
 
 type OriginIssueBranch = { branch: string; sha: string };
 
-const listOriginIssueBranches = (cwd: string, issue: number): OriginIssueBranch[] => {
-  const result = git(cwd, "ls-remote", "--heads", "origin", issueHeadGlob(issue));
+const listOriginIssueBranches = (cwd: string, issue: number, gitArgs: readonly string[]): OriginIssueBranch[] => {
+  const result = git(cwd, ...gitArgs, "ls-remote", "--heads", "origin", issueHeadGlob(issue));
   if (result.exitCode !== 0) return [];
   const prefix = `refs/heads/${issuePrefix(issue)}`;
   return result.stdout
@@ -100,8 +105,13 @@ const listOriginIssueBranches = (cwd: string, issue: number): OriginIssueBranch[
     .filter((row): row is OriginIssueBranch => row !== null);
 };
 
-const deleteRemoteBranch = (cwd: string, origin: string, branch: string): void => {
-  const pushed = git(cwd, "push", "origin", "--delete", branch);
+const deleteRemoteBranch = (
+  cwd: string,
+  origin: string,
+  branch: string,
+  github: WipeIssueOptions["github"]
+): void => {
+  const pushed = git(cwd, ...(github?.gitArgs ?? []), "push", "origin", "--delete", branch);
   if (pushed.exitCode === 0) return;
   const repository = githubRepositoryFromOrigin(origin);
   if (repository === null) {
@@ -111,7 +121,8 @@ const deleteRemoteBranch = (cwd: string, origin: string, branch: string): void =
   // Fall back to the GitHub API so wipe-issue still works from either cwd.
   const api = spawnSync("gh", ["api", "-X", "DELETE", `repos/${repository}/git/refs/heads/${branch}`], {
     cwd,
-    encoding: "utf8"
+    encoding: "utf8",
+    ...(github === undefined ? {} : { env: github.ghEnv })
   });
   if ((api.status ?? 1) !== 0) {
     throw new Error(
@@ -337,7 +348,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     if (pushCwd === undefined) {
       log("skip remote branch deletes: no product or agent clone available\n");
     } else {
-      const remoteBranches = listOriginIssueBranches(pushCwd, options.issue);
+      const remoteBranches = listOriginIssueBranches(pushCwd, options.issue, options.github?.gitArgs ?? []);
       if (remoteBranches.length === 0) {
         log(`remote ${prefix}* already absent\n`);
       }
@@ -352,7 +363,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
             continue;
           }
           log(`${dryRun ? "would delete" : "deleting"} origin/${branch} (ballot evidence, owner requested)\n`);
-          if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch);
+          if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch, options.github);
           result.deletedRemoteBranches.push(branch);
           continue;
         }
@@ -374,7 +385,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
           continue;
         }
         log(`${dryRun ? "would delete" : "deleting"} origin/${branch}\n`);
-        if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch);
+        if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch, options.github);
         result.deletedRemoteBranches.push(branch);
       }
     }

@@ -546,6 +546,98 @@ describe("CLI version", () => {
   });
 });
 
+describe("CLI GitHub account selection", () => {
+  const helperKey = "credential.https://github.com.helper";
+  /** A real clone already on its issue branch, wired to `account` as coord install would wire it. */
+  const wireClone = (clone: string, branch: string, account = "acct"): void => {
+    execFileSync("git", ["init", "-q", "-b", branch, clone]);
+    execFileSync("git", ["-C", clone, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "base"]);
+    execFileSync("git", ["-C", clone, "config", "--local", "coord.githubAccount", account]);
+    execFileSync("git", ["-C", clone, "config", "--local", "--add", helperKey, ""]);
+    execFileSync("git", ["-C", clone, "config", "--local", "--add", helperKey, `!/usr/bin/env node '/coord/dist/main.js' auth git-credential --account ${account}`]);
+  };
+  const selectAccount = (configPath: string): void => {
+    writeFileSync(configPath, JSON.stringify({ ...JSON.parse(readFileSync(configPath, "utf8")) as object, github: { account: "acct" } }));
+  };
+  type Call = { argv: readonly string[]; env: NodeJS.ProcessEnv | undefined };
+  /** gh answers as `acct` with `tok-acct`, or reports no saved credential when token is null. */
+  const accountRunner = (calls: Call[], token: string | null = "tok-acct", api = (argv: readonly string[]) =>
+    ({ exitCode: 0, stdout: argv[2] === "user" ? "acct\n" : "example/fixture\n", stderr: "" })): ProcessRunner =>
+    async (argv, _cwd, options) => {
+      calls.push({ argv, env: options?.env });
+      if (argv[0] === "gh" && argv[1] === "auth" && argv[2] === "token") {
+        return token === null ? { exitCode: 1, stdout: "", stderr: "no account" } : { exitCode: 0, stdout: `${token}\n`, stderr: "" };
+      }
+      if (argv[0] === "gh" && argv[1] === "api") return api(argv);
+      return successfulStartGit(argv);
+    };
+  const start = (fixture: ReturnType<typeof setup>, runner: ProcessRunner, errors: string[], effects: string[]) =>
+    runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
+      io: { stdout: () => undefined, stderr: (message) => errors.push(message) },
+      processRunner: runner,
+      startEffects: async (input) => { effects.push(input.githubAccount ?? "none"); return { cleanup: async () => undefined }; },
+      makeRunLoop: fakeLoop
+    });
+
+  it("refuses to start before any GitHub or runtime effect when the selected account's credential is unavailable", async () => {
+    const fixture = setup();
+    selectAccount(fixture.configPath);
+    wireClone(join(fixture.root, "clone-codex"), "issue-1/codex");
+    const calls: Call[] = [], errors: string[] = [], effects: string[] = [];
+    expect(await start(fixture, accountRunner(calls, null), errors, effects)).toBe(2);
+    expect(errors.join("")).toContain("GitHub authentication for acct is unavailable.\nRun: coord auth login");
+    expect(calls.some((call) => call.argv[1] === "issue" || call.argv.includes("ls-remote"))).toBe(false);
+    expect(effects).toEqual([]);
+    expect(existsSync(join(fixture.runtime, "issue-1"))).toBe(false);
+  });
+
+  it("binds start's gh and git calls to the account, freezes it, and re-validates it on resume", async () => {
+    const fixture = setup();
+    selectAccount(fixture.configPath);
+    wireClone(join(fixture.root, "clone-codex"), "issue-1/codex");
+    const calls: Call[] = [], errors: string[] = [], effects: string[] = [];
+    expect(await start(fixture, accountRunner(calls), errors, effects)).toBe(0);
+    expect(calls.find((call) => call.argv[1] === "issue")?.env?.GH_TOKEN).toBe("tok-acct");
+    const lsRemote = calls.find((call) => call.argv.includes("ls-remote"))!.argv;
+    expect(lsRemote.slice(0, 3)).toEqual(["git", "-c", `${helperKey}=`]);
+    expect(effects).toEqual(["acct"]);
+    expect(readStartState(issueRuntimePaths(fixture.runtime, 1)).githubAccount).toBe("acct");
+
+    const resumeErrors: string[] = [];
+    expect(await runCli(["run", "--issue", "1", "--coord-runtime", fixture.runtime], {
+      io: { stdout: () => undefined, stderr: (message) => resumeErrors.push(message) },
+      processRunner: accountRunner([], "tok-acct", () => ({ exitCode: 1, stdout: "", stderr: "HTTP 401: Bad credentials" })),
+      makeRunLoop: (paths) => ({ ...fakeLoop(paths), run: async () => { throw new Error("resume must not run"); } })
+    })).toBe(2);
+    expect(resumeErrors.join("")).toContain("GitHub authentication for acct has expired or been revoked.\nRun: coord auth login");
+  });
+
+  it("reports the workspace account through coord auth status", async () => {
+    const fixture = setup();
+    const status = async (runner: ProcessRunner) => {
+      const out: string[] = [], err: string[] = [];
+      const code = await runCli(["auth", "status", "--config", fixture.configPath], {
+        io: { stdout: (message) => out.push(message), stderr: (message) => err.push(message) }, processRunner: runner
+      });
+      return { code, out: out.join(""), err: err.join("") };
+    };
+    const unselected = await status(accountRunner([]));
+    expect(unselected).toMatchObject({ code: 0 });
+    expect(unselected.out).toContain("--github-account");
+
+    selectAccount(fixture.configPath);
+    for (const agent of ["codex", "claude", "cursor"]) wireClone(join(fixture.root, `clone-${agent}`), "main");
+    const healthy = await status(accountRunner([]));
+    expect(healthy.code).toBe(0);
+    expect(healthy.out).toContain("GitHub account: acct\nRepository: example/fixture\n");
+    expect(healthy.out).toContain("Status: authenticated as acct; repository access verified; agent clones wired.");
+
+    const expired = await status(accountRunner([], "tok-acct", () => ({ exitCode: 1, stdout: "", stderr: "HTTP 401: Bad credentials" })));
+    expect(expired.code).toBe(1);
+    expect(expired.err).toContain("GitHub authentication for acct has expired or been revoked.\nRun: coord auth login");
+  });
+});
+
 describe("CLI manual mode", () => {
   it("launches every configured agent without GitHub, runtime, or run-loop effects", async () => {
     const fixture = setup();
