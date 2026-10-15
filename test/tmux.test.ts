@@ -6,11 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   agentClientAttachCommand,
   harnessLooksReady,
-  harnessPromptReady,
   harnessPromptReadiness,
-  idleSentinelAfterAction,
-  COORD_IDLE_SENTINEL,
   nudgePreludeKeys,
+  paneActivityDigest,
+  pendingPromptInComposer,
   ownerTerminalCloseAppleScript,
   ownerTerminalOpenAppleScript,
   ownerTerminalWindowTitle,
@@ -36,6 +35,9 @@ const commandsIn = (args: readonly string[]): string[][] => {
   return commands;
 };
 const noopSleep = async (): Promise<void> => undefined;
+const harnessPromptReady = (paneText: string, agentId: string): boolean => harnessPromptReadiness(paneText, agentId).ready;
+/** The idle line agents used to print; it is no longer evidence of anything. */
+const COORD_IDLE_SENTINEL = "COORD-IDLE: waiting for the next coordinator action file";
 
 it("reports issue environment wiring without claiming child-process trust", async () => {
   const calls: string[][] = [];
@@ -90,7 +92,7 @@ const promptFor = (agentId: string): string => {
     case "antigravity":
       return "Antigravity CLI\n> \n? for shortcuts accept-edits · Gemini\n";
     case "codex":
-      return "codex ready\n";
+      return "codex ready\n› \n? for shortcuts\n";
     default:
       return "ready\n";
   }
@@ -855,36 +857,42 @@ describe("tmux boundary", () => {
     });
   });
 
-  it("treats the idle sentinel as evidence only when it is current and nothing blocks", () => {
+  it("no longer treats the retired idle line as evidence of a prompt", () => {
     const action = "11111111-2222-3333-4444-555555555555";
-    // Positive: a pane no vendor pattern matched, with a fresh sentinel.
-    expect(harnessPromptReadiness(`working on ${action}\n${COORD_IDLE_SENTINEL}`, "claude", action)).toEqual({
-      ready: true,
-      reason: "idle-sentinel"
-    });
-    // Stale: the sentinel predates this action, so it proves nothing.
-    expect(
-      harnessPromptReadiness(`${COORD_IDLE_SENTINEL}\nRead and execute ${action}`, "claude", action)
-    ).toEqual({ ready: false, reason: "claude-no-prompt" });
-    // A positive hint never clears a blocker.
-    expect(
-      harnessPromptReadiness(
-        `⚠ Verifying your account...\n${COORD_IDLE_SENTINEL}`,
-        "antigravity",
-        action
-      )
-    ).toEqual({ ready: false, reason: "antigravity-verify-overlay" });
-    expect(harnessPromptReadiness(`Thinking…\n${COORD_IDLE_SENTINEL}`, "cursor", action)).toEqual({
+    expect(harnessPromptReadiness(`working on ${action}\n${COORD_IDLE_SENTINEL}`, "claude")).toEqual({
       ready: false,
-      reason: "cursor-turn-chrome"
+      reason: "claude-no-prompt"
     });
-    expect(harnessPromptReadiness(`Do you trust this folder?\n${COORD_IDLE_SENTINEL}`, "claude", action)).toEqual({
+    expect(harnessPromptReadiness(`Antigravity CLI\n${COORD_IDLE_SENTINEL}`, "antigravity")).toEqual({
       ready: false,
-      reason: "trust-dialog"
+      reason: "antigravity-no-prompt"
     });
-    expect(idleSentinelAfterAction(`${action}\n${COORD_IDLE_SENTINEL}`, action)).toBe(true);
-    expect(idleSentinelAfterAction(`${COORD_IDLE_SENTINEL}\n${action}`, action)).toBe(false);
-    expect(idleSentinelAfterAction("no sentinel here", action)).toBe(false);
+  });
+
+  it("digests only the pane above the composer, so drafts and footers are not activity", () => {
+    const pane = (spinner: string, draft: string, footer: string) =>
+      `⏺ Reviewing the plan\n${spinner}\n────\n❯ ${draft}\n────\n  ${footer}`;
+    const base = paneActivityDigest(pane("✻ Thinking… (45s)", "", "? for shortcuts"));
+    expect(paneActivityDigest(pane("✻ Thinking… (45s)", "owner draft", "12:01 · context 40%"))).toBe(base);
+    expect(paneActivityDigest(`${esc}[2m${pane("✻ Thinking… (45s)", "", "? for shortcuts")}${esc}[0m`)).toBe(base);
+    expect(paneActivityDigest(pane("✻ Thinking… (46s)", "", "? for shortcuts"))).not.toBe(base);
+    expect(paneActivityDigest("no composer\nline")).not.toBe(paneActivityDigest("no composer\nline 2"));
+  });
+
+  it("finds this action's unsent prompt in the Codex composer or the pane tail", () => {
+    const action = "11111111-2222-3333-4444-555555555555";
+    const prompt = `Read and execute coordinator action ${action} digest ${"a".repeat(64)} at /a`;
+    expect(pendingPromptInComposer(codexPane("• done", prompt), "codex", action)).toBe(true);
+    expect(pendingPromptInComposer(codexPane("• done", "owner draft"), "codex", action)).toBe(false);
+    // An action mentioned only above the composer was already submitted.
+    expect(pendingPromptInComposer(codexPane(`› ${prompt}\n• Working on it`, ""), "codex", action)).toBe(false);
+    // Cursor wraps the prompt across lines, splitting the UUID.
+    expect(pendingPromptInComposer(`Auto · 1%\n→ Read and execute coordinator action 11111111-2222-\n  3333-4444-555555555555 at /a\nRun Everything`,
+      "cursor", action)).toBe(true);
+    expect(pendingPromptInComposer(`${prompt}\n1\n2\n3\n4\n5\n6`, "cursor", action)).toBe(false);
+    // An already-submitted prompt above an empty composer is history, not a pending prompt.
+    expect(pendingPromptInComposer(`❯ ${prompt}\n⎿ API Error: overloaded\n❯ \n  ? for shortcuts`, "claude", action)).toBe(false);
+    expect(pendingPromptInComposer(`→ ${prompt}\nRequest failed\n→ Plan, search, build anything\nAuto · 1%`, "cursor", action)).toBe(false);
   });
 
   // Modelled on the live Codex capture in issue 181: dim placeholder composer, two footer lines.
@@ -898,57 +906,26 @@ describe("tmux boundary", () => {
   const codexPane = (body: string, draft = "", vim = "Insert") =>
     `• Explored\n  └ Read action.md\n\n${body}\n\n${codexComposer(draft)}\n\n${codexFooter.replace("Vim: Insert", `Vim: ${vim}`)}`;
 
-  it("vetoes a live Codex turn and reads its idle sentinel only above an empty composer", () => {
-    const action = "11111111-2222-3333-4444-555555555555";
-    expect(harnessPromptReadiness(codexPane("• Working (2m 27s • esc to interrupt)\n  └ Tip: run ! commands"), "codex", action))
+  it("vetoes a live Codex turn but not prose about one, and ignores the retired idle line", () => {
+    expect(harnessPromptReadiness(codexPane("• Working (2m 27s • esc to interrupt)\n  └ Tip: run ! commands"), "codex"))
       .toEqual({ ready: false, reason: "codex-turn-chrome" });
-    // Prose quoting the status line is not chrome.
-    expect(harnessPromptReadiness(codexPane("• I saw `Working (2s • esc to interrupt)` earlier."), "codex", action))
+    expect(harnessPromptReadiness(codexPane("• I saw `Working (2s • esc to interrupt)` earlier."), "codex"))
       .toEqual({ ready: true, reason: "vendor-prompt" });
-    expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}`), "codex", action))
-      .toEqual({ ready: true, reason: "idle-sentinel" });
-    // An unsent owner draft, a dialog line, or the action after the sentinel is not idle proof.
-    expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}`, "Please inspect my changes"), "codex", action))
+    expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}\n\n${turnSummary}`), "codex"))
       .toEqual({ ready: true, reason: "vendor-prompt" });
-    expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}\n  2. No, continue without the server`), "codex", action))
-      .toEqual({ ready: true, reason: "vendor-prompt" });
-    expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}`, `Read and execute ${action}`), "codex", action))
-      .toEqual({ ready: true, reason: "vendor-prompt" });
-    // Codex's end-of-turn summary may sit between the sentinel and the composer; the legacy footer still counts.
-    // Rendered dim, as Codex paints it, and in the older `─` rule form.
-    for (const summary of [turnSummary, `${esc}[2m${turnSummary}${esc}[0m`, "─ Worked for 12s ─────"]) {
-      expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}\n\n${summary}`), "codex", action))
-        .toEqual({ ready: true, reason: "idle-sentinel" });
-    }
-    expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}`).replace("← for agents · ", ""), "codex", action))
-      .toEqual({ ready: true, reason: "idle-sentinel" });
-    expect(harnessPromptReadiness(codexPane(`${turnSummary}\n\n• ${COORD_IDLE_SENTINEL}`), "codex", action))
-      .toEqual({ ready: true, reason: "idle-sentinel" });
-    // Only one summary line is skipped; prose or a dialog after it still fails closed, and a live turn still vetoes.
-    for (const after of [`${turnSummary}\n  2. No, continue without the server`, "  Worked for the reviewer: pick 1 or 2",
-      "• I printed Worked for 5m earlier", `${turnSummary}\n  Worked for 3s`, "  Worked for 3s • 5:42 AM then pick 1 or 2",
-      `${turnSummary}\n› another request`]) {
-      expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}\n\n${after}`), "codex", action))
-        .toEqual({ ready: true, reason: "vendor-prompt" });
-    }
-    // An unknown line below the footer still fails closed.
-    expect(harnessPromptReadiness(`${codexPane(`• ${COORD_IDLE_SENTINEL}\n\n${turnSummary}`)}\n  unknown footer`, "codex", action))
-      .toEqual({ ready: true, reason: "vendor-prompt" });
-    expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}\n\n  Worked for 3s\n• Working (1s • esc to interrupt)`), "codex", action))
+    expect(harnessPromptReadiness(codexPane(`• ${COORD_IDLE_SENTINEL}\n\n  Worked for 3s\n• Working (1s • esc to interrupt)`), "codex"))
       .toEqual({ ready: false, reason: "codex-turn-chrome" });
   });
 
-  it.each(["idle-sentinel", "ready-file"] as const)("sends a %s nudge only while the idle proof holds before its batch", async (source) => {
-    const composerReason = source === "idle-sentinel" ? "no-idle-sentinel" : "codex-composer-not-ready";
+  it("sends a Codex nudge only while keystroke safety holds before its batch", async () => {
     const agent = { id: "codex", root: "/clone", launcher: "start-codex.sh", delivery: "both" as const, harnessProcess: "codex" };
     const action = "11111111-2222-3333-4444-555555555555";
     // A minimal Codex: typed text lands in the composer; `onCapture` lets a test change the pane between keys.
     const attempt = async (options: {
-      body?: string; draft?: string; vim?: string; gate?: string;
-      lifecycle?: (check: number) => "unchanged" | "accepted" | "changed";
+      body?: string; draft?: string; vim?: string; gate?: string; resend?: boolean;
       onCapture?: (index: number, pane: { body: string; draft: string }) => void;
     } = {}) => {
-      const pane = { body: options.body ?? (source === "idle-sentinel" ? `• ${COORD_IDLE_SENTINEL}\n\n${turnSummary}` : "• done"), draft: options.draft ?? "" };
+      const pane = { body: options.body ?? "• done", draft: options.draft ?? "" };
       const keys: string[] = [];
       let captures = 0;
       const controller = new TmuxController(async (args) => {
@@ -957,37 +934,36 @@ describe("tmux boundary", () => {
           options.onCapture?.(captures++, pane);
           return ok(codexPane(pane.body, pane.draft, options.vim));
         }
-        if (args[0] === "send-keys") {
+        if (args.includes("send-keys")) {
           for (const command of commandsIn(args)) {
-            if (command[0] === "send-keys") keys.push(command.includes("-l") ? "-l" : command.at(-1)!);
+            if (command[0] === "send-keys") keys.push(command.at(-1)!);
           }
         }
         return ok();
       }, null, null, null, noopSleep);
-      let checks = 0;
-      const outcome = await controller.nudge(1, agent, "/a", undefined, action, undefined, undefined,
-        { source, lifecycle: () => options.lifecycle?.(checks++) ?? "unchanged" });
+      const outcome = await controller.nudge(1, agent, "/a", undefined, action, "a".repeat(64), undefined, { resend: options.resend });
       return { outcome, keys };
     };
-    if (source === "idle-sentinel") {
-      expect(await attempt({ body: "• done" })).toMatchObject({ outcome: { status: "busy", reason: "no-idle-sentinel", stage: "prompt" }, keys: [] });
-    }
-    expect(await attempt({ draft: "Owner draft" })).toMatchObject({ outcome: { status: "busy", reason: composerReason }, keys: [] });
+    const prompt = `Read and execute coordinator action ${action} digest ${"a".repeat(64)} at /a`;
+    expect(await attempt({ draft: "Owner draft" })).toMatchObject({ outcome: { status: "busy", reason: "codex-composer-not-ready" }, keys: [] });
     expect(await attempt({ body: "Trust this folder?" })).toMatchObject({ outcome: { status: "busy", reason: "trust-dialog" }, keys: [] });
     for (const [gate, reason] of [["0\tbash\t0\t0\n", "foreground-mismatch"], ["0\tcodex\t1\t0\n", "owner-typing"], ["0\tcodex\t0\t1\n", "input-off"]]) {
       expect(await attempt({ gate })).toMatchObject({ outcome: { status: "busy", reason }, keys: [] });
     }
-    // The owner starts a turn, or a lifecycle hook reports activity, before the first key: nothing is typed.
+    // Codex queues a prompt typed mid-turn: its Enter-only submit is sent despite live turn chrome.
     expect(await attempt({ onCapture: (index, pane) => { if (index === 1) pane.body = "• Working (1s • esc to interrupt)"; } }))
-      .toMatchObject({ outcome: { status: "busy", reason: "codex-turn-chrome", stage: "prompt" }, keys: [] });
-    expect(await attempt({ lifecycle: () => "changed" }))
-      .toMatchObject({ outcome: { status: "busy", reason: "lifecycle-changed", stage: "prompt" }, keys: [] });
-    expect(await attempt()).toMatchObject({ outcome: { status: "sent", detail: source }, keys: ["-l", "Enter"] });
-    expect(await attempt({ vim: "Normal" })).toMatchObject({ outcome: { status: "sent" }, keys: ["i", "-l", "Enter"] });
+      .toMatchObject({ outcome: { status: "sent" }, keys: [prompt, "Enter"] });
+    // The owner starts a draft before the first key: nothing is typed.
     expect(await attempt({ onCapture: (index, pane) => { if (index === 1) pane.draft = "owner draft"; } }))
-      .toMatchObject({ outcome: { status: "busy", reason: composerReason, stage: "prompt" }, keys: [] });
-    expect(await attempt({ lifecycle: (check) => check === 1 ? "changed" : "unchanged" }))
-      .toMatchObject({ outcome: { status: "busy", reason: "lifecycle-changed", stage: "prompt" }, keys: [] });
+      .toMatchObject({ outcome: { status: "busy", reason: "codex-composer-not-ready", stage: "prompt" }, keys: [] });
+    expect(await attempt()).toMatchObject({ outcome: { status: "sent" }, keys: [prompt, "Enter"] });
+    expect((await attempt()).outcome).not.toHaveProperty("detail");
+    // A vim prelude key that lands in the composer anyway stays apart from the prompt.
+    expect(await attempt({ vim: "Normal" })).toMatchObject({ outcome: { status: "sent" }, keys: ["i", ` ${prompt}`, "Enter"] });
+    // A resend names the shortcut; a prompt still in the composer is submitted, never typed twice.
+    expect((await attempt({ resend: true })).keys[0]).toBe(`If you already wrote complete for this action, only write its ready file. ${prompt}`);
+    expect(await attempt({ draft: prompt, vim: "Normal", resend: true }))
+      .toMatchObject({ outcome: { status: "sent", detail: "pending-prompt-submitted" }, keys: ["Enter"] });
   });
 
   it.each(["Insert", "Normal"])("sends Codex text and Enter once in %s mode without waiting for paint", async (vim) => {
@@ -1009,40 +985,55 @@ describe("tmux boundary", () => {
     expect(sleeps).toEqual([]);
   });
 
-  it.each(["codex", "claude", "cursor", "antigravity"])("trusts %s Stop without a visible idle prompt", async (id) => {
+  it.each(["claude", "cursor"])("types a %s resend when its earlier prompt is only history above an empty composer", async (id) => {
+    const action = "11111111-2222-3333-4444-555555555555";
+    const sent: string[] = [];
+    const controller = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return ok(`0\t${id}\t0\t0`);
+      if (args[0] === "capture-pane") return ok(`❯ Read and execute coordinator action ${action} at /a\nRequest failed\n${promptFor(id)}❯ \n`);
+      if (args.includes("send-keys")) sent.push(...commandsIn(args).filter((command) => command.includes("-l")).map((command) => command.at(-1)!));
+      return ok();
+    }, null, null, null, noopSleep);
+    expect(await controller.nudge(1, { id, root: "/clone", launcher: id, delivery: "both", nudgePrelude: [] },
+      "/a", undefined, action, undefined, undefined, { resend: true })).toMatchObject({ status: "sent" });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain(`coordinator action ${action}`);
+  });
+
+  it.each([
+    { id: "cursor", pane: "Thinking…\nAuto · 1%\nRun Everything", vim: false, sent: true },
+    { id: "cursor", pane: "Thinking…\nAuto · 1%\nRun Everything", vim: true, sent: false },
+    { id: "cursor", pane: "", vim: false, sent: false }
+  ])("sends to $id mid-turn only when no Escape is typed and the pane is readable (vim=$vim, pane=$pane)", async ({ id, pane, vim, sent }) => {
     const calls: string[][] = [];
     const controller = new TmuxController(async (args) => {
       calls.push([...args]);
       if (args[0] === "display-message") return ok(`0\t${id}\t0\t0`);
-      if (args[0] === "capture-pane") return ok("Working... esc to cancel");
+      if (args[0] === "capture-pane") return pane === "" ? { exitCode: 1, stdout: "", stderr: "no pane" } : ok(pane);
+      return ok();
+    }, null, null, null, noopSleep);
+    const outcome = await controller.nudge(1, { id, root: "/clone", launcher: id, delivery: "both", ...(vim ? { nudgePrelude: ["a"] } : {}) }, "/a");
+    expect(outcome).toMatchObject(sent ? { status: "sent" }
+      : { status: "busy", reason: pane === "" ? "pane-capture-unavailable" : "cursor-turn-chrome" });
+    expect(calls.some((args) => args.includes("send-keys"))).toBe(sent);
+  });
+
+  it.each(["claude", "cursor"])("submits a %s prompt still sitting in the pane tail without typing it again", async (id) => {
+    const action = "11111111-2222-3333-4444-555555555555";
+    const calls: string[][] = [];
+    const controller = new TmuxController(async (args) => {
+      calls.push([...args]);
+      if (args[0] === "display-message") return ok(`0\t${id}\t0\t0`);
+      if (args[0] === "capture-pane") return ok(`${promptFor(id)}❯ Read and execute coordinator action ${action} at /a\n`);
       return ok();
     }, null, null, null, noopSleep);
     expect(await controller.nudge(1, { id, root: "/clone", launcher: id, delivery: "both", nudgePrelude: [] },
-      "/a", undefined, undefined, undefined, undefined, { source: "stop-hook", lifecycle: () => "unchanged" }))
-      .toMatchObject({ status: "sent", detail: "stop-hook" });
-    expect(calls.filter((args) => args[0] === "send-keys").flatMap(commandsIn).at(-1)?.at(-1)).toBe("Enter");
-  });
-
-  it.each([1, 2])("refuses file-backed delivery when capture %s is unavailable", async (failedCapture) => {
-    for (const exitCode of [0, 1]) {
-      const calls: Array<readonly string[]> = [];
-      let captures = 0;
-      const controller = new TmuxController(async (args) => {
-        calls.push(args);
-        if (args[0] === "display-message") return ok("0\tagent\t0\t0\n");
-        if (args[0] === "capture-pane") {
-          if (++captures === failedCapture) return { exitCode, stdout: "", stderr: "" };
-          return ok(promptFor("cursor"));
-        }
-        return ok();
-      }, null, null, null, noopSleep);
-      const result = await controller.nudge(1,
-        { id: "cursor", root: "/clone", launcher: "start-cursor.sh", delivery: "both", harnessProcess: "agent" },
-        "/a", undefined, undefined, undefined, undefined, { source: "ready-file", lifecycle: () => "unchanged" });
-      expect(result).toMatchObject({ status: "busy", reason: "pane-capture-unavailable",
-        stage: "prompt" });
-      expect(calls.filter((args) => args[0] === "send-keys")).toHaveLength(0);
-    }
+      "/a", undefined, action, undefined, undefined, { resend: true }))
+      .toMatchObject({ status: "sent", detail: "pending-prompt-submitted" });
+    // A submit-only batch begins with its pre-submit sleep.
+    const keys = calls.filter((args) => args.includes("send-keys")).flatMap(commandsIn).filter((command) => command[0] === "send-keys");
+    expect(keys.some((command) => command.includes("-l"))).toBe(false);
+    expect(keys.at(-1)?.at(-1)).toBe("Enter");
   });
 
   it("reports which pane predicate deferred a delivery", async () => {

@@ -1,177 +1,133 @@
-# Readiness policy — scrape, hooks, and workflow truth
+# Readiness policy — ready file, keystroke safety, and workflow truth
 
-Three signals tell the coordinator about an agent. They can disagree. This file
-says which one wins for automatic delivery, and names its refusal codes.
-Explicit owner reminders follow the separate contract below.
+The coordinator sends an agent its next action when the agent says it is ready.
+Hook execution state never decides delivery. This file names the authorizations,
+the keystroke-safety checks that guard every send, the stall watchdog, and the
+refusal codes. Explicit owner reminders follow the separate contract below.
 
 | Layer | Mechanism | Authority for |
 | --- | --- | --- |
-| Delivery readiness | process/pane gates, vendor Stop, fallback pane inspection | whether the next prompt can be delivered |
-| Observability | vendor lifecycle hooks (`SessionStart`, prompt-submit, `Stop`) | whether a second send would be a duplicate |
+| Delivery authority | the `ready` file, JOIN, a fresh session, a hold release | whether the next action may be sent |
+| Keystroke safety | pane gate and vendor prompt checks | whether typed keys land safely now |
+| Stall watchdog | transcript growth, tool hooks, pane repaint | whether owed work needs one resend |
 | Workflow truth | the `complete` file plus Git pin **or** accepted response + published batch | whether the work actually happened |
 
 ## Explicit owner reminders
 
 The interactive `n` command lists every configured agent and sends each selected
-owner reminder on the next poll, even during a manual pause or hold. It bypasses
-automatic lifecycle, prompt, composer, foreground, queue/background, spacing,
-budget and reservation gates. Copy mode is cancelled before typing; capture is
-optional and used only to choose vim keys. Configured pull-only delivery does not
-prevent an explicit owner send. Existing vendor keys and the short text/key gaps
-are shared with automatic transport.
+owner reminder on the next poll, even during a manual pause or hold. An agent
+that owes work (an ordered action whose `complete` is missing) is resent its
+current action with the resend prefix below. An agent that owes nothing is sent
+nothing; the run loop logs that and journals `nudge-deferred` with
+`code: "no-owed-action"`. Owner sends bypass automatic prompt, composer,
+foreground, spacing, budget and reservation gates. Copy mode is cancelled before
+typing; capture is optional and used only to choose vim keys. Configured
+pull-only delivery does not prevent an explicit owner send.
 
-The runner selects the current message at dispatch. Outstanding work receives the
-current action path, UUID and digest; a pending completion receives a reminder to
-preserve the submitted files and await validation; accepted, dropped or unassigned
-work receives a neutral reminder without instructions to execute a stale or
-missing action. A concurrent assignment/submission change is reported as failed
-before typing, or uncertain between keys, with remaining keys stopped. A change
-noticed after the complete submit succeeds does not undo terminal delivery: the
-result stays sent, with any skipped lifecycle update reported separately.
+Every selection has a unique request ID and a journal outcome: `nudged` for
+successful terminal injection and `nudge-deferred` for failures, uncertainty or
+a skipped agent. A concurrent assignment/submission change is reported as failed
+before typing, or uncertain between keys. A change noticed after the complete
+submit succeeds does not undo terminal delivery. Owner sends do not spend or
+reset automatic send credit, clear reservations, release holds or remove
+submitted files, and automatic delivery adds no send to the same agent in that
+poll.
 
-Every selection has a unique request ID and a sent, failed or uncertain journal
-outcome using `nudged` only for successful terminal injection and `nudge-deferred`
-for failures/uncertainty. These owner events are not deduplicated by automatic
-reason code. A missing pane, unavailable terminal controller or transport exception
-gets a concrete result; one failed target does not stop All agents. Sent never
-means vendor acceptance or valid workflow completion.
-
-Owner sends do not spend or reset automatic send credit, clear reservations,
-release holds or remove submitted files. Successful action injection still uses
-the existing lifecycle correlation, and automatic delivery adds no send to the
-same agent in that poll. A first assignment deferred by that rule can still be
-delivered on a later poll under the usual automatic gates, including after a
-runner restart. Ambiguous owner attempts are reported without queuing
-another attempt; the owner can explicitly send again. The rules below continue
-to govern automatic sends.
-
-## The three rules
-
-**A current Stop authorizes the next delivery.** Background work remains
-telemetry and does not block the next prompt or action. A Stop from an old
-session or a known older turn is not current. New foreground activity, queued
-input, session replacement, or a new delivery revokes this readiness. No
-Working-text, idle-sentinel, or empty-composer confirmation of Stop is required.
-Process identity, pane liveness, copy mode, disabled input, trust/account dialogs,
-vendor usage waits, manual pause, holds and send budgets still apply.
-
-**A matching submit hook confirms acceptance.** `UserPromptSubmit` (Codex and
-Claude) or `beforeSubmitPrompt` (Cursor) must match the current action UUID,
-digest, and session. No subsequent pane evidence is needed. Matching hooks also
-clear that attempt's delivery reservation and corresponding `delivery-uncertain`
-hold, even after a restart or delayed receipt. Other holds, manual pause and
-charged send counts remain intact. AGY retains its existing delivery and Stop
-path without acquiring a prompt-submit-hook requirement.
-
-A successful tmux write proves injection only. Codex, Claude and Cursor receive
-one tmux command batch: literal prompt text followed by actual submit-key events.
-Blocking `run-shell` sleeps inside that batch allow 300 ms after the text and
-150 ms between submit keys. This keeps Enter out of paste detection and separates
-vim Escape from Enter so it cannot be read as Alt+Enter. These fixed delays do
-not depend on pane text.
-The coordinator does not wait for the prompt to paint, poll the composer, or
-press fallback submit keys. Codex uses Enter, including old configurations with
-`["C-j", "C-m"]` or `["C-m"]`. AGY keeps its separate literal-text/Enter delivery
-and existing delays. Without Stop evidence, pane readiness remains the fallback.
-After an injection, a repeat requires a new eligible idle transition or the
-lost-delivery proof below; a delayed hook alone never authorizes a duplicate.
-
-**Workflow truth outranks both.** For Git-mode actions, `complete` plus a
-pushed commit proves the action arrived. For ballot response-mode actions,
-workflow truth is the completion marker (`response <actionId>`) plus an
-accepted private response, and the gate advances only after the coordinator
-publishes that roster's evidence batch. Quiet work continues through normal
-completion validation. Completing an action also clears a legacy degraded alert
-already raised against it by an older coordinator.
-
-## Positive evidence is additive
+## Sending on ready
 
 After completing an action and rereading the order, agents write
 `ready <completed-actionId>` in the `ready` file beside `complete` if the order
-is unchanged **or missing**. Acceptance removes the order while peers may still
-be working, so a missing file must not lose this handshake. A changed action is
-executed immediately instead. Other read errors do not authorize a receipt.
-The agent then prints the idle line and ends its turn.
+is unchanged **or missing**. A changed action is executed immediately instead,
+and no ready file is written.
 
-The receipt is a delivery hint, not workflow completion. Its UUID must match
-the agent cursor's durable last accepted action (Git, private response, or an
-accepted amendment request), and differ from the next action being delivered.
-An unanswered peer order retired by an amendment is not an accepted action.
-The amendment request's action UUID must equal the current order's UUID;
-validation rejects a different UUID before advancing the accepted identity.
-Acceptance and preparation leave the receipt in place. Only a successful send
-consumes the observed receipt; a replacement file is preserved. The existing
-mailbox directory grant covers this sibling without new permissions.
+Every poll, for every active agent, the coordinator reads that file and deletes
+it. A receipt naming the agent's current action or its last accepted action is
+recorded in the agent's lifecycle entry as `ready`. A receipt naming the last
+accepted action once the current action was already sent predates that send and
+is ignored, as is any other UUID. The journal records `ready-consumed` or
+`ready-ignored`.
 
-File proof is eligible only before the next action's first charged send, with
-no pending input or delivery reservation. Background work blocks file-only
-proof unless a current Stop already authorizes delivery. Its mtime must be
-strictly newer than the last activity-hook receipt and not in the future;
-millisecond timestamp ties fail closed. A separate per-agent hook receipt
-timestamp/sequence includes duplicate activity callbacks, unlike semantic
-`lastEventAt`. The sequence and file identity are rechecked before the batch (and each AGY key).
-Status-bar telemetry is deliberately excluded: an idle status render is not
-new activity, and must not invalidate the ready file just written. Identical
-Antigravity status observations explicitly reporting idle, no pending input,
-and no background work also retain semantic deduplication: they neither
-rewrite lifecycle state nor count as a heartbeat after a new order. This
-prevents a harmless redraw between paste and submit from interrupting delivery.
-Do not exclude all status observations: repeated working/unknown reports,
-queue/background activity, session changes and other semantic changes still
-revoke readiness. Neither receipt field fabricates execution or an idle epoch.
+An agent owes work while its cursor is ordered, `complete` is missing and
+`action.md` exists. An unsent current action (UUID and digest) is sent when any
+one of these holds:
 
-A valid file can overrule stale `working` or `unknown` for that first send
-without needing the idle line visible in the pane. It never bypasses process,
-dialog, live-turn, owner-input, pause/hold, authority or send-budget checks.
-For file-only Codex proof, the composer must be empty before the batch; the
-coordinator never waits for the pasted message to become visible. Changed proof
-before delivery defers for free. An ambiguous transport failure after reservation
-retains its durable charge and creates a delivery-uncertain hold, which a matching
-submit hook can resolve. Legacy lifecycle files default to no Stop receipt.
+- the agent is recorded `ready`;
+- **JOIN**: the agent has never had an action accepted in this issue;
+- a **fresh session**: `SessionStart` (or Antigravity's status payload)
+  established a new session ID and no prompt has been submitted since;
+- a **hold release**: the action was last sent under an older hold generation.
 
-Startup `foreground-mismatch (bash)` is a separate, intentional refusal before
-terminal text is considered: the launcher may not yet have handed control to
-the harness. If it persists, the harness may have failed or exited. Neither
-an idle line nor a ready file permits typing into that shell. A pre-send
-refusal preserves readiness so delivery can proceed once the harness is ready.
+Whichever of the receipt or the order arrives second triggers the send. A
+successful send clears `ready` and the fresh-session flag, so each send is
+authorized exactly once. No Stop, turn ID, idle epoch, execution state, idle
+sentinel or hook-versus-file timestamp takes part.
 
-Agents print `COORD-IDLE: waiting for the next coordinator action file` when
-they finish an action and find no new one. It can confirm a pane that no vendor
-pattern matched; it can never clear a blocker. Every blocking check runs first,
-and the sentinel counts only when it appears *after* the current action id in
-the captured buffer — the 40-line capture keeps the sentinel from the previous
-action on screen long after it stopped being true.
+The reread protocol is compatible with this. If the reread finds a newer action
+B, the agent executes it and writes no ready file, so B is never sent. If B is
+published after the agent wrote ready, the agent never saw B, so it is sent.
 
-Codex renders the sentinel as an assistant item (`• COORD-IDLE: …`) above its
-composer and footer, so it counts there only when everything below it is at
-most one end-of-turn summary line (`Worked for 5m 21s • 5:42 AM`), the single
-`›` composer — empty or holding just Codex's dimmed placeholder, never an
-unsent draft — and known footer lines (`? for shortcuts` or
-`← for agents · ? for shortcuts`, `Context N% left`). Any other line fails
-closed. The file-backed path applies the same composer and footer rules
-without requiring the sentinel.
+A reissue under the same action UUID has a new digest and is therefore unsent;
+the agent is idle and waiting, so its ready receipt authorizes the send.
 
-**Legacy terminal proof: a stale `working` record before the first send.** A Stop event
-that never reaches this issue leaves lifecycle at `working`, which would block
-the next action forever. While an action has never been sent (no send charged,
-`delivery: "ordered"`, no injection), a current sentinel that passes every veto
-may overrule that `working` record, and only that one. Lifecycle and pane proof
-are rechecked immediately before the batch; AGY retains its per-key checks.
-Codex must show an empty composer, and its vim `i` prelude is sent only from
-NORMAL. A refusal before any key costs nothing. The send is journalled with
-`lifecycleOverride: "working"`, and stdout names the missing Stop. Lifecycle
-state is not rewritten; after that first send, `working` blocks another send.
+## Keystroke safety
 
-## Lost delivery is retried only on positive proof
+Every automatic send passes these checks, re-read before each key batch:
 
-A send that was never accepted may be retried when, and only when,
-`actionAbsentAtReadyPrompt` shows a live, ready prompt whose captured viewport
-no longer contains the action id. Unknown or exhausted-idle delivery must first
-pass the 45-second delivery wait; no degraded-health flag is required. Unknown
-execution also requires no lifecycle event at or after injection, so a delayed
-`SessionStart` cannot reopen delivery. Queue, background, turn-correlation and
-send-budget checks still apply. Elapsed time or a missing `complete` never
-authorize a retry on their own.
+- the pane gate: pane alive, not in copy mode (`owner-typing`), input enabled,
+  and the harness in the foreground;
+- the vendor prompt checks: trust dialogs, Claude usage-limit screens,
+  Antigravity's verify overlay, a visible prompt after startup, and live turn
+  chrome where an Escape-bearing submit would cancel the turn;
+- vim/INSERT prelude selection, and for Codex an empty composer (an owner draft
+  would be submitted with the prompt).
+
+A refusal before any key costs nothing and is retried on a later poll. A
+transport failure after reservation keeps its durable charge and creates a
+`delivery-uncertain` hold. The 60/120/240-second repeat spacing and the
+four-send budget remain as a backstop.
+
+Codex, Claude and Cursor receive one tmux command batch: literal prompt text
+followed by actual submit-key events, with blocking `run-shell` sleeps of 300 ms
+after the text and 150 ms between submit keys. AGY keeps its separate
+literal-text/Enter delivery and delays.
+
+## Acknowledgment is display-only
+
+`UserPromptSubmit` (Codex and Claude) or `beforeSubmitPrompt` (Cursor) matching
+the current action UUID and digest marks the action acknowledged for the status
+report, and resolves that attempt's `delivery-uncertain` hold. It never gates or
+triggers a send. There is no acknowledgment timer.
+
+## Stall watchdog
+
+Once a minute, for each agent that owes work, the coordinator fingerprints:
+
+1. the Claude or Codex session transcript's modification time and size;
+2. the tool-hook sequence (`PreToolUse`/`PostToolUse` for Claude and Codex,
+   `postToolUse`/`postToolUseFailure` for Cursor, invocation hooks for AGY);
+3. a digest of the pane above its last composer line, so the owner's draft and
+   the footer are ignored while spinners and timers count.
+
+The agent is quiet when the fingerprint is unchanged since the previous check
+and no tool call is open (a `PreToolUse` without its end). Hook or journal
+silence alone never counts as quiet. On the first quiet check the current action
+is resent once through the same keystroke-safety checks; if the composer still
+holds this action's unsent prompt, only the submit keys are sent. Still quiet
+after that, one `[WAIT]` line names the agent, the action and how long it has
+been quiet, and `nudge-deferred` is journaled with `code: "stalled"`. There is
+no further resend. Both outcomes are durable for that action and digest.
+
+Resends (watchdog and owner) begin with `If you already wrote complete for this
+action, only write its ready file.`, so a resend that crosses a just-finished
+turn cannot redo the work.
+
+## Workflow truth outranks everything
+
+For Git-mode actions, `complete` plus a pushed commit proves the action arrived.
+For ballot response-mode actions, workflow truth is the completion marker
+(`response <actionId>`) plus an accepted private response, and the gate advances
+only after the coordinator publishes that roster's evidence batch. Completing an
+action also clears a legacy degraded alert already raised against it.
 
 ## Reason codes
 
@@ -193,63 +149,28 @@ Prompt readiness (`PromptBlockedReason`):
 | --- | --- |
 | `trust-dialog` | the harness is on its trust-this-folder prompt |
 | `claude-no-prompt` | no idle prompt is visible |
+| `claude-usage-wait` | Claude is waiting for a usage limit |
 | `cursor-turn-chrome` | a turn is in flight |
 | `antigravity-turn-chrome` | a turn is in flight |
 | `antigravity-verify-overlay` | the account-verify overlay is up and discards keys |
 | `antigravity-no-prompt` | splash or no prompt yet |
 | `codex-turn-chrome` | Codex's `Working (… esc to interrupt)` status line is up |
-| `no-idle-sentinel` | lifecycle reports `working` and the pane shows no current sentinel to overrule it, or its pre-send composer is not empty |
-| `codex-composer-not-ready` | file-backed readiness cannot prove an empty Codex composer before the batch |
-| `pane-capture-unavailable` | file-backed readiness cannot check pane vetoes because the capture failed or was empty |
-| `lifecycle-changed` | lifecycle hooks reported new activity while an override send was being prepared |
+| `codex-composer-not-ready` | the Codex composer holds a draft that is not this action's message |
 
 In-flight status words (`Thinking`, `Working`, `Generating`, `Running`) match
 only at the start of a line, after whitespace or a spinner glyph, and only with
-a trailing ellipsis. Agents on this workflow write those words inside plans and
-reviews; a quoted or bulleted line is prose and must not read as chrome.
-
-Lifecycle wait (`NudgeWaitCode`): `unmatched-action`, `workflow-complete`,
-`pending-input`, `background-active`, `unknown`, `queued`, `working`,
-`idle-transition-already-used`.
-
-## Quiet work is normal
-
-Lifecycle hooks describe transitions, not a continuous heartbeat. An unfinished,
-delivered action is presumed to continue until evidence says otherwise. Missing
-hooks do not create degraded health, an `unobservable` hold, a restart warning or
-permission to resend. This policy applies even when acceptance has not yet
-correlated, and does not fabricate acceptance, execution state or completion.
-
-Quota/resource evidence, vendor waits, harness loss and delivery uncertainty keep
-their existing controls. An operator question or a wait for coordinator work must
-not be inferred from silence. Inspecting the pane can veto delivery, but a failed
-observation cannot establish progress. Observation exceptions emit a verbose
-diagnostic and are retried at the bounded pane-check cadence.
-
-Legacy degraded states remain readable. Already persisted `unobservable` holds
-still require scoped owner recovery with `coord resume --issue N --hold HOLD_ID`;
-this change neither migrates them nor releases other holds or manual pauses.
+a trailing ellipsis or timer. A quoted or bulleted line is prose and must not
+read as chrome.
 
 ## Journalling
 
-Every automatic readiness refusal appends a `nudge-deferred` event carrying `layer`, `code`,
-`human`, `gateWaiting`, the hook snapshot, and `splitBrain: true` when the
-scrape refused while hooks reported idle and healthy. Both sides of a
-disagreement live on one event. `gateWaiting` is true while the action is out
-and unanswered, which is what makes a deferral operator-relevant rather than
-background detail; every delivery path in the run loop today defers only in that
-state, so the field currently reads true wherever it appears, and it is recorded
-so a consumer can tell the difference without re-deriving cursor state. The line
-reaches normal stdout when `gateWaiting` holds or the layers disagree; an
-unchanged code repeating on later ticks stays verbose.
-Clearing a legacy degraded alert on workflow completion appends
-`agent-observability-recovered`. The run loop no longer emits
-`agent-observability-degraded` merely because lifecycle events are missing.
-File-backed sends record `readiness: "ready-file"` and the prior execution in
-`lifecycleOverride`; their diagnostic does not claim a sentinel was visible.
-
-Stop-authorized sends record `readiness: "stop-hook"`. A late submission hook
-that resolves uncertainty records an automatic `hold-released` event with
+Every automatic readiness refusal appends a `nudge-deferred` event carrying
+`layer`, `code`, `human`, `gateWaiting` and the hook health. `gateWaiting` is
+true while the action is out and unanswered; the line reaches normal stdout only
+then, and an unchanged code repeating on later ticks stays verbose. Sends record
+`nudged` with the reason (`initial`, `idle`, `reissue` or `resend`) and, for a
+ready-authorized send, `readyFor`. A late submission hook that resolves
+uncertainty records an automatic `hold-released` event with
 `reason: "prompt-submitted"`.
 
 ## Issue 177 incident evidence (issue 195)

@@ -75,6 +75,26 @@ describe("agent lifecycle hook synchronization", () => {
     expect(readFileSync(path, "utf8")).not.toContain(AGENT_LIFECYCLE_HOOK_MARKER);
   });
 
+  it.each(["codex", "claude"] as const)("installs all-tools %s activity hooks beside the Bash shell guard", (agent) => {
+    const { clone, cliEntry } = fixture();
+    const path = agentLifecycleHookPath(clone, agent)!;
+    const options = effectOptions(() => undefined, false);
+    syncAgentLifecycleHooks({ clone, agent, cliEntry, options });
+    const hooks = json(path).hooks as Record<string, { matcher?: string; hooks: { command: string }[] }[]>;
+    const [guard, activity] = hooks.PreToolUse!;
+    expect(guard).toMatchObject({ matcher: "Bash" });
+    expect(guard!.hooks[0]!.command).toContain("git-guard");
+    expect(activity).not.toHaveProperty("matcher");
+    expect(activity!.hooks[0]!.command).toContain("agent-event");
+    expect(activity!.hooks[0]!.command).toContain("--event 'PreToolUse'");
+    const ends = agent === "claude" ? ["PostToolUse", "PostToolUseFailure"] : ["PostToolUse"];
+    for (const event of ends) expect(hooks[event]![0]!.hooks[0]!.command).toContain(`--event '${event}'`);
+    if (agent === "codex") expect(hooks).not.toHaveProperty("PostToolUseFailure");
+    expect(syncAgentLifecycleHooks({ clone, agent, cliEntry, options }).changed).toBe(false);
+    removeAgentLifecycleHooks({ clone, agent, options });
+    expect(existsSync(path) ? readFileSync(path, "utf8") : "").not.toContain(AGENT_LIFECYCLE_HOOK_MARKER);
+  });
+
   it.each(["codex", "claude", "cursor", "antigravity"] as const)("prefilters %s without starting Node and decodes escaped JSON through Node", (vendor) => {
     const { root, clone } = fixture();
     const cliEntry = join(root, "test-cli.cjs");

@@ -213,24 +213,24 @@ describe("issue report", () => {
     );
   });
 
-  it("shows delivery, execution, health, queue, and background state", () => {
-    const lifecycle = initialAgentLifecycle(["cursor"], "2026-08-13T00:00:00.000Z");
-    lifecycle.agents.cursor = {
-      ...lifecycle.agents.cursor!,
-      execution: "queued",
-      health: "healthy",
-      pendingInputCount: 2,
-      backgroundActive: true
-    };
+  it("shows delivery, ready, watchdog and health without execution state", () => {
+    const at = "2026-08-13T00:00:00.000Z";
+    const lifecycle = initialAgentLifecycle(["cursor"], at);
+    lifecycle.agents.cursor = { ...lifecycle.agents.cursor!, health: "healthy",
+      ready: { actionId: "22222222-2222-4222-8222-222222222222", at } };
     expect(renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle)).toContain(
-      "Agent cursor: no current task; input queued; activity reports healthy, pending=2, background-active"
+      "Agent cursor: no current task; ready for its next action; activity reports healthy, containment"
     );
-    lifecycle.agents.cursor = { ...lifecycle.agents.cursor!, execution: "working", pendingInputCount: null, backgroundActive: null,
-      action: { actionId: "11111111-1111-4111-8111-111111111111", actionDigest: "a".repeat(64), delivery: "ordered",
-        orderedAt: "2026-08-13T00:00:00.000Z", injectedAt: null, retryableInjectionAt: null, acceptedAt: null, sessionId: null,
-        turnId: null, lastNudgedIdleEpoch: null, workflowCompleteAt: null, rereadExpected: true } };
+    const action = { actionId: "11111111-1111-4111-8111-111111111111", actionDigest: "a".repeat(64), delivery: "injected" as const,
+      orderedAt: at, injectedAt: at, acceptedAt: null, sessionId: null, turnId: null, workflowCompleteAt: null,
+      sentHoldGeneration: 0, resentAt: at, waitReportedAt: null, watch: null };
+    lifecycle.agents.cursor = { ...lifecycle.agents.cursor!, ready: null, action };
     expect(renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle)).toContain(
-      "Agent cursor: task file published; agent expected to pick it up by rereading action.md; working; no intervention needed"
+      "Agent cursor: task message sent; resent after a quiet minute; activity reports healthy"
+    );
+    lifecycle.agents.cursor = { ...lifecycle.agents.cursor!, action: { ...action, waitReportedAt: at } };
+    expect(renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle)).toContain(
+      "Agent cursor: task message sent; quiet, waiting on the owner; activity reports healthy"
     );
   });
 

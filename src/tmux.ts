@@ -6,6 +6,7 @@ import type { AgentConfig } from "./state.js";
 import { assertNoSymlink, containedPath, isPathInside } from "./paths.js";
 import { agentNudgeKeyDefaults, agentOwnerUiDefaults } from "./setupWorkspace.js";
 import { shellQuote } from "./agentHookSync.js";
+import { sha256 } from "./hash.js";
 
 export type TmuxResult = { exitCode: number; stdout: string; stderr: string };
 export type TmuxRunner = (args: readonly string[], input?: string) => Promise<TmuxResult>;
@@ -59,15 +60,6 @@ export const harnessLooksReady = (foreground: string, expected?: string): boolea
   return false;
 };
 
-/**
- * The exact line an agent prints once it has written `complete` and found no
- * replacement action. It is *additive* positive evidence: it can confirm an
- * otherwise-ready pane, and it can never clear a blocker (see
- * `harnessPromptReadiness`). Agents are told to print it by the protocol block
- * in `templates/product/AGENTS.protocol.md`.
- */
-export const COORD_IDLE_SENTINEL = "COORD-IDLE: waiting for the next coordinator action file";
-
 /** Why a pane refused a paste. A closed union so journal consumers can match it. */
 export type PromptBlockedReason =
   | "trust-dialog"
@@ -78,17 +70,11 @@ export type PromptBlockedReason =
   | "antigravity-verify-overlay"
   | "antigravity-no-prompt"
   | "codex-turn-chrome"
-  | "no-idle-sentinel"
   | "codex-composer-not-ready"
-  | "pane-capture-unavailable"
-  | "lifecycle-changed";
-
-/** The lifecycle record since an override send began: untouched, showing this nudge accepted, or anything else. */
-export type OverrideLifecycle = "unchanged" | "accepted" | "changed";
-export type IdleOverride = { source: "idle-sentinel" | "ready-file" | "stop-hook"; lifecycle: () => OverrideLifecycle };
+  | "pane-capture-unavailable";
 
 export type PromptReadiness =
-  | { ready: true; reason: "vendor-prompt" | "idle-sentinel" }
+  | { ready: true; reason: "vendor-prompt" }
   | { ready: false; reason: PromptBlockedReason };
 
 /**
@@ -113,12 +99,6 @@ const STATUS_SUFFIX = String.raw`(?:\.\.\.|\u2026|\s+for\s+\d|\s*\(\d)`;
 const inFlightStatusLine = (plain: string, words: string): boolean =>
   new RegExp(String.raw`^${SPINNER_PREFIX}(?:${words})${STATUS_SUFFIX}`, "im").test(plain);
 
-/** True when the sentinel is the last thing the pane rendered. */
-const sentinelAtTail = (plain: string): boolean => {
-  const lines = plain.split("\n").map((line) => line.trim()).filter((line) => line !== "");
-  return lines[lines.length - 1] === COORD_IDLE_SENTINEL;
-};
-
 /**
  * Codex's live status line, `• Working (12s • esc to interrupt)`, near the
  * bottom of the pane. Anchored like `inFlightStatusLine`, so a quoted or
@@ -130,15 +110,12 @@ const codexTurnChrome = (plain: string): boolean =>
 
 const CODEX_FOOTER = /^(?:(?:←\s+for agents\s+·\s+)?\?\s+for shortcuts|Context \d+% left|\d+% context left)/;
 
-/** The dim summary Codex paints once a turn ends: `Worked for 5m 21s • 5:42 AM`, or a `─` rule around it. */
-const CODEX_TURN_SUMMARY = /^[─\s]*Worked for \d+[hms](?:\s*\d+[hms])*(?:\s*•\s*\d{1,2}:\d{2}(?:\s*[AP]M)?)?[─\s]*$/;
-
 /**
  * True when the composer after `›` holds nothing but the placeholder Codex
  * paints dim (SGR 2). Undimmed text is a draft the owner has not sent, and a
  * nudge typed after it would be appended to it and submitted with it.
  */
-const codexComposerEmpty = (rawLine: string): boolean => {
+const composerLineEmpty = (rawLine: string): boolean => {
   const esc = String.fromCharCode(0x1b);
   let dim = false;
   let visible = "";
@@ -167,26 +144,15 @@ const paneLines = (paneText: string): PaneLine[] => paneText.split("\n")
   .filter((line) => line.plain !== "");
 
 /**
- * Codex renders the sentinel as an assistant item (`• COORD-IDLE: …`) above
- * its composer and footer, so it is never the last line. Below the last
- * sentinel only one turn-summary line, the composer (which may wrap) and known
- * footer lines may follow; anything else — a new transcript item, a dialog —
- * fails closed.
+ * Codex's composer (which may wrap) and the known footer lines below it;
+ * anything else after the composer — a dialog, a new transcript item — fails
+ * closed.
  */
-/** Non-blank pane lines below Codex's last rendered sentinel, or null without one. */
-const linesAfterCodexSentinel = (paneText: string): PaneLine[] | null => {
-  const lines = paneLines(paneText);
-  const sentinel = lines.map((line) => line.plain.replace(/^•\s*/, "")).lastIndexOf(COORD_IDLE_SENTINEL);
-  if (sentinel < 0) return null;
-  const after = lines.slice(sentinel + 1);
-  return after[0] !== undefined && CODEX_TURN_SUMMARY.test(after[0].plain) ? after.slice(1) : after;
-};
-
-const codexTail = (paneText: string, requireSentinel = true): { composer: PaneLine[]; footer: PaneLine[] } | null => {
+const codexTail = (paneText: string): { composer: PaneLine[]; footer: PaneLine[] } | null => {
   const lines = paneLines(paneText);
   const composerAt = lines.map((line) => line.plain.startsWith("›")).lastIndexOf(true);
-  const after = requireSentinel ? linesAfterCodexSentinel(paneText) : composerAt < 0 ? null : lines.slice(composerAt);
-  if (after === null) return null;
+  if (composerAt < 0) return null;
+  const after = lines.slice(composerAt);
   const footerAt = after.findIndex((line) => CODEX_FOOTER.test(line.plain));
   const composer = footerAt < 0 ? after : after.slice(0, footerAt);
   const footer = footerAt < 0 ? [] : after.slice(footerAt);
@@ -195,15 +161,15 @@ const codexTail = (paneText: string, requireSentinel = true): { composer: PaneLi
     : null;
 };
 
-/** An empty composer, additionally requiring the sentinel for legacy proof. */
-const codexSentinelAtTail = (paneText: string, requireSentinel = true): boolean => {
-  const tail = codexTail(paneText, requireSentinel);
-  return tail !== null && tail.composer.length === 1 && codexComposerEmpty(tail.composer[0]!.raw);
+/** An empty Codex composer: an owner draft would be submitted with the prompt. */
+const codexComposerEmpty = (paneText: string): boolean => {
+  const tail = codexTail(paneText);
+  return tail !== null && tail.composer.length === 1 && composerLineEmpty(tail.composer[0]!.raw);
 };
 
 /** Codex's footer names its vim mode; the `i` prelude is only needed to leave NORMAL. */
-const codexVimNormal = (paneText: string, requireSentinel = true): boolean =>
-  codexTail(paneText, requireSentinel)?.footer.some((line) => /Vim: Normal/.test(line.plain)) === true;
+const codexVimNormal = (paneText: string): boolean =>
+  codexTail(paneText)?.footer.some((line) => /Vim: Normal/.test(line.plain)) === true;
 
 /** Active unquoted terminal lines, not prose discussing a past limit. Fail closed. */
 const claudeUsageWait = (plain: string): boolean => {
@@ -213,18 +179,32 @@ const claudeUsageWait = (plain: string): boolean => {
   return new RegExp(String.raw`^${prefix}(?:Usage limit (?:reached|reset)|(?:You've|You’ve|You have) hit your(?: .+)? limit|continuing (?:automatically|shortly)|Your usage limit has reset|Automatic continue (?:cancelled|canceled|stopped)|Wait here, then continue automatically)`, "im").test(tail);
 };
 
+/** A composer input line: `❯` (Claude), `›` (Codex), `>` (Antigravity), `→` (Cursor). */
+const COMPOSER_LINE = /^[❯›>→]/;
+
 /**
- * True when the sentinel appears *after* the last mention of `actionId`.
- *
- * The capture buffer keeps 40 lines, so the sentinel an agent printed for the
- * previous action can still be on screen while it works on the current one.
- * Only a sentinel newer than the current action proves present-tense idleness.
+ * True when this action's prompt is still sitting unsent in the composer, so a
+ * resend submits it instead of typing it a second time. Codex's composer is
+ * parsed; other vendors use the lines from the last composer line down, so
+ * already-submitted history above it never counts. Wrapping can split the
+ * UUID, so whitespace is ignored.
  */
-export const idleSentinelAfterAction = (paneText: string, actionId: string): boolean => {
-  const plain = stripAnsi(paneText);
-  const sentinel = plain.lastIndexOf(COORD_IDLE_SENTINEL);
-  if (sentinel < 0) return false;
-  return sentinel > plain.lastIndexOf(actionId);
+export const pendingPromptInComposer = (paneText: string, agentId: string, actionId: string): boolean => {
+  const lines = paneLines(paneText);
+  const composerAt = lines.map((line) => COMPOSER_LINE.test(line.plain)).lastIndexOf(true);
+  const composer = agentId === "codex" ? codexTail(paneText)?.composer ?? [] : composerAt < 0 ? [] : lines.slice(composerAt);
+  return composer.map((line) => line.plain).join("").replace(/\s+/g, "").includes(actionId);
+};
+
+/**
+ * Watchdog activity: a digest of the pane above its last composer line. The
+ * owner's draft and the vendor footer/status line below the composer are
+ * ignored; spinners and elapsed-time chrome above it still change the digest.
+ */
+export const paneActivityDigest = (paneText: string): string => {
+  const lines = stripAnsi(paneText).split("\n");
+  const composerAt = lines.map((line) => COMPOSER_LINE.test(line.trim())).lastIndexOf(true);
+  return sha256((composerAt < 0 ? lines : lines.slice(0, composerAt)).join("\n"));
 };
 
 /**
@@ -232,22 +212,14 @@ export const idleSentinelAfterAction = (paneText: string, actionId: string): boo
  *
  * Process-name readiness alone is not enough: Antigravity/`agy` can be
  * foreground during splash while keys are discarded; Claude may still be on the
- * trust dialog. Every blocking check runs *before* the sentinel is consulted —
- * a positive hint may add a reason to send, never remove one, or a stale
- * sentinel would let the coordinator type into an account-verify overlay that
- * silently drops the keystrokes.
+ * trust dialog. These are keystroke-safety checks, not idle detection.
  */
 export const harnessPromptReadiness = (
   paneText: string,
-  agentId: string,
-  actionId?: string
+  agentId: string
 ): PromptReadiness => {
   const plain = stripAnsi(paneText);
-  // A sentinel older than the current action is stale scrollback, not evidence.
-  const sentinel =
-    (agentId === "codex" ? codexSentinelAtTail(paneText) : sentinelAtTail(plain)) &&
-    (actionId === undefined || idleSentinelAfterAction(plain, actionId));
-  const ready = (): PromptReadiness => ({ ready: true, reason: sentinel ? "idle-sentinel" : "vendor-prompt" });
+  const ready = (): PromptReadiness => ({ ready: true, reason: "vendor-prompt" });
   // Match Cursor's dialog lines (including its box and warning icon), not
   // phrases quoted in prose above an idle prompt.
   if (/trust this folder/i.test(plain) ||
@@ -258,7 +230,7 @@ export const harnessPromptReadiness = (
     case "claude":
       if (claudeUsageWait(plain)) return { ready: false, reason: "claude-usage-wait" };
       if (/❯|auto mode|-- INSERT --|-- NORMAL --|-- VISUAL/i.test(plain)) return ready();
-      return sentinel ? { ready: true, reason: "idle-sentinel" } : { ready: false, reason: "claude-no-prompt" };
+      return { ready: false, reason: "claude-no-prompt" };
     case "cursor":
       // Composer placeholder copy changes; do not match it. Block only on
       // in-flight turn chrome. Process readiness is `harnessLooksReady`.
@@ -276,9 +248,7 @@ export const harnessPromptReadiness = (
         return { ready: false, reason: "antigravity-verify-overlay" };
       }
       if (/>|shortcuts|Accept-edits/i.test(plain) && /Antigravity|Gemini|accept-edits/i.test(plain)) return ready();
-      return sentinel
-        ? { ready: true, reason: "idle-sentinel" }
-        : { ready: false, reason: "antigravity-no-prompt" };
+      return { ready: false, reason: "antigravity-no-prompt" };
     case "codex":
       // Codex accepts keys once the process is up; block only on its live turn status.
       if (codexTurnChrome(plain)) return { ready: false, reason: "codex-turn-chrome" };
@@ -287,10 +257,6 @@ export const harnessPromptReadiness = (
       return ready();
   }
 };
-
-/** True when the TUI has an idle prompt that can accept typed input. */
-export const harnessPromptReady = (paneText: string, agentId: string, actionId?: string): boolean =>
-  harnessPromptReadiness(paneText, agentId, actionId).ready;
 
 /**
  * Vim-mode TUIs swallow the first nudge character in NORMAL. Enter insert with
@@ -414,12 +380,15 @@ export const NUDGE_AFTER_PRELUDE_MS = 150;
  */
 export const NUDGE_BEFORE_ANTIGRAVITY_MS = 2500;
 
-export const renderNudgeText = (actionPath: string, actionId?: string, actionDigest?: string): string =>
-  actionId === undefined
+/** The resend prefix precedes the identity: the prompt parser reads `at <path>` to end of line. */
+export const RESEND_PREFIX = "If you already wrote complete for this action, only write its ready file. ";
+
+export const renderNudgeText = (actionPath: string, actionId?: string, actionDigest?: string, resend = false): string =>
+  (resend ? RESEND_PREFIX : "") + (actionId === undefined
     ? `Read and execute your current coordinator action at ${actionPath}`
     : actionDigest === undefined
       ? `Read and execute coordinator action ${actionId} at ${actionPath}`
-      : `Read and execute coordinator action ${actionId} digest ${actionDigest} at ${actionPath}`;
+      : `Read and execute coordinator action ${actionId} digest ${actionDigest} at ${actionPath}`);
 
 /** Why the pane gate refused. A closed union, like `PromptBlockedReason`. */
 export type GateReason = "ok" | "pane-dead" | "owner-typing" | "input-off" | "foreground-mismatch";
@@ -1176,24 +1145,6 @@ export class TmuxController {
     return captured.stdout;
   }
 
-  /** Positive recovery evidence: a live, ready prompt whose viewport lacks this action UUID. */
-  async actionAbsentAtReadyPrompt(
-    issue: number,
-    agent: AgentConfig,
-    actionId: string,
-    assertAuthority: () => void = () => undefined
-  ): Promise<boolean> {
-    const target = this.target(issue, agent.id);
-    const gate = await this.injectionGate(target, agent, assertAuthority);
-    if (gate.status !== "ok") return false;
-    const captured = await this.runner(["capture-pane", "-ep", "-t", target, "-S", "-40"]);
-    assertAuthority();
-    if (captured.exitCode !== 0) return false;
-    // The UUID check stays on the full 40-line capture: a ready prompt is not
-    // proof on its own, only a ready prompt that never showed this action.
-    return harnessPromptReady(captured.stdout, agent.id, actionId) && !captured.stdout.includes(actionId);
-  }
-
   /** An explicit owner instruction uses the transport without automatic readiness policy. */
   async remind(
     issue: number, agent: AgentConfig, text: string,
@@ -1217,7 +1168,7 @@ export class TmuxController {
       try { paneText = await this.capturePane(target); } catch { /* Use configured keys. */ }
       assertAuthority();
       const { prelude, submit } = resolveNudgeKeys(agent, paneText);
-      const preludeKeys = agent.id === "codex" && !codexVimNormal(paneText, false) ? [] : prelude;
+      const preludeKeys = agent.id === "codex" && !codexVimNormal(paneText) ? [] : prelude;
       await this.typeAndSubmit(target, agent, text, preludeKeys, submit, async (args) => {
         assertAuthority();
         if (!began) { onBegin(); began = true; }
@@ -1242,11 +1193,7 @@ export class TmuxController {
     actionId?: string,
     actionDigest?: string,
     reserveSend: () => void = () => undefined,
-    /**
-     * Stop authorizes queued delivery; file/sentinel proof can recover stale
-     * lifecycle state. Revalidate immediately before the batch or AGY key.
-     */
-    staleOverride?: IdleOverride
+    options: { resend?: boolean } = {}
   ): Promise<NudgeOutcome> {
     if (agent.delivery !== "nudge" && agent.delivery !== "both") {
       return { status: "disabled", reason: "delivery-disabled", stage: "config" };
@@ -1256,28 +1203,20 @@ export class TmuxController {
     if (initial.status !== "ok") {
       return { status: initial.status, reason: initial.reason, stage: "gate", ...(initial.detail === undefined ? {} : { detail: initial.detail }) };
     }
-    const stopped = staleOverride?.source === "stop-hook";
-    const requireSentinel = staleOverride?.source === "idle-sentinel";
-    const readinessForSend = (text: string): PromptReadiness => {
-      const readiness = harnessPromptReadiness(text, agent.id, actionId);
-      // Stop is vendor evidence that the next prompt can be queued. Stale
-      // Working chrome and missing prompt/sentinel text cannot veto it.
-      if (stopped && (readiness.ready || !["trust-dialog", "claude-usage-wait", "antigravity-verify-overlay"].includes(readiness.reason))) {
-        return { ready: true, reason: "vendor-prompt" };
-      }
-      if (staleOverride?.source === "ready-file" && stripAnsi(text).trim() === "") {
-        return { ready: false, reason: "pane-capture-unavailable" };
-      }
-      return readiness;
+    const promptPending = (text: string): boolean => actionId !== undefined && pendingPromptInComposer(text, agent.id, actionId);
+    // Keystroke safety only. Codex and Cursor queue a prompt typed mid-turn, so
+    // their turn chrome vetoes only keys that include Escape, which cancels a turn.
+    const readinessFor = (text: string): PromptReadiness => {
+      if (stripAnsi(text).trim() === "") return { ready: false, reason: "pane-capture-unavailable" };
+      const readiness = harnessPromptReadiness(text, agent.id);
+      const { prelude, submit } = resolveNudgeKeys(agent, text);
+      return !readiness.ready && ["codex-turn-chrome", "cursor-turn-chrome"].includes(readiness.reason) &&
+        ![...prelude, ...submit].includes("Escape") ? { ready: true, reason: "vendor-prompt" } : readiness;
     };
     const proofRefusal = (text: string): PromptBlockedReason | null => {
-      const readiness = readinessForSend(text);
+      const readiness = readinessFor(text);
       if (!readiness.ready) return readiness.reason;
-      if (requireSentinel && readiness.reason !== "idle-sentinel") return "no-idle-sentinel";
-      if (staleOverride?.source === "ready-file" && agent.id === "codex" && !codexSentinelAtTail(text, false)) {
-        return "codex-composer-not-ready";
-      }
-      return staleOverride !== undefined && staleOverride.lifecycle() !== "unchanged" ? "lifecycle-changed" : null;
+      return agent.id === "codex" && !codexComposerEmpty(text) && !promptPending(text) ? "codex-composer-not-ready" : null;
     };
     let paneText = await this.capturePane(target);
     assertAuthority();
@@ -1291,23 +1230,21 @@ export class TmuxController {
       const refused = proofRefusal(paneText);
       if (refused !== null) return { status: "busy", reason: refused, stage: "antigravity-recapture" };
     }
-    const text = renderNudgeText(actionPath, actionId, actionDigest);
+    // A prompt still sitting in the composer is submitted, not typed again.
+    const submitOnly = promptPending(paneText);
+    const text = submitOnly ? null : renderNudgeText(actionPath, actionId, actionDigest, options.resend === true);
     const { prelude, submit } = resolveNudgeKeys(agent, paneText);
-    const preludeKeys = agent.id === "codex" && !codexVimNormal(paneText, requireSentinel)
-      ? [] : prelude;
+    const preludeKeys = submitOnly || (agent.id === "codex" && !codexVimNormal(paneText)) ? [] : prelude;
     let began = false;
     const send = async (args: readonly string[]): Promise<NudgeOutcome | null> => {
       const gate = await this.injectionGate(target, agent, assertAuthority);
       if (gate.status !== "ok") return { status: gate.status, reason: gate.reason,
         stage: began ? "mid-send" : "gate", ...(gate.detail === undefined ? {} : { detail: gate.detail }) };
-      if (staleOverride !== undefined || agent.id === "claude") {
+      if (agent.id === "claude" || agent.id === "codex") {
         const latest = await this.capturePane(target);
         assertAuthority();
-        const readiness = readinessForSend(latest);
-        const refused = began
-          ? (staleOverride !== undefined && staleOverride.lifecycle() !== "unchanged" ? "lifecycle-changed"
-            : !readiness.ready ? readiness.reason : null)
-          : proofRefusal(latest);
+        const readiness = readinessFor(latest);
+        const refused = began ? (!readiness.ready ? readiness.reason : null) : proofRefusal(latest);
         if (refused !== null) return { status: "busy", reason: refused, stage: began ? "mid-send" : "prompt" };
       }
       if (!began) { reserveSend(); began = true; }
@@ -1320,14 +1257,12 @@ export class TmuxController {
     if (refusedDuringSend !== null) return refusedDuringSend;
     // This is transport success only. A matching vendor prompt-submit hook
     // acknowledges acceptance, even if it arrives after this method returns.
-    return { status: "sent", reason: "sent", stage: "complete",
-      ...(staleOverride !== undefined ? { detail: staleOverride.source }
-        : harnessPromptReadiness(paneText, agent.id, actionId).reason === "idle-sentinel" ? { detail: "idle-sentinel" } : {}) };
+    return { status: "sent", reason: "sent", stage: "complete", ...(submitOnly ? { detail: "pending-prompt-submitted" } : {}) };
   }
 
   /** Share vendor key layout and text/key timing between automatic and owner delivery. */
   private async typeAndSubmit(
-    target: string, agent: AgentConfig, text: string, preludeKeys: readonly string[], submit: readonly string[],
+    target: string, agent: AgentConfig, text: string | null, preludeKeys: readonly string[], submit: readonly string[],
     send: (args: readonly string[]) => Promise<NudgeOutcome | null>, assertAuthority: () => void
   ): Promise<NudgeOutcome | null> {
     if (agent.id === "antigravity") {
@@ -1336,8 +1271,10 @@ export class TmuxController {
         const refused = await send(["send-keys", "-t", target, key]);
         if (refused !== null) return refused;
       }
-      const refused = await send(["send-keys", "-l", "-t", target, text]);
-      if (refused !== null) return refused;
+      if (text !== null) {
+        const refused = await send(["send-keys", "-l", "-t", target, text]);
+        if (refused !== null) return refused;
+      }
       await this.sleep(NUDGE_AFTER_TEXT_MS);
       assertAuthority();
       for (const [index, key] of submit.entries()) {
@@ -1356,7 +1293,7 @@ export class TmuxController {
           ["run-shell", `sleep ${NUDGE_AFTER_PRELUDE_MS / 1000}`]
         ]),
         // If a prelude key lands in the composer anyway, keep it apart from the prompt.
-        ["send-keys", "-l", "-t", target, preludeKeys.length > 0 ? ` ${text}` : text],
+        ...(text === null ? [] : [["send-keys", "-l", "-t", target, preludeKeys.length > 0 ? ` ${text}` : text]]),
         ...submit.flatMap((key, index) => [
           ["run-shell", `sleep ${(index === 0 ? NUDGE_AFTER_TEXT_MS : NUDGE_BETWEEN_SUBMIT_MS) / 1000}`],
           ["send-keys", "-t", target, key]

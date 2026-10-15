@@ -55,27 +55,6 @@ export const stringField = (value: JsonObject, ...names: readonly string[]): str
   return undefined;
 };
 
-const intField = (value: JsonObject, ...names: readonly string[]): number | undefined => {
-  for (const name of names) {
-    const candidate = value[name];
-    if (typeof candidate === "number" && Number.isInteger(candidate) && candidate >= 0) return candidate;
-  }
-  return undefined;
-};
-
-const boolField = (value: JsonObject, ...names: readonly string[]): boolean | undefined => {
-  for (const name of names) {
-    const candidate = value[name];
-    if (typeof candidate === "boolean") return candidate;
-  }
-  return undefined;
-};
-
-const arrayHasItems = (value: JsonObject, name: string): boolean | undefined => {
-  const candidate = value[name];
-  return Array.isArray(candidate) ? candidate.length > 0 : undefined;
-};
-
 const eventNameOf = (raw: JsonObject, explicitEvent?: string): string =>
   explicitEvent ?? stringField(raw, "hook_event_name", "hookEventName") ?? "unknown";
 
@@ -108,7 +87,9 @@ export const normalizeAgentEvent = (
           : { actionId: action.actionId, actionDigest: action.actionDigest, actionPath: action.actionPath })
       };
     }
-    if (normalizedName === "stop") return { kind: "stopped", ...common, backgroundActive: false };
+    if (normalizedName === "pretooluse") return { kind: "tool-start", ...common };
+    if (normalizedName === "posttooluse") return { kind: "tool-activity", ...common };
+    if (normalizedName === "stop") return { kind: "stopped", ...common };
     return null;
   }
 
@@ -134,7 +115,7 @@ export const normalizeAgentEvent = (
     if (normalizedName === "stopfailure") {
       // Actual StopFailure fields only; no invented error_type/error_message aliases.
       return {
-        kind: "failed", ...common, backgroundActive: false,
+        kind: "failed", ...common,
         failure: {
           vendor: "claude",
           error: stringField(raw, "error") ?? null,
@@ -147,12 +128,9 @@ export const normalizeAgentEvent = (
       const rateLimits = parseClaudeRateLimits(raw);
       return rateLimits === null ? null : { kind: "telemetry", ...common, rateLimits };
     }
-    if (normalizedName === "stop") {
-      const background = [arrayHasItems(raw, "background_tasks"), arrayHasItems(raw, "session_crons")].some(
-        (value) => value === true
-      );
-      return { kind: "stopped", ...common, backgroundActive: background };
-    }
+    if (normalizedName === "pretooluse") return { kind: "tool-start", ...common };
+    if (normalizedName === "posttooluse" || normalizedName === "posttoolusefailure") return { kind: "tool-activity", ...common };
+    if (normalizedName === "stop") return { kind: "stopped", ...common };
     return null;
   }
 
@@ -188,49 +166,20 @@ export const normalizeAgentEvent = (
       const status = stringField(raw, "status", "reason", "final_status")?.toLowerCase();
       return status === "error" || status === "aborted"
         ? {
-          kind: "failed", ...common, backgroundActive: false,
+          kind: "failed", ...common,
           failure: { vendor: "cursor", status, error: stringField(raw, "error", "error_message") ?? null, errorDetails: null, lastAssistantMessage: null }
         }
-        : { kind: "stopped", ...common, backgroundActive: false };
+        : { kind: "stopped", ...common };
     }
     return null;
   }
 
   const sessionId = stringField(raw, "conversation_id", "session_id", "conversationId");
   const common = { eventName, ...(sessionId === undefined ? {} : { sessionId }) };
-  if (normalizedName === "status-line" || normalizedName === "statusline") {
-    const pendingInputCount = intField(raw, "pending_input_count") ?? 0;
-    const taskCount = intField(raw, "task_count") ?? 0;
-    const toolConfirmationPending = boolField(raw, "tool_confirmation_pending") ?? false;
-    const state = stringField(raw, "agent_state")?.toLowerCase();
-    const execution =
-      pendingInputCount > 0 || taskCount > 0 || toolConfirmationPending
-        ? "queued"
-        : state === "idle"
-          ? "idle"
-          : state === "thinking" || state === "working" || state === "tool_use" || state === "initializing"
-            ? "working"
-            : "unknown";
-    return {
-      kind: "status",
-      ...common,
-      execution,
-      pendingInputCount,
-      backgroundActive: taskCount > 0 || toolConfirmationPending
-    };
-  }
-  if (normalizedName === "preinvocation" || normalizedName === "postinvocation") {
-    return { kind: "working", ...common };
-  }
-  if (normalizedName === "stop") {
-    const fullyIdle = boolField(raw, "fullyIdle") ?? false;
-    return {
-      kind: "stopped",
-      ...common,
-      backgroundActive: !fullyIdle,
-      allowInjectedIdle: fullyIdle
-    };
-  }
+  // The status payload only establishes session identity; activity comes from the watchdog.
+  if (normalizedName === "status-line" || normalizedName === "statusline") return { kind: "status", ...common };
+  if (normalizedName === "preinvocation" || normalizedName === "postinvocation") return { kind: "tool-activity", ...common };
+  if (normalizedName === "stop") return { kind: "stopped", ...common };
   return null;
 };
 
@@ -373,8 +322,9 @@ export const handleAgentEvent = (input: HandleAgentEventInput): HandleAgentEvent
     state = result.state;
     const journalsTurnBoundary = observation.kind === "prompt-submitted" || observation.kind === "stopped";
     const failure = observation.failure === undefined ? null : result.state.agents[agent]?.lastFailure ?? null;
-    // Status renders are telemetry: never journaled, however often they change.
-    if (observation.kind !== "telemetry" && (result.changed || journalsTurnBoundary)) {
+    // Status renders and tool callbacks are never journaled, however often they change.
+    const quiet = observation.kind === "telemetry" || observation.kind === "tool-start" || observation.kind === "tool-activity";
+    if (!quiet && (result.changed || journalsTurnBoundary)) {
       appendJournal(
         paths,
         {
@@ -385,7 +335,6 @@ export const handleAgentEvent = (input: HandleAgentEventInput): HandleAgentEvent
             vendor: input.vendor,
             event: observation.eventName,
             kind: observation.kind,
-            execution: result.state.agents[agent]?.execution ?? "unknown",
             health: result.state.agents[agent]?.health ?? "unknown",
             ...(observation.sessionId === undefined ? {} : { sessionId: observation.sessionId }),
             ...(observation.turnId === undefined ? {} : { turnId: observation.turnId }),

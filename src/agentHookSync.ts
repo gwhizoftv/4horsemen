@@ -104,13 +104,13 @@ const eventArray = (hooks: JsonObject, event: string, path: string): unknown[] =
 };
 
 const nestedEvents: Record<"codex" | "claude", readonly string[]> = {
-  codex: ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "PreToolUse"],
-  claude: ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd", "PreToolUse"]
+  codex: ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "PreToolUse", "PostToolUse"],
+  claude: ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd", "PreToolUse", "PostToolUse", "PostToolUseFailure"]
 };
 
-/** Lifecycle hooks that drive nudge delivery and idle detection. */
+/** Lifecycle hooks: session identity, prompt acknowledgment and turn ends. */
 export const cursorLifecycleEvents = ["sessionStart", "beforeSubmitPrompt", "stop", "sessionEnd"] as const;
-/** Analytics hooks: tool counts and optional per-turn token fields on stdin. */
+/** Analytics hooks: tool counts and optional per-turn token fields on stdin; tool hooks are also stall-watchdog activity. */
 export const cursorUsageEvents = ["postToolUse", "postToolUseFailure", "afterAgentResponse"] as const;
 export const cursorManagedEvents = [...cursorLifecycleEvents, ...cursorUsageEvents, "beforeShellExecution"] as const;
 const cursorEvents = cursorManagedEvents;
@@ -132,20 +132,22 @@ const plannedDocument = (input: {
         const cleaned = withoutManagedNestedHandlers(entry);
         return cleaned.value === null ? [] : [cleaned.value];
       });
+      const lifecycle = {
+        hooks: [
+          {
+            type: "command",
+            command: `${managesEditorMode && event === "SessionStart" ? `${CLAUDE_EDITOR_MODE_MARKER} ` : ""}${renderAgentLifecycleHookCommand(input.cliEntry, input.clone, input.vendor, event)}`,
+            timeout: 5
+          }
+        ]
+      };
+      // PreToolUse carries the Bash shell guard and, for every tool, watchdog activity.
       hooks[event] = [
         ...existing,
-        {
-          ...(event === "PreToolUse" ? { matcher: "Bash" } : {}),
-          hooks: [
-            {
-              type: "command",
-              command: event === "PreToolUse"
-                ? renderShellGuardHookCommand(input.cliEntry, input.clone, input.vendor)
-                : `${managesEditorMode && event === "SessionStart" ? `${CLAUDE_EDITOR_MODE_MARKER} ` : ""}${renderAgentLifecycleHookCommand(input.cliEntry, input.clone, input.vendor, event)}`,
-              timeout: event === "PreToolUse" ? 10 : 5
-            }
-          ]
-        }
+        ...(event === "PreToolUse"
+          ? [{ matcher: "Bash", hooks: [{ type: "command", command: renderShellGuardHookCommand(input.cliEntry, input.clone, input.vendor), timeout: 10 }] }]
+          : []),
+        lifecycle
       ];
     }
     return {

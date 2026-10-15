@@ -502,7 +502,7 @@ Implement the selected product files.
 });
 
 describe("lifecycle nudge canary", () => {
-  it("does not pile a second prompt after 45 seconds and permits one after the matching turn stops", async () => {
+  it("never piles a second prompt on Stop and sends the next action when the agent writes ready", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "coord-lifecycle-e2e-"));
     roots.push(workspace);
     const root = join(workspace, "coord-runtime");
@@ -540,7 +540,8 @@ describe("lifecycle nudge canary", () => {
     });
     let nowMs = Date.parse("2026-08-18T00:00:00.000Z");
     let submittedPrompts = 0;
-    let paneText = "";
+    const idle = "› \n? for shortcuts\n";
+    let paneText = idle;
     const tmux = new TmuxController(async (args) => {
       if (args[0] === "display-message") return { exitCode: 0, stdout: "0\tcodex\t0\t0\n", stderr: "" };
       if (args[0] === "capture-pane") return { exitCode: 0, stdout: paneText, stderr: "" };
@@ -568,14 +569,28 @@ describe("lifecycle nudge canary", () => {
       kind: "stopped",
       eventName: "Stop",
       sessionId: "session-1",
-      turnId: "turn-1",
-      backgroundActive: false
+      turnId: "turn-1"
     });
     await loop.runTick();
-    expect(submittedPrompts).toBe(1); // a Stop cannot bypass the 60-second minimum
+    expect(submittedPrompts).toBe(1); // a Stop is no authority to send
     nowMs += 15_000;
     await loop.runTick();
+    expect(submittedPrompts).toBe(1);
+
+    // The coordinator accepts the action and publishes the next; the agent's ready receipt sends it.
+    const runtime = agentRuntimePaths(paths, "codex");
+    const next = "20000000-0000-4000-8000-000000000002";
+    mutateCursorsState(paths, (current) => ({ ...current, agents: { ...current.agents,
+      codex: { ...current.agents.codex!, actionId: next, lastAcceptedActionId: action.actionId } } }));
+    writeFileSync(runtime.action, readFileSync(runtime.action, "utf8").replaceAll(action.actionId, next));
+    paneText = idle;
+    nowMs += 1_000;
+    await loop.runTick();
+    expect(submittedPrompts).toBe(1);
+    writeFileSync(runtime.ready, `ready ${action.actionId}\n`);
+    await loop.runTick();
     expect(submittedPrompts).toBe(2);
+    expect(existsSync(runtime.ready)).toBe(false);
     await loop.runTick();
     expect(submittedPrompts).toBe(2);
   });

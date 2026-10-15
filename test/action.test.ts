@@ -78,7 +78,7 @@ describe("agent actions", () => {
     expect(raw).toContain(`/runtime/completes/issue-1/codex/ready`);
     expect(raw).toContain(`ready ${input.actionId}`);
     expect(raw).toContain("or is missing because");
-    expect(raw).toContain("COORD-IDLE: waiting for the next coordinator action file");
+    expect(raw).not.toContain("COORD-IDLE");
     expect(raw.indexOf(`ready ${input.actionId}`)).toBeGreaterThan(raw.indexOf("If `actionId` in the front matter has changed"));
     expect(parseAction(raw)).not.toHaveProperty("readyPath");
   });

@@ -82,16 +82,7 @@ The action body gives the exact path. Do not write ready if the re-read failed
 for any other reason, or while executing a replacement action. This applies to
 both Git-mode and response-mode actions and does not require a Git commit.
 
-Then end your reply with this exact line, on its own, with nothing after it:
-
-```
-COORD-IDLE: waiting for the next coordinator action file
-```
-
-Coordination uses the ready file as durable idle evidence and still checks your
-terminal before typing. Keep the line as additional evidence for older versions.
-Print it only when you are genuinely finished and waiting; never print it while
-work is still in progress.
+Coordination sends your next action when it reads the ready file.
 
 A **plan** (`.plans/issue-<n>/plan.md`) must include every heading below,
 each with a non-empty body:

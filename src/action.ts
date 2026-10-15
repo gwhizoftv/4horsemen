@@ -187,10 +187,6 @@ the coordinator accepted it, write this exact line as the sole contents of
 
 \`ready ${order.actionId}\`
 
-Then end your reply with this exact line, on its own, with nothing after it:
-
-COORD-IDLE: waiting for the next coordinator action file
-
 Do not write ready while executing a replacement action or if the re-read
 failed for a reason other than a missing file.
 `;
