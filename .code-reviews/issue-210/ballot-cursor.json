@@ -1,0 +1,29 @@
+{
+  "actionId": "2e93021b-06d7-4c20-b304-0bc4a964aec1",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "755a65d93d46a7feae802065d4dbde39626d7d02",
+      "path": ".signals/issue-210/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "68694071858bcc44a57738a8fad0ae401933e930",
+      "path": ".signals/issue-210/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "86dd06eb7761e863dd2e69825f80ea9082f917bb",
+      "path": ".signals/issue-210/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "c90b426fe0de511df47534d9851b4fff420f628528169d27695e4ad8a6829d54",
+  "issue": 210,
+  "issueSessionId": "issue-210:cb7ed092cb8a5d15f651387651df7c631e4596e6",
+  "protocolVersion": 2,
+  "rationale": "Codex best matches the selected plan by keeping current integration boundaries, quantifying why a registry does not pay for the next harness, and uniquely documenting Muse hook cleared-env versus COORD_ISSUE fail-open plus sandbox/.git grant hazards that Claude understates and Cursor omits.",
+  "responseSha256": "ce6a795fbfad9c162c3f26c594530befb79de4e7bbc6baedd442b2be5a855b23"
+}

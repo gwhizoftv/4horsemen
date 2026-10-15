@@ -1,0 +1,29 @@
+{
+  "actionId": "805eb061-9d04-43cf-aa76-d407ea5350e2",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "755a65d93d46a7feae802065d4dbde39626d7d02",
+      "path": ".signals/issue-210/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "68694071858bcc44a57738a8fad0ae401933e930",
+      "path": ".signals/issue-210/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "86dd06eb7761e863dd2e69825f80ea9082f917bb",
+      "path": ".signals/issue-210/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "c90b426fe0de511df47534d9851b4fff420f628528169d27695e4ad8a6829d54",
+  "issue": 210,
+  "issueSessionId": "issue-210:cb7ed092cb8a5d15f651387651df7c631e4596e6",
+  "protocolVersion": 2,
+  "rationale": "Codex's analysis is the most complete and the only one that catches the verified blocker that Muse hooks run in a cleared environment so coord's shell guard (src/shellGuard.ts:283) would silently allow without COORD_ISSUE, needing only a provenance fix and the unknown-id nudge-key evidence from the Claude pin.",
+  "responseSha256": "26a89a5f3b1f02feccec2e675752164acd50189fafcd802f471bc55280e128b6"
+}

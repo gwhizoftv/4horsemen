@@ -1,0 +1,29 @@
+{
+  "actionId": "c425bf74-0b43-45ff-aa72-d98ab33f2f55",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "755a65d93d46a7feae802065d4dbde39626d7d02",
+      "path": ".signals/issue-210/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "68694071858bcc44a57738a8fad0ae401933e930",
+      "path": ".signals/issue-210/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "86dd06eb7761e863dd2e69825f80ea9082f917bb",
+      "path": ".signals/issue-210/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "c90b426fe0de511df47534d9851b4fff420f628528169d27695e4ad8a6829d54",
+  "issue": 210,
+  "issueSessionId": "issue-210:cb7ed092cb8a5d15f651387651df7c631e4596e6",
+  "protocolVersion": 2,
+  "rationale": "Codex provides the most complete source map, explicitly addresses Muse hook-environment and Git-write blockers, and justifies a bounded integration without an unnecessary registry migration.",
+  "responseSha256": "00dc585246c2cd9e94bb9c6ac2463565f9d7c56fad80345ae6a5d4f9737fb9fc"
+}
