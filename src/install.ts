@@ -253,6 +253,54 @@ const bootstrapCoordination = (installRoot: string, options: EffectOptions): voi
   }
 };
 
+/** Describe the merged policy, including partial declarations, without recording a mutation. */
+const logProjectPolicy = (
+  config: CoordinatorConfig,
+  declared: WorkspaceDeclaration | null,
+  options: EffectOptions
+): void => {
+  const source = (field: keyof WorkspaceDeclaration): string => declared?.[field] === undefined ? "inferred" : "declared";
+  const commands = (checks: CoordinatorConfig["checks"] | undefined): string => checks === undefined
+    ? "not configured"
+    : checks.length === 0 ? "none" : checks.map((check) => `${check.name} ${JSON.stringify(check.argv)}`).join("; ");
+  const lines = [
+    `${options.dryRun ? "Proposed" : "Effective"} verification policy:`,
+    `  toolchain (${source("toolchain")}): ${config.toolchain ?? "unspecified"}`,
+    `  local precommit (${source("verify")}): ${commands(config.verify?.precommit)}`,
+    `  local prepush (${source("verify")}): ${commands(config.verify?.prepush)}`,
+    `  finalization (${source("checks")}): ${commands(config.checks)}`,
+    `  critical prefixes (${source("workflowCriticalPrefixes")}): ${JSON.stringify(config.workflowCriticalPrefixes)}`,
+    `  critical files (${source("workflowCriticalFiles")}): ${JSON.stringify(config.workflowCriticalFiles)}`
+  ];
+  if (config.verify === undefined) lines.push("  Local hooks block product changes until verify is declared.");
+  if (config.documentation !== undefined) {
+    const docs = config.documentation;
+    lines.push(`  documentation-only (${source("documentation")}): ${JSON.stringify(docs.paths)}`,
+      `    precommit: ${commands(docs.verify.precommit)}; prepush: ${commands(docs.verify.prepush)}; finalization: ${commands(docs.checks)}`);
+  }
+  if (config.verification?.mode === "coordinator") {
+    lines.push("  During an active coordinated issue, coordinated hooks replace local hooks:",
+      `    coordinated precommit (declared): ${commands(config.verification.coordinated?.precommit)}`,
+      `    coordinated prepush (declared): ${commands(config.verification.coordinated?.prepush)}`,
+      `    candidate checks (declared): ${commands(config.verification.candidate?.checks)}`);
+  }
+  lines.push("  These commands are recorded, not run during installation; product dependencies are not installed.",
+    "  Make tools and dependencies available to agent clones and fresh finalization worktrees.",
+    "  Onboarding's doctor checks executable availability, not whether the product suite passes.");
+  const effectiveCommands = [...(config.verify?.precommit ?? []), ...(config.verify?.prepush ?? []), ...config.checks];
+  if (effectiveCommands.some((check) => check.argv[0] === "pytest")) {
+    lines.push("  pytest must be on PATH (activate your prepared environment); no tests collected is a failure.");
+  }
+  if (effectiveCommands.some((check) => check.argv[0] === "flutter")) {
+    lines.push("  Flutter commands require the Flutter SDK and prepared product dependencies.");
+    if (effectiveCommands.some((check) => check.argv[0] === "flutter" && check.argv.includes("--no-fatal-infos"))) {
+      lines.push("  --no-fatal-infos leaves analyzer warnings and errors fatal; informational diagnostics do not block.");
+    }
+  }
+  lines.push("  Use --declare <file.json> to override policy fields; keep that declaration for reinstalls.");
+  options.log(`${lines.join("\n")}\n`);
+};
+
 export const install = (options: InstallOptions): InstallResult => {
   const effects = effectOptions(options.log, options.dryRun);
   const installRoot = requireWorktree(resolve(options.installRoot), "The coordination install root");
@@ -378,6 +426,8 @@ export const install = (options: InstallOptions): InstallResult => {
       ? previous.coordination
       : stamp
   );
+
+  logProjectPolicy(config, declared, effects);
 
   // ---- steps 2-5: per-agent clone wiring ----------------------------------
   const clones: string[] = [];

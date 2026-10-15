@@ -153,6 +153,85 @@ describe("pre-push scope", () => {
 });
 
 describe("installer proposals", () => {
+  it.each(["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"])("proposes pytest without a linter for %s", (marker) => {
+    const root = mkdtempSync(join(tmpdir(), "coord-python-"));
+    try {
+      writeFileSync(join(root, marker), "# fixture\n");
+      const test = { name: "test", argv: ["pytest", "-q"] };
+      expect(proposeProjectPolicy(root)).toEqual({
+        toolchain: "python", verify: { precommit: [test], prepush: [] }, checks: [test],
+        workflowCriticalPrefixes: ["src/", "tests/", "test/"],
+        workflowCriticalFiles: ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "pytest.ini", "tox.ini",
+          "uv.lock", "poetry.lock", "Pipfile", "Pipfile.lock"]
+      });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ["block dependency", "dependencies:\n  flutter:\n    sdk: flutter # SDK\n", true],
+    ["quoted inline dependency", 'dependencies: {flutter: {sdk: "flutter"}}\n', true],
+    ["development SDK", "dev_dependencies: {flutter_test: {sdk: flutter}}\n", true],
+    ["plain Dart", 'environment: {sdk: "^3.0.0"}\n', false],
+    ["description string", "description: |\n  sdk: flutter\n", false],
+    ["comment", "# sdk: flutter\n", false],
+    ["malformed YAML", "dependencies: [\n", false],
+    ["non-mapping", "- sdk: flutter\n", false]
+  ])("identifies Flutter by its SDK mapping: %s", (_name, manifest, flutter) => {
+    const root = mkdtempSync(join(tmpdir(), "coord-flutter-"));
+    try {
+      writeFileSync(join(root, "pubspec.yaml"), String(manifest));
+      const proposal = proposeProjectPolicy(root);
+      if (flutter) {
+        const analyze = { name: "analyze", argv: ["flutter", "analyze", "--no-fatal-infos"] };
+        const test = { name: "test", argv: ["flutter", "test"] };
+        expect(proposal).toEqual({
+          toolchain: "flutter", verify: { precommit: [analyze], prepush: [test] }, checks: [analyze, test],
+          workflowCriticalPrefixes: ["lib/", "test/", "integration_test/", "android/", "ios/", "web/", "macos/", "windows/", "linux/"],
+          workflowCriticalFiles: ["pubspec.yaml", "pubspec.lock", "analysis_options.yaml"]
+        });
+      } else {
+        expect(proposal.checks).toBeUndefined();
+        expect(proposal.verify).toBeUndefined();
+        expect(proposal.toolchain).toBeUndefined();
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("preserves usable project gates and only falls back from incidental tooling", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-mixed-"));
+    try {
+      writeFileSync(join(root, "pyproject.toml"), "# fixture\n");
+      writeFileSync(join(root, "pubspec.yaml"), "dependencies: {flutter: {sdk: flutter}}\n");
+      writeFileSync(join(root, "go.mod"), "module example.com/x\n");
+      writeFileSync(join(root, "Cargo.toml"), "[package]\n");
+      expect(proposeProjectPolicy(root).toolchain).toBe("cargo");
+      rmSync(join(root, "Cargo.toml"));
+      expect(proposeProjectPolicy(root).toolchain).toBe("go");
+      rmSync(join(root, "go.mod"));
+      writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { test: "existing-test" } }));
+      expect(proposeProjectPolicy(root).checks?.[0]?.argv).toEqual(["npm", "run", "--silent", "test"]);
+      writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { lint: "incidental-tool" } }));
+      expect(proposeProjectPolicy(root).toolchain).toBe("flutter");
+      rmSync(join(root, "pubspec.yaml"));
+      expect(proposeProjectPolicy(root)).toMatchObject({ toolchain: "npm", checks: undefined });
+      rmSync(join(root, "package.json"));
+      writeFileSync(join(root, "Makefile"), "check:\n\ttrue\ntest:\n\ttrue\n");
+      expect(proposeProjectPolicy(root).checks?.[0]?.argv).toEqual(["make", "test"]);
+      writeFileSync(join(root, "pubspec.yaml"), "dependencies: {flutter: {sdk: flutter}}\n");
+      expect(proposeProjectPolicy(root).toolchain).toBe("make");
+      writeFileSync(join(root, "Makefile"), "check:\n\ttrue\n");
+      expect(proposeProjectPolicy(root).toolchain).toBe("flutter");
+      rmSync(join(root, "pubspec.yaml"));
+      expect(proposeProjectPolicy(root).toolchain).toBe("python");
+      const declared = workspaceDeclarationSchema.parse({ toolchain: "custom", verify: { precommit: [], prepush: [] },
+        checks: [{ name: "custom", argv: ["make", "check"] }], workflowCriticalPrefixes: ["custom/"], workflowCriticalFiles: [] });
+      const configured = buildWorkspaceConfig({ project: "fixture", origin: "https://example.com/fixture.git", baseBranch: "main",
+        agents: ["codex"], profile: "solo", cloneRoot: "/clones", workspaceDir: "/runtime", completesRoot: "/completes",
+        declared, proposal: proposeProjectPolicy(root) }, undefined);
+      expect(configured).toMatchObject(declared);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("proposes an exact tracked prose allowlist with empty checks and product fallback", () => {
     const fixture = makeProduct("plain");
     try {
