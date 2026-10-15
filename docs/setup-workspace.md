@@ -425,25 +425,66 @@ publication. The journal records which tier failed.
 
 The driver needs Node 26 and pnpm 11, but the product does not. Installation
 uses `proposeProjectPolicy` in `src/setupWorkspace.ts` to propose the policy
-below, in order: **first matching detector wins**. Review the generated config;
-multi-language monorepos may need an explicit declaration instead.
+below. Cargo and Go keep first priority, followed by existing Node checks and
+a Makefile with a `test` target. New language defaults preserve those working
+gates on reinstall. Review the generated config; multi-language monorepos may
+need an explicit declaration instead.
 
 | Marker | Toolchain | Precommit / prepush proposal | Finalization checks |
 | --- | --- | --- | --- |
 | `Cargo.toml` | `cargo` | `cargo check --all-targets` / `cargo test` | `cargo test` |
 | `go.mod` | `go` | `go vet ./...` / `go test ./...` | `go build ./...`, `go test ./...` |
 | `package.json` | `pnpm`, `yarn`, or `npm` (lockfile-selected) | first existing `check:fast`, `check`, `lint` / existing `test:e2e` | first existing `check`, `test` |
-| recognized targets in `Makefile` | `make` | `make check` if present / none | `make test` if present |
+| `test` target in `Makefile` | `make` | `make check` if present / none | `make test` |
+| Flutter SDK dependency in `pubspec.yaml` | `flutter` | `flutter analyze --no-fatal-infos` / `flutter test` | analyze, then test, with the same arguments |
+| `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt` | `python` | `pytest -q` / none | `pytest -q` |
+| other recognized targets in `Makefile` | `make` | `make check` if present / none | no inference; supply `--declare` |
 | none of these | unspecified | no inference | no inference; supply `--declare` |
 
-For Node, the entries name package scripts, not bare executables. A marker
-alone does not guarantee usable checks: install refuses missing finalization
-checks, and absent `verify` fails closed in agent hooks. Detection happens only
+For Node, the entries name package scripts, not bare executables. A Node
+manifest without `check` or `test` still requires a declaration, even alongside
+a Python marker. A confirmed Flutter SDK dependency is the exception: an
+incidental Node tooling manifest without a finalization script can fall through
+to Make or Flutter. Flutter wins over Python when both language markers are
+present. A Makefile without `test` can fall through to either language.
+An absent `verify` still fails closed in agent hooks. Detection happens only
 at install; hooks execute the recorded policy without inspecting language files.
 
-Python works through an explicit declaration today; `pyproject.toml`, uv,
-Poetry and Hatch are not auto-detected. Save this as `declaration.json` outside
-the product's tracked tree, adjusting commands and critical paths to its layout:
+Use `coord onboard /path/to/app` for either language without special options.
+The installer prints the effective toolchain, local hook and finalization
+commands, critical paths, and any documentation-only profile, labeling each
+group as inferred or declared. Partial declarations are reflected field by
+field. Coordinator-mode hooks and candidate checks are labeled separately;
+dry-run output describes the proposed policy without writing it.
+
+Python defaults run pytest at commit and finalization, with no additional push
+check and no mandatory linter. Install pytest and the project's dependencies
+in the environment inherited by the agents and coordinator. Activate a prepared
+virtual environment before onboarding when appropriate. uv, Poetry, and Hatch
+are not selected automatically; expose their prepared tools on PATH, or declare
+their runner commands and any dependency setup needed in fresh finalization
+worktrees. No tests collected remains a failure. The default does not assume
+Ruff, unittest discovery, or a packaging/install command.
+
+Flutter detection reads the YAML dependency mappings, including quoted values,
+comments, and inline mappings. It recognizes a Flutter SDK dependency named
+`flutter`, or a development dependency named `flutter` or `flutter_test` with
+`sdk: flutter`. A plain Dart pubspec or descriptive text mentioning Flutter
+does not select the Flutter SDK. The analyzer default leaves warnings and
+errors fatal while allowing informational diagnostics; declare `flutter analyze`
+without `--no-fatal-infos` to enforce those too. The default requires the Flutter
+SDK, prepared project dependencies, and runnable tests; it does not select an
+emulator, device, or platform build target.
+
+Installation records policy without running product checks or installing product
+dependencies. Onboarding's doctor checks executable availability, not test
+success. Keep environments usable from both agent clones and fresh verification
+worktrees. Unknown product paths retain product checks; critical paths prevent
+source, platform, and manifest changes from becoming documentation-only changes.
+
+To customize the defaults, save a declaration outside the product's tracked
+tree and retain it for reinstalls. For example, a Python project that already
+uses Ruff can declare it explicitly, adjusting commands and paths to its layout:
 
 ```json
 {
@@ -465,7 +506,7 @@ coord doctor --coord-runtime /path/to/coord-runtime --product /path/to/app
 ```
 
 Alternatively, use `coord onboard /path/to/app --declare /path/to/declaration.json`.
-Install Ruff/pytest and expose
+For this override, install Ruff/pytest and expose
 them on the PATH inherited by the agents and coordinator (including any virtual
 environment); doctor reports a `toolchain` finding when an `argv[0]` cannot be
 resolved. The same requirement applies to Go/Cargo and every declared tool.
@@ -500,7 +541,7 @@ paths are placeholders to replace, not shell variables or real install stamps.
   rather than at an agent's first commit.
 
 `coord install` proposes a `verify` / `checks` / critical-path set from the
-product's obvious ecosystem (cargo, go, pnpm/npm/yarn, make) and writes it into
+product's obvious ecosystem (cargo, go, pnpm/npm/yarn, make, Python, or Flutter) and writes it into
 the config for review. That detection happens once, in the installer, and is
 recorded. Hooks never sniff.
 

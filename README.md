@@ -69,7 +69,7 @@ security sandbox. Peer agreement and passing checks still need your judgment.
 - **Node 26, pnpm 11, and Git** to install and run the driver.
 - **GitHub CLI (`gh`)**, authenticated for your product's issue and PR operations.
 - **tmux** and the coding-agent harnesses you select, installed and authenticated.
-- **Your product's tools**, such as Go, Cargo, or the declared Python test tools.
+- **Your product's tools**, such as Go, Cargo, pytest, or the Flutter SDK, with its dependencies prepared.
 
 The driver uses Node/pnpm regardless of your product's language. Public
 bootstrap needs no GitHub CLI authentication; product operations do.
@@ -129,13 +129,17 @@ operator guide; stopping the coordinator does not stop its agent harnesses.
 | Rust | `Cargo.toml`: automatically proposes Cargo checks |
 | Node | `package.json`: pnpm, yarn, or npm selected by lockfile; uses existing scripts |
 | Make | Recognized `Makefile` targets supply checks |
-| Python | Explicit commands via `coord install --declare`; no auto-detection yet |
+| Python | `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt`: proposes pytest checks |
+| Flutter | Flutter SDK dependency in `pubspec.yaml`: proposes analyze and test checks |
 
-Review the proposed policy: a language marker alone does not guarantee usable
-checks, and installation refuses missing finalization checks. Other languages
-work through explicit command declarations. See
+Plain `coord onboard <repository>` handles Python and Flutter without a declaration.
+Installation prints the effective commands and their inferred or declared origin;
+review them and make the product's tools available to agents and finalization worktrees.
+Existing usable Node and Make test gates keep their priority. A language marker
+alone does not guarantee usable checks, and installation refuses missing finalization
+checks. Other languages and custom workflows use explicit command declarations. See
 [product languages and declarations](docs/setup-workspace.md#product-languages)
-for detection precedence, tool requirements, and a complete Python example.
+for detection precedence, tool requirements, and a Python override example.
 
 ## Platforms
 

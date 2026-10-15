@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { load } from "js-yaml";
 import {
   git,
   gitOrThrow,
@@ -149,6 +150,20 @@ const makeTargets = (productRoot: string): Set<string> => {
   }
 };
 
+const hasFlutterSdk = (productRoot: string): boolean => {
+  const mapping = (value: unknown): Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  try {
+    const pubspec = mapping(load(readFileSync(join(productRoot, "pubspec.yaml"), "utf8")));
+    const dependencies = mapping(pubspec.dependencies);
+    const development = mapping(pubspec.dev_dependencies);
+    return [dependencies.flutter, development.flutter, development.flutter_test]
+      .some((dependency) => mapping(dependency).sdk === "flutter");
+  } catch {
+    return false;
+  }
+};
+
 /**
  * A proposal only carries `verify` when it actually found something to run.
  *
@@ -204,6 +219,7 @@ const proposeToolchainPolicy = (productRoot: string): ProjectPolicyProposal => {
     };
   }
 
+  const flutter = hasFlutterSdk(productRoot);
   if (has("package.json")) {
     const scripts = nodeScripts(productRoot);
     const manager = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : "npm";
@@ -214,28 +230,58 @@ const proposeToolchainPolicy = (productRoot: string): ProjectPolicyProposal => {
     const precommit = ["check:fast", "check", "lint"].filter((name) => scripts.has(name)).slice(0, 1);
     const prepush = ["test:e2e"].filter((name) => scripts.has(name));
     const finalization = ["check", "test"].filter((name) => scripts.has(name)).slice(0, 1);
-    return {
+    const proposal: ProjectPolicyProposal = {
       toolchain: manager,
       ...proposedVerify(precommit.map(runScript), prepush.map(runScript)),
       checks: finalization.length === 0 ? undefined : finalization.map(runScript),
       workflowCriticalPrefixes: ["src/", "test/", "scripts/", "githooks/"],
       workflowCriticalFiles: ["package.json", has("pnpm-lock.yaml") ? "pnpm-lock.yaml" : has("yarn.lock") ? "yarn.lock" : "package-lock.json"]
     };
+    // Preserve existing Node gates; only a confirmed Flutter app may fall
+    // through an incidental Node manifest with no finalization script.
+    if (proposal.checks !== undefined || !flutter) return proposal;
   }
 
   const targets = makeTargets(productRoot);
+  let make: ProjectPolicyProposal | undefined;
   if (targets.size > 0) {
     const target = (name: string): CheckCommand => ({ name, argv: ["make", name] });
-    return {
+    make = {
       toolchain: "make",
       ...proposedVerify(targets.has("check") ? [target("check")] : [], []),
       checks: targets.has("test") ? [target("test")] : undefined,
       workflowCriticalPrefixes: [],
       workflowCriticalFiles: ["Makefile"]
     };
+    // Reinstall must not replace an already usable project test workflow.
+    if (make.checks !== undefined) return make;
   }
 
-  return { workflowCriticalPrefixes: [], workflowCriticalFiles: [] };
+  if (flutter) {
+    const analyze = { name: "analyze", argv: ["flutter", "analyze", "--no-fatal-infos"] };
+    const test = { name: "test", argv: ["flutter", "test"] };
+    return {
+      toolchain: "flutter",
+      verify: { precommit: [analyze], prepush: [test] },
+      checks: [analyze, test],
+      workflowCriticalPrefixes: ["lib/", "test/", "integration_test/", "android/", "ios/", "web/", "macos/", "windows/", "linux/"],
+      workflowCriticalFiles: ["pubspec.yaml", "pubspec.lock", "analysis_options.yaml"]
+    };
+  }
+
+  if (["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"].some(has)) {
+    const test = { name: "test", argv: ["pytest", "-q"] };
+    return {
+      toolchain: "python",
+      verify: { precommit: [test], prepush: [] },
+      checks: [test],
+      workflowCriticalPrefixes: ["src/", "tests/", "test/"],
+      workflowCriticalFiles: ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "pytest.ini", "tox.ini",
+        "uv.lock", "poetry.lock", "Pipfile", "Pipfile.lock"]
+    };
+  }
+
+  return make ?? { workflowCriticalPrefixes: [], workflowCriticalFiles: [] };
 };
 
 export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal => {

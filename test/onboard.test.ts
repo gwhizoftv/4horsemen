@@ -1,13 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCli, type CliRunLoop } from "../src/cli.js";
 import { localConfigGet } from "../src/gitExec.js";
-import { onboard, uninstall } from "../src/install.js";
+import { install, onboard, uninstall } from "../src/install.js";
 import { issueRuntimePaths } from "../src/paths.js";
-import { agentCloneDirectory } from "../src/setupWorkspace.js";
-import { readCursorsState, readStartState } from "../src/state.js";
+import { agentCloneDirectory, resolveRealGit } from "../src/setupWorkspace.js";
+import { readConfig, readCursorsState, readStartState } from "../src/state.js";
 import { nestedConfigPath, OWNER_WORKSPACE_CONFIG_KEY } from "../src/workspace.js";
 import {
   ensureBuilt,
@@ -15,6 +15,7 @@ import {
   makeProduct,
   repoRoot,
   silence,
+  writeDeclaration,
   type ProductFixture
 } from "./support/workspaceFixture.js";
 
@@ -23,16 +24,15 @@ afterEach(() => {
   for (const product of products.splice(0)) product.cleanup();
 });
 
-const product = (name = "myserver"): ProductFixture => {
+const product = (name = "myserver", files: Record<string, string> = {
+  "package.json": `${JSON.stringify({ name: "fixture", scripts: { "check:fast": "true", check: "true" } }, null, 2)}\n`,
+  "pnpm-lock.yaml": "lockfileVersion: '9.0'\n"
+}): ProductFixture => {
   ensureBuilt();
   const fixture = makeProduct("plain", name);
   products.push(fixture);
-  writeFileSync(
-    join(fixture.productRoot, "package.json"),
-    `${JSON.stringify({ name: "fixture", scripts: { "check:fast": "true", check: "true" } }, null, 2)}\n`
-  );
-  writeFileSync(join(fixture.productRoot, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
-  git(fixture.productRoot, "add", "package.json", "pnpm-lock.yaml");
+  for (const [path, contents] of Object.entries(files)) writeFileSync(join(fixture.productRoot, path), contents);
+  git(fixture.productRoot, "add", ...Object.keys(files));
   git(fixture.productRoot, "commit", "-qm", "add checks");
   git(fixture.productRoot, "push", "-q", "origin", "main");
   git(fixture.productRoot, "remote", "set-url", "origin", `https://github.com/acme/${name}.git`);
@@ -66,6 +66,100 @@ const runner = async (argv: readonly string[]) => {
 };
 
 describe("coord onboard", () => {
+  it.each(["python", "flutter"])("onboards %s without declarations and reports the effective policy", async (language) => {
+    const files: Record<string, string> = language === "python"
+      ? { "pyproject.toml": "# pytest project\n" }
+      : { "pubspec.yaml": 'dependencies: {flutter: {sdk: "flutter"}}\n' };
+    const fixture = product(language, files);
+    const coordRoot = join(fixture.workspaceRoot, "coord-runtime");
+    const configPath = join(coordRoot, "config.json");
+    const clone = agentCloneDirectory(fixture.workspaceRoot, language, "claude");
+    const output: string[] = [];
+    const log = (message: string) => output.push(message);
+    const options = { installRoot: repoRoot, productRoot: fixture.productRoot, agents: ["claude"], profile: "solo", home: null, log };
+    install({ ...options, coordRoot, writeProduct: false, vendor: false, bootstrap: false, dryRun: true });
+    expect(output.join("")).toContain("Proposed verification policy:");
+    expect(existsSync(configPath)).toBe(false);
+    expect(existsSync(clone)).toBe(false);
+
+    const bin = join(fixture.workspaceRoot, "bin");
+    mkdirSync(bin);
+    // Resolve the process-wide Git cache before introducing disposable PATH entries.
+    symlinkSync(resolveRealGit(), join(bin, "git"));
+    for (const command of ["cat", "chmod", "sh", "dirname", "mkdir"]) {
+      symlinkSync(execFileSync("which", [command], { encoding: "utf8" }).trim(), join(bin, command));
+    }
+    symlinkSync(process.execPath, join(bin, "node"));
+    symlinkSync("/bin/bash", join(bin, "bash"));
+    const executable = language === "python" ? "pytest" : "flutter";
+    const tool = join(bin, executable);
+    // Initially non-executable: the fixture PATH contains no real product tools.
+    writeFileSync(tool, '#!/bin/sh\n: > "$0.called"\nexit 0\n', { mode: 0o644 });
+    const oldPath = process.env.PATH;
+    try {
+      process.env.PATH = bin;
+      const unavailable = onboard(options);
+      expect(unavailable.doctor.findings).toContainEqual(expect.objectContaining({ class: "toolchain", subject: executable }));
+      expect(unavailable.doctor.exitCode).not.toBe(0);
+      expect(localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBeNull();
+      // Keep re-onboarding local: a working agent branch is never fetched or reset.
+      git(clone, "checkout", "-qb", "claude/manual");
+      chmodSync(tool, 0o755);
+      output.length = 0;
+      const argv = ["onboard", fixture.productRoot, "--agents", "claude", "--profile", "solo"];
+      expect(await runCli(argv, { home: null, io: { stdout: log, stderr: log } })).toBe(0);
+      const configured = readConfig(configPath);
+      const checks = language === "python" ? [{ name: "test", argv: ["pytest", "-q"] }] : [
+        { name: "analyze", argv: ["flutter", "analyze", "--no-fatal-infos"] }, { name: "test", argv: ["flutter", "test"] }
+      ];
+      expect(configured.toolchain).toBe(language);
+      expect(configured.checks).toEqual(checks);
+      expect(configured.verify?.precommit).toEqual([checks[0]]);
+      expect(configured.verify?.prepush).toEqual(language === "python" ? [] : [checks[1]]);
+      expect(localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBe(realpathSync(configPath));
+      const summary = output.join("");
+      expect(summary).toContain(`toolchain (inferred): ${language}`);
+      for (const check of checks) expect(summary).toContain(`${check.name} ${JSON.stringify(check.argv)}`);
+      expect(summary).toContain("documentation-only (inferred)");
+      expect(summary).toContain("product dependencies are not installed");
+      expect(summary).toContain(language === "python" ? "no tests collected is a failure" : "informational diagnostics do not block");
+      expect(existsSync(`${tool}.called`)).toBe(false);
+      expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
+
+      const declaration = writeDeclaration(fixture.workspaceRoot, {
+        verify: { precommit: [], prepush: [] }, workflowCriticalPrefixes: ["custom/"], workflowCriticalFiles: []
+      });
+      output.length = 0;
+      expect(await runCli([...argv, "--declare", declaration], { home: null, io: { stdout: log, stderr: log } })).toBe(0);
+      expect(readConfig(configPath).verify).toEqual({ precommit: [], prepush: [] });
+      expect(readConfig(configPath).checks).toEqual(checks);
+      expect(output.join("")).toContain("local precommit (declared): none");
+      expect(output.join("")).toContain('critical prefixes (declared): ["custom/"]');
+      expect(output.join("")).not.toContain("local precommit (inferred)");
+
+      if (language === "python") {
+        // Coordinator-mode labels must keep local, coordinated, candidate and final commands distinct.
+        const local = { name: "local", argv: ["node", "--version"] };
+        const final = { name: "final", argv: ["node", "--help"] };
+        writeDeclaration(fixture.workspaceRoot, { toolchain: "custom", verify: { precommit: [local], prepush: [] }, checks: [final],
+          verification: { mode: "coordinator", coordinated: { precommit: [], prepush: [local] },
+            candidate: { checks: [final], covers: { prefixes: ["src/"] }, rules: [] } } });
+        output.length = 0;
+        expect(await runCli([...argv, "--declare", declaration], { home: null, io: { stdout: log, stderr: log } })).toBe(0);
+        expect(readConfig(configPath).checks).toEqual([final]);
+        expect(output.join("")).toContain('local precommit (declared): local ["node","--version"]');
+        expect(output.join("")).toContain("coordinated precommit (declared): none");
+        expect(output.join("")).toContain('coordinated prepush (declared): local ["node","--version"]');
+        expect(output.join("")).toContain('candidate checks (declared): final ["node","--help"]');
+        expect(output.join("")).toContain('finalization (declared): final ["node","--help"]');
+        expect(output.join("")).not.toContain("pytest must be on PATH");
+      }
+    } finally {
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+    }
+  });
+
   it("applies the happy-path defaults without changing the tracked product tree", async () => {
     const fixture = product();
     const output: string[] = [];
