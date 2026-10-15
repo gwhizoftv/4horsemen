@@ -1,0 +1,17 @@
+{
+  "protocolVersion": 1,
+  "issue": 220,
+  "issueSessionId": "issue-220:e5ec3f6d664d3967a15130337f91b4d193579555",
+  "agent": "cursor",
+  "inputSetHash": "e4f96e31ae2784b8980c78ea29229d46ccc2bfcb1141740a0a074610cc61fc9b",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "8ac06bac06de77fb1702b7fd62187c99a1838a77",
+  "scopeHash": "a122a3e8876a4a2fb92b9e5ad49a82df4221e13f31ab963f36fe04028f05ae9c",
+  "approvedPaths": [
+    "docs/coord-driver.md",
+    "src/runLoop.ts",
+    "test/integration.test.ts",
+    "test/orderScaffold.test.ts",
+    "test/runLoop.test.ts"
+  ]
+}
