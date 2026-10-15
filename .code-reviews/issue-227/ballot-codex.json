@@ -1,0 +1,29 @@
+{
+  "actionId": "0c85a767-2571-4f6c-9f3b-24cd067ac8cb",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "b24676e48af4a45793ca01b54ae14f997ccafc0d",
+      "path": ".signals/issue-227/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "af2cadc0edfabad30ff2fb0e6d21576daa763ab0",
+      "path": ".signals/issue-227/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "90c618789a3d941d48a492c9f98f7ae3b0fee039",
+      "path": ".signals/issue-227/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "549bd617a9ae5858735a90670e91a808a1a0701fbb244c770ee10a2266c1fd1f",
+  "issue": 227,
+  "issueSessionId": "issue-227:fcc3cbcda53a8e130b5366e6e623891b3c0c46ed",
+  "protocolVersion": 2,
+  "rationale": "Codex af2cadc0edfabad30ff2fb0e6d21576daa763ab0 best covers account isolation, launcher validation, helper preservation, cleanup, and resume with focused behavioral tests, while its effective clone-helper validation still needs the revision documented in the comparison.",
+  "responseSha256": "33b5077ffbff5ed8e69addb473c11aad0216f3250edf01eada32de41e910a568"
+}

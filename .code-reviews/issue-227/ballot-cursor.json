@@ -1,0 +1,29 @@
+{
+  "actionId": "cced83bc-ed88-47d9-a1d8-badabc973382",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "b24676e48af4a45793ca01b54ae14f997ccafc0d",
+      "path": ".signals/issue-227/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "af2cadc0edfabad30ff2fb0e6d21576daa763ab0",
+      "path": ".signals/issue-227/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "90c618789a3d941d48a492c9f98f7ae3b0fee039",
+      "path": ".signals/issue-227/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "549bd617a9ae5858735a90670e91a808a1a0701fbb244c770ee10a2266c1fd1f",
+  "issue": 227,
+  "issueSessionId": "issue-227:fcc3cbcda53a8e130b5366e6e623891b3c0c46ed",
+  "protocolVersion": 2,
+  "rationale": "Claude matches the plan most closely: correct launcher git-config-before-shim ordering, helper-aware clone wiring, and no extra auth launch-token surface or githubAuth↔state import cycle.",
+  "responseSha256": "c9b2654f8a2f49abf47d50fc3c8307fb1e56fdbb59befc52f9a3ccceefa58efe"
+}

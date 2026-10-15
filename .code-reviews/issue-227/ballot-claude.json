@@ -1,0 +1,29 @@
+{
+  "actionId": "dbdbab46-0652-445d-949a-af1ff44c2986",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "b24676e48af4a45793ca01b54ae14f997ccafc0d",
+      "path": ".signals/issue-227/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "af2cadc0edfabad30ff2fb0e6d21576daa763ab0",
+      "path": ".signals/issue-227/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "90c618789a3d941d48a492c9f98f7ae3b0fee039",
+      "path": ".signals/issue-227/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "549bd617a9ae5858735a90670e91a808a1a0701fbb244c770ee10a2266c1fd1f",
+  "issue": 227,
+  "issueSessionId": "issue-227:fcc3cbcda53a8e130b5366e6e623891b3c0c46ed",
+  "protocolVersion": 2,
+  "rationale": "All three implement the same selected design within the approved map, but claude's pin has only low-severity gaps (unbound wipe fetch --prune, SSH refusal after runtime creation, text-only launcher test) while cursor's breaks install idempotence, silently skips remote branch deletion during wipe, and leaves gh's active account switched after onboarding sign-in, and codex's turns transient network failures into aborted re-onboards and dead agent panes with misleading auth-login advice.",
+  "responseSha256": "48536cd6a4a4478c60a57a9d6701ceb2ed1b31e6c19730e65ef82eacfa5ea26f"
+}
