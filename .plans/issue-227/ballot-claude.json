@@ -1,0 +1,46 @@
+{
+  "actionId": "f3c2e76f-65a4-49bc-8a78-6f347f342455",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "46a0d5cb0445992672cdcd8484afc274f2dafa0a106d9c26bf6758e6805df1cd",
+  "issue": 227,
+  "issueSessionId": "issue-227:fcc3cbcda53a8e130b5366e6e623891b3c0c46ed",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "c63770ff1e4bac4c85709af0397b461298863bf4",
+      "path": ".plans/issue-227/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "1970545aba74e31957b1d6575b94e931c96cd570",
+      "path": ".plans/issue-227/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "308cfa4b726a6e090a7ad075b9f46503e13dc775",
+      "path": ".plans/issue-227/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "It is the smallest complete design that threads one gh-store account binding through install, the mirror, start/resume/attach, launchers, wipe and PR calls via reset-then-account credential helpers and a gh/git-only runner wrapper, while cursor's plan leaks the token into product checks and loses to inherited helpers and codex's adds a stale-prone second keychain store, a native dependency, and upgrade-breaking mandatory selection; the remaining review points (sameRemote userinfo, launcher-time validation, docs/test-config commands) are revision-sized fixes.",
+  "responseSha256": "63933e225f65258acec4705bcf90b78b316d354c46338e719e33aa696896e8da",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "38c45aa56f5dbfe41eed328a37f198beeb4b0d8b",
+      "path": ".plans/issue-227/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9c48dd9feebe3d6329765ad3dd153f34f95c53ed",
+      "path": ".plans/issue-227/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "0a8717bec87702557c349d1d56e2085eafd2dca5",
+      "path": ".plans/issue-227/review.md"
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "actionId": "42c0045e-2858-44ba-acc8-67699fae00f7",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "46a0d5cb0445992672cdcd8484afc274f2dafa0a106d9c26bf6758e6805df1cd",
+  "issue": 227,
+  "issueSessionId": "issue-227:fcc3cbcda53a8e130b5366e6e623891b3c0c46ed",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "c63770ff1e4bac4c85709af0397b461298863bf4",
+      "path": ".plans/issue-227/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "1970545aba74e31957b1d6575b94e931c96cd570",
+      "path": ".plans/issue-227/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "308cfa4b726a6e090a7ad075b9f46503e13dc775",
+      "path": ".plans/issue-227/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex covers owner and pre-install authentication and avoids shared-account mutations during renewal, with explicit storage precedence, migration rules, and regression coverage for the added credential machinery.",
+  "responseSha256": "ffaa2d8ee2d3ed775d3d0d5fb28543404f373acf4b0d09a9ce3ce5b1474ea4b2",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "38c45aa56f5dbfe41eed328a37f198beeb4b0d8b",
+      "path": ".plans/issue-227/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9c48dd9feebe3d6329765ad3dd153f34f95c53ed",
+      "path": ".plans/issue-227/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "0a8717bec87702557c349d1d56e2085eafd2dca5",
+      "path": ".plans/issue-227/review.md"
+    }
+  ]
+}
