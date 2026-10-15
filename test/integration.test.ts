@@ -405,7 +405,11 @@ Implement the selected product files.
       expectStep("R6.revise");
       expect(currentOrder("cursor").round).toBe(1);
       expect(currentOrder("cursor").inputs).toEqual(revisionBefore.inputs);
-      expect(currentOrder("cursor").inputs).toHaveLength(1);
+      expect(currentOrder("cursor").inputs.filter((input) => input.kind === "implementation")).toHaveLength(1);
+      for (const agent of activeAfterDrop) {
+        expect(currentOrder("cursor").inputs.filter((input) => input.kind === "consensus-ballot" && input.agent === agent)).toHaveLength(1);
+        expect(currentOrder("cursor").inputs.filter((input) => input.kind === "review" && input.agent === agent)).toHaveLength(1);
+      }
       expect(currentOrder("cursor").scopeHash).toBe(revisionBefore.scopeHash);
       expect(currentOrder("cursor").approvedPaths).not.toContain("test/unnecessary.test.ts");
       expect(currentOrder("cursor").task).toContain("last amendment was rejected");
@@ -433,7 +437,7 @@ Implement the selected product files.
             scopeHash: order.scopeHash,
             round: 1,
             revisedBranchHead: revisionPin,
-            basedOn: order.inputs.map((input) => input.commitSha)
+            basedOn: order.inputs.filter((input) => input.kind === "implementation").map((input) => input.commitSha)
           })
         );
       }

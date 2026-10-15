@@ -4224,6 +4224,56 @@ describe("third revision closeout", () => {
     }]);
   });
 
+  it("binds comparison ballots and comparisons on revision round 1", () => {
+    const { paths } = fixture();
+    const start = readStartState(paths);
+    const base = readCursorsState(paths);
+    const now = base.updatedAt;
+    const implementationPin = "f".repeat(40);
+    const implementation = {
+      stepId: "R4.implement" as const, agent: "codex", round: null, submissionSha: "c".repeat(40),
+      productPin: implementationPin, path: ".signals/issue-1/implementation-ready-codex.json", acceptedAt: now
+    };
+    const comparisons = base.activeRoster.map((agent) => ({
+      stepId: "R5.compare" as const, agent, round: null, submissionSha: gitShaFixture(`compare-${agent}`),
+      path: ".code-reviews/issue-1/comparison.md", acceptedAt: now
+    }));
+    const batch = publishedBallotBatchFixture({
+      kind: "comparison-ballot-batch", activeRoster: base.activeRoster, round: null
+    });
+    const seeded = cursorsStateSchema.parse({
+      ...base,
+      accepted: [implementation, ...comparisons],
+      acceptedResponses: base.activeRoster.map((agent) =>
+        acceptedResponseFixture({ stepId: "R5.compare-ballot", agent, round: null, choice: "codex" })),
+      ballotBatches: [batch],
+      derived: {
+        ...base.derived,
+        implementationSelection: {
+          kind: "implementation-selection", algorithm: "plurality-active-roster-v1", inputSetHash: "b".repeat(64),
+          activeRoster: base.activeRoster, inputs: [{
+            kind: "implementation", agent: "codex", submissionSha: "c".repeat(40),
+            path: implementation.path, productPin: implementationPin
+          }],
+          decisionId: `implementation-selection:${"b".repeat(64)}`, supersedes: null, decidedAt: now,
+          winner: "codex", reviser: "codex", implementationPin
+        }
+      }
+    });
+    const selected = {
+      kind: "implementation", agent: implementation.agent, commitSha: implementationPin, path: implementation.path
+    };
+    const ballots = batch.responses.map((response, index) => ({
+      kind: "consensus-ballot", agent: response.agent, commitSha: batch.commitSha, path: batch.paths[index]
+    }));
+    const reviews = comparisons.map((comparison) => ({
+      kind: "review", agent: comparison.agent, commitSha: comparison.submissionSha, path: comparison.path
+    }));
+    expect(deriveBoundInputs(start, seeded, "R6.revise", 1)).toEqual([selected, ...ballots, ...reviews]);
+    expect(deriveBoundInputs(start, { ...seeded, ballotBatches: [] }, "R6.revise", 1)).toEqual([selected, ...reviews]);
+    expect(base.activeRoster).toHaveLength(2);
+  });
+
   it.each(["revise", "escalate", "approve"] as const)("derives exact published terminal evidence for %s", (disposition) => {
     const { cursors, now, revision } = terminalFixture(disposition);
     const derived = computeConsensusDerived(cursors, 3, now)!;

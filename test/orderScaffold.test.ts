@@ -32,6 +32,27 @@ describe("orderScaffold", () => {
     expect(ballot).toEqual({ actionId: ctx.actionId, disposition: "approve", rationale: "<one sentence>" });
   });
 
+  it("keeps round-1 basedOn on the selected implementation pin", () => {
+    const implementationSha = "c".repeat(40);
+    const inputs = [
+      { kind: "implementation", agent: "codex", commitSha: implementationSha, path: ".signals/issue-1/implementation-ready-codex.json" },
+      { kind: "consensus-ballot", agent: "claude", commitSha: "e".repeat(40), path: ".code-reviews/issue-1/ballot-claude.json" },
+      { kind: "consensus-ballot", agent: "codex", commitSha: "e".repeat(40), path: ".code-reviews/issue-1/ballot-codex.json" },
+      { kind: "review", agent: "claude", commitSha: "f".repeat(40), path: ".code-reviews/issue-1/comparison.md" },
+      { kind: "review", agent: "codex", commitSha: "a".repeat(40), path: ".code-reviews/issue-1/comparison.md" }
+    ];
+    const ctx = {
+      stepId: "R6.revise" as const, issue: 1, issueSessionId: "s", agent: "codex",
+      actionId: "10000000-0000-4000-8000-000000000001", baselineSha: "b".repeat(40), automationDigest: "d".repeat(64),
+      inputs, eligibleChoices: [], round: 1, approvedPaths: ["src/product.ts"], scopeHash: "1".repeat(64)
+    };
+    expect(artifactScaffoldValue(ctx)).toMatchObject({
+      basedOn: [implementationSha],
+      round: 1,
+      inputSetHash: computeInputSetHash(inputs)
+    });
+  });
+
   it("renders a filled join JSON scaffold", () => {
     const ctx = {
       stepId: "R1.join" as const,
