@@ -1,0 +1,21 @@
+## Findings
+
+### Claude `c9ff31f8c9eb3a4b913519f0cb97f9001bb09efa`
+
+Exact file list. The declared product prepush is `pnpm test:e2e` (`test/integration.test.ts` only) and the coordinator gate `pnpm check` runs that same file. The consensus canary, after it reaches revise round 1, asserts `currentOrder("cursor").inputs` has length 1 (`test/integration.test.ts:408`) and submits `basedOn` as every bound `commitSha` (`test/integration.test.ts:436`). Followed as written, the round-1 binder adds one comparison ballot and one comparison per active agent (`activeAfterDrop` is claude, codex, and cursor), so the length assertion fails and, if that line is loosened without changing the submission, evidence rejects the artifact because `basedOn` is no longer the single implementation pin. Add `test/integration.test.ts` to the file list. Assert one `implementation` plus one `consensus-ballot` and one `review` per agent in `activeAfterDrop`, and set `basedOn` to the implementation `commitSha` only.
+
+Tests, case 2. The issue acceptance requires the new `test/orderScaffold.test.ts` `basedOn` case to fail before the change and pass after it. The plan builds that case from a hand-written input list and states that it already passes, because `revisionProductInputs` already drops `review` and `consensus-ballot`. Followed as written, the new scaffold test is green on unmodified `deriveBoundInputs`, so it does not detect a round-1 branch that still returns only the selected implementation. Derive the round-1 inputs with `deriveBoundInputs` from a state that has the published comparison batch and the accepted comparisons, require that full set, then assert `basedOn` is only the selected implementation pin.
+
+### Codex `c8f9ad31a0a575c4fea3f57c77eabd89f1eb4fc2`
+
+Exact file list. Same rule as the Claude file-list finding: product prepush is `pnpm test:e2e` and `pnpm check` includes it. This plan names both commands and still does not change `test/integration.test.ts`. Followed as written, the implementation push fails at `test/integration.test.ts:408` (length 1) and the revision submission at line 436 fails the one-pin `basedOn` check. Same correction: update those two assertions and list the file.
+
+Tests, item 1. The existing rounds-2-and-3 case must keep proving that those rounds bind only the prior revision and the previous consensus batch. That same case also expects `deriveBoundInputs(..., "R6.revise", 1)` to equal only the selected implementation (`test/runLoop.test.ts:4222`). The plan says to seed comparison feedback into that case as well. Followed as written, the shared `seeded` state then contains comparisons and a comparison batch, the correct round-1 binder returns them, and the retained round-1 equality fails. Seed that feedback only in the new round-1 case. Leave the existing fixture without it so its round-1 equality still describes the empty-feedback path.
+
+### Cursor `d5e5c507f775d4ff141eff9e64551cbb8a32879d`
+
+Tests, the `test/orderScaffold.test.ts` case. The issue acceptance requires that `basedOn` case to fail before the change and pass after it. The plan passes a hand-built list of one `implementation`, two `consensus-ballot` entries, and two `review` entries to `artifactScaffoldValue`, and states that the case is already green because `revisionProductInputs` filters by kind. Followed as written, the new test passes before `deriveBoundInputs` changes, so a round-1 branch that still omits the ballots and comparisons does not fail it. Derive those inputs with `deriveBoundInputs` from a seeded published comparison batch and accepted comparisons, require the feedback entries, then assert `basedOn` is only the implementation pin.
+
+## Conclusion
+
+All three plans stay inside issue 220, add no new production file, and reuse `deriveBoundInputs`, `consensusBallotInputs`, `publishedBallotBatch`, `acceptedAt`, `inputFromSubmission`, and `revisionProductInputs`. Cursor is the only plan that updates the e2e canary those checks run. Claude and Codex leave that canary red after a correct binder change. Claude and Cursor leave the required `test/orderScaffold.test.ts` case green before the binder change. Codex is the only plan that makes that case fail before the change, and it does so by deriving the inputs. None of the three is followable as written until the findings above are corrected.
