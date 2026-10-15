@@ -432,8 +432,11 @@ multi-language monorepos may need an explicit declaration instead.
 | --- | --- | --- | --- |
 | `Cargo.toml` | `cargo` | `cargo check --all-targets` / `cargo test` | `cargo test` |
 | `go.mod` | `go` | `go vet ./...` / `go test ./...` | `go build ./...`, `go test ./...` |
+| `pubspec.yaml` depending on the Flutter SDK | `flutter` | `flutter analyze` / `flutter test` | `flutter analyze`, `flutter test` |
 | `package.json` | `pnpm`, `yarn`, or `npm` (lockfile-selected) | first existing `check:fast`, `check`, `lint` / existing `test:e2e` | first existing `check`, `test` |
-| recognized targets in `Makefile` | `make` | `make check` if present / none | `make test` if present |
+| `Makefile` with a `test` target | `make` | `make check` if present / none | `make test` |
+| `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt` | `python` | `pytest -q` / none | `pytest -q` |
+| other recognized targets in `Makefile` | `make` | `make check` if present / none | none |
 | none of these | unspecified | no inference | no inference; supply `--declare` |
 
 For Node, the entries name package scripts, not bare executables. A marker
@@ -441,9 +444,24 @@ alone does not guarantee usable checks: install refuses missing finalization
 checks, and absent `verify` fails closed in agent hooks. Detection happens only
 at install; hooks execute the recorded policy without inspecting language files.
 
-Python works through an explicit declaration today; `pyproject.toml`, uv,
-Poetry and Hatch are not auto-detected. Save this as `declaration.json` outside
-the product's tracked tree, adjusting commands and critical paths to its layout:
+Flutter is recognized from the parsed `pubspec.yaml`: `dependencies.flutter`,
+`dev_dependencies.flutter`, or `dev_dependencies.flutter_test` with
+`sdk: flutter`. A plain Dart package, or a comment or description that merely
+mentions Flutter, is not. A Makefile whose `test` target already gates the
+project keeps that gate; Python only outranks a Makefile of auxiliary targets.
+
+Install and onboard print the recorded policy before wiring any clone: the
+toolchain, local precommit and prepush commands, finalization checks, critical
+paths, and any documentation-only paths, each marked inferred or declared, plus
+what the inferred defaults mean. A Python project runs `pytest -q` at commit
+and at finalization; a Flutter project analyzes at commit and tests at push,
+then runs both at finalization. Onboarding does not run those commands or
+install the product's environment; `coord doctor` only checks that each
+executable resolves. A dry run prints the same summary as proposed.
+
+Python projects that use uv, Poetry, Hatch, or another runner, or that need
+different commands, declare them. Save this as `declaration.json` outside the
+product's tracked tree, adjusting commands and critical paths to its layout:
 
 ```json
 {
@@ -465,7 +483,8 @@ coord doctor --coord-runtime /path/to/coord-runtime --product /path/to/app
 ```
 
 Alternatively, use `coord onboard /path/to/app --declare /path/to/declaration.json`.
-Install Ruff/pytest and expose
+Each declared field replaces the matching inferred one. Install pytest (and
+Ruff, if declared) or the Flutter SDK and expose
 them on the PATH inherited by the agents and coordinator (including any virtual
 environment); doctor reports a `toolchain` finding when an `argv[0]` cannot be
 resolved. The same requirement applies to Go/Cargo and every declared tool.
@@ -500,7 +519,7 @@ paths are placeholders to replace, not shell variables or real install stamps.
   rather than at an agent's first commit.
 
 `coord install` proposes a `verify` / `checks` / critical-path set from the
-product's obvious ecosystem (cargo, go, pnpm/npm/yarn, make) and writes it into
+product's obvious ecosystem (cargo, go, flutter, pnpm/npm/yarn, make, python) and writes it into
 the config for review. That detection happens once, in the installer, and is
 recorded. Hooks never sniff.
 

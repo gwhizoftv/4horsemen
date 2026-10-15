@@ -47,11 +47,13 @@ import {
   writeCloneExclude,
   writeWorkspaceConfig,
   type EffectOptions,
-  type Logger
+  type Logger,
+  type ProjectPolicyProposal
 } from "./setupWorkspace.js";
 import {
   readConfig,
   workspaceDeclarationSchema,
+  type CheckCommand,
   type CoordinatorConfig,
   type InstallStamp,
   type WorkspaceDeclaration
@@ -187,6 +189,70 @@ const readDeclaration = (path: string): WorkspaceDeclaration => {
   const result = workspaceDeclarationSchema.safeParse(value);
   if (!result.success) throw new Error(`Invalid --declare ${path}: ${result.error.message}`);
   return result.data;
+};
+
+const renderCommands = (commands: readonly CheckCommand[]): string =>
+  commands.length === 0 ? "none" : commands.map((command) => `${command.name} ${JSON.stringify(command.argv)}`).join(", ");
+
+/**
+ * The verification policy this install records, announced before any effect.
+ *
+ * Rendered from the validated config, not the proposal, so a partial
+ * declaration is shown exactly as merged; each group says whether the owner
+ * declared it or install inferred it from the product tree. Output only: it is
+ * never a recorded change, so it cannot disturb idempotence.
+ */
+const renderPolicySummary = (
+  config: CoordinatorConfig,
+  declared: WorkspaceDeclaration | null,
+  proposal: ProjectPolicyProposal,
+  dryRun: boolean
+): string => {
+  const source = (isDeclared: boolean): string => (isDeclared ? "declared" : "inferred");
+  const row = (label: string, value: string, from: string): string => `  ${label.padEnd(21)}: ${value} (${from})`;
+  const coordinator = config.verification?.mode === "coordinator";
+  const local = coordinator ? "local " : "";
+  const verify = config.verify;
+  const phase = (commands: readonly CheckCommand[] | undefined): string =>
+    verify === undefined
+      ? "not declared; agent hooks block until verify is declared"
+      : verify.precommit.length === 0 && verify.prepush.length === 0
+        ? "none (explicit opt-out)"
+        : renderCommands(commands ?? []);
+  const verifySource = source(declared?.verify !== undefined);
+  const criticalPaths = [...config.workflowCriticalPrefixes, ...config.workflowCriticalFiles];
+  const lines = [
+    "",
+    dryRun ? "Proposed verification policy (dry run; nothing written):" : "Verification policy:",
+    row("toolchain", config.toolchain ?? "unspecified", source(declared?.toolchain !== undefined)),
+    row(`${local}precommit`, phase(verify?.precommit), verifySource),
+    row(`${local}prepush`, phase(verify?.prepush), verifySource),
+    row("finalization", renderCommands(config.checks), source(declared?.checks !== undefined)),
+    row("critical paths", criticalPaths.length === 0 ? "none" : criticalPaths.join(", "),
+      source(declared?.workflowCriticalPrefixes !== undefined || declared?.workflowCriticalFiles !== undefined))
+  ];
+  if (config.documentation !== undefined) {
+    lines.push(row("documentation-only", config.documentation.paths.join(", "), source(declared?.documentation !== undefined)));
+  }
+  if (coordinator) {
+    const coordinated = config.verification?.coordinated;
+    lines.push(
+      row("coordinated precommit", coordinated === undefined ? "not declared" : renderCommands(coordinated.precommit), "declared"),
+      row("coordinated prepush", coordinated === undefined ? "not declared" : renderCommands(coordinated.prepush), "declared"),
+      row("candidate checks", renderCommands(config.verification?.candidate?.checks ?? []), "declared")
+    );
+  }
+  // A default's consequences hold only while both its local and final commands are the inferred ones.
+  if (declared?.verify === undefined && declared?.checks === undefined) {
+    lines.push(...(proposal.effects ?? []).map((effect) => `  ${effect}`));
+  }
+  lines.push(
+    "  These commands, the tools they name, and the product's dependencies must be available to the agents and to",
+    "  coordinator verification worktrees. `coord doctor` (run by onboard) checks that each executable resolves;",
+    "  nothing here runs the suite or installs the product's environment. Override any field with --declare <file.json>.",
+    ""
+  );
+  return lines.join("\n");
 };
 
 /**
@@ -378,6 +444,7 @@ export const install = (options: InstallOptions): InstallResult => {
       ? previous.coordination
       : stamp
   );
+  options.log(renderPolicySummary(config, declared, proposal, options.dryRun));
 
   // ---- steps 2-5: per-agent clone wiring ----------------------------------
   const clones: string[] = [];

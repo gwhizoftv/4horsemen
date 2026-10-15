@@ -1,13 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCli, type CliRunLoop } from "../src/cli.js";
 import { localConfigGet } from "../src/gitExec.js";
-import { onboard, uninstall } from "../src/install.js";
+import { install, onboard, uninstall } from "../src/install.js";
 import { issueRuntimePaths } from "../src/paths.js";
 import { agentCloneDirectory } from "../src/setupWorkspace.js";
-import { readCursorsState, readStartState } from "../src/state.js";
+import { readConfig, readCursorsState, readStartState } from "../src/state.js";
 import { nestedConfigPath, OWNER_WORKSPACE_CONFIG_KEY } from "../src/workspace.js";
 import {
   ensureBuilt,
@@ -23,16 +23,17 @@ afterEach(() => {
   for (const product of products.splice(0)) product.cleanup();
 });
 
-const product = (name = "myserver"): ProductFixture => {
+const nodeManifests: Record<string, string> = {
+  "package.json": `${JSON.stringify({ name: "fixture", scripts: { "check:fast": "true", check: "true" } }, null, 2)}\n`,
+  "pnpm-lock.yaml": "lockfileVersion: '9.0'\n"
+};
+
+const product = (name = "myserver", manifests = nodeManifests): ProductFixture => {
   ensureBuilt();
   const fixture = makeProduct("plain", name);
   products.push(fixture);
-  writeFileSync(
-    join(fixture.productRoot, "package.json"),
-    `${JSON.stringify({ name: "fixture", scripts: { "check:fast": "true", check: "true" } }, null, 2)}\n`
-  );
-  writeFileSync(join(fixture.productRoot, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
-  git(fixture.productRoot, "add", "package.json", "pnpm-lock.yaml");
+  for (const [path, content] of Object.entries(manifests)) writeFileSync(join(fixture.productRoot, path), content);
+  git(fixture.productRoot, "add", ...Object.keys(manifests));
   git(fixture.productRoot, "commit", "-qm", "add checks");
   git(fixture.productRoot, "push", "-q", "origin", "main");
   git(fixture.productRoot, "remote", "set-url", "origin", `https://github.com/acme/${name}.git`);
@@ -403,5 +404,109 @@ describe("coord onboard", () => {
     } finally {
       process.env.PATH = originalPath;
     }
+  });
+});
+
+describe("coord onboard — Python and Flutter defaults", () => {
+  /** Executables that only record that something ran them; onboarding must not. */
+  const toolStubs = (fixture: ProductFixture, tool: string): { path: string; marker: string } => {
+    const bin = join(fixture.workspaceRoot, "bin");
+    const marker = join(fixture.workspaceRoot, "tool-invoked");
+    mkdirSync(bin);
+    writeFileSync(join(bin, tool), `#!/bin/sh\necho "$0 $*" >> '${marker}'\nexit 1\n`);
+    chmodSync(join(bin, tool), 0o755);
+    return { path: `${bin}${delimiter}${process.env.PATH ?? ""}`, marker };
+  };
+  const withPath = <T>(path: string, run: () => T): T => {
+    const original = process.env.PATH;
+    try {
+      process.env.PATH = path;
+      return run();
+    } finally {
+      process.env.PATH = original;
+    }
+  };
+  const onboardProduct = (fixture: ProductFixture, output: string[], declarePath?: string) =>
+    onboard({
+      home: null,
+      installRoot: repoRoot,
+      productRoot: fixture.productRoot,
+      agents: ["claude"],
+      profile: "solo",
+      log: (message) => output.push(message),
+      ...(declarePath === undefined ? {} : { declarePath })
+    });
+  const pyproject = { "pyproject.toml": "[project]\nname = \"app\"\n" };
+  const pubspec = { "pubspec.yaml": "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n" };
+
+  it.each([
+    { kind: "python", manifests: pyproject, tool: "pytest", checks: [["pytest", "-q"]], effect: "Python runs `pytest -q` at commit" },
+    {
+      kind: "flutter", manifests: pubspec, tool: "flutter", checks: [["flutter", "analyze"], ["flutter", "test"]],
+      effect: "Flutter runs `flutter analyze` at commit and `flutter test` at push"
+    }
+  ])("onboards a plain $kind product, records and announces its defaults, and runs no product tool", ({ kind, manifests, tool, checks, effect }) => {
+    const fixture = product(`${kind}app`, manifests);
+    const stubs = toolStubs(fixture, tool);
+    const output: string[] = [];
+    const result = withPath(stubs.path, () => onboardProduct(fixture, output));
+    expect(result.doctor.findings).toEqual([]);
+    const config = readConfig(result.install.configPath);
+    expect(config.toolchain).toBe(kind);
+    expect(config.checks.map((check) => check.argv)).toEqual(checks);
+    const text = output.join("");
+    expect(text).toMatch(new RegExp(`toolchain +: ${kind} \\(inferred\\)`));
+    expect(text).toContain(`: ${config.checks.map((check) => `${check.name} ${JSON.stringify(check.argv)}`).join(", ")} (inferred)`);
+    expect(text).toContain(effect);
+    expect(text).toContain("nothing here runs the suite");
+    expect(localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBe(realpathSync(result.install.configPath));
+    expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
+    expect(existsSync(stubs.marker)).toBe(false);
+  });
+
+  it("reports a missing Flutter SDK as a doctor finding, not an inference failure", () => {
+    const fixture = product("flutterapp", pubspec);
+    const result = withPath("/usr/bin:/bin", () => onboardProduct(fixture, []));
+    expect(result.doctor.findings).toContainEqual(expect.objectContaining({ class: "toolchain", subject: "flutter" }));
+    expect(readConfig(result.install.configPath).toolchain).toBe("flutter");
+    expect(localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBeNull();
+  });
+
+  it("shows a re-onboard declaration as recorded, and a dry run as proposed without writing", () => {
+    const fixture = product("pythonapp", pyproject);
+    const stubs = toolStubs(fixture, "pytest");
+    expect(withPath(stubs.path, () => onboardProduct(fixture, [])).doctor.exitCode).toBe(0);
+    const declaration = join(fixture.workspaceRoot, "policy.json");
+    const unit = { name: "unit", argv: ["pytest", "tests/unit"] };
+    writeFileSync(declaration, JSON.stringify({ verify: { precommit: [], prepush: [] }, checks: [unit] }));
+    const output: string[] = [];
+    const result = withPath(stubs.path, () => onboardProduct(fixture, output, declaration));
+    expect(result.doctor.exitCode).toBe(0);
+    expect(readConfig(result.install.configPath)).toMatchObject({ verify: { precommit: [], prepush: [] }, checks: [unit] });
+    const text = output.join("");
+    expect(text).toMatch(/precommit +: none \(explicit opt-out\) \(declared\)/);
+    expect(text).toContain(`: unit ${JSON.stringify(unit.argv)} (declared)`);
+    expect(text).not.toContain("Python runs");
+
+    const fresh = product("drypython", pyproject);
+    const dryOutput: string[] = [];
+    const dry = install({
+      installRoot: repoRoot,
+      productRoot: fresh.productRoot,
+      coordRoot: fresh.coordRoot,
+      agents: ["claude"],
+      profile: "solo",
+      writeProduct: false,
+      vendor: false,
+      bootstrap: false,
+      dryRun: true,
+      home: null,
+      log: (message) => dryOutput.push(message)
+    });
+    expect(dryOutput.join("")).toContain("Proposed verification policy (dry run; nothing written):");
+    expect(dryOutput.join("")).toMatch(/precommit +: test \["pytest","-q"\] \(inferred\)/);
+    expect(existsSync(dry.configPath)).toBe(false);
+    expect(dry.clones.some((clone) => existsSync(clone))).toBe(false);
+    expect(dry.changes.join("\n")).not.toContain("verification policy");
   });
 });

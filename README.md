@@ -69,7 +69,7 @@ security sandbox. Peer agreement and passing checks still need your judgment.
 - **Node 26, pnpm 11, and Git** to install and run the driver.
 - **GitHub CLI (`gh`)**, authenticated for your product's issue and PR operations.
 - **tmux** and the coding-agent harnesses you select, installed and authenticated.
-- **Your product's tools**, such as Go, Cargo, or the declared Python test tools.
+- **Your product's tools**, such as Go, Cargo, pytest, or the Flutter SDK.
 
 The driver uses Node/pnpm regardless of your product's language. Public
 bootstrap needs no GitHub CLI authentication; product operations do.
@@ -128,14 +128,17 @@ operator guide; stopping the coordinator does not stop its agent harnesses.
 | Go | `go.mod`: automatically proposes Go checks |
 | Rust | `Cargo.toml`: automatically proposes Cargo checks |
 | Node | `package.json`: pnpm, yarn, or npm selected by lockfile; uses existing scripts |
+| Flutter | `pubspec.yaml` with a Flutter SDK dependency: `flutter analyze` and `flutter test` |
+| Python | `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt`: `pytest -q` |
 | Make | Recognized `Makefile` targets supply checks |
-| Python | Explicit commands via `coord install --declare`; no auto-detection yet |
 
-Review the proposed policy: a language marker alone does not guarantee usable
-checks, and installation refuses missing finalization checks. Other languages
-work through explicit command declarations. See
+Onboarding prints the verification policy it recorded and what it means, and
+marks each part inferred or declared. Review it: a language marker alone does
+not guarantee usable checks, and installation refuses missing finalization
+checks. Other languages, or different commands, work through explicit
+declarations. See
 [product languages and declarations](docs/setup-workspace.md#product-languages)
-for detection precedence, tool requirements, and a complete Python example.
+for detection precedence, tool requirements, and a complete override example.
 
 ## Platforms
 

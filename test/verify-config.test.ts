@@ -262,6 +262,85 @@ describe("installer proposals", () => {
       rmSync(cargoRoot, { recursive: true, force: true });
     }
   });
+
+  const proposeFor = (files: Record<string, string>): ReturnType<typeof proposeProjectPolicy> => {
+    const root = mkdtempSync(join(tmpdir(), "coord-propose-"));
+    try {
+      for (const [path, content] of Object.entries(files)) writeFileSync(join(root, path), content);
+      return proposeProjectPolicy(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  it("proposes pytest for Python markers and Flutter checks only for a Flutter SDK dependency", () => {
+    const pytest = { name: "test", argv: ["pytest", "-q"] };
+    for (const marker of ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"]) {
+      const python = proposeFor({ [marker]: "\n" });
+      expect(python, marker).toMatchObject({
+        toolchain: "python", verify: { precommit: [pytest], prepush: [] }, checks: [pytest],
+        workflowCriticalPrefixes: ["src/", "tests/", "test/"]
+      });
+      expect(python.workflowCriticalFiles).toEqual(expect.arrayContaining([marker, "uv.lock", "poetry.lock", "Pipfile.lock"]));
+    }
+
+    const analyze = { name: "analyze", argv: ["flutter", "analyze"] };
+    const test = { name: "test", argv: ["flutter", "test"] };
+    const flutterManifests = {
+      block: "name: app\ndependencies:\n  flutter:\n    sdk: flutter # SDK\n",
+      quoted: "name: app\ndependencies:\n  flutter:\n    sdk: \"flutter\"\n",
+      inline: "name: app\ndependencies: {flutter: {sdk: flutter}}\n",
+      testOnly: "name: app\ndev_dependencies:\n  flutter_test:\n    sdk: flutter\n"
+    };
+    for (const [form, pubspec] of Object.entries(flutterManifests)) {
+      expect(proposeFor({ "pubspec.yaml": pubspec }), form).toMatchObject({
+        toolchain: "flutter", verify: { precommit: [analyze], prepush: [test] }, checks: [analyze, test],
+        workflowCriticalFiles: ["pubspec.yaml", "pubspec.lock", "analysis_options.yaml"]
+      });
+    }
+    const notFlutter = {
+      dart: "name: pkg\nenvironment:\n  sdk: ^3.4.0\ndependencies:\n  path: ^1.9.0\n",
+      comment: "name: pkg\n# dependencies:\n#   flutter:\n#     sdk: flutter\n",
+      description: "name: pkg\ndescription: |\n  flutter:\n    sdk: flutter\n",
+      malformed: "dependencies: [flutter\n",
+      wrongShape: "dependencies:\n  flutter: sdk\n",
+      list: "- flutter\n"
+    };
+    for (const [form, pubspec] of Object.entries(notFlutter)) {
+      const proposal = proposeFor({ "pubspec.yaml": pubspec });
+      expect(proposal.toolchain, form).toBeUndefined();
+      expect(proposal.checks, form).toBeUndefined();
+    }
+  });
+
+  it("keeps earlier and working detectors ahead of Python and Flutter, and lets declarations win", () => {
+    const flutter = "dependencies:\n  flutter:\n    sdk: flutter\n";
+    const nodeTest = JSON.stringify({ scripts: { test: "vitest" } });
+    expect(proposeFor({ "Cargo.toml": "[package]\n", "pyproject.toml": "\n" }).toolchain).toBe("cargo");
+    expect(proposeFor({ "go.mod": "module x\n", "pubspec.yaml": flutter }).toolchain).toBe("go");
+    expect(proposeFor({ "package.json": nodeTest, "pubspec.yaml": flutter }).toolchain).toBe("flutter");
+    expect(proposeFor({ "package.json": nodeTest, "pyproject.toml": "\n" }).toolchain).toBe("npm");
+    expect(proposeFor({ Makefile: "lint:\n\truff check .\n", "pyproject.toml": "\n" }).toolchain).toBe("python");
+    expect(proposeFor({ Makefile: "test:\n\tpython -m unittest\n", "pyproject.toml": "\n" }).checks)
+      .toEqual([{ name: "test", argv: ["make", "test"] }]);
+
+    const declared = workspaceDeclarationSchema.parse({
+      toolchain: "uv",
+      verify: { precommit: [], prepush: [] },
+      checks: [{ name: "unit", argv: ["uv", "run", "pytest", "tests/unit"] }],
+      workflowCriticalPrefixes: ["app/"],
+      workflowCriticalFiles: ["uv.lock"]
+    });
+    const configured = buildWorkspaceConfig({
+      project: "fixture", origin: "https://example.com/fixture.git", baseBranch: "main", agents: ["codex"],
+      profile: "solo", cloneRoot: "/clones", workspaceDir: "/runtime", completesRoot: "/completes",
+      declared, proposal: proposeFor({ "pyproject.toml": "\n" })
+    }, undefined);
+    expect(configured).toMatchObject({
+      toolchain: "uv", verify: { precommit: [], prepush: [] }, checks: declared.checks,
+      workflowCriticalPrefixes: ["app/"], workflowCriticalFiles: ["uv.lock"]
+    });
+  });
 });
 
 describe("shipped examples", () => {

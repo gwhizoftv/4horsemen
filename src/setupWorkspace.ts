@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { load } from "js-yaml";
 import {
   git,
   gitOrThrow,
@@ -127,6 +128,8 @@ export type ProjectPolicyProposal = {
   documentation?: CoordinatorConfig["documentation"];
   workflowCriticalPrefixes: string[];
   workflowCriticalFiles: string[];
+  /** Plain-language consequences of these defaults, announced by install; never written to config. */
+  effects?: string[];
 };
 
 const nodeScripts = (productRoot: string): Set<string> => {
@@ -148,6 +151,34 @@ const makeTargets = (productRoot: string): Set<string> => {
     return new Set<string>();
   }
 };
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Whether the root pubspec depends on the Flutter SDK. Parsed rather than
+ * matched by line, so quoted values, comments, and flow mappings mean what YAML
+ * says they mean, and `sdk: flutter` inside a description does not. Anything
+ * unreadable or oddly shaped is simply not Flutter.
+ */
+const declaresFlutterSdk = (productRoot: string): boolean => {
+  let manifest: unknown;
+  try {
+    manifest = load(readFileSync(join(productRoot, "pubspec.yaml"), "utf8"));
+  } catch {
+    return false;
+  }
+  if (!isRecord(manifest)) return false;
+  const sdkDependency = (section: unknown, name: string): boolean => {
+    const dependency = isRecord(section) ? section[name] : undefined;
+    return isRecord(dependency) && dependency.sdk === "flutter";
+  };
+  return sdkDependency(manifest.dependencies, "flutter") ||
+    sdkDependency(manifest.dev_dependencies, "flutter") ||
+    sdkDependency(manifest.dev_dependencies, "flutter_test");
+};
+
+const PYTHON_MARKERS = ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"];
 
 /**
  * A proposal only carries `verify` when it actually found something to run.
@@ -171,6 +202,12 @@ const proposedVerify = (
  * ever sniffs: a proposal made once and recorded is reviewable, whereas a
  * decision remade silently on every commit is the drift this issue exists to
  * remove.
+ *
+ * Order: Cargo, Go, Flutter, Node, a Makefile with a `test` target, Python,
+ * then any other Makefile. A confirmed Flutter SDK dependency outranks an
+ * incidental Node tooling manifest; a Makefile that already supplies `make
+ * test` keeps the gate it has always produced, and Python only outranks a
+ * Makefile of auxiliary targets.
  */
 const proposeToolchainPolicy = (productRoot: string): ProjectPolicyProposal => {
   const has = (relative: string): boolean => existsSync(join(productRoot, relative));
@@ -204,6 +241,19 @@ const proposeToolchainPolicy = (productRoot: string): ProjectPolicyProposal => {
     };
   }
 
+  if (has("pubspec.yaml") && declaresFlutterSdk(productRoot)) {
+    const analyze: CheckCommand = { name: "analyze", argv: ["flutter", "analyze"] };
+    const test: CheckCommand = { name: "test", argv: ["flutter", "test"] };
+    return {
+      toolchain: "flutter",
+      ...proposedVerify([analyze], [test]),
+      checks: [analyze, test],
+      workflowCriticalPrefixes: ["lib/", "test/", "integration_test/", "android/", "ios/", "web/", "macos/", "windows/", "linux/"],
+      workflowCriticalFiles: ["pubspec.yaml", "pubspec.lock", "analysis_options.yaml"],
+      effects: ["Flutter runs `flutter analyze` at commit and `flutter test` at push, then both at finalization."]
+    };
+  }
+
   if (has("package.json")) {
     const scripts = nodeScripts(productRoot);
     const manager = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : "npm";
@@ -224,18 +274,31 @@ const proposeToolchainPolicy = (productRoot: string): ProjectPolicyProposal => {
   }
 
   const targets = makeTargets(productRoot);
-  if (targets.size > 0) {
-    const target = (name: string): CheckCommand => ({ name, argv: ["make", name] });
+  const target = (name: string): CheckCommand => ({ name, argv: ["make", name] });
+  const make: ProjectPolicyProposal | undefined = targets.size === 0 ? undefined : {
+    toolchain: "make",
+    ...proposedVerify(targets.has("check") ? [target("check")] : [], []),
+    checks: targets.has("test") ? [target("test")] : undefined,
+    workflowCriticalPrefixes: [],
+    workflowCriticalFiles: ["Makefile"]
+  };
+  if (make?.checks !== undefined) return make;
+
+  if (PYTHON_MARKERS.some(has)) {
+    const pytest: CheckCommand = { name: "test", argv: ["pytest", "-q"] };
     return {
-      toolchain: "make",
-      ...proposedVerify(targets.has("check") ? [target("check")] : [], []),
-      checks: targets.has("test") ? [target("test")] : undefined,
-      workflowCriticalPrefixes: [],
-      workflowCriticalFiles: ["Makefile"]
+      toolchain: "python",
+      ...proposedVerify([pytest], []),
+      checks: [pytest],
+      workflowCriticalPrefixes: ["src/", "tests/", "test/"],
+      workflowCriticalFiles: [
+        ...PYTHON_MARKERS, "pytest.ini", "tox.ini", "uv.lock", "poetry.lock", "Pipfile", "Pipfile.lock"
+      ],
+      effects: ["Python runs `pytest -q` at commit and at finalization; push adds no further local check."]
     };
   }
 
-  return { workflowCriticalPrefixes: [], workflowCriticalFiles: [] };
+  return make ?? { workflowCriticalPrefixes: [], workflowCriticalFiles: [] };
 };
 
 export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal => {
