@@ -1,0 +1,14 @@
+{
+  "actionId": "a3f6d958-0cf6-4a3a-8864-a028773a56ef",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "2648bd93a757082f1e10e7ffe3714204e61d774f94cb1a327daf47acd28dd778",
+  "issue": 227,
+  "issueSessionId": "issue-227:fcc3cbcda53a8e130b5366e6e623891b3c0c46ed",
+  "protocolVersion": 2,
+  "rationale": "Revision 2639f290 fixes the actionable comparison gaps on the selected pin: foreign helper preservation, wipe prune authArgs, active-roster resume wiring, repair-install preflight, and launcher revoke checks that still warn-and-continue on transport failures.",
+  "responseSha256": "4f3eb891725dea56e8c8fec2520050b865d5e5ade7391dcef319cf53035f1356",
+  "revisionCommitSha": "2639f2907ecdab722e05483fbfbd8479d27d7c4b",
+  "round": 1
+}
