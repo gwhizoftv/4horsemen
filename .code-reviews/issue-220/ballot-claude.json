@@ -1,0 +1,29 @@
+{
+  "actionId": "18394a2f-439b-48a0-86c3-3fb707f98942",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "966c689ae1ac7828a64b2b2de5c2696d1c59b4d3",
+      "path": ".signals/issue-220/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "b71317bc0b11164a217e91f2c608eeb4d8616af1",
+      "path": ".signals/issue-220/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "8ac06bac06de77fb1702b7fd62187c99a1838a77",
+      "path": ".signals/issue-220/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "00aad391db00bd152ca51a766cea7928536b4645b9172e89f7236adf352d63ff",
+  "issue": 220,
+  "issueSessionId": "issue-220:e5ec3f6d664d3967a15130337f91b4d193579555",
+  "protocolVersion": 2,
+  "rationale": "All three pins ship the identical round-1 binder change, but codex b71317bc is the only one meeting every issue 220 acceptance clause as written: its orderScaffold basedOn test derives inputs via deriveBoundInputs so it fails before the fix, and its e2e canary proves the published action's manifest, file bytes, and implementation worktree are readable without git show.",
+  "responseSha256": "15023fbbb76adaad447335a89f1d478f6be42a2cdd3df855dc1f7ffac3890b36"
+}
