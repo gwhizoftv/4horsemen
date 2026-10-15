@@ -1,0 +1,21 @@
+{
+  "protocolVersion": 1,
+  "issue": 227,
+  "issueSessionId": "issue-227:fcc3cbcda53a8e130b5366e6e623891b3c0c46ed",
+  "agent": "codex",
+  "inputSetHash": "90c1af2f59f4bb2b55c0aba34281597b3626fc90cacf402fc2d0efd013f2df2c",
+  "artifact": "plan-amendment-request",
+  "actionId": "50ed5ee8-8798-47ec-b849-808671faca8d",
+  "scopeHash": "f46b8d2406e4ebeec47a35b21ee0f87428b669e8afed3f6b32a925fab2c4f6f3",
+  "explanation": "The selected plan's Scope limits explicitly exclude scripts/bootstrap.sh, interpreting installation as onboard/install after a driver is already available; however, issue 227 explicitly requires authentication during coord installation before an issue starts, and the existing bootstrap performs git clone at line 70 and git fetch at line 82 before any workspace configuration or built credential helper exists, so a private source under account B still uses ambient account A. These two existing files are necessary to cover that original pre-install authentication requirement with an explicit named-account bootstrap option and a focused regression; public/local bootstrap behavior and the selected plan's gh-backed credential storage remain unchanged.",
+  "additionalPaths": [
+    {
+      "path": "scripts/bootstrap.sh",
+      "reason": "Apply an explicit selected GitHub account to the initial private coordinator-source clone and subsequent fetch before the installed TypeScript helper is available, using named gh credential lookup with token-free helper configuration, no shared account switch, and failure before remote access when lookup or identity validation fails."
+    },
+    {
+      "path": "test/bootstrap.test.ts",
+      "reason": "Extend the existing BootstrapFixture/fake-bin tests to verify that first private clone and update use the selected account despite conflicting ambient credentials, that missing or mismatched credentials stop before Git, and that no token is persisted or passed in argv; this executable pre-install shell path is not exercised by the approved CLI/install unit tests."
+    }
+  ]
+}
