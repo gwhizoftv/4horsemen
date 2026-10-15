@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname } from "node:path";
 import { gitShaSchema, repositoryPathSchema } from "./protocol.js";
 import { validatePhasePin, type PinValidationResult } from "./pinValidation.js";
+import { explainGitHubAuthFailure, gitCredentialArgs } from "./githubAuth.js";
 
 export type CommandResult = { exitCode: number; stdout: Buffer; stderr: string };
 export type GitRunner = (
@@ -85,18 +86,38 @@ const branchPattern = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 export type FetchResult = { ok: true; ref: string; tip: string } | { ok: false; transient: boolean; error: string };
 
 export class BareMirror {
+  private readonly authArgs: readonly string[];
+  private readonly authAccount: string | null;
+
   constructor(
     readonly path: string,
     readonly origin: string,
-    private readonly runner: GitRunner = runGitCommand
-  ) {}
+    private readonly runner: GitRunner = runGitCommand,
+    auth: { account: string; cliEntry: string } | null = null
+  ) {
+    this.authAccount = auth?.account ?? null;
+    this.authArgs = auth === null ? [] : gitCredentialArgs(auth.account, auth.cliEntry);
+  }
+
+  private decorateAuthFailure(stderr: string): string {
+    if (this.authAccount === null) return stderr;
+    const explanation = explainGitHubAuthFailure(this.authAccount, stderr);
+    return explanation === null ? stderr : `${stderr}\n${explanation}`;
+  }
 
   private async git(args: readonly string[], allowFailure = false): Promise<CommandResult> {
-    const result = await this.runner(["--git-dir", this.path, ...args]);
+    const result = await this.runner([...this.authArgs, "--git-dir", this.path, ...args]);
     if (!allowFailure && result.exitCode !== 0) {
-      throw new GitCommandError(`git ${args[0] ?? "command"} failed: ${result.stderr}`, result, isTransientGitFailure(result.stderr));
+      const stderr = this.decorateAuthFailure(result.stderr);
+      throw new GitCommandError(
+        `git ${args[0] ?? "command"} failed: ${stderr}`,
+        { ...result, stderr },
+        isTransientGitFailure(result.stderr)
+      );
     }
-    return result;
+    return result.exitCode !== 0 && this.authAccount !== null
+      ? { ...result, stderr: this.decorateAuthFailure(result.stderr) }
+      : result;
   }
 
   async initialize(): Promise<void> {

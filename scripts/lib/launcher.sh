@@ -430,6 +430,20 @@ if [[ -x .coord/bin/git ]]; then
   export PATH="\$(pwd)/.coord/bin:\$PATH"
 fi
 
+# Workspace GitHub account: resolve a fresh token at launch (never embed one here).
+coord_github_account="\$(git config --local --get coord.githubAccount 2>/dev/null || true)"
+if [[ -n "\$coord_github_account" ]]; then
+  coord_token="\$(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN \\
+    gh auth token --hostname github.com --user "\$coord_github_account" 2>/dev/null || true)"
+  if [[ -z "\$coord_token" ]]; then
+    echo "GitHub authentication for \$coord_github_account is unavailable." >&2
+    echo "Run: coord auth login" >&2
+    exit 1
+  fi
+  export GH_TOKEN="\$coord_token"
+  echo "GitHub account: \$coord_github_account"
+fi
+
 $command
 EOF
 

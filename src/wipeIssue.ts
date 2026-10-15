@@ -29,6 +29,8 @@ export type WipeIssueOptions = {
   deleteEvidence?: boolean;
   log?: WipeIssueLogger;
   terminalCloser?: OwnerTerminalCloser | null;
+  /** Bound GH environment for the API delete fallback when a workspace account is selected. */
+  ghEnv?: NodeJS.ProcessEnv;
 };
 
 export type WipeIssueResult = {
@@ -100,7 +102,12 @@ const listOriginIssueBranches = (cwd: string, issue: number): OriginIssueBranch[
     .filter((row): row is OriginIssueBranch => row !== null);
 };
 
-const deleteRemoteBranch = (cwd: string, origin: string, branch: string): void => {
+const deleteRemoteBranch = (
+  cwd: string,
+  origin: string,
+  branch: string,
+  ghEnv?: NodeJS.ProcessEnv
+): void => {
   const pushed = git(cwd, "push", "origin", "--delete", branch);
   if (pushed.exitCode === 0) return;
   const repository = githubRepositoryFromOrigin(origin);
@@ -111,7 +118,8 @@ const deleteRemoteBranch = (cwd: string, origin: string, branch: string): void =
   // Fall back to the GitHub API so wipe-issue still works from either cwd.
   const api = spawnSync("gh", ["api", "-X", "DELETE", `repos/${repository}/git/refs/heads/${branch}`], {
     cwd,
-    encoding: "utf8"
+    encoding: "utf8",
+    env: ghEnv ?? process.env
   });
   if ((api.status ?? 1) !== 0) {
     throw new Error(
@@ -352,7 +360,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
             continue;
           }
           log(`${dryRun ? "would delete" : "deleting"} origin/${branch} (ballot evidence, owner requested)\n`);
-          if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch);
+          if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch, options.ghEnv);
           result.deletedRemoteBranches.push(branch);
           continue;
         }
@@ -374,7 +382,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
           continue;
         }
         log(`${dryRun ? "would delete" : "deleting"} origin/${branch}\n`);
-        if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch);
+        if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch, options.ghEnv);
         result.deletedRemoteBranches.push(branch);
       }
     }

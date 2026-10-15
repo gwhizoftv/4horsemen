@@ -67,12 +67,14 @@ security sandbox. Peer agreement and passing checks still need your judgment.
 ## Requirements
 
 - **Node 26, pnpm 11, and Git** to install and run the driver.
-- **GitHub CLI (`gh`)**, authenticated for your product's issue and PR operations.
+- **GitHub CLI (`gh`)**, authenticated for each GitHub account you will select per workspace.
 - **tmux** and the coding-agent harnesses you select, installed and authenticated.
 - **Your product's tools**, such as Go, Cargo, pytest, or the Flutter SDK, with its dependencies prepared.
 
 The driver uses Node/pnpm regardless of your product's language. Public
-bootstrap needs no GitHub CLI authentication; product operations do.
+bootstrap needs no GitHub CLI authentication; product operations do. Use
+`coord auth status` and `coord auth login` for a workspace's selected account;
+tokens stay in gh's credential store, not in workspace config.
 
 ## Quick start
 
@@ -93,15 +95,21 @@ install from a private fork, see [bootstrap options](docs/setup-workspace.md#boo
 
 ```sh
 coord onboard /path/to/app
+# or, when several gh accounts are logged in:
+coord onboard /path/to/app --github-account mylogin
 ```
 
 The default is all four agents and your own clone. Onboarding creates
 the agent clones, proposes checks for the product, and runs `coord doctor`.
+With a TTY it can ask which GitHub account this workspace should use.
 Install all four harnesses, or use this alternative for a one-agent start:
 
 ```sh
 coord onboard /path/to/app --agents codex --profile solo
 ```
+
+Check or renew the workspace account later with `coord auth status` and
+`coord auth login` (from the product directory).
 
 ### 3. Run a GitHub issue
 

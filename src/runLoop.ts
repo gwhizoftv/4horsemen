@@ -37,6 +37,9 @@ import { inspectRangeChanges, selectCandidateVerification, selectVerification } 
 import { runVerification, type RunVerificationResult } from "./verificationRunner.js";
 import { createVerificationIngestor, verificationMeasurement } from "./verificationLog.js";
 import { BareMirror, GitCommandError, hermeticGitEnv, isTransientGitFailure } from "./mirror.js";
+import { coordCliEntry, withGitHubAccount } from "./githubAuth.js";
+import { localConfigGet } from "./gitExec.js";
+import { CLI_ENTRY_KEY } from "./hookPolicy.js";
 import {
   materializeBoundInputs,
   pruneSupersededWorktrees,
@@ -201,8 +204,11 @@ export type PullRequestInput = {
 export type PullRequestOpener = (input: PullRequestInput) => Promise<{ url: string }>;
 export type PullRequestMerger = (input: { url: string }) => Promise<void>;
 
-export const openDraftPullRequest: PullRequestOpener = async (input) => {
-  const existing = await runArgv(
+export const openDraftPullRequest = async (
+  input: PullRequestInput,
+  runner: ProcessRunner = runArgv
+): Promise<{ url: string }> => {
+  const existing = await runner(
     ["gh", "pr", "list", "--repo", input.repository, "--head", input.head, "--state", "all", "--json", "url", "--limit", "1"],
     process.cwd()
   );
@@ -214,7 +220,7 @@ export const openDraftPullRequest: PullRequestOpener = async (input) => {
       // Fall through to create; gh's structured output should normally parse.
     }
   }
-  const result = await runArgv(
+  const result = await runner(
     [
       "gh",
       "pr",
@@ -237,12 +243,15 @@ export const openDraftPullRequest: PullRequestOpener = async (input) => {
   return { url: result.stdout.trim() };
 };
 
-export const mergePullRequest: PullRequestMerger = async (input) => {
-  const ready = await runArgv(["gh", "pr", "ready", input.url], process.cwd());
+export const mergePullRequest = async (
+  input: { url: string },
+  runner: ProcessRunner = runArgv
+): Promise<void> => {
+  const ready = await runner(["gh", "pr", "ready", input.url], process.cwd());
   if (ready.exitCode !== 0 && !/not a draft/i.test(`${ready.stderr}${ready.stdout}`)) {
     throw new Error(`marking PR ready failed: ${ready.stderr.trim() || ready.stdout.trim()}`);
   }
-  const merged = await runArgv(["gh", "pr", "merge", input.url, "--merge", "--delete-branch"], process.cwd());
+  const merged = await runner(["gh", "pr", "merge", input.url, "--merge", "--delete-branch"], process.cwd());
   if (merged.exitCode !== 0) throw new Error(`PR merge failed: ${merged.stderr.trim() || merged.stdout.trim()}`);
 };
 
@@ -1086,13 +1095,30 @@ export class CoordinatorRunLoop {
     this.startupReported = true;
   }
 
+  private readonly githubRunner: ProcessRunner;
+
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
-    this.mirror = dependencies.mirror ?? new BareMirror(paths.mirror, start.origin);
+    const cliEntry =
+      start.agents
+        .map((agent) => (existsSync(agent.root) ? localConfigGet(agent.root, CLI_ENTRY_KEY) : null))
+        .find((value) => value !== null) ?? coordCliEntry();
+    const mirrorAuth =
+      start.githubAccount === undefined
+        ? null
+        : { account: start.githubAccount, cliEntry };
+    this.mirror = dependencies.mirror ?? new BareMirror(paths.mirror, start.origin, undefined, mirrorAuth);
     this.tmux = dependencies.tmux === undefined ? new TmuxController(undefined, paths.tmuxNamespace, undefined, undefined, undefined, paths.terminalGroup) : dependencies.tmux;
     this.processRunner = dependencies.processRunner ?? runArgv;
-    this.pullRequestOpener = dependencies.pullRequestOpener ?? openDraftPullRequest;
-    this.pullRequestMerger = dependencies.pullRequestMerger ?? mergePullRequest;
+    this.githubRunner = withGitHubAccount(
+      this.processRunner,
+      start.githubAccount ?? null,
+      cliEntry
+    ) as ProcessRunner;
+    this.pullRequestOpener =
+      dependencies.pullRequestOpener ?? ((input) => openDraftPullRequest(input, this.githubRunner));
+    this.pullRequestMerger =
+      dependencies.pullRequestMerger ?? ((input) => mergePullRequest(input, this.githubRunner));
     this.now = dependencies.now ?? (() => new Date().toISOString());
     this.sleep = dependencies.sleep ?? pollSleep;
     this.actionId = dependencies.actionId ?? createActionId;
@@ -2742,7 +2768,7 @@ export class CoordinatorRunLoop {
     const result = await assessFollowUpIssue({ origin: start.origin, issue: start.issue,
       issueSessionId: start.issueSessionId, agent: order.agent,
       revisionCommitSha: observation.followUpRequest.revisionCommitSha, url: observation.followUpRequest.followUpIssueUrl,
-      cwd: this.mirror.path, runner: this.processRunner });
+      cwd: this.mirror.path, runner: this.githubRunner });
     return result.status === "satisfied" ? { ...observation, followUp: result.followUp }
       : { ...observation, status: result.status, outstanding: result.outstanding };
   }

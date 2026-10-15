@@ -76,6 +76,43 @@ describe("owner bare mirror", () => {
     }
   });
 
+  it("prefixes account credential -c args before --git-dir when auth is bound", async () => {
+    const calls: string[][] = [];
+    const mirror = new BareMirror(
+      join(mkdtempSync(join(tmpdir(), "coord-mirror-auth-")), "mirror.git"),
+      "https://github.com/example/fixture.git",
+      async (args) => {
+        calls.push([...args]);
+        if (args.includes("init")) return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+        if (args.includes("remote")) return { exitCode: 0, stdout: Buffer.from("https://github.com/example/fixture.git\n"), stderr: "" };
+        if (args.includes("fetch")) return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+        if (args.includes("rev-parse")) return { exitCode: 0, stdout: Buffer.from(`${"a".repeat(40)}\n`), stderr: "" };
+        if (args.includes("push")) return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+        return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+      },
+      { account: "acct", cliEntry: "/tmp/coord/dist/main.js" }
+    );
+    await mirror.initialize();
+    await mirror.fetchBranch("main");
+    await mirror.publishBranch("a".repeat(40), "issue-1/claude");
+    const network = calls.filter((argv) => argv.includes("fetch") || argv.includes("push"));
+    expect(network.length).toBeGreaterThan(0);
+    for (const argv of network) {
+      expect(argv[0]).toBe("-c");
+      expect(argv[1]).toBe("credential.https://github.com.helper=");
+      expect(argv[2]).toBe("-c");
+      expect(argv[3]).toContain("auth git-credential");
+      expect(argv.indexOf("--git-dir")).toBeGreaterThan(3);
+    }
+    const plain = new BareMirror(join(mkdtempSync(join(tmpdir(), "coord-mirror-plain-")), "mirror.git"), "https://github.com/example/fixture.git",
+      async (args) => {
+        calls.push([...args]);
+        return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
+      });
+    await plain.initialize();
+    expect(calls.at(-1)?.[0]).not.toBe("-c");
+  });
+
   it("distinguishes transient network failures", () => {
     expect(isTransientGitFailure("fatal: Could not resolve host: example.invalid")).toBe(true);
     expect(isTransientGitFailure("fatal: couldn't find remote ref missing")).toBe(false);

@@ -37,6 +37,7 @@ import {
   clearCloneExclude,
   clearCloneIdentity,
   cloneIsDirty,
+  clearCloneGitHubCredential,
   configureCloneIdentity,
   effectOptions,
   ensureAgentClone,
@@ -49,6 +50,7 @@ import {
   type EffectOptions,
   type Logger
 } from "./setupWorkspace.js";
+import { assertHttpsOriginForAccount, gitCredentialArgs } from "./githubAuth.js";
 import {
   readConfig,
   workspaceDeclarationSchema,
@@ -113,6 +115,11 @@ export type InstallOptions = {
   completesRoot?: string;
   /** Test/embedding override for user-global vendor settings; null skips them. */
   home?: string | null;
+  /**
+   * Selected GitHub login. When omitted, a previous workspace config's
+   * `github.account` is carried forward. Pass `null` to clear the selection.
+   */
+  githubAccount?: string | null;
 };
 
 export type InstallResult = {
@@ -404,6 +411,12 @@ export const install = (options: InstallOptions): InstallResult => {
   // typically one written before a schema change — must not stop the installer
   // that exists to rewrite it; regenerating is the repair.
   const previous = readPreviousConfig(configPath);
+  const githubAccount =
+    options.githubAccount !== undefined
+      ? options.githubAccount
+      : (previous?.github?.account ?? null);
+  if (githubAccount !== null) assertHttpsOriginForAccount(origin, githubAccount);
+  const gitAuthArgs = githubAccount === null ? [] : [...gitCredentialArgs(githubAccount, cliEntry)];
   const config = buildWorkspaceConfig(
     {
       project,
@@ -415,7 +428,8 @@ export const install = (options: InstallOptions): InstallResult => {
       workspaceDir: workspace.workspaceRoot,
       declared,
       proposal,
-      completesRoot
+      completesRoot,
+      githubAccount
     },
     // A re-install must not look like a change just because time passed — but
     // only the timestamp may be carried over. Comparing three fields let a run
@@ -434,7 +448,16 @@ export const install = (options: InstallOptions): InstallResult => {
   for (const agent of agents) {
     const clone = agentCloneDirectory(cloneRoot, project, agent);
     clones.push(clone);
-    ensureAgentClone({ productRoot, origin, clone, baseBranch, options: effects });
+    ensureAgentClone({
+      productRoot,
+      origin,
+      clone,
+      baseBranch,
+      options: effects,
+      gitAuthArgs,
+      githubAccount,
+      cliEntry
+    });
     if (!existsSync(clone)) {
       // Dry run against a workspace that does not exist yet: the remaining
       // per-clone steps have nothing to inspect, and guessing would report
@@ -464,7 +487,8 @@ export const install = (options: InstallOptions): InstallResult => {
         installRoot: options.vendor ? null : installRoot,
         cliEntry,
         workspaceConfig: configPath,
-        completesRoot
+        completesRoot,
+        githubAccount
       },
       effects
     );
@@ -692,6 +716,7 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
       kept.push(`${clone}: ${file} was edited after installation and was left in place`);
     }
     clearCloneIdentity(clone, effects);
+    clearCloneGitHubCredential(clone, effects);
     clearCloneExclude(clone, effects);
     liftCloneAgentsProtocol(clone, effects);
     clearClaudeAgentsShim(clone, agent.id, effects);
@@ -840,6 +865,7 @@ export type OnboardOptions = {
   profile?: string;
   log: Logger;
   home?: string | null;
+  githubAccount?: string | null;
 };
 
 export type OnboardResult = { install: InstallResult; doctor: DoctorReport };
@@ -877,7 +903,8 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     bootstrap: false,
     dryRun: false,
     log: options.log,
-    ...(options.home === undefined ? {} : { home: options.home })
+    ...(options.home === undefined ? {} : { home: options.home }),
+    ...(options.githubAccount === undefined ? {} : { githubAccount: options.githubAccount })
   });
   const report = doctor({ coordRoot, productRoot, ...(options.home === undefined ? {} : { home: options.home }) });
   if (report.exitCode === 0) {

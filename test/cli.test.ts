@@ -2045,3 +2045,128 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     expect(JSON.parse(output.join(""))).toEqual({ decision: "allow" });
   });
 });
+
+describe("workspace GitHub auth commands", () => {
+  const wireCloneAccount = (root: string, account: string): void => {
+    for (const agent of ["codex", "claude", "cursor"]) {
+      const clone = join(root, `clone-${agent}`);
+      execFileSync("git", ["-C", clone, "init", "-q"]);
+      execFileSync("git", ["-C", clone, "add", "."]);
+      execFileSync("git", [
+        "-C",
+        clone,
+        "-c",
+        "user.name=fixture",
+        "-c",
+        "user.email=fixture@example.com",
+        "commit",
+        "-qm",
+        "init"
+      ]);
+      execFileSync("git", ["-C", clone, "config", "coord.githubAccount", account]);
+    }
+  };
+
+  it("starts with github.account using bound GH_TOKEN and freezes start.githubAccount", async () => {
+    const f = setup();
+    const config = JSON.parse(readFileSync(f.configPath, "utf8")) as Record<string, unknown>;
+    config.github = { account: "acct" };
+    writeFileSync(f.configPath, JSON.stringify(config));
+    wireCloneAccount(f.root, "acct");
+    const calls: Array<{ argv: string[]; env?: NodeJS.ProcessEnv }> = [];
+    expect(
+      await runCli(["start", "7", "--profile", "solo", "--config", f.configPath, "--coord-runtime", f.runtime], {
+        processRunner: async (argv, _cwd, options) => {
+          calls.push({ argv: [...argv], ...(options?.env === undefined ? {} : { env: options.env }) });
+          if (argv[0] === "gh" && argv[1] === "auth" && argv[2] === "token") {
+            return { exitCode: 0, stdout: "tok\n", stderr: "" };
+          }
+          if (argv[0] === "gh" && argv[1] === "api" && argv[2] === "user") {
+            return { exitCode: 0, stdout: "acct\n", stderr: "" };
+          }
+          if (argv[0] === "gh" && argv[1] === "api" && String(argv[2]).startsWith("repos/")) {
+            return { exitCode: 0, stdout: "example/fixture\n", stderr: "" };
+          }
+          return successfulStartGit(argv);
+        },
+        makeRunLoop: fakeLoop,
+        io: { stdout: () => undefined }
+      })
+    ).toBe(0);
+    const issueView = calls.find((call) => call.argv[0] === "gh" && call.argv[1] === "issue");
+    expect(issueView?.env?.GH_TOKEN).toBe("tok");
+    const lsRemote = calls.find((call) => call.argv.includes("ls-remote"));
+    expect(lsRemote?.argv[0]).toBe("git");
+    expect(lsRemote?.argv[1]).toBe("-c");
+    expect(lsRemote?.argv[2]).toBe("credential.https://github.com.helper=");
+    expect(lsRemote?.argv[3]).toBe("-c");
+    expect(lsRemote?.argv[4]).toContain("auth git-credential");
+    const start = JSON.parse(readFileSync(join(f.runtime, "issue-7", "start.json"), "utf8")) as { githubAccount?: string };
+    expect(start.githubAccount).toBe("acct");
+  });
+
+  it("refuses start when the selected account token is unavailable", async () => {
+    const f = setup();
+    const config = JSON.parse(readFileSync(f.configPath, "utf8")) as Record<string, unknown>;
+    config.github = { account: "acct" };
+    writeFileSync(f.configPath, JSON.stringify(config));
+    wireCloneAccount(f.root, "acct");
+    let issueViews = 0;
+    const errors: string[] = [];
+    expect(
+      await runCli(["start", "8", "--profile", "solo", "--config", f.configPath, "--coord-runtime", f.runtime], {
+        processRunner: async (argv) => {
+          if (argv[0] === "gh" && argv[1] === "auth" && argv[2] === "token") {
+            return { exitCode: 1, stdout: "", stderr: "missing" };
+          }
+          if (argv[0] === "gh" && argv[1] === "issue") issueViews += 1;
+          return successfulStartGit(argv);
+        },
+        makeRunLoop: fakeLoop,
+        startEffects: async () => {
+          throw new Error("startEffects must not run");
+        },
+        io: { stdout: () => undefined, stderr: (message) => errors.push(message) }
+      })
+    ).not.toBe(0);
+    expect(issueViews).toBe(0);
+    expect(existsSync(join(f.runtime, "issue-8"))).toBe(false);
+    expect(errors.join("")).toMatch(/unavailable|expired|revoked|Run: coord auth login/);
+  });
+
+  it("auth status reports authenticated or missing selection", async () => {
+    const f = setup();
+    const missing: string[] = [];
+    expect(
+      await runCli(["auth", "status", "--config", f.configPath, "--coord-runtime", f.runtime], {
+        processRunner: successfulStartGit,
+        io: { stdout: () => undefined, stderr: (message) => missing.push(message) }
+      })
+    ).toBe(1);
+    expect(missing.join("")).toContain("--github-account");
+
+    const config = JSON.parse(readFileSync(f.configPath, "utf8")) as Record<string, unknown>;
+    config.github = { account: "acct" };
+    writeFileSync(f.configPath, JSON.stringify(config));
+    const output: string[] = [];
+    expect(
+      await runCli(["auth", "status", "--config", f.configPath, "--coord-runtime", f.runtime], {
+        processRunner: async (argv) => {
+          if (argv[0] === "gh" && argv[1] === "auth" && argv[2] === "token") {
+            return { exitCode: 0, stdout: "tok\n", stderr: "" };
+          }
+          if (argv[0] === "gh" && argv[1] === "api" && argv[2] === "user") {
+            return { exitCode: 0, stdout: "acct\n", stderr: "" };
+          }
+          if (argv[0] === "gh" && argv[1] === "api") {
+            return { exitCode: 0, stdout: "example/fixture\n", stderr: "" };
+          }
+          return successfulStartGit(argv);
+        },
+        io: { stdout: (message) => output.push(message) }
+      })
+    ).toBe(0);
+    expect(output.join("")).toContain("Workspace account: acct");
+    expect(output.join("")).toContain("authenticated");
+  });
+});

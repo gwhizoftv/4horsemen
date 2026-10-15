@@ -4358,6 +4358,62 @@ describe("third revision closeout", () => {
     expect(calls[0]!.slice(0, 3)).toEqual(["gh", "issue", "view"]);
   });
 
+  it("binds GH_TOKEN on follow-up gh when start.githubAccount is set", async () => {
+    const { paths, start, mirror, revision } = terminalFixture();
+    writeFileSync(paths.start, `${JSON.stringify({ ...start, githubAccount: "acct" }, null, 2)}\n`);
+    await new CoordinatorRunLoop(paths, { mirror, tmux: null, log: () => undefined }).runTick();
+    const before = readCursorsState(paths);
+    const actionId = before.agents.claude!.actionId!;
+    const order = buildOrder(paths, start, before, "claude", "R6.follow-up", 3, actionId);
+    const receipt = {
+      protocolVersion: 1,
+      issue: 1,
+      issueSessionId: start.issueSessionId,
+      agent: "claude",
+      artifact: "follow-up-ready",
+      actionId,
+      inputSetHash: computeInputSetHash(order.inputs),
+      round: 3,
+      revisionCommitSha: revision.productPin,
+      followUpIssueUrl: "https://github.com/acme/app/issues/2"
+    };
+    vi.spyOn(mirror, "fetchBranch").mockResolvedValue({ ok: true, ref: "refs/remotes/origin/issue-1/claude", tip: "a".repeat(40) });
+    vi.spyOn(mirror, "isReachable").mockResolvedValue(true);
+    vi.spyOn(mirror, "readBlob").mockImplementation(async (_sha, path) =>
+      path === order.requiredPath ? JSON.stringify(receipt) : null
+    );
+    writeFileSync(agentRuntimePaths(paths, "claude").complete, "a".repeat(40));
+    const envs: Array<NodeJS.ProcessEnv | undefined> = [];
+    const loop = new CoordinatorRunLoop(paths, {
+      mirror,
+      tmux: null,
+      log: () => undefined,
+      processRunner: async (argv, _cwd, options) => {
+        envs.push(options?.env);
+        if (argv[0] === "gh" && argv[1] === "auth" && argv[2] === "token") {
+          return { exitCode: 0, stdout: "tok\n", stderr: "" };
+        }
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout: JSON.stringify({
+            number: 2,
+            title: "Remaining objections",
+            url: receipt.followUpIssueUrl,
+            body: [
+              "All remaining objections",
+              "Related to https://github.com/acme/app/issues/1",
+              `Revision: ${revision.productPin}`,
+              `Tracking key: ${followUpKey(start.issueSessionId, "claude", revision.productPin)}`
+            ].join("\n")
+          })
+        };
+      }
+    });
+    await loop.runTick();
+    expect(envs.some((env) => env?.GH_TOKEN === "tok")).toBe(true);
+  });
+
   it("drops only a late non-reviser, republishes the reduced final batch and preserves the revision with one survivor", () => {
     const { paths, start, cursors, now, revision } = terminalFixture();
     const conclusion = computeConsensusDerived(cursors, 3, now)!;

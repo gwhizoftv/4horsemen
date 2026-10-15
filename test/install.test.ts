@@ -5,8 +5,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { findAgentLanguageViolations } from "../src/agentLanguage.js";
 import { syncAgentTrust } from "../src/agentTrust.js";
 import { assertInstallDeletionAllowed, install, uninstall } from "../src/install.js";
+import { CREDENTIAL_HELPER_KEY, GITHUB_ACCOUNT_KEY } from "../src/githubAuth.js";
 import { readConfig } from "../src/state.js";
 import { nestedConfigPath } from "../src/workspace.js";
+import { localConfigGet } from "../src/gitExec.js";
 import {
   declaredChecks,
   ensureBuilt,
@@ -1126,6 +1128,44 @@ describe("generated git shim", () => {
     writeFileSync(shim, "#!/bin/sh\necho someone else wrote this\n");
     installOnce(fixture, { agents: ["claude"] });
     expect(readFileSync(shim, "utf8")).toContain("someone else wrote this");
+  });
+});
+
+describe("per-workspace GitHub account", () => {
+  it("persists github.account, clone helper wiring, and launcher token resolution", () => {
+    const fixture = product();
+    const origin = "https://acct@github.com/example/fixture.git";
+    const result = installOnce(fixture, { githubAccount: "acct", origin, agents: ["claude", "codex"] });
+    expect(readConfig(result.configPath).github).toEqual({ account: "acct" });
+    for (const clone of result.clones) {
+      expect(localConfigGet(clone, GITHUB_ACCOUNT_KEY)).toBe("acct");
+      const helpers = git(clone, "config", "--local", "--get-all", CREDENTIAL_HELPER_KEY)
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      // Empty reset plus the coord helper (git --get-all may omit a blank line).
+      expect(helpers.some((value) => value.includes("auth git-credential") && value.includes("acct"))).toBe(true);
+      const launcher = readFileSync(join(clone, clone.includes("codex") ? "start-codex.sh" : "start-claude.sh"), "utf8");
+      expect(launcher).toContain("coord.githubAccount");
+      expect(launcher).toContain("gh auth token --hostname github.com --user");
+      expect(launcher).not.toMatch(/gho_|github_pat_|ghp_/);
+    }
+    installOnce(fixture, { origin, agents: ["claude", "codex"] });
+    expect(readConfig(result.configPath).github).toEqual({ account: "acct" });
+    uninstallOnce(fixture);
+    for (const clone of result.clones) {
+      expect(localConfigGet(clone, GITHUB_ACCOUNT_KEY)).toBeNull();
+      const helpers = tryGit(clone, "config", "--local", "--get-all", CREDENTIAL_HELPER_KEY);
+      expect(helpers.stdout.includes("auth git-credential")).toBe(false);
+    }
+  });
+
+  it("refuses a selected account with an SSH origin before cloning", () => {
+    const fixture = product();
+    expect(() =>
+      installOnce(fixture, { githubAccount: "acct", origin: "git@github.com:example/fixture.git" })
+    ).toThrow(/https:\/\/github\.com/);
+    expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(false);
   });
 });
 

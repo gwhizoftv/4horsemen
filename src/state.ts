@@ -39,6 +39,11 @@ import {
   type WorkflowStepId
 } from "./steps.js";
 
+/** Kept local so state does not import githubAuth (cycle via agentHookSync). */
+const githubLoginSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/, "github.account must be a GitHub login");
+
 export const RUNTIME_FORMAT_VERSION = 4;
 
 const LEGACY_RUNTIME_FORMAT_VERSIONS = new Set([2, 3]);
@@ -271,6 +276,7 @@ export const coordinatorConfigSchema = z
   .object({
     project: z.string().min(1),
     origin: z.string().min(1),
+    github: z.object({ account: githubLoginSchema }).strict().optional(),
     agents: z.array(agentConfigSchema).min(1),
     branch: z.string().refine((value) => value.includes("{issue}") && value.includes("{agent}")),
     baseBranch: z.string().min(1).default("main"),
@@ -435,6 +441,8 @@ export const startStateSchema = z
       .min(1),
     trustedSourceCommit: gitShaSchema,
     origin: z.string().min(1),
+    /** Frozen workspace GitHub account for this issue; absent means ambient credentials. */
+    githubAccount: githubLoginSchema.optional(),
     coordRoot: z.string().min(1),
     /**
      * Where this issue's receipts live, frozen for the issue session.
