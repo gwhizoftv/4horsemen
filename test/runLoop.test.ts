@@ -4423,27 +4423,32 @@ describe("ready-driven delivery and stall watchdog", () => {
     return { previous, next };
   };
 
-  it("issue 415: sends each of six actions exactly once to a Codex turn that never stops", async () => {
-    const f = safetyFixture("codex");
+  it.each([
+    { vendor: "codex", chrome: "• Working (3m 2s • esc to interrupt)\n› \n? for shortcuts" },
+    { vendor: "cursor", chrome: "⠋ Thinking…\n→ Plan, search, build anything\nAuto · 1%" }
+  ])("issue 415: sends each of six actions exactly once to a $vendor turn that never stops", async ({ vendor, chrome }) => {
+    const f = safetyFixture(vendor);
     const loop = f.makeLoop();
     await loop.runTick();
+    // The live turn's chrome stays on screen throughout; it does not block an Enter-only send.
+    f.ui.text = chrome;
     const acknowledge = () => {
-      const action = readAgentLifecycle(f.paths).agents.codex!.action!;
-      observeAgentLifecycle(f.paths, "codex", { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session",
+      const action = readAgentLifecycle(f.paths).agents[vendor]!.action!;
+      observeAgentLifecycle(f.paths, vendor, { kind: "prompt-submitted", eventName: "UserPromptSubmit", sessionId: "session",
         turnId: "01a13ad6-turn", actionId: action.actionId, actionDigest: action.actionDigest }, f.now());
     };
     acknowledge();
-    const sent = [readCursorsState(f.paths).agents.codex!.actionId!];
+    const sent = [readCursorsState(f.paths).agents[vendor]!.actionId!];
     for (let index = 1; index < 6; index++) {
       f.advance(5_000);
-      const { previous, next } = nextAction(f, "codex");
+      const { previous, next } = nextAction(f, vendor);
       // Without ready the published action is not sent: the agent may pick it up by rereading.
       await loop.runTick();
       expect(f.ui.sends).toBe(index);
-      writeFileSync(agentRuntimePaths(f.paths, "codex").ready, `ready ${previous}\n`);
+      writeFileSync(agentRuntimePaths(f.paths, vendor).ready, `ready ${previous}\n`);
       await loop.runTick();
       expect(f.ui.sends).toBe(index + 1);
-      expect(existsSync(agentRuntimePaths(f.paths, "codex").ready)).toBe(false);
+      expect(existsSync(agentRuntimePaths(f.paths, vendor).ready)).toBe(false);
       acknowledge();
       sent.push(next);
     }
@@ -4542,6 +4547,18 @@ describe("ready-driven delivery and stall watchdog", () => {
     expect(f.ui.sends).toBe(1);
     f.advance(60_000); await loop.runTick();
     expect(f.ui.sends).toBe(2);
+  });
+
+  it("never treats a blank pane capture as quiet, so it cannot trigger a resend", async () => {
+    const f = safetyFixture("cursor");
+    f.ui.quiet = true;
+    const loop = f.makeLoop();
+    await loop.runTick();
+    f.ui.text = ""; // tmux capture-pane returns "" when it exits nonzero
+    for (let minute = 0; minute < 5; minute++) { f.advance(60_000); await loop.runTick(); }
+    expect(f.ui.sends).toBe(1);
+    expect(readAgentLifecycle(f.paths).agents.cursor!.action!.resentAt).toBeNull();
+    expect(f.messages.join("\n")).not.toContain("[WAIT]");
   });
 
   it("submits a resent Codex prompt still sitting in the composer instead of typing it again", async () => {

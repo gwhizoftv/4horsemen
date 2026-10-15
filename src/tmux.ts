@@ -70,7 +70,8 @@ export type PromptBlockedReason =
   | "antigravity-verify-overlay"
   | "antigravity-no-prompt"
   | "codex-turn-chrome"
-  | "codex-composer-not-ready";
+  | "codex-composer-not-ready"
+  | "pane-capture-unavailable";
 
 export type PromptReadiness =
   | { ready: true; reason: "vendor-prompt" }
@@ -178,15 +179,21 @@ const claudeUsageWait = (plain: string): boolean => {
   return new RegExp(String.raw`^${prefix}(?:Usage limit (?:reached|reset)|(?:You've|You’ve|You have) hit your(?: .+)? limit|continuing (?:automatically|shortly)|Your usage limit has reset|Automatic continue (?:cancelled|canceled|stopped)|Wait here, then continue automatically)`, "im").test(tail);
 };
 
+/** A composer input line: `❯` (Claude), `›` (Codex), `>` (Antigravity), `→` (Cursor). */
+const COMPOSER_LINE = /^[❯›>→]/;
+
 /**
  * True when this action's prompt is still sitting unsent in the composer, so a
  * resend submits it instead of typing it a second time. Codex's composer is
- * parsed; other vendors use the last few rendered lines. Wrapping can split
- * the UUID, so whitespace is ignored.
+ * parsed; other vendors use the lines from the last composer line down, so
+ * already-submitted history above it never counts. Wrapping can split the
+ * UUID, so whitespace is ignored.
  */
 export const pendingPromptInComposer = (paneText: string, agentId: string, actionId: string): boolean => {
-  const lines = agentId === "codex" ? codexTail(paneText)?.composer ?? [] : paneLines(paneText).slice(-6);
-  return lines.map((line) => line.plain).join("").replace(/\s+/g, "").includes(actionId);
+  const lines = paneLines(paneText);
+  const composerAt = lines.map((line) => COMPOSER_LINE.test(line.plain)).lastIndexOf(true);
+  const composer = agentId === "codex" ? codexTail(paneText)?.composer ?? [] : composerAt < 0 ? [] : lines.slice(composerAt);
+  return composer.map((line) => line.plain).join("").replace(/\s+/g, "").includes(actionId);
 };
 
 /**
@@ -196,7 +203,7 @@ export const pendingPromptInComposer = (paneText: string, agentId: string, actio
  */
 export const paneActivityDigest = (paneText: string): string => {
   const lines = stripAnsi(paneText).split("\n");
-  const composerAt = lines.map((line) => /^[❯›>]/.test(line.trim())).lastIndexOf(true);
+  const composerAt = lines.map((line) => COMPOSER_LINE.test(line.trim())).lastIndexOf(true);
   return sha256((composerAt < 0 ? lines : lines.slice(0, composerAt)).join("\n"));
 };
 
@@ -1197,9 +1204,17 @@ export class TmuxController {
       return { status: initial.status, reason: initial.reason, stage: "gate", ...(initial.detail === undefined ? {} : { detail: initial.detail }) };
     }
     const promptPending = (text: string): boolean => actionId !== undefined && pendingPromptInComposer(text, agent.id, actionId);
-    // Keystroke safety only: dialogs, startup, live turn chrome and owner drafts.
-    const proofRefusal = (text: string): PromptBlockedReason | null => {
+    // Keystroke safety only. Codex and Cursor queue a prompt typed mid-turn, so
+    // their turn chrome vetoes only keys that include Escape, which cancels a turn.
+    const readinessFor = (text: string): PromptReadiness => {
+      if (stripAnsi(text).trim() === "") return { ready: false, reason: "pane-capture-unavailable" };
       const readiness = harnessPromptReadiness(text, agent.id);
+      const { prelude, submit } = resolveNudgeKeys(agent, text);
+      return !readiness.ready && ["codex-turn-chrome", "cursor-turn-chrome"].includes(readiness.reason) &&
+        ![...prelude, ...submit].includes("Escape") ? { ready: true, reason: "vendor-prompt" } : readiness;
+    };
+    const proofRefusal = (text: string): PromptBlockedReason | null => {
+      const readiness = readinessFor(text);
       if (!readiness.ready) return readiness.reason;
       return agent.id === "codex" && !codexComposerEmpty(text) && !promptPending(text) ? "codex-composer-not-ready" : null;
     };
@@ -1228,7 +1243,7 @@ export class TmuxController {
       if (agent.id === "claude" || agent.id === "codex") {
         const latest = await this.capturePane(target);
         assertAuthority();
-        const readiness = harnessPromptReadiness(latest, agent.id);
+        const readiness = readinessFor(latest);
         const refused = began ? (!readiness.ready ? readiness.reason : null) : proofRefusal(latest);
         if (refused !== null) return { status: "busy", reason: refused, stage: began ? "mid-send" : "prompt" };
       }

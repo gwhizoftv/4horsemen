@@ -890,6 +890,9 @@ describe("tmux boundary", () => {
     expect(pendingPromptInComposer(`Auto · 1%\n→ Read and execute coordinator action 11111111-2222-\n  3333-4444-555555555555 at /a\nRun Everything`,
       "cursor", action)).toBe(true);
     expect(pendingPromptInComposer(`${prompt}\n1\n2\n3\n4\n5\n6`, "cursor", action)).toBe(false);
+    // An already-submitted prompt above an empty composer is history, not a pending prompt.
+    expect(pendingPromptInComposer(`❯ ${prompt}\n⎿ API Error: overloaded\n❯ \n  ? for shortcuts`, "claude", action)).toBe(false);
+    expect(pendingPromptInComposer(`→ ${prompt}\nRequest failed\n→ Plan, search, build anything\nAuto · 1%`, "cursor", action)).toBe(false);
   });
 
   // Modelled on the live Codex capture in issue 181: dim placeholder composer, two footer lines.
@@ -947,9 +950,10 @@ describe("tmux boundary", () => {
     for (const [gate, reason] of [["0\tbash\t0\t0\n", "foreground-mismatch"], ["0\tcodex\t1\t0\n", "owner-typing"], ["0\tcodex\t0\t1\n", "input-off"]]) {
       expect(await attempt({ gate })).toMatchObject({ outcome: { status: "busy", reason }, keys: [] });
     }
-    // The owner starts a turn or a draft before the first key: nothing is typed.
+    // Codex queues a prompt typed mid-turn: its Enter-only submit is sent despite live turn chrome.
     expect(await attempt({ onCapture: (index, pane) => { if (index === 1) pane.body = "• Working (1s • esc to interrupt)"; } }))
-      .toMatchObject({ outcome: { status: "busy", reason: "codex-turn-chrome", stage: "prompt" }, keys: [] });
+      .toMatchObject({ outcome: { status: "sent" }, keys: [prompt, "Enter"] });
+    // The owner starts a draft before the first key: nothing is typed.
     expect(await attempt({ onCapture: (index, pane) => { if (index === 1) pane.draft = "owner draft"; } }))
       .toMatchObject({ outcome: { status: "busy", reason: "codex-composer-not-ready", stage: "prompt" }, keys: [] });
     expect(await attempt()).toMatchObject({ outcome: { status: "sent" }, keys: [prompt, "Enter"] });
@@ -979,6 +983,39 @@ describe("tmux boundary", () => {
       .toEqual(vim === "Normal" ? ["i", "sleep 0.15", "-l", "sleep 0.3", "Enter"] : ["-l", "sleep 0.3", "Enter"]);
     expect(calls.at(-1)).toBe(sends[0]);
     expect(sleeps).toEqual([]);
+  });
+
+  it.each(["claude", "cursor"])("types a %s resend when its earlier prompt is only history above an empty composer", async (id) => {
+    const action = "11111111-2222-3333-4444-555555555555";
+    const sent: string[] = [];
+    const controller = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return ok(`0\t${id}\t0\t0`);
+      if (args[0] === "capture-pane") return ok(`❯ Read and execute coordinator action ${action} at /a\nRequest failed\n${promptFor(id)}❯ \n`);
+      if (args.includes("send-keys")) sent.push(...commandsIn(args).filter((command) => command.includes("-l")).map((command) => command.at(-1)!));
+      return ok();
+    }, null, null, null, noopSleep);
+    expect(await controller.nudge(1, { id, root: "/clone", launcher: id, delivery: "both", nudgePrelude: [] },
+      "/a", undefined, action, undefined, undefined, { resend: true })).toMatchObject({ status: "sent" });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain(`coordinator action ${action}`);
+  });
+
+  it.each([
+    { id: "cursor", pane: "Thinking…\nAuto · 1%\nRun Everything", vim: false, sent: true },
+    { id: "cursor", pane: "Thinking…\nAuto · 1%\nRun Everything", vim: true, sent: false },
+    { id: "cursor", pane: "", vim: false, sent: false }
+  ])("sends to $id mid-turn only when no Escape is typed and the pane is readable (vim=$vim, pane=$pane)", async ({ id, pane, vim, sent }) => {
+    const calls: string[][] = [];
+    const controller = new TmuxController(async (args) => {
+      calls.push([...args]);
+      if (args[0] === "display-message") return ok(`0\t${id}\t0\t0`);
+      if (args[0] === "capture-pane") return pane === "" ? { exitCode: 1, stdout: "", stderr: "no pane" } : ok(pane);
+      return ok();
+    }, null, null, null, noopSleep);
+    const outcome = await controller.nudge(1, { id, root: "/clone", launcher: id, delivery: "both", ...(vim ? { nudgePrelude: ["a"] } : {}) }, "/a");
+    expect(outcome).toMatchObject(sent ? { status: "sent" }
+      : { status: "busy", reason: pane === "" ? "pane-capture-unavailable" : "cursor-turn-chrome" });
+    expect(calls.some((args) => args.includes("send-keys"))).toBe(sent);
   });
 
   it.each(["claude", "cursor"])("submits a %s prompt still sitting in the pane tail without typing it again", async (id) => {

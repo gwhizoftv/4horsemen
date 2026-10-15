@@ -922,7 +922,8 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "antigravity-verify-overlay": "the account-verify overlay is up and discards keystrokes",
   "antigravity-no-prompt": "no idle prompt is visible in the pane",
   "codex-turn-chrome": "the agent is still working; no intervention needed",
-  "codex-composer-not-ready": "the Codex composer holds a draft that is not this action's message"
+  "codex-composer-not-ready": "the Codex composer holds a draft that is not this action's message",
+  "pane-capture-unavailable": "coord cannot read the terminal to check whether input is safe; inspect the agent terminal"
 };
 
 const deferralRationale = (code: string): string =>
@@ -2051,8 +2052,9 @@ export class CoordinatorRunLoop {
       return null;
     });
     this.authority(cursors);
-    // A failed observation is checked but never quiet, so it stays bounded and cannot trigger a resend.
-    if (text === null) {
+    // A failed (or blank, as tmux returns on a nonzero exit) observation is checked
+    // but never quiet, so it stays bounded and cannot trigger a resend.
+    if (text === null || text.trim() === "") {
       updateActionWatch(this.paths, agent, actionId, action.actionDigest,
         { watch: { checkedAt: now, quietSince: now, fingerprint: `unavailable:${now}` } }, now);
       return cursors;
