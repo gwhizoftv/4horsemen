@@ -168,6 +168,41 @@ Default readiness fallbacks are not evidence of a supported harness.
 This also explains why naming two agents “codex-fast” and “codex-deep” does
 not inherit all Codex integrations.
 
+### Unknown-vendor nudge keys cannot be repaired by configuration alone
+
+The baseline functions reproduce the following results for id muse and an
+idle pane, both with omitted key overrides and with explicit
+nudgePrelude: [] / nudgeSubmit: ["Enter"]:
+
+~~~json
+{"prelude":["a"],"submit":["Escape","Enter"]}
+~~~
+
+At [src/tmux.ts:341](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L341),
+an empty configured prelude still reaches vimInsertPrelude and inserts “a”.
+At [src/tmux.ts:362](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L362),
+the stale-submit repair replaces the configured Enter with the unknown-id
+default Escape/Enter. These are required source-edit sites before automated
+nudge delivery; adding only process/UI defaults or changing config is not a
+complete integration. Extend the existing test next to
+[test/tmux.test.ts:346](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/tmux.test.ts#L346)
+to assert empty prelude and Enter survive for the newly supported vendor.
+
+Two additional baseline calls show why the terminal contract needs its own
+adapter: harnessPromptReadiness("Thinking... esc to interrupt", "muse") returns
+ready: true, while harnessLooksReady("muse-bin-1.4.7-R6101.1", "muse") returns
+false. These are synthetic inputs to unchanged functions, not observations of
+a running Muse pane. Measure the actual foreground name, including any OS
+truncation, before selecting a process alias.
+
+Muse's [interactive guide](https://dev.meta.ai/docs/muse-code/interactive)
+documents Enter as steering text into an active turn and Esc as interrupting
+that turn. Thus the key fallback can add unwanted prompt text or cancel work;
+a false-ready result can steer a new action into an existing turn. The
+documented key semantics are known; live chrome and send timing remain open.
+Pull-only delivery avoids nudge injection but still needs the filesystem and
+Git permissions described below.
+
 Maintained documentation also carries supported-agent claims: [README.md:11](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/README.md#L11)
 names the roster; [docs/setup-workspace.md:100](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/docs/setup-workspace.md#L100) describes vendor trust
 and editor settings; [docs/coord-driver.md:515](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/docs/coord-driver.md#L515) explains lifecycle state;
@@ -196,9 +231,15 @@ refusal or successful coord run.
 | --- | --- | --- |
 | muse --version; muse --help; muse exec --help; muse export --help | Local CLI 1.4.9 (1.4.9-R6297.1) | Only help/version paths were executed. |
 | Local muse launcher, inspected as text | Bash wrapper; should_check_for_update/main and update_interval | Wrapper behavior is installation-specific; no update subcommand was invoked. |
-| [Developer docs landing page](https://meta-models.github.io/muse-code-sdk/1.4/) | Site identifies 1.4; generator commit 40c7658b12790fedfe6f206beaecb6d43423577b; schema fingerprint c533a6c39dca76ab4da20084e0b730712e0cae8db4644721290e13676aec90a3 | A site version does not validate every example against 1.4.9. |
-| [Hooks reference](https://meta-models.github.io/muse-code-sdk/1.4/guides/extend/hooks/) | Page says its demonstrated runs used 1.3.0, despite the /1.4/ URL | Recheck payloads and enforcement on 1.4.9 before integrating. |
+| [Earlier developer docs route](https://meta-models.github.io/muse-code-sdk/1.4/) | The original /1.4 authoring snapshot is superseded for current provenance; its generator/fingerprint are not retained as a compatibility pin | This route could not be re-fetched during revision. Its path is not proof of current page content or local CLI compatibility. |
+| [Current developer docs landing page](https://meta-models.github.io/muse-code-sdk/next/) | Retrieved 2026-10-15 at approximately 20:16 UTC: Developer Preview; generator commit 4c63a69364245c08e8dd81d6a865e57ef6f06c2d; schema fingerprint sha256:e8b3d24f3922af8e567838a9ebdf8a28b64e6e0ddb516689f1a760e46c2f7fa1 | A separate rolling route, not a verification of the unavailable /1.4 page or of local CLI 1.4.9. |
+| [Original hooks reference](https://meta-models.github.io/muse-code-sdk/1.4/guides/extend/hooks/) and [available hooks reference](https://meta-models.github.io/muse-code-sdk/next/guides/extend/hooks/) | Both retrieved snapshots label their demonstrated runs 1.3.0; the next route was available during review | Recheck payloads and enforcement on 1.4.9 before integrating. |
 | [Configuration](https://dev.meta.ai/docs/muse-code/configuration) and [permissions](https://dev.meta.ai/docs/muse-code/permissions) | Live user-manual pages without a pinned CLI build | Treat defaults as documented, not a measured local policy. |
+
+The documentation generator and schema fingerprint describe the retrieved
+documentation snapshot. They are not measurements of the installed Muse
+binary. No MSP initialize exchange was performed; a future MSP integration
+must compare its actual host response with the documentation it consumes.
 
 ### Compatibility assessment
 
@@ -212,7 +253,7 @@ refusal or successful coord run.
 | Instructions/settings | **D:** [configuration](https://dev.meta.ai/docs/muse-code/configuration) places user JSON in ~/.config/muse/settings.json and loads project AGENTS.md only after trust, with documented precedence over alternative instruction files. **I/O:** reuse coord's overlay rather than run muse init; verify loading in the managed clone. No Claude-style shim is presently justified. |
 | Hook installation | **D:** [hooks](https://meta-models.github.io/muse-code-sdk/1.4/guides/extend/hooks/) documents .muse/hooks.json in trusted projects, nested event/matcher/command groups, lifecycle events and Bash/shell matching. **I/O:** reuse managed-handler preservation patterns, verify exact live payloads and Stop behavior. |
 | Hook environment/denial | **D:** the same [reference](https://meta-models.github.io/muse-code-sdk/1.4/guides/extend/hooks/) describes a cleared environment, managed-only env allowlisting and a PreToolUse permissionDecision deny response. **I:** current renderShellGuardHookCommand relies on inherited COORD_ISSUE, so a copied project hook would return allow at shellGuard.ts:283. **O:** establish an owner-bound issue-context channel and prove actual harness refusal, including restart and stale-session cases. |
-| Terminal readiness | **O:** foreground process, idle/busy/trust text, editor mode, key sequences, scrolling and interruption behavior have not been measured in a live pane. **I:** do not use generic vimInsertPrelude or ready fallback as the Muse adapter. |
+| Terminal readiness | **D:** the [interactive guide](https://dev.meta.ai/docs/muse-code/interactive) defines Enter steering and Esc interruption. **I:** the reproduced unknown-id trace above proves config overrides do not prevent the unwanted vim prelude or submit repair. **O:** actual foreground process, idle/busy/trust text, editor mode, scrolling and send timing still need live measurement. |
 | Retained usage | **L:** export help describes schema-versioned offline export from a session UUID or session.jsonl. **O:** this does not establish the store location, token accounting or turn correlation. No transcript/credential files were read. Start with unavailable analytics. |
 | Headless / MSP | **L:** exec --json, --prompt-file, serve and schema are listed. **D:** the [official SDK](https://github.com/meta-models/muse-code-sdk) drives sessions over MSP. **I:** these are alternative transports requiring action identity, permission, restart and completion integration; they do not automatically replace the existing persistent tmux lifecycle. |
 
@@ -241,7 +282,7 @@ the relevant symbol after code moves.
 | A | [src/agentHookSync.ts:13](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/agentHookSync.ts#L13), [src/agentHookSync.ts:16](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/agentHookSync.ts#L16), [src/agentHookSync.ts:34](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/agentHookSync.ts#L34), [src/agentHookSync.ts:48](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/agentHookSync.ts#L48), [src/agentHookSync.ts:106](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/agentHookSync.ts#L106), [src/agentHookSync.ts:119](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/agentHookSync.ts#L119), [src/agentHookSync.ts:228](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/agentHookSync.ts#L228), [src/agentHookSync.ts:293](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/agentHookSync.ts#L293) | Add supported vendor, path/events, merge/remove/inspect symmetry and binding-aware hook rendering. Reuse [test/agentHookSync.test.ts:41](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/agentHookSync.test.ts#L41) and [test/agentHookSync.test.ts:191](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/agentHookSync.test.ts#L191). |
 | A | [src/agentEvent.ts:17](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/agentEvent.ts#L17) and [src/agentEvent.ts:61](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/agentEvent.ts#L61); [src/cli.ts:306](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/cli.ts#L306) and [src/cli.ts:1291](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/cli.ts#L1291) | Extend accepted lifecycle vendor and actual field mapping; update command help and response handling only as needed. Reuse [test/agentEvent.test.ts:85](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/agentEvent.test.ts#L85) and [test/agentEvent.test.ts:287](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/agentEvent.test.ts#L287). |
 | A | [src/shellGuard.ts:30](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/shellGuard.ts#L30), [src/shellGuard.ts:39](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/shellGuard.ts#L39), [src/shellGuard.ts:279](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/shellGuard.ts#L279), [src/shellGuard.ts:320](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/shellGuard.ts#L320) | Validate actual Muse command/session envelope and denial; resolve cleared-env issue binding with the hook renderer. Extend [test/shellGuard.test.ts:16](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/shellGuard.test.ts#L16) and stale-binding case at [test/shellGuard.test.ts:107](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/shellGuard.test.ts#L107). |
-| A | [src/tmux.ts:49](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L49), [src/tmux.ts:64](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L64), [src/tmux.ts:192](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L192), [src/tmux.ts:217](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L217), [src/tmux.ts:269](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L269), [src/tmux.ts:327](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L327), [src/tmux.ts:1171](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L1171), [src/tmux.ts:1213](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L1213), [src/tmux.ts:1243](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L1243), [src/tmux.ts:1268](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L1268) | Explicit process/prompt/composer/key policy and measured send sequencing; review optional mouse allowlists separately. Reuse [test/tmux.test.ts:1260](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/tmux.test.ts#L1260) and current prompt/owner-draft fixtures. |
+| A | [src/tmux.ts:49](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L49), [src/tmux.ts:64](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L64), [src/tmux.ts:192](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L192), [src/tmux.ts:217](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L217), [src/tmux.ts:269](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L269), [src/tmux.ts:327](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L327), [src/tmux.ts:341](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L341), [src/tmux.ts:362](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L362), [src/tmux.ts:1171](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L1171), [src/tmux.ts:1213](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L1213), [src/tmux.ts:1243](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L1243), [src/tmux.ts:1268](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/tmux.ts#L1268) | Explicit process/prompt/composer/key policy and measured send sequencing; fix empty-prelude fallback at 341 and bare-Enter repair at 362, which config alone cannot override. Review optional mouse allowlists separately. Reuse [test/tmux.test.ts:346](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/tmux.test.ts#L346), [test/tmux.test.ts:1260](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/tmux.test.ts#L1260) and current prompt/owner-draft fixtures. |
 | A | [src/runLoop.ts:922](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/runLoop.ts#L922) and [src/doctor.ts:354](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/doctor.ts#L354) | Report new prompt reasons and the supported vendor/capability truthfully; preserve no-silent-retry rules. Reuse [test/doctor.test.ts:138](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/doctor.test.ts#L138) and [test/runLoop.test.ts:1635](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/runLoop.test.ts#L1635). |
 | C | [src/agentTrust.ts:54](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/agentTrust.ts#L54) and [src/agentTrust.ts:76](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/agentTrust.ts#L76) | Only if persisted trust is needed instead of the run-local flag; preserve settings and restrict roots. Existing home/dry-run/idempotence tests at [test/install.test.ts:59](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/install.test.ts#L59) and [test/install.test.ts:100](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/install.test.ts#L100). |
 | C | [src/agentsProtocol.ts:182](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/agentsProtocol.ts#L182) | Only if live trusted-clone testing contradicts documented native AGENTS loading. Keep ownership-safe removal at [src/agentsProtocol.ts:199](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/src/agentsProtocol.ts#L199). Reuse [test/install.test.ts:241](https://github.com/gwhizoftv/4horsemen/blob/cb7ed092cb8a5d15f651387651df7c631e4596e6/test/install.test.ts#L241). |
@@ -373,7 +414,9 @@ vendor list, parser or generated config are the ones to extend.
    not a solution to blocked Git/mailbox writes.
 3. **Add automatic delivery.** Complete A rows with measured pane fixtures,
    action ID/digest acknowledgement, busy/trust/owner-draft refusal, correct
-   submit keys and restart behavior. Preserve the existing no-blind-resend
+   submit keys and restart behavior. Assert that explicit empty prelude and
+   Enter survive key resolution for Muse, and that busy panes cannot receive
+   a steered action or an interrupt from submission. Preserve the no-blind-resend
    policy. Demonstrate both Git-mode and private-response completion followed
    by ready and a subsequent action.
 4. **Consider optional integrations separately.** Add token usage only with a
@@ -393,9 +436,11 @@ it does not prove inventory completeness. No new executable behavior or
 test fixture is introduced. Mandatory checks remain owned by the installed
 hooks and coordinator under the issue's frozen policy.
 
-Authoring validation: 189 distinct source anchors across 62 files were checked
+Authoring validation: 192 distinct source anchors across 62 files were checked
 against baseline file bytes and nonempty target lines; the README link resolves.
 All 34 source/script/hook/template/CI files matching vendor searches were
 accounted for, including the documented cursor-state exclusions. The focused
-check passed: pnpm check:docs, 29 tests passed and 84 skipped. No live Muse
-session or integration test is claimed.
+check passed: pnpm check:docs, 29 tests passed and 84 skipped. The unchanged
+baseline functions were also exercised with synthetic unknown-vendor inputs
+to confirm the key-override, ready-fallback and process-mismatch results above.
+No live Muse session or integration test is claimed.
