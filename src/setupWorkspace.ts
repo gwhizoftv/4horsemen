@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { load as loadYaml } from "js-yaml";
 import {
   git,
   gitOrThrow,
@@ -163,6 +164,82 @@ const proposedVerify = (
 ): { verify?: { precommit: CheckCommand[]; prepush: CheckCommand[] } } =>
   precommit.length === 0 && prepush.length === 0 ? {} : { verify: { precommit, prepush } };
 
+const isFlutterSdkDependency = (value: unknown): boolean =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
+  (value as { sdk?: unknown }).sdk === "flutter";
+
+/** True when a root pubspec declares the Flutter SDK (not a plain Dart package). */
+const isFlutterPubspec = (productRoot: string): boolean => {
+  const path = join(productRoot, "pubspec.yaml");
+  if (!existsSync(path)) return false;
+  try {
+    const parsed: unknown = loadYaml(readFileSync(path, "utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return false;
+    const root = parsed as Record<string, unknown>;
+    const dependencies = root.dependencies;
+    if (typeof dependencies === "object" && dependencies !== null && !Array.isArray(dependencies)) {
+      if (isFlutterSdkDependency((dependencies as Record<string, unknown>).flutter)) return true;
+    }
+    const devDependencies = root.dev_dependencies;
+    if (typeof devDependencies === "object" && devDependencies !== null && !Array.isArray(devDependencies)) {
+      const record = devDependencies as Record<string, unknown>;
+      if (isFlutterSdkDependency(record.flutter) || isFlutterSdkDependency(record.flutter_test)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+};
+
+const proposeFlutterPolicy = (productRoot: string): ProjectPolicyProposal | null => {
+  if (!isFlutterPubspec(productRoot)) return null;
+  const analyze: CheckCommand = { name: "analyze", argv: ["flutter", "analyze"] };
+  const test: CheckCommand = { name: "test", argv: ["flutter", "test"] };
+  return {
+    toolchain: "flutter",
+    verify: { precommit: [analyze], prepush: [test] },
+    checks: [analyze, test],
+    workflowCriticalPrefixes: [
+      "lib/",
+      "test/",
+      "integration_test/",
+      "android/",
+      "ios/",
+      "web/",
+      "macos/",
+      "windows/",
+      "linux/"
+    ],
+    workflowCriticalFiles: ["pubspec.yaml", "pubspec.lock", "analysis_options.yaml"]
+  };
+};
+
+const proposePythonPolicy = (productRoot: string): ProjectPolicyProposal | null => {
+  const has = (relative: string): boolean => existsSync(join(productRoot, relative));
+  if (!["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"].some(has)) return null;
+  const test: CheckCommand = { name: "test", argv: ["pytest", "-q"] };
+  return {
+    toolchain: "python",
+    verify: { precommit: [test], prepush: [] },
+    checks: [test],
+    workflowCriticalPrefixes: ["src/", "tests/", "test/"],
+    workflowCriticalFiles: [
+      "pyproject.toml",
+      "setup.py",
+      "setup.cfg",
+      "requirements.txt",
+      "pytest.ini",
+      "tox.ini",
+      "uv.lock",
+      "poetry.lock",
+      "Pipfile",
+      "Pipfile.lock"
+    ]
+  };
+};
+
 /**
  * Scaffold a project's declared policy from what its tree obviously is.
  *
@@ -171,6 +248,8 @@ const proposedVerify = (
  * ever sniffs: a proposal made once and recorded is reviewable, whereas a
  * decision remade silently on every commit is the drift this issue exists to
  * remove.
+ *
+ * Detector order: Cargo, Go, Flutter, Node, Python, Make. First match wins.
  */
 const proposeToolchainPolicy = (productRoot: string): ProjectPolicyProposal => {
   const has = (relative: string): boolean => existsSync(join(productRoot, relative));
@@ -204,6 +283,9 @@ const proposeToolchainPolicy = (productRoot: string): ProjectPolicyProposal => {
     };
   }
 
+  const flutter = proposeFlutterPolicy(productRoot);
+  if (flutter !== null) return flutter;
+
   if (has("package.json")) {
     const scripts = nodeScripts(productRoot);
     const manager = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : "npm";
@@ -222,6 +304,9 @@ const proposeToolchainPolicy = (productRoot: string): ProjectPolicyProposal => {
       workflowCriticalFiles: ["package.json", has("pnpm-lock.yaml") ? "pnpm-lock.yaml" : has("yarn.lock") ? "yarn.lock" : "package-lock.json"]
     };
   }
+
+  const python = proposePythonPolicy(productRoot);
+  if (python !== null) return python;
 
   const targets = makeTargets(productRoot);
   if (targets.size > 0) {
@@ -256,6 +341,75 @@ export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal
   });
   if (paths.length === 0) return proposal;
   return { ...proposal, documentation: { paths, verify: { precommit: [], prepush: [] }, checks: [] } };
+};
+
+const formatCheckList = (commands: readonly CheckCommand[]): string =>
+  commands.length === 0
+    ? "[]"
+    : commands.map((command) => `${command.name} ${JSON.stringify(command.argv)}`).join("; ");
+
+/**
+ * Human-readable summary of the validated workspace policy for install/onboard.
+ * Values come from the merged config; each group is labelled declared or inferred.
+ */
+export const renderEffectivePolicySummary = (
+  config: CoordinatorConfig,
+  declared: WorkspaceDeclaration | null,
+  options: { dryRun: boolean }
+): string => {
+  const origin = (field: keyof WorkspaceDeclaration): string =>
+    declared !== null && declared[field] !== undefined ? "declared" : "inferred";
+  const lines = [
+    options.dryRun
+      ? "Proposed verification policy (dry-run; nothing written):"
+      : "Effective verification policy:",
+    `  toolchain        : ${config.toolchain ?? "unspecified"} (${origin("toolchain")})`,
+    config.verify === undefined
+      ? `  local verify     : absent — hooks block until declared`
+      : [
+          `  local precommit  : ${formatCheckList(config.verify.precommit)} (${origin("verify")})`,
+          `  local prepush    : ${formatCheckList(config.verify.prepush)} (${origin("verify")})`
+        ].join("\n"),
+    `  finalization     : ${formatCheckList(config.checks)} (${origin("checks")})`,
+    `  critical prefixes: ${
+      config.workflowCriticalPrefixes.length === 0 ? "(none)" : config.workflowCriticalPrefixes.join(", ")
+    } (${origin("workflowCriticalPrefixes")})`,
+    `  critical files   : ${
+      config.workflowCriticalFiles.length === 0 ? "(none)" : config.workflowCriticalFiles.join(", ")
+    } (${origin("workflowCriticalFiles")})`
+  ];
+  if (config.documentation !== undefined) {
+    lines.push(
+      `  documentation    : ${config.documentation.paths.length} path(s), empty checks (${origin("documentation")})`
+    );
+  }
+  if (config.verification !== undefined) {
+    lines.push(`  verification     : mode=${config.verification.mode} (${origin("verification")})`);
+    if (config.verification.coordinated !== undefined) {
+      lines.push(
+        `  coordinated precommit: ${formatCheckList(config.verification.coordinated.precommit)}`,
+        `  coordinated prepush  : ${formatCheckList(config.verification.coordinated.prepush)}`
+      );
+    }
+    if (config.verification.candidate !== undefined) {
+      lines.push(`  candidate checks  : ${formatCheckList(config.verification.candidate.checks)}`);
+    }
+  }
+  if (config.toolchain === "python" && declared?.checks === undefined && declared?.verify === undefined) {
+    lines.push(
+      "  effect           : pytest runs at commit and finalization; expose pytest on PATH for agents and verification worktrees."
+    );
+  }
+  if (config.toolchain === "flutter" && declared?.checks === undefined && declared?.verify === undefined) {
+    lines.push(
+      "  effect           : flutter analyze at commit, flutter test at push, both at finalization; expose the Flutter SDK on PATH."
+    );
+  }
+  lines.push(
+    "  note             : Onboarding records commands and checks PATH; it does not run the product suite or install its environment.",
+    "                     Pass --declare to replace these defaults."
+  );
+  return `${lines.join("\n")}\n`;
 };
 
 // ------------------------------------------------------------------ config --

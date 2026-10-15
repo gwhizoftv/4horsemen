@@ -9,7 +9,11 @@ import {
   unresolvableCommands,
   verifyCommands
 } from "../src/hookPolicy.js";
-import { buildWorkspaceConfig, proposeProjectPolicy } from "../src/setupWorkspace.js";
+import {
+  buildWorkspaceConfig,
+  proposeProjectPolicy,
+  renderEffectivePolicySummary
+} from "../src/setupWorkspace.js";
 import {
   classifyChanges,
   inspectOutgoingChanges,
@@ -260,6 +264,198 @@ describe("installer proposals", () => {
       expect(cargo.checks?.[0]?.argv).toEqual(["cargo", "test"]);
     } finally {
       rmSync(cargoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["pyproject.toml", "[project]\nname = \"x\"\nversion = \"0\"\n"],
+    ["setup.py", "from setuptools import setup\nsetup(name='x')\n"],
+    ["setup.cfg", "[metadata]\nname = x\n"],
+    ["requirements.txt", "pytest\n"]
+  ] as const)("proposes python checks from %s", (marker, body) => {
+    const root = mkdtempSync(join(tmpdir(), "coord-propose-"));
+    try {
+      writeFileSync(join(root, marker), body);
+      const proposal = proposeProjectPolicy(root);
+      expect(proposal.toolchain).toBe("python");
+      expect(proposal.verify?.precommit).toEqual([{ name: "test", argv: ["pytest", "-q"] }]);
+      expect(proposal.verify?.prepush).toEqual([]);
+      expect(proposal.checks).toEqual([{ name: "test", argv: ["pytest", "-q"] }]);
+      expect(proposal.workflowCriticalPrefixes).toEqual(["src/", "tests/", "test/"]);
+      expect(proposal.workflowCriticalFiles).toContain(marker);
+      expect(proposal.workflowCriticalFiles).toEqual(
+        expect.arrayContaining([
+          "pyproject.toml",
+          "setup.py",
+          "setup.cfg",
+          "requirements.txt",
+          "pytest.ini",
+          "tox.ini",
+          "uv.lock",
+          "poetry.lock",
+          "Pipfile",
+          "Pipfile.lock"
+        ])
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    [
+      "block mapping",
+      "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n",
+      true
+    ],
+    [
+      "inline mapping",
+      'name: app\ndependencies:\n  flutter: { sdk: flutter }\n',
+      true
+    ],
+    [
+      "quoted sdk",
+      'name: app\ndependencies:\n  flutter:\n    sdk: "flutter"\n',
+      true
+    ],
+    [
+      "dev_dependencies flutter_test",
+      "name: app\ndev_dependencies:\n  flutter_test:\n    sdk: flutter\n",
+      true
+    ],
+    [
+      "plain dart sdk constraint",
+      "name: app\nenvironment:\n  sdk: '>=3.0.0 <4.0.0'\n",
+      false
+    ],
+    [
+      "comment only",
+      "name: app\n# sdk: flutter\nenvironment:\n  sdk: '>=3.0.0 <4.0.0'\n",
+      false
+    ],
+    ["malformed yaml", "dependencies: [\n", false],
+    ["wrong shape", "dependencies: flutter\n", false]
+  ] as const)("detects Flutter from pubspec (%s)", (_label, body, expectFlutter) => {
+    const root = mkdtempSync(join(tmpdir(), "coord-propose-"));
+    try {
+      writeFileSync(join(root, "pubspec.yaml"), body);
+      const proposal = proposeProjectPolicy(root);
+      if (expectFlutter) {
+        expect(proposal.toolchain).toBe("flutter");
+        expect(proposal.verify?.precommit).toEqual([{ name: "analyze", argv: ["flutter", "analyze"] }]);
+        expect(proposal.verify?.prepush).toEqual([{ name: "test", argv: ["flutter", "test"] }]);
+        expect(proposal.checks).toEqual([
+          { name: "analyze", argv: ["flutter", "analyze"] },
+          { name: "test", argv: ["flutter", "test"] }
+        ]);
+        expect(proposal.workflowCriticalPrefixes).toEqual([
+          "lib/",
+          "test/",
+          "integration_test/",
+          "android/",
+          "ios/",
+          "web/",
+          "macos/",
+          "windows/",
+          "linux/"
+        ]);
+        expect(proposal.workflowCriticalFiles).toEqual([
+          "pubspec.yaml",
+          "pubspec.lock",
+          "analysis_options.yaml"
+        ]);
+      } else {
+        expect(proposal.toolchain).toBeUndefined();
+        expect(proposal.checks).toBeUndefined();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("locks detector precedence across mixed markers and declaration overrides", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-propose-"));
+    try {
+      writeFileSync(join(root, "Cargo.toml"), "[package]\nname = \"x\"\n");
+      writeFileSync(join(root, "go.mod"), "module example.com/x\n");
+      writeFileSync(join(root, "pubspec.yaml"), "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n");
+      writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { test: "true" } }));
+      writeFileSync(join(root, "pyproject.toml"), "[project]\nname = \"x\"\nversion = \"0\"\n");
+      writeFileSync(join(root, "Makefile"), "test:\n\techo ok\n");
+      expect(proposeProjectPolicy(root).toolchain).toBe("cargo");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    const flutterOverNode = mkdtempSync(join(tmpdir(), "coord-propose-"));
+    try {
+      writeFileSync(
+        join(flutterOverNode, "pubspec.yaml"),
+        "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n"
+      );
+      writeFileSync(join(flutterOverNode, "package.json"), JSON.stringify({ scripts: { lint: "true" } }));
+      expect(proposeProjectPolicy(flutterOverNode).toolchain).toBe("flutter");
+    } finally {
+      rmSync(flutterOverNode, { recursive: true, force: true });
+    }
+
+    const nodeOverPython = mkdtempSync(join(tmpdir(), "coord-propose-"));
+    try {
+      writeFileSync(join(nodeOverPython, "package.json"), JSON.stringify({ scripts: { test: "true" } }));
+      writeFileSync(join(nodeOverPython, "pyproject.toml"), "[project]\nname = \"x\"\nversion = \"0\"\n");
+      expect(proposeProjectPolicy(nodeOverPython).toolchain).toBe("npm");
+    } finally {
+      rmSync(nodeOverPython, { recursive: true, force: true });
+    }
+
+    const pythonOverMake = mkdtempSync(join(tmpdir(), "coord-propose-"));
+    try {
+      writeFileSync(join(pythonOverMake, "pyproject.toml"), "[project]\nname = \"x\"\nversion = \"0\"\n");
+      writeFileSync(join(pythonOverMake, "Makefile"), "check:\n\techo ok\n");
+      expect(proposeProjectPolicy(pythonOverMake).toolchain).toBe("python");
+    } finally {
+      rmSync(pythonOverMake, { recursive: true, force: true });
+    }
+
+    const pythonRoot = mkdtempSync(join(tmpdir(), "coord-propose-"));
+    try {
+      writeFileSync(join(pythonRoot, "requirements.txt"), "pytest\n");
+      const proposal = proposeProjectPolicy(pythonRoot);
+      const declared = workspaceDeclarationSchema.parse({
+        toolchain: "custom",
+        verify: { precommit: [], prepush: [] },
+        checks: [{ name: "test", argv: ["true"] }],
+        workflowCriticalPrefixes: ["custom/"],
+        workflowCriticalFiles: ["custom.txt"]
+      });
+      const configured = buildWorkspaceConfig(
+        {
+          project: "fixture",
+          origin: "https://example.com/fixture.git",
+          baseBranch: "main",
+          agents: ["codex"],
+          profile: "solo",
+          cloneRoot: "/clones",
+          workspaceDir: "/runtime",
+          completesRoot: "/completes",
+          declared,
+          proposal
+        },
+        undefined
+      );
+      expect(configured.toolchain).toBe("custom");
+      expect(configured.verify).toEqual({ precommit: [], prepush: [] });
+      expect(configured.checks).toEqual([{ name: "test", argv: ["true"] }]);
+      expect(configured.workflowCriticalPrefixes).toEqual(["custom/"]);
+      expect(configured.workflowCriticalFiles).toEqual(["custom.txt"]);
+      const summary = renderEffectivePolicySummary(configured, declared, { dryRun: false });
+      expect(summary).toContain("toolchain        : custom (declared)");
+      expect(summary).toContain("local precommit  : [] (declared)");
+      expect(summary).toContain('finalization     : test ["true"] (declared)');
+      expect(summary).not.toContain('test ["pytest","-q"]');
+      expect(summary).not.toContain("effect           : pytest");
+    } finally {
+      rmSync(pythonRoot, { recursive: true, force: true });
     }
   });
 });

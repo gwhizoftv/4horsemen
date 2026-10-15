@@ -42,6 +42,7 @@ import {
   ensureAgentClone,
   productName,
   proposeProjectPolicy,
+  renderEffectivePolicySummary,
   writeAgentLauncher,
   writeGitWrapper,
   writeCloneExclude,
@@ -378,6 +379,10 @@ export const install = (options: InstallOptions): InstallResult => {
       ? previous.coordination
       : stamp
   );
+
+  // Report the validated policy before any clone wiring so dry-run and real
+  // installs announce the same effective commands.
+  options.log(renderEffectivePolicySummary(config, declared, { dryRun: options.dryRun }));
 
   // ---- steps 2-5: per-agent clone wiring ----------------------------------
   const clones: string[] = [];

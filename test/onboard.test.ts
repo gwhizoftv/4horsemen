@@ -1,13 +1,25 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCli, type CliRunLoop } from "../src/cli.js";
 import { localConfigGet } from "../src/gitExec.js";
-import { onboard, uninstall } from "../src/install.js";
+import { install, onboard, uninstall } from "../src/install.js";
 import { issueRuntimePaths } from "../src/paths.js";
 import { agentCloneDirectory } from "../src/setupWorkspace.js";
-import { readCursorsState, readStartState } from "../src/state.js";
+import { readConfig, readCursorsState, readStartState } from "../src/state.js";
 import { nestedConfigPath, OWNER_WORKSPACE_CONFIG_KEY } from "../src/workspace.js";
 import {
   ensureBuilt,
@@ -15,6 +27,7 @@ import {
   makeProduct,
   repoRoot,
   silence,
+  writeDeclaration,
   type ProductFixture
 } from "./support/workspaceFixture.js";
 
@@ -403,5 +416,171 @@ describe("coord onboard", () => {
     } finally {
       process.env.PATH = originalPath;
     }
+  });
+
+  const plainLanguageProduct = (
+    name: string,
+    files: Record<string, string>
+  ): ProductFixture => {
+    ensureBuilt();
+    const fixture = makeProduct("plain", name);
+    products.push(fixture);
+    for (const [relative, body] of Object.entries(files)) {
+      writeFileSync(join(fixture.productRoot, relative), body);
+    }
+    git(fixture.productRoot, "add", ...Object.keys(files));
+    git(fixture.productRoot, "commit", "-qm", "add language markers");
+    git(fixture.productRoot, "push", "-q", "origin", "main");
+    git(fixture.productRoot, "remote", "set-url", "origin", `https://github.com/acme/${name}.git`);
+    return fixture;
+  };
+
+  const withToolStubs = (names: string[], body: () => void): void => {
+    const bin = mkdtempSync(join(tmpdir(), "coord-tool-bin-"));
+    const markers = names.map((name) => join(bin, `${name}.invoked`));
+    for (const name of names) {
+      const script = join(bin, name);
+      writeFileSync(
+        script,
+        `#!/bin/sh\necho invoked >> "${join(bin, `${name}.invoked`)}"\nexit 0\n`,
+        { mode: 0o755 }
+      );
+      chmodSync(script, 0o755);
+    }
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = `${bin}:${originalPath ?? ""}`;
+      body();
+      for (const marker of markers) {
+        expect(existsSync(marker), marker).toBe(false);
+      }
+    } finally {
+      process.env.PATH = originalPath;
+      rmSync(bin, { recursive: true, force: true });
+    }
+  };
+
+  const languageCases: Array<{
+    label: string;
+    files: Record<string, string>;
+    toolchain: string;
+    checks: Array<{ name: string; argv: string[] }>;
+    tools: string[];
+    summary: string;
+  }> = [
+    {
+      label: "python",
+      files: { "requirements.txt": "pytest\n" },
+      toolchain: "python",
+      checks: [{ name: "test", argv: ["pytest", "-q"] }],
+      tools: ["pytest"],
+      summary: 'local precommit  : test ["pytest","-q"] (inferred)'
+    },
+    {
+      label: "flutter",
+      files: {
+        "pubspec.yaml": "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n"
+      },
+      toolchain: "flutter",
+      checks: [
+        { name: "analyze", argv: ["flutter", "analyze"] },
+        { name: "test", argv: ["flutter", "test"] }
+      ],
+      tools: ["flutter"],
+      summary: 'local precommit  : analyze ["flutter","analyze"] (inferred)'
+    }
+  ];
+
+  it.each(languageCases)("onboards a $label product without --declare", ({ label, files, toolchain, checks, tools, summary }) => {
+    const fixture = plainLanguageProduct(`${label}-app`, files);
+    const output: string[] = [];
+    withToolStubs(tools, () => {
+      const result = onboard({
+        home: null,
+        installRoot: repoRoot,
+        productRoot: fixture.productRoot,
+        agents: ["claude"],
+        profile: "solo",
+        log: (message) => output.push(message)
+      });
+      expect(result.doctor.exitCode).toBe(0);
+      const config = readConfig(result.install.configPath);
+      expect(config.toolchain).toBe(toolchain);
+      expect(config.checks).toEqual(checks);
+      expect(output.join("")).toContain(summary);
+      expect(output.join("")).toContain("Effective verification policy:");
+      expect(localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBe(
+        realpathSync(result.install.configPath)
+      );
+      expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
+    });
+  });
+
+  it("reports a toolchain finding when the inferred python tool is missing", () => {
+    const fixture = plainLanguageProduct("python-missing", { "requirements.txt": "pytest\n" });
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = "/usr/bin:/bin";
+      const result = onboard({
+        home: null,
+        installRoot: repoRoot,
+        productRoot: fixture.productRoot,
+        agents: ["claude"],
+        profile: "solo",
+        log: silence().log
+      });
+      expect(result.doctor.exitCode).not.toBe(0);
+      expect(result.doctor.findings.map((finding) => finding.class)).toContain("toolchain");
+      expect(localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBeNull();
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("re-onboards with a declaration override and dry-run announces without writing", () => {
+    const fixture = plainLanguageProduct("python-override", { "requirements.txt": "pytest\n" });
+    const output: string[] = [];
+    const declarePath = writeDeclaration(fixture.workspaceRoot, {
+      toolchain: "custom",
+      verify: { precommit: [], prepush: [] },
+      checks: [{ name: "test", argv: ["true"] }]
+    });
+    const result = onboard({
+      home: null,
+      installRoot: repoRoot,
+      productRoot: fixture.productRoot,
+      agents: ["claude"],
+      profile: "solo",
+      declarePath,
+      log: (message) => output.push(message)
+    });
+    expect(result.doctor.exitCode).toBe(0);
+    const config = readConfig(result.install.configPath);
+    expect(config.toolchain).toBe("custom");
+    expect(config.verify).toEqual({ precommit: [], prepush: [] });
+    expect(config.checks).toEqual([{ name: "test", argv: ["true"] }]);
+    expect(output.join("")).toContain("toolchain        : custom (declared)");
+    expect(output.join("")).not.toContain('test ["pytest","-q"]');
+    expect(output.join("")).not.toContain("effect           : pytest");
+
+    const dry = plainLanguageProduct("python-dry", { "requirements.txt": "pytest\n" });
+    const dryOutput: string[] = [];
+    const dryResult = install({
+      installRoot: repoRoot,
+      productRoot: dry.productRoot,
+      coordRoot: dry.coordRoot,
+      agents: ["claude"],
+      profile: "solo",
+      writeProduct: false,
+      vendor: false,
+      bootstrap: false,
+      dryRun: true,
+      home: join(dry.workspaceRoot, "home"),
+      log: (message) => dryOutput.push(message)
+    });
+    expect(existsSync(dryResult.configPath)).toBe(false);
+    expect(existsSync(join(dry.workspaceRoot, "python-dry-claude"))).toBe(false);
+    expect(dryOutput.join("")).toContain("Proposed verification policy (dry-run; nothing written):");
+    expect(dryOutput.join("")).toContain('local precommit  : test ["pytest","-q"] (inferred)');
   });
 });

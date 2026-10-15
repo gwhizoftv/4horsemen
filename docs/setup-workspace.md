@@ -432,18 +432,38 @@ multi-language monorepos may need an explicit declaration instead.
 | --- | --- | --- | --- |
 | `Cargo.toml` | `cargo` | `cargo check --all-targets` / `cargo test` | `cargo test` |
 | `go.mod` | `go` | `go vet ./...` / `go test ./...` | `go build ./...`, `go test ./...` |
+| `pubspec.yaml` with Flutter SDK dependency | `flutter` | `flutter analyze` / `flutter test` | `flutter analyze`, `flutter test` |
 | `package.json` | `pnpm`, `yarn`, or `npm` (lockfile-selected) | first existing `check:fast`, `check`, `lint` / existing `test:e2e` | first existing `check`, `test` |
+| `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt` | `python` | `pytest -q` / none | `pytest -q` |
 | recognized targets in `Makefile` | `make` | `make check` if present / none | `make test` if present |
 | none of these | unspecified | no inference | no inference; supply `--declare` |
+
+Order is Cargo, Go, Flutter, Node, Python, then Make: **first matching detector
+wins**. A Flutter SDK dependency in `pubspec.yaml` precedes an incidental
+`package.json`. Node precedes Python. Python precedes a Makefile that only has
+auxiliary targets. Mixed monorepos that need a different gate use `--declare`.
 
 For Node, the entries name package scripts, not bare executables. A marker
 alone does not guarantee usable checks: install refuses missing finalization
 checks, and absent `verify` fails closed in agent hooks. Detection happens only
 at install; hooks execute the recorded policy without inspecting language files.
 
-Python works through an explicit declaration today; `pyproject.toml`, uv,
-Poetry and Hatch are not auto-detected. Save this as `declaration.json` outside
-the product's tracked tree, adjusting commands and critical paths to its layout:
+`coord install` and `coord onboard` print the effective toolchain, local
+verify commands, finalization checks, and critical paths, labelling each group
+inferred or declared. Python defaults run pytest at commit and finalization.
+Flutter defaults analyze at commit, test at push, and run both at finalization.
+Onboarding records commands and checks that `argv[0]` is on PATH; it does not
+run the product suite or install its environment. Expose pytest or the Flutter
+SDK (and product dependencies) on the PATH inherited by agents and coordinator
+verification worktrees. Doctor reports a `toolchain` finding when an `argv[0]`
+cannot be resolved. The same requirement applies to Go/Cargo and every declared
+tool. Arguments are passed directly, not interpreted as shell syntax.
+
+Flutter recognition parses `pubspec.yaml` and requires
+`dependencies.flutter.sdk === "flutter"`, or a `dev_dependencies` entry named
+`flutter` or `flutter_test` with `sdk === "flutter"`. A plain Dart package is
+not auto-detected. Override wrong defaults with a declaration outside the
+product's tracked tree:
 
 ```json
 {
@@ -465,11 +485,6 @@ coord doctor --coord-runtime /path/to/coord-runtime --product /path/to/app
 ```
 
 Alternatively, use `coord onboard /path/to/app --declare /path/to/declaration.json`.
-Install Ruff/pytest and expose
-them on the PATH inherited by the agents and coordinator (including any virtual
-environment); doctor reports a `toolchain` finding when an `argv[0]` cannot be
-resolved. The same requirement applies to Go/Cargo and every declared tool.
-Arguments are passed directly, not interpreted as shell syntax.
 
 `config.product.example.json` illustrates a **full generated Go workspace
 config**, not a file accepted by `--declare`: identity, agent roots and the
@@ -500,9 +515,9 @@ paths are placeholders to replace, not shell variables or real install stamps.
   rather than at an agent's first commit.
 
 `coord install` proposes a `verify` / `checks` / critical-path set from the
-product's obvious ecosystem (cargo, go, pnpm/npm/yarn, make) and writes it into
-the config for review. That detection happens once, in the installer, and is
-recorded. Hooks never sniff.
+product's obvious ecosystem (cargo, go, flutter, pnpm/npm/yarn, python, make)
+and writes it into the config for review. That detection happens once, in the
+installer, and is recorded. Hooks never sniff.
 
 ### Scoping verification
 
