@@ -876,6 +876,21 @@ const registeredCoordRoot = (productRoot: string): string | null => {
   }
 };
 
+/**
+ * The runtime onboard (no coordRoot) or install (coordRoot) would use for this
+ * product, and the GitHub account its existing workspace config selects.
+ * Install carries that account forward, so callers verify it before any
+ * effect; onboard callers pass the root back to avoid resolving it twice.
+ */
+export const savedGitHubAccount = (productRoot: string, coordRoot?: string): { coordRoot: string; account: string | null } => {
+  const product = requireWorktree(resolve(productRoot), "The product");
+  const root = resolve(coordRoot ?? registeredCoordRoot(product) ?? join(dirname(product), "coord-runtime"));
+  return {
+    coordRoot: root,
+    account: readPreviousConfig(selectWorkspaceLocation(root, productName(product)).configPath)?.github?.account ?? null
+  };
+};
+
 export const onboard = (options: OnboardOptions): OnboardResult => {
   const productRoot = requireWorktree(resolve(options.productRoot), "The product");
   const parent = dirname(productRoot);

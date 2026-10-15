@@ -818,13 +818,33 @@ const cloneCredentialHelpers = (clone: string): string[] => {
   return result.exitCode === 0 ? result.stdout.replace(/\n$/, "").split("\n") : [];
 };
 
-const ownsCredentialHelpers = (values: readonly string[]): boolean =>
-  values.some((value) => value.includes(GITHUB_CREDENTIAL_HELPER_MARKER));
+const isCoordHelper = (value: string): boolean => value.includes(GITHUB_CREDENTIAL_HELPER_MARKER);
+
+/**
+ * The helper values coord did not write, in order. Coord owns each of its
+ * helpers and the empty reset written immediately before it; everything else
+ * (an owner's `cache` or `store` helper, say) is preserved across configure,
+ * repair and uninstall.
+ */
+const unmanagedCredentialHelpers = (values: readonly string[]): string[] => {
+  const kept: string[] = [];
+  for (const value of values) {
+    if (!isCoordHelper(value)) kept.push(value);
+    else if (kept.at(-1) === "") kept.pop();
+  }
+  return kept;
+};
+
+const rewriteCredentialHelpers = (clone: string, values: readonly string[]): void => {
+  localConfigUnset(clone, GITHUB_CREDENTIAL_HELPER_KEY);
+  for (const value of values) gitOrThrow(clone, "config", "--local", "--add", GITHUB_CREDENTIAL_HELPER_KEY, value);
+};
 
 /**
  * Wire the clone's github.com credential helper to the selected account: an
- * empty value resets inherited helpers, then coord's helper answers with the
- * account's token from gh's storage. No token is written.
+ * empty value resets every helper before it (inherited or the owner's own,
+ * which are kept in place), then coord's helper answers with the account's
+ * token from gh's storage. No token is written.
  */
 export const configureCloneGitHubCredential = (
   clone: string,
@@ -833,20 +853,20 @@ export const configureCloneGitHubCredential = (
   options: EffectOptions
 ): void => {
   const current = cloneCredentialHelpers(clone);
-  const desired = ["", gitCredentialHelperCommand(account, cliEntry)];
+  const desired = [...unmanagedCredentialHelpers(current), "", gitCredentialHelperCommand(account, cliEntry)];
   if (JSON.stringify(current) === JSON.stringify(desired)) {
     options.log(`GitHub credential helper for ${account} already current in ${clone}\n`);
     return;
   }
-  act(options, `record the GitHub credential helper for ${account} in ${clone}`, () => {
-    localConfigUnset(clone, GITHUB_CREDENTIAL_HELPER_KEY);
-    for (const value of desired) gitOrThrow(clone, "config", "--local", "--add", GITHUB_CREDENTIAL_HELPER_KEY, value);
-  });
+  act(options, `record the GitHub credential helper for ${account} in ${clone}`, () => rewriteCredentialHelpers(clone, desired));
 };
 
+/** Remove only coord's reset/helper pairs; the owner's helpers stay. */
 export const clearCloneGitHubCredential = (clone: string, options: EffectOptions): void => {
-  if (!ownsCredentialHelpers(cloneCredentialHelpers(clone))) return;
-  act(options, `clear the GitHub credential helper in ${clone}`, () => localConfigUnset(clone, GITHUB_CREDENTIAL_HELPER_KEY));
+  const current = cloneCredentialHelpers(clone);
+  if (!current.some(isCoordHelper)) return;
+  act(options, `clear the GitHub credential helper in ${clone}`, () =>
+    rewriteCredentialHelpers(clone, unmanagedCredentialHelpers(current)));
 };
 
 /** Why a clone cannot use the selected account, or null when its wiring is current. */
@@ -855,9 +875,13 @@ export const cloneGitHubWiringProblem = (clone: string, account: string): string
   if (recorded !== account) {
     return `Agent clone ${clone} is not wired for GitHub account ${account} (${GITHUB_ACCOUNT_KEY} is ${recorded ?? "unset"}).`;
   }
+  // Effective means: the account's helper directly follows a reset, and no
+  // later reset or other coord helper can take its place.
   const helpers = cloneCredentialHelpers(clone);
-  if (helpers[0] !== "" || !helpers.slice(1).some((value) => value.endsWith(`${GITHUB_CREDENTIAL_HELPER_MARKER}${account}`))) {
-    return `Agent clone ${clone} has no GitHub credential helper for ${account}.`;
+  const index = helpers.map((value) => value.endsWith(`${GITHUB_CREDENTIAL_HELPER_MARKER}${account}`)).lastIndexOf(true);
+  const later = helpers.slice(index + 1);
+  if (index < 1 || helpers[index - 1] !== "" || later.includes("") || later.some(isCoordHelper)) {
+    return `Agent clone ${clone} has no effective GitHub credential helper for ${account}.`;
   }
   return null;
 };

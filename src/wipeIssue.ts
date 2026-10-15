@@ -172,10 +172,11 @@ const pruneIssueRefs = (input: {
   deletedLocalBranches: string[];
   dropLocalHeads?: ReadonlySet<string>;
   keepRemoteBranches?: ReadonlySet<string>;
+  gitArgs: readonly string[];
 }): void => {
   if (!isGitRepo(input.cwd)) return;
   if (!input.dryRun && hasOrigin(input.cwd)) {
-    const pruned = git(input.cwd, "fetch", "--prune", "origin");
+    const pruned = git(input.cwd, ...input.gitArgs, "fetch", "--prune", "origin");
     if (pruned.exitCode !== 0) {
       input.log(`could not fetch --prune in ${input.cwd}: ${pruned.stderr.trim() || "git fetch failed"}\n`);
     }
@@ -404,6 +405,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     for (const { root } of clones) {
       pruneIssueRefs({
         cwd: root,
+        gitArgs: options.github?.gitArgs ?? [],
         issue: options.issue,
         dryRun,
         log,
@@ -414,6 +416,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     if (productHasRepo) {
       pruneIssueRefs({
         cwd: productRoot,
+        gitArgs: options.github?.gitArgs ?? [],
         issue: options.issue,
         dryRun,
         log,
@@ -424,6 +427,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     }
     pruneIssueRefs({
       cwd: paths.mirror,
+      gitArgs: options.github?.gitArgs ?? [],
       issue: options.issue,
       dryRun,
       log,

@@ -29,7 +29,7 @@ import { sha256 } from "./hash.js";
 import { renderHookScope, resolveHookBinding, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { inspectOutgoingChanges, inspectStagedChanges } from "./changeClassification.js";
 import { hookVerificationRecorder } from "./verificationLog.js";
-import { install, onboard, packageVersion, uninstall } from "./install.js";
+import { install, onboard, packageVersion, savedGitHubAccount, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
 import { makeAgentClonesBaseReady, makeManualClonesBaseReady, prepareAgentIssueBranches, type CloneBaseReadyResult } from "./prepareAgentBranch.js";
@@ -891,8 +891,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       return; // Legacy or unreadable state is refused by the run loop with its own message.
     }
     if (start.githubAccount === undefined) return;
-    await preflightGitHubAccount({ account: start.githubAccount, origin: start.origin, agents: start.agents,
-      configPath: start.configPath });
+    // A dropped agent's clone is no longer a participant and must not block the rest.
+    const active = readCursorsState(paths).activeRoster;
+    await preflightGitHubAccount({ account: start.githubAccount, origin: start.origin,
+      agents: start.agents.filter((agent) => active.includes(agent.id)), configPath: start.configPath });
   };
 
   /**
@@ -928,21 +930,11 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     return signedIn;
   };
 
-  /**
-   * Onboarding asks once. Re-onboarding without --github-account keeps the
-   * saved selection (install carries it forward), so a workspace that already
-   * has one is not asked again.
-   */
-  const selectOnboardAccount = async (productRoot: string, flag: string | undefined): Promise<string | undefined> => {
-    if (flag !== undefined) return flag;
+  /** Onboarding asks once, only when neither --github-account nor a saved selection names one. */
+  const chooseOnboardAccount = async (): Promise<string | undefined> => {
     const canChoose = dependencies.choose !== undefined ||
       (process.env.VITEST === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true);
     if (!canChoose) return undefined;
-    try {
-      if (readConfig(resolveWorkspaceFromProduct(productRoot).configPath).github !== undefined) return undefined;
-    } catch {
-      // Not onboarded yet, or unreadable: install reports the latter.
-    }
     const accounts = await readGitHubAccounts(runner, io.cwd);
     const choice = await choose("Which GitHub account should this workspace use?", [...accounts.logins, SIGN_IN_ANOTHER_ACCOUNT]);
     if (choice === null) return undefined;
@@ -1371,16 +1363,19 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (agents.length === 0) throw new Error("--agents requires at least one agent id.");
       const profile = workflowProfile(parsed.flags.get("profile") ?? "consensus");
       const productRoot = resolve(io.cwd, parsed.positionals[0] as string);
-      const githubAccount = await selectOnboardAccount(productRoot, parsed.flags.get("github-account"));
+      // Explicit, then saved (install carries it forward), then asked: verified before any effect.
+      const saved = savedGitHubAccount(productRoot,
+        parsed.flags.has("coord-runtime") ? resolve(io.cwd, requireFlag(parsed, "coord-runtime")) : undefined);
+      const githubAccount = parsed.flags.get("github-account") ?? saved.account ?? await chooseOnboardAccount();
       if (githubAccount !== undefined) await verifyInstallAccount(githubAccount, productRoot, undefined);
       const result = onboard({
         ...(githubAccount === undefined ? {} : { githubAccount }),
+        coordRoot: saved.coordRoot,
         installRoot: coordinatorSourceRoot,
         productRoot,
         agents,
         profile,
         ...(parsed.flags.has("declare") ? { declarePath: resolve(io.cwd, requireFlag(parsed, "declare")) } : {}),
-        ...(parsed.flags.has("coord-runtime") ? { coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-runtime")) } : {}),
         ...(parsed.flags.has("completes-root")
           ? { completesRoot: resolve(io.cwd, requireFlag(parsed, "completes-root")) }
           : {}),
@@ -1389,12 +1384,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         log: io.stdout
       });
       (result.doctor.exitCode === 0 ? io.stdout : io.stderr)(renderDoctorReport(result.doctor));
-      // A selection carried forward from the existing workspace is verified too.
-      const savedAccount = existsSync(result.install.configPath) ? readConfig(result.install.configPath).github?.account : undefined;
-      if (savedAccount === undefined) {
+      if (githubAccount === undefined) {
         io.stdout("No GitHub account selected; gh and git use ambient credentials. Select one with --github-account <login>.\n");
-      } else if (githubAccount === undefined) {
-        await verifyInstallAccount(savedAccount, productRoot, undefined);
       }
       return result.doctor.exitCode;
     }
@@ -1424,13 +1415,18 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         throw new Error("--profile must be solo, reviewed, or consensus.");
       }
       const installProduct = resolve(io.cwd, requireFlag(parsed, "product"));
+      const installRuntime = resolve(io.cwd, requireFlag(parsed, "coord-runtime"));
       const installAccount = parsed.flags.get("github-account");
-      if (installAccount !== undefined) await verifyInstallAccount(installAccount, installProduct, parsed.flags.get("origin"));
+      // A repair keeps the saved account, so it is verified before any effect too.
+      const effectiveAccount = installAccount ?? savedGitHubAccount(installProduct, installRuntime).account;
+      if (effectiveAccount !== null && !flagIsSet(parsed, "dry-run")) {
+        await verifyInstallAccount(effectiveAccount, installProduct, parsed.flags.get("origin"));
+      }
       install({
         installRoot: coordinatorSourceRoot,
         productRoot: installProduct,
         ...(installAccount === undefined ? {} : { githubAccount: installAccount }),
-        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-runtime")),
+        coordRoot: installRuntime,
         agents,
         profile,
         ...(parsed.flags.has("completes-root")

@@ -612,6 +612,24 @@ describe("CLI GitHub account selection", () => {
     expect(resumeErrors.join("")).toContain("GitHub authentication for acct has expired or been revoked.\nRun: coord auth login");
   });
 
+  it("validates only the active roster's clones on resume", async () => {
+    const fixture = setup();
+    selectAccount(fixture.configPath);
+    for (const agent of ["codex", "claude", "cursor"]) wireClone(join(fixture.root, `clone-${agent}`), `issue-1/${agent}`);
+    expect(await runCli(["start", "1", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
+      io: { stdout: () => undefined }, processRunner: accountRunner([]),
+      startEffects: async () => ({ cleanup: async () => undefined }), makeRunLoop: fakeLoop
+    })).toBe(0);
+    const paths = issueRuntimePaths(fixture.runtime, 1);
+    const run = () => runCli(["run", "--issue", "1", "--coord-runtime", fixture.runtime], {
+      io: { stdout: () => undefined, stderr: () => undefined }, processRunner: accountRunner([]), makeRunLoop: fakeLoop
+    });
+    execFileSync("git", ["-C", join(fixture.root, "clone-cursor"), "config", "--local", "--unset", "coord.githubAccount"]);
+    expect(await run()).toBe(2);
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...readCursorsState(paths), activeRoster: ["codex", "claude"] }));
+    expect(await run()).toBe(0);
+  });
+
   it("reports the workspace account through coord auth status", async () => {
     const fixture = setup();
     const status = async (runner: ProcessRunner) => {
@@ -1926,6 +1944,23 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     expect(code).toBe(0);
     expect(out.join("")).toContain("would clone");
     expect(existsSync(join(product.coordRoot, "workspaces"))).toBe(false);
+  });
+
+  it("verifies a saved GitHub account before a repair install changes anything", async () => {
+    const { product, declarePath } = installedWorkspace();
+    const gh = (token: string | null): ProcessRunner => async (argv) => {
+      if (argv[1] === "auth") return token === null ? { exitCode: 1, stdout: "", stderr: "no account" } : { exitCode: 0, stdout: `${token}\n`, stderr: "" };
+      return { exitCode: 0, stdout: argv[2] === "user" ? "acct\n" : "example/myserver\n", stderr: "" };
+    };
+    expect(await runCli([...installArgs(product, declarePath), "--github-account", "acct"], {
+      home: null, io: { stdout: () => undefined }, processRunner: gh("tok")
+    })).toBe(0);
+    const out: string[] = [], errors: string[] = [];
+    expect(await runCli(installArgs(product, declarePath), {
+      home: null, io: { stdout: (message) => out.push(message), stderr: (message) => errors.push(message) }, processRunner: gh(null)
+    })).toBe(2);
+    expect(errors.join("")).toContain("GitHub authentication for acct is unavailable.\nRun: coord auth login");
+    expect(out.join("")).not.toContain("clone already present");
   });
 
   it("emits a config that coord start accepts unchanged", async () => {
