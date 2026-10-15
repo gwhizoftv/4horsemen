@@ -155,6 +155,7 @@ platforms use tmux without that integration; native Windows is not promised.
 | [Readiness policy](docs/readiness-policy.md) | Agent delivery readiness, lifecycle hooks, and completion evidence |
 | [Analytics](docs/analytics.md) | Workflow timing, token measurements, and their limitations |
 | [Repository map](docs/repo-map.md) | Source layout and implementation entry points |
+| [Agent CLI integration assessment](docs/issue-210-agent-cli-analysis.md) | Vendor-specific integration sites, Muse Code assessment, and architecture recommendation |
 | [Contributing](CONTRIBUTING.md) | Human contribution workflow and development checks |
 | [Security policy](SECURITY.md) | Private vulnerability-reporting guidance |
 
