@@ -1,0 +1,41 @@
+# Issue 166 plan review
+
+Reviewed pins:
+
+- Claude plan `bfdbea3dad76aae161deb94bf149e771fc7e6ef5` at `.plans/issue-166/plan.md`
+- Cursor plan `1ae7ee369bb82a8a3271dcae17f75c81e76576e0` at `.plans/issue-166/plan.md`
+- Codex plan `6f1f787705d486db2f1dfadc56232ecece81e182` at `.plans/issue-166/plan.md`
+
+All three stay on onboarding policy for Python and Flutter, reuse `proposeToolchainPolicy` / `proposeProjectPolicy` / `buildWorkspaceConfig`, and extend existing test files. None adds a product source file. The findings below are defects in the plans as written.
+
+## Findings
+
+1. Cursor plan, Python commands in Exact File List. Precommit is always `ruff check .`, with a runner prefix when uv, Poetry, or Hatch is detected, including a tree whose only marker is `requirements.txt` or `pyproject.toml`. `coord onboard` writes that proposal and returns `doctor`'s exit code. `doctor` reports a toolchain finding for every `argv[0]` that `unresolvableCommands` cannot resolve on `PATH`, and `recordOwnerWorkspace` runs only when that exit code is 0. A pytest project that has not installed Ruff therefore fails onboarding, the owner locator stays unset, and the first agent commit fails on `ruff check .`. Record Ruff only when `ruff.toml`, `.ruff.toml`, or a `[tool.ruff` section is present; otherwise use the test command as precommit.
+
+2. Cursor plan, detector order in Exact File List. Flutter and Python are inserted before the Makefile branch, and a Makefile no longer wins once those markers match. `proposeToolchainPolicy` returns on the first matching detector, and a Makefile that contains a `test` target already produces finalization checks `["make", "test"]`, so install succeeds today. Re-onboard of a Python or Flutter repository that also has that target replaces `make test` with `pytest -q` or `flutter test`. Keep a Make proposal that already has checks ahead of Python and Flutter. Detect those languages when the Makefile has no `test` target.
+
+3. Cursor plan, `renderInferredPolicyNotice` in Exact File List. The notice is emitted when `JSON.stringify(appliedChecks)` equals `JSON.stringify(proposal.checks)`, and its precommit, prepush, and critical-path lines are taken from the proposal. `buildWorkspaceConfig` stores `declared.verify ?? proposal.verify`, and the same override applies to critical prefixes and files. A `--declare` file that sets `verify` or the critical paths and omits `checks` still passes the comparison, so the notice prints `ruff` / `pytest` or `flutter analyze` while the config stores the declared commands. Render the notice from the validated config, and skip it when the declaration supplied `verify`, `checks`, or either critical-path field.
+
+4. Cursor plan, Exact File List. The only documentation change is `docs/setup-workspace.md`. `README.md` under Supported languages tells the operator "Python | Explicit commands via `coord install --declare`; no auto-detection yet" and has no Flutter row. After this plan is implemented, that table still tells the operator to pass `--declare` for Python and says nothing about Flutter. Add `README.md` to the changed-file list and update those rows.
+
+5. Cursor plan, Tests. The installer-proposal bullet "`uv.lock` and `poetry.lock` together → uv wins" names no other file. The same plan starts Python detection only from `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, or `Pipfile`; `uv.lock` is not a trigger. A fixture that contains only the two lockfiles never enters the Python branch, `checks` stays undefined, and the uv-wins assertion cannot pass. Put `pyproject.toml` in that fixture.
+
+6. Claude plan, install summary in Exact File List. Each phase is printed as joined argv, `none (explicit opt-out)`, or `absent — hooks block until declared`. Python without a Ruff config sets `verify.precommit` to pytest and `verify.prepush` to `[]`. `proposedVerify` drops `verify` only when both arrays are empty, because that pair is the owner's opt-out; a nonempty precommit with an empty prepush is a recorded push phase that runs no commands, and a missing `verify` is what makes the hooks fail closed. The empty prepush has no argv, so the summary's remaining label is `none (explicit opt-out)`. Onboard then says the owner opted out of a phase the detector wrote. Print `none` for an empty array, and use `explicit opt-out` only when both arrays are empty.
+
+7. Claude plan, `proposeToolchainPolicy` fall-through in Exact File List, locked by test 3. The ordered list returns the first proposal that has finalization checks, and a `package.json` whose only script is `lint`, plus `pyproject.toml`, must select Python. The Node branch matches `package.json` and returns today even when `check` and `test` are absent, which leaves `checks` undefined and install refusing. Documented detection is first match wins, with `--declare` for a mixed root. Followed as written, a Node repository whose scripts are not named `check` or `test`, and which also has a Python marker, records pytest and drops the Node lint script. Return a matched Cargo, Go, or Node proposal even when it has no finalization checks. Fall through from Make only when the Makefile has no `test` target.
+
+8. Claude plan, Tests, case 4. `installOnce(product(), { declarePath: undefined })` uses the Go fixture and asserts the `go` toolchain line and `go build` / `go test`. Python and Flutter consequences are checked as `notes` on the proposal object in `test/verify-config.test.ts`. The install summary is the only place those notes are shown to the owner, and the issue requires that announcement. An implementation that fills `notes` and never logs them still passes case 4: the Go proposal has no notes, and the declared re-run only asserts that a note line is absent. Install a plain `pyproject.toml` or Flutter `pubspec.yaml` fixture and assert one of that detector's note lines in the captured log.
+
+9. Codex plan, detector order in Reuse and Scope. The order is Cargo, Go, Flutter, Node, Python, Make, so Python and Flutter precede Make, including when the Makefile's `test` target is the gate that already onboards. The same rule as finding 2 applies: a Makefile with `test` already supplies `make test`. A root `pyproject.toml` beside that target records `["pytest", "-q"]` instead, and re-onboard changes a working workspace. Keep a Make proposal that has checks ahead of Python. Use the Python default when the Makefile has no `test` target.
+
+10. Codex plan, install summary in Reuse and Scope. When `verification` is declared, the summary labels local hook commands separately from coordinated and candidate commands. This issue's announcement is the recorded Python and Flutter policy. The new tests build plain fixtures, a declaration override, and a dry run; none of them sets `verification`. A summary that swaps local and coordinated commands still passes those tests, and every coordinator-mode install prints the untested branch. Announce the toolchain, the effective verify and checks, the critical paths, and the assumption that the owner must supply pytest or Flutter on `PATH`. Leave coordinator-mode labeling out of this change.
+
+## Conclusion
+
+Do not implement any of the three pins unchanged.
+
+Claude `bfdbea3dad76aae161deb94bf149e771fc7e6ef5` is the ordering to keep after findings 6 and 8 are fixed: Cargo, Go, and Node still return on a match, Make keeps a workspace that already has `make test`, and Python or Flutter supplies checks only when that earlier pass produced none. Its Ruff-only-when-configured rule and its `python3 -m` / `uv run` / `poetry run` runners avoid the onboarding failure in finding 1. Dart on a pubspec that is not Flutter is still the same refusal this issue is closing, and it adds no new file.
+
+Cursor `1ae7ee369bb82a8a3271dcae17f75c81e76576e0` needs findings 1 through 5 corrected before it can be the implementation contract. The notice, the README row, and the lockfile fixture are local edits. The Ruff default and the Makefile reorder change onboarding results.
+
+Codex `6f1f787705d486db2f1dfadc56232ecece81e182` reuses the existing tests and justifies moving the current `js-yaml` dependency rather than adding a parser. It still needs findings 9 and 10 corrected. Bare `pytest` and `flutter analyze` / `flutter test` are coherent defaults once a working `make test` target is left in place.
