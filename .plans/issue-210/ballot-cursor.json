@@ -1,0 +1,46 @@
+{
+  "actionId": "443c0be2-5efc-49a4-9132-4d36653d0ab1",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "6651cda561328e24118fc8874e93d852d8f4b2dc0ea68081e71e5ed3a8df305a",
+  "issue": 210,
+  "issueSessionId": "issue-210:cb7ed092cb8a5d15f651387651df7c631e4596e6",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "887e8e7d863211f266068c837674cb7a72f3dfe2",
+      "path": ".plans/issue-210/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c284ace4ff9f7a5a5abb7269a220d173e8eacad5",
+      "path": ".plans/issue-210/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "8cd4eddcec9193b82dbe8d5b417f827ed4ce1766",
+      "path": ".plans/issue-210/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex alone keeps extractApprovedPaths to exactly its two documentation files while requiring a baseline-pinned complete inventory, primary Muse sources, and a cost-gated architecture choice, making it the safest base once Claude's verified muse-update and missing --add-dir hazards are folded into its Muse map.",
+  "responseSha256": "f8e75a0a629758ce0a4415839210614540aef826251abd352ce4dddc0b60721a",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "b38250a3475d677b55fc7c9cfa26126b2e017f31",
+      "path": ".plans/issue-210/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a732d535b53b7f9432c2824b565ad6d3e7c45535",
+      "path": ".plans/issue-210/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "0f155087c3f0d8700f66f3c17f6f2f9c70819907",
+      "path": ".plans/issue-210/review.md"
+    }
+  ]
+}
