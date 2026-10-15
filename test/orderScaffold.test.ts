@@ -32,6 +32,23 @@ describe("orderScaffold", () => {
     expect(ballot).toEqual({ actionId: ctx.actionId, disposition: "approve", rationale: "<one sentence>" });
   });
 
+  it("keeps round-1 basedOn on the selected implementation pin", () => {
+    const inputs = [
+      { kind: "implementation", agent: "codex", commitSha: "c".repeat(40), path: ".signals/issue-1/implementation-ready-codex.json" },
+      ...["claude", "codex"].flatMap((agent, index) => [
+        { kind: "consensus-ballot", agent, commitSha: "e".repeat(40), path: `.code-reviews/issue-1/ballot-${agent}.json` },
+        { kind: "review", agent, commitSha: String(index + 1).repeat(40), path: ".code-reviews/issue-1/comparison.md" }
+      ])
+    ];
+    const ctx = {
+      stepId: "R6.revise" as const, issue: 1, issueSessionId: "s", agent: "codex",
+      actionId: "10000000-0000-4000-8000-000000000001", baselineSha: "a".repeat(40), automationDigest: "b".repeat(64),
+      inputs, eligibleChoices: [], round: 1, approvedPaths: ["src/product.ts"], scopeHash: "d".repeat(64)
+    };
+    expect(artifactScaffoldValue(ctx)).toMatchObject({ basedOn: ["c".repeat(40)], round: 1,
+      inputSetHash: computeInputSetHash(inputs) });
+  });
+
   it("renders a filled join JSON scaffold", () => {
     const ctx = {
       stepId: "R1.join" as const,

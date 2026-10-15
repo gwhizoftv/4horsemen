@@ -4224,6 +4224,42 @@ describe("third revision closeout", () => {
     }]);
   });
 
+  it("binds comparison ballots and comparisons on revision round 1", async () => {
+    const { paths, start, cursors, revision } = terminalFixture();
+    const implementation = { ...revision, stepId: "R4.implement", round: null,
+      submissionSha: "c".repeat(40), productPin: "f".repeat(40), path: ".signals/issue-1/implementation-ready-codex.json" };
+    const comparisons = cursors.activeRoster.map((agent, index) => ({ stepId: "R5.compare", agent, round: null,
+      submissionSha: gitShaFixture(String(index + 1)), path: ".code-reviews/issue-1/comparison.md", acceptedAt: revision.acceptedAt }));
+    const batch = publishedBallotBatchFixture({ kind: "comparison-ballot-batch", activeRoster: cursors.activeRoster });
+    const seeded = cursorsStateSchema.parse({ ...cursors,
+      accepted: [implementation, ...comparisons],
+      acceptedResponses: cursors.activeRoster.map((agent) =>
+        acceptedResponseFixture({ stepId: "R5.compare-ballot", agent, choice: "codex" })),
+      ballotBatches: [batch]
+    });
+    const implementationInput = { kind: "implementation", agent: implementation.agent,
+      commitSha: implementation.productPin, path: implementation.path };
+    const reviews = comparisons.map((comparison) => ({ kind: "review", agent: comparison.agent,
+      commitSha: comparison.submissionSha, path: comparison.path }));
+    const order = buildOrder(paths, start, seeded, "codex", "R6.revise", 1);
+    expect(order.inputs).toEqual([
+      implementationInput,
+      ...batch.responses.map((response, index) => ({
+        kind: "consensus-ballot", agent: response.agent, commitSha: batch.commitSha, path: batch.paths[index]
+      })),
+      ...reviews
+    ]);
+    expect(deriveBoundInputs(start, { ...seeded, ballotBatches: [] }, "R6.revise", 1)).toEqual([implementationInput, ...reviews]);
+    const materialized = await materializeBoundInputs({ paths, inputs: order.inputs, mirror: {
+      readBlob: async (sha: string, path: string) => `body of ${sha}:${path}\n`,
+      materializeWorktree: async () => undefined,
+      removeWorktree: async () => undefined
+    } });
+    expect(materialized.omitted).toEqual([]);
+    expect(materialized.entries).toHaveLength(order.inputs.length - 1);
+    expect(materialized.worktrees.map((worktree) => worktree.kind)).toEqual(["implementation"]);
+  });
+
   it.each(["revise", "escalate", "approve"] as const)("derives exact published terminal evidence for %s", (disposition) => {
     const { cursors, now, revision } = terminalFixture(disposition);
     const derived = computeConsensusDerived(cursors, 3, now)!;

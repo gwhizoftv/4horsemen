@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { clearCompletion } from "../src/action.js";
 import { observeAgentLifecycle, readAgentLifecycle } from "../src/agentLifecycle.js";
 import { writeAgentResponse } from "../src/ballotResponse.js";
-import { computeInputSetHash } from "../src/evidence.js";
+import { computeInputSetHash, revisionProductInputs } from "../src/evidence.js";
 import { BareMirror } from "../src/mirror.js";
 import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { buildOrder, CoordinatorRunLoop, type RunLoopDependencies } from "../src/runLoop.js";
@@ -405,7 +405,13 @@ Implement the selected product files.
       expectStep("R6.revise");
       expect(currentOrder("cursor").round).toBe(1);
       expect(currentOrder("cursor").inputs).toEqual(revisionBefore.inputs);
-      expect(currentOrder("cursor").inputs).toHaveLength(1);
+      const roundOneInputs = currentOrder("cursor").inputs;
+      expect(roundOneInputs).toHaveLength(1 + 2 * activeAfterDrop.length);
+      expect(roundOneInputs.filter((input) => input.kind === "implementation").map((input) => input.agent)).toEqual(["cursor"]);
+      for (const kind of ["consensus-ballot", "review"]) {
+        expect(roundOneInputs.filter((input) => input.kind === kind).map((input) => input.agent).sort())
+          .toEqual([...activeAfterDrop].sort());
+      }
       expect(currentOrder("cursor").scopeHash).toBe(revisionBefore.scopeHash);
       expect(currentOrder("cursor").approvedPaths).not.toContain("test/unnecessary.test.ts");
       expect(currentOrder("cursor").task).toContain("last amendment was rejected");
@@ -433,7 +439,7 @@ Implement the selected product files.
             scopeHash: order.scopeHash,
             round: 1,
             revisedBranchHead: revisionPin,
-            basedOn: order.inputs.map((input) => input.commitSha)
+            basedOn: revisionProductInputs(order.inputs).map((input) => input.commitSha)
           })
         );
       }
