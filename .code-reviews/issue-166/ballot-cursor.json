@@ -1,0 +1,29 @@
+{
+  "actionId": "07ecdeb2-a249-4d7d-9f76-e96468e8ad59",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "ab1393881936df212f1649bc17e5804bf8cb80d7",
+      "path": ".signals/issue-166/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "72d156d68e6075027eb050b74be9d5f7b972c628",
+      "path": ".signals/issue-166/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "bc5812c2ac7ed4aba2310d28a7a2f65f118df8bf",
+      "path": ".signals/issue-166/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "22f9c374ab866d09d53c0520290ea18242900a13968b2dd4abf0eb56ca2fca0b",
+  "issue": 166,
+  "issueSessionId": "issue-166:b824e845b83925c7adeaf471b4966e24d2f00b8a",
+  "protocolVersion": 2,
+  "rationale": "Codex alone preserves usable make test and Node gates, records flutter analyze --no-fatal-infos, and locks those precedence boundaries in tests.",
+  "responseSha256": "c2550f78486e257ad5ff75386bb7d974f8960d15fbd683b51191261768edb795"
+}

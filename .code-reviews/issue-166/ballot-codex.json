@@ -1,0 +1,29 @@
+{
+  "actionId": "6ec80d7e-9f98-41e7-9a6e-10722c755607",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "ab1393881936df212f1649bc17e5804bf8cb80d7",
+      "path": ".signals/issue-166/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "72d156d68e6075027eb050b74be9d5f7b972c628",
+      "path": ".signals/issue-166/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "bc5812c2ac7ed4aba2310d28a7a2f65f118df8bf",
+      "path": ".signals/issue-166/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "22f9c374ab866d09d53c0520290ea18242900a13968b2dd4abf0eb56ca2fca0b",
+  "issue": 166,
+  "issueSessionId": "issue-166:b824e845b83925c7adeaf471b4966e24d2f00b8a",
+  "protocolVersion": 2,
+  "rationale": "Codex resolves plain Python and Flutter onboarding within the approved scope while preserving existing Node and Make gates, accurately reporting effective and declared policies, and covering those behaviors with focused tests.",
+  "responseSha256": "4255bb6f0ff5cf71f54c2772bd7f4ef7b6c70bc242e53ea97bb66f950f24dd67"
+}

@@ -1,0 +1,29 @@
+{
+  "actionId": "60c7d322-fd79-4ee6-a51c-2f6d46aa23fa",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "ab1393881936df212f1649bc17e5804bf8cb80d7",
+      "path": ".signals/issue-166/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "72d156d68e6075027eb050b74be9d5f7b972c628",
+      "path": ".signals/issue-166/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "bc5812c2ac7ed4aba2310d28a7a2f65f118df8bf",
+      "path": ".signals/issue-166/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "22f9c374ab866d09d53c0520290ea18242900a13968b2dd4abf0eb56ca2fca0b",
+  "issue": 166,
+  "issueSessionId": "issue-166:b824e845b83925c7adeaf471b4966e24d2f00b8a",
+  "protocolVersion": 2,
+  "rationale": "Codex's pin is the only one that preserves every gate that onboards today (a Makefile with a test target and a Node manifest with checks) while adding Python and Flutter defaults, records flutter analyze --no-fatal-infos so existing info-level lints do not block every commit, keeps its announced effects true under partial declarations, and tests onboarding on a hermetic PATH, whereas cursor replaces a working make test with pytest and both cursor and claude make Flutter info lints fatal.",
+  "responseSha256": "c47f7c066d5423ad82305ef1e716fc866350e31840fa178c2bb6db25da2db53f"
+}
