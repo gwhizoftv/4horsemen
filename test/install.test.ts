@@ -1,3 +1,4 @@
+import { gitCredentialHelperCommand } from "../src/githubAuth.js";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -1147,4 +1148,82 @@ describe("generated agent launchers", () => {
     // The user-global status line lands in the fixture, never the owner's home.
     expect(existsSync(join(fixture.workspaceRoot, "home", ".gemini", "antigravity-cli", "settings.json"))).toBe(true);
   });
+});
+
+
+it("persists, repairs, and uninstalls named credentials while preserving unrelated helpers", () => {
+  const fixture = product();
+  const origin = "https://acct@github.com/example/fixture.git";
+  const first = installOnce(fixture, { githubAccount: "acct", origin });
+  const clone = first.clones[0]!;
+  const helperKey = "credential.https://github.com.helper";
+  const helpers = () => execFileSync("git", ["-C", clone, "config", "--local", "--get-all", helperKey], { encoding: "utf8" });
+  const command = gitCredentialHelperCommand("acct", join(repoRoot, "dist/main.js"));
+  expect(readConfig(first.configPath).github).toEqual({ account: "acct" });
+  expect(git(clone, "config", "coord.githubAccount")).toBe("acct");
+  expect(helpers()).toBe(`\n${command}\n`);
+  expect(readFileSync(join(clone, "start-claude.sh"), "utf8")).toContain("auth launch-token");
+  const home = join(fixture.workspaceRoot, "credential-home"), bin = join(home, ".local/bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "gh"), `#!/usr/bin/env bash
+case "$1 $2" in
+  'auth token')
+    [[ -z "\${GH_TOKEN:-}" && -z "\${GITHUB_TOKEN:-}" ]] || exit 9
+    [[ "\${COORD_TEST_AUTH:-}" != missing ]] || exit 1
+    printf '%s' "$COORD_TEST_TOKEN" ;;
+  'api user')
+    if [[ "\${COORD_TEST_AUTH:-}" == expired ]]; then echo 'HTTP 401 Bad credentials' >&2; exit 1; fi
+    printf acct ;;
+  'api repos/example/fixture') printf example/fixture ;;
+  *) exit 8 ;;
+esac
+`, { mode: 0o700 });
+  writeFileSync(join(bin, "claude"), '#!/usr/bin/env bash\nprintf "harness-token=%s" "$GH_TOKEN"\n', { mode: 0o700 });
+  const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, GH_TOKEN: "ambient-wrong",
+    GITHUB_TOKEN: "ambient-wrong", COORD_TEST_TOKEN: "fixture-selected-secret" };
+  const credential = spawnSync("git", ["credential", "fill"], { cwd: clone, env, encoding: "utf8",
+    input: "protocol=https\nhost=github.com\nusername=url-user\n\n" });
+  expect(credential.status, credential.stderr).toBe(0);
+  expect(credential.stdout).toContain("username=acct\npassword=fixture-selected-secret");
+  const launch = (mode: string) => spawnSync("bash", [join(clone, "start-claude.sh")], {
+    cwd: clone, env: { ...env, COORD_ISSUE: "", COORD_TEST_AUTH: mode }, encoding: "utf8"
+  });
+  const launched = launch("valid");
+  expect(launched.status, launched.stderr).toBe(0);
+  expect(launched.stdout).toContain("harness-token=fixture-selected-secret");
+  for (const mode of ["missing", "expired"]) {
+    const failed = launch(mode);
+    expect(failed.status).toBe(1);
+    expect(failed.stdout).not.toContain("harness-token");
+    expect(failed.stderr).toContain("Run: coord auth login");
+    expect(failed.stderr).not.toContain("fixture-selected-secret");
+  }
+  const missing = spawnSync("git", ["-c", "credential.helper=!printf 'username=wrong\\npassword=wrong\\n'", "credential", "fill"], {
+    cwd: clone, env: { ...env, COORD_TEST_AUTH: "missing", GIT_TERMINAL_PROMPT: "0" }, encoding: "utf8",
+    input: "protocol=https\nhost=github.com\n\n"
+  });
+  expect(missing.status).not.toBe(0);
+  expect(missing.stdout).not.toContain("password=wrong");
+  expect(missing.stderr).toContain("Run: coord auth login");
+  // Redirect only this fixture's HTTPS remote to its local bare origin; no network needed.
+  git(clone, "config", `url.${fixture.originPath}.insteadOf`, "https://github.com/example/fixture.git");
+  git(clone, "remote", "set-url", "origin", "https://github.com/example/fixture.git");
+  git(clone, "config", "--add", helperKey, "cache --timeout=42");
+  const repeated = installOnce(fixture, { origin });
+  expect(readConfig(repeated.configPath).github?.account).toBe("acct");
+  expect(helpers()).toBe(`cache --timeout=42\n\n${command}\n`);
+  const same = installOnce(fixture, { origin });
+  expect(same.changes.some((change) => change.includes("credential helper"))).toBe(false);
+  uninstall({ coordRoot: fixture.coordRoot, productRoot: fixture.productRoot, deleteClones: false,
+    wipeRuntime: false, deleteCoordination: false, force: false, dryRun: false, home: null, log: () => undefined });
+  expect(tryGit(clone, "config", "--get", "coord.githubAccount").exitCode).toBe(1);
+  expect(helpers()).toBe("cache --timeout=42\n");
+});
+
+it("refuses selected-account SSH before creating runtime or clones", () => {
+  const fixture = product();
+  const runtime = join(fixture.workspaceRoot, "new-runtime");
+  expect(() => installOnce(fixture, { coordRoot: runtime, githubAccount: "acct", origin: "git@github.com:acme/app.git" })).toThrow("SSH");
+  expect(existsSync(runtime)).toBe(false);
+  expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(false);
 });

@@ -1,3 +1,4 @@
+import { GITHUB_HELPER_KEY, gitCredentialHelperCommand, explainGitHubAuthFailure } from "./githubAuth.js";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -307,6 +308,7 @@ export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal
 // ------------------------------------------------------------------ config --
 
 export type WorkspaceConfigInput = {
+  githubAccount?: string | null;
   project: string;
   origin: string;
   baseBranch: string;
@@ -347,6 +349,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
   return coordinatorConfigSchema.parse({
     project: input.project,
     origin: input.origin,
+    ...(input.githubAccount == null ? {} : { github: { account: input.githubAccount } }),
     agents: input.agents.map((agent) => ({
       id: agent,
       // Config-relative, so a workspace directory can be moved with its clones.
@@ -412,7 +415,7 @@ export type CloneOutcome = { clone: string; created: boolean; synced: boolean };
 
 /** Normalise remote URLs enough to compare a local path against its clone's. */
 const sameRemote = (left: string, right: string): boolean => {
-  const strip = (value: string): string => value.replace(/\.git$/, "").replace(/\/+$/, "");
+  const strip = (value: string): string => value.replace(/^https:\/\/[A-Za-z0-9-]+@github\.com\//, "https://github.com/").replace(/\/+$/, "").replace(/\.git$/, "");
   return strip(left) === strip(right) || strip(resolve(left)) === strip(resolve(right));
 };
 
@@ -433,6 +436,9 @@ const sameRemote = (left: string, right: string): boolean => {
  * diverged clones are reported, never rewritten.
  */
 export const ensureAgentClone = (input: {
+  gitAuthArgs?: readonly string[];
+  githubAccount?: string | null;
+  cliEntry?: string;
   productRoot: string;
   origin: string;
   clone: string;
@@ -454,6 +460,7 @@ export const ensureAgentClone = (input: {
           "  Refusing to wire this product's identity, policy, and hooks into an unrelated repository."
       );
     }
+    configureCloneGitHubCredential(input.clone, input.githubAccount ?? null, input.cliEntry, input.options);
     input.options.log(`clone already present at ${input.clone} (worktree left untouched)\n`);
     return { clone: input.clone, created: false, synced: syncAgentClone(input) };
   }
@@ -470,13 +477,14 @@ export const ensureAgentClone = (input: {
     );
     if (originTip.exitCode === 0) {
       const tip = originTip.stdout.trim();
-      gitOrThrow(dirname(input.clone), "clone", "--no-checkout", input.productRoot, input.clone);
+      gitOrThrow(dirname(input.clone), ...(input.gitAuthArgs ?? []), "clone", "--no-checkout", input.productRoot, input.clone);
       gitOrThrow(input.clone, "remote", "set-url", "origin", input.origin);
       gitOrThrow(input.clone, "checkout", "--quiet", "-B", input.baseBranch, tip);
       return;
     }
     const reachable = git(
       dirname(input.clone),
+      ...(input.gitAuthArgs ?? []),
       "-c",
       "gc.auto=0",
       "ls-remote",
@@ -490,13 +498,16 @@ export const ensureAgentClone = (input: {
           `and origin '${input.origin}' is unreachable.`
       );
     }
-    gitOrThrow(dirname(input.clone), "clone", "--branch", input.baseBranch, input.origin, input.clone);
+    gitOrThrow(dirname(input.clone), ...(input.gitAuthArgs ?? []), "clone", "--branch", input.baseBranch, input.origin, input.clone);
   });
+  if (existsSync(input.clone)) configureCloneGitHubCredential(input.clone, input.githubAccount ?? null, input.cliEntry, input.options);
   return { clone: input.clone, created: true, synced: false };
 };
 
 /** Fast-forward a clean clone sitting on the shared branch; never rewrite. */
 const syncAgentClone = (input: {
+  gitAuthArgs?: readonly string[];
+  githubAccount?: string | null;
   clone: string;
   baseBranch: string;
   options: EffectOptions;
@@ -522,8 +533,9 @@ const syncAgentClone = (input: {
     input.options.log(`would fast-forward ${input.clone} to origin/${input.baseBranch}\n`);
     return true;
   }
-  const fetched = git(input.clone, "fetch", "--quiet", "origin", input.baseBranch);
+  const fetched = git(input.clone, ...(input.gitAuthArgs ?? []), "fetch", "--quiet", "origin", input.baseBranch);
   if (fetched.exitCode !== 0) {
+    if (input.githubAccount != null) throw new Error(explainGitHubAuthFailure(input.githubAccount, fetched.stderr));
     input.options.log(`could not fetch origin/${input.baseBranch} for ${input.clone}; leaving it as is\n`);
     return false;
   }
@@ -708,6 +720,7 @@ export const clearCloneExclude = (clone: string, options: EffectOptions): void =
 };
 
 export type CloneIdentity = {
+  githubAccount?: string | null;
   agent: string;
   label: string;
   baseBranch: string;
@@ -743,7 +756,8 @@ const IDENTITY_KEYS: readonly string[] = [
   INSTALL_ROOT_KEY,
   CLI_ENTRY_KEY,
   WORKSPACE_CONFIG_KEY,
-  COMPLETES_ROOT_KEY
+  COMPLETES_ROOT_KEY,
+  "coord.githubAccount"
 ];
 
 export const configureCloneIdentity = (clone: string, identity: CloneIdentity, options: EffectOptions): void => {
@@ -755,7 +769,8 @@ export const configureCloneIdentity = (clone: string, identity: CloneIdentity, o
     [INSTALL_ROOT_KEY, identity.installRoot],
     [CLI_ENTRY_KEY, identity.cliEntry],
     [WORKSPACE_CONFIG_KEY, identity.workspaceConfig],
-    [COMPLETES_ROOT_KEY, identity.completesRoot]
+    [COMPLETES_ROOT_KEY, identity.completesRoot],
+    ["coord.githubAccount", identity.githubAccount ?? null]
   ];
   const stale = desired.filter(([key, value]) => localConfigGet(clone, key) !== value);
   if (stale.length === 0) {
@@ -812,3 +827,36 @@ export const assertContainment = (input: {
 };
 
 export const productName = (productRoot: string): string => basename(resolve(productRoot));
+
+/** Remove only the helper/reset pair installed by coord, retaining user helpers. */
+const cloneGitHubHelpers = (clone: string): string[] => {
+  const result = git(clone, "config", "--local", "--get-all", GITHUB_HELPER_KEY);
+  if (result.exitCode === 1) return [];
+  if (result.exitCode !== 0) throw new Error(`Cannot read GitHub credential helpers in ${clone}.`);
+  return result.stdout.replace(/\n$/, "").split("\n");
+};
+
+const unmanagedGitHubHelpers = (helpers: readonly string[]): string[] => {
+  const kept: string[] = [];
+  for (const helper of helpers) {
+    if (helper.startsWith("!/usr/bin/env node ") && helper.includes(" auth git-credential --account ")) {
+      if (kept.at(-1) === "") kept.pop();
+    } else kept.push(helper);
+  }
+  return kept;
+};
+
+export const configureCloneGitHubCredential = (
+  clone: string, account: string | null, cliEntry: string | undefined, options: EffectOptions
+): void => {
+  const current = cloneGitHubHelpers(clone);
+  const desired = [...unmanagedGitHubHelpers(current), ...(account === null ? [] : ["", gitCredentialHelperCommand(account, cliEntry)])];
+  if (JSON.stringify(current) === JSON.stringify(desired)) return;
+  act(options, `configure GitHub credential helper in ${clone}`, () => {
+    localConfigUnset(clone, GITHUB_HELPER_KEY);
+    for (const helper of desired) gitOrThrow(clone, "config", "--local", "--add", GITHUB_HELPER_KEY, helper);
+  });
+};
+
+export const clearCloneGitHubCredential = (clone: string, options: EffectOptions): void =>
+  configureCloneGitHubCredential(clone, null, undefined, options);

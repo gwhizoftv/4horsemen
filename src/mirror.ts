@@ -1,3 +1,4 @@
+import { gitCredentialArgs, explainGitHubAuthFailure } from "./githubAuth.js";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,11 +89,19 @@ export class BareMirror {
   constructor(
     readonly path: string,
     readonly origin: string,
-    private readonly runner: GitRunner = runGitCommand
+    private readonly runner: GitRunner = runGitCommand,
+    private readonly auth: { account: string; cliEntry: string } | null = null
   ) {}
 
+  private authArgs(): string[] {
+    return this.auth === null ? [] : gitCredentialArgs(this.auth.account, this.auth.cliEntry);
+  }
+
   private async git(args: readonly string[], allowFailure = false): Promise<CommandResult> {
-    const result = await this.runner(["--git-dir", this.path, ...args]);
+    const result = await this.runner([...this.authArgs(), "--git-dir", this.path, ...args]);
+    if (result.exitCode !== 0 && this.auth !== null && /authentication|401|bad credentials|expired|revoked|could not read Username/i.test(result.stderr)) {
+      result.stderr = explainGitHubAuthFailure(this.auth.account, result.stderr);
+    }
     if (!allowFailure && result.exitCode !== 0) {
       throw new GitCommandError(`git ${args[0] ?? "command"} failed: ${result.stderr}`, result, isTransientGitFailure(result.stderr));
     }
@@ -102,7 +111,7 @@ export class BareMirror {
   async initialize(): Promise<void> {
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     if (!existsSync(this.path)) {
-      const initialized = await this.runner(["init", "--bare", this.path]);
+      const initialized = await this.runner([...this.authArgs(), "init", "--bare", this.path]);
       if (initialized.exitCode !== 0) {
         throw new GitCommandError(`cannot initialize bare mirror: ${initialized.stderr}`, initialized, false);
       }

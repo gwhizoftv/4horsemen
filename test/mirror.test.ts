@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { BareMirror, isTransientGitFailure } from "../src/mirror.js";
+import { gitCredentialArgs } from "../src/githubAuth.js";
+import { BareMirror, isTransientGitFailure, type GitRunner } from "../src/mirror.js";
 import { assertNoSymlink, resolveSafeCoordRoot } from "../src/paths.js";
 
 const roots: string[] = [];
@@ -38,6 +39,22 @@ const repository = () => {
 };
 
 describe("owner bare mirror", () => {
+  it("uses the named helper for every mirror command and reports authentication failure", async () => {
+    const calls: string[][] = [];
+    let fail = false;
+    const runner: GitRunner = async (args) => {
+      calls.push([...args]);
+      return { exitCode: fail ? 1 : 0, stdout: Buffer.from("a".repeat(40)), stderr: fail ? "Authentication failed" : "" };
+    };
+    const auth = { account: "acct", cliEntry: "/install with spaces/coord's/dist/main.js" };
+    const mirror = new BareMirror("/tmp/mirror.git", "https://github.com/acme/app.git", runner, auth);
+    expect((await mirror.fetchBranch("issue-1/codex")).ok).toBe(true);
+    await mirror.publishBranch("a".repeat(40), "issue-1/final");
+    for (const args of calls) expect(args.slice(0, 6)).toEqual([...gitCredentialArgs(auth.account, auth.cliEntry), "--git-dir", mirror.path]);
+    fail = true;
+    expect(await mirror.fetchBranch("main")).toMatchObject({ ok: false, transient: false,
+      error: "GitHub authentication for acct has expired or been revoked.\nRun: coord auth login" });
+  });
   it("fetches explicit origin refs and reads exact-commit blobs", async () => {
     const fixture = repository();
     const mirror = new BareMirror(join(fixture.root, "runtime/mirror.git"), fixture.origin);

@@ -1,3 +1,4 @@
+import * as wipeModule from "../src/wipeIssue.js";
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
@@ -2043,5 +2044,117 @@ describe("CLI — install, doctor, and the hook bridge", () => {
       })
     ).toBe(0);
     expect(JSON.parse(output.join(""))).toEqual({ decision: "allow" });
+  });
+});
+
+
+describe("workspace GitHub account commands", () => {
+  const selectAccount = (fixture: ReturnType<typeof setup>): void => {
+    writeFileSync(fixture.configPath, JSON.stringify({ ...readConfig(fixture.configPath), github: { account: "acct" } }));
+  };
+  const authenticated: ProcessRunner = async (argv) => {
+    if (argv[1] === "auth" && argv[2] === "token") return { exitCode: 0, stdout: "selected-secret", stderr: "" };
+    if (argv[1] === "api") return { exitCode: 0, stdout: argv[2] === "user" ? "acct" : "example/fixture", stderr: "" };
+    return successfulStartGit(argv);
+  };
+
+  it("fails start before snapshot, mailbox, runtime, or terminal effects when credentials are missing", async () => {
+    const f = setup(); selectAccount(f);
+    const errors: string[] = [];
+    const runner = vi.fn<ProcessRunner>().mockResolvedValue({ exitCode: 1, stdout: "", stderr: "missing" });
+    const effects = vi.fn();
+    expect(await runCli(["start", "1", "--config", f.configPath, "--coord-runtime", f.runtime], {
+      processRunner: runner, startEffects: effects, io: { stdout: () => undefined, stderr: (message) => errors.push(message) }
+    })).toBe(1);
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(errors.join("")).toContain("GitHub authentication for acct is unavailable.\nRun: coord auth login");
+    expect(effects).not.toHaveBeenCalled();
+    expect(existsSync(f.runtime)).toBe(false);
+  });
+
+  it("scopes start requests, freezes the account, and refuses unavailable credentials on resume and attach", async () => {
+    const f = setup(); selectAccount(f);
+    const clone = join(f.root, "clone-codex");
+    fixtureGit(clone, "init", "-b", "main");
+    fixtureGit(clone, "add", ".");
+    fixtureGit(clone, "commit", "-m", "fixture");
+    fixtureGit(clone, "config", "coord.githubAccount", "acct");
+    const baseline = fixtureGit(clone, "rev-parse", "HEAD");
+    const calls: Parameters<ProcessRunner>[] = [];
+    const runner: ProcessRunner = async (...args) => {
+      calls.push(args);
+      if (args[0].includes("ls-remote")) return { exitCode: 0, stdout: `${baseline}\trefs/heads/main`, stderr: "" };
+      return authenticated(...args);
+    };
+    const errors: string[] = [];
+    const deps = { processRunner: runner, makeRunLoop: fakeLoop, io: { stdout: () => undefined, stderr: (message: string) => errors.push(message) } };
+    expect(await runCli(["start", "1", "--profile", "solo", "--config", f.configPath, "--coord-runtime", f.runtime], deps), errors.join("")).toBe(0);
+    const paths = issueRuntimePaths(f.runtime, 1);
+    expect(readStartState(paths).githubAccount).toBe("acct");
+    expect(calls.find(([argv]) => argv[0] === "gh" && argv[1] === "issue")?.[2]?.env?.GH_TOKEN).toBe("selected-secret");
+    expect(calls.find(([argv]) => argv.includes("ls-remote"))?.[0].slice(0, 3)).toEqual(["git", "-c", "credential.https://github.com.helper="]);
+    expect(readFileSync(paths.start, "utf8")).not.toContain("selected-secret");
+    // The current config may change: existing issues must still request their frozen account.
+    writeFileSync(f.configPath, JSON.stringify({ ...readConfig(f.configPath), github: { account: "different" } }));
+    const missing = vi.fn<ProcessRunner>().mockResolvedValue({ exitCode: 1, stdout: "", stderr: "missing" });
+    const run = vi.fn(async () => undefined), restore = vi.fn(async () => undefined);
+    for (const command of [["1"], ["attach", "1"], ["run", "--issue", "1"]]) {
+      const selectors = command[0] === "run" ? ["--coord-runtime", f.runtime] : ["--config", f.configPath, "--coord-runtime", f.runtime];
+      expect(await runCli([...command, ...selectors], { ...deps, processRunner: missing,
+        makeRunLoop: () => ({ ...fakeLoop(paths), run, restoreTerminals: restore }) })).toBe(1);
+    }
+    expect(missing.mock.calls.every(([argv]) => argv.at(-1) === "acct")).toBe(true);
+    expect(run).not.toHaveBeenCalled(); expect(restore).not.toHaveBeenCalled();
+  });
+
+  it("reports verified status and actionable expiry, and preserves ambient behavior without a selection", async () => {
+    const f = setup(); const output: string[] = [];
+    const io = { stdout: (message: string) => output.push(message), stderr: (message: string) => output.push(message) };
+    expect(await runCli(["auth", "status", "--config", f.configPath], { io, processRunner: authenticated })).toBe(0);
+    expect(output.join("")).toContain("--github-account");
+    selectAccount(f); output.length = 0;
+    expect(await runCli(["auth", "status", "--config", f.configPath], { io, processRunner: authenticated })).toBe(0);
+    expect(output.join("")).toContain("GitHub account acct: authenticated for example/fixture");
+    expect(await runCli(["auth", "status", "--config", f.configPath], { io,
+      processRunner: async (...args) => args[0][1] === "api" ? { exitCode: 1, stdout: "", stderr: "HTTP 401 Bad credentials" } : authenticated(...args)
+    })).toBe(1);
+    expect(output.join("")).toContain("GitHub authentication for acct has expired or been revoked.");
+  });
+
+  it("passes scoped credentials to the cleanup fallback", async () => {
+    const f = setup(); selectAccount(f);
+    const cleanup = vi.spyOn(wipeModule, "wipeIssue").mockRejectedValue(new Error("fixture stop"));
+    try {
+      await runCli(["wipe-issue", "1", "--config", f.configPath, "--coord-runtime", f.runtime], {
+        processRunner: authenticated, io: { stdout: () => undefined, stderr: () => undefined }
+      });
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      expect(cleanup.mock.calls[0]?.[0].ghEnv?.GH_TOKEN).toBe("selected-secret");
+    } finally { cleanup.mockRestore(); }
+  });
+
+  it("restores the previously active gh account after attended login, including a mismatched login", async () => {
+    const f = setup(); selectAccount(f);
+    for (const signedIn of ["acct", "wrong"]) {
+      let active = "personal";
+      const calls: string[][] = [];
+      const runner: ProcessRunner = async (argv, cwd, options) => {
+        calls.push([...argv]);
+        if (argv[1] === "auth" && argv[2] === "status") return { exitCode: 0, stderr: "", stdout: JSON.stringify({
+          hosts: { "github.com": [{ login: active, active: true }] }
+        }) };
+        if (argv[2] === "switch") { active = argv.at(-1)!; return { exitCode: 0, stdout: "", stderr: "" }; }
+        return authenticated(argv, cwd, options);
+      };
+      const output: string[] = [];
+      const code = await runCli(["auth", "login", "--config", f.configPath], {
+        processRunner: runner, githubLogin: async (env) => { expect(env.GH_TOKEN).toBeUndefined(); active = signedIn; return 0; },
+        io: { stdout: (text) => output.push(text), stderr: (text) => output.push(text), env: { GH_TOKEN: "ambient-secret" } }
+      });
+      expect(code).toBe(signedIn === "acct" ? 0 : 1);
+      expect(active).toBe("personal");
+      expect(calls.filter((argv) => argv[2] === "switch")).toEqual([["gh", "auth", "switch", "--hostname", "github.com", "--user", "personal"]]);
+      expect(output.join("")).not.toContain("selected-secret");
+    }
   });
 });

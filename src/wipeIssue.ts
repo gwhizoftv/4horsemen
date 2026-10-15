@@ -1,3 +1,4 @@
+import { gitCredentialArgs, explainGitHubAuthFailure } from "./githubAuth.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -17,6 +18,7 @@ import type { OwnerTerminalCloser } from "./tmux.js";
 export type WipeIssueLogger = (message: string) => void;
 
 export type WipeIssueOptions = {
+  ghEnv?: NodeJS.ProcessEnv;
   issue: number;
   config: CoordinatorConfig;
   configPath: string;
@@ -83,9 +85,12 @@ const isAncestor = (cwd: string, ancestor: string, descendant: string): boolean 
 
 type OriginIssueBranch = { branch: string; sha: string };
 
-const listOriginIssueBranches = (cwd: string, issue: number): OriginIssueBranch[] => {
-  const result = git(cwd, "ls-remote", "--heads", "origin", issueHeadGlob(issue));
-  if (result.exitCode !== 0) return [];
+const listOriginIssueBranches = (cwd: string, issue: number, authArgs: readonly string[]): OriginIssueBranch[] => {
+  const result = git(cwd, ...authArgs, "ls-remote", "--heads", "origin", issueHeadGlob(issue));
+  if (result.exitCode !== 0) {
+    if (authArgs.length > 0) throw new Error("Cannot list remote issue branches with the selected GitHub account. Run coord auth status.");
+    return [];
+  }
   const prefix = `refs/heads/${issuePrefix(issue)}`;
   return result.stdout
     .split("\n")
@@ -100,8 +105,9 @@ const listOriginIssueBranches = (cwd: string, issue: number): OriginIssueBranch[
     .filter((row): row is OriginIssueBranch => row !== null);
 };
 
-const deleteRemoteBranch = (cwd: string, origin: string, branch: string): void => {
-  const pushed = git(cwd, "push", "origin", "--delete", branch);
+const deleteRemoteBranch = (cwd: string, origin: string, branch: string, account: string | undefined, ghEnv?: NodeJS.ProcessEnv): void => {
+  const authArgs = account === undefined ? [] : gitCredentialArgs(account);
+  const pushed = git(cwd, ...authArgs, "push", "origin", "--delete", branch);
   if (pushed.exitCode === 0) return;
   const repository = githubRepositoryFromOrigin(origin);
   if (repository === null) {
@@ -109,11 +115,14 @@ const deleteRemoteBranch = (cwd: string, origin: string, branch: string): void =
   }
   // Product masters have no agent pre-push hooks; agent clones may block deletes.
   // Fall back to the GitHub API so wipe-issue still works from either cwd.
+  if (authArgs.length > 0 && ghEnv?.GH_TOKEN === undefined) throw new Error("Selected-account cleanup requires GitHub credentials. Run coord wipe-issue from the CLI.");
   const api = spawnSync("gh", ["api", "-X", "DELETE", `repos/${repository}/git/refs/heads/${branch}`], {
     cwd,
-    encoding: "utf8"
+    encoding: "utf8",
+    env: ghEnv
   });
   if ((api.status ?? 1) !== 0) {
+    if (authArgs.length > 0) throw new Error(explainGitHubAuthFailure(account ?? "the selected account", api.stderr ?? ""));
     throw new Error(
       `Cannot delete origin/${branch} via git push (${pushed.stderr.trim()}) or gh api (${(api.stderr ?? "").trim()}).`
     );
@@ -161,10 +170,11 @@ const pruneIssueRefs = (input: {
   deletedLocalBranches: string[];
   dropLocalHeads?: ReadonlySet<string>;
   keepRemoteBranches?: ReadonlySet<string>;
+  authArgs: readonly string[];
 }): void => {
   if (!isGitRepo(input.cwd)) return;
   if (!input.dryRun && hasOrigin(input.cwd)) {
-    const pruned = git(input.cwd, "fetch", "--prune", "origin");
+    const pruned = git(input.cwd, ...input.authArgs, "fetch", "--prune", "origin");
     if (pruned.exitCode !== 0) {
       input.log(`could not fetch --prune in ${input.cwd}: ${pruned.stderr.trim() || "git fetch failed"}\n`);
     }
@@ -200,6 +210,8 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
   const dryRun = options.dryRun === true;
   const deleteEvidence = options.deleteEvidence === true;
   const log = options.log ?? (() => undefined);
+  const account = options.config.github?.account;
+  const authArgs = account === undefined ? [] : gitCredentialArgs(account);
   const base = options.config.baseBranch;
   const prefix = issuePrefix(options.issue);
   const result: WipeIssueResult = {
@@ -337,7 +349,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     if (pushCwd === undefined) {
       log("skip remote branch deletes: no product or agent clone available\n");
     } else {
-      const remoteBranches = listOriginIssueBranches(pushCwd, options.issue);
+      const remoteBranches = listOriginIssueBranches(pushCwd, options.issue, authArgs);
       if (remoteBranches.length === 0) {
         log(`remote ${prefix}* already absent\n`);
       }
@@ -352,7 +364,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
             continue;
           }
           log(`${dryRun ? "would delete" : "deleting"} origin/${branch} (ballot evidence, owner requested)\n`);
-          if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch);
+          if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch, account, options.ghEnv);
           result.deletedRemoteBranches.push(branch);
           continue;
         }
@@ -374,7 +386,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
           continue;
         }
         log(`${dryRun ? "would delete" : "deleting"} origin/${branch}\n`);
-        if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch);
+        if (!dryRun) deleteRemoteBranch(pushCwd, options.config.origin, branch, account, options.ghEnv);
         result.deletedRemoteBranches.push(branch);
       }
     }
@@ -392,6 +404,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
 
     for (const { root } of clones) {
       pruneIssueRefs({
+        authArgs,
         cwd: root,
         issue: options.issue,
         dryRun,
@@ -402,6 +415,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
     }
     if (productHasRepo) {
       pruneIssueRefs({
+        authArgs,
         cwd: productRoot,
         issue: options.issue,
         dryRun,
@@ -412,6 +426,7 @@ export const wipeIssue = async (options: WipeIssueOptions): Promise<WipeIssueRes
       });
     }
     pruneIssueRefs({
+      authArgs,
       cwd: paths.mirror,
       issue: options.issue,
       dryRun,

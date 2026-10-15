@@ -1,3 +1,4 @@
+import { githubLoginSchema } from "./githubAuth.js";
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -271,6 +272,8 @@ export const coordinatorConfigSchema = z
   .object({
     project: z.string().min(1),
     origin: z.string().min(1),
+    // Credential helpers reuse state-backed hook helpers; defer the shared login schema until parsing.
+    github: z.object({ account: z.lazy(() => githubLoginSchema) }).strict().optional(),
     agents: z.array(agentConfigSchema).min(1),
     branch: z.string().refine((value) => value.includes("{issue}") && value.includes("{agent}")),
     baseBranch: z.string().min(1).default("main"),
@@ -435,6 +438,7 @@ export const startStateSchema = z
       .min(1),
     trustedSourceCommit: gitShaSchema,
     origin: z.string().min(1),
+    githubAccount: z.lazy(() => githubLoginSchema).optional(),
     coordRoot: z.string().min(1),
     /**
      * Where this issue's receipts live, frozen for the issue session.

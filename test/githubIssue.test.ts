@@ -22,6 +22,9 @@ describe("GitHub issue snapshots", () => {
     expect(githubRepositoryFromOrigin("https://github.com/acme/app.git")).toBe("acme/app");
     expect(githubRepositoryFromOrigin("git@github.com:acme/app.git")).toBe("acme/app");
     expect(githubRepositoryFromOrigin("/tmp/app.git")).toBeNull();
+    expect(githubRepositoryFromOrigin("https://gwhizofss@github.com/acme/app.git")).toBe("acme/app");
+    expect(githubRepositoryFromOrigin("https://gwhizofss@github.com/acme/app")).toBe("acme/app");
+    expect(githubRepositoryFromOrigin("https://user:secret@github.com/acme/app.git")).toBeNull();
     const calls: string[][] = [];
     const snapshot = await fetchGitHubIssue({
       origin: "https://github.com/acme/app.git",

@@ -1,3 +1,4 @@
+import { githubLoginSchema, gitCredentialArgs, requireGitHubHttpsOrigin } from "./githubAuth.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -36,6 +37,7 @@ import {
   buildWorkspaceConfig,
   clearCloneExclude,
   clearCloneIdentity,
+  clearCloneGitHubCredential,
   cloneIsDirty,
   configureCloneIdentity,
   effectOptions,
@@ -90,6 +92,7 @@ import { removeClaudeStatusLine, syncClaudeStatusLine } from "./claudeStatusLine
  */
 
 export type InstallOptions = {
+  githubAccount?: string | null;
   installRoot: string;
   productRoot: string;
   coordRoot: string;
@@ -314,6 +317,13 @@ export const install = (options: InstallOptions): InstallResult => {
   // no workspace config left behind for uninstall to find it by.
   const agents = validateAgentIds(options.agents, installRoot);
 
+  const origin = options.origin ?? localConfigGet(productRoot, "remote.origin.url");
+  if (origin === null || origin === "") {
+    throw new Error(`The product ${productRoot} has no 'origin' remote. Agents publish evidence to a shared remote; add one or pass --origin.`);
+  }
+  const githubAccount = resolveInstallGitHubAccount(productRoot, options.coordRoot, options.githubAccount);
+  if (githubAccount !== null) requireGitHubHttpsOrigin(origin);
+
   // ---- step 0: optional bootstrap of the coordination install itself -------
   if (options.bootstrap) bootstrapCoordination(installRoot, effects);
 
@@ -347,12 +357,6 @@ export const install = (options: InstallOptions): InstallResult => {
     write: !options.dryRun
   });
 
-  const origin = options.origin ?? localConfigGet(productRoot, "remote.origin.url");
-  if (origin === null || origin === "") {
-    throw new Error(
-      `The product ${productRoot} has no 'origin' remote. Agents publish evidence to a shared remote; add one or pass --origin.`
-    );
-  }
   const baseBranch = options.baseBranch ?? "main";
   if (git(productRoot, "rev-parse", "--verify", `refs/heads/${baseBranch}`).exitCode !== 0) {
     throw new Error(`The product ${productRoot} has no '${baseBranch}' branch.`);
@@ -408,6 +412,7 @@ export const install = (options: InstallOptions): InstallResult => {
     {
       project,
       origin,
+      githubAccount,
       baseBranch,
       agents,
       profile: options.profile,
@@ -434,7 +439,8 @@ export const install = (options: InstallOptions): InstallResult => {
   for (const agent of agents) {
     const clone = agentCloneDirectory(cloneRoot, project, agent);
     clones.push(clone);
-    ensureAgentClone({ productRoot, origin, clone, baseBranch, options: effects });
+    ensureAgentClone({ productRoot, origin, clone, baseBranch, options: effects, githubAccount, cliEntry,
+      gitAuthArgs: githubAccount === null ? [] : gitCredentialArgs(githubAccount, cliEntry) });
     if (!existsSync(clone)) {
       // Dry run against a workspace that does not exist yet: the remaining
       // per-clone steps have nothing to inspect, and guessing would report
@@ -463,6 +469,7 @@ export const install = (options: InstallOptions): InstallResult => {
         remoteName: "origin",
         installRoot: options.vendor ? null : installRoot,
         cliEntry,
+        githubAccount,
         workspaceConfig: configPath,
         completesRoot
       },
@@ -691,6 +698,7 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
     for (const file of removal.kept) {
       kept.push(`${clone}: ${file} was edited after installation and was left in place`);
     }
+    clearCloneGitHubCredential(clone, effects);
     clearCloneIdentity(clone, effects);
     clearCloneExclude(clone, effects);
     liftCloneAgentsProtocol(clone, effects);
@@ -829,6 +837,7 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
 };
 
 export type OnboardOptions = {
+  githubAccount?: string | null;
   installRoot: string;
   productRoot: string;
   coordRoot?: string;
@@ -865,6 +874,7 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
   const coordRoot = resolve(options.coordRoot ?? registeredCoordRoot(productRoot) ?? join(parent, "coord-runtime"));
   const installed = install({
     installRoot: options.installRoot,
+    githubAccount: options.githubAccount,
     productRoot,
     coordRoot,
     ...(options.completesRoot === undefined ? {} : { completesRoot: resolve(options.completesRoot) }),
@@ -896,4 +906,11 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     );
   }
   return { install: installed, doctor: report };
+};
+
+/** Resolve the same previous selection for CLI preflight and synchronous installation. */
+export const resolveInstallGitHubAccount = (productRoot: string, coordRoot?: string, requested?: string | null): string | null => {
+  if (requested !== undefined) return requested === null ? null : githubLoginSchema.parse(requested);
+  const root = resolve(coordRoot ?? registeredCoordRoot(productRoot) ?? join(dirname(productRoot), "coord-runtime"));
+  return readPreviousConfig(selectWorkspaceLocation(root, productName(productRoot)).configPath)?.github?.account ?? null;
 };

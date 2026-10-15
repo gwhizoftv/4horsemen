@@ -355,6 +355,19 @@ cd "\$(dirname "\${BASH_SOURCE[0]}")"
 $(declare -f launcher_environment)
 launcher_environment "$agent"
 
+# Resolve the named account at every launch/respawn; credentials never enter this file.
+coord_github_account="\$(git config --local --get coord.githubAccount 2>/dev/null || true)"
+if [[ -n "\$coord_github_account" ]]; then
+  coord_cli_entry="\$(git config --local --get coord.cliEntry)"
+  coord_github_origin="\$(git config --local --get remote.origin.url)"
+  if ! coord_github_token="\$(node "\$coord_cli_entry" auth launch-token --account "\$coord_github_account" --origin "\$coord_github_origin")"; then
+    exit 1
+  fi
+  unset GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+  export GH_TOKEN="\$coord_github_token"
+  unset coord_github_token
+fi
+
 # Prefer pnpm via Corepack when this is a pnpm repo.
 if [[ -f pnpm-lock.yaml ]] && command -v corepack >/dev/null; then
   corepack enable pnpm >/dev/null 2>&1 || true

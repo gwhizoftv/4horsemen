@@ -102,7 +102,7 @@ export const formatFinalizationPullRequest = (input: {
 };
 
 export const githubRepositoryFromOrigin = (origin: string): string | null => {
-  const https = /^https:\/\/github\.com\/([^/]+\/[^/]+?)\/?$/.exec(origin);
+  const https = /^https:\/\/(?:[A-Za-z0-9-]+@)?github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)\/?$/.exec(origin);
   if (https?.[1] !== undefined) return https[1].replace(/\.git$/, "");
   const ssh = /^git@github\.com:([^/]+\/[^/]+)$/.exec(origin);
   return ssh?.[1]?.replace(/\.git$/, "") ?? null;

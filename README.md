@@ -74,6 +74,31 @@ security sandbox. Peer agreement and passing checks still need your judgment.
 The driver uses Node/pnpm regardless of your product's language. Public
 bootstrap needs no GitHub CLI authentication; product operations do.
 
+To bind a workspace to one GitHub login, use
+`coord onboard /path/to/product --github-account <name>` (also supported by
+`coord install`). In an interactive terminal, first onboarding offers accounts
+already stored by `gh` and a sign-in option. Reinstalling keeps the saved account.
+Only `github.account` is saved in workspace config; tokens remain in gh's
+credential store (the system keyring when supported).
+
+Run `coord auth status` from the product or an agent clone to check the selected
+login and repository access. Use `coord auth login` to replace a missing or
+expired credential. Login is owner-attended: gh can temporarily change its shared
+active account, and coord restores the previously active account afterward.
+Avoid concurrent login sessions. Normal workspace operations never switch the
+shared active account. A selected account requires an HTTPS GitHub origin;
+`https://user@github.com/owner/repo.git` is supported, and the saved selection
+controls authentication regardless of the URL's username. Selected SSH origins
+are refused because SSH keys cannot enforce this credential choice.
+
+The selection applies to coordinator Git/gh requests and installed agent clones.
+Each issue freezes its account at start; resume refuses mismatched clone wiring.
+Git resolves credentials for each request, coordinator gh commands resolve them
+per call, and agent launchers refresh `GH_TOKEN` on every launch or restart.
+Restart an existing agent after replacing its token. Workspaces with no selection
+continue using ambient credentials. The initial coordinator-source bootstrap
+runs before workspace selection and continues using the owner's existing access.
+
 ## Quick start
 
 Install once per machine, onboard once per product, then run an issue whenever

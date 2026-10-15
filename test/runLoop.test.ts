@@ -4339,8 +4339,14 @@ describe("third revision closeout", () => {
       mutateCursorsState(paths, (current) => setPaused(current, false));
     }
     const calls: string[][] = [];
+    writeFileSync(paths.start, JSON.stringify({ ...start, githubAccount: "acct" }));
     const restored = new CoordinatorRunLoop(paths, { mirror, tmux: null, log: () => undefined,
-      processRunner: async (argv) => {
+      processRunner: async (argv, _cwd, options) => {
+        if (argv[1] === "auth") {
+          expect(argv.at(-1)).toBe("acct");
+          return { exitCode: 0, stdout: "selected-secret", stderr: "" };
+        }
+        expect(options?.env?.GH_TOKEN).toBe("selected-secret");
         calls.push([...argv]);
         return { exitCode: 0, stderr: "", stdout: JSON.stringify({ number: 2, title: "Remaining objections", url: receipt.followUpIssueUrl,
           body: ["All remaining objections", "Related to https://github.com/acme/app/issues/1", `Revision: ${revision.productPin}`,
