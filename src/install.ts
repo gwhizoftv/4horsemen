@@ -369,8 +369,20 @@ export const install = (options: InstallOptions): InstallResult => {
     requireHttpsGitHubOrigin(githubAccount, origin);
   }
   const baseBranch = options.baseBranch ?? "main";
-  if (git(productRoot, "rev-parse", "--verify", `refs/heads/${baseBranch}`).exitCode !== 0) {
-    throw new Error(`The product ${productRoot} has no '${baseBranch}' branch.`);
+  if (git(productRoot, "check-ref-format", "--branch", baseBranch).exitCode !== 0) {
+    throw new Error(
+      `Invalid shared branch '${baseBranch}'. Pass a valid Git branch name via --base-branch, ` +
+        "or let onboard/install discover GitHub's default branch."
+    );
+  }
+  const localBase = git(productRoot, "rev-parse", "--verify", `refs/heads/${baseBranch}^{commit}`);
+  const remoteBase = git(productRoot, "rev-parse", "--verify", `refs/remotes/origin/${baseBranch}^{commit}`);
+  if (localBase.exitCode !== 0 && remoteBase.exitCode !== 0) {
+    throw new Error(
+      `The product ${productRoot} has no local branch '${baseBranch}' and no origin/${baseBranch} tip. ` +
+        `Fetch it (\`git fetch origin ${baseBranch}\`) or create the branch before onboarding, ` +
+        "or pass --base-branch <existing-branch>."
+    );
   }
 
   const cliEntry = join(installRoot, "dist", "main.js");
@@ -856,6 +868,8 @@ export type OnboardOptions = {
   declarePath?: string;
   agents?: readonly string[];
   profile?: string;
+  /** Shared branch; when omitted, install keeps the compatibility default `main`. */
+  baseBranch?: string;
   log: Logger;
   home?: string | null;
   githubAccount?: string;
@@ -906,6 +920,7 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     ...(options.declarePath === undefined ? {} : { declarePath: resolve(options.declarePath) }),
     agents: options.agents ?? ["claude", "codex", "cursor", "antigravity"],
     profile: options.profile ?? "consensus",
+    ...(options.baseBranch === undefined ? {} : { baseBranch: options.baseBranch }),
     writeProduct: false,
     vendor: false,
     bootstrap: false,

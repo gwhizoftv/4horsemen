@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { findAgentLanguageViolations } from "../src/agentLanguage.js";
 import { syncAgentTrust } from "../src/agentTrust.js";
+import { localConfigGet } from "../src/gitExec.js";
 import { assertInstallDeletionAllowed, install, uninstall } from "../src/install.js";
 import { readConfig } from "../src/state.js";
 import { cloneGitHubWiringProblem } from "../src/setupWorkspace.js";
@@ -635,6 +636,31 @@ describe("coord uninstall", () => {
 });
 
 describe("coord install — preflight before effects", () => {
+  it("accepts a slash-containing shared branch available only as origin tracking", () => {
+    const fixture = product();
+    const tip = git(fixture.productRoot, "rev-parse", "HEAD");
+    git(fixture.productRoot, "checkout", "-qb", "feature/work");
+    git(fixture.productRoot, "update-ref", "refs/remotes/origin/release/alpha", tip);
+    tryGit(fixture.productRoot, "branch", "-D", "main");
+    const installed = installOnce(fixture, { baseBranch: "release/alpha" });
+    const config = readConfig(join(fixture.coordRoot, "config.json"));
+    expect(config.baseBranch).toBe("release/alpha");
+    const clone = installed.clones[0] as string;
+    expect(localConfigGet(clone, "consensus.sharedBranch")).toBe("release/alpha");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("release/alpha");
+    expect(git(fixture.productRoot, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature/work");
+  });
+
+  it("rejects an invalid branch name and a branch missing from local and origin refs", () => {
+    const fixture = product();
+    expect(() => installOnce(fixture, { baseBranch: "bad branch" })).toThrow(/Invalid shared branch/);
+    expect(() => installOnce(fixture, { baseBranch: "release/alpha" })).toThrow(
+      /no local branch 'release\/alpha' and no origin\/release\/alpha tip/
+    );
+    expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(false);
+    expect(existsSync(join(fixture.coordRoot, "config.json"))).toBe(false);
+  });
+
   it("rejects a malformed or duplicated agent id before creating anything", () => {
     const fixture = product();
     expect(() => installOnce(fixture, { agents: ["../../escaped"] })).toThrow(/not a valid agent id/);

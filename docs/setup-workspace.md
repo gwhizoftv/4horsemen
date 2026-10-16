@@ -138,8 +138,28 @@ keys on that product. The locator is untracked and does not appear in a fresh
 human clone.
 
 Overrides kept on the simple command are `--coord-runtime`, `--clone-root`,
-`--agents`, and `--profile`. Use advanced install for policy declarations,
-vendoring, tracked product changes, origin/base overrides, or dry runs.
+`--agents`, `--profile`, and `--base-branch`. Use advanced install for policy
+declarations, vendoring, tracked product changes, origin overrides, or dry runs.
+
+### Shared branch (GitHub default)
+
+Onboard and install need one shared branch for runtime `config.json`
+(`baseBranch`) and each agent clone's local Git config
+(`consensus.sharedBranch`). Selection order:
+
+1. Explicit `--base-branch <branch>` (skips GitHub lookup; account verification
+   still runs when an account is selected).
+2. Otherwise, for a github.com origin, `gh api repos/<owner>/<repo>` reads
+   GitHub's `default_branch` through the workspace account when one is selected,
+   or ambient `gh` credentials when none is. A failed lookup is an error: pass
+   `--base-branch` or repair `gh` / `coord auth login`. Dry-run performs the
+   same read-only discovery and still creates no clones or config.
+3. Non-github origins keep the compatibility default `main`.
+
+Re-onboarding without `--base-branch` refreshes from GitHub's current default.
+Owners who deliberately use a different shared branch must pass
+`--base-branch` on later setup runs too. The product checkout is not switched;
+the branch must already exist as a local branch or as `origin/<branch>`.
 
 ## Advanced install
 

@@ -15,6 +15,7 @@ import {
   makeProduct,
   repoRoot,
   silence,
+  tryGit,
   writeDeclaration,
   type ProductFixture
 } from "./support/workspaceFixture.js";
@@ -47,6 +48,14 @@ const fakeLoop = (paths: ReturnType<typeof issueRuntimePaths>): CliRunLoop => ({
 
 const runner = async (argv: readonly string[]) => {
   if (argv[0] === "gh") {
+    if (argv[1] === "api" && typeof argv[2] === "string" && argv[2].startsWith("repos/") && !argv.includes("--jq")) {
+      const repository = argv[2].slice("repos/".length);
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ default_branch: "main", full_name: repository }),
+        stderr: ""
+      };
+    }
     const issue = Number(argv[3]);
     const repository = argv[5] ?? "acme/myserver";
     return {
@@ -63,6 +72,17 @@ const runner = async (argv: readonly string[]) => {
   if (argv.includes("ls-remote")) return { exitCode: 0, stdout: `${"a".repeat(40)}\trefs/heads/main\n`, stderr: "" };
   if (argv.includes("rev-parse")) return { exitCode: 0, stdout: `${"b".repeat(40)}\n`, stderr: "" };
   return { exitCode: 1, stdout: "", stderr: `unexpected command ${argv.join(" ")}` };
+};
+
+const defaultBranchRunner = (branch: string) => async (argv: readonly string[]) => {
+  if (argv[0] === "gh" && argv[1] === "api" && typeof argv[2] === "string" && argv[2].startsWith("repos/") && !argv.includes("--jq")) {
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({ default_branch: branch, full_name: argv[2].slice("repos/".length) }),
+      stderr: ""
+    };
+  }
+  return runner(argv);
 };
 
 describe("coord onboard", () => {
@@ -107,7 +127,7 @@ describe("coord onboard", () => {
       chmodSync(tool, 0o755);
       output.length = 0;
       const argv = ["onboard", fixture.productRoot, "--agents", "claude", "--profile", "solo"];
-      expect(await runCli(argv, { home: null, io: { stdout: log, stderr: log } })).toBe(0);
+      expect(await runCli(argv, { home: null, io: { stdout: log, stderr: log }, processRunner: runner })).toBe(0);
       const configured = readConfig(configPath);
       const checks = language === "python" ? [{ name: "test", argv: ["pytest", "-q"] }] : [
         { name: "analyze", argv: ["flutter", "analyze", "--no-fatal-infos"] }, { name: "test", argv: ["flutter", "test"] }
@@ -130,7 +150,7 @@ describe("coord onboard", () => {
         verify: { precommit: [], prepush: [] }, workflowCriticalPrefixes: ["custom/"], workflowCriticalFiles: []
       });
       output.length = 0;
-      expect(await runCli([...argv, "--declare", declaration], { home: null, io: { stdout: log, stderr: log } })).toBe(0);
+      expect(await runCli([...argv, "--declare", declaration], { home: null, io: { stdout: log, stderr: log }, processRunner: runner })).toBe(0);
       expect(readConfig(configPath).verify).toEqual({ precommit: [], prepush: [] });
       expect(readConfig(configPath).checks).toEqual(checks);
       expect(output.join("")).toContain("local precommit (declared): none");
@@ -145,7 +165,7 @@ describe("coord onboard", () => {
           verification: { mode: "coordinator", coordinated: { precommit: [], prepush: [local] },
             candidate: { checks: [final], covers: { prefixes: ["src/"] }, rules: [] } } });
         output.length = 0;
-        expect(await runCli([...argv, "--declare", declaration], { home: null, io: { stdout: log, stderr: log } })).toBe(0);
+        expect(await runCli([...argv, "--declare", declaration], { home: null, io: { stdout: log, stderr: log }, processRunner: runner })).toBe(0);
         expect(readConfig(configPath).checks).toEqual([final]);
         expect(output.join("")).toContain('local precommit (declared): local ["node","--version"]');
         expect(output.join("")).toContain("coordinated precommit (declared): none");
@@ -172,6 +192,7 @@ describe("coord onboard", () => {
     expect(
       await runCli(["onboard", productAlias], {
         home,
+        processRunner: runner,
         io: { stdout: (message) => output.push(message), stderr: (message) => output.push(message) }
       })
     ).toBe(0);
@@ -183,6 +204,7 @@ describe("coord onboard", () => {
     expect(
       await runCli(["onboard", fixture.productRoot], {
         home,
+        processRunner: runner,
         io: { stdout: (message) => output.push(message), stderr: (message) => output.push(message) }
       })
     ).toBe(0);
@@ -205,6 +227,7 @@ describe("coord onboard", () => {
     writeFileSync(declaration, JSON.stringify({ verification }));
     expect(await runCli(["onboard", fixture.productRoot, "--declare", "policy.json"], {
       home,
+      processRunner: runner,
       io: { cwd: fixture.workspaceRoot, stdout: (message) => output.push(message), stderr: (message) => output.push(message) }
     })).toBe(0);
     expect(JSON.parse(readFileSync(configPath, "utf8")).verification).toMatchObject(verification);
@@ -258,6 +281,7 @@ describe("coord onboard", () => {
     expect(
       await runCli(["onboard", fixture.productRoot, "--agents", "claude", "--profile", "reviewed"], {
         home: null,
+        processRunner: runner,
         io: { stdout: () => undefined }
       })
     ).toBe(0);
@@ -307,14 +331,14 @@ describe("coord onboard", () => {
     expect(
       await runCli(
         ["onboard", first.productRoot, "--coord-runtime", sharedRoot, "--agents", "claude", "--profile", "solo"],
-        { home: null, io: { stdout: () => undefined } }
+        { home: null, io: { stdout: () => undefined }, processRunner: runner }
       )
     ).toBe(0);
     const firstConfigBytes = readFileSync(join(sharedRoot, "config.json"), "utf8");
     expect(
       await runCli(
         ["onboard", second.productRoot, "--coord-runtime", sharedRoot, "--agents", "claude", "--profile", "solo"],
-        { home: null, io: { stdout: () => undefined } }
+        { home: null, io: { stdout: () => undefined }, processRunner: runner }
       )
     ).toBe(0);
     expect(readFileSync(join(sharedRoot, "config.json"), "utf8")).toBe(firstConfigBytes);
@@ -406,7 +430,7 @@ describe("coord onboard", () => {
     const parent = dirname(fixture.productRoot);
     const customRoot = join(parent, "myserver-runtime");
     const solo = ["--agents", "claude", "--profile", "solo"];
-    const quiet = { home: null, io: { stdout: () => undefined } };
+    const quiet = { home: null, io: { stdout: () => undefined }, processRunner: runner };
     expect(await runCli(["onboard", fixture.productRoot, "--coord-runtime", customRoot, ...solo], quiet)).toBe(0);
     const customConfig = join(customRoot, "config.json");
     const clone = agentCloneDirectory(parent, "myserver", "claude");
@@ -432,7 +456,7 @@ describe("coord onboard", () => {
     const second = product("beta");
     const sharedRoot = first.coordRoot;
     const solo = ["--agents", "claude", "--profile", "solo"];
-    const quiet = { home: null, io: { stdout: () => undefined } };
+    const quiet = { home: null, io: { stdout: () => undefined }, processRunner: runner };
     for (const fixture of [first, second]) {
       expect(await runCli(["onboard", fixture.productRoot, "--coord-runtime", sharedRoot, ...solo], quiet)).toBe(0);
     }
@@ -444,6 +468,62 @@ describe("coord onboard", () => {
     expect(localConfigGet(second.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBe(nested);
     expect(existsSync(join(dirname(second.productRoot), "coord-runtime"))).toBe(false);
     expect(readFileSync(join(sharedRoot, "config.json"), "utf8")).toBe(firstConfigBytes);
+  });
+
+  it("onboards on the GitHub default branch and refreshes config without resetting clone work", async () => {
+    const fixture = product();
+    const tip = git(fixture.productRoot, "rev-parse", "HEAD");
+    // Shared default exists only as origin tracking; owner stays on a feature branch.
+    git(fixture.productRoot, "branch", "-M", "feature/work");
+    git(fixture.productRoot, "update-ref", "refs/remotes/origin/release/alpha", tip);
+    tryGit(fixture.productRoot, "update-ref", "-d", "refs/remotes/origin/main");
+    tryGit(fixture.productRoot, "branch", "-D", "main");
+    const ownerHead = git(fixture.productRoot, "rev-parse", "--abbrev-ref", "HEAD");
+    expect(ownerHead).toBe("feature/work");
+
+    const coordRoot = join(dirname(fixture.productRoot), "coord-runtime");
+    const configPath = join(coordRoot, "config.json");
+    const clone = agentCloneDirectory(dirname(fixture.productRoot), "myserver", "claude");
+    expect(
+      await runCli(["onboard", fixture.productRoot, "--agents", "claude", "--profile", "solo"], {
+        home: null,
+        processRunner: defaultBranchRunner("release/alpha"),
+        io: { stdout: () => undefined }
+      })
+    ).toBe(0);
+    expect(readConfig(configPath).baseBranch).toBe("release/alpha");
+    expect(localConfigGet(clone, "consensus.sharedBranch")).toBe("release/alpha");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("release/alpha");
+    expect(git(clone, "rev-parse", "HEAD")).toBe(tip);
+    expect(git(fixture.productRoot, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature/work");
+    expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
+    expect(readFileSync(join(clone, "start-claude.sh"), "utf8")).toContain("release/alpha");
+
+    git(clone, "checkout", "-qb", "claude/manual");
+    writeFileSync(join(clone, "WIP.txt"), "keep\n");
+    const workingHead = git(clone, "rev-parse", "HEAD");
+    expect(
+      await runCli(["onboard", fixture.productRoot, "--agents", "claude", "--profile", "solo"], {
+        home: null,
+        processRunner: defaultBranchRunner("develop"),
+        io: { stdout: () => undefined }
+      })
+    ).toBe(2);
+    // develop is not present locally or as origin/develop — discovery succeeds, preflight fails.
+    git(fixture.productRoot, "update-ref", "refs/remotes/origin/develop", tip);
+    expect(
+      await runCli(["onboard", fixture.productRoot, "--agents", "claude", "--profile", "solo"], {
+        home: null,
+        processRunner: defaultBranchRunner("develop"),
+        io: { stdout: () => undefined }
+      })
+    ).toBe(0);
+    expect(readConfig(configPath).baseBranch).toBe("develop");
+    expect(localConfigGet(clone, "consensus.sharedBranch")).toBe("develop");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("claude/manual");
+    expect(git(clone, "rev-parse", "HEAD")).toBe(workingHead);
+    expect(readFileSync(join(clone, "WIP.txt"), "utf8")).toBe("keep\n");
+    expect(readFileSync(join(clone, "start-claude.sh"), "utf8")).toContain("develop");
   });
 
   it("does not publish the owner locator when doctor fails", () => {

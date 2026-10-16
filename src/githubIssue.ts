@@ -4,7 +4,20 @@ import { sha256 } from "./hash.js";
 import type { FollowUpEvidence } from "./protocol.js";
 
 export type CommandResult = { exitCode: number; stdout: string; stderr: string };
-export type CommandRunner = (argv: readonly string[], cwd: string) => Promise<CommandResult>;
+export type CommandRunnerOptions = { timeoutMs?: number; env?: NodeJS.ProcessEnv };
+export type CommandRunner = (
+  argv: readonly string[],
+  cwd: string,
+  options?: CommandRunnerOptions
+) => Promise<CommandResult>;
+
+const DEFAULT_BRANCH_LOOKUP_TIMEOUT_MS = 30_000;
+
+const repositoryDefaultBranchSchema = z
+  .object({
+    default_branch: z.string()
+  })
+  .passthrough();
 
 const issueResponseSchema = z
   .object({
@@ -117,6 +130,65 @@ export const renderGitHubIssueSnapshot = (snapshot: GitHubIssueSnapshot): string
 
 const remediation = (repository: string, issue: number): string =>
   `Create GitHub issue ${issue} in ${repository} first, or repair GitHub CLI access with \`gh auth status\`.`;
+
+const defaultBranchRemediation = (): string =>
+  `Pass --base-branch <branch>, or repair GitHub CLI access with \`gh auth status\` / \`coord auth login\`.`;
+
+/**
+ * GitHub's configured default branch for a supported github.com origin.
+ * Returns null without calling gh when the origin is not github.com.
+ * A github.com origin that cannot return a clean `default_branch` throws.
+ */
+export const fetchGitHubDefaultBranch = async (input: {
+  origin: string;
+  cwd: string;
+  runner: CommandRunner;
+}): Promise<string | null> => {
+  const repository = githubRepositoryFromOrigin(input.origin);
+  if (repository === null) return null;
+
+  let result: CommandResult;
+  try {
+    result = await input.runner(["gh", "api", `repos/${repository}`], input.cwd, {
+      timeoutMs: DEFAULT_BRANCH_LOOKUP_TIMEOUT_MS
+    });
+  } catch (error) {
+    throw new Error(
+      `Cannot read default branch for ${repository}: ${error instanceof Error ? error.message : String(error)}. ` +
+        defaultBranchRemediation()
+    );
+  }
+  if (result.exitCode !== 0) {
+    const detail = result.stderr.trim().split("\n")[0] || result.stdout.trim() || `gh exited ${result.exitCode}`;
+    throw new Error(`Cannot read default branch for ${repository}: ${detail}. ${defaultBranchRemediation()}`);
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(result.stdout) as unknown;
+  } catch (error) {
+    throw new Error(
+      `Cannot read default branch for ${repository}: invalid JSON (${error instanceof Error ? error.message : String(error)}). ` +
+        defaultBranchRemediation()
+    );
+  }
+  const parsed = repositoryDefaultBranchSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(
+      `Cannot read default branch for ${repository}: response is missing a string default_branch. ` +
+        defaultBranchRemediation()
+    );
+  }
+  const branch = parsed.data.default_branch;
+  // Exact token only: reject empty, trimmed-differing, or multiline values.
+  if (branch === "" || branch !== branch.trim() || /[\r\n]/.test(branch)) {
+    throw new Error(
+      `Cannot read default branch for ${repository}: default_branch is empty or malformed. ` +
+        defaultBranchRemediation()
+    );
+  }
+  return branch;
+};
 
 export const fetchGitHubIssue = async (input: {
   origin: string;

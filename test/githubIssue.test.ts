@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   assessFollowUpIssue,
   followUpKey,
+  fetchGitHubDefaultBranch,
   fetchGitHubIssue,
   formatFinalizationPullRequest,
   githubRepositoryFromOrigin,
@@ -158,6 +159,104 @@ describe("GitHub issue snapshots", () => {
   });
 });
 
+
+describe("GitHub default branch", () => {
+  it.each([
+    "https://github.com/acme/app.git",
+    "git@github.com:acme/app.git",
+    "https://gwhizofss@github.com/acme/app.git"
+  ])("reads default_branch for %s independent of cwd", async (origin) => {
+    const calls: Array<{ argv: string[]; cwd: string; options?: unknown }> = [];
+    const branch = await fetchGitHubDefaultBranch({
+      origin,
+      cwd: "/unrelated/repository",
+      runner: async (argv, cwd, options) => {
+        calls.push({ argv: [...argv], cwd, options });
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ default_branch: "release/alpha", full_name: "acme/app", private: true }),
+          stderr: ""
+        };
+      }
+    });
+    expect(branch).toBe("release/alpha");
+    expect(calls).toEqual([
+      {
+        argv: ["gh", "api", "repos/acme/app"],
+        cwd: "/unrelated/repository",
+        options: { timeoutMs: 30_000 }
+      }
+    ]);
+  });
+
+  it("returns null for a non-GitHub origin without calling gh", async () => {
+    let called = false;
+    expect(
+      await fetchGitHubDefaultBranch({
+        origin: "/tmp/app.git",
+        cwd: "/tmp",
+        runner: async () => {
+          called = true;
+          return { exitCode: 0, stdout: "{}", stderr: "" };
+        }
+      })
+    ).toBeNull();
+    expect(called).toBe(false);
+  });
+
+  it.each([
+    {
+      name: "thrown runner",
+      runner: async () => {
+        throw new Error("gh missing");
+      },
+      match: /gh missing/
+    },
+    {
+      name: "nonzero exit",
+      runner: async () => ({ exitCode: 1, stdout: "", stderr: "HTTP 404: Not Found\nmore" }),
+      match: /HTTP 404: Not Found/
+    },
+    {
+      name: "malformed JSON",
+      runner: async () => ({ exitCode: 0, stdout: "{", stderr: "" }),
+      match: /invalid JSON/
+    },
+    {
+      name: "missing default_branch",
+      runner: async () => ({ exitCode: 0, stdout: JSON.stringify({ full_name: "acme/app" }), stderr: "" }),
+      match: /missing a string default_branch/
+    },
+    {
+      name: "null default_branch",
+      runner: async () => ({ exitCode: 0, stdout: JSON.stringify({ default_branch: null }), stderr: "" }),
+      match: /missing a string default_branch/
+    },
+    {
+      name: "blank default_branch",
+      runner: async () => ({ exitCode: 0, stdout: JSON.stringify({ default_branch: "" }), stderr: "" }),
+      match: /empty or malformed/
+    },
+    {
+      name: "whitespace-padded default_branch",
+      runner: async () => ({ exitCode: 0, stdout: JSON.stringify({ default_branch: " main " }), stderr: "" }),
+      match: /empty or malformed/
+    },
+    {
+      name: "multiline default_branch",
+      runner: async () => ({ exitCode: 0, stdout: JSON.stringify({ default_branch: "main\nextra" }), stderr: "" }),
+      match: /empty or malformed/
+    }
+  ])("rejects $name with --base-branch remediation", async ({ runner, match }) => {
+    await expect(
+      fetchGitHubDefaultBranch({
+        origin: "https://github.com/acme/app.git",
+        cwd: "/tmp",
+        runner
+      })
+    ).rejects.toThrow(new RegExp(`${match.source}.*--base-branch`, "s"));
+  });
+});
 
 describe("follow-up issue verification", () => {
   const input = { origin: "git@github.com:acme/app.git", issue: 1, issueSessionId: "session",
