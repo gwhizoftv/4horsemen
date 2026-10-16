@@ -1,0 +1,46 @@
+{
+  "actionId": "50300a3d-389b-43e9-bb38-036d4c43974f",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "1cecb2ded8b911fc52d085cad180bb7c224927afd9b95d4ef84ed3a66588bc99",
+  "issue": 230,
+  "issueSessionId": "issue-230:884df5fe1200f1cfbd3cecae887488d8c376fdf9",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "cea4ff7cc5c6c872484eb8ad4ea71dc5022e8da3",
+      "path": ".plans/issue-230/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "b279ae5629cacf1d49f3ada2db30044f261f940c",
+      "path": ".plans/issue-230/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "74b712c5873c2690c173141417ba94964c724ccf",
+      "path": ".plans/issue-230/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude’s R-row + pull plan is the only mechanically complete minimum-installed Muse design: it permits Git writes, fixes PATH and vim-prelude remind keys, stays opt-in, and avoids Codex’s unbound A-row scope and Cursor’s non-publishing --workspace sandbox.",
+  "responseSha256": "398b6644d8e370ce7a812598d010512ba33ca706c48b6a93d2581c758f5f1d26",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "8242c28b292d6a531449719e4bdf4738a151ba41",
+      "path": ".plans/issue-230/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "422182c92a13be21ac7c3d57391c9582640b7302",
+      "path": ".plans/issue-230/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e9a0c6ca325fecf1ff7f77372d19775478905691",
+      "path": ".plans/issue-230/review.md"
+    }
+  ]
+}

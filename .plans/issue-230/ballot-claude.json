@@ -1,0 +1,46 @@
+{
+  "actionId": "c8223a28-e6ec-40d8-a06c-d8aadc76d6e7",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "1cecb2ded8b911fc52d085cad180bb7c224927afd9b95d4ef84ed3a66588bc99",
+  "issue": 230,
+  "issueSessionId": "issue-230:884df5fe1200f1cfbd3cecae887488d8c376fdf9",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "cea4ff7cc5c6c872484eb8ad4ea71dc5022e8da3",
+      "path": ".plans/issue-230/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "b279ae5629cacf1d49f3ada2db30044f261f940c",
+      "path": ".plans/issue-230/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "74b712c5873c2690c173141417ba94964c724ccf",
+      "path": ".plans/issue-230/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "The claude plan is the only one with an implementable minimum installed mode (issue-210 R rows plus pull delivery, nullable updater, ~/.local/bin PATH, Muse vim-prelude fix, aligned .muse/ ignores and focused tests in existing files) that can actually commit, whereas cursor's sandboxed --workspace launch cannot write .git and codex's plan gates a 29-file unattended integration on an unproven narrow grant policy; codex's valid concern that --disable-sandbox matches the existing antigravity/claude posture rather than narrow grants should be recorded in the launcher comment and docs as shim-only, unverified containment.",
+  "responseSha256": "3c87f191bdc9890440e483f87d77ae901e31b44151f029823c99f95f853648b1",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "8242c28b292d6a531449719e4bdf4738a151ba41",
+      "path": ".plans/issue-230/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "422182c92a13be21ac7c3d57391c9582640b7302",
+      "path": ".plans/issue-230/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "e9a0c6ca325fecf1ff7f77372d19775478905691",
+      "path": ".plans/issue-230/review.md"
+    }
+  ]
+}
