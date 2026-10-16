@@ -108,6 +108,30 @@ reuse the same trust writer. Reinstall preserves unrelated settings and does not
 rewrite unchanged trust entries; `install --dry-run` makes no trust changes.
 Launchers retain their existing sandbox and tool-permission settings.
 
+### The shared branch
+
+Agents branch from, and coordination opens pull requests into, one shared
+branch. Without an option, `coord onboard` and `coord install` ask GitHub for
+the repository's default branch (`gh api repos/<owner>/<repo>`, under the
+workspace's selected GitHub account when there is one) and use it. The value is
+written to `baseBranch` in the workspace `config.json`, to each agent clone's
+local `consensus.sharedBranch` Git setting, and to the generated launchers. The
+product checkout's own Git configuration and current branch are not changed.
+
+- `--base-branch <branch>` chooses the branch explicitly and skips the GitHub
+  lookup. Re-onboarding without it refreshes the branch from GitHub, so pass it
+  on every run if you deliberately use a branch other than GitHub's default.
+- A failed lookup (no `gh`, expired credentials, no access, no network) stops
+  setup before anything is written, rather than guessing `main`. Repair access
+  with `gh auth status` or `coord auth login`, or pass `--base-branch`.
+- An origin that is not a github.com repository keeps the `main` default.
+- `install --dry-run` still performs the lookup, because it only reads; an
+  explicit `--base-branch` avoids it.
+- The branch must exist in the product checkout, either as a local branch or as
+  an `origin/<branch>` tracking ref; run `git fetch origin <branch>` if neither
+  is present. Agent clones are seeded from the tracking ref.
+- Issues that have already started keep the branch they were started with.
+
 ### Agent editor modes
 
 Install/onboard set Claude's clone-local `.claude/settings.local.json` to

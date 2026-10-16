@@ -1935,26 +1935,93 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     declarePath
   ];
 
+  // The fixture origin is a fake GitHub URL: answer the default-branch lookup locally.
+  const githubDefault = (branch: string, calls: string[][] = []): ProcessRunner => async (argv) => {
+    calls.push([...argv]);
+    return argv[0] === "gh" && argv[1] === "api" && argv.length === 3
+      ? { exitCode: 0, stdout: JSON.stringify({ default_branch: branch }), stderr: "" }
+      : { exitCode: 1, stdout: "", stderr: `unexpected command ${argv.join(" ")}` };
+  };
+  const quietInstall = { home: null, io: { stdout: () => undefined }, processRunner: githubDefault("main") };
+
   it("accepts the boolean switches without swallowing the next option", async () => {
     const { product, declarePath } = installedWorkspace();
     const out: string[] = [];
+    const calls: string[][] = [];
     const code = await runCli([...installArgs(product, declarePath), "--dry-run"], {
-      io: { stdout: (message) => out.push(message) }
+      io: { stdout: (message) => out.push(message) }, processRunner: githubDefault("main", calls)
     });
     expect(code).toBe(0);
+    // Discovery is read-only, so a dry run performs it and still writes nothing.
+    expect(calls).toEqual([["gh", "api", "repos/example/myserver"]]);
+    expect(out.join("")).toContain("Shared branch: main (GitHub default branch of example/myserver)");
     expect(out.join("")).toContain("would clone");
     expect(existsSync(join(product.coordRoot, "workspaces"))).toBe(false);
+    expect(existsSync(join(product.coordRoot, "config.json"))).toBe(false);
+  });
+
+  it.each(["onboard", "install"])("%s honors an explicit --base-branch without asking GitHub", async (command) => {
+    const { product, declarePath } = installedWorkspace();
+    fixtureGit(product.productRoot, "branch", "develop");
+    fixtureGit(product.productRoot, "update-ref", "refs/remotes/origin/develop", "develop");
+    const argv = command === "install" ? installArgs(product, declarePath)
+      : ["onboard", product.productRoot, "--coord-runtime", product.coordRoot, "--agents", "claude", "--profile", "solo",
+        "--declare", declarePath];
+    expect(await runCli([...argv, "--base-branch", "develop"], {
+      home: null, io: { stdout: () => undefined },
+      processRunner: async (argv) => { throw new Error(`explicit branch must not call ${argv.join(" ")}`); }
+    })).toBe(0);
+    expect(readConfig(join(product.coordRoot, "config.json")).baseBranch).toBe("develop");
+    expect(fixtureGit(join(product.workspaceRoot, "myserver-claude"), "config", "--local", "consensus.sharedBranch")).toBe("develop");
+  });
+
+  it("discovers through install's --origin and changes nothing when the lookup fails", async () => {
+    const { product, declarePath } = installedWorkspace();
+    const configPath = join(product.coordRoot, "config.json");
+    const clone = join(product.workspaceRoot, "myserver-claude");
+    const failing: ProcessRunner = async () => ({ exitCode: 1, stdout: "", stderr: "HTTP 404: Not Found" });
+    const errors: string[] = [];
+    const io = { stdout: () => undefined, stderr: (message: string) => errors.push(message) };
+    expect(await runCli(installArgs(product, declarePath), { home: null, io, processRunner: failing })).toBe(2);
+    expect(errors.join("")).toContain("Cannot read the default branch of example/myserver from GitHub: HTTP 404: Not Found.");
+    expect(errors.join("")).toContain("--base-branch <branch>");
+    expect(existsSync(configPath)).toBe(false);
+    expect(existsSync(clone)).toBe(false);
+
+    const calls: string[][] = [];
+    const other = ["--origin", "https://github.com/acme/other.git"];
+    expect(await runCli([...installArgs(product, declarePath), ...other], {
+      home: null, io, processRunner: githubDefault("main", calls)
+    })).toBe(0);
+    expect(calls).toEqual([["gh", "api", "repos/acme/other"]]);
+    const installed = readFileSync(configPath, "utf8");
+    expect(await runCli([...installArgs(product, declarePath), ...other], { home: null, io, processRunner: failing })).toBe(2);
+    expect(readFileSync(configPath, "utf8")).toBe(installed);
   });
 
   it("verifies a saved GitHub account before a repair install changes anything", async () => {
     const { product, declarePath } = installedWorkspace();
-    const gh = (token: string | null): ProcessRunner => async (argv) => {
+    const lookupTokens: Array<string | undefined> = [];
+    const gh = (token: string | null): ProcessRunner => async (argv, _cwd, options) => {
       if (argv[1] === "auth") return token === null ? { exitCode: 1, stdout: "", stderr: "no account" } : { exitCode: 0, stdout: `${token}\n`, stderr: "" };
+      if (argv.length === 3) {
+        lookupTokens.push(options?.env?.GH_TOKEN);
+        return { exitCode: 0, stdout: JSON.stringify({ default_branch: "main" }), stderr: "" };
+      }
       return { exitCode: 0, stdout: argv[2] === "user" ? "acct\n" : "example/myserver\n", stderr: "" };
     };
-    expect(await runCli([...installArgs(product, declarePath), "--github-account", "acct"], {
-      home: null, io: { stdout: () => undefined }, processRunner: gh("tok")
-    })).toBe(0);
+    // The selected account answers the default-branch lookup, never an ambient token.
+    const ambient = process.env.GH_TOKEN;
+    process.env.GH_TOKEN = "ambient-token";
+    try {
+      expect(await runCli([...installArgs(product, declarePath), "--github-account", "acct"], {
+        home: null, io: { stdout: () => undefined }, processRunner: gh("tok")
+      })).toBe(0);
+    } finally {
+      if (ambient === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = ambient;
+    }
+    expect(lookupTokens).toEqual(["tok"]);
     const out: string[] = [], errors: string[] = [];
     expect(await runCli(installArgs(product, declarePath), {
       home: null, io: { stdout: (message) => out.push(message), stderr: (message) => errors.push(message) }, processRunner: gh(null)
@@ -1965,7 +2032,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
 
   it("emits a config that coord start accepts unchanged", async () => {
     const { product, declarePath } = installedWorkspace();
-    expect(await runCli(installArgs(product, declarePath), { home: null, io: { stdout: () => undefined } })).toBe(0);
+    expect(await runCli(installArgs(product, declarePath), quietInstall)).toBe(0);
 
     const configPath = join(product.coordRoot, "config.json");
     const runtime = join(product.coordRoot, "runtime");
@@ -2035,7 +2102,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
 
   it("infers owner and registered clone context while retaining the frozen mailbox", async () => {
     const { product, declarePath } = installedWorkspace();
-    expect(await runCli(installArgs(product, declarePath), { home: null, io: { stdout: () => undefined } })).toBe(0);
+    expect(await runCli(installArgs(product, declarePath), quietInstall)).toBe(0);
     execFileSync("git", ["config", "--local", "coord.ownerWorkspaceConfig", join(product.coordRoot, "config.json")], { cwd: product.productRoot });
     expect(await runCli(["start", "89", "--product", product.productRoot], {
       io: { stdout: () => undefined }, processRunner: successfulStartGit, makeRunLoop: fakeLoop
@@ -2072,7 +2139,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
 
   it("resolves analytics through an onboarded product", async () => {
     const { product, declarePath } = installedWorkspace();
-    expect(await runCli(installArgs(product, declarePath), { home: null, io: { stdout: () => undefined } })).toBe(0);
+    expect(await runCli(installArgs(product, declarePath), quietInstall)).toBe(0);
     execFileSync(
       "git",
       ["config", "--local", "coord.ownerWorkspaceConfig", join(product.coordRoot, "config.json")],
@@ -2104,7 +2171,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
 
   it("returns doctor's class-specific exit code", async () => {
     const { product, declarePath } = installedWorkspace();
-    expect(await runCli(installArgs(product, declarePath), { home: null, io: { stdout: () => undefined } })).toBe(0);
+    expect(await runCli(installArgs(product, declarePath), quietInstall)).toBe(0);
 
     const doctorArgs = ["doctor", "--coord-runtime", product.coordRoot, "--product", product.productRoot];
     expect(await runCli(doctorArgs, { home: null, io: { stdout: () => undefined } })).toBe(0);
@@ -2117,7 +2184,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
 
   it("serves the hook bridge from the workspace config", async () => {
     const { product, declarePath } = installedWorkspace();
-    expect(await runCli(installArgs(product, declarePath), { home: null, io: { stdout: () => undefined } })).toBe(0);
+    expect(await runCli(installArgs(product, declarePath), quietInstall)).toBe(0);
     const clone = join(product.workspaceRoot, "myserver-claude");
 
     const scope: string[] = [];

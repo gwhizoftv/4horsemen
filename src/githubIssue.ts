@@ -183,6 +183,53 @@ export const fetchGitHubIssue = async (input: {
   return { repository, ...parsed.data };
 };
 
+const DEFAULT_BRANCH_LOOKUP_TIMEOUT_MS = 30_000;
+
+const repositoryResponseSchema = z.object({ default_branch: z.string() }).passthrough();
+
+/**
+ * GitHub's configured default branch for the origin's repository, or null for
+ * an origin that is not a github.com repository (no API call is made). A
+ * failed or unusable answer throws: guessing `main` would wire a real but
+ * wrong shared branch while appearing to succeed.
+ */
+export const fetchGitHubDefaultBranch = async (input: {
+  origin: string;
+  cwd: string;
+  runner: (argv: readonly string[], cwd: string, options?: { timeoutMs?: number }) => Promise<CommandResult>;
+}): Promise<string | null> => {
+  const repository = githubRepositoryFromOrigin(input.origin);
+  if (repository === null) return null;
+  const failure = (detail: string): Error =>
+    new Error(
+      `Cannot read the default branch of ${repository} from GitHub: ${detail}. ` +
+        "Repair GitHub CLI access with `gh auth status` (or `coord auth login`), or pass --base-branch <branch>."
+    );
+  let result: CommandResult;
+  try {
+    result = await input.runner(["gh", "api", `repos/${repository}`], input.cwd, {
+      timeoutMs: DEFAULT_BRANCH_LOOKUP_TIMEOUT_MS
+    });
+  } catch (error) {
+    throw failure(error instanceof Error ? error.message : String(error));
+  }
+  if (result.exitCode !== 0) {
+    throw failure(result.stderr.trim().split("\n")[0] || result.stdout.trim() || `gh exited ${result.exitCode}`);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(result.stdout) as unknown;
+  } catch {
+    throw failure("gh returned invalid JSON");
+  }
+  const parsed = repositoryResponseSchema.safeParse(value);
+  const branch = parsed.success ? parsed.data.default_branch : null;
+  if (branch === null || branch === "" || branch !== branch.trim() || /[\r\n]/.test(branch)) {
+    throw failure("the response has no usable default_branch");
+  }
+  return branch;
+};
+
 /** Stable across replacement actions and coordinator restarts. */
 export const followUpKey = (issueSessionId: string, agent: string, revisionCommitSha: string): string =>
   `coord-follow-up:${sha256(JSON.stringify([issueSessionId, agent, revisionCommitSha]))}`;

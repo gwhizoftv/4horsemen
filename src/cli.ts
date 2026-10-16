@@ -10,7 +10,7 @@ import { guardShellRequest, recordContainmentProbe, shellGuardResponse } from ".
 import { buildAnalytics, renderAnalytics } from "./analytics.js";
 import { initializeAgentLifecycle, readAgentLifecycle } from "./agentLifecycle.js";
 import { doctor, renderDoctorReport } from "./doctor.js";
-import { fetchGitHubIssue, githubRepositoryFromOrigin, renderGitHubIssueSnapshot } from "./githubIssue.js";
+import { fetchGitHubDefaultBranch, fetchGitHubIssue, githubRepositoryFromOrigin, renderGitHubIssueSnapshot } from "./githubIssue.js";
 import {
   coordCliEntry,
   gitCredentialArgs,
@@ -296,12 +296,12 @@ const help = `Four Horsemen (coord) — owner-side workflow driver
 Usage:
   coord --version | -V | version
   coord onboard <repository> [--coord-runtime <path>] [--completes-root <path>] [--agents <a,b,c>] [--profile <p>] [--declare <file>]
-                [--github-account <login>]
+                [--github-account <login>] [--base-branch <branch>]
   coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord manual [--product <path> | --config <path> --coord-runtime <path>]
   coord install --product <path> --coord-runtime <external-path> --agents <a,b,c> [--profile <p>]
                 [--completes-root <path>] [--clone-root <dir>] [--declare <file>] [--github-account <login>]
-                [--write-product] [--vendor] [--bootstrap-coordination] [--dry-run]
+                [--origin <url>] [--base-branch <branch>] [--write-product] [--vendor] [--bootstrap-coordination] [--dry-run]
   coord uninstall --coord-runtime <path> --product <path> [--delete-clones] [--force]
                   [--wipe-runtime] [--delete-coordination] [--dry-run]
   coord doctor [--coord-runtime <path>] [--product <path>]
@@ -950,6 +950,35 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     io.stdout(`GitHub account ${access.login} can access ${access.repository}.\n`);
   };
 
+  /**
+   * The shared branch onboard and install pass to the installer: --base-branch,
+   * else GitHub's default for a github.com origin (a failed lookup throws before
+   * any effect), else undefined so the installer keeps its `main` default.
+   */
+  const resolveBaseBranch = async (input: {
+    productRoot: string;
+    origin: string | undefined;
+    explicit: string | undefined;
+    account: string | null | undefined;
+  }): Promise<string | undefined> => {
+    if (input.explicit !== undefined) {
+      io.stdout(`Shared branch: ${input.explicit} (explicit --base-branch).\n`);
+      return input.explicit;
+    }
+    // A missing origin is the installer's error to report, with its remedy.
+    const remote = input.origin ?? localConfigGet(input.productRoot, "remote.origin.url");
+    if (remote === null || remote === "") return undefined;
+    const branch = await fetchGitHubDefaultBranch({
+      origin: remote, cwd: io.cwd, runner: withGitHubAccount(runner, input.account)
+    });
+    if (branch === null) {
+      io.stdout("Shared branch: main (origin is not a GitHub repository; pass --base-branch to choose another).\n");
+      return undefined;
+    }
+    io.stdout(`Shared branch: ${branch} (GitHub default branch of ${githubRepositoryFromOrigin(remote) ?? remote}).\n`);
+    return branch;
+  };
+
   const sessionName = (key: number | "manual", identity: WorkspaceUiIdentity): string =>
     new TmuxController(undefined, identity.tmuxNamespace, null, null, undefined, identity.terminalGroup).sessionName(key);
 
@@ -1354,7 +1383,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "onboard") {
-      allowedFlags(parsed, ["coord-runtime", "completes-root", "clone-root", "agents", "profile", "declare", "github-account"]);
+      allowedFlags(parsed, ["coord-runtime", "completes-root", "clone-root", "agents", "profile", "declare", "github-account", "base-branch"]);
       if (parsed.positionals.length !== 1) throw new Error("onboard requires exactly one repository path.");
       const agents = (parsed.flags.get("agents") ?? "claude,codex,cursor,antigravity")
         .split(",")
@@ -1368,8 +1397,13 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         parsed.flags.has("coord-runtime") ? resolve(io.cwd, requireFlag(parsed, "coord-runtime")) : undefined);
       const githubAccount = parsed.flags.get("github-account") ?? saved.account ?? await chooseOnboardAccount();
       if (githubAccount !== undefined) await verifyInstallAccount(githubAccount, productRoot, undefined);
+      const baseBranch = await resolveBaseBranch({
+        productRoot, origin: undefined, account: githubAccount,
+        explicit: parsed.flags.has("base-branch") ? requireFlag(parsed, "base-branch") : undefined
+      });
       const result = onboard({
         ...(githubAccount === undefined ? {} : { githubAccount }),
+        ...(baseBranch === undefined ? {} : { baseBranch }),
         coordRoot: saved.coordRoot,
         installRoot: coordinatorSourceRoot,
         productRoot,
@@ -1422,6 +1456,11 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (effectiveAccount !== null && !flagIsSet(parsed, "dry-run")) {
         await verifyInstallAccount(effectiveAccount, installProduct, parsed.flags.get("origin"));
       }
+      // Read-only, so a dry run discovers too; only an explicit branch skips GitHub.
+      const installBranch = await resolveBaseBranch({
+        productRoot: installProduct, origin: parsed.flags.get("origin"), account: effectiveAccount,
+        explicit: parsed.flags.has("base-branch") ? requireFlag(parsed, "base-branch") : undefined
+      });
       install({
         installRoot: coordinatorSourceRoot,
         productRoot: installProduct,
@@ -1435,7 +1474,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         ...(parsed.flags.has("clone-root") ? { cloneRoot: resolve(io.cwd, requireFlag(parsed, "clone-root")) } : {}),
         ...(parsed.flags.has("declare") ? { declarePath: resolve(io.cwd, requireFlag(parsed, "declare")) } : {}),
         ...(parsed.flags.has("origin") ? { origin: requireFlag(parsed, "origin") } : {}),
-        ...(parsed.flags.has("base-branch") ? { baseBranch: requireFlag(parsed, "base-branch") } : {}),
+        ...(installBranch === undefined ? {} : { baseBranch: installBranch }),
         writeProduct: flagIsSet(parsed, "write-product"),
         vendor: flagIsSet(parsed, "vendor"),
         bootstrap: flagIsSet(parsed, "bootstrap-coordination"),

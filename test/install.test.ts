@@ -645,6 +645,33 @@ describe("coord install — preflight before effects", () => {
     expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(false);
   });
 
+  it("accepts a shared branch held only as an origin tracking ref and refuses invalid or absent ones", () => {
+    const fixture = product();
+    const owner = fixture.productRoot;
+    const clone = join(fixture.workspaceRoot, "myserver-claude");
+    const configPath = join(fixture.coordRoot, "config.json");
+    for (const [baseBranch, refusal] of [
+      ["bad..name", /'bad\.\.name' is not a valid shared branch name/],
+      ["release/beta", /neither a 'release\/beta' branch nor an origin\/release\/beta tracking ref\.\n {2}Fix: git -C .* fetch origin release\/beta/]
+    ] as const) {
+      expect(() => installOnce(fixture, { baseBranch })).toThrow(refusal);
+      expect(existsSync(clone)).toBe(false);
+      expect(existsSync(configPath)).toBe(false);
+    }
+
+    git(owner, "checkout", "-qb", "release/alpha");
+    git(owner, "commit", "-q", "--allow-empty", "-m", "alpha");
+    const alpha = git(owner, "rev-parse", "HEAD");
+    git(owner, "update-ref", "refs/remotes/origin/release/alpha", alpha);
+    git(owner, "checkout", "-q", "main");
+    git(owner, "branch", "-qD", "release/alpha");
+    installOnce(fixture, { baseBranch: "release/alpha" });
+    expect(readConfig(configPath).baseBranch).toBe("release/alpha");
+    expect(git(clone, "config", "--local", "consensus.sharedBranch")).toBe("release/alpha");
+    expect(git(clone, "rev-parse", "HEAD")).toBe(alpha);
+    expect(git(owner, "branch", "--list", "release/alpha")).toBe("");
+  });
+
   it("refuses an undeclarable product without leaving a wired clone behind", () => {
     const fixture = product("plain");
     expect(() =>

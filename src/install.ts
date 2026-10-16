@@ -369,8 +369,21 @@ export const install = (options: InstallOptions): InstallResult => {
     requireHttpsGitHubOrigin(githubAccount, origin);
   }
   const baseBranch = options.baseBranch ?? "main";
-  if (git(productRoot, "rev-parse", "--verify", `refs/heads/${baseBranch}`).exitCode !== 0) {
-    throw new Error(`The product ${productRoot} has no '${baseBranch}' branch.`);
+  // check-ref-format expands shorthands such as @{-1}; only a literal name is a shared branch.
+  const validated = git(productRoot, "check-ref-format", "--branch", baseBranch);
+  if (validated.exitCode !== 0 || validated.stdout.trim() !== baseBranch) {
+    throw new Error(`'${baseBranch}' is not a valid shared branch name.`);
+  }
+  // An owner checked out on a feature branch may hold the shared branch only as
+  // its origin tracking ref; agent clones are seeded from that tip anyway.
+  const hasBase = ["refs/heads", "refs/remotes/origin"].some(
+    (namespace) => git(productRoot, "rev-parse", "--verify", "--quiet", `${namespace}/${baseBranch}^{commit}`).exitCode === 0
+  );
+  if (!hasBase) {
+    throw new Error(
+      `The product ${productRoot} has neither a '${baseBranch}' branch nor an origin/${baseBranch} tracking ref.\n` +
+        `  Fix: git -C ${productRoot} fetch origin ${baseBranch}, or pass --base-branch <branch>.`
+    );
   }
 
   const cliEntry = join(installRoot, "dist", "main.js");
@@ -859,6 +872,8 @@ export type OnboardOptions = {
   log: Logger;
   home?: string | null;
   githubAccount?: string;
+  /** Shared branch; the CLI supplies GitHub's default. Omitted keeps install's `main`. */
+  baseBranch?: string;
 };
 
 export type OnboardResult = { install: InstallResult; doctor: DoctorReport };
@@ -912,7 +927,8 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     dryRun: false,
     log: options.log,
     ...(options.home === undefined ? {} : { home: options.home }),
-    ...(options.githubAccount === undefined ? {} : { githubAccount: options.githubAccount })
+    ...(options.githubAccount === undefined ? {} : { githubAccount: options.githubAccount }),
+    ...(options.baseBranch === undefined ? {} : { baseBranch: options.baseBranch })
   });
   const report = doctor({ coordRoot, productRoot, ...(options.home === undefined ? {} : { home: options.home }) });
   if (report.exitCode === 0) {

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   assessFollowUpIssue,
   followUpKey,
+  fetchGitHubDefaultBranch,
   fetchGitHubIssue,
   formatFinalizationPullRequest,
   githubRepositoryFromOrigin,
@@ -155,6 +156,50 @@ describe("GitHub issue snapshots", () => {
         draft: false
       }).title
     ).toBe("Issue 112: coordinated implementation");
+  });
+});
+
+
+describe("GitHub default branch", () => {
+  it.each([
+    "https://github.com/acme/app.git",
+    "https://owner@github.com/acme/app",
+    "git@github.com:acme/app.git"
+  ])("reads the default branch of %s from its repository endpoint", async (origin) => {
+    const calls: Array<{ argv: string[]; cwd: string; timeoutMs: number | undefined }> = [];
+    const branch = await fetchGitHubDefaultBranch({
+      origin,
+      cwd: "/unrelated/repository",
+      runner: async (argv, cwd, options) => {
+        calls.push({ argv: [...argv], cwd, timeoutMs: options?.timeoutMs });
+        return { exitCode: 0, stdout: JSON.stringify({ full_name: "acme/app", default_branch: "release/alpha" }), stderr: "" };
+      }
+    });
+    expect(branch).toBe("release/alpha");
+    expect(calls).toEqual([{ argv: ["gh", "api", "repos/acme/app"], cwd: "/unrelated/repository", timeoutMs: 30_000 }]);
+  });
+
+  it("makes no API call for an origin that is not a GitHub repository", async () => {
+    const branch = await fetchGitHubDefaultBranch({
+      origin: "/tmp/app.git",
+      cwd: "/tmp",
+      runner: async () => { throw new Error("must not call gh"); }
+    });
+    expect(branch).toBeNull();
+  });
+
+  it.each([
+    ["an unavailable gh", async () => { throw new Error("spawn gh ENOENT"); }, /spawn gh ENOENT/],
+    ["a failed API call", async () => ({ exitCode: 1, stdout: "", stderr: "HTTP 404: Not Found\nmore" }), /HTTP 404: Not Found\./],
+    ["malformed JSON", async () => ({ exitCode: 0, stdout: "{", stderr: "" }), /invalid JSON/],
+    ["a missing branch", async () => ({ exitCode: 0, stdout: "{}", stderr: "" }), /no usable default_branch/],
+    ["a null branch", async () => ({ exitCode: 0, stdout: '{"default_branch":null}', stderr: "" }), /no usable default_branch/],
+    ["a blank branch", async () => ({ exitCode: 0, stdout: '{"default_branch":" "}', stderr: "" }), /no usable default_branch/],
+    ["a multiline branch", async () => ({ exitCode: 0, stdout: '{"default_branch":"a\\nb"}', stderr: "" }), /no usable default_branch/]
+  ])("rejects %s with recovery guidance", async (_case, runner, detail) => {
+    const lookup = fetchGitHubDefaultBranch({ origin: "https://github.com/acme/app.git", cwd: "/tmp", runner });
+    await expect(lookup).rejects.toThrow(detail);
+    await expect(lookup).rejects.toThrow(/default branch of acme\/app.*gh auth status.*--base-branch <branch>/);
   });
 });
 
