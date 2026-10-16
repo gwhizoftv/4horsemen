@@ -1,0 +1,46 @@
+{
+  "actionId": "e6a7193c-e99c-448a-9f0c-cc3c3726bbd6",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "df3458bb8e81196e4e48858fc8d9dfcea591afbf02cb3085379dffec26a75530",
+  "issue": 231,
+  "issueSessionId": "issue-231:884df5fe1200f1cfbd3cecae887488d8c376fdf9",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "70d11af63f38cb21dfd791fc3a0ca92f55eda87a",
+      "path": ".plans/issue-231/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "26a6740a64f13199c35922922a8062af82f77976",
+      "path": ".plans/issue-231/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "3f3c127cc93244ef39a390b73c06ba7e69147739",
+      "path": ".plans/issue-231/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex combines bounded account-aware CLI discovery, explicit failure and override behavior, remote-tracking branch support, and a complete file map for existing fixture updates while reusing the current configuration writers; its documentation and routing assertions address newly introduced behavior and can remain concise.",
+  "responseSha256": "108e0ddb44d29519d256dbc6b83a88e876a54be45800eea1771ee7d0d559261b",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "97f648c2eca39615fd16a081e2d91969c95596c4",
+      "path": ".plans/issue-231/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "09523d41cafe4299d3ceaeeffd7442b6f731c784",
+      "path": ".plans/issue-231/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "ea1af63e851d1a0d22b8748a46cf68f7956a3ef0",
+      "path": ".plans/issue-231/review.md"
+    }
+  ]
+}
