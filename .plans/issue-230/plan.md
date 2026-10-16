@@ -142,7 +142,7 @@ Reused unchanged:
 - `validateAgentIds` (`src/install.ts:204`): accepts `muse` once
   `launcher_command muse` succeeds. No TypeScript allowlist edit.
 - `agentIdSchema`, `agentConfigSchema`, `deliverySchema`
-  (`src/protocol.ts`, `src/state.ts:237`): `muse` and `delivery: "pull"` are
+  (`src/protocol.ts`, `src/state.ts:235`): `muse` and `delivery: "pull"` are
   already valid.
 - `agentLabel` (`src/setupWorkspace.ts:123`): the capitalising fallback
   already yields `Muse`, so `KNOWN_AGENT_LABELS` is not edited.
@@ -155,7 +155,7 @@ Reused unchanged:
   return early or report `unsupported` for IDs outside their allowlists. Run-local
   `--trust-workspace` replaces a persisted trust writer (issue-210 C row
   declined).
-- `resolveNudgeKeys` (`src/tmux.ts:325`): unchanged. It picks up the new
+- `resolveNudgeKeys` (`src/tmux.ts:327`): unchanged. It picks up the new
   defaults and the `vimInsertPrelude` exclusion.
 - `liftCloneAgentsProtocol` / the `AGENTS.md` overlay: Muse reads `AGENTS.md`
   natively after trust, so no bridge file like `CLAUDE.md` is needed.
