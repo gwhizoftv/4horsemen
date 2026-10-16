@@ -369,8 +369,16 @@ export const install = (options: InstallOptions): InstallResult => {
     requireHttpsGitHubOrigin(githubAccount, origin);
   }
   const baseBranch = options.baseBranch ?? "main";
-  if (git(productRoot, "rev-parse", "--verify", `refs/heads/${baseBranch}`).exitCode !== 0) {
-    throw new Error(`The product ${productRoot} has no '${baseBranch}' branch.`);
+  const validBranch = git(productRoot, "check-ref-format", "--branch", baseBranch);
+  if (validBranch.exitCode !== 0 || validBranch.stdout.trim() !== baseBranch) {
+    throw new Error(`Invalid shared branch '${baseBranch}'; pass a literal branch name with --base-branch.`);
+  }
+  if (git(productRoot, "rev-parse", "--verify", `refs/heads/${baseBranch}^{commit}`).exitCode !== 0 &&
+      git(productRoot, "rev-parse", "--verify", `refs/remotes/origin/${baseBranch}^{commit}`).exitCode !== 0) {
+    throw new Error(
+      `The product ${productRoot} has neither a local '${baseBranch}' branch nor an origin/${baseBranch} tracking commit. ` +
+        `Fetch origin's ${baseBranch} branch into refs/remotes/origin/${baseBranch}, or pass --base-branch <branch>.`
+    );
   }
 
   const cliEntry = join(installRoot, "dist", "main.js");
@@ -859,6 +867,7 @@ export type OnboardOptions = {
   log: Logger;
   home?: string | null;
   githubAccount?: string;
+  baseBranch?: string;
 };
 
 export type OnboardResult = { install: InstallResult; doctor: DoctorReport };
@@ -900,6 +909,7 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
   const installed = install({
     installRoot: options.installRoot,
     productRoot,
+    ...(options.baseBranch === undefined ? {} : { baseBranch: options.baseBranch }),
     coordRoot,
     ...(options.completesRoot === undefined ? {} : { completesRoot: resolve(options.completesRoot) }),
     cloneRoot: resolve(options.cloneRoot ?? parent),

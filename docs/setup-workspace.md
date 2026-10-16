@@ -92,6 +92,25 @@ Its completion mailbox then defaults to `/path/to/completes/app-runtime/`.
 Re-running `coord onboard` without `--coord-runtime` reuses the runtime the
 repository is already registered to, so a custom runtime keeps its issue state.
 
+For GitHub origins, `onboard` and `install` read the repository's current default
+branch through `gh api`. That branch becomes runtime `config.json`'s
+`baseBranch` and each agent clone's local Git setting `consensus.sharedBranch`.
+Discovery uses the selected workspace GitHub account, or ambient gh credentials
+when no account is selected. Non-GitHub origins retain the `main` default.
+
+Pass `--base-branch release/alpha` to either command to choose a branch explicitly
+and skip discovery. Repeat the override on later setup runs if you want a branch
+other than GitHub's current default. Without it, re-onboarding refreshes the
+default from GitHub; a failed lookup stops setup with recovery guidance rather
+than writing a guessed branch. Existing issue snapshots keep their original base.
+`install --dry-run` also performs the read-only lookup unless an override is given,
+but does not write clones or runtime configuration.
+
+The branch must exist locally or as an `origin/<branch>` tracking commit. If it
+is missing, fetch it before retrying, for example
+`git fetch origin refs/heads/release/alpha:refs/remotes/origin/release/alpha`.
+Setup leaves the owner's checkout and agents' working branches in place.
+
 Both `onboard` and `install` accept `--declare /path/to/policy.json` for
 verification, caching, documentation and other policy overrides. Keep that
 declaration and pass it again when reinstalling: setup regenerates `config.json`
