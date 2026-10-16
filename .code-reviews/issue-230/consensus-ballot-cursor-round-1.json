@@ -1,0 +1,14 @@
+{
+  "actionId": "4def8c19-1dd4-46d0-8309-76c14df452a5",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "2cb916c160619c43aabb1e01979e21bcecf858f1268c91217272af6714c26190",
+  "issue": 230,
+  "issueSessionId": "issue-230:884df5fe1200f1cfbd3cecae887488d8c376fdf9",
+  "protocolVersion": 2,
+  "rationale": "Codex revision bf0763a6 correctly lands opt-in Muse pull delivery with the planned unsandboxed launcher, skipped updater, vim-prelude fix, ignores, and the strongest PATH-isolated launcher tests.",
+  "responseSha256": "d907a14fcd67d2534baf9aefb63481bc6b7f90b2fbd58cc44cf01a6066a32c36",
+  "revisionCommitSha": "bf0763a60d36f1d322d1f8bb36ee819742b7784f",
+  "round": 1
+}

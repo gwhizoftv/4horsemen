@@ -1,0 +1,14 @@
+{
+  "actionId": "0262236a-0865-4480-aea1-893ad0274f6c",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "2cb916c160619c43aabb1e01979e21bcecf858f1268c91217272af6714c26190",
+  "issue": 230,
+  "issueSessionId": "issue-230:884df5fe1200f1cfbd3cecae887488d8c376fdf9",
+  "protocolVersion": 2,
+  "rationale": "The unchanged product pin implements the approved opt-in Muse scope, has no outstanding findings from the bound reviews, retains successful product-hook evidence, and explicitly documents the unverified live behavior.",
+  "responseSha256": "4c3b9806342d434dc8981176044919b3e2f7d3fe3f85987283388838c2110418",
+  "revisionCommitSha": "bf0763a60d36f1d322d1f8bb36ee819742b7784f",
+  "round": 1
+}

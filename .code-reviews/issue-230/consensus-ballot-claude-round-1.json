@@ -1,0 +1,14 @@
+{
+  "actionId": "3082dd13-03e0-498e-913a-2f8dd55ef969",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "2cb916c160619c43aabb1e01979e21bcecf858f1268c91217272af6714c26190",
+  "issue": 230,
+  "issueSessionId": "issue-230:884df5fe1200f1cfbd3cecae887488d8c376fdf9",
+  "protocolVersion": 2,
+  "rationale": "Codex pin bf0763a6 is the implementation I compared and found defect-free: it adds Muse as an opt-in pull-delivery agent within the approved map (unsandboxed launcher with run-local trust and pinned wrapper updates, version-only maintenance, Enter-only keys, aligned .muse/ ignores) with the strongest focused tests and candid containment docs.",
+  "responseSha256": "cdf992c2ff1122b4a44eb71098d426bb4a57dcbcdfe184094d23232725188aba",
+  "revisionCommitSha": "bf0763a60d36f1d322d1f8bb36ee819742b7784f",
+  "round": 1
+}
