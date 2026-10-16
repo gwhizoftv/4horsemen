@@ -1,0 +1,23 @@
+{
+  "protocolVersion": 1,
+  "issue": 231,
+  "issueSessionId": "issue-231:884df5fe1200f1cfbd3cecae887488d8c376fdf9",
+  "agent": "claude",
+  "inputSetHash": "9d76a69b7a58ff94f85239c2466a38e4fc28c31ce7c4a501e7cfd86eac53869d",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "180a769ecf633a0b176f531c0bac9e54f08f4105",
+  "scopeHash": "0f419682f5c10cce7640cba6c34bea0a1ea5064d519ef9c6597535207c684af7",
+  "approvedPaths": [
+    "consensus.sharedBranch",
+    "docs/setup-workspace.md",
+    "origin/HEAD",
+    "release/alpha",
+    "src/cli.ts",
+    "src/githubIssue.ts",
+    "src/install.ts",
+    "test/cli.test.ts",
+    "test/githubIssue.test.ts",
+    "test/install.test.ts",
+    "test/onboard.test.ts"
+  ]
+}
