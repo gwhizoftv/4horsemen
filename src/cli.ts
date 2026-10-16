@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
@@ -9,12 +10,26 @@ import { guardShellRequest, recordContainmentProbe, shellGuardResponse } from ".
 import { buildAnalytics, renderAnalytics } from "./analytics.js";
 import { initializeAgentLifecycle, readAgentLifecycle } from "./agentLifecycle.js";
 import { doctor, renderDoctorReport } from "./doctor.js";
-import { fetchGitHubIssue, renderGitHubIssueSnapshot } from "./githubIssue.js";
+import { fetchGitHubIssue, githubRepositoryFromOrigin, renderGitHubIssueSnapshot } from "./githubIssue.js";
+import {
+  coordCliEntry,
+  gitCredentialArgs,
+  gitCredentialResponse,
+  GITHUB_HOST,
+  githubLoginSchema,
+  readGitHubAccounts,
+  resolveGitHubToken,
+  verifyGitHubAccess,
+  withGitHubAccount,
+  withoutAmbientTokens,
+  type GitHubAccess
+} from "./githubAuth.js";
+import { cloneGitHubWiringProblem } from "./setupWorkspace.js";
 import { sha256 } from "./hash.js";
 import { renderHookScope, resolveHookBinding, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { inspectOutgoingChanges, inspectStagedChanges } from "./changeClassification.js";
 import { hookVerificationRecorder } from "./verificationLog.js";
-import { install, onboard, packageVersion, uninstall } from "./install.js";
+import { install, onboard, packageVersion, savedGitHubAccount, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
 import { makeAgentClonesBaseReady, makeManualClonesBaseReady, prepareAgentIssueBranches, type CloneBaseReadyResult } from "./prepareAgentBranch.js";
@@ -101,6 +116,7 @@ export type CliDependencies = {
     paths: IssueRuntimePaths;
     issue: number;
     origin: string;
+    githubAccount: string | null;
     agents: CoordinatorConfig["agents"];
     log?: (message: string) => void;
   }) => Promise<{ cleanup: () => Promise<void> }>;
@@ -115,6 +131,10 @@ export type CliDependencies = {
   sessionExists?: (sessionName: string) => Promise<boolean>;
   /** Test/embedding override for an owner yes/no question; the default answers no without a TTY. */
   confirm?: (question: string) => Promise<boolean>;
+  /** Test/embedding override for an owner menu choice; the default returns null without a TTY. */
+  choose?: (question: string, choices: readonly string[]) => Promise<string | null>;
+  /** Test/embedding override for an owner-attended command sharing this terminal (gh auth login). */
+  interactive?: (argv: readonly string[], cwd: string) => Promise<number>;
 };
 
 /** Upper bound for one lifecycle hook or status-line payload. */
@@ -224,7 +244,8 @@ const booleanFlags: Record<string, readonly string[]> = {
   uninstall: ["delete-clones", "wipe-runtime", "delete-coordination", "force", "dry-run"],
   "wipe-issue": ["force", "dry-run", "delete-evidence"],
   "reset-clones": ["force", "dry-run"],
-  detach: ["dry-run"]
+  detach: ["dry-run"],
+  auth: ["with-token"]
 };
 
 const flagIsSet = (parsed: ParsedArgs, name: string): boolean => parsed.flags.get(name) === "true";
@@ -275,10 +296,11 @@ const help = `Four Horsemen (coord) — owner-side workflow driver
 Usage:
   coord --version | -V | version
   coord onboard <repository> [--coord-runtime <path>] [--completes-root <path>] [--agents <a,b,c>] [--profile <p>] [--declare <file>]
+                [--github-account <login>]
   coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord manual [--product <path> | --config <path> --coord-runtime <path>]
   coord install --product <path> --coord-runtime <external-path> --agents <a,b,c> [--profile <p>]
-                [--completes-root <path>] [--clone-root <dir>] [--declare <file>]
+                [--completes-root <path>] [--clone-root <dir>] [--declare <file>] [--github-account <login>]
                 [--write-product] [--vendor] [--bootstrap-coordination] [--dry-run]
   coord uninstall --coord-runtime <path> --product <path> [--delete-clones] [--force]
                   [--wipe-runtime] [--delete-coordination] [--dry-run]
@@ -299,12 +321,15 @@ Usage:
   coord detach manual [--product <path> | --config <path> --coord-runtime <path>] [--dry-run]
   coord wipe-issue <issue> [--product <path> | --config <path> --coord-runtime <path>] [--force] [--dry-run] [--delete-evidence]
   coord reset-clones <issue> [--product <path> | --config <path> --coord-runtime <path>] [--force] [--dry-run]
+  coord auth status [--product <path> | --config <path> [--coord-runtime <path>]]
+  coord auth login [--with-token] [--product <path> | --config <path> [--coord-runtime <path>]]
 
 Called by the agent-clone hooks, not by operators:
   coord hook-verify --clone <path> --phase <precommit|prepush>
   coord hook-scope --clone <path>
   coord agent-event --vendor <codex|claude|cursor|antigravity> [--clone <path>] [--event <name>]
   coord git-guard --vendor <codex|claude|cursor|antigravity> --clone <path>
+  coord auth git-credential --account <login> <get|store|erase>
   coord containment-probe --resolved-git <tool-shell-command-v-result> [--tool-result hook-denied|shim-refused|executed|unknown] [--vendor-version <version>] [--clone <path>] [--issue <n>]
 
 Happy path: bootstrap once, onboard a repository once, create GitHub issue N, then run
@@ -351,6 +376,15 @@ coordinator state, action, run loop, or publication. The owner assigns work in
 chat and agents use their own <agent>/<name> scratch branches. Manual and
 automated issue sessions cannot run concurrently for the same workspace; use
 \`coord detach manual\` to close manual UI before starting or resuming an issue.
+
+A workspace may select one GitHub account (onboard asks once in a terminal, or pass
+--github-account). Coord then reads that account's token from gh's own credential
+storage on every use (gh auth token --user) and applies it to coordinator git and gh,
+the mirror, agent clones and agent terminals, without gh auth switch. When it is
+missing, expired or revoked, coord stops and says: Run: coord auth login.
+\`coord auth status\` shows the account and verifies it; \`coord auth login\` signs in
+again through gh (or replaces the token with --with-token on stdin) and restores gh's
+previously active account. Without a selection, ambient gh and git credentials apply.
 
 install remains the advanced explicit interface. Onboard and install leave the repository's
 tracked tree untouched; a fresh human clone receives no coordination hooks or metadata.
@@ -402,6 +436,7 @@ const commandDescriptions: Record<string, string> = {
   "hook-scope": "Read the clone's verification scope; invoked by hooks.",
   "agent-event": "Record a vendor hook callback supplied on stdin; this is not an owner command for marking work complete.",
   "git-guard": "Evaluate a native shell-tool hook request supplied on stdin, using the installed clone binding.",
+  auth: "Show (status) or renew (login) this workspace's GitHub account credentials; git-credential is Git's helper. Example: coord auth status.",
   "containment-probe": "Record an actual harness-tool observation, not an invented trust result; follow the agent action's probe instructions."
 };
 
@@ -479,6 +514,40 @@ const defaultConfirm = async (question: string): Promise<boolean> => {
   } finally {
     prompt.close();
   }
+};
+
+const defaultChoose = async (question: string, choices: readonly string[]): Promise<string | null> => {
+  if (process.env.VITEST !== undefined || process.stdin.isTTY !== true || process.stdout.isTTY !== true) return null;
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const menu = choices.map((choice, index) => `  ${index + 1}. ${choice}`).join("\n");
+    const answer = Number((await prompt.question(`${question}\n\n${menu}\n\nChoose 1-${choices.length}: `)).trim());
+    return Number.isInteger(answer) && answer >= 1 && answer <= choices.length ? (choices[answer - 1] as string) : null;
+  } finally {
+    prompt.close();
+  }
+};
+
+const defaultInteractive = (argv: readonly string[], cwd: string): Promise<number> =>
+  new Promise((resolvePromise, reject) => {
+    const [command, ...args] = argv;
+    if (command === undefined) { reject(new Error("Cannot run an empty argv.")); return; }
+    const child = spawn(command, args, { cwd, stdio: "inherit", env: withoutAmbientTokens() });
+    child.once("error", reject);
+    child.once("close", (code) => resolvePromise(code ?? 1));
+  });
+
+const SIGN_IN_ANOTHER_ACCOUNT = "Sign in with another account";
+
+/** The command that re-wires this workspace's clones. */
+const onboardRemedy = (configPath: string): string => {
+  try {
+    const productRoot = readConfig(configPath).coordination?.productRoot;
+    if (productRoot !== undefined) return `coord onboard ${shellQuote(productRoot)}`;
+  } catch {
+    // Fall through to the generic form; the config itself is reported elsewhere.
+  }
+  return "coord onboard <repository>";
 };
 
 const readinessSummary = (results: readonly CloneBaseReadyResult[]): string =>
@@ -662,10 +731,12 @@ const defaultStartEffects = async (input: {
   paths: IssueRuntimePaths;
   issue: number;
   origin: string;
+  githubAccount: string | null;
   agents: CoordinatorConfig["agents"];
   log?: (message: string) => void;
 }): Promise<{ cleanup: () => Promise<void> }> => {
-  const mirror = new BareMirror(input.paths.mirror, input.origin);
+  const mirror = new BareMirror(input.paths.mirror, input.origin, undefined,
+    input.githubAccount === null ? null : { account: input.githubAccount, cliEntry: coordCliEntry() });
   await mirror.initialize();
   const tmux = new TmuxController(undefined, input.paths.tmuxNamespace, undefined, undefined, undefined, input.paths.terminalGroup);
   await tmux.startSession(input.issue, input.agents, (agentId) => agentRuntimePaths(input.paths, agentId).terminalLogs);
@@ -789,6 +860,95 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       : async (sessionName: string) => (await runner(["tmux", "has-session", "-t", sessionName], io.cwd)).exitCode === 0);
 
   const confirm = dependencies.confirm ?? defaultConfirm;
+  const choose = dependencies.choose ?? defaultChoose;
+  const interactive = dependencies.interactive ?? defaultInteractive;
+
+  /**
+   * Before any GitHub effect of a workspace that selects an account: the saved
+   * credential signs in as that account, reaches the repository, and every
+   * agent clone is wired to it. Never falls back to another account.
+   */
+  const preflightGitHubAccount = async (input: {
+    account: string;
+    origin: string;
+    agents: readonly { root: string }[];
+    configPath: string;
+  }): Promise<GitHubAccess> => {
+    const access = await verifyGitHubAccess({ account: input.account, origin: input.origin, runner, cwd: io.cwd });
+    for (const agent of input.agents) {
+      const problem = cloneGitHubWiringProblem(agent.root, input.account);
+      if (problem !== null) throw new Error(`${problem}\nRun: ${onboardRemedy(input.configPath)}`);
+    }
+    return access;
+  };
+
+  /** Resume, run and attach validate the account frozen into start.json. */
+  const preflightIssueGitHub = async (paths: IssueRuntimePaths): Promise<void> => {
+    let start;
+    try {
+      start = readStartState(paths);
+    } catch {
+      return; // Legacy or unreadable state is refused by the run loop with its own message.
+    }
+    if (start.githubAccount === undefined) return;
+    // A dropped agent's clone is no longer a participant and must not block the rest.
+    const active = readCursorsState(paths).activeRoster;
+    await preflightGitHubAccount({ account: start.githubAccount, origin: start.origin,
+      agents: start.agents.filter((agent) => active.includes(agent.id)), configPath: start.configPath });
+  };
+
+  /**
+   * Owner-attended `gh auth login`. gh makes the new login active, so the
+   * previously active account is restored afterwards: other workspaces with a
+   * selection never read the active account, and unselected ones get theirs back.
+   */
+  const signInGitHub = async (expected: string | null, withToken: boolean): Promise<string> => {
+    const before = await readGitHubAccounts(runner, io.cwd);
+    if (!withToken) {
+      io.stdout(
+        `Sign in to GitHub${expected === null ? "" : ` as ${expected}`}. If gh asks to authenticate Git with your ` +
+          "GitHub credentials, answer No: coord wires Git for each workspace itself.\n"
+      );
+    }
+    const exitCode = await interactive(
+      ["gh", "auth", "login", "--hostname", GITHUB_HOST, "--git-protocol", "https", ...(withToken ? ["--with-token"] : ["--web"])],
+      io.cwd
+    );
+    const after = await readGitHubAccounts(runner, io.cwd);
+    if (before.active !== null && after.active !== null && after.active !== before.active) {
+      const restored = await runner(["gh", "auth", "switch", "--hostname", GITHUB_HOST, "--user", before.active], io.cwd,
+        { env: withoutAmbientTokens() });
+      if (restored.exitCode === 0) io.stdout(`Restored gh's active account to ${before.active}.\n`);
+      else io.stderr(`WARNING: could not restore gh's active account to ${before.active}: ${restored.stderr.trim()}\n`);
+    }
+    if (exitCode !== 0) throw new Error(`gh auth login exited ${exitCode}; the saved credentials were not changed by coord.`);
+    const signedIn = after.active;
+    if (signedIn === null) throw new Error("gh reports no signed-in GitHub account after login.");
+    if (expected !== null && signedIn.toLowerCase() !== expected.toLowerCase()) {
+      throw new Error(`Signed in as ${signedIn}, but this workspace uses ${expected}. Run coord auth login again and sign in as ${expected}.`);
+    }
+    return signedIn;
+  };
+
+  /** Onboarding asks once, only when neither --github-account nor a saved selection names one. */
+  const chooseOnboardAccount = async (): Promise<string | undefined> => {
+    const canChoose = dependencies.choose !== undefined ||
+      (process.env.VITEST === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true);
+    if (!canChoose) return undefined;
+    const accounts = await readGitHubAccounts(runner, io.cwd);
+    const choice = await choose("Which GitHub account should this workspace use?", [...accounts.logins, SIGN_IN_ANOTHER_ACCOUNT]);
+    if (choice === null) return undefined;
+    return choice === SIGN_IN_ANOTHER_ACCOUNT ? signInGitHub(null, false) : choice;
+  };
+
+  const verifyInstallAccount = async (account: string, productRoot: string, origin: string | undefined): Promise<void> => {
+    const parsedAccount = githubLoginSchema.safeParse(account);
+    if (!parsedAccount.success) throw new Error(`Invalid GitHub account '${account}'.`);
+    const remote = origin ?? localConfigGet(productRoot, "remote.origin.url");
+    if (remote === null) throw new Error(`The product ${productRoot} has no 'origin' remote.`);
+    const access = await verifyGitHubAccess({ account, origin: remote, runner, cwd: io.cwd });
+    io.stdout(`GitHub account ${access.login} can access ${access.repository}.\n`);
+  };
 
   const sessionName = (key: number | "manual", identity: WorkspaceUiIdentity): string =>
     new TmuxController(undefined, identity.tmuxNamespace, null, null, undefined, identity.terminalGroup).sessionName(key);
@@ -862,12 +1022,16 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
 
   const attachIssue = async (paths: IssueRuntimePaths): Promise<void> => {
     await assertIssueCanRun(paths);
+    await preflightIssueGitHub(paths);
     const loop = makeRunLoop(paths);
     if (loop.restoreTerminals === undefined) throw new Error("This runner does not support terminal recovery.");
     await loop.restoreTerminals();
   };
 
-  const runIssue = async (paths: IssueRuntimePaths, loop = makeRunLoop(paths)): Promise<number> => {
+  /** A loop handed over by startIssue was already validated against the account. */
+  const runIssue = async (paths: IssueRuntimePaths, started?: CliRunLoop): Promise<number> => {
+    if (started === undefined) await preflightIssueGitHub(paths);
+    const loop = started ?? makeRunLoop(paths);
     const controller = new AbortController();
     let stopCode = 0;
     let session: InteractiveSession | null = null;
@@ -989,10 +1153,15 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         terminalGroup: paths.terminalGroup, log: io.stdout });
     }
 
-    const snapshot = await fetchGitHubIssue({ origin: config.origin, issue, cwd: io.cwd, runner });
+    const githubAccount = config.github?.account ?? null;
+    if (githubAccount !== null) {
+      await preflightGitHubAccount({ account: githubAccount, origin: config.origin, agents: roster, configPath });
+    }
+    const githubRunner = withGitHubAccount(runner, githubAccount);
+    const snapshot = await fetchGitHubIssue({ origin: config.origin, issue, cwd: io.cwd, runner: githubRunner });
     const snapshotBytes = renderGitHubIssueSnapshot(snapshot);
     const digest = automationDigestMaterial(configPath, config, issue, snapshotBytes);
-    const baselineResult = await runner(
+    const baselineResult = await githubRunner(
       ["git", "ls-remote", "--exit-code", config.origin, `refs/heads/${config.baseBranch}`],
       io.cwd
     );
@@ -1039,6 +1208,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         automationDigestSources: digest.sources,
         trustedSourceCommit: trustedSourceCommit.data,
         origin: config.origin,
+        ...(githubAccount === null ? {} : { githubAccount }),
         coordRoot,
         configPath,
         agents: roster,
@@ -1058,7 +1228,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       initializeAgentLifecycle(paths, roster.map((agent) => agent.id));
       // Start the CLIs only after their owner runtime exists. SessionStart
       // hooks can then establish a durable handshake instead of racing start.
-      effects = await startEffects({ paths, issue, origin: config.origin, agents: roster, log: io.stdout });
+      effects = await startEffects({ paths, issue, origin: config.origin, githubAccount, agents: roster, log: io.stdout });
     } catch (error) {
       rmSync(paths.issueRoot, { recursive: true, force: true });
       // The mailbox is a separate tree, so the rollback has to name it too.
@@ -1145,8 +1315,46 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       return 0;
     }
 
+    if (command === "auth") {
+      const subcommand = parsed.positionals[0];
+      if (subcommand === "git-credential") {
+        // Git's credential helper protocol; invoked by Git, never by owners.
+        allowedFlags(parsed, ["account"]);
+        const account = githubLoginSchema.parse(requireFlag(parsed, "account"));
+        const response = await gitCredentialResponse({
+          operation: parsed.positionals[1] ?? "", request: io.stdin(), account, runner, cwd: io.cwd
+        });
+        io.stdout(response.stdout);
+        io.stderr(response.stderr);
+        return 0;
+      }
+      if (subcommand !== "status" && subcommand !== "login") throw new Error("auth requires status, login, or git-credential.");
+      if (parsed.positionals.length !== 1) throw new Error(`auth ${subcommand} takes no further positional arguments.`);
+      allowedFlags(parsed, ["product", "config", "coord-runtime", ...(subcommand === "login" ? ["with-token"] : [])]);
+      const resolution = resolveStart(parsed, io);
+      const account = resolution.config.github?.account;
+      io.stdout(`Workspace: ${resolution.configPath}\n`);
+      if (account === undefined) {
+        const message = "GitHub account: none selected; gh and git use ambient credentials.\n" +
+          "Select one with: coord onboard <repository> --github-account <login>\n";
+        if (subcommand === "status") { io.stdout(message); return 0; }
+        throw new Error(message.trim());
+      }
+      io.stdout(`GitHub account: ${account}\nRepository: ${githubRepositoryFromOrigin(resolution.config.origin) ?? resolution.config.origin}\n`);
+      try {
+        if (subcommand === "login") await signInGitHub(account, flagIsSet(parsed, "with-token"));
+        const access = await preflightGitHubAccount({ account, origin: resolution.config.origin,
+          agents: resolvedAgents(resolution), configPath: resolution.configPath });
+        io.stdout(`Status: authenticated as ${access.login}; repository access verified; agent clones wired.\n`);
+        return 0;
+      } catch (error) {
+        io.stderr(`${error instanceof Error ? error.message : String(error)}\n`);
+        return 1;
+      }
+    }
+
     if (command === "onboard") {
-      allowedFlags(parsed, ["coord-runtime", "completes-root", "clone-root", "agents", "profile", "declare"]);
+      allowedFlags(parsed, ["coord-runtime", "completes-root", "clone-root", "agents", "profile", "declare", "github-account"]);
       if (parsed.positionals.length !== 1) throw new Error("onboard requires exactly one repository path.");
       const agents = (parsed.flags.get("agents") ?? "claude,codex,cursor,antigravity")
         .split(",")
@@ -1155,13 +1363,19 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (agents.length === 0) throw new Error("--agents requires at least one agent id.");
       const profile = workflowProfile(parsed.flags.get("profile") ?? "consensus");
       const productRoot = resolve(io.cwd, parsed.positionals[0] as string);
+      // Explicit, then saved (install carries it forward), then asked: verified before any effect.
+      const saved = savedGitHubAccount(productRoot,
+        parsed.flags.has("coord-runtime") ? resolve(io.cwd, requireFlag(parsed, "coord-runtime")) : undefined);
+      const githubAccount = parsed.flags.get("github-account") ?? saved.account ?? await chooseOnboardAccount();
+      if (githubAccount !== undefined) await verifyInstallAccount(githubAccount, productRoot, undefined);
       const result = onboard({
+        ...(githubAccount === undefined ? {} : { githubAccount }),
+        coordRoot: saved.coordRoot,
         installRoot: coordinatorSourceRoot,
         productRoot,
         agents,
         profile,
         ...(parsed.flags.has("declare") ? { declarePath: resolve(io.cwd, requireFlag(parsed, "declare")) } : {}),
-        ...(parsed.flags.has("coord-runtime") ? { coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-runtime")) } : {}),
         ...(parsed.flags.has("completes-root")
           ? { completesRoot: resolve(io.cwd, requireFlag(parsed, "completes-root")) }
           : {}),
@@ -1170,6 +1384,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         log: io.stdout
       });
       (result.doctor.exitCode === 0 ? io.stdout : io.stderr)(renderDoctorReport(result.doctor));
+      if (githubAccount === undefined) {
+        io.stdout("No GitHub account selected; gh and git use ambient credentials. Select one with --github-account <login>.\n");
+      }
       return result.doctor.exitCode;
     }
 
@@ -1184,6 +1401,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         "declare",
         "origin",
         "base-branch",
+        "github-account",
         ...(booleanFlags.install ?? [])
       ]);
       if (parsed.positionals.length !== 0) throw new Error("install takes no positional arguments.");
@@ -1196,10 +1414,19 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (!(profile === "solo" || profile === "reviewed" || profile === "consensus")) {
         throw new Error("--profile must be solo, reviewed, or consensus.");
       }
+      const installProduct = resolve(io.cwd, requireFlag(parsed, "product"));
+      const installRuntime = resolve(io.cwd, requireFlag(parsed, "coord-runtime"));
+      const installAccount = parsed.flags.get("github-account");
+      // A repair keeps the saved account, so it is verified before any effect too.
+      const effectiveAccount = installAccount ?? savedGitHubAccount(installProduct, installRuntime).account;
+      if (effectiveAccount !== null && !flagIsSet(parsed, "dry-run")) {
+        await verifyInstallAccount(effectiveAccount, installProduct, parsed.flags.get("origin"));
+      }
       install({
         installRoot: coordinatorSourceRoot,
-        productRoot: resolve(io.cwd, requireFlag(parsed, "product")),
-        coordRoot: resolve(io.cwd, requireFlag(parsed, "coord-runtime")),
+        productRoot: installProduct,
+        ...(installAccount === undefined ? {} : { githubAccount: installAccount }),
+        coordRoot: installRuntime,
         agents,
         profile,
         ...(parsed.flags.has("completes-root")
@@ -1429,7 +1656,12 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         force: flagIsSet(parsed, "force"),
         dryRun: flagIsSet(parsed, "dry-run"),
         deleteEvidence: flagIsSet(parsed, "delete-evidence"),
-        log: io.stdout
+        log: io.stdout,
+        ...(resolution.config.github === undefined ? {} : { github: {
+          gitArgs: gitCredentialArgs(resolution.config.github.account, coordCliEntry()),
+          ghEnv: { ...withoutAmbientTokens(),
+            GH_TOKEN: await resolveGitHubToken(resolution.config.github.account, runner, io.cwd), GH_PROMPT_DISABLED: "1" }
+        } })
       });
       if (!flagIsSet(parsed, "delete-evidence")) {
         io.stdout(

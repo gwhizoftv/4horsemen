@@ -416,6 +416,41 @@ if [[ -n "\$coord_workspace_config" && -f "\$coord_workspace_config" && "\${COOR
   done
 fi
 
+# The workspace's selected GitHub account (#227): gh in this harness uses its
+# token, read now from gh's credential storage by account name (never the
+# active account, never an inherited token). Nothing is written to this file;
+# every launch and restart re-reads it. Git uses the clone's credential helper.
+# A revoked token or another login refuses the launch; an unreachable GitHub
+# only warns, so an outage cannot leave the agent unable to restart.
+coord_github_account="\$(git config --local --get coord.githubAccount 2>/dev/null || true)"
+if [[ -n "\$coord_github_account" ]]; then
+  if ! GH_TOKEN="\$(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN \\
+      gh auth token --hostname github.com --user "\$coord_github_account" 2>/dev/null)" || [[ -z "\$GH_TOKEN" ]]; then
+    echo "GitHub authentication for \$coord_github_account is unavailable." >&2
+    echo "Run: coord auth login" >&2
+    exit 1
+  fi
+  export GH_TOKEN GH_PROMPT_DISABLED=1
+  unset GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+  coord_github_login="\$(gh api user --jq .login 2>&1)" && coord_github_status=0 || coord_github_status=\$?
+  coord_github_expired='HTTP 401|Bad credentials'
+  if [[ \$coord_github_status -eq 0 ]]; then
+    if [[ "\$(printf '%s' "\$coord_github_login" | tr '[:upper:]' '[:lower:]')" != \\
+          "\$(printf '%s' "\$coord_github_account" | tr '[:upper:]' '[:lower:]')" ]]; then
+      echo "The saved GitHub credential for \$coord_github_account authenticates as \$coord_github_login." >&2
+      echo "Run: coord auth login" >&2
+      exit 1
+    fi
+  elif [[ "\$coord_github_login" =~ \$coord_github_expired ]]; then
+    echo "GitHub authentication for \$coord_github_account has expired or been revoked." >&2
+    echo "Run: coord auth login" >&2
+    exit 1
+  else
+    echo "WARNING: could not verify GitHub account \$coord_github_account (\$(printf '%s\\n' "\$coord_github_login" | head -n 1)); continuing with its saved credential." >&2
+  fi
+  echo "GitHub account: \$coord_github_account"
+fi
+
 echo "=== $label agent | branches issue-<n>/$agent or $agent/<name> | shared: $shared ==="
 echo "Automated issue mode: fetch your coordinator action with:"
 echo "  coord next --issue <n>"

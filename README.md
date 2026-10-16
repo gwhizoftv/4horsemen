@@ -103,6 +103,23 @@ Install all four harnesses, or use this alternative for a one-agent start:
 coord onboard /path/to/app --agents codex --profile solo
 ```
 
+To run workspaces under different GitHub accounts at the same time, select one
+account per workspace. Onboarding asks once in a terminal, or pass it:
+
+```sh
+gh auth login                      # once per account; coord reads gh's saved credentials
+coord onboard /path/to/app --github-account my-login
+coord auth status                  # account, repository access, clone wiring
+coord auth login                   # sign in again when a token expires or is revoked
+```
+
+Coord stores only the account name. Each run reads that account's token from
+gh (`gh auth token --user`) for coordinator git and gh, the agent clones and the
+agent terminals, without `gh auth switch`. The origin must be
+`https://[login@]github.com/<owner>/<repository>`. When the credential is
+unavailable, coord stops with `Run: coord auth login` instead of using another
+account. Without a selection, ambient gh and git credentials apply as before.
+
 ### 3. Run a GitHub issue
 
 ```sh

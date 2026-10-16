@@ -101,8 +101,12 @@ export const formatFinalizationPullRequest = (input: {
   };
 };
 
+/**
+ * A username in an https origin (`https://login@github.com/...`) is accepted
+ * but never identifies the repository or the account; `github.account` does.
+ */
 export const githubRepositoryFromOrigin = (origin: string): string | null => {
-  const https = /^https:\/\/github\.com\/([^/]+\/[^/]+?)\/?$/.exec(origin);
+  const https = /^https:\/\/(?:[^/@:]+@)?github\.com\/([^/]+\/[^/]+?)\/?$/.exec(origin);
   if (https?.[1] !== undefined) return https[1].replace(/\.git$/, "");
   const ssh = /^git@github\.com:([^/]+\/[^/]+)$/.exec(origin);
   return ssh?.[1]?.replace(/\.git$/, "") ?? null;

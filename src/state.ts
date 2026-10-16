@@ -27,6 +27,7 @@ import {
   issueSessionIdSchema,
   repositoryPathSchema
 } from "./protocol.js";
+import { githubLoginSchema } from "./githubAuth.js";
 import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.js";
 import { resourceEvidenceSchema } from "./resourceEvidence.js";
 import {
@@ -308,6 +309,12 @@ export const coordinatorConfigSchema = z
      * put two products' receipts in one tree.
      */
     completesRoot: z.string().min(1).optional(),
+    /**
+     * The GitHub account this workspace's git and gh operations use (#227).
+     * Only the name: its token stays in gh's credential storage. Absent means
+     * ambient gh/git credentials, exactly as before the selection existed.
+     */
+    github: z.object({ account: githubLoginSchema }).strict().optional(),
     coordination: installStampSchema.optional()
   })
   .strict()
@@ -435,6 +442,8 @@ export const startStateSchema = z
       .min(1),
     trustedSourceCommit: gitShaSchema,
     origin: z.string().min(1),
+    /** Frozen like origin: resume, attach and the run loop keep the account the issue started with. */
+    githubAccount: githubLoginSchema.optional(),
     coordRoot: z.string().min(1),
     /**
      * Where this issue's receipts live, frozen for the issue session.

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname } from "node:path";
 import { gitShaSchema, repositoryPathSchema } from "./protocol.js";
 import { validatePhasePin, type PinValidationResult } from "./pinValidation.js";
+import { explainGitHubAuthFailure, gitCredentialArgs } from "./githubAuth.js";
 
 export type CommandResult = { exitCode: number; stdout: Buffer; stderr: string };
 export type GitRunner = (
@@ -85,14 +86,24 @@ const branchPattern = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 export type FetchResult = { ok: true; ref: string; tip: string } | { ok: false; transient: boolean; error: string };
 
 export class BareMirror {
+  /**
+   * `auth` binds every mirror Git call to a workspace's GitHub account (#227)
+   * through one-shot `-c` helper settings, so an existing mirror needs no
+   * re-initialisation and a resumed issue keeps the account it started with.
+   */
   constructor(
     readonly path: string,
     readonly origin: string,
-    private readonly runner: GitRunner = runGitCommand
+    private readonly runner: GitRunner = runGitCommand,
+    private readonly auth: { account: string; cliEntry: string } | null = null
   ) {}
 
   private async git(args: readonly string[], allowFailure = false): Promise<CommandResult> {
-    const result = await this.runner(["--git-dir", this.path, ...args]);
+    const authArgs = this.auth === null ? [] : gitCredentialArgs(this.auth.account, this.auth.cliEntry);
+    const raw = await this.runner([...authArgs, "--git-dir", this.path, ...args]);
+    const result = this.auth === null || raw.exitCode === 0
+      ? raw
+      : { ...raw, stderr: explainGitHubAuthFailure(this.auth.account, raw.stderr) };
     if (!allowFailure && result.exitCode !== 0) {
       throw new GitCommandError(`git ${args[0] ?? "command"} failed: ${result.stderr}`, result, isTransientGitFailure(result.stderr));
     }

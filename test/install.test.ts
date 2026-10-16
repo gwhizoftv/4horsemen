@@ -6,6 +6,7 @@ import { findAgentLanguageViolations } from "../src/agentLanguage.js";
 import { syncAgentTrust } from "../src/agentTrust.js";
 import { assertInstallDeletionAllowed, install, uninstall } from "../src/install.js";
 import { readConfig } from "../src/state.js";
+import { cloneGitHubWiringProblem } from "../src/setupWorkspace.js";
 import { nestedConfigPath } from "../src/workspace.js";
 import {
   declaredChecks,
@@ -328,6 +329,85 @@ describe("coord install — two-mode footprint", () => {
     expect(existsSync(join(clone, "local-only.txt"))).toBe(false);
     expect(git(clone, "rev-parse", "HEAD")).toBe(git(fixture.originPath, "rev-parse", "refs/heads/main"));
     expect(git(clone, "remote", "get-url", "origin")).toBe(fixture.originPath);
+  });
+
+  it("binds clones to a selected GitHub account without storing a token, keeps it on reinstall, and removes it on uninstall", () => {
+    const fixture = product();
+    const origin = "https://acct@github.com/example/myserver.git";
+    const helper = "credential.https://github.com.helper";
+    const coordHelper = `!/usr/bin/env node '${join(repoRoot, "dist", "main.js")}' auth git-credential --account acct`;
+    const helpers = () => tryGit(clone, "config", "--local", "--get-all", helper).stdout.split("\n").slice(0, -1);
+    const result = installOnce(fixture, { origin, githubAccount: "acct" });
+    const clone = result.clones[0] as string;
+    expect(readConfig(result.configPath).github).toEqual({ account: "acct" });
+    expect(git(clone, "config", "--local", "--get", "coord.githubAccount")).toBe("acct");
+    expect(helpers()).toEqual(["", coordHelper]);
+    expect(cloneGitHubWiringProblem(clone, "acct")).toBeNull();
+    const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
+    expect(launcher).toContain('gh auth token --hostname github.com --user "$coord_github_account"');
+    expect(launcher).not.toMatch(/GH_TOKEN=["']?[A-Za-z0-9_]{8,}/);
+
+    // A repair run without the option keeps the selection (dry run: no fetch from github.com).
+    expect(installOnce(fixture, { origin, dryRun: true }).changes).toEqual([]);
+
+    // An owner's own helper survives a real repair (fetch redirected to the local origin) and
+    // stays ahead of coord's reset; a later reset would defeat coord's helper and is reported.
+    git(clone, "config", `url.${fixture.originPath}.insteadOf`, origin);
+    git(clone, "config", "--local", "--add", helper, "cache --timeout=42");
+    installOnce(fixture, { origin });
+    expect(helpers()).toEqual(["cache --timeout=42", "", coordHelper]);
+    expect(installOnce(fixture, { origin }).changes).toEqual([]);
+    git(clone, "config", "--local", "--add", helper, "");
+    expect(cloneGitHubWiringProblem(clone, "acct")).toMatch(/no effective GitHub credential helper/);
+
+    uninstallOnce(fixture);
+    expect(tryGit(clone, "config", "--local", "--get", "coord.githubAccount").exitCode).not.toBe(0);
+    expect(helpers()).toEqual(["cache --timeout=42", ""]);
+  });
+
+  it("launches an agent with the selected account's token only after GitHub accepts it", () => {
+    const fixture = product();
+    const clone = installOnce(fixture, { origin: "https://github.com/example/myserver.git", githubAccount: "acct" }).clones[0] as string;
+    const bin = join(fixture.workspaceRoot, "fake-bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "gh"), [
+      "#!/usr/bin/env bash",
+      'case "$1 $2" in',
+      '  "auth token") [[ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" && "$6" == acct ]] || exit 9; echo selected-token ;;',
+      '  "api user") case "$FAKE_GH" in',
+      "    ok) echo Acct ;; other) echo someone-else ;;",
+      "    revoked) echo 'gh: Bad credentials (HTTP 401)' >&2; exit 1 ;;",
+      "    offline) echo 'error connecting to api.github.com' >&2; exit 1 ;;",
+      "  esac ;;",
+      "  *) exit 8 ;;",
+      "esac", ""
+    ].join("\n"), { mode: 0o755 });
+    writeFileSync(join(bin, "claude"), '#!/usr/bin/env bash\necho "harness GH_TOKEN=$GH_TOKEN GITHUB_TOKEN=${GITHUB_TOKEN:-}"\n', { mode: 0o755 });
+    const launch = (mode: string) => spawnSync("bash", [join(clone, "start-claude.sh")], {
+      cwd: clone, encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, FAKE_GH: mode, GH_TOKEN: "ambient", GITHUB_TOKEN: "ambient", COORD_ISSUE: "" }
+    });
+
+    for (const mode of ["ok", "offline"]) {
+      const launched = launch(mode);
+      expect(launched.status, launched.stderr).toBe(0);
+      expect(launched.stdout).toContain("harness GH_TOKEN=selected-token GITHUB_TOKEN=\n");
+    }
+    expect(launch("offline").stderr).toContain("WARNING: could not verify GitHub account acct");
+    const revoked = launch("revoked");
+    expect(revoked.status).toBe(1);
+    expect(revoked.stderr).toContain("GitHub authentication for acct has expired or been revoked.\nRun: coord auth login");
+    const other = launch("other");
+    expect(other.status).toBe(1);
+    expect(other.stderr).toContain("authenticates as someone-else");
+    for (const refused of [revoked, other]) expect(refused.stdout).not.toContain("harness");
+  });
+
+  it("refuses a selected GitHub account on an SSH origin before creating any clone", () => {
+    const fixture = product();
+    expect(() => installOnce(fixture, { origin: "git@github.com:example/myserver.git", githubAccount: "acct" }))
+      .toThrow("needs an https://github.com/");
+    expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(false);
   });
 });
 

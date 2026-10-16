@@ -76,6 +76,30 @@ describe("owner bare mirror", () => {
     }
   });
 
+  it("binds every mirror Git call to a selected GitHub account without persisting it", async () => {
+    const calls: (readonly string[])[] = [];
+    const runner = async (args: readonly string[]) => {
+      calls.push(args);
+      const failed = args.includes("push");
+      return { exitCode: failed ? 128 : 0, stdout: Buffer.from(`${"a".repeat(40)}\n`),
+        stderr: failed ? "fatal: Authentication failed for 'https://github.com/acme/app.git/'" : "" };
+    };
+    const helper = "credential.https://github.com.helper";
+    const bound = new BareMirror("/runtime/mirror.git", "https://github.com/acme/app.git", runner, { account: "acct", cliEntry: "/coord/dist/main.js" });
+    expect(await bound.fetchBranch("issue-1/codex")).toMatchObject({ ok: true });
+    await expect(bound.publishBranch("a".repeat(40), "issue-1/codex-final")).rejects.toThrow(
+      "GitHub authentication for acct has expired or been revoked.\nRun: coord auth login"
+    );
+    for (const args of calls) {
+      expect(args.slice(0, 4)).toEqual(["-c", `${helper}=`, "-c", `${helper}=!/usr/bin/env node '/coord/dist/main.js' auth git-credential --account acct`]);
+      expect(args[4]).toBe("--git-dir");
+    }
+
+    calls.length = 0;
+    await new BareMirror("/runtime/mirror.git", "https://github.com/acme/app.git", runner).fetchBranch("issue-1/codex");
+    expect(calls.every((args) => args[0] === "--git-dir")).toBe(true);
+  });
+
   it("distinguishes transient network failures", () => {
     expect(isTransientGitFailure("fatal: Could not resolve host: example.invalid")).toBe(true);
     expect(isTransientGitFailure("fatal: couldn't find remote ref missing")).toBe(false);

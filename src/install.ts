@@ -35,6 +35,7 @@ import {
   assertContainment,
   buildWorkspaceConfig,
   clearCloneExclude,
+  clearCloneGitHubCredential,
   clearCloneIdentity,
   cloneIsDirty,
   configureCloneIdentity,
@@ -57,6 +58,7 @@ import {
   type WorkspaceDeclaration
 } from "./state.js";
 import { agentIdSchema } from "./protocol.js";
+import { githubLoginSchema, requireHttpsGitHubOrigin } from "./githubAuth.js";
 import {
   clearOwnerWorkspace,
   flatConfigPath,
@@ -113,6 +115,11 @@ export type InstallOptions = {
   completesRoot?: string;
   /** Test/embedding override for user-global vendor settings; null skips them. */
   home?: string | null;
+  /**
+   * GitHub account for this workspace's git and gh operations. Omitted keeps
+   * the account the existing workspace config already selects, if any.
+   */
+  githubAccount?: string;
 };
 
 export type InstallResult = {
@@ -353,6 +360,14 @@ export const install = (options: InstallOptions): InstallResult => {
       `The product ${productRoot} has no 'origin' remote. Agents publish evidence to a shared remote; add one or pass --origin.`
     );
   }
+  // Before any clone is created or fetched: the clone must already authenticate
+  // as the selected account, and an origin the helper cannot cover is refused.
+  const githubAccount = options.githubAccount ?? readPreviousConfig(workspace.configPath)?.github?.account ?? null;
+  if (githubAccount !== null) {
+    const parsedAccount = githubLoginSchema.safeParse(githubAccount);
+    if (!parsedAccount.success) throw new Error(`Invalid GitHub account '${githubAccount}': ${parsedAccount.error.issues[0]?.message ?? "invalid"}.`);
+    requireHttpsGitHubOrigin(githubAccount, origin);
+  }
   const baseBranch = options.baseBranch ?? "main";
   if (git(productRoot, "rev-parse", "--verify", `refs/heads/${baseBranch}`).exitCode !== 0) {
     throw new Error(`The product ${productRoot} has no '${baseBranch}' branch.`);
@@ -415,7 +430,8 @@ export const install = (options: InstallOptions): InstallResult => {
       workspaceDir: workspace.workspaceRoot,
       declared,
       proposal,
-      completesRoot
+      completesRoot,
+      githubAccount
     },
     // A re-install must not look like a change just because time passed — but
     // only the timestamp may be carried over. Comparing three fields let a run
@@ -434,7 +450,7 @@ export const install = (options: InstallOptions): InstallResult => {
   for (const agent of agents) {
     const clone = agentCloneDirectory(cloneRoot, project, agent);
     clones.push(clone);
-    ensureAgentClone({ productRoot, origin, clone, baseBranch, options: effects });
+    ensureAgentClone({ productRoot, origin, clone, baseBranch, options: effects, githubAccount, cliEntry });
     if (!existsSync(clone)) {
       // Dry run against a workspace that does not exist yet: the remaining
       // per-clone steps have nothing to inspect, and guessing would report
@@ -464,7 +480,8 @@ export const install = (options: InstallOptions): InstallResult => {
         installRoot: options.vendor ? null : installRoot,
         cliEntry,
         workspaceConfig: configPath,
-        completesRoot
+        completesRoot,
+        githubAccount
       },
       effects
     );
@@ -692,6 +709,7 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
       kept.push(`${clone}: ${file} was edited after installation and was left in place`);
     }
     clearCloneIdentity(clone, effects);
+    clearCloneGitHubCredential(clone, effects);
     clearCloneExclude(clone, effects);
     liftCloneAgentsProtocol(clone, effects);
     clearClaudeAgentsShim(clone, agent.id, effects);
@@ -840,6 +858,7 @@ export type OnboardOptions = {
   profile?: string;
   log: Logger;
   home?: string | null;
+  githubAccount?: string;
 };
 
 export type OnboardResult = { install: InstallResult; doctor: DoctorReport };
@@ -855,6 +874,21 @@ const registeredCoordRoot = (productRoot: string): string | null => {
         "Pass --coord-runtime to choose the runtime for this onboarding explicitly."
     );
   }
+};
+
+/**
+ * The runtime onboard (no coordRoot) or install (coordRoot) would use for this
+ * product, and the GitHub account its existing workspace config selects.
+ * Install carries that account forward, so callers verify it before any
+ * effect; onboard callers pass the root back to avoid resolving it twice.
+ */
+export const savedGitHubAccount = (productRoot: string, coordRoot?: string): { coordRoot: string; account: string | null } => {
+  const product = requireWorktree(resolve(productRoot), "The product");
+  const root = resolve(coordRoot ?? registeredCoordRoot(product) ?? join(dirname(product), "coord-runtime"));
+  return {
+    coordRoot: root,
+    account: readPreviousConfig(selectWorkspaceLocation(root, productName(product)).configPath)?.github?.account ?? null
+  };
 };
 
 export const onboard = (options: OnboardOptions): OnboardResult => {
@@ -877,7 +911,8 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     bootstrap: false,
     dryRun: false,
     log: options.log,
-    ...(options.home === undefined ? {} : { home: options.home })
+    ...(options.home === undefined ? {} : { home: options.home }),
+    ...(options.githubAccount === undefined ? {} : { githubAccount: options.githubAccount })
   });
   const report = doctor({ coordRoot, productRoot, ...(options.home === undefined ? {} : { home: options.home }) });
   if (report.exitCode === 0) {
