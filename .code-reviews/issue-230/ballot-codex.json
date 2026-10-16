@@ -1,0 +1,29 @@
+{
+  "actionId": "3255e484-b529-4d10-8096-8fc37bdfd131",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "cc767a47d481ff24b9bee4a2109872eed4bf73de",
+      "path": ".signals/issue-230/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "bf0763a60d36f1d322d1f8bb36ee819742b7784f",
+      "path": ".signals/issue-230/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "af7bc76b9a43ce64873560670bafe03da9cd75e5",
+      "path": ".signals/issue-230/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "885d914ce482d05e1c4d7e86da192d09773dda2f86bc5e8a144300f6fa9cb136",
+  "issue": 230,
+  "issueSessionId": "issue-230:884df5fe1200f1cfbd3cecae887488d8c376fdf9",
+  "protocolVersion": 2,
+  "rationale": "Codex implements the same approved behavior as the alternatives while adding focused launcher coverage for issue and manual modes, controlled PATH resolution and paths with spaces, and clearer documentation of unrestricted writes and unverified live Muse behavior.",
+  "responseSha256": "14efb93afb5305c173cd02d9e75923ceeb4449f56efb81a70a837d762cb0d773"
+}
