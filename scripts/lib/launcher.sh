@@ -27,8 +27,11 @@ launcher_environment() {
     nvm use
     echo "Node: $(node --version)"
   fi
-  if [[ "$1" == antigravity ]]; then
+  if [[ "$1" == antigravity || "$1" == muse ]]; then
     export PATH="$HOME/.local/bin:$PATH"
+  fi
+  if [[ "$1" == muse ]]; then
+    export MUSE_NO_AUTO_UPDATE=1
   fi
 }
 
@@ -37,9 +40,9 @@ launcher_environment() {
 # Emits the shell lines that launch one agent. This is the only place a vendor's
 # flags are recorded; setup scripts and the post-merge hook both read them here.
 #
-# Every vendor below accepts --add-dir for an extra writable root, so the
-# completion mailbox is granted with "${coord_grant[@]}" rather than by widening
-# the sandbox. That array is computed by the generated launcher at exec time
+# Claude, Codex, Cursor and Antigravity accept --add-dir for extra roots;
+# Muse and Gemini do not receive these flags. The coord_grant array is
+# computed by the generated launcher at exec time
 # (see write_launcher); it is empty when there is no current issue. The
 # expansion is written as ${a[@]+"${a[@]}"} because macOS /bin/bash is 3.2,
 # where a plain "${a[@]}" on an empty array aborts under `set -u`.
@@ -85,6 +88,15 @@ launcher_command() {
       # No mailbox grant: gemini is not a configured coordination harness and
       # has no completion receipt to write.
       printf 'exec gemini\n'
+      ;;
+    muse)
+      # Opt-in pull participant: Muse's sandbox protects .git, blocking the
+      # commits required by Git actions. Explicitly disable it and approvals,
+      # and trust the clone for this run so Muse loads the AGENTS.md overlay.
+      # This permits writes anywhere the owner can write, including receipts;
+      # Muse has no --add-dir, so do not pass coord_grant. The PATH Git shim is
+      # still installed, but native hooks and live containment are unverified.
+      printf 'exec muse --approval-mode never --disable-sandbox --trust-workspace\n'
       ;;
     cursor)
       # --add-dir only means something if the harness is sandboxed: an

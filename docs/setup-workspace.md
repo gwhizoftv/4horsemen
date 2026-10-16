@@ -108,6 +108,19 @@ reuse the same trust writer. Reinstall preserves unrelated settings and does not
 rewrite unchanged trust entries; `install --dry-run` makes no trust changes.
 Launchers retain their existing sandbox and tool-permission settings.
 
+Muse Code is opt-in: include `muse` in `--agents` when installing or onboarding.
+It uses pull delivery, with Enter-only owner reminders and no vim prelude.
+The launcher passes run-local `--trust-workspace` to load `AGENTS.md` without
+writing persisted trust. It also passes `--disable-sandbox --approval-mode never`
+because Muse's sandbox protects `.git`, preventing the commits required by
+coordination. This permits writes anywhere the owner can write; no filesystem
+isolation is claimed. The existing PATH Git shim remains installed, with live
+coverage unverified; Muse lifecycle hooks, automatic nudges and usage analytics
+are not available. `MUSE_NO_AUTO_UPDATE=1` suppresses wrapper updates during
+version collection and launches; update Muse outside coord sessions. These
+flags were observed with Muse Code 1.4.10. A live Muse run loading instructions,
+committing/pushing and writing receipts has not been verified by the stub tests.
+
 ### Agent editor modes
 
 Install/onboard set Claude's clone-local `.claude/settings.local.json` to

@@ -261,13 +261,13 @@ export const harnessPromptReadiness = (
 /**
  * Vim-mode TUIs swallow the first nudge character in NORMAL. Enter insert with
  * `a` when INSERT is not visible. Codex keeps its configured `i` prelude.
- * Antigravity has no vim mode. Cursor uses `a` only when `editor.vimMode` is on
+ * Antigravity and Muse use no vim prelude. Cursor uses `a` only when `editor.vimMode` is on
  * (see `readCursorVimMode`). Claude often omits a mode indicator — still send
  * `a` unless INSERT is shown. resolveNudgeKeys skips this fallback when the
  * installed Claude settings explicitly disable vim.
  */
 export const vimInsertPrelude = (paneText: string, agentId: string): readonly string[] => {
-  if (agentId === "antigravity" || agentId === "codex") return [];
+  if (agentId === "antigravity" || agentId === "codex" || agentId === "muse") return [];
   const plain = stripAnsi(paneText);
   if (/--\s*INSERT\s*--/i.test(plain) || /Vim:\s*Insert/i.test(plain)) return [];
   if (/--\s*VISUAL(?:\s+LINE)?\s*--/i.test(plain)) return ["Escape", "a"];
