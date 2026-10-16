@@ -27,8 +27,14 @@ launcher_environment() {
     nvm use
     echo "Node: $(node --version)"
   fi
-  if [[ "$1" == antigravity ]]; then
+  if [[ "$1" == antigravity || "$1" == muse ]]; then
     export PATH="$HOME/.local/bin:$PATH"
+  fi
+  if [[ "$1" == muse ]]; then
+    # Wrapper defaults to hourly background self-update; pin the binary for the
+    # whole issue so fresh-start --version matches the pane. Owners update Muse
+    # outside coord.
+    export MUSE_NO_AUTO_UPDATE=1
   fi
 }
 
@@ -37,12 +43,14 @@ launcher_environment() {
 # Emits the shell lines that launch one agent. This is the only place a vendor's
 # flags are recorded; setup scripts and the post-merge hook both read them here.
 #
-# Every vendor below accepts --add-dir for an extra writable root, so the
+# Most vendors below accept --add-dir for an extra writable root, so the
 # completion mailbox is granted with "${coord_grant[@]}" rather than by widening
-# the sandbox. That array is computed by the generated launcher at exec time
-# (see write_launcher); it is empty when there is no current issue. The
-# expansion is written as ${a[@]+"${a[@]}"} because macOS /bin/bash is 3.2,
-# where a plain "${a[@]}" on an empty array aborts under `set -u`.
+# the sandbox. Muse and gemini are exceptions: Muse has no --add-dir and runs
+# unsandboxed (see its case); gemini is not a configured harness. That array is
+# computed by the generated launcher at exec time (see write_launcher); it is
+# empty when there is no current issue. The expansion is written as
+# ${a[@]+"${a[@]}"} because macOS /bin/bash is 3.2, where a plain "${a[@]}" on
+# an empty array aborts under `set -u`.
 launcher_command() {
   case "$1" in
     claude)
@@ -85,6 +93,17 @@ launcher_command() {
       # No mailbox grant: gemini is not a configured coordination harness and
       # has no completion receipt to write.
       printf 'exec gemini\n'
+      ;;
+    muse)
+      # muse installs into ~/.local/bin (same PATH setup as antigravity).
+      # Meta documents .git as read-only inside the Muse sandbox; without
+      # --disable-sandbox a Git-mode participant cannot commit. Muse has no
+      # --add-dir; an unsandboxed harness can already write the mailbox, so
+      # coord_grant is omitted (same posture as antigravity's broad grant and
+      # the cursor comment on unsandboxed hosts). --trust-workspace is
+      # run-local and does not persist trust. Prefer these explicit flags over
+      # --yolo, which also withholds request_user_input.
+      printf 'exec muse --approval-mode never --disable-sandbox --trust-workspace\n'
       ;;
     cursor)
       # --add-dir only means something if the harness is sandboxed: an

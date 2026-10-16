@@ -278,6 +278,17 @@ describe("tmux boundary", () => {
     expect(
       resolveNudgeKeys({ ...agent, nudgePrelude: ["a"] }, "Auto ·")
     ).toEqual({ prelude: ["a"], submit: ["Escape", "Enter"] });
+    expect(vimInsertPrelude("> ", "muse")).toEqual([]);
+    expect(resolveNudgeKeys({ id: "muse", root: "/m", launcher: "x", delivery: "pull" }, "> ")).toEqual({
+      prelude: [],
+      submit: ["Enter"]
+    });
+    expect(
+      resolveNudgeKeys(
+        { id: "muse", root: "/m", launcher: "x", delivery: "pull", nudgePrelude: [], nudgeSubmit: ["Enter"] },
+        "> "
+      )
+    ).toEqual({ prelude: [], submit: ["Enter"] });
   });
 
   it("uses per-agent nudgePrelude and nudgeSubmit for Codex vim", async () => {

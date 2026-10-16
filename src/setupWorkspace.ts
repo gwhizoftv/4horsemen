@@ -52,9 +52,10 @@ export const agentHarnessProcess = (agent: string): string => {
  * Cursor without vim and Antigravity submit on Enter; Escape dismisses that
  * Cursor composer and cancels Antigravity. Cursor with `editor.vimMode` uses
  * vim `a` (when not INSERT) and Escape then Enter so INSERT does not treat
- * Enter as a newline. Codex uses vim insert (`i`) and `Enter`.
- * Operators override via config.json (non-vim Cursor Escape+Enter is still
- * upgraded to Enter).
+ * Enter as a newline. Codex uses vim insert (`i`) and `Enter`. Muse documents
+ * Enter as submit/steer and Esc as interrupt, so it uses bare Enter (not the
+ * unknown-id Escape+Enter fallback). Operators override via config.json
+ * (non-vim Cursor Escape+Enter is still upgraded to Enter).
  */
 export const agentOwnerUiDefaults = (
   agent: string
@@ -68,6 +69,8 @@ export const agentOwnerUiDefaults = (
       return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Cursor 1" };
     case "antigravity":
       return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Gemini 1" };
+    case "muse":
+      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Basic" };
     default:
       return { nudgePrelude: [], nudgeSubmit: ["Escape", "Enter"], terminalProfile: "Basic" };
   }
@@ -362,7 +365,8 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
       root: relativeFrom(input.workspaceDir, agentCloneDirectory(input.cloneRoot, input.project, agent)),
       launcher: `start-${agent}.sh`,
       // both: driver pastes a short action path; agents can also pull via `coord next`.
-      delivery: "both",
+      // Muse has no lifecycle-hook mapping yet; pull avoids promising nudge delivery.
+      delivery: agent === "muse" ? "pull" : "both",
       harnessProcess: agentHarnessProcess(agent),
       ...agentOwnerUiDefaults(agent)
     })),

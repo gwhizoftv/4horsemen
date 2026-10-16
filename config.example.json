@@ -39,6 +39,15 @@
       "nudgePrelude": [],
       "nudgeSubmit": ["Enter"],
       "terminalProfile": "Red Sands"
+    },
+    {
+      "id": "muse",
+      "root": "../4horsemen-muse",
+      "launcher": "start-muse.sh",
+      "delivery": "pull",
+      "nudgePrelude": [],
+      "nudgeSubmit": ["Enter"],
+      "terminalProfile": "Basic"
     }
   ],
   "branch": "issue-{issue}/{agent}",

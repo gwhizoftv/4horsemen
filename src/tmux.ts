@@ -267,7 +267,7 @@ export const harnessPromptReadiness = (
  * installed Claude settings explicitly disable vim.
  */
 export const vimInsertPrelude = (paneText: string, agentId: string): readonly string[] => {
-  if (agentId === "antigravity" || agentId === "codex") return [];
+  if (agentId === "antigravity" || agentId === "codex" || agentId === "muse") return [];
   const plain = stripAnsi(paneText);
   if (/--\s*INSERT\s*--/i.test(plain) || /Vim:\s*Insert/i.test(plain)) return [];
   if (/--\s*VISUAL(?:\s+LINE)?\s*--/i.test(plain)) return ["Escape", "a"];

@@ -300,6 +300,38 @@ describe("fresh-start agent maintenance", () => {
     expect(output.join("")).toContain("Agent codex version: unknown");
   });
 
+  it("records Muse's version without running an update command", async () => {
+    const f = setup();
+    const config = JSON.parse(readFileSync(f.configPath, "utf8"));
+    const museRoot = join(f.root, "clone-muse");
+    mkdirSync(museRoot);
+    writeFileSync(join(museRoot, "start-muse.sh"), "#!/bin/sh\n", { mode: 0o700 });
+    config.agents = [{ id: "muse", root: museRoot, launcher: "start-muse.sh" }];
+    writeFileSync(f.configPath, JSON.stringify(config));
+    const calls: string[] = [], output: string[] = [], errors: string[] = [];
+    expect(await runCli(["start", "1", "--profile", "solo", "--config", f.configPath, "--coord-runtime", f.runtime], {
+      makeRunLoop: fakeLoop,
+      io: { stdout: (line) => output.push(line), stderr: (line) => errors.push(line) },
+      processRunner: async (argv, cwd) => {
+        if (argv[3] === "coord-agent-maintenance") {
+          calls.push(`${argv.at(-2)} ${argv.at(-1)}`);
+          expect(cwd).toBe(museRoot);
+          expect(argv[5]).toBe("muse");
+          return successfulStartGit(argv);
+        }
+        return successfulStartGit(argv);
+      }
+    })).toBe(0);
+    expect(calls).toEqual(["muse --version"]);
+    expect(calls).not.toContain("muse update");
+    expect(readStartState(issueRuntimePaths(f.runtime, 1)).agentVersions).toEqual({
+      muse: "muse fixture-version"
+    });
+    expect(output.join("")).toContain("muse has no update command");
+    expect(output.join("")).toContain("Agent muse version: muse fixture-version");
+    expect(errors.join("")).not.toContain("WARNING: muse");
+  });
+
   it("does not update or replace the version snapshot on attach, resume, run, or numeric continuation", async () => {
     const f = setup();
     expect(await runCli(["start", "1", "--config", f.configPath, "--coord-runtime", f.runtime], {

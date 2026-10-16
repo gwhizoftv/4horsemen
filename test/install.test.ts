@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { findAgentLanguageViolations } from "../src/agentLanguage.js";
 import { syncAgentTrust } from "../src/agentTrust.js";
 import { assertInstallDeletionAllowed, install, uninstall } from "../src/install.js";
+import { DEFAULT_CLONE_IGNORES } from "../src/productIgnore.js";
 import { readConfig } from "../src/state.js";
 import { cloneGitHubWiringProblem } from "../src/setupWorkspace.js";
 import { nestedConfigPath } from "../src/workspace.js";
@@ -1226,5 +1227,49 @@ describe("generated agent launchers", () => {
     expect(launcher).toContain('export PATH="$HOME/.local/bin:$PATH"');
     // The user-global status line lands in the fixture, never the owner's home.
     expect(existsSync(join(fixture.workspaceRoot, "home", ".gemini", "antigravity-cli", "settings.json"))).toBe(true);
+  });
+
+  it("launches Muse unsandboxed with pull delivery and no self-update", () => {
+    const fixture = product("plain");
+    const completesRoot = join(fixture.workspaceRoot, "completion mailbox");
+    const home = join(fixture.workspaceRoot, "home");
+    const result = installOnce(fixture, { agents: ["muse"], completesRoot, home });
+    const clone = result.clones[0] as string;
+    const drop = join(completesRoot, "issue-17", "muse");
+    mkdirSync(drop, { recursive: true });
+    mkdirSync(join(fixture.coordRoot, "issue-17", "agents", "muse", "responses"), { recursive: true });
+    mkdirSync(join(fixture.coordRoot, "issue-17", "inputs"), { recursive: true });
+    mkdirSync(join(fixture.coordRoot, "issue-17", "worktrees"), { recursive: true });
+    const localBin = join(home, ".local", "bin");
+    mkdirSync(localBin, { recursive: true });
+    writeFileSync(
+      join(localBin, "muse"),
+      '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$CAPTURE"\nprintf \'%s\' "$MUSE_NO_AUTO_UPDATE" > "$CAPTURE.env"\n',
+      { mode: 0o755 }
+    );
+    const capture = join(fixture.workspaceRoot, "muse.args");
+    execFileSync("/bin/bash", [join(clone, "start-muse.sh")], {
+      cwd: clone,
+      // Stub lives under $HOME/.local/bin; launcher_environment prepends that.
+      env: { ...process.env, HOME: home, PATH: process.env.PATH ?? "/usr/bin:/bin", COORD_ISSUE: "17", CAPTURE: capture },
+      stdio: "ignore"
+    });
+    expect(readFileSync(capture, "utf8").trimEnd().split("\n")).toEqual([
+      "--approval-mode",
+      "never",
+      "--disable-sandbox",
+      "--trust-workspace"
+    ]);
+    expect(readFileSync(`${capture}.env`, "utf8")).toBe("1");
+    const agent = readConfig(result.configPath).agents.find((entry) => entry.id === "muse");
+    expect(agent).toMatchObject({
+      delivery: "pull",
+      nudgePrelude: [],
+      nudgeSubmit: ["Enter"]
+    });
+    expect(DEFAULT_CLONE_IGNORES).toContain(".muse/");
+    expect(readFileSync(join(repoRoot, "templates/product/gitignore.coordination.block"), "utf8")).toContain(
+      ".muse/"
+    );
   });
 });

@@ -152,8 +152,14 @@ type ParsedArgs = { positionals: string[]; flags: Map<string, string> };
 
 const coordinatorSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-const agentExecutables = new Map([
-  ["codex", "codex"], ["claude", "claude"], ["cursor", "agent"], ["antigravity", "agy"]
+/** Fresh-start maintenance: executable name plus whether `update` exists. */
+const agentMaintenance = new Map([
+  ["codex", { executable: "codex", update: true }],
+  ["claude", { executable: "claude", update: true }],
+  ["cursor", { executable: "agent", update: true }],
+  ["antigravity", { executable: "agy", update: true }],
+  // Muse help has no update subcommand; a positional "update" can start a session.
+  ["muse", { executable: "muse", update: false }]
 ]);
 const AGENT_UPDATE_TIMEOUT_MS = 180_000;
 const AGENT_VERSION_TIMEOUT_MS = 5_000;
@@ -168,7 +174,7 @@ const updateAgentVersions = async (
     io.stderr(`WARNING: ${id} ${step}: ${summary}; continuing with the installed version.\n`);
   };
   const run = async (agent: CoordinatorConfig["agents"][number], step: "update" | "--version") => {
-    const executable = agentExecutables.get(agent.id)!;
+    const executable = agentMaintenance.get(agent.id)!.executable;
     try {
       const result = await runner([
         "bash", "-c", 'set -euo pipefail\n. "$1"\nlauncher_environment "$2" >/dev/null\nshift 2\nexec "$@"',
@@ -184,15 +190,20 @@ const updateAgentVersions = async (
   // Finish every updater before collecting versions or launching any agent.
   for (const agent of agents) {
     versions[agent.id] = null;
-    if (!agentExecutables.has(agent.id)) {
+    const maintenance = agentMaintenance.get(agent.id);
+    if (maintenance === undefined) {
       warn(agent.id, "update skipped", "no known vendor command");
+      continue;
+    }
+    if (!maintenance.update) {
+      io.stdout(`${agent.id} has no update command; recording the installed version.\n`);
       continue;
     }
     io.stdout(`Updating ${agent.id} (timeout ${AGENT_UPDATE_TIMEOUT_MS / 1_000}s)...\n`);
     await run(agent, "update");
   }
   for (const agent of agents) {
-    if (agentExecutables.has(agent.id)) {
+    if (agentMaintenance.has(agent.id)) {
       const result = await run(agent, "--version");
       const version = result?.stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null;
       if (result !== null && version === null) warn(agent.id, "--version", "empty version output");

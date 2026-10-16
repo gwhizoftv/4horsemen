@@ -108,6 +108,14 @@ reuse the same trust writer. Reinstall preserves unrelated settings and does not
 rewrite unchanged trust entries; `install --dry-run` makes no trust changes.
 Launchers retain their existing sandbox and tool-permission settings.
 
+Meta's Muse Code is an opt-in agent: pass `--agents …,muse` (or list it in
+config). It uses pull delivery. The launcher passes run-local
+`--trust-workspace` (no persisted trust entry), plus `--disable-sandbox` and
+`--approval-mode never`, because the Muse sandbox keeps `.git` read-only and
+Muse has no `--add-dir`. `MUSE_NO_AUTO_UPDATE=1` pins the binary for coord
+sessions; update Muse by running it outside coord. Lifecycle hooks, automatic
+nudges, and usage analytics are not yet available for Muse.
+
 ### Agent editor modes
 
 Install/onboard set Claude's clone-local `.claude/settings.local.json` to
