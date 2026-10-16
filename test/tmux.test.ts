@@ -292,6 +292,14 @@ describe("tmux boundary", () => {
     expect(vimInsertPrelude("-- INSERT --", "cursor")).toEqual([]);
     expect(vimInsertPrelude(">", "antigravity")).toEqual([]);
     expect(vimInsertPrelude("Vim: Normal", "codex")).toEqual([]);
+    // Muse has no vim mode, Enter submits, and Escape interrupts its turn.
+    expect(vimInsertPrelude("> ", "muse")).toEqual([]);
+    const muse = { id: "muse", root: "/m", launcher: "x", delivery: "pull" as const };
+    expect(resolveNudgeKeys(muse, "> ")).toEqual({ prelude: [], submit: ["Enter"] });
+    expect(resolveNudgeKeys({ ...muse, nudgePrelude: [], nudgeSubmit: ["Enter"] }, "> ")).toEqual({
+      prelude: [],
+      submit: ["Enter"]
+    });
     expect(resolveNudgeKeys({ id: "claude", root: "/c", launcher: "x", delivery: "both" }, "❯").prelude).toEqual([
       "a"
     ]);

@@ -12,7 +12,7 @@ Four Horsemen (`4horsemen`) run by using its `coord` command, short for coordina
 
 Instead of trusting a single model with a change, give a team of coding agents
 the same GitHub issue. Four Horsemen runs Claude Code, Codex, Cursor, and Antigravity
-in separate Git clones, coordinates their plans, plan reviews, competitive implementations and peer code reviews, and verifies
+(and optionally Meta's Muse Code) in separate Git clones, coordinates their plans, plan reviews, competitive implementations and peer code reviews, and verifies
 the exact commits they submit before publishing a pull request. You choose the
 agents, the project's checks, and when to intervene.
 

@@ -27,8 +27,14 @@ launcher_environment() {
     nvm use
     echo "Node: $(node --version)"
   fi
-  if [[ "$1" == antigravity ]]; then
+  if [[ "$1" == antigravity || "$1" == muse ]]; then
     export PATH="$HOME/.local/bin:$PATH"
+  fi
+  # Muse's wrapper otherwise checks hourly and swaps its binary in the
+  # background, so the version coord start records could differ from the one a
+  # later pane restart runs. Owners update by running muse outside coord.
+  if [[ "$1" == muse ]]; then
+    export MUSE_NO_AUTO_UPDATE=1
   fi
 }
 
@@ -37,9 +43,9 @@ launcher_environment() {
 # Emits the shell lines that launch one agent. This is the only place a vendor's
 # flags are recorded; setup scripts and the post-merge hook both read them here.
 #
-# Every vendor below accepts --add-dir for an extra writable root, so the
-# completion mailbox is granted with "${coord_grant[@]}" rather than by widening
-# the sandbox. That array is computed by the generated launcher at exec time
+# Every sandboxed vendor below accepts --add-dir for an extra writable root, so
+# the completion mailbox is granted with "${coord_grant[@]}" rather than by
+# widening the sandbox. Muse has no --add-dir and runs unsandboxed; see its case. That array is computed by the generated launcher at exec time
 # (see write_launcher); it is empty when there is no current issue. The
 # expansion is written as ${a[@]+"${a[@]}"} because macOS /bin/bash is 3.2,
 # where a plain "${a[@]}" on an empty array aborts under `set -u`.
@@ -80,6 +86,17 @@ launcher_command() {
       # add-dir below is therefore advisory for this vendor until the sandbox
       # can be verified against a real agy run that pushes.
       printf 'exec agy --mode accept-edits --dangerously-skip-permissions ${coord_grant[@]+"${coord_grant[@]}"}\n'
+      ;;
+    muse)
+      # Muse's sandbox keeps .git read-only inside the workspace and it has no
+      # --add-dir, so a sandboxed Muse could never commit the artifact whose SHA
+      # it must report. Like agy, it runs unsandboxed; an unsandboxed harness can
+      # already write the mailbox, so coord_grant would be decoration. The git
+      # shim is its only coordination guard: no native hooks are installed for
+      # Muse yet, so containment stays unverified (coord status).
+      # --trust-workspace is run-local (it loads this clone's AGENTS.md) and
+      # persists nothing; --approval-mode never matches codex's unattended run.
+      printf 'exec muse --approval-mode never --disable-sandbox --trust-workspace\n'
       ;;
     gemini)
       # No mailbox grant: gemini is not a configured coordination harness and

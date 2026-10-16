@@ -108,6 +108,22 @@ reuse the same trust writer. Reinstall preserves unrelated settings and does not
 rewrite unchanged trust entries; `install --dry-run` makes no trust changes.
 Launchers retain their existing sandbox and tool-permission settings.
 
+### Muse Code
+
+Meta's Muse Code CLI is opt-in: add it with `--agents …,muse`. It is not in
+the default roster. Its launcher passes `--trust-workspace`, which applies to
+that run only, loads the clone's `AGENTS.md`, and writes no trust entry. It
+also passes `--disable-sandbox --approval-mode never`, because Muse's sandbox
+keeps `.git` read-only and Muse has no `--add-dir`, so a sandboxed Muse could
+not commit. The coordinator Git shim is its only coordination guard. No Muse
+lifecycle or shell hooks are installed yet, so its containment remains
+unverified in `coord status`. The generated config uses `delivery: "pull"`:
+the coordinator does not paste actions into a Muse pane, but `coord remind`
+still submits with Enter only. `coord start` records `muse --version` but runs
+no updater. Launchers and that probe set `MUSE_NO_AUTO_UPDATE=1`, so an issue
+keeps one Muse build; update Muse by running it outside coordination. Usage
+analytics and quota telemetry are unavailable for Muse.
+
 ### Agent editor modes
 
 Install/onboard set Claude's clone-local `.claude/settings.local.json` to
