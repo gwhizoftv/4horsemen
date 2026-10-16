@@ -1,0 +1,29 @@
+{
+  "actionId": "b9c622a6-047b-4772-ac3e-e6affc12a612",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "180a769ecf633a0b176f531c0bac9e54f08f4105",
+      "path": ".signals/issue-231/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "3832b1ae2683c8bfe3860bd5eeb24f65d0408ca6",
+      "path": ".signals/issue-231/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "1917e58ce6ed0472bcdb9ca1abe3d7f1f83cbc95",
+      "path": ".signals/issue-231/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "f13cbcd1321f52ac9b071eeb37e5b26f2883663eef6af4054c9b73546fa3c179",
+  "issue": 231,
+  "issueSessionId": "issue-231:884df5fe1200f1cfbd3cecae887488d8c376fdf9",
+  "protocolVersion": 2,
+  "rationale": "Codex 3832b1ae2683c8bfe3860bd5eeb24f65d0408ca6 satisfies the approved scope without changing the shared runner interface and adds focused coverage for failed refreshes, saved-account discovery, and preservation of dirty tracked agent work, with passing recorded hook checks.",
+  "responseSha256": "ebf6b4a06450ef90ce5afc5bbe94d6a4901b17a226ca888b2ca0cd83dbaaf3ce"
+}

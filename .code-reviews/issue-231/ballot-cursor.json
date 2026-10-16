@@ -1,0 +1,29 @@
+{
+  "actionId": "0234c48a-cbce-4dd2-a22b-6703b9efd0bd",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "180a769ecf633a0b176f531c0bac9e54f08f4105",
+      "path": ".signals/issue-231/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "3832b1ae2683c8bfe3860bd5eeb24f65d0408ca6",
+      "path": ".signals/issue-231/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "1917e58ce6ed0472bcdb9ca1abe3d7f1f83cbc95",
+      "path": ".signals/issue-231/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "f13cbcd1321f52ac9b071eeb37e5b26f2883663eef6af4054c9b73546fa3c179",
+  "issue": 231,
+  "issueSessionId": "issue-231:884df5fe1200f1cfbd3cecae887488d8c376fdf9",
+  "protocolVersion": 2,
+  "rationale": "Codex pairs fail-hard GitHub default-branch discovery with literal check-ref-format validation and origin-tracking preflight, avoiding cursor’s @{-1} shorthand acceptance while matching the selected plan’s CLI account binding.",
+  "responseSha256": "8d8d71d274f201d7d8f140118f321bf5930eb8bb1137790165ddb3435212a28a"
+}
