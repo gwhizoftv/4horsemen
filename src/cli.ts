@@ -958,7 +958,11 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       return explicit;
     }
     const remote = origin ?? localConfigGet(productRoot, "remote.origin.url");
-    if (remote === null || remote === "") throw new Error(`The product ${productRoot} has no 'origin' remote.`);
+    if (remote === null || remote === "") {
+      throw new Error(
+        `The product ${productRoot} has no 'origin' remote. Agents publish evidence to a shared remote; add one or pass --origin.`
+      );
+    }
     const gh = withGitHubAccount(runner, account);
     const discovered = await fetchGitHubDefaultBranch({
       origin: remote,
