@@ -1,0 +1,14 @@
+{
+  "actionId": "06cf11b7-c636-446d-a791-5e7d918ecbc7",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "d0aadfc857efa86c27d19d596e8d45221f2310519a86afa7d59b5a68cfebaf32",
+  "issue": 231,
+  "issueSessionId": "issue-231:884df5fe1200f1cfbd3cecae887488d8c376fdf9",
+  "protocolVersion": 2,
+  "rationale": "Revision ef73a147 restores the installer's full missing-origin remedy (my comparison finding F2) and leaves the rest of the previously compared, correct implementation in place: GitHub default-branch discovery bound to the workspace account with a 30-second timeout, fail-before-effects, literal branch validation, and tracking-ref acceptance.",
+  "responseSha256": "ee6852a846bd51cc93be9f1f183e6d77ae6559fbf3724a19580eff0b49c55f84",
+  "revisionCommitSha": "ef73a147ab8cfa53f389c11510df11115397fe69",
+  "round": 1
+}

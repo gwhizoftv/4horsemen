@@ -1,0 +1,14 @@
+{
+  "actionId": "dd5f3bf3-8449-4930-8b08-d94d82076d88",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "d0aadfc857efa86c27d19d596e8d45221f2310519a86afa7d59b5a68cfebaf32",
+  "issue": 231,
+  "issueSessionId": "issue-231:884df5fe1200f1cfbd3cecae887488d8c376fdf9",
+  "protocolVersion": 2,
+  "rationale": "Revision ef73a147ab8cfa53f389c11510df11115397fe69 restores actionable missing-origin guidance within the approved scope, preserves the reviewed account-bound and time-limited default-branch lookup, and passed five focused CLI cases plus the mandatory check:fast and test:e2e hooks.",
+  "responseSha256": "15c2d812c123da421305ff25deab23c6850f94c1e3ea53010e2c5484c4e0afc5",
+  "revisionCommitSha": "ef73a147ab8cfa53f389c11510df11115397fe69",
+  "round": 1
+}

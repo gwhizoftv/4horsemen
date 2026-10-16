@@ -1,0 +1,14 @@
+{
+  "actionId": "e247bbae-7933-4404-87db-83e677833829",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "d0aadfc857efa86c27d19d596e8d45221f2310519a86afa7d59b5a68cfebaf32",
+  "issue": 231,
+  "issueSessionId": "issue-231:884df5fe1200f1cfbd3cecae887488d8c376fdf9",
+  "protocolVersion": 2,
+  "rationale": "Revision ef73a147 restores the installer's missing-origin remedy on the discovery path while keeping fail-hard default-branch lookup, literal branch validation, and the CLI-bounded 30s timeout that already has end-to-end coverage.",
+  "responseSha256": "d3a58289e79f085298e12ff895ab8cbaa33d3c9f40601c0a564fbd52dcb32047",
+  "revisionCommitSha": "ef73a147ab8cfa53f389c11510df11115397fe69",
+  "round": 1
+}
