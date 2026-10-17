@@ -32,6 +32,9 @@ const fixture = () => {
   roots.push(root);
   const clone = join(root, "clone");
   mkdirSync(clone);
+  mkdirSync(join(root, "coord/dist"), { recursive: true });
+  mkdirSync(join(root, "coord/scripts/lib"), { recursive: true });
+  writeFileSync(join(root, "coord/scripts/lib/node-runtime.sh"), readFileSync("scripts/lib/node-runtime.sh"), { mode: 0o700 });
   return { root, clone, cliEntry: join(root, "coord", "dist", "main.js") };
 };
 
@@ -96,8 +99,7 @@ describe("agent lifecycle hook synchronization", () => {
   });
 
   it.each(["codex", "claude", "cursor", "antigravity"] as const)("prefilters %s without starting Node and decodes escaped JSON through Node", (vendor) => {
-    const { root, clone } = fixture();
-    const cliEntry = join(root, "test-cli.cjs");
+    const { root, clone, cliEntry } = fixture();
     writeFileSync(cliEntry, 'process.stdout.write("decoded\\n")');
     const bin = join(root, "bin");
     mkdirSync(bin);

@@ -33,12 +33,12 @@ export const coordCliEntry = (): string => resolve(dirname(fileURLToPath(import.
 
 const singleQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
-/** Stable coordinator entry for callbacks: reselect Node after runtime upgrades. */
-export const coordNodeCommand = (): string =>
-  singleQuote(resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "lib", "node-runtime.sh"));
+/** Reselect beside the target CLI; retain this Node only as a validated fallback. */
+export const coordNodeCommand = (cliEntry: string): string =>
+  `${singleQuote(resolve(dirname(cliEntry), "..", "scripts", "lib", "node-runtime.sh"))} --fallback-node ${singleQuote(process.execPath)}`;
 
 export const gitCredentialHelperCommand = (account: string, cliEntry: string): string =>
-  `!${coordNodeCommand()} ${singleQuote(cliEntry)}${GITHUB_CREDENTIAL_HELPER_MARKER}${account}`;
+  `!${coordNodeCommand(cliEntry)} ${singleQuote(cliEntry)}${GITHUB_CREDENTIAL_HELPER_MARKER}${account}`;
 
 /**
  * One-shot Git settings: the empty value resets inherited helpers (osxkeychain,

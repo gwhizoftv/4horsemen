@@ -152,10 +152,50 @@ describe("coord wrapper", () => {
     writeNode(override, "v25.0.0");
     const env = { ...environment(root, bin), COORD_NODE: override };
     expect(spawnSync(wrapper, [], { encoding: "utf8", env }).status).toBe(1);
+    expect(spawnSync(wrapper, [], { encoding: "utf8", env: { ...env, COORD_NODE: "" } }).status).toBe(1);
     writeNode(override, "v27.0.0");
     expect(spawnSync(wrapper, [], { encoding: "utf8", env }).status).toBe(0);
     const engines = (JSON.parse(readFileSync(resolve("package.json"), "utf8")) as { engines: { node: string } }).engines.node;
     const floor = /coord_min_major=(\d+)/.exec(readFileSync(resolve("scripts/lib/node-runtime.sh"), "utf8"))![1];
     expect(engines).toBe(`>=${floor}.0.0`);
+  });
+
+  it("isolates version-probe stdin from callback input and preserves the callback exit status", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-wrapper-stdin-"));
+    roots.push(root);
+    const { bin } = writeFixture(root);
+    writeFileSync(join(bin, "node"), `#!/bin/sh
+if [ "$1" = --version ]; then IFS= read -r consumed || :; echo v26.0.0; exit 0; fi
+/bin/cat
+exit 7
+`, { mode: 0o700 });
+    const input = "protocol=https\nhost=github.com\n\n";
+    const result = spawnSync(join(root, "scripts/lib/node-runtime.sh"), ["callback.js"], {
+      input, encoding: "utf8", env: environment(root, bin)
+    });
+    expect(result.stdout).toBe(input);
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(7);
+  });
+
+  it("validates a saved callback's fallback Node while preferring current discovery and overrides", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-wrapper-fallback-"));
+    roots.push(root);
+    const { bin } = writeFixture(root);
+    writeNode(join(bin, "node"), "v16.18.0");
+    const fallback = join(root, "custom-node/node");
+    writeNode(fallback, "v26.0.0");
+    const runtime = join(root, "scripts/lib/node-runtime.sh");
+    const env = environment(root, bin);
+    const run = (extra: NodeJS.ProcessEnv = {}) => spawnSync(runtime, ["--fallback-node", fallback, "--resolve"], {
+      encoding: "utf8", env: { ...env, ...extra }
+    });
+    expect(run()).toMatchObject({ status: 0, stdout: `${realpathSync(fallback)}\n` });
+    expect(run({ COORD_NODE: join(bin, "node") }).status).toBe(1);
+    writeNode(fallback, "v25.0.0");
+    expect(run().status).toBe(1);
+    writeNode(join(bin, "node"), "v27.0.0");
+    unlinkSync(fallback);
+    expect(run()).toMatchObject({ status: 0, stdout: `${realpathSync(join(bin, "node"))}\n` });
   });
 });

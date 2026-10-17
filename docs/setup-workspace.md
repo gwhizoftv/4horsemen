@@ -55,7 +55,8 @@ Coord selects its own Node >=26 before loading driver code. It checks an explici
 `COORD_NODE` first, then Node executables in PATH order, then the newest compatible
 installation under `${NVM_DIR:-$HOME/.nvm}/versions/node`. `COORD_NODE` must be an
 absolute path to an executable named `node`; an invalid override fails rather
-than falling back. For example, `COORD_NODE=/path/to/node26/bin/node coord onboard
+than falling back, including an explicitly empty `COORD_NODE=`. Use `unset
+COORD_NODE` to restore automatic discovery. For example, `COORD_NODE=/path/to/node26/bin/node coord onboard
 /path/to/app` lets the product keep an older development Node. Selection does
 not download Node, source nvm, or change your version-manager defaults.
 
@@ -66,8 +67,14 @@ must also be available for those steps. If no compatible Node is found, coord
 stops before loading JavaScript and explains how to install one or set the
 override. Re-run onboarding after upgrading coord to refresh existing generated
 callbacks; those callbacks then resolve Node at each invocation, so removing an
-older Node patch installation does not require regenerating them. Update an
-explicit COORD_NODE yourself if its executable is removed.
+older Node patch installation does not require regenerating them when a compatible
+replacement is discoverable. They use the selector beside their target CLI and
+retain the Node that generated them as a validated last resort, so a one-shot
+onboarding override also works for later callbacks without that environment.
+An explicit current `COORD_NODE` always wins; update it yourself if its executable
+is removed. Other coordinator entry points still need a discoverable Node or an
+exported override. The selector's internal `--resolve` mode prints only the chosen
+absolute executable path for coordinator builds.
 
 `COORD_SOURCE` supplies the default source; `--source` overrides it. For private
 forks, authenticate Git and pass a local authenticated clone as `--source`.

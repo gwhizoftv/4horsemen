@@ -13,7 +13,7 @@ coord_node_error() {
 coord_probe_node() {
   coord_probe_version=unavailable
   [ -x "$1" ] && [ ! -d "$1" ] || return 1
-  coord_probe_version=$("$1" --version 2>/dev/null) || return 1
+  coord_probe_version=$("$1" --version </dev/null 2>/dev/null) || return 1
   case "$coord_probe_version" in v*) ;; *) return 1 ;; esac
   coord_numbers=${coord_probe_version#v}
   case "$coord_numbers" in *[!0-9.]*|*.*.*.*) return 1 ;; esac
@@ -28,6 +28,17 @@ coord_probe_node() {
   done
   [ "$coord_major" -ge "$coord_min_major" ]
 }
+
+# Saved callbacks retain the install-time executable as a last resort when a
+# one-shot COORD_NODE is no longer in their environment. Discovery still wins
+# after Node upgrades, and an explicit current override remains authoritative.
+coord_fallback=
+if [ "${1:-}" = --fallback-node ]; then
+  [ "$#" -ge 2 ] || coord_node_error '--fallback-node requires an executable path'
+  coord_fallback=$2
+  shift 2
+  case "$coord_fallback" in /*/node) ;; *) coord_node_error 'fallback Node must be an absolute executable bin/node' ;; esac
+fi
 
 coord_selected=
 coord_found=none
@@ -69,6 +80,9 @@ else
         coord_best_major=$coord_major coord_best_minor=$coord_minor coord_best_patch=$coord_patch
       fi
     done
+  fi
+  if [ -z "$coord_selected" ] && [ -n "$coord_fallback" ] && coord_probe_node "$coord_fallback"; then
+    coord_selected=$coord_fallback
   fi
 fi
 
