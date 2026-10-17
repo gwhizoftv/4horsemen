@@ -62,6 +62,38 @@ for public bootstrap. Interactive operation also needs tmux, the configured
 harnesses and the product's own tools. Terminal.app windows are a macOS-only
 integration; on other platforms use tmux without those windows.
 
+### Coordinator Node runtime selection
+
+`coord` requires a stable Node.js `>=26.0.0` runtime for its own CLI, build
+steps, and Git/agent hook bridges, even when the product repository develops
+against an older ambient Node version on `PATH` (for example `v16.18.0`):
+
+1. `COORD_NODE`: when set to an absolute path to a `node` executable, `coord`
+   validates that binary directly and fails closed if it is missing, not
+   executable, or older than `26.0.0` (it never falls back silently).
+2. `PATH`: otherwise `coord` scans `PATH` entries in order and selects the first
+   `node` reporting a stable version `>=26.0.0`.
+3. NVM: if every `node` on `PATH` is older (or none is present), `coord` scans
+   `${NVM_DIR:-$HOME/.nvm}/versions/node/*/bin/node` and selects the highest
+   installed stable version `>=26.0.0` without running `nvm use` or mutating the
+   caller's shell environment.
+
+When `coord`, `scripts/bootstrap.sh`, or `coord install --bootstrap-coordination`
+runs `pnpm install` or `pnpm build` for the coordination checkout itself, it
+prepends the selected Node's `bin` directory to `PATH` only for that build
+subshell. The `coord` CLI process and product verification commands (`verify`
+and `checks`) inherit the caller's original `PATH` and working directory
+unchanged, so product child processes continue to use the workspace's own Node
+version. If no compatible Node `>=26.0.0` is found, `coord` and agent Git hooks
+fail closed with a diagnostic naming the detected version and remediation
+(`nvm install 26` or `COORD_NODE=/absolute/path/to/node`).
+
+Generated per-clone and status-line callbacks (Git credential helpers, agent
+lifecycle/shell-guard hooks, and Claude/Antigravity status-line wrappers) pin
+the resolved Node `process.execPath` recorded during `coord onboard` or `coord
+install`. If you later remove or relocate that Node installation, re-run
+`coord onboard` or `coord install` to refresh those generated commands.
+
 ## Onboard a product
 
 ```sh

@@ -90,8 +90,9 @@ describe("owner bare mirror", () => {
     await expect(bound.publishBranch("a".repeat(40), "issue-1/codex-final")).rejects.toThrow(
       "GitHub authentication for acct has expired or been revoked.\nRun: coord auth login"
     );
+    const quotedNode = `'${process.execPath.replaceAll("'", "'\\''")}'`;
     for (const args of calls) {
-      expect(args.slice(0, 4)).toEqual(["-c", `${helper}=`, "-c", `${helper}=!/usr/bin/env node '/coord/dist/main.js' auth git-credential --account acct`]);
+      expect(args.slice(0, 4)).toEqual(["-c", `${helper}=`, "-c", `${helper}=!${quotedNode} '/coord/dist/main.js' auth git-credential --account acct`]);
       expect(args[4]).toBe("--git-dir");
     }
 

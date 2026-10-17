@@ -122,13 +122,21 @@ describe("coord install — two-mode footprint", () => {
       env: { CLAUDE_CONFIG_DIR: join(parent, "claude-config") }, options });
     expect(existsSync(join(parent, "claude-config/.claude.json"))).toBe(true);
     // Execute the shared setup helper against an installed clone without
-    // running the rest of the legacy identity/MCP/permission setup.
+    // running the rest of the legacy identity/MCP/permission setup, even when
+    // an incompatible ambient node v16.18.0 is first on PATH.
     const installed = installOnce(fixture, { agents: ["codex"], home: null });
     const codexHome = join(parent, "codex-config");
+    const oldNodeBin = join(parent, "node16-bin");
+    mkdirSync(oldNodeBin, { recursive: true });
+    writeFileSync(
+      join(oldNodeBin, "node"),
+      "#!/bin/sh\nif [ \"${1:-}\" = \"--version\" ]; then printf 'v16.18.0\\n'; exit 0; fi\necho 'wrong node' >&2\nexit 99\n",
+      { mode: 0o755 }
+    );
     const setupTrust = (dryRun: boolean) => execFileSync("bash", ["-c",
       '. "$1"; AGENT_NAME=codex; MASTER_ROOT="$2"; CLONE_DIR="$3"; DRY_RUN="$4"; common_configure_trust',
       "_", join(repoRoot, "scripts/setup_common.sh"), fixture.productRoot, installed.clones[0]!, String(dryRun)], {
-        env: { ...process.env, CODEX_HOME: codexHome }, stdio: "pipe"
+        env: { ...process.env, CODEX_HOME: codexHome, PATH: `${oldNodeBin}:${dirname(process.execPath)}:${process.env.PATH ?? ""}` }, stdio: "pipe"
       });
     setupTrust(true);
     expect(existsSync(codexHome)).toBe(false);
@@ -336,7 +344,8 @@ describe("coord install — two-mode footprint", () => {
     const fixture = product();
     const origin = "https://acct@github.com/example/myserver.git";
     const helper = "credential.https://github.com.helper";
-    const coordHelper = `!/usr/bin/env node '${join(repoRoot, "dist", "main.js")}' auth git-credential --account acct`;
+    const quotedNode = `'${process.execPath.replaceAll("'", "'\\''")}'`;
+    const coordHelper = `!${quotedNode} '${join(repoRoot, "dist", "main.js")}' auth git-credential --account acct`;
     const helpers = () => tryGit(clone, "config", "--local", "--get-all", helper).stdout.split("\n").slice(0, -1);
     const result = installOnce(fixture, { origin, githubAccount: "acct" });
     const clone = result.clones[0] as string;
@@ -409,6 +418,34 @@ describe("coord install — two-mode footprint", () => {
     expect(() => installOnce(fixture, { origin: "git@github.com:example/myserver.git", githubAccount: "acct" }))
       .toThrow("needs an https://github.com/");
     expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(false);
+  });
+
+  it("prepends dirname(process.execPath) to PATH during bootstrapCoordination without mutating process.env.PATH", () => {
+    const fixture = product();
+    const fakeBin = join(fixture.workspaceRoot, "bootstrap-fake-bin");
+    const pnpmLog = join(fixture.workspaceRoot, "bootstrap-pnpm.log");
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(
+      join(fakeBin, "node"),
+      "#!/bin/sh\necho 'v16.18.0'\n",
+      { mode: 0o755 }
+    );
+    writeFileSync(
+      join(fakeBin, "pnpm"),
+      `#!/bin/sh\nprintf '%s node=%s\\n' "$*" "$(command -v node)" >> '${pnpmLog}'\n`,
+      { mode: 0o755 }
+    );
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}:${originalPath ?? ""}`;
+    try {
+      installOnce(fixture, { bootstrap: true });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+    expect(readFileSync(pnpmLog, "utf8").trim().split("\n")).toEqual([
+      `install --frozen-lockfile node=${process.execPath}`,
+      `build node=${process.execPath}`
+    ]);
   });
 });
 

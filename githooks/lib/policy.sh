@@ -14,7 +14,7 @@
 # what a workspace config means.
 
 coord_cli_entry() {
-  local entry
+  local entry runtime
   entry="$(git config --local --get coord.cliEntry 2>/dev/null || true)"
 
   if [[ -z "$entry" ]]; then
@@ -30,8 +30,15 @@ coord_cli_entry() {
     return 1
   fi
 
-  if ! command -v node >/dev/null 2>&1; then
-    echo "HOOK BLOCKED: node is not on PATH, so coordination cannot read the declared checks for this clone." >&2
+  runtime="$(dirname "$(dirname "$entry")")/scripts/lib/node-runtime.sh"
+  if [[ ! -x "$runtime" ]]; then
+    echo "HOOK BLOCKED: coordination runtime selector '$runtime' is missing or not executable." >&2
+    echo "  Fix: re-run coord install or restore the coordination checkout." >&2
+    return 1
+  fi
+
+  if ! "$runtime" --print-path >/dev/null; then
+    echo "HOOK BLOCKED: no compatible Node.js (>=26.0.0) runtime is available, so coordination cannot read the declared checks for this clone." >&2
     echo "  Only agent clones need this; the product itself is never made to depend on Node." >&2
     return 1
   fi
@@ -46,16 +53,18 @@ coord_cli_entry() {
 # Prepush receives the buffered outgoing ref list on stdin; precommit inspects
 # Git's index. Classification and measurement live in the same CLI as coord.
 coord_verify() {
-  local phase="$1" entry
+  local phase="$1" entry runtime
   entry="$(coord_cli_entry)" || return 1
-  node "$entry" hook-verify --clone "$(git rev-parse --show-toplevel)" --phase "$phase"
+  runtime="$(dirname "$(dirname "$entry")")/scripts/lib/node-runtime.sh"
+  "$runtime" "$entry" hook-verify --clone "$(git rev-parse --show-toplevel)" --phase "$phase"
 }
 
 # coord_scope (legacy installed-hook compatibility only)
 #
 # Current hooks use coord_verify's shared classifier, not this older filter.
 coord_scope() {
-  local entry
+  local entry runtime
   entry="$(coord_cli_entry)" || return 1
-  node "$entry" hook-scope --clone "$(git rev-parse --show-toplevel)"
+  runtime="$(dirname "$(dirname "$entry")")/scripts/lib/node-runtime.sh"
+  "$runtime" "$entry" hook-scope --clone "$(git rev-parse --show-toplevel)"
 }

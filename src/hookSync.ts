@@ -137,6 +137,8 @@ const bodyPath = (installRoot: string, name: string): string => join(installRoot
 
 const launcherLibraryPath = (installRoot: string): string => join(installRoot, "scripts", "lib", "launcher.sh");
 
+const nodeRuntimeLibraryPath = (installRoot: string): string => join(installRoot, "scripts", "lib", "node-runtime.sh");
+
 const sourcePathFor = (installRoot: string, relative: string): string =>
   relative === "lib/launcher.sh" ? launcherLibraryPath(installRoot) : bodyPath(installRoot, relative);
 
@@ -162,7 +164,8 @@ export const canonicalSourceDigest = (installRoot: string): string => {
     ["githooks/lib/identity.sh", bodyPath(installRoot, "lib/identity.sh")] as const,
     ["githooks/lib/policy.sh", bodyPath(installRoot, "lib/policy.sh")] as const,
     ["templates/hooks/shim.sh", shimTemplatePath(installRoot)] as const,
-    ["scripts/lib/launcher.sh", launcherLibraryPath(installRoot)] as const
+    ["scripts/lib/launcher.sh", launcherLibraryPath(installRoot)] as const,
+    ["scripts/lib/node-runtime.sh", nodeRuntimeLibraryPath(installRoot)] as const
   ];
   const canonical = sources
     .map(([id, path]) => `${id}:${sha256OfFile(path)}`)

@@ -37,7 +37,7 @@ export const renderAgentLifecycleHookCommand = (
   vendor: LifecycleVendor,
   event: string
 ): string =>
-  `COORD_AGENT_LIFECYCLE_HOOK=${AGENT_LIFECYCLE_HOOK_MARKER} /usr/bin/env node ${shellQuote(
+  `COORD_AGENT_LIFECYCLE_HOOK=${AGENT_LIFECYCLE_HOOK_MARKER} ${shellQuote(process.execPath)} ${shellQuote(
     resolve(cliEntry)
   )} agent-event --vendor ${vendor} --clone ${shellQuote(resolve(clone))} --event ${shellQuote(event)}`;
 
@@ -47,7 +47,7 @@ export type JsonObject = Record<string, unknown>;
  * the decoder too (e.g. g\\u0069t), never to the substring fast path. */
 export const renderShellGuardHookCommand = (cliEntry: string, clone: string, vendor: LifecycleVendor): string => {
   const allow = vendor === "cursor" ? '{"permission":"allow"}' : vendor === "antigravity" ? '{"decision":"allow"}' : '';
-  const script = `payload=$(cat); case "$payload" in *git*|*\\\\*|*\\'*) printf '%s' "$payload" | /usr/bin/env node ${shellQuote(resolve(cliEntry))} git-guard --vendor ${vendor} --clone ${shellQuote(resolve(clone))} ;; *) ${allow ? `printf '%s\\n' ${shellQuote(allow)}` : ':'} ;; esac`;
+  const script = `payload=$(cat); case "$payload" in *git*|*\\\\*|*\\'*) printf '%s' "$payload" | ${shellQuote(process.execPath)} ${shellQuote(resolve(cliEntry))} git-guard --vendor ${vendor} --clone ${shellQuote(resolve(clone))} ;; *) ${allow ? `printf '%s\\n' ${shellQuote(allow)}` : ':'} ;; esac`;
   return `COORD_AGENT_LIFECYCLE_HOOK=${AGENT_LIFECYCLE_HOOK_MARKER} /bin/sh -c ${shellQuote(script)}`;
 };
 export const isObject = (value: unknown): value is JsonObject =>
@@ -374,7 +374,7 @@ const renderStatusLineWrapper = (cliEntry: string, previousStatusLine: unknown):
     "payload=\"$(cat)\"",
     // Status rendering must not wait for a cold Node process. The receiver is
     // observational and owns its own lock, so forwarding can finish async.
-    `(printf '%s' "$payload" | /usr/bin/env node ${shellQuote(resolve(cliEntry))} agent-event --vendor antigravity --event status-line >/dev/null 2>&1) &`,
+    `(printf '%s' "$payload" | ${shellQuote(process.execPath)} ${shellQuote(resolve(cliEntry))} agent-event --vendor antigravity --event status-line >/dev/null 2>&1) &`,
     ...(downstream === null
       ? ["printf '%s\\n' 'coord lifecycle'"]
       : [`printf '%s' "$payload" | /bin/sh -c ${shellQuote(downstream)}`]),

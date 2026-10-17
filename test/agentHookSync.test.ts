@@ -95,12 +95,21 @@ describe("agent lifecycle hook synchronization", () => {
     expect(existsSync(path) ? readFileSync(path, "utf8") : "").not.toContain(AGENT_LIFECYCLE_HOOK_MARKER);
   });
 
-  it.each(["codex", "claude", "cursor", "antigravity"] as const)("prefilters %s without starting Node and decodes escaped JSON through Node", (vendor) => {
+  it.each(["codex", "claude", "cursor", "antigravity"] as const)("prefilters %s without starting Node and decodes escaped JSON through pinned process.execPath", (vendor) => {
     const { root, clone } = fixture();
     const cliEntry = join(root, "test-cli.cjs");
     writeFileSync(cliEntry, 'process.stdout.write("decoded\\n")');
+    const badBin = join(root, "bad-bin");
+    mkdirSync(badBin);
+    writeFileSync(join(badBin, "node"), "#!/bin/sh\necho wrong-path-node >&2\nexit 99\n", { mode: 0o700 });
     const command = renderShellGuardHookCommand(cliEntry, clone, vendor);
-    const run = (input: string) => spawnSync("/bin/sh", ["-c", command], { input, encoding: "utf8" });
+    expect(command).not.toContain("/usr/bin/env node");
+    const run = (input: string) =>
+      spawnSync("/bin/sh", ["-c", command], {
+        input,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${badBin}:${process.env.PATH ?? ""}` }
+      });
     const allow = vendor === "cursor" ? '{"permission":"allow"}\n' : vendor === "antigravity" ? '{"decision":"allow"}\n' : "";
     expect(run('{"command":"echo hello"}').stdout).toBe(allow);
     expect(run('{"command":"git status"}').stdout).toBe("decoded\n");

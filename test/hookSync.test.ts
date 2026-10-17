@@ -1,8 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { inspectCloneHooks, readHookManifest, removeCloneHooks, type HookManifest } from "../src/hookSync.js";
+import { canonicalSourceDigest, inspectCloneHooks, readHookManifest, removeCloneHooks, type HookManifest } from "../src/hookSync.js";
 import { install, uninstall } from "../src/install.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { initializeOperationalState, mutateCursorsState, readConfig } from "../src/state.js";
@@ -402,6 +403,94 @@ describe("vendored delivery", () => {
 
     expect(tryGit(clone, "commit", "-m", "no label").exitCode).not.toBe(0);
     expect(tryGit(clone, "commit", "-m", "Claude: work").exitCode).toBe(0);
+  });
+
+  it("runs hook-verify with Node >=26 while keeping workspace Node 16 on PATH for product verify commands in shim and vendor modes", () => {
+    const nodeVersionFile = "node-version.txt";
+    const verifyNode16 = {
+      precommit: [
+        {
+          name: "check-workspace-node",
+          argv: ["/bin/sh", "-c", `test "$(node --version)" = "v16.18.0" && node --version > ${nodeVersionFile}`]
+        }
+      ],
+      prepush: []
+    };
+    const { fixture, clone } = installed(verifyNode16);
+    const oldNodeBin = join(fixture.workspaceRoot, "node16-bin");
+    mkdirSync(oldNodeBin, { recursive: true });
+    writeFileSync(
+      join(oldNodeBin, "node"),
+      "#!/bin/sh\nif [ \"${1:-}\" = \"--version\" ]; then printf 'v16.18.0\\n'; exit 0; fi\necho 'node16 cannot run coord' >&2\nexit 42\n",
+      { mode: 0o755 }
+    );
+
+    const runCommit = (extraEnv: NodeJS.ProcessEnv) =>
+      spawnSync("git", ["commit", "-m", "Claude: work"], {
+        cwd: clone,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "Fixture",
+          GIT_AUTHOR_EMAIL: "fixture@example.com",
+          GIT_COMMITTER_NAME: "Fixture",
+          GIT_COMMITTER_EMAIL: "fixture@example.com",
+          ...extraEnv
+        }
+      });
+
+    stageWork(clone, "issue-1/claude", "cmd/shim-check.go");
+    const blocked = runCommit({
+      COORD_NODE: "",
+      NVM_DIR: join(fixture.workspaceRoot, "no-nvm"),
+      PATH: `${oldNodeBin}:/usr/bin:/bin`
+    });
+    expect(blocked.status).not.toBe(0);
+    expect(blocked.stderr).toContain("HOOK BLOCKED");
+    expect(blocked.stderr).toContain(">=26.0.0");
+
+    const shimOk = runCommit({
+      COORD_NODE: process.execPath,
+      NVM_DIR: join(fixture.workspaceRoot, "no-nvm"),
+      PATH: `${oldNodeBin}:/usr/bin:/bin`
+    });
+    expect(shimOk.status, shimOk.stderr).toBe(0);
+    expect(readFileSync(join(clone, nodeVersionFile), "utf8").trim()).toBe("v16.18.0");
+
+    install({
+      home: null,
+      installRoot: repoRoot,
+      productRoot: fixture.productRoot,
+      coordRoot: fixture.coordRoot,
+      agents: ["claude"],
+      profile: "solo",
+      declarePath: writeDeclaration(fixture.workspaceRoot, { checks: declaredChecks, verify: verifyNode16 }, "vendor-node16"),
+      writeProduct: false,
+      vendor: true,
+      bootstrap: false,
+      dryRun: false,
+      log: silence().log
+    });
+    writeFileSync(join(clone, "cmd/vendor-check.go"), "package main\n");
+    git(clone, "add", "cmd/vendor-check.go");
+    const vendorOk = runCommit({
+      COORD_NODE: process.execPath,
+      NVM_DIR: join(fixture.workspaceRoot, "no-nvm"),
+      PATH: `${oldNodeBin}:/usr/bin:/bin`
+    });
+    expect(vendorOk.status, vendorOk.stderr).toBe(0);
+  });
+
+  it("includes scripts/lib/node-runtime.sh in canonicalSourceDigest", () => {
+    const { fixture } = installed();
+    const fakeInstall = join(fixture.workspaceRoot, "fake-install");
+    for (const dir of ["githooks", "templates", "scripts/lib"]) {
+      mkdirSync(join(fakeInstall, dir), { recursive: true });
+      cpSync(join(repoRoot, dir), join(fakeInstall, dir), { recursive: true });
+    }
+    const before = canonicalSourceDigest(fakeInstall);
+    writeFileSync(join(fakeInstall, "scripts/lib/node-runtime.sh"), `${readFileSync(join(fakeInstall, "scripts/lib/node-runtime.sh"), "utf8")}\n# changed\n`);
+    expect(canonicalSourceDigest(fakeInstall)).not.toBe(before);
   });
 });
 

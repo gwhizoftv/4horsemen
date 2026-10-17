@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { syncAgentTrust } from "./agentTrust.js";
 import {
@@ -244,6 +244,11 @@ const requireWorktree = (path: string, description: string): string => {
 };
 
 const bootstrapCoordination = (installRoot: string, options: EffectOptions): void => {
+  const nodeBinDir = dirname(process.execPath);
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PATH: process.env.PATH ? `${nodeBinDir}${delimiter}${process.env.PATH}` : nodeBinDir
+  };
   for (const argv of [
     ["pnpm", "install", "--frozen-lockfile"],
     ["pnpm", "build"]
@@ -255,7 +260,7 @@ const bootstrapCoordination = (installRoot: string, options: EffectOptions): voi
       continue;
     }
     options.log(`running ${argv.join(" ")} in ${installRoot}\n`);
-    const result = spawnSync(command as string, args, { cwd: installRoot, stdio: "inherit" });
+    const result = spawnSync(command as string, args, { cwd: installRoot, stdio: "inherit", env });
     if ((result.status ?? 1) !== 0) throw new Error(`Bootstrap step '${argv.join(" ")}' failed in ${installRoot}.`);
   }
 };

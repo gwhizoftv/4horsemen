@@ -53,10 +53,11 @@ describe("GitHub account binding", () => {
     expect(gh.env?.GITHUB_TOKEN).toBeUndefined();
 
     await bound(["git", "ls-remote", "origin"], "/work");
+    const quotedNode = `'${process.execPath.replaceAll("'", "'\\''")}'`;
     expect(calls.at(-1)!.argv).toEqual([
       "git",
       "-c", "credential.https://github.com.helper=",
-      "-c", "credential.https://github.com.helper=!/usr/bin/env node '/coord/dist/main.js' auth git-credential --account acct",
+      "-c", `credential.https://github.com.helper=!${quotedNode} '/coord/dist/main.js' auth git-credential --account acct`,
       "ls-remote", "origin"
     ]);
 
