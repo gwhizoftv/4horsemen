@@ -5,7 +5,7 @@ import { git, localConfigGet, worktreeRoot } from "./gitExec.js";
 import { canonicalSourceDigest, inspectCloneHooks, readHookManifest } from "./hookSync.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, unresolvableCommands, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
-import { GIT_WRAPPER_RELATIVE_PATH, productName } from "./setupWorkspace.js";
+import { GIT_WRAPPER_RELATIVE_PATH, hasTerminalDeliveryAdapter, productName } from "./setupWorkspace.js";
 import { readConfig, type CoordinatorConfig, type StartState } from "./state.js";
 import { resolveWorkspaceLocation } from "./workspace.js";
 import { inspectAgentLifecycleHooks } from "./agentHookSync.js";
@@ -356,14 +356,15 @@ const checkClone = (input: {
     });
     if (
       lifecycle.kind === "unsupported" &&
-      (input.agent.delivery === "nudge" || input.agent.delivery === "both")
+      (input.agent.delivery === "nudge" || input.agent.delivery === "both") &&
+      !hasTerminalDeliveryAdapter(input.agent.id)
     ) {
       findings.push(
         finding(
           "lifecycleHooks",
           clone,
-          `Agent '${input.agent.id}' has nudge delivery enabled but no supported lifecycle-hook vendor mapping.`,
-          "Use a supported vendor agent id (claude, codex, cursor, or antigravity), or set delivery to pull so hook-gated nudging is not promised."
+          `Agent '${input.agent.id}' has nudge delivery enabled but no supported lifecycle-hook vendor mapping or terminal delivery adapter.`,
+          "Use a supported vendor agent id (claude, codex, cursor, antigravity, or muse), or set delivery to pull so hook-gated nudging is not promised."
         )
       );
     } else if (lifecycle.kind === "missing") {

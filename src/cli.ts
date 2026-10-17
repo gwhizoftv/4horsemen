@@ -29,7 +29,7 @@ import { sha256 } from "./hash.js";
 import { renderHookScope, resolveHookBinding, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { inspectOutgoingChanges, inspectStagedChanges } from "./changeClassification.js";
 import { hookVerificationRecorder } from "./verificationLog.js";
-import { install, onboard, packageVersion, savedGitHubAccount, uninstall } from "./install.js";
+import { DEFAULT_AGENTS, install, onboard, packageVersion, savedGitHubAccount, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
 import { makeAgentClonesBaseReady, makeManualClonesBaseReady, prepareAgentIssueBranches, type CloneBaseReadyResult } from "./prepareAgentBranch.js";
@@ -306,6 +306,7 @@ Usage:
   coord --version | -V | version
   coord onboard <repository> [--coord-runtime <path>] [--completes-root <path>] [--agents <a,b,c>] [--profile <p>] [--declare <file>]
                 [--github-account <login>] [--base-branch <branch>]
+                (default agents: claude,codex,cursor,antigravity,muse)
   coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>] [-v|--verbose]
   coord manual [--product <path> | --config <path> --coord-runtime <path>]
   coord install --product <path> --coord-runtime <external-path> --agents <a,b,c> [--profile <p>]
@@ -1389,7 +1390,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     if (command === "onboard") {
       allowedFlags(parsed, ["coord-runtime", "completes-root", "clone-root", "agents", "profile", "declare", "github-account", "base-branch"]);
       if (parsed.positionals.length !== 1) throw new Error("onboard requires exactly one repository path.");
-      const agents = (parsed.flags.get("agents") ?? "claude,codex,cursor,antigravity")
+      const agents = (parsed.flags.get("agents") ?? DEFAULT_AGENTS.join(","))
         .split(",")
         .map((agent) => agent.trim())
         .filter((agent) => agent !== "");

@@ -152,18 +152,25 @@ reuse the same trust writer. Reinstall preserves unrelated settings and does not
 rewrite unchanged trust entries; `install --dry-run` makes no trust changes.
 Launchers retain their existing sandbox and tool-permission settings.
 
-Muse Code is opt-in: include `muse` in `--agents` when installing or onboarding.
-It uses pull delivery, with Enter-only owner reminders and no vim prelude.
-The launcher passes run-local `--trust-workspace` to load `AGENTS.md` without
-writing persisted trust. It also passes `--disable-sandbox --approval-mode never`
-because Muse's sandbox protects `.git`, preventing the commits required by
-coordination. This permits writes anywhere the owner can write; no filesystem
-isolation is claimed. The existing PATH Git shim remains installed, with live
-coverage unverified; Muse lifecycle hooks, automatic nudges and usage analytics
-are not available. `MUSE_NO_AUTO_UPDATE=1` suppresses wrapper updates during
-version collection and launches; update Muse outside coord sessions. These
-flags were observed with Muse Code 1.4.10. A live Muse run loading instructions,
-committing/pushing and writing receipts has not been verified by the stub tests.
+Muse Code is included in the default `coord onboard` roster (fifth after Claude,
+Codex, Cursor, and Antigravity) with `delivery: "both"`. Automatic handoffs use
+the ready/complete protocol and a measured terminal adapter: foreground
+`muse-bin-<version>`, idle `❯` composer above a `─` rule and status footer,
+Enter-only submit (Escape is stripped because it interrupts a turn), and busy
+detection on `(… esc to interrupt)` chrome. Lifecycle hooks, prompt-submit
+acknowledgement, transcript watchdog input, and hook containment are unavailable;
+`coord status` reports Muse hook coverage as unverified without blocking
+progress. The launcher passes run-local `--trust-workspace` to load `AGENTS.md`
+without writing persisted trust, plus `--disable-sandbox --approval-mode never`
+because Muse's sandbox protects `.git`. This permits writes anywhere the owner
+can write; no filesystem isolation is claimed. `MUSE_NO_AUTO_UPDATE=1` suppresses
+wrapper updates during version collection and launches; update Muse outside
+coord sessions. Terminal adapter fixtures and this note match Muse Code 1.4.10
+(1.4.10-R6427.1), confirmed via `muse --version` during implementation.
+Re-measure after Muse upgrades. Focused stub/system tests cover onboarding,
+doctor, terminal gates, and ready-driven delivery; full live multi-action Git
+and private-response publication in a disposable workspace remains an owner
+acceptance step and is not claimed by those stubs alone.
 
 ### Agent editor modes
 
@@ -204,7 +211,7 @@ vendoring, tracked product changes, origin/base overrides, or dry runs.
 coord install \
   --product /path/to/app \
   --coord-runtime /path/to/coord-runtime \
-  --agents claude,codex,cursor,antigravity \
+  --agents claude,codex,cursor,antigravity,muse \
   --profile consensus
   # --write-product            # opt-in tracked product changes (additive only)
   # --vendor                   # copy hook bodies into agent clones instead of exec'ing them

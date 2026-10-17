@@ -149,6 +149,29 @@ describe("coord doctor", () => {
     expect(lifecycle?.remediation).toContain("delivery to pull");
   });
 
+  it("allows Muse automatic delivery without a lifecycle vendor mapping", () => {
+    ensureBuilt();
+    const fixture = makeProduct("plain");
+    fixtures.push(fixture);
+    git(fixture.productRoot, "remote", "set-url", "origin", "https://github.com/example/myserver.git");
+    install({
+      home: null,
+      installRoot: repoRoot,
+      productRoot: fixture.productRoot,
+      coordRoot: fixture.coordRoot,
+      agents: ["muse"],
+      profile: "solo",
+      declarePath: writeDeclaration(fixture.workspaceRoot, { checks: declaredChecks, verify: passingVerify }),
+      writeProduct: false,
+      vendor: false,
+      bootstrap: false,
+      dryRun: false,
+      log: silence().log
+    });
+    const lifecycle = report(fixture).findings.find((item) => item.class === "lifecycleHooks");
+    expect(lifecycle).toBeUndefined();
+  });
+
   it("reports a missing or crossed agent identity", () => {
     const { fixture, clone } = installed();
     git(clone, "config", "--local", "--unset", "consensus.agentId");

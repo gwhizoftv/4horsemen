@@ -876,6 +876,9 @@ export type OnboardOptions = {
 
 export type OnboardResult = { install: InstallResult; doctor: DoctorReport };
 
+/** Default `coord onboard` roster; Muse is fifth with automatic delivery. */
+export const DEFAULT_AGENTS = ["claude", "codex", "cursor", "antigravity", "muse"] as const;
+
 /** The runtime this product is already registered to, or null on first onboarding. */
 const registeredCoordRoot = (productRoot: string): string | null => {
   if (localConfigGet(productRoot, OWNER_WORKSPACE_CONFIG_KEY) === null) return null;
@@ -918,7 +921,7 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     ...(options.completesRoot === undefined ? {} : { completesRoot: resolve(options.completesRoot) }),
     cloneRoot: resolve(options.cloneRoot ?? parent),
     ...(options.declarePath === undefined ? {} : { declarePath: resolve(options.declarePath) }),
-    agents: options.agents ?? ["claude", "codex", "cursor", "antigravity"],
+    agents: options.agents ?? [...DEFAULT_AGENTS],
     profile: options.profile ?? "consensus",
     writeProduct: false,
     vendor: false,

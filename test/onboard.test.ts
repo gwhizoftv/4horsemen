@@ -201,6 +201,7 @@ describe("coord onboard", () => {
   });
 
   it("applies the happy-path defaults without changing the tracked product tree", async () => {
+    // Five default agents (incl. Muse) make this slower than the prior four-agent onboard.
     const fixture = product();
     const output: string[] = [];
     const aliasParent = join(fixture.workspaceRoot, "aliases");
@@ -237,7 +238,7 @@ describe("coord onboard", () => {
     expect(config.agents.find((agent) => agent.id === "codex")?.nudgeSubmit).toEqual(["Enter"]);
     expect(config.profile).toBe("consensus");
     expect(config.digestPaths).toEqual([]);
-    expect(config.agents.map((agent) => agent.id)).toEqual(["claude", "codex", "cursor", "antigravity"]);
+    expect(config.agents.map((agent) => agent.id)).toEqual(["claude", "codex", "cursor", "antigravity", "muse"]);
     const declaration = join(fixture.workspaceRoot, "policy.json");
     const verification = {
       mode: "coordinator",
@@ -274,7 +275,7 @@ describe("coord onboard", () => {
         }
       })
     ).toBe(0);
-    expect(manualAgents).toEqual([["claude", "codex", "cursor", "antigravity"]]);
+    expect(manualAgents).toEqual([["claude", "codex", "cursor", "antigravity", "muse"]]);
 
     const human = join(fixture.workspaceRoot, "human");
     execFileSync("git", ["clone", "-q", fixture.originPath, human]);
@@ -294,7 +295,7 @@ describe("coord onboard", () => {
     ).toBe(2);
     expect(errors.join("")).toContain("is not onboarded in this worktree");
     expect(existsSync(issueRuntimePaths(coordRoot, 10).issueRoot)).toBe(false);
-  });
+  }, 60_000);
 
   it("persists a selected profile and numeric dispatch resumes without refetching", async () => {
     const fixture = product();

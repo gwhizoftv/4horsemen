@@ -233,19 +233,29 @@ const fixture = (options: { prPolicy?: "owner-only" | "coord-open-unmerged" | "c
 /** An idle prompt every vendor check accepts, including an empty Codex composer. */
 const IDLE_PANE = "❯ Antigravity Gemini >\n› \n? for shortcuts";
 
+/** Measured Muse idle tail (composer + rule + footer). */
+const MUSE_IDLE_PANE = [
+  "── Voice input (alt(option)+v to start) ──────",
+  "❯",
+  "──────────────────────────────────────────────",
+  "  muse-wonder-1.0 · high · /tmp · Launch overrides"
+].join("\n");
+
 const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {}) => {
   const { paths } = fixture();
   let nowMs = Date.parse("2026-09-22T12:00:00.000Z");
   const now = () => new Date(nowMs).toISOString();
   const start = readStartState(paths);
+  const harnessProcess = vendor === "muse" ? "muse" : "harness";
+  const foreground = vendor === "muse" ? "muse-bin-1.4.10" : "harness";
   writeFileSync(paths.start, JSON.stringify({ ...start, profile: "solo", originalRoster: [vendor],
-    agents: [{ ...start.agents[0], id: vendor, delivery: "both", harnessProcess: "harness", nudgePrelude: [], nudgeSubmit: ["Enter"] }] }));
+    agents: [{ ...start.agents[0], id: vendor, delivery: "both", harnessProcess, nudgePrelude: [], nudgeSubmit: ["Enter"] }] }));
   createIssueRuntime(paths, [vendor]);
   const current = readCursorsState(paths);
   writeCursorsState(paths, cursorsStateSchema.parse({ ...current, activeRoster: [vendor], agents: { [vendor]: current.agents.codex } }));
   writeFileSync(paths.agentLifecycle, JSON.stringify(initialAgentLifecycle([vendor], now())));
   // `quiet: false` repaints a line above the composer on every capture, as a working harness does.
-  const ui = { foreground: "harness", busy: false, dead: false, text: IDLE_PANE, quiet: false, failSubmit: false,
+  const ui = { foreground, busy: false, dead: false, text: vendor === "muse" ? MUSE_IDLE_PANE : IDLE_PANE, quiet: false, failSubmit: false,
     failInspect: false, failCapture: false, waitAtCapture: Infinity, sends: 0, inspections: 0, captures: 0,
     sentTexts: [] as string[],
     onCapture: undefined as (() => void) | undefined, onSend: undefined as (() => void) | undefined };
@@ -1283,16 +1293,16 @@ describe("durable delivery safety", () => {
     expect(held.actionSafety[vendor]?.sends).toBe(4);
   });
 
-  it("charges partial sends and does not retry them on restart", async () => {
-    const f = safetyFixture(); f.ui.failSubmit = true;
+  it.each(["codex", "muse"])("charges partial sends and does not retry them on restart (%s)", async (vendor) => {
+    const f = safetyFixture(vendor); f.ui.failSubmit = true;
     const held = await f.tick();
     expect(held.holds[0]?.reason).toBe("delivery-uncertain");
-    expect(held.actionSafety.codex).toMatchObject({ sends: 1, reserved: true });
+    expect(held.actionSafety[vendor]).toMatchObject({ sends: 1, reserved: true });
     f.ui.failSubmit = false;
     f.advance(60_000); await f.tick();
     expect(f.ui.sends).toBe(1);
     const released = releaseHold(held, held.holds[0]!.id, false, f.now());
-    expect(released.actionSafety.codex).toMatchObject({ sends: 1, reserved: false });
+    expect(released.actionSafety[vendor]).toMatchObject({ sends: 1, reserved: false });
   });
 
   it.each(["codex", "claude", "cursor"])("reconciles %s's delayed submit hook without pane confirmation or another send", async (vendor) => {
@@ -1632,18 +1642,20 @@ const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], fina
 };
 
 describe("effectful run loop", () => {
-  it("records ready before verification and sends the next action exactly once after acceptance", async () => {
-    const f = safetyFixture("claude");
-    await f.tick(); f.advance(10); f.working();
-    const runtime = agentRuntimePaths(f.paths, "claude");
-    const completedId = readCursorsState(f.paths).agents.claude.actionId!;
+  it.each(["claude", "muse"])("records ready before verification and sends the next action exactly once after acceptance (%s)", async (vendor) => {
+    const f = safetyFixture(vendor);
+    await f.tick();
+    f.advance(10);
+    if (vendor === "claude") f.working();
+    const runtime = agentRuntimePaths(f.paths, vendor);
+    const completedId = readCursorsState(f.paths).agents[vendor]!.actionId!;
     const start = readStartState(f.paths);
     const sha = "d".repeat(40);
     const mirror = new BareMirror(f.paths.mirror, start.origin, async (args) => {
       if (args[2] === "rev-parse") return { exitCode: 0, stdout: Buffer.from(`${sha}\n`), stderr: "" };
       if (args[2] === "show") return { exitCode: 0, stdout: Buffer.from(JSON.stringify({
         protocolVersion: 1, artifact: "participation-ready", issue: start.issue, issueSessionId: start.issueSessionId,
-        agent: "claude", baselineSha: start.baselineSha, automationDigest: start.automationDigest
+        agent: vendor, baselineSha: start.baselineSha, automationDigest: start.automationDigest
       })), stderr: "" };
       return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
     });
@@ -1654,16 +1666,16 @@ describe("effectful run loop", () => {
     const loop = f.makeLoop({ mirror });
     await loop.runTick();
     expect(existsSync(runtime.ready)).toBe(false);
-    expect(readAgentLifecycle(f.paths).agents.claude.ready).toEqual({ actionId: completedId, at: f.now() });
+    expect(readAgentLifecycle(f.paths).agents[vendor]!.ready).toEqual({ actionId: completedId, at: f.now() });
     expect(f.ui.sends).toBe(1);
-    f.ui.foreground = "harness";
+    f.ui.foreground = vendor === "muse" ? "muse-bin-1.4.10" : "harness";
     for (let tick = 0; tick < 5; tick++) { f.advance(1_000); await loop.runTick(); }
-    const next = readCursorsState(f.paths).agents.claude;
+    const next = readCursorsState(f.paths).agents[vendor]!;
     expect(next.lastAcceptedActionId).toBe(completedId);
     expect(next.actionId).not.toBe(completedId);
     expect(f.ui.sends).toBe(2);
     expect(f.ui.sentTexts.at(-1)).toContain(next.actionId!);
-    expect(readAgentLifecycle(f.paths).agents.claude.ready).toBeNull();
+    expect(readAgentLifecycle(f.paths).agents[vendor]!.ready).toBeNull();
     expect(readJournal(f.paths).filter((event) => event.type === "nudged" && event.actionId === next.actionId)).toEqual([
       expect.objectContaining({ details: expect.objectContaining({ readyFor: completedId }) })
     ]);
@@ -2790,7 +2802,7 @@ describe("effectful run loop", () => {
     expect(readJournal(f.paths).some((event) => event.details?.event === "prompt-ready-action-absent")).toBe(false);
   });
 
-  it.each(["claude", "codex"])("resends a lost %s prompt once after a quiet minute, then reports [WAIT], with no ack timer", async (vendor) => {
+  it.each(["claude", "codex", "muse"])("resends a lost %s prompt once after a quiet minute, then reports [WAIT], with no ack timer", async (vendor) => {
     const f = safetyFixture(vendor);
     f.ui.quiet = true;
     const loop = f.makeLoop();
@@ -4546,19 +4558,20 @@ describe("ready-driven delivery and stall watchdog", () => {
     expect(f.ui.sends).toBe(ready ? 2 : 1);
   });
 
-  it("resends the current action once after an owner hold release, without ready", async () => {
-    const f = safetyFixture("claude");
+  it.each(["claude", "muse"])("resends the current action once after an owner hold release, without ready (%s)", async (vendor) => {
+    const f = safetyFixture(vendor);
     await f.tick();
     f.ui.dead = true;
     f.advance(60_000);
     const held = await f.tick();
     expect(held.holds).toEqual([expect.objectContaining({ reason: "harness-gone" })]);
     f.ui.dead = false;
+    f.ui.foreground = vendor === "muse" ? "muse-bin-1.4.10" : "harness";
     writeCursorsState(f.paths, releaseHold(held, held.holds[0]!.id, false, f.now()));
     f.advance(1);
     await f.tick();
     expect(f.ui.sends).toBe(2);
-    expect(readAgentLifecycle(f.paths).agents.claude!.action).toMatchObject({ delivery: "injected", sentHoldGeneration: 1 });
+    expect(readAgentLifecycle(f.paths).agents[vendor]!.action).toMatchObject({ delivery: "injected", sentHoldGeneration: 1 });
     await f.tick();
     expect(f.ui.sends).toBe(2);
   });

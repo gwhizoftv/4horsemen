@@ -44,7 +44,7 @@
       "id": "muse",
       "root": "../4horsemen-muse",
       "launcher": "start-muse.sh",
-      "delivery": "pull",
+      "delivery": "both",
       "nudgePrelude": [],
       "nudgeSubmit": ["Enter"],
       "terminalProfile": "Basic"

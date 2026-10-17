@@ -8,14 +8,15 @@
 
 Four Horsemen (`4horsemen`) run by using its `coord` command, short for coordinator.
 
-![Claude Code](https://img.shields.io/badge/agent-Claude_Code-d97757) ![Codex](https://img.shields.io/badge/agent-Codex-10a37f) ![Cursor](https://img.shields.io/badge/agent-Cursor-555555) ![Antigravity](https://img.shields.io/badge/agent-Antigravity-4285f4) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+![Claude Code](https://img.shields.io/badge/agent-Claude_Code-d97757) ![Codex](https://img.shields.io/badge/agent-Codex-10a37f) ![Cursor](https://img.shields.io/badge/agent-Cursor-555555) ![Antigravity](https://img.shields.io/badge/agent-Antigravity-4285f4) ![Muse](https://img.shields.io/badge/agent-Muse_Code-0a66c2) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Instead of trusting a single model with a change, give a team of coding agents
 the same GitHub issue. Four Horsemen runs Claude Code, Codex, Cursor, Antigravity,
-and optionally Meta's Muse Code (pull delivery)
+and Meta's Muse Code
 in separate Git clones, coordinates their plans, plan reviews, competitive implementations and peer code reviews, and verifies
-the exact commits they submit before publishing a pull request. You choose the
-agents, the project's checks, and when to intervene.
+the exact commits they submit before publishing a pull request. Muse participates
+through the same ready/complete terminal delivery path without lifecycle hooks or
+usage analytics. You choose the agents, the project's checks, and when to intervene.
 
 ## How it works
 
@@ -96,9 +97,9 @@ install from a private fork, see [bootstrap options](docs/setup-workspace.md#boo
 coord onboard /path/to/app
 ```
 
-The default is all four agents and your own clone. Onboarding creates
-the agent clones, proposes checks for the product, and runs `coord doctor`.
-Install all four harnesses, or use this alternative for a one-agent start:
+The default is all five agents (including Muse) and your own clone. Onboarding
+creates the agent clones, proposes checks for the product, and runs `coord doctor`.
+Install the five harnesses, or use this alternative for a one-agent start:
 
 ```sh
 coord onboard /path/to/app --agents codex --profile solo

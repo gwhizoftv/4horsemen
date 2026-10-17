@@ -83,6 +83,18 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+/** Measured Muse idle composer + rule + footer (sanitized). */
+const museIdleTail = (composer = "❯"): string =>
+  [
+    "── Voice input (alt(option)+v to start) ──────",
+    composer,
+    "──────────────────────────────────────────────",
+    "  muse-wonder-1.0 · high · /tmp · Launch overrides"
+  ].join("\n");
+
+const museBusyTail = (chrome: string): string =>
+  `${chrome}\n${museIdleTail("❯")}`;
+
 const promptFor = (agentId: string): string => {
   switch (agentId) {
     case "claude":
@@ -93,6 +105,8 @@ const promptFor = (agentId: string): string => {
       return "Antigravity CLI\n> \n? for shortcuts accept-edits · Gemini\n";
     case "codex":
       return "codex ready\n› \n? for shortcuts\n";
+    case "muse":
+      return `${museIdleTail()}\n`;
     default:
       return "ready\n";
   }
@@ -281,10 +295,12 @@ describe("tmux boundary", () => {
   });
 
   it("keeps Muse owner reminders free of vim preludes and Escape", () => {
-    const agent = { id: "muse", root: "/m", launcher: "start-muse.sh", delivery: "pull" as const };
+    const agent = { id: "muse", root: "/m", launcher: "start-muse.sh", delivery: "both" as const };
     expect(vimInsertPrelude("> ", "muse")).toEqual([]);
     expect(resolveNudgeKeys(agent, "> ")).toEqual({ prelude: [], submit: ["Enter"] });
     expect(resolveNudgeKeys({ ...agent, nudgePrelude: [], nudgeSubmit: ["Enter"] }, "> "))
+      .toEqual({ prelude: [], submit: ["Enter"] });
+    expect(resolveNudgeKeys({ ...agent, nudgeSubmit: ["Escape", "Enter"] }, "> "))
       .toEqual({ prelude: [], submit: ["Enter"] });
   });
 
@@ -796,6 +812,11 @@ describe("tmux boundary", () => {
     expect(harnessLooksReady("node", "agy")).toBe(true);
     expect(harnessLooksReady("antigravity", "agy")).toBe(true);
     expect(harnessLooksReady("agy", "agy")).toBe(true);
+    expect(harnessLooksReady("muse-bin-1.4.10", "muse")).toBe(true);
+    expect(harnessLooksReady("muse-bin-1.4.7-R6101.1", "muse")).toBe(true);
+    expect(harnessLooksReady("muse", "muse")).toBe(true);
+    expect(harnessLooksReady("node", "muse")).toBe(false);
+    expect(harnessLooksReady("bash", "muse")).toBe(false);
   });
 
   it("does not read prose about in-flight chrome as in-flight chrome", () => {
@@ -823,6 +844,22 @@ describe("tmux boundary", () => {
     expect(harnessPromptReady("Generating (3s)", "antigravity")).toBe(false);
     // ...but a sentence that merely opens with the word is still prose.
     expect(harnessPromptReady("Thinking about the timer forms for this issue\n> ", "cursor")).toBe(true);
+  });
+
+  it("reads measured Muse idle and turn-chrome panes", () => {
+    expect(harnessPromptReadiness(museIdleTail(), "muse")).toEqual({ ready: true, reason: "vendor-prompt" });
+    expect(harnessPromptReadiness(museBusyTail("◈ Thinking (0s · esc to interrupt)"), "muse"))
+      .toEqual({ ready: false, reason: "muse-turn-chrome" });
+    expect(harnessPromptReadiness(
+      museBusyTail("◇ Running command · Sleep for twenty seconds — running (7s · esc to interrupt)"),
+      "muse"
+    )).toEqual({ ready: false, reason: "muse-turn-chrome" });
+    expect(harnessPromptReadiness("Muse Code\nLaunching…", "muse"))
+      .toEqual({ ready: false, reason: "muse-no-prompt" });
+    expect(harnessPromptReadiness(
+      `❯ old prompt text\n◆ done\n${museIdleTail("❯")}`,
+      "muse"
+    )).toEqual({ ready: true, reason: "vendor-prompt" });
   });
 
   it("names the predicate that refused a prompt", () => {
@@ -993,17 +1030,23 @@ describe("tmux boundary", () => {
     expect(sleeps).toEqual([]);
   });
 
-  it.each(["claude", "cursor"])("types a %s resend when its earlier prompt is only history above an empty composer", async (id) => {
+  it.each(["claude", "cursor", "muse"])("types a %s resend when its earlier prompt is only history above an empty composer", async (id) => {
     const action = "11111111-2222-3333-4444-555555555555";
     const sent: string[] = [];
+    const process = id === "muse" ? "muse-bin-1.4.10" : id;
+    const historyPane = id === "muse"
+      ? `❯ Read and execute coordinator action ${action} at /a\n◆ done\n${museIdleTail("❯")}`
+      : `❯ Read and execute coordinator action ${action} at /a\nRequest failed\n${promptFor(id)}❯ \n`;
     const controller = new TmuxController(async (args) => {
-      if (args[0] === "display-message") return ok(`0\t${id}\t0\t0`);
-      if (args[0] === "capture-pane") return ok(`❯ Read and execute coordinator action ${action} at /a\nRequest failed\n${promptFor(id)}❯ \n`);
+      if (args[0] === "display-message") return ok(`0\t${process}\t0\t0`);
+      if (args[0] === "capture-pane") return ok(historyPane);
       if (args.includes("send-keys")) sent.push(...commandsIn(args).filter((command) => command.includes("-l")).map((command) => command.at(-1)!));
       return ok();
     }, null, null, null, noopSleep);
-    expect(await controller.nudge(1, { id, root: "/clone", launcher: id, delivery: "both", nudgePrelude: [] },
-      "/a", undefined, action, undefined, undefined, { resend: true })).toMatchObject({ status: "sent" });
+    expect(await controller.nudge(1, {
+      id, root: "/clone", launcher: id, delivery: "both", nudgePrelude: [],
+      ...(id === "muse" ? { harnessProcess: "muse" } : {})
+    }, "/a", undefined, action, undefined, undefined, { resend: true })).toMatchObject({ status: "sent" });
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain(`coordinator action ${action}`);
   });
@@ -1026,22 +1069,67 @@ describe("tmux boundary", () => {
     expect(calls.some((args) => args.includes("send-keys"))).toBe(sent);
   });
 
-  it.each(["claude", "cursor"])("submits a %s prompt still sitting in the pane tail without typing it again", async (id) => {
+  it.each(["claude", "cursor", "muse"])("submits a %s prompt still sitting in the pane tail without typing it again", async (id) => {
     const action = "11111111-2222-3333-4444-555555555555";
+    const digest = "a".repeat(64);
+    const rendered = `If you already wrote complete for this action, only write its ready file. Read and execute coordinator action ${action} digest ${digest} at /a`;
     const calls: string[][] = [];
+    const process = id === "muse" ? "muse-bin-1.4.10" : id;
+    const pendingPane = id === "muse"
+      ? museIdleTail(`❯ ${rendered}`)
+      : `${promptFor(id)}❯ Read and execute coordinator action ${action} at /a\n`;
     const controller = new TmuxController(async (args) => {
       calls.push([...args]);
-      if (args[0] === "display-message") return ok(`0\t${id}\t0\t0`);
-      if (args[0] === "capture-pane") return ok(`${promptFor(id)}❯ Read and execute coordinator action ${action} at /a\n`);
+      if (args[0] === "display-message") return ok(`0\t${process}\t0\t0`);
+      if (args[0] === "capture-pane") return ok(pendingPane);
       return ok();
     }, null, null, null, noopSleep);
-    expect(await controller.nudge(1, { id, root: "/clone", launcher: id, delivery: "both", nudgePrelude: [] },
-      "/a", undefined, action, undefined, undefined, { resend: true }))
+    expect(await controller.nudge(1, {
+      id, root: "/clone", launcher: id, delivery: "both", nudgePrelude: [],
+      ...(id === "muse" ? { harnessProcess: "muse" } : {})
+    }, "/a", undefined, action, id === "muse" ? digest : undefined, undefined, { resend: true }))
       .toMatchObject({ status: "sent", detail: "pending-prompt-submitted" });
     // A submit-only batch begins with its pre-submit sleep.
     const keys = calls.filter((args) => args.includes("send-keys")).flatMap(commandsIn).filter((command) => command[0] === "send-keys");
     expect(keys.some((command) => command.includes("-l"))).toBe(false);
     expect(keys.at(-1)?.at(-1)).toBe("Enter");
+  });
+
+  it.each([
+    { label: "owner draft", pane: () => museIdleTail("❯ owner draft text"), reason: "muse-composer-not-ready" },
+    { label: "running turn", pane: () => museBusyTail("◈ Thinking (0s · esc to interrupt)"), reason: "muse-turn-chrome" },
+    { label: "uuid-only draft", pane: () => museIdleTail("❯ Please investigate action 11111111-2222-3333-4444-555555555555 but do not send"), reason: "muse-composer-not-ready" }
+  ])("refuses Muse nudge for $label without send-keys", async ({ pane, reason }) => {
+    const calls: string[][] = [];
+    const controller = new TmuxController(async (args) => {
+      calls.push([...args]);
+      if (args[0] === "display-message") return ok("0\tmuse-bin-1.4.10\t0\t0");
+      if (args[0] === "capture-pane") return ok(pane());
+      return ok();
+    }, null, null, null, noopSleep);
+    expect(await controller.nudge(1, {
+      id: "muse", root: "/m", launcher: "start-muse.sh", delivery: "both", harnessProcess: "muse", nudgePrelude: []
+    }, "/a", undefined, "11111111-2222-3333-4444-555555555555", "b".repeat(64)))
+      .toMatchObject({ status: "busy", reason });
+    expect(calls.some((args) => args.includes("send-keys"))).toBe(false);
+  });
+
+  it("sends Muse idle panes as one Enter-only batch", async () => {
+    const calls: string[][] = [];
+    const controller = new TmuxController(async (args) => {
+      calls.push([...args]);
+      if (args[0] === "display-message") return ok("0\tmuse-bin-1.4.10\t0\t0");
+      if (args[0] === "capture-pane") return ok(museIdleTail());
+      return ok();
+    }, null, null, null, noopSleep);
+    expect(await controller.nudge(1, {
+      id: "muse", root: "/m", launcher: "start-muse.sh", delivery: "both", harnessProcess: "muse", nudgePrelude: []
+    }, "/a")).toMatchObject({ status: "sent" });
+    const batch = calls.find((args) => args.includes("send-keys"));
+    expect(batch).toBeDefined();
+    const steps = commandsIn(batch!).map((args) => args.includes("-l") ? "-l" : args.at(-1));
+    expect(steps).toEqual(["-l", "sleep 0.3", "Enter"]);
+    expect(steps).not.toContain("Escape");
   });
 
   it("reports which pane predicate deferred a delivery", async () => {
