@@ -1,0 +1,14 @@
+{
+  "actionId": "ec3d51a8-d68b-43da-b899-8548d0362243",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "dffa046831e3654b15a3ad699aa30123e2dfa4094c9a9485e8a91d1850c0c86b",
+  "issue": 235,
+  "issueSessionId": "issue-235:2b36122912fb55327e9872646bee3a2c0b32f5ce",
+  "protocolVersion": 2,
+  "rationale": "Revision 5c3e0fe185e46a63b086b33ed6ede2c4c04862d1 resolves the idle-prose false busy finding while retaining narrow-pane safety, footer validation, pending-state recapture protection and frozen-roster coverage, with seven targeted reviewer probes passing, recorded successful hook verification for its product tree, and the previously inspected live Muse handoff evidence.",
+  "responseSha256": "4f6ef770a0a7abaecbede0d1a50499705994a0d6a92d177e97708e081621a474",
+  "revisionCommitSha": "5c3e0fe185e46a63b086b33ed6ede2c4c04862d1",
+  "round": 2
+}

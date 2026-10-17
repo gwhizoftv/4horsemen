@@ -1,0 +1,14 @@
+{
+  "actionId": "9b6b3059-96e8-4699-8aa6-5746cab49833",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "dffa046831e3654b15a3ad699aa30123e2dfa4094c9a9485e8a91d1850c0c86b",
+  "issue": 235,
+  "issueSessionId": "issue-235:2b36122912fb55327e9872646bee3a2c0b32f5ce",
+  "protocolVersion": 2,
+  "rationale": "Revision 5c3e0fe1 resolves codex's round-1 finding by matching Muse's busy line on the elapsed timer alone, so a finished reply mentioning esc to interrupt stays ready while every measured busy form (full, shortened, clipped narrow-pane lines) still blocks, with the prose-versus-chrome regression extended for Muse and the commit hook passing 843 fast and 255 system tests.",
+  "responseSha256": "c4b5bdab23cb09ed360fbea03723c247dbd0c064194180b249e61f7c0c61f60e",
+  "revisionCommitSha": "5c3e0fe185e46a63b086b33ed6ede2c4c04862d1",
+  "round": 2
+}

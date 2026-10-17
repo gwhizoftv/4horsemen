@@ -1,0 +1,14 @@
+{
+  "actionId": "55f5b0c2-816a-4cf2-87ab-c3e9d4de2d22",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "dffa046831e3654b15a3ad699aa30123e2dfa4094c9a9485e8a91d1850c0c86b",
+  "issue": 235,
+  "issueSessionId": "issue-235:2b36122912fb55327e9872646bee3a2c0b32f5ce",
+  "protocolVersion": 2,
+  "rationale": "Claude revision 5c3e0fe1 keeps the round-1 Muse safety stack and correctly matches busy chrome by the live elapsed-timer form only, so finished replies that mention esc-to-interrupt no longer false-busy the send gate.",
+  "responseSha256": "1accc0a2c1dd4d8b598547b5d0e80d6df7bda5fc19ac5ea9432c7f29fd4202e0",
+  "revisionCommitSha": "5c3e0fe185e46a63b086b33ed6ede2c4c04862d1",
+  "round": 2
+}
