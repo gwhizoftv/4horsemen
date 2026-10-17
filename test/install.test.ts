@@ -1,7 +1,8 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import childProcess, { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { syncBuiltinESMExports } from "node:module";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { findAgentLanguageViolations } from "../src/agentLanguage.js";
 import { syncAgentTrust } from "../src/agentTrust.js";
 import { assertInstallDeletionAllowed, install, uninstall } from "../src/install.js";
@@ -58,6 +59,35 @@ const installOnce = (
 };
 
 describe("coord install — two-mode footprint", () => {
+  it("isolates its bootstrap Node PATH from the product environment", () => {
+    const fixture = product();
+    const oldBin = join(fixture.workspaceRoot, "old-node");
+    mkdirSync(oldBin);
+    writeFileSync(join(oldBin, "node"), "#!/bin/sh\necho v16.18.0\n", { mode: 0o700 });
+    const productPath = `${oldBin}${delimiter}${process.env.PATH ?? ""}`;
+    vi.stubEnv("PATH", productPath);
+    const original = childProcess.spawnSync;
+    const paths: (string | undefined)[] = [];
+    const commands: unknown[] = [];
+    const spy = vi.spyOn(childProcess, "spawnSync").mockImplementation((command, args, options) => {
+      if (command !== "pnpm") return original(command, args, options);
+      commands.push(args);
+      paths.push(options?.env?.PATH);
+      return { pid: 0, output: [], stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), status: 0, signal: null };
+    });
+    syncBuiltinESMExports();
+    try {
+      installOnce(fixture, { bootstrap: true });
+      expect(commands).toEqual([["install", "--frozen-lockfile"], ["build"]]);
+      expect(paths).toEqual(Array(2).fill(`${dirname(process.execPath)}${delimiter}${productPath}`));
+      expect(process.env.PATH).toBe(productPath);
+    } finally {
+      spy.mockRestore();
+      syncBuiltinESMExports();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("persists parent trust for all vendors while preserving existing settings and repeat-install bytes", () => {
     const fixture = product();
     // Outside the product parent: a home inside it is never trusted as one.
@@ -125,10 +155,13 @@ describe("coord install — two-mode footprint", () => {
     // running the rest of the legacy identity/MCP/permission setup.
     const installed = installOnce(fixture, { agents: ["codex"], home: null });
     const codexHome = join(parent, "codex-config");
+    const productBin = join(parent, "product-node");
+    mkdirSync(productBin);
+    writeFileSync(join(productBin, "node"), "#!/bin/sh\n[ \"$1\" = --version ] || exit 99\necho v16.18.0\n", { mode: 0o700 });
     const setupTrust = (dryRun: boolean) => execFileSync("bash", ["-c",
       '. "$1"; AGENT_NAME=codex; MASTER_ROOT="$2"; CLONE_DIR="$3"; DRY_RUN="$4"; common_configure_trust',
       "_", join(repoRoot, "scripts/setup_common.sh"), fixture.productRoot, installed.clones[0]!, String(dryRun)], {
-        env: { ...process.env, CODEX_HOME: codexHome }, stdio: "pipe"
+        env: { ...process.env, CODEX_HOME: codexHome, PATH: `${productBin}:/usr/bin:/bin`, COORD_NODE: process.execPath }, stdio: "pipe"
       });
     setupTrust(true);
     expect(existsSync(codexHome)).toBe(false);
@@ -336,7 +369,7 @@ describe("coord install — two-mode footprint", () => {
     const fixture = product();
     const origin = "https://acct@github.com/example/myserver.git";
     const helper = "credential.https://github.com.helper";
-    const coordHelper = `!/usr/bin/env node '${join(repoRoot, "dist", "main.js")}' auth git-credential --account acct`;
+    const coordHelper = `!'${join(repoRoot, "scripts/lib/node-runtime.sh")}' --fallback-node '${process.execPath}' '${join(repoRoot, "dist", "main.js")}' auth git-credential --account acct`;
     const helpers = () => tryGit(clone, "config", "--local", "--get-all", helper).stdout.split("\n").slice(0, -1);
     const result = installOnce(fixture, { origin, githubAccount: "acct" });
     const clone = result.clones[0] as string;

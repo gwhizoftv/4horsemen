@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import {
   gitCredentialResponse,
+  gitCredentialHelperCommand,
   verifyGitHubAccess,
   withGitHubAccount
 } from "../src/githubAuth.js";
@@ -36,6 +41,31 @@ afterEach(() => {
 });
 
 describe("GitHub account binding", () => {
+  it("runs a custom install's saved credential helper without its install-time override, retaining the product PATH", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "coord-credential-node-"));
+    try {
+      const bin = resolve(root, "bin");
+      mkdirSync(bin);
+      writeFileSync(resolve(bin, "node"), "#!/bin/sh\n[ \"$1\" = --version ] || exit 99\necho v16.18.0\n", { mode: 0o700 });
+      mkdirSync(resolve(root, "dist"));
+      mkdirSync(resolve(root, "scripts/lib"), { recursive: true });
+      const runtime = resolve(root, "scripts/lib/node-runtime.sh");
+      writeFileSync(runtime, readFileSync(resolve("scripts/lib/node-runtime.sh")), { mode: 0o700 });
+      const entry = resolve(root, "dist/receiver.cjs");
+      writeFileSync(entry, `const fs = require('node:fs'); const cp = require('node:child_process');
+process.stdout.write(JSON.stringify({args: process.argv.slice(2), input: fs.readFileSync(0, 'utf8'), product: cp.execFileSync('node', ['--version'], {encoding: 'utf8'}).trim()}));`);
+      const command = gitCredentialHelperCommand("acct", entry).slice(1);
+      expect(command.startsWith(`'${runtime}' --fallback-node `)).toBe(true);
+      const result = spawnSync("/bin/sh", ["-c", `${command} get`], {
+        input: "protocol=https\nhost=github.com\n", encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, NVM_DIR: resolve(root, "no-nvm"), COORD_NODE: undefined }
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ args: ["auth", "git-credential", "--account", "acct", "get"],
+        input: "protocol=https\nhost=github.com\n", product: "v16.18.0" });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("gives gh the named account's token and git the account helper, and leaves everything else alone", async () => {
     process.env.GH_TOKEN = "ambient-other-account";
     process.env.GITHUB_TOKEN = "ambient-other-account";
@@ -56,7 +86,7 @@ describe("GitHub account binding", () => {
     expect(calls.at(-1)!.argv).toEqual([
       "git",
       "-c", "credential.https://github.com.helper=",
-      "-c", "credential.https://github.com.helper=!/usr/bin/env node '/coord/dist/main.js' auth git-credential --account acct",
+      "-c", `credential.https://github.com.helper=!'/coord/scripts/lib/node-runtime.sh' --fallback-node '${process.execPath}' '/coord/dist/main.js' auth git-credential --account acct`,
       "ls-remote", "origin"
     ]);
 

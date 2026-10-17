@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { inspectCloneHooks, readHookManifest, removeCloneHooks, type HookManifest } from "../src/hookSync.js";
+import { canonicalSourceDigest, inspectCloneHooks, readHookManifest, removeCloneHooks, type HookManifest } from "../src/hookSync.js";
 import { install, uninstall } from "../src/install.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { initializeOperationalState, mutateCursorsState, readConfig } from "../src/state.js";
@@ -29,7 +30,7 @@ afterEach(() => {
 type Installed = { fixture: ProductFixture; clone: string; configPath: string };
 
 /** `verify: null` installs a workspace that declares no verification at all. */
-const installed = (verify: unknown = passingVerify, kind: "go" | "plain" = "go", extra: Record<string, unknown> = {}): Installed => {
+const installed = (verify: unknown = passingVerify, kind: "go" | "plain" = "go", extra: Record<string, unknown> = {}, vendor = false): Installed => {
   ensureBuilt();
   const fixture = makeProduct(kind);
   fixtures.push(fixture);
@@ -44,7 +45,7 @@ const installed = (verify: unknown = passingVerify, kind: "go" | "plain" = "go",
     profile: "solo",
     declarePath: writeDeclaration(fixture.workspaceRoot, declaration),
     writeProduct: false,
-    vendor: false,
+    vendor,
     bootstrap: false,
     dryRun: false,
     log: silence().log
@@ -195,6 +196,30 @@ describe("agent-clone hook wiring", () => {
 });
 
 describe("declared verification in the hooks", () => {
+  it.each([false, true])("keeps product checks on their Node while selecting the coordinator Node (vendor=%s)", (vendor) => {
+    const verify = { precommit: [{ name: "product-node", argv: ["node", "--product-check"] }], prepush: [] };
+    const { clone, fixture } = installed(verify, "go", {}, vendor);
+    const bin = join(fixture.workspaceRoot, "old-node");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "node"), "#!/bin/sh\ncase \"$1\" in\n--version) echo v16.18.0;;\n--product-check) echo PRODUCT_NODE_16; exit \"$PRODUCT_CHECK_EXIT\";;\n*) echo AMBIENT_NODE_RAN >&2; exit 99;;\nesac\n", { mode: 0o700 });
+    stageWork(clone);
+    const run = (node: string, exit: string) => spawnSync("git", ["commit", "-m", "Claude: runtime isolation"], {
+      cwd: clone, encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_NODE: node, PRODUCT_CHECK_EXIT: exit }
+    });
+    const unsupported = run(join(bin, "node"), "0");
+    expect(unsupported.status).not.toBe(0);
+    expect(unsupported.stderr).toContain("Node >= 26");
+    expect(unsupported.stdout + unsupported.stderr).not.toContain("PRODUCT_NODE_16");
+    const failed = run(process.execPath, "7");
+    expect(failed.status).not.toBe(0);
+    expect(failed.stdout + failed.stderr).toContain("PRODUCT_NODE_16");
+    const passed = run(process.execPath, "0");
+    expect(passed.status, passed.stderr).toBe(0);
+    expect(passed.stdout + passed.stderr).toContain("PRODUCT_NODE_16");
+    expect(passed.stdout + passed.stderr).not.toContain("AMBIENT_NODE_RAN");
+  });
+
   it("blocks a commit when a declared precommit command fails, in a non-Node product", () => {
     const { clone } = installed(failingPrecommit);
     expect(existsSync(join(clone, "go.mod"))).toBe(true);
@@ -424,6 +449,19 @@ describe("hook drift", () => {
 });
 
 describe("hook attestation", () => {
+  it("includes the shared Node selector in the canonical hook digest", () => {
+    const fixture = makeProduct();
+    fixtures.push(fixture);
+    const source = join(fixture.workspaceRoot, "install-copy");
+    for (const dir of ["githooks", "templates/hooks", "scripts/lib"]) {
+      cpSync(join(repoRoot, dir), join(source, dir), { recursive: true });
+    }
+    const before = canonicalSourceDigest(source);
+    const selector = join(source, "scripts/lib/node-runtime.sh");
+    writeFileSync(selector, `${readFileSync(selector, "utf8")}\n# modified\n`);
+    expect(canonicalSourceDigest(source)).not.toBe(before);
+  });
+
   it("restores an execute bit that was lost, and reports it until then", () => {
     // Git skips a non-executable hook and says nothing, so bytes alone are not
     // health: a reinstall used to classify this "unchanged" and doctor "ok".

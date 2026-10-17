@@ -50,12 +50,14 @@ const fixture = (): BootstrapFixture => {
   writeFileSync(join(source, ".gitignore"), "dist/\n");
   writeFileSync(join(source, "coord"), "#!/bin/sh\nexit 0\n");
   chmodSync(join(source, "coord"), 0o755);
-  git(source, "add", ".gitignore", "package.json", "pnpm-lock.yaml", "coord");
+  mkdirSync(join(source, "scripts/lib"), { recursive: true });
+  writeFileSync(join(source, "scripts/lib/node-runtime.sh"), readFileSync(join(repoRoot, "scripts/lib/node-runtime.sh")), { mode: 0o755 });
+  git(source, "add", ".gitignore", "package.json", "pnpm-lock.yaml", "coord", "scripts/lib/node-runtime.sh");
   git(source, "commit", "-qm", "initial");
   git(source, "remote", "add", "origin", origin);
   git(source, "push", "-q", "-u", "origin", "main");
 
-  writeFileSync(join(fakeBin, "node"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(join(fakeBin, "node"), "#!/bin/sh\necho v26.0.0\n");
   chmodSync(join(fakeBin, "node"), 0o755);
   writeFileSync(
     join(fakeBin, "pnpm"),
@@ -74,6 +76,8 @@ const fixture = (): BootstrapFixture => {
     env: {
       ...process.env,
       HOME: home,
+      COORD_NODE: undefined,
+      NVM_DIR: join(home, ".nvm"),
       PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
       BOOTSTRAP_PNPM_LOG: pnpmLog
     }
@@ -87,6 +91,25 @@ const bootstrap = (input: BootstrapFixture, args: readonly string[], env: NodeJS
   });
 
 describe("coord bootstrap", () => {
+  it("selects its own Node for installation and build and rejects an unsupported override before pnpm", () => {
+    const input = fixture();
+    writeFileSync(join(input.fakeBin, "node"), "#!/bin/sh\necho v16.18.0\n");
+    const node = join(input.home, ".nvm/versions/node/v26.10.0/bin/node");
+    mkdirSync(join(node, ".."), { recursive: true });
+    writeFileSync(node, "#!/bin/sh\necho v26.10.0\n", { mode: 0o755 });
+    const pnpm = join(input.fakeBin, "pnpm");
+    writeFileSync(pnpm, readFileSync(pnpm, "utf8").replace("printf '%s\\n'", "[ \"$(node --version)\" = v26.10.0 ] || exit 42\nprintf '%s\\n'"));
+    const installRoot = join(input.root, "runtime-install");
+    const result = bootstrap(input, ["--root", installRoot, "--source", input.origin, "--no-path"], { ...input.env, COORD_NODE: node });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(input.pnpmLog, "utf8").trim().split("\n")).toEqual(["install --frozen-lockfile", "build"]);
+    const before = readFileSync(input.pnpmLog, "utf8");
+    const rejected = bootstrap(input, ["--root", installRoot, "--source", input.origin, "--no-path"], { ...input.env, COORD_NODE: join(input.fakeBin, "node") });
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain("Node >= 26");
+    expect(readFileSync(input.pnpmLog, "utf8")).toBe(before);
+  });
+
   it("honors --root over the environment, builds, owns its clone, and manages the PATH link", () => {
     const input = fixture();
     const installRoot = join(input.root, "explicit-install");

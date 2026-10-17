@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { syncAgentTrust } from "./agentTrust.js";
 import {
@@ -255,7 +255,11 @@ const bootstrapCoordination = (installRoot: string, options: EffectOptions): voi
       continue;
     }
     options.log(`running ${argv.join(" ")} in ${installRoot}\n`);
-    const result = spawnSync(command as string, args, { cwd: installRoot, stdio: "inherit" });
+    const result = spawnSync(command as string, args, {
+      cwd: installRoot,
+      stdio: "inherit",
+      env: { ...process.env, PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}` }
+    });
     if ((result.status ?? 1) !== 0) throw new Error(`Bootstrap step '${argv.join(" ")}' failed in ${installRoot}.`);
   }
 };
