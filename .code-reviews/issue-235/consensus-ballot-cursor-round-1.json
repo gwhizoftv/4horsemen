@@ -1,0 +1,14 @@
+{
+  "actionId": "5a0eef60-eb4b-47a2-8b53-ef1531d41eb4",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "9cda30783f64c02dacf2cd607e316539ac42a13b29f4b567402126f76c1e438f",
+  "issue": 235,
+  "issueSessionId": "issue-235:2b36122912fb55327e9872646bee3a2c0b32f5ce",
+  "protocolVersion": 2,
+  "rationale": "Claude revision 7b234db7 keeps Muse default both-delivery and Escape stripping, and closes the comparison gaps with a measured muse- footer fail-closed parser, dual resend/non-resend pending match, and pre-send pending-flip deferral backed by focused tmux tests.",
+  "responseSha256": "7908348847c292b794d6fec05209a4b1c07cd9984a2eec893772548f97266c97",
+  "revisionCommitSha": "7b234db708fc1f07fa44d480fdaf6dba51bbcced",
+  "round": 1
+}

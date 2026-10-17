@@ -1,0 +1,14 @@
+{
+  "actionId": "5889309d-0a95-47d2-aab9-5b403abad1ea",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "9cda30783f64c02dacf2cd607e316539ac42a13b29f4b567402126f76c1e438f",
+  "issue": 235,
+  "issueSessionId": "issue-235:2b36122912fb55327e9872646bee3a2c0b32f5ce",
+  "protocolVersion": 2,
+  "rationale": "Revision 7b234db7 resolves every round-1 finding (final-recapture pending reconciliation, measured model-footer validation, the frozen-roster re-onboarding regression, and the shared busy-indicator gap, now matched by the elapsed timer and confirmed live in a 30-column Muse pane), with its commit hook passing 843 fast and 255 system tests and no scope beyond the approved paths.",
+  "responseSha256": "89780f1b0269516c2949bdd0e586d3c7bf13e735a3f9ec469fa04063c641792a",
+  "revisionCommitSha": "7b234db708fc1f07fa44d480fdaf6dba51bbcced",
+  "round": 1
+}

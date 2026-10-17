@@ -1,0 +1,14 @@
+{
+  "actionId": "a500d69f-6676-4934-a76d-d3857eaf590d",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "9cda30783f64c02dacf2cd607e316539ac42a13b29f4b567402126f76c1e438f",
+  "issue": 235,
+  "issueSessionId": "issue-235:2b36122912fb55327e9872646bee3a2c0b32f5ce",
+  "protocolVersion": 2,
+  "rationale": "At revision 7b234db708fc1f07fa44d480fdaf6dba51bbcced, src/tmux.ts:216 must distinguish active Muse status from completed transcript prose, but an idle pane ending with \"◆ Completed the review; use esc to interrupt a running turn\" now returns muse-turn-chrome and sends nothing, indefinitely blocking the next ready-authorized handoff while that text remains visible; extend the existing prose-versus-chrome regression to Muse while preserving the measured narrow-pane busy cases.",
+  "responseSha256": "42c80fbcf3733ea7d9900e20dff363e1bf504bde7a3f89deac9bd218b9b12345",
+  "revisionCommitSha": "7b234db708fc1f07fa44d480fdaf6dba51bbcced",
+  "round": 1
+}
