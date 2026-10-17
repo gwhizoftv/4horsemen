@@ -1,0 +1,56 @@
+{
+  "actionId": "f1c453b5-dc33-4219-bd6f-4cbda7ca678d",
+  "agent": "antigravity",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "a6b52a66daa7e5a42518ae05c4e352adc9996aab9f172f03d77f2b4ebc71327a",
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "0802da2c9c4f98e5517c3fa55e14e73a1d443c3a",
+      "path": ".plans/issue-234/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "b41d415ef1dadbd91982d4410e16a38e6f63af9c",
+      "path": ".plans/issue-234/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "f42cecbaffc98d1d980eef1294b803e6a16844dc",
+      "path": ".plans/issue-234/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "950af137fa180b8f0d8a5a8805c4b4a0ac836b0d",
+      "path": ".plans/issue-234/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex is the only plan whose file map includes the `coord/` token needed by extractApprovedPaths to authorize editing the extensionless root `coord` wrapper, while also covering the hook, callback, and bootstrap entry points in both shim and vendor modes without mutating the workspace PATH.",
+  "responseSha256": "ac7388b955ad1c17e79bd52502aec768b25102a49e146d35ee0e25fdd754ada0",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "9d7d7dc65578a86a938cf64370674b13c38de3ae",
+      "path": ".plans/issue-234/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "a366d799d39107bd0f5ea6f803a7159ce8e15ee6",
+      "path": ".plans/issue-234/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ffba357a71b9b89db79f1b5173dd3b65138e7c1f",
+      "path": ".plans/issue-234/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "3f8cfc7b99dee76d8df986828f4c2a90b5dc222c",
+      "path": ".plans/issue-234/review.md"
+    }
+  ]
+}

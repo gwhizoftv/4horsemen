@@ -1,0 +1,56 @@
+{
+  "actionId": "93903027-ba39-441f-8869-2cfca170872b",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "a6b52a66daa7e5a42518ae05c4e352adc9996aab9f172f03d77f2b4ebc71327a",
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "0802da2c9c4f98e5517c3fa55e14e73a1d443c3a",
+      "path": ".plans/issue-234/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "b41d415ef1dadbd91982d4410e16a38e6f63af9c",
+      "path": ".plans/issue-234/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "f42cecbaffc98d1d980eef1294b803e6a16844dc",
+      "path": ".plans/issue-234/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "950af137fa180b8f0d8a5a8805c4b4a0ac836b0d",
+      "path": ".plans/issue-234/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex's plan is the only one whose file map mechanically approves the root coord wrapper (coord/), it resolves the hook bridge from coord.cliEntry so vendor-mode clones keep working, and it covers every coordinator Node entry point while leaving the product PATH untouched; its remaining issues (rendering process.execPath instead of the run-time selector, the missing test/mirror.test.ts expectation, the setup_common.sh scope) are smaller corrections than the scope and vendor-mode defects in the claude plan or the wrapper-only gaps in the cursor and antigravity plans.",
+  "responseSha256": "d367ab1748219390becf805b59689ecad265db891ef7437bd761e7d4aa4c650c",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "9d7d7dc65578a86a938cf64370674b13c38de3ae",
+      "path": ".plans/issue-234/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "a366d799d39107bd0f5ea6f803a7159ce8e15ee6",
+      "path": ".plans/issue-234/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ffba357a71b9b89db79f1b5173dd3b65138e7c1f",
+      "path": ".plans/issue-234/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "3f8cfc7b99dee76d8df986828f4c2a90b5dc222c",
+      "path": ".plans/issue-234/review.md"
+    }
+  ]
+}
