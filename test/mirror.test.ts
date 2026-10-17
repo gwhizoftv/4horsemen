@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { BareMirror, isTransientGitFailure } from "../src/mirror.js";
 import { assertNoSymlink, resolveSafeCoordRoot } from "../src/paths.js";
@@ -91,7 +91,7 @@ describe("owner bare mirror", () => {
       "GitHub authentication for acct has expired or been revoked.\nRun: coord auth login"
     );
     for (const args of calls) {
-      expect(args.slice(0, 4)).toEqual(["-c", `${helper}=`, "-c", `${helper}=!/usr/bin/env node '/coord/dist/main.js' auth git-credential --account acct`]);
+      expect(args.slice(0, 4)).toEqual(["-c", `${helper}=`, "-c", `${helper}=!'${resolve("scripts/lib/node-runtime.sh")}' '/coord/dist/main.js' auth git-credential --account acct`]);
       expect(args[4]).toBe("--git-dir");
     }
 

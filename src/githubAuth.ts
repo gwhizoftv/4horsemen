@@ -33,8 +33,12 @@ export const coordCliEntry = (): string => resolve(dirname(fileURLToPath(import.
 
 const singleQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
+/** Stable coordinator entry for callbacks: reselect Node after runtime upgrades. */
+export const coordNodeCommand = (): string =>
+  singleQuote(resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "lib", "node-runtime.sh"));
+
 export const gitCredentialHelperCommand = (account: string, cliEntry: string): string =>
-  `!/usr/bin/env node ${singleQuote(cliEntry)}${GITHUB_CREDENTIAL_HELPER_MARKER}${account}`;
+  `!${coordNodeCommand()} ${singleQuote(cliEntry)}${GITHUB_CREDENTIAL_HELPER_MARKER}${account}`;
 
 /**
  * One-shot Git settings: the empty value resets inherited helpers (osxkeychain,

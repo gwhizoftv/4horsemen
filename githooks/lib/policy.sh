@@ -30,9 +30,9 @@ coord_cli_entry() {
     return 1
   fi
 
-  if ! command -v node >/dev/null 2>&1; then
-    echo "HOOK BLOCKED: node is not on PATH, so coordination cannot read the declared checks for this clone." >&2
-    echo "  Only agent clones need this; the product itself is never made to depend on Node." >&2
+  if [[ ! -x "$(dirname "$entry")/../scripts/lib/node-runtime.sh" ]]; then
+    echo "HOOK BLOCKED: the coordination Node selector is missing beside the recorded CLI install." >&2
+    echo "  Fix: repair the coordination install and re-run coord install." >&2
     return 1
   fi
 
@@ -48,7 +48,7 @@ coord_cli_entry() {
 coord_verify() {
   local phase="$1" entry
   entry="$(coord_cli_entry)" || return 1
-  node "$entry" hook-verify --clone "$(git rev-parse --show-toplevel)" --phase "$phase"
+  "$(dirname "$entry")/../scripts/lib/node-runtime.sh" "$entry" hook-verify --clone "$(git rev-parse --show-toplevel)" --phase "$phase"
 }
 
 # coord_scope (legacy installed-hook compatibility only)
@@ -57,5 +57,5 @@ coord_verify() {
 coord_scope() {
   local entry
   entry="$(coord_cli_entry)" || return 1
-  node "$entry" hook-scope --clone "$(git rev-parse --show-toplevel)"
+  "$(dirname "$entry")/../scripts/lib/node-runtime.sh" "$entry" hook-scope --clone "$(git rev-parse --show-toplevel)"
 }

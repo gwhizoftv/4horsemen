@@ -8,6 +8,7 @@ import {
   type JsonObject
 } from "./agentHookSync.js";
 import { atomicWriteJson } from "./state.js";
+import { coordNodeCommand } from "./githubAuth.js";
 import type { EffectOptions } from "./setupWorkspace.js";
 
 /**
@@ -127,7 +128,7 @@ const resolveEffective = (
 
 export const renderClaudeStatusLineWrapper = (cliEntry: string, clone: string, downstream: string | null): string => {
   const paths = claudeStatusLinePaths(clone);
-  const receiver = `/usr/bin/env node ${shellQuote(resolve(cliEntry))} agent-event --vendor claude --clone ${shellQuote(resolve(clone))} --event status-line`;
+  const receiver = `${coordNodeCommand()} ${shellQuote(resolve(cliEntry))} agent-event --vendor claude --clone ${shellQuote(resolve(clone))} --event status-line`;
   const run = downstream === null ? ":" : `/bin/sh -c ${shellQuote(downstream)}`;
   return [
     "#!/bin/sh",

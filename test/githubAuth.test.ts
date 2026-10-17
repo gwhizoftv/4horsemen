@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import {
   gitCredentialResponse,
+  gitCredentialHelperCommand,
   verifyGitHubAccess,
   withGitHubAccount
 } from "../src/githubAuth.js";
@@ -36,6 +41,25 @@ afterEach(() => {
 });
 
 describe("GitHub account binding", () => {
+  it("runs a saved credential helper with a supported Node while retaining the product PATH", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "coord-credential-node-"));
+    try {
+      const bin = resolve(root, "bin");
+      mkdirSync(bin);
+      writeFileSync(resolve(bin, "node"), "#!/bin/sh\n[ \"$1\" = --version ] || exit 99\necho v16.18.0\n", { mode: 0o700 });
+      const entry = resolve(root, "receiver.cjs");
+      writeFileSync(entry, `const fs = require('node:fs'); const cp = require('node:child_process');
+process.stdout.write(JSON.stringify({args: process.argv.slice(2), input: fs.readFileSync(0, 'utf8'), product: cp.execFileSync('node', ['--version'], {encoding: 'utf8'}).trim()}));`);
+      const result = spawnSync("/bin/sh", ["-c", `${gitCredentialHelperCommand("acct", entry).slice(1)} get`], {
+        input: "protocol=https\nhost=github.com\n", encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, COORD_NODE: process.execPath }
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ args: ["auth", "git-credential", "--account", "acct", "get"],
+        input: "protocol=https\nhost=github.com\n", product: "v16.18.0" });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("gives gh the named account's token and git the account helper, and leaves everything else alone", async () => {
     process.env.GH_TOKEN = "ambient-other-account";
     process.env.GITHUB_TOKEN = "ambient-other-account";
@@ -56,7 +80,7 @@ describe("GitHub account binding", () => {
     expect(calls.at(-1)!.argv).toEqual([
       "git",
       "-c", "credential.https://github.com.helper=",
-      "-c", "credential.https://github.com.helper=!/usr/bin/env node '/coord/dist/main.js' auth git-credential --account acct",
+      "-c", `credential.https://github.com.helper=!'${resolve("scripts/lib/node-runtime.sh")}' '/coord/dist/main.js' auth git-credential --account acct`,
       "ls-remote", "origin"
     ]);
 
