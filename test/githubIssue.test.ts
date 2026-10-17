@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   assessFollowUpIssue,
   followUpKey,
+  fetchGitHubDefaultBranch,
   fetchGitHubIssue,
   formatFinalizationPullRequest,
   githubRepositoryFromOrigin,
@@ -15,6 +16,39 @@ import {
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe("GitHub default branch", () => {
+  it.each(["https://github.com/acme/app.git", "https://user@github.com/acme/app.git", "git@github.com:acme/app.git"])(
+    "reads the exact default from %s independently of cwd", async (origin) => {
+      const calls: unknown[] = [];
+      expect(await fetchGitHubDefaultBranch({ origin, cwd: "/another/repo", runner: async (argv, cwd) => {
+        calls.push({ argv, cwd });
+        return { exitCode: 0, stdout: JSON.stringify({ default_branch: "release/alpha", full_name: "acme/app" }), stderr: "" };
+      } })).toBe("release/alpha");
+      expect(calls).toEqual([{ argv: ["gh", "api", "repos/acme/app"], cwd: "/another/repo" }]);
+    }
+  );
+
+  it("skips non-GitHub origins without a process", async () => {
+    expect(await fetchGitHubDefaultBranch({ origin: "/local/app.git", cwd: "/work", runner: async () => {
+      throw new Error("must not run gh");
+    } })).toBeNull();
+  });
+
+  it.each(["not JSON", "{}", '{"default_branch":null}', ...["", " main", "main ", "main\n", "main\nother"].map(
+    (default_branch) => JSON.stringify({ default_branch })
+  )])("rejects unusable metadata: %s", async (stdout) => {
+    await expect(fetchGitHubDefaultBranch({ origin: "https://github.com/acme/app.git", cwd: "/work",
+      runner: async () => ({ exitCode: 0, stdout, stderr: "" }) })).rejects.toThrow(/acme\/app.*--base-branch/);
+  });
+
+  it.each(["unavailable", "HTTP 404"])("reports %s with explicit-branch recovery", async (failure) => {
+    await expect(fetchGitHubDefaultBranch({ origin: "https://github.com/acme/app.git", cwd: "/work", runner: async () => {
+      if (failure === "unavailable") throw new Error("gh unavailable");
+      return { exitCode: 1, stdout: "", stderr: "HTTP 404" };
+    } })).rejects.toThrow(new RegExp(`acme/app.*${failure}.*--base-branch`));
+  });
 });
 
 describe("GitHub issue snapshots", () => {

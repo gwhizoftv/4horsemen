@@ -433,6 +433,28 @@ describe("coord install — idempotence", () => {
 });
 
 describe("coord install — emitted config", () => {
+  it("uses a supplied tracking branch without creating an owner branch", () => {
+    const fixture = product();
+    const branch = "release/alpha";
+    git(fixture.productRoot, "update-ref", `refs/remotes/origin/${branch}`, "HEAD");
+    const result = installOnce(fixture, { baseBranch: branch });
+    expect(readConfig(result.configPath).baseBranch).toBe(branch);
+    expect(git(result.clones[0]!, "config", "--local", "consensus.sharedBranch")).toBe(branch);
+    expect(tryGit(fixture.productRoot, "show-ref", "--verify", `refs/heads/${branch}`).exitCode).not.toBe(0);
+    expect(git(fixture.productRoot, "branch", "--show-current")).toBe("main");
+  });
+
+  it.each(["bad..branch", "@{-1}", "missing/branch"])("rejects unusable branch %s before clone/config writes", (branch) => {
+    const fixture = product();
+    // @{-1} is revision shorthand, even when Git can resolve it to a valid branch.
+    git(fixture.productRoot, "checkout", "-qb", "feature/work");
+    expect(() => installOnce(fixture, { baseBranch: branch })).toThrow(
+      branch === "missing/branch" ? /neither a local.*Fetch origin.*--base-branch/ : /Invalid shared branch/
+    );
+    expect(existsSync(join(fixture.coordRoot, "config.json"))).toBe(false);
+    expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(false);
+  });
+
   it("is accepted by the driver's own config parser unchanged", () => {
     const fixture = product();
     const result = installOnce(fixture);

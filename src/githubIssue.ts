@@ -112,6 +112,38 @@ export const githubRepositoryFromOrigin = (origin: string): string | null => {
   return ssh?.[1]?.replace(/\.git$/, "") ?? null;
 };
 
+/** Non-GitHub origins keep the installer's compatibility default without an API call. */
+export const fetchGitHubDefaultBranch = async (input: {
+  origin: string;
+  cwd: string;
+  runner: CommandRunner;
+}): Promise<string | null> => {
+  const repository = githubRepositoryFromOrigin(input.origin);
+  if (repository === null) return null;
+  const failure = (detail: string): Error => new Error(
+    `Cannot discover the GitHub default branch for ${repository}: ${detail}. ` +
+      "Repair GitHub CLI access with `gh auth status` and retry, or pass --base-branch <branch>."
+  );
+  let result: CommandResult;
+  try {
+    result = await input.runner(["gh", "api", `repos/${repository}`], input.cwd);
+  } catch (error) {
+    throw failure(error instanceof Error ? error.message : String(error));
+  }
+  if (result.exitCode !== 0) {
+    throw failure(result.stderr.trim() || result.stdout.trim() || `gh exited ${result.exitCode}`);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(result.stdout) as unknown;
+  } catch {
+    throw failure("invalid repository JSON");
+  }
+  const parsed = z.object({ default_branch: z.string().min(1).refine((branch) => !/\s/.test(branch)) }).safeParse(value);
+  if (!parsed.success) throw failure("invalid or missing default_branch");
+  return parsed.data.default_branch;
+};
+
 export const renderGitHubIssueSnapshot = (snapshot: GitHubIssueSnapshot): string =>
   `${JSON.stringify(snapshot, null, 2)}\n`;
 
