@@ -1,0 +1,46 @@
+{
+  "actionId": "07ec7f76-3442-4168-8c39-364d8ddd2548",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "5b44bbd04a522e6e3043256665a15d3b56e55d8628000dd9ee78b53b9222edcd",
+  "issue": 235,
+  "issueSessionId": "issue-235:2b36122912fb55327e9872646bee3a2c0b32f5ce",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "4aefc91e7638ee270c8b4d86da4db867f899dc1b",
+      "path": ".plans/issue-235/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ae92f75414b10cc9863c28688ba7336b741fb2da",
+      "path": ".plans/issue-235/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "f372678b802f7b8cba21e5d325ee15f7132244bf",
+      "path": ".plans/issue-235/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude's plan alone grounds the Muse adapter in measured 1.4.10 pane facts and keeps scope narrow (no remind-contract change, DoctorReport field, or integration lane), and its reviewed gaps are small and fixable in implementation by adopting codex's full-rendered-prompt pending match, the muse footer fail-closed check, a frozen-roster assertion, and the split vitest/system-config commands.",
+  "responseSha256": "adfdbe6c35b46f381633bbf3ac0fe629f42a7509bb4acda5d65a96cfbe8174ab",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "884e1e50c2932b14fbd8f13d5182b5e8f88f4c29",
+      "path": ".plans/issue-235/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "28d11aac2d34db1ad23857b3ce9c4d6d815f6b83",
+      "path": ".plans/issue-235/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "faafaaaae32fb6035fa467be1c7ce136e0411a83",
+      "path": ".plans/issue-235/review.md"
+    }
+  ]
+}

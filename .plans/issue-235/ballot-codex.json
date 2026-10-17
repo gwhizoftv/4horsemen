@@ -1,0 +1,46 @@
+{
+  "actionId": "f9c602bb-7973-4940-bac5-85b1178fbb6c",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "5b44bbd04a522e6e3043256665a15d3b56e55d8628000dd9ee78b53b9222edcd",
+  "issue": 235,
+  "issueSessionId": "issue-235:2b36122912fb55327e9872646bee3a2c0b32f5ce",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "4aefc91e7638ee270c8b4d86da4db867f899dc1b",
+      "path": ".plans/issue-235/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ae92f75414b10cc9863c28688ba7336b741fb2da",
+      "path": ".plans/issue-235/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "f372678b802f7b8cba21e5d325ee15f7132244bf",
+      "path": ".plans/issue-235/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude provides the smallest measured terminal adapter while preserving owner-reminder semantics and existing handoff logic; apply the reviews' full-prompt pending match, footer validation, frozen-roster regression and corrected test-selection commands, and retain mandatory live publication verification.",
+  "responseSha256": "679b6b8f3b28f70646ce41758455b4c3b6c52161048d87934fd6d854bfdb9b8b",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "884e1e50c2932b14fbd8f13d5182b5e8f88f4c29",
+      "path": ".plans/issue-235/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "28d11aac2d34db1ad23857b3ce9c4d6d815f6b83",
+      "path": ".plans/issue-235/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "faafaaaae32fb6035fa467be1c7ce136e0411a83",
+      "path": ".plans/issue-235/review.md"
+    }
+  ]
+}

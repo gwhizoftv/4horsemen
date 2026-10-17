@@ -1,0 +1,46 @@
+{
+  "actionId": "7f77670e-d4c3-404e-a126-e99b9d3d92c5",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "5b44bbd04a522e6e3043256665a15d3b56e55d8628000dd9ee78b53b9222edcd",
+  "issue": 235,
+  "issueSessionId": "issue-235:2b36122912fb55327e9872646bee3a2c0b32f5ce",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "4aefc91e7638ee270c8b4d86da4db867f899dc1b",
+      "path": ".plans/issue-235/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ae92f75414b10cc9863c28688ba7336b741fb2da",
+      "path": ".plans/issue-235/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "f372678b802f7b8cba21e5d325ee15f7132244bf",
+      "path": ".plans/issue-235/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude alone pins measured Muse 1.4.10 chrome with Escape strip, pre-send recapture, and DEFERRAL_RATIONALE, and is the only plan peers treat as implementable once Codex's full-prompt pending match is folded in without Codex's remind-gating or DoctorReport schema.",
+  "responseSha256": "3b78e2dda4ae33acf8c91e19aacd93b68aa6447bba716b81d214d27cf6ae139a",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "884e1e50c2932b14fbd8f13d5182b5e8f88f4c29",
+      "path": ".plans/issue-235/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "28d11aac2d34db1ad23857b3ce9c4d6d815f6b83",
+      "path": ".plans/issue-235/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "faafaaaae32fb6035fa467be1c7ce136e0411a83",
+      "path": ".plans/issue-235/review.md"
+    }
+  ]
+}
