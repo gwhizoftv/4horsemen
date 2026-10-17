@@ -205,15 +205,16 @@ const museComposerEmpty = (paneText: string): boolean => {
  * above it (`◈ Thinking (3s · esc to interrupt)`) is the busy signal. Enter
  * would steer that turn, so this blocks every key. Narrow panes shorten that
  * line (`runn… (24s · esc to interrupt)`) or clip it (`◇ Thinking (0s · esc to
- * interr`), so the elapsed timer is matched, not the glyph or the full suffix.
- * Finished items show their duration without the parenthesis (`· 20s · ctrl+o`).
+ * interr`), so the elapsed timer `(3s ·` is matched, not the glyph or the
+ * suffix; a reply that merely mentions "esc to interrupt" is prose. Finished
+ * items show their duration without the parenthesis (`· 20s · ctrl+o`).
  */
 const museTurnChrome = (paneText: string): boolean => {
   const lines = paneLines(paneText);
   const composerAt = lines.map((line) => line.plain.startsWith("❯")).lastIndexOf(true);
   return (composerAt < 0 ? lines : lines.slice(0, composerAt))
     .filter((line) => !line.plain.startsWith("─")).slice(-4)
-    .some((line) => /\((?:\d+[hm] )*\d+s ·|esc to interr/.test(line.plain));
+    .some((line) => /\((?:\d+[hm] )*\d+s(?: ·|$)/.test(line.plain));
 };
 
 /**

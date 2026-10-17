@@ -863,6 +863,10 @@ describe("tmux boundary", () => {
     expect(harnessPromptReady("Generating (3s)", "antigravity")).toBe(false);
     // ...but a sentence that merely opens with the word is still prose.
     expect(harnessPromptReady("Thinking about the timer forms for this issue\n> ", "cursor")).toBe(true);
+    // A finished Muse reply that mentions the interrupt hint is prose; only the live timer is chrome.
+    expect(harnessPromptReady(musePane("◆ Completed the review; use esc to interrupt a running turn\n"), "muse")).toBe(true);
+    expect(harnessPromptReady(musePane("◆ Muse paints `esc to interrupt` while a turn runs\n"), "muse")).toBe(true);
+    expect(harnessPromptReady(musePane("◇ Thinking (0s\n"), "muse")).toBe(false);
   });
 
   it("names the predicate that refused a prompt", () => {
