@@ -152,18 +152,57 @@ reuse the same trust writer. Reinstall preserves unrelated settings and does not
 rewrite unchanged trust entries; `install --dry-run` makes no trust changes.
 Launchers retain their existing sandbox and tool-permission settings.
 
-Muse Code is opt-in: include `muse` in `--agents` when installing or onboarding.
-It uses pull delivery, with Enter-only owner reminders and no vim prelude.
+Muse Code is part of the default onboarding roster; an explicit `--agents`
+list without `muse` leaves it out. Muse receives its actions automatically
+(`delivery: "both"`) through the same `complete`/`ready` protocol as the other
+agents, with no lifecycle hooks: initial JOIN needs no prior acceptance, and
+each matching ready receipt authorizes the next send. Muse sends no prompt
+acknowledgement, session or tool events and has no transcript reader, so the
+stall watchdog reads only pane activity; `coord status` reports its hook
+coverage as unverified. Usage analytics and quota recovery are unavailable.
+
+Muse's terminal adapter follows its measured screen (Muse Code 1.4.10). The
+pane command is the versioned `muse-bin-<version>`. The live composer is the
+last `❯` line above a `─` rule and one status-footer line. A running turn keeps
+that composer painted and shows `◈ Thinking (3s · esc to interrupt)` above it,
+so coord refuses delivery (`muse-turn-chrome`): Enter would steer the running
+turn. Any other text in the composer is an owner draft (`muse-composer-not-ready`)
+unless it is this action's complete current prompt, which is then submitted
+without retyping. An unknown screen fails closed (`muse-no-prompt`). Delivery
+types the prompt and Enter with no vim prelude. Muse never receives Escape,
+which interrupts a turn, even from configured keys. Explicit owner reminders
+keep bypassing readiness.
+
 The launcher passes run-local `--trust-workspace` to load `AGENTS.md` without
 writing persisted trust. It also passes `--disable-sandbox --approval-mode never`
 because Muse's sandbox protects `.git`, preventing the commits required by
 coordination. This permits writes anywhere the owner can write; no filesystem
-isolation is claimed. The existing PATH Git shim remains installed, with live
-coverage unverified; Muse lifecycle hooks, automatic nudges and usage analytics
-are not available. `MUSE_NO_AUTO_UPDATE=1` suppresses wrapper updates during
-version collection and launches; update Muse outside coord sessions. These
-flags were observed with Muse Code 1.4.10. A live Muse run loading instructions,
-committing/pushing and writing receipts has not been verified by the stub tests.
+isolation is claimed. The PATH Git shim remains installed. `MUSE_NO_AUTO_UPDATE=1`
+suppresses wrapper updates during version collection and launches; update Muse
+outside coord sessions.
+
+Live verification (issue 235) used Muse Code 1.4.10 (1.4.10-R6427.1), tmux
+3.7b and macOS. It ran in a disposable workspace with a local bare origin
+standing in for GitHub, through the generated `start-muse.sh` with no lifecycle
+hooks:
+
+- **Coordinator run:** `coord start` and `coord run` drove JOIN, plan,
+  implementation and finalization to an accepted final pin with no owner
+  input. The first send waited for Muse's startup screen (`muse-no-prompt`)
+  and then sent JOIN. Each later action was picked up when Muse re-read
+  `action.md`, as the protocol allows, and Muse wrote its final `ready`
+  receipt. Only the stubbed draft-PR creation failed.
+- **Terminal delivery** through the same adapter:
+  - A private response with `response <actionId>`, then `ready`, was followed
+    by a Git action sent on that ready receipt.
+  - Running turns were refused with `muse-turn-chrome`, including the
+    `Double checking` phase Muse runs after writing `ready`.
+  - An owner draft was refused and left intact.
+  - A pending action prompt was submitted without retyping.
+  - After Muse was killed mid-action and relaunched, a single resend
+    completed the action once.
+- **Containment:** Muse's own `git status --porcelain` request was refused by
+  the PATH Git shim.
 
 ### Agent editor modes
 
@@ -204,7 +243,7 @@ vendoring, tracked product changes, origin/base overrides, or dry runs.
 coord install \
   --product /path/to/app \
   --coord-runtime /path/to/coord-runtime \
-  --agents claude,codex,cursor,antigravity \
+  --agents claude,codex,cursor,antigravity,muse \
   --profile consensus
   # --write-product            # opt-in tracked product changes (additive only)
   # --vendor                   # copy hook bodies into agent clones instead of exec'ing them

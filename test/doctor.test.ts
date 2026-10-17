@@ -26,7 +26,8 @@ type Installed = { fixture: ProductFixture; clone: string; configPath: string };
 
 const installed = (
   declaration: Record<string, unknown> = { checks: declaredChecks, verify: passingVerify },
-  kind: "go" | "plain" = "go"
+  kind: "go" | "plain" = "go",
+  agents: readonly string[] = ["claude"]
 ): Installed => {
   ensureBuilt();
   const fixture = makeProduct(kind);
@@ -37,7 +38,7 @@ const installed = (
     installRoot: repoRoot,
     productRoot: fixture.productRoot,
     coordRoot: fixture.coordRoot,
-    agents: ["claude"],
+    agents,
     profile: "solo",
     declarePath: writeDeclaration(fixture.workspaceRoot, declaration),
     writeProduct: false,
@@ -147,6 +148,12 @@ describe("coord doctor", () => {
     const lifecycle = report(fixture).findings.find((item) => item.class === "lifecycleHooks");
     expect(lifecycle?.message).toContain("no supported lifecycle-hook vendor mapping");
     expect(lifecycle?.remediation).toContain("delivery to pull");
+  });
+
+  it("accepts Muse's automatic delivery through its terminal adapter, without lifecycle hooks", () => {
+    const { fixture, configPath } = installed(undefined, "go", ["muse"]);
+    expect(readConfig(configPath).agents).toMatchObject([{ id: "muse", delivery: "both" }]);
+    expect(report(fixture)).toMatchObject({ findings: [], exitCode: 0 });
   });
 
   it("reports a missing or crossed agent identity", () => {

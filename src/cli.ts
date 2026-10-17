@@ -29,7 +29,7 @@ import { sha256 } from "./hash.js";
 import { renderHookScope, resolveHookBinding, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { inspectOutgoingChanges, inspectStagedChanges } from "./changeClassification.js";
 import { hookVerificationRecorder } from "./verificationLog.js";
-import { install, onboard, packageVersion, savedGitHubAccount, uninstall } from "./install.js";
+import { DEFAULT_AGENTS, install, onboard, packageVersion, savedGitHubAccount, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
 import { makeAgentClonesBaseReady, makeManualClonesBaseReady, prepareAgentIssueBranches, type CloneBaseReadyResult } from "./prepareAgentBranch.js";
@@ -410,7 +410,8 @@ No control force-completes work: the agent must publish valid evidence first.
 Commands infer the workspace runtime from the current onboarded repository or
 registered agent clone when neither --product nor --coord-runtime is supplied, and
 from --config alone (its directory). Use --coord-runtime to name the runtime
-directory explicitly. Onboard defaults to a coord-runtime directory beside the repository.
+directory explicitly. Onboard defaults to a coord-runtime directory beside the repository
+and to --agents ${DEFAULT_AGENTS.join(",")}; an explicit --agents list is used exactly.
 coord detach manual first checks every clone, then closes manual terminals and returns
 the clones to the base branch; uncommitted or unpushed work refuses it and nothing is
 discarded. In a terminal, coord <issue>/start/attach/run offer to close a leftover manual
@@ -1389,7 +1390,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     if (command === "onboard") {
       allowedFlags(parsed, ["coord-runtime", "completes-root", "clone-root", "agents", "profile", "declare", "github-account", "base-branch"]);
       if (parsed.positionals.length !== 1) throw new Error("onboard requires exactly one repository path.");
-      const agents = (parsed.flags.get("agents") ?? "claude,codex,cursor,antigravity")
+      const agents = (parsed.flags.get("agents") ?? DEFAULT_AGENTS.join(","))
         .split(",")
         .map((agent) => agent.trim())
         .filter((agent) => agent !== "");

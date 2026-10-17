@@ -232,12 +232,13 @@ describe("coord onboard", () => {
     const config = JSON.parse(readFileSync(configPath, "utf8")) as {
       profile: string;
       digestPaths: string[];
-      agents: Array<{ id: string; nudgeSubmit: string[] }>;
+      agents: Array<{ id: string; delivery: string; nudgeSubmit: string[] }>;
     };
     expect(config.agents.find((agent) => agent.id === "codex")?.nudgeSubmit).toEqual(["Enter"]);
     expect(config.profile).toBe("consensus");
     expect(config.digestPaths).toEqual([]);
-    expect(config.agents.map((agent) => agent.id)).toEqual(["claude", "codex", "cursor", "antigravity"]);
+    expect(config.agents.map((agent) => agent.id)).toEqual(["claude", "codex", "cursor", "antigravity", "muse"]);
+    expect(config.agents.find((agent) => agent.id === "muse")).toMatchObject({ delivery: "both", nudgeSubmit: ["Enter"] });
     const declaration = join(fixture.workspaceRoot, "policy.json");
     const verification = {
       mode: "coordinator",
@@ -274,7 +275,7 @@ describe("coord onboard", () => {
         }
       })
     ).toBe(0);
-    expect(manualAgents).toEqual([["claude", "codex", "cursor", "antigravity"]]);
+    expect(manualAgents).toEqual([["claude", "codex", "cursor", "antigravity", "muse"]]);
 
     const human = join(fixture.workspaceRoot, "human");
     execFileSync("git", ["clone", "-q", fixture.originPath, human]);
@@ -294,7 +295,7 @@ describe("coord onboard", () => {
     ).toBe(2);
     expect(errors.join("")).toContain("is not onboarded in this worktree");
     expect(existsSync(issueRuntimePaths(coordRoot, 10).issueRoot)).toBe(false);
-  });
+  }, 45_000); // two default onboardings each wire all five agent clones
 
   it("persists a selected profile and numeric dispatch resumes without refetching", async () => {
     const fixture = product();
