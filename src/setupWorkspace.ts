@@ -46,13 +46,21 @@ export const agentHarnessProcess = (agent: string): string => {
 };
 
 /**
+ * Agents whose terminal readiness, draft and key handling `src/tmux.ts`
+ * implements, so automatic delivery is safe. Muse has this adapter without
+ * any lifecycle-hook mapping; progress comes from its ready receipts.
+ */
+export const hasTerminalDeliveryAdapter = (agent: string): boolean =>
+  ["claude", "codex", "cursor", "antigravity", "muse"].includes(agent);
+
+/**
  * Default per-agent owner UI for nudges and macOS Terminal windows.
  *
  * Claude needs Escape then Enter after `send-keys -l` (autocomplete / multiline).
  * Cursor without vim, Antigravity and Muse submit on Enter; Escape dismisses that
  * Cursor composer and cancels Antigravity. Cursor with `editor.vimMode` uses
  * vim `a` (when not INSERT) and Escape then Enter so INSERT does not treat
- * Enter as a newline. Muse's Escape interrupts a turn. Codex uses vim insert (`i`) and `Enter`.
+ * Enter as a newline. Muse's Escape interrupts a turn, so it is never sent. Codex uses vim insert (`i`) and `Enter`.
  * Operators override via config.json (non-vim Cursor Escape+Enter is still
  * upgraded to Enter).
  */
@@ -363,9 +371,8 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
       // Config-relative, so a workspace directory can be moved with its clones.
       root: relativeFrom(input.workspaceDir, agentCloneDirectory(input.cloneRoot, input.project, agent)),
       launcher: `start-${agent}.sh`,
-      // Muse has no lifecycle-hook mapping yet; owners deliver its action via pull.
-      // Other agents also receive a short action path through the driver.
-      delivery: agent === "muse" ? "pull" : "both",
+      // Agents also receive a short action path through the driver.
+      delivery: "both",
       harnessProcess: agentHarnessProcess(agent),
       ...agentOwnerUiDefaults(agent)
     })),

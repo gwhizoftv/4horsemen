@@ -17,6 +17,7 @@ import {
   readCursorVimMode,
   resolveAgentLauncher,
   NUDGE_BEFORE_ANTIGRAVITY_MS,
+  renderNudgeText,
   resolveNudgeKeys,
   runTmux,
   TmuxController,
@@ -36,6 +37,10 @@ const commandsIn = (args: readonly string[]): string[][] => {
 };
 const noopSleep = async (): Promise<void> => undefined;
 const harnessPromptReady = (paneText: string, agentId: string): boolean => harnessPromptReadiness(paneText, agentId).ready;
+/** Measured Muse Code 1.4.10 tail: transcript, voice-input rule, composer, rule and status footer. */
+const musePane = (above: string, composer = ""): string =>
+  `  Muse Code 1.4.10\n${above}── Voice input (alt(option)+v to start) ──────────\n❯${composer === "" ? "" : ` ${composer}`}\n` +
+  "──────────────────────────────────────────────────\n  muse-wonder-1.0 · high · /clone · Launch overrides\n";
 /** The idle line agents used to print; it is no longer evidence of anything. */
 const COORD_IDLE_SENTINEL = "COORD-IDLE: waiting for the next coordinator action file";
 
@@ -280,11 +285,14 @@ describe("tmux boundary", () => {
     ).toEqual({ prelude: ["a"], submit: ["Escape", "Enter"] });
   });
 
-  it("keeps Muse owner reminders free of vim preludes and Escape", () => {
-    const agent = { id: "muse", root: "/m", launcher: "start-muse.sh", delivery: "pull" as const };
+  it("keeps Muse nudges and owner reminders free of vim preludes and Escape", () => {
+    const agent = { id: "muse", root: "/m", launcher: "start-muse.sh", delivery: "both" as const };
     expect(vimInsertPrelude("> ", "muse")).toEqual([]);
     expect(resolveNudgeKeys(agent, "> ")).toEqual({ prelude: [], submit: ["Enter"] });
     expect(resolveNudgeKeys({ ...agent, nudgePrelude: [], nudgeSubmit: ["Enter"] }, "> "))
+      .toEqual({ prelude: [], submit: ["Enter"] });
+    // Escape interrupts a Muse turn, so stale or hand-written config never sends it.
+    expect(resolveNudgeKeys({ ...agent, nudgePrelude: ["Escape"], nudgeSubmit: ["Escape", "Enter"] }, "> "))
       .toEqual({ prelude: [], submit: ["Enter"] });
   });
 
@@ -796,6 +804,38 @@ describe("tmux boundary", () => {
     expect(harnessLooksReady("node", "agy")).toBe(true);
     expect(harnessLooksReady("antigravity", "agy")).toBe(true);
     expect(harnessLooksReady("agy", "agy")).toBe(true);
+    expect(harnessLooksReady("muse-bin-1.4.10", "muse")).toBe(true);
+    expect(harnessLooksReady("muse-bin-1.4.7-R6101.1", "muse")).toBe(true);
+    expect(harnessLooksReady("node", "muse")).toBe(false);
+    expect(harnessLooksReady("bash", "muse")).toBe(false);
+  });
+
+  it("reads measured Muse panes: a running turn keeps its composer but is not ready", () => {
+    expect(harnessPromptReadiness(musePane(""), "muse")).toEqual({ ready: true, reason: "vendor-prompt" });
+    expect(harnessPromptReady(musePane("❯ earlier prompt\n◆ Ran command · Sleep · ✓ · 20s · ctrl+o\n◆ done\n"), "muse")).toBe(true);
+    for (const chrome of ["◈ Thinking (0s · esc to interrupt)\n",
+      "◇ Running command · Sleep for twenty seconds — running (7s · esc to interrupt)\n└ (ctrl+alt(option)+b to send to background)\n"]) {
+      expect(harnessPromptReadiness(musePane(`❯ earlier prompt\n${chrome}`), "muse")).toEqual({ ready: false, reason: "muse-turn-chrome" });
+    }
+    expect(harnessPromptReadiness("  Muse Code 1.4.10\nLoading…\n", "muse")).toEqual({ ready: false, reason: "muse-no-prompt" });
+    // Anything below the status footer, such as a menu, is an unknown tail.
+    expect(harnessPromptReadiness(`${musePane("")}/help   Show help\n/model  Switch model\n`, "muse"))
+      .toEqual({ ready: false, reason: "muse-no-prompt" });
+    // So is a missing or replaced footer, including Muse's transient steering notice.
+    const tail = "── Voice input (alt(option)+v to start) ──\n❯\n──────────────────────────────\n";
+    for (const footer of ["", "Press Enter to confirm deletion\n", "  muse-wonder-1.0 steering th…\n"]) {
+      expect(harnessPromptReadiness(`  Muse Code 1.4.10\n${tail}${footer}`, "muse")).toEqual({ ready: false, reason: "muse-no-prompt" });
+    }
+  });
+
+  it("reads Muse's shortened and clipped busy lines in a measured 30-column pane", () => {
+    const narrow = (above: string): string => `❯ Run exactly: sleep 12 ; then\n  reply ok.\n${above}── Voice input (alt(option)+…\n` +
+      "❯\n──────────────────────────────\n  muse-wonder-1.0 · high · na…\n";
+    expect(harnessPromptReadiness(narrow("◆ done\n"), "muse")).toEqual({ ready: true, reason: "vendor-prompt" });
+    for (const busy of ["◇ Thinking (0s · esc to interr\n", "runn… (24s · esc to interrupt)\n└ (ctrl+b to send to backgrou…\n",
+      "◇ Thinking (1m 04s · esc to interrupt)\n"]) {
+      expect(harnessPromptReadiness(narrow(busy), "muse")).toEqual({ ready: false, reason: "muse-turn-chrome" });
+    }
   });
 
   it("does not read prose about in-flight chrome as in-flight chrome", () => {
@@ -823,6 +863,10 @@ describe("tmux boundary", () => {
     expect(harnessPromptReady("Generating (3s)", "antigravity")).toBe(false);
     // ...but a sentence that merely opens with the word is still prose.
     expect(harnessPromptReady("Thinking about the timer forms for this issue\n> ", "cursor")).toBe(true);
+    // A finished Muse reply that mentions the interrupt hint is prose; only the live timer is chrome.
+    expect(harnessPromptReady(musePane("◆ Completed the review; use esc to interrupt a running turn\n"), "muse")).toBe(true);
+    expect(harnessPromptReady(musePane("◆ Muse paints `esc to interrupt` while a turn runs\n"), "muse")).toBe(true);
+    expect(harnessPromptReady(musePane("◇ Thinking (0s\n"), "muse")).toBe(false);
   });
 
   it("names the predicate that refused a prompt", () => {
@@ -1042,6 +1086,61 @@ describe("tmux boundary", () => {
     const keys = calls.filter((args) => args.includes("send-keys")).flatMap(commandsIn).filter((command) => command[0] === "send-keys");
     expect(keys.some((command) => command.includes("-l"))).toBe(false);
     expect(keys.at(-1)?.at(-1)).toBe("Enter");
+  });
+
+  describe("Muse automatic delivery", () => {
+    const action = "11111111-2222-3333-4444-555555555555";
+    const digest = "f".repeat(64);
+    const current = renderNudgeText("/a", action, digest);
+    /** Later captures repeat the last one; the second is the final pre-send recapture. */
+    const museNudge = async (...captures: string[]) => {
+      const calls: string[][] = [];
+      const controller = new TmuxController(async (args) => {
+        calls.push([...args]);
+        if (args[0] === "display-message") return ok("0\tmuse-bin-1.4.10\t0\t0");
+        if (args[0] === "capture-pane") return ok(captures.length > 1 ? captures.shift()! : captures[0]!);
+        return ok();
+      }, null, null, null, noopSleep);
+      const outcome = await controller.nudge(1, { id: "muse", root: "/clone", launcher: "start-muse.sh", delivery: "both",
+        harnessProcess: "muse", nudgePrelude: [], nudgeSubmit: ["Enter"] }, "/a", undefined, action, digest);
+      return { outcome, keys: calls.filter((args) => args.includes("send-keys")).flatMap(commandsIn) };
+    };
+
+    it("types the action and Enter into an idle composer, with no prelude or Escape", async () => {
+      const { outcome, keys } = await museNudge(musePane("❯ earlier prompt\n◆ done\n"));
+      expect(outcome).toMatchObject({ status: "sent", reason: "sent" });
+      expect(keys.map((args) => args.includes("-l") ? "-l" : args.at(-1))).toEqual(["-l", "sleep 0.3", "Enter"]);
+      expect(keys.find((args) => args.includes("-l"))?.at(-1)).toBe(current);
+    });
+
+    it.each([
+      { state: "an owner draft", pane: musePane("", "owner draft text"), reason: "muse-composer-not-ready" },
+      { state: "a draft quoting the action id", pane: musePane("", `please look at ${action} later`), reason: "muse-composer-not-ready" },
+      { state: "this action's prompt for an older digest", pane: musePane("", renderNudgeText("/a", action, "0".repeat(64))),
+        reason: "muse-composer-not-ready" },
+      { state: "a running turn", pane: musePane("◈ Thinking (2s · esc to interrupt)\n"), reason: "muse-turn-chrome" },
+      { state: "a draft typed before the final recapture", pane: [musePane(""), musePane("", "owner draft text")],
+        reason: "muse-composer-not-ready" },
+      { state: "a turn started before the final recapture", pane: [musePane(""), musePane("◈ Thinking (0s · esc to interrupt)\n")],
+        reason: "muse-turn-chrome" },
+      // The batch chosen from the first capture would retype the prompt, or press a bare Enter.
+      { state: "this action's prompt typed before the final recapture", pane: [musePane(""), musePane("", current)],
+        reason: "muse-composer-not-ready" },
+      { state: "a pending prompt submitted before the final recapture", pane: [musePane("", current), musePane("")],
+        reason: "muse-composer-not-ready" }
+    ])("sends nothing over $state", async ({ pane, reason }) => {
+      const { outcome, keys } = await museNudge(...(Array.isArray(pane) ? pane : [pane]));
+      expect(outcome).toMatchObject({ status: "busy", reason });
+      expect(keys).toEqual([]);
+    });
+
+    it.each([false, true])("submits this action's pending prompt without retyping it (wrapped=%s)", async (wrapped) => {
+      const pending = wrapped ? current.replace(" digest ", "\n  digest ") : current;
+      const { outcome, keys } = await museNudge(musePane("", pending));
+      expect(outcome).toMatchObject({ status: "sent", detail: "pending-prompt-submitted" });
+      expect(keys.some((args) => args.includes("-l"))).toBe(false);
+      expect(keys.at(-1)?.at(-1)).toBe("Enter");
+    });
   });
 
   it("reports which pane predicate deferred a delivery", async () => {

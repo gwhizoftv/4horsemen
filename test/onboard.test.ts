@@ -232,12 +232,13 @@ describe("coord onboard", () => {
     const config = JSON.parse(readFileSync(configPath, "utf8")) as {
       profile: string;
       digestPaths: string[];
-      agents: Array<{ id: string; nudgeSubmit: string[] }>;
+      agents: Array<{ id: string; delivery: string; nudgeSubmit: string[] }>;
     };
     expect(config.agents.find((agent) => agent.id === "codex")?.nudgeSubmit).toEqual(["Enter"]);
     expect(config.profile).toBe("consensus");
     expect(config.digestPaths).toEqual([]);
-    expect(config.agents.map((agent) => agent.id)).toEqual(["claude", "codex", "cursor", "antigravity"]);
+    expect(config.agents.map((agent) => agent.id)).toEqual(["claude", "codex", "cursor", "antigravity", "muse"]);
+    expect(config.agents.find((agent) => agent.id === "muse")).toMatchObject({ delivery: "both", nudgeSubmit: ["Enter"] });
     const declaration = join(fixture.workspaceRoot, "policy.json");
     const verification = {
       mode: "coordinator",
@@ -274,7 +275,7 @@ describe("coord onboard", () => {
         }
       })
     ).toBe(0);
-    expect(manualAgents).toEqual([["claude", "codex", "cursor", "antigravity"]]);
+    expect(manualAgents).toEqual([["claude", "codex", "cursor", "antigravity", "muse"]]);
 
     const human = join(fixture.workspaceRoot, "human");
     execFileSync("git", ["clone", "-q", fixture.originPath, human]);
@@ -294,7 +295,29 @@ describe("coord onboard", () => {
     ).toBe(2);
     expect(errors.join("")).toContain("is not onboarded in this worktree");
     expect(existsSync(issueRuntimePaths(coordRoot, 10).issueRoot)).toBe(false);
-  });
+  }, 45_000); // two default onboardings each wire all five agent clones
+
+  it("adds Muse on default re-onboarding while a started issue keeps its frozen roster", async () => {
+    const fixture = product();
+    const fourAgents = ["claude", "codex", "cursor", "antigravity"];
+    const options = { installRoot: repoRoot, productRoot: fixture.productRoot, home: null, log: () => undefined };
+    const initial = onboard({ ...options, agents: fourAgents });
+    expect(initial.doctor.exitCode).toBe(0);
+    const deps = { processRunner: runner, makeRunLoop: fakeLoop, io: { cwd: fixture.productRoot, stdout: () => undefined } };
+    expect(await runCli(["9"], deps)).toBe(0);
+    const coordRoot = dirname(initial.install.configPath);
+    const started = issueRuntimePaths(coordRoot, 9);
+    const snapshot = readFileSync(started.start, "utf8");
+
+    const updated = onboard(options);
+    expect(updated.doctor.exitCode).toBe(0);
+    expect(readConfig(updated.install.configPath).agents.map((agent) => agent.id)).toEqual([...fourAgents, "muse"]);
+    expect(existsSync(join(agentCloneDirectory(fixture.workspaceRoot, "myserver", "muse"), "start-muse.sh"))).toBe(true);
+    expect(await runCli(["9"], deps)).toBe(0);
+    expect(readFileSync(started.start, "utf8")).toBe(snapshot);
+    expect(await runCli(["10"], deps)).toBe(0);
+    expect(readStartState(issueRuntimePaths(coordRoot, 10)).originalRoster).toEqual([...fourAgents, "muse"]);
+  }, 60_000); // two onboardings wire four, then five agent clones
 
   it("persists a selected profile and numeric dispatch resumes without refetching", async () => {
     const fixture = product();

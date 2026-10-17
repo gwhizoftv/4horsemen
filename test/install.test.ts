@@ -1266,7 +1266,7 @@ describe("generated git shim", () => {
 });
 
 describe("generated agent launchers", () => {
-  it("launches Muse unsandboxed with pull delivery and no self-update", () => {
+  it("launches Muse unsandboxed with automatic delivery and no self-update", () => {
     const fixture = product("plain");
     const home = join(fixture.workspaceRoot, "home with spaces");
     const completesRoot = join(fixture.workspaceRoot, "completion mailbox");
@@ -1296,7 +1296,7 @@ describe("generated agent launchers", () => {
       expect(readFileSync(`${capture}.env`, "utf8")).toBe(`1\n${clone}/.coord/bin/git\n${issue}\n`);
     }
     expect(readConfig(result.configPath).agents).toMatchObject([{
-      id: "muse", delivery: "pull", nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Basic"
+      id: "muse", delivery: "both", harnessProcess: "muse", nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Basic"
     }]);
     expect(DEFAULT_CLONE_IGNORES).toContain(".muse/");
     for (const path of [".gitignore", "templates/product/gitignore.coordination.block"]) {

@@ -11,9 +11,8 @@ Four Horsemen (`4horsemen`) run by using its `coord` command, short for coordina
 ![Claude Code](https://img.shields.io/badge/agent-Claude_Code-d97757) ![Codex](https://img.shields.io/badge/agent-Codex-10a37f) ![Cursor](https://img.shields.io/badge/agent-Cursor-555555) ![Antigravity](https://img.shields.io/badge/agent-Antigravity-4285f4) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Instead of trusting a single model with a change, give a team of coding agents
-the same GitHub issue. Four Horsemen runs Claude Code, Codex, Cursor, Antigravity,
-and optionally Meta's Muse Code (pull delivery)
-in separate Git clones, coordinates their plans, plan reviews, competitive implementations and peer code reviews, and verifies
+the same GitHub issue. Four Horsemen runs Claude Code, Codex, Cursor, Antigravity
+and Meta's Muse Code in separate Git clones, coordinates their plans, plan reviews, competitive implementations and peer code reviews, and verifies
 the exact commits they submit before publishing a pull request. You choose the
 agents, the project's checks, and when to intervene.
 
@@ -96,9 +95,10 @@ install from a private fork, see [bootstrap options](docs/setup-workspace.md#boo
 coord onboard /path/to/app
 ```
 
-The default is all four agents and your own clone. Onboarding creates
-the agent clones, proposes checks for the product, and runs `coord doctor`.
-Install all four harnesses, or use this alternative for a one-agent start:
+The default is all five agents (Claude, Codex, Cursor, Antigravity and Muse)
+and your own clone. Onboarding creates the agent clones, proposes checks for the
+product, and runs `coord doctor`. Install all five harnesses, or name exactly the
+agents you have with `--agents`; this is a one-agent start:
 
 ```sh
 coord onboard /path/to/app --agents codex --profile solo
