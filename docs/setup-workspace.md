@@ -163,12 +163,18 @@ coverage as unverified. Usage analytics and quota recovery are unavailable.
 
 Muse's terminal adapter follows its measured screen (Muse Code 1.4.10). The
 pane command is the versioned `muse-bin-<version>`. The live composer is the
-last `❯` line above a `─` rule and one status-footer line. A running turn keeps
-that composer painted and shows `◈ Thinking (3s · esc to interrupt)` above it,
-so coord refuses delivery (`muse-turn-chrome`): Enter would steer the running
-turn. Any other text in the composer is an owner draft (`muse-composer-not-ready`)
-unless it is this action's complete current prompt, which is then submitted
-without retyping. An unknown screen fails closed (`muse-no-prompt`). Delivery
+last `❯` line above a `─` rule and exactly one status footer that starts with
+the model (`muse-wonder-1.0 · high · …`). A running turn keeps that composer
+painted and shows `◈ Thinking (3s · esc to interrupt)` above it, so coord
+refuses delivery (`muse-turn-chrome`): Enter would steer the running turn.
+Narrow panes shorten or clip that line (`runn… (24s · esc to interrupt)`,
+`◇ Thinking (0s · esc to interr` at 30 columns), so the elapsed timer
+`(…s ·` is what identifies it. Any other text in the composer is an owner
+draft (`muse-composer-not-ready`) unless it is this action's complete current
+prompt, which is then submitted without retyping. If the composer changes
+between the first check and the final recapture, delivery defers and decides
+again on the next poll. An unknown screen, including a missing or replaced
+footer, fails closed (`muse-no-prompt`). Delivery
 types the prompt and Enter with no vim prelude. Muse never receives Escape,
 which interrupts a turn, even from configured keys. Explicit owner reminders
 keep bypassing readiness.
@@ -201,6 +207,10 @@ hooks:
   - A pending action prompt was submitted without retyping.
   - After Muse was killed mid-action and relaunched, a single resend
     completed the action once.
+- **Narrow panes:** at 44 and 30 columns, Muse kept the elapsed timer on the
+  busy line while shortening or clipping the rest, and shortened the footer
+  path. At 30 columns, a prompt sent mid-turn briefly replaced the footer with
+  a steering notice.
 - **Containment:** Muse's own `git status --porcelain` request was refused by
   the PATH Git shim.
 

@@ -177,19 +177,22 @@ const codexVimNormal = (paneText: string): boolean =>
   codexTail(paneText)?.footer.some((line) => /Vim: Normal/.test(line.plain)) === true;
 
 const MUSE_RULE = /^─+$/;
+/** The status footer names the model first: `muse-wonder-1.0 · high · <path> · Launch overrides`. */
+const MUSE_FOOTER = /^muse-[\w.-]+ · /;
 
 /**
  * Muse's live composer: the last `❯` line and any wrapped input above a pure
- * `─` rule, which only its one-line status footer may follow. Submitted
+ * `─` rule, followed by exactly its one-line status footer. Submitted
  * prompts stay above it as `❯ …` history. Any other tail (splash, menu,
- * dialog) is unknown and fails closed as `null`.
+ * dialog, a missing or replaced footer) is unknown and fails closed as `null`.
  */
 const museComposer = (paneText: string): PaneLine[] | null => {
   const lines = paneLines(paneText);
   const composerAt = lines.map((line) => line.plain.startsWith("❯")).lastIndexOf(true);
   if (composerAt < 0) return null;
   const ruleAt = lines.findIndex((line, index) => index > composerAt && MUSE_RULE.test(line.plain));
-  return ruleAt < 0 || lines.length - ruleAt > 2 ? null : lines.slice(composerAt, ruleAt);
+  return ruleAt < 0 || lines.length !== ruleAt + 2 || !MUSE_FOOTER.test(lines[ruleAt + 1]!.plain)
+    ? null : lines.slice(composerAt, ruleAt);
 };
 
 const museComposerEmpty = (paneText: string): boolean => {
@@ -200,14 +203,17 @@ const museComposerEmpty = (paneText: string): boolean => {
 /**
  * Muse keeps an empty composer painted during a turn; its status line just
  * above it (`◈ Thinking (3s · esc to interrupt)`) is the busy signal. Enter
- * would steer that turn, so this blocks every key.
+ * would steer that turn, so this blocks every key. Narrow panes shorten that
+ * line (`runn… (24s · esc to interrupt)`) or clip it (`◇ Thinking (0s · esc to
+ * interr`), so the elapsed timer is matched, not the glyph or the full suffix.
+ * Finished items show their duration without the parenthesis (`· 20s · ctrl+o`).
  */
 const museTurnChrome = (paneText: string): boolean => {
   const lines = paneLines(paneText);
   const composerAt = lines.map((line) => line.plain.startsWith("❯")).lastIndexOf(true);
   return (composerAt < 0 ? lines : lines.slice(0, composerAt))
     .filter((line) => !line.plain.startsWith("─")).slice(-4)
-    .some((line) => /^[◆◇◈]\s.*\([^)]*esc to interrupt\)/.test(line.plain));
+    .some((line) => /\((?:\d+[hm] )*\d+s ·|esc to interr/.test(line.plain));
 };
 
 /**
@@ -1308,6 +1314,12 @@ export class TmuxController {
         const readiness = readinessFor(latest);
         const refused = began ? (!readiness.ready ? readiness.reason : null) : proofRefusal(latest);
         if (refused !== null) return { status: "busy", reason: refused, stage: began ? "mid-send" : "prompt" };
+        // The batch was chosen from the first capture. A prompt that appeared or was
+        // submitted since would be typed twice or answered with a bare Enter: defer
+        // before spending credit and choose again on the next poll.
+        if (agent.id === "muse" && !began && promptPending(latest) !== submitOnly) {
+          return { status: "busy", reason: "muse-composer-not-ready", stage: "prompt" };
+        }
       }
       if (!began) { reserveSend(); began = true; }
       const result = await this.runner(args);

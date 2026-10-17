@@ -297,6 +297,28 @@ describe("coord onboard", () => {
     expect(existsSync(issueRuntimePaths(coordRoot, 10).issueRoot)).toBe(false);
   }, 45_000); // two default onboardings each wire all five agent clones
 
+  it("adds Muse on default re-onboarding while a started issue keeps its frozen roster", async () => {
+    const fixture = product();
+    const fourAgents = ["claude", "codex", "cursor", "antigravity"];
+    const options = { installRoot: repoRoot, productRoot: fixture.productRoot, home: null, log: () => undefined };
+    const initial = onboard({ ...options, agents: fourAgents });
+    expect(initial.doctor.exitCode).toBe(0);
+    const deps = { processRunner: runner, makeRunLoop: fakeLoop, io: { cwd: fixture.productRoot, stdout: () => undefined } };
+    expect(await runCli(["9"], deps)).toBe(0);
+    const coordRoot = dirname(initial.install.configPath);
+    const started = issueRuntimePaths(coordRoot, 9);
+    const snapshot = readFileSync(started.start, "utf8");
+
+    const updated = onboard(options);
+    expect(updated.doctor.exitCode).toBe(0);
+    expect(readConfig(updated.install.configPath).agents.map((agent) => agent.id)).toEqual([...fourAgents, "muse"]);
+    expect(existsSync(join(agentCloneDirectory(fixture.workspaceRoot, "myserver", "muse"), "start-muse.sh"))).toBe(true);
+    expect(await runCli(["9"], deps)).toBe(0);
+    expect(readFileSync(started.start, "utf8")).toBe(snapshot);
+    expect(await runCli(["10"], deps)).toBe(0);
+    expect(readStartState(issueRuntimePaths(coordRoot, 10)).originalRoster).toEqual([...fourAgents, "muse"]);
+  }, 60_000); // two onboardings wire four, then five agent clones
+
   it("persists a selected profile and numeric dispatch resumes without refetching", async () => {
     const fixture = product();
     expect(

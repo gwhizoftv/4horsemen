@@ -821,6 +821,21 @@ describe("tmux boundary", () => {
     // Anything below the status footer, such as a menu, is an unknown tail.
     expect(harnessPromptReadiness(`${musePane("")}/help   Show help\n/model  Switch model\n`, "muse"))
       .toEqual({ ready: false, reason: "muse-no-prompt" });
+    // So is a missing or replaced footer, including Muse's transient steering notice.
+    const tail = "── Voice input (alt(option)+v to start) ──\n❯\n──────────────────────────────\n";
+    for (const footer of ["", "Press Enter to confirm deletion\n", "  muse-wonder-1.0 steering th…\n"]) {
+      expect(harnessPromptReadiness(`  Muse Code 1.4.10\n${tail}${footer}`, "muse")).toEqual({ ready: false, reason: "muse-no-prompt" });
+    }
+  });
+
+  it("reads Muse's shortened and clipped busy lines in a measured 30-column pane", () => {
+    const narrow = (above: string): string => `❯ Run exactly: sleep 12 ; then\n  reply ok.\n${above}── Voice input (alt(option)+…\n` +
+      "❯\n──────────────────────────────\n  muse-wonder-1.0 · high · na…\n";
+    expect(harnessPromptReadiness(narrow("◆ done\n"), "muse")).toEqual({ ready: true, reason: "vendor-prompt" });
+    for (const busy of ["◇ Thinking (0s · esc to interr\n", "runn… (24s · esc to interrupt)\n└ (ctrl+b to send to backgrou…\n",
+      "◇ Thinking (1m 04s · esc to interrupt)\n"]) {
+      expect(harnessPromptReadiness(narrow(busy), "muse")).toEqual({ ready: false, reason: "muse-turn-chrome" });
+    }
   });
 
   it("does not read prose about in-flight chrome as in-flight chrome", () => {
@@ -1103,7 +1118,12 @@ describe("tmux boundary", () => {
       { state: "a draft typed before the final recapture", pane: [musePane(""), musePane("", "owner draft text")],
         reason: "muse-composer-not-ready" },
       { state: "a turn started before the final recapture", pane: [musePane(""), musePane("◈ Thinking (0s · esc to interrupt)\n")],
-        reason: "muse-turn-chrome" }
+        reason: "muse-turn-chrome" },
+      // The batch chosen from the first capture would retype the prompt, or press a bare Enter.
+      { state: "this action's prompt typed before the final recapture", pane: [musePane(""), musePane("", current)],
+        reason: "muse-composer-not-ready" },
+      { state: "a pending prompt submitted before the final recapture", pane: [musePane("", current), musePane("")],
+        reason: "muse-composer-not-ready" }
     ])("sends nothing over $state", async ({ pane, reason }) => {
       const { outcome, keys } = await museNudge(...(Array.isArray(pane) ? pane : [pane]));
       expect(outcome).toMatchObject({ status: "busy", reason });

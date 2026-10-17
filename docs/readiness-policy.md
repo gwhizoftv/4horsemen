@@ -156,9 +156,9 @@ Prompt readiness (`PromptBlockedReason`):
 | `antigravity-no-prompt` | splash or no prompt yet |
 | `codex-turn-chrome` | Codex's `Working (… esc to interrupt)` status line is up |
 | `codex-composer-not-ready` | the Codex composer holds a draft that is not this action's message |
-| `muse-turn-chrome` | Muse's `(… esc to interrupt)` status line is up; Enter would steer that turn |
-| `muse-no-prompt` | no Muse composer, or an unknown screen (splash, menu, dialog) |
-| `muse-composer-not-ready` | the Muse composer holds text other than this action's complete current prompt |
+| `muse-turn-chrome` | Muse's busy line with its elapsed timer (`(3s · esc to interrupt)`, possibly shortened or clipped) is up; Enter would steer that turn |
+| `muse-no-prompt` | no Muse composer, or an unknown screen (splash, menu, dialog, missing or replaced status footer) |
+| `muse-composer-not-ready` | the Muse composer holds text other than this action's complete current prompt, or changed before the final recapture |
 
 In-flight status words (`Thinking`, `Working`, `Generating`, `Running`) match
 only at the start of a line, after whitespace or a spinner glyph, and only with
