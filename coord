@@ -13,7 +13,8 @@ while [[ -L "$SOURCE" ]]; do
   fi
 done
 ROOT="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+coord_node_bin="$("$ROOT/scripts/lib/node-runtime.sh" --resolve)"
 if [[ ! -f "$ROOT/dist/main.js" ]] || find "$ROOT/src" -type f -newer "$ROOT/dist/main.js" -print -quit | grep -q .; then
-  (cd "$ROOT" && pnpm build) >&2
+  (cd "$ROOT" && PATH="$(dirname "$coord_node_bin"):$PATH" pnpm build) >&2
 fi
-exec node "$ROOT/dist/main.js" "$@"
+exec "$coord_node_bin" "$ROOT/dist/main.js" "$@"

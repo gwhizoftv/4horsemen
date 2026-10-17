@@ -33,8 +33,12 @@ export const coordCliEntry = (): string => resolve(dirname(fileURLToPath(import.
 
 const singleQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
+/** Reselect beside the target CLI; retain this Node only as a validated fallback. */
+export const coordNodeCommand = (cliEntry: string): string =>
+  `${singleQuote(resolve(dirname(cliEntry), "..", "scripts", "lib", "node-runtime.sh"))} --fallback-node ${singleQuote(process.execPath)}`;
+
 export const gitCredentialHelperCommand = (account: string, cliEntry: string): string =>
-  `!/usr/bin/env node ${singleQuote(cliEntry)}${GITHUB_CREDENTIAL_HELPER_MARKER}${account}`;
+  `!${coordNodeCommand(cliEntry)} ${singleQuote(cliEntry)}${GITHUB_CREDENTIAL_HELPER_MARKER}${account}`;
 
 /**
  * One-shot Git settings: the empty value resets inherited helpers (osxkeychain,

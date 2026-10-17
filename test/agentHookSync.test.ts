@@ -32,6 +32,9 @@ const fixture = () => {
   roots.push(root);
   const clone = join(root, "clone");
   mkdirSync(clone);
+  mkdirSync(join(root, "coord/dist"), { recursive: true });
+  mkdirSync(join(root, "coord/scripts/lib"), { recursive: true });
+  writeFileSync(join(root, "coord/scripts/lib/node-runtime.sh"), readFileSync("scripts/lib/node-runtime.sh"), { mode: 0o700 });
   return { root, clone, cliEntry: join(root, "coord", "dist", "main.js") };
 };
 
@@ -96,11 +99,14 @@ describe("agent lifecycle hook synchronization", () => {
   });
 
   it.each(["codex", "claude", "cursor", "antigravity"] as const)("prefilters %s without starting Node and decodes escaped JSON through Node", (vendor) => {
-    const { root, clone } = fixture();
-    const cliEntry = join(root, "test-cli.cjs");
+    const { root, clone, cliEntry } = fixture();
     writeFileSync(cliEntry, 'process.stdout.write("decoded\\n")');
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "node"), "#!/bin/sh\n[ \"$1\" = --version ] || exit 99\necho v16.18.0\n", { mode: 0o700 });
     const command = renderShellGuardHookCommand(cliEntry, clone, vendor);
-    const run = (input: string) => spawnSync("/bin/sh", ["-c", command], { input, encoding: "utf8" });
+    const run = (input: string) => spawnSync("/bin/sh", ["-c", command], { input, encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, COORD_NODE: process.execPath } });
     const allow = vendor === "cursor" ? '{"permission":"allow"}\n' : vendor === "antigravity" ? '{"decision":"allow"}\n' : "";
     expect(run('{"command":"echo hello"}').stdout).toBe(allow);
     expect(run('{"command":"git status"}').stdout).toBe("decoded\n");
@@ -282,11 +288,15 @@ describe("Claude status-line tee", () => {
     mkdirSync(dirname(base.cliEntry), { recursive: true });
     writeFileSync(base.cliEntry, `require("fs").writeFileSync(${JSON.stringify(received)}, require("fs").readFileSync(0));\n`);
     const owner = join(base.root, "owner-statusline.sh");
+    const bin = join(base.root, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "node"), "#!/bin/sh\n[ \"$1\" = --version ] || exit 99\necho v16.18.0\n", { mode: 0o700 });
     // Newline-sensitive owner command: \`read\` fails without the terminating newline.
-    writeFileSync(owner, "#!/bin/sh\nread -r first || exit 9\nprintf 'owner:%s|' \"$first\"\ncat\necho owner-stderr >&2\nexit 7\n");
+    writeFileSync(owner, "#!/bin/sh\n[ \"$(node --version)\" = v16.18.0 ] || exit 99\nread -r first || exit 9\nprintf 'owner:%s|' \"$first\"\ncat\necho owner-stderr >&2\nexit 7\n");
     chmodSync(owner, 0o700);
     const context = { clone: base.clone, home, cliEntry: base.cliEntry, managedSettings: [] as string[] };
-    const run = (input: string) => spawnSync(claudeStatusLinePaths(base.clone).wrapper, { input, encoding: "utf8" });
+    const run = (input: string) => spawnSync(claudeStatusLinePaths(base.clone).wrapper, { input, encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, COORD_NODE: process.execPath } });
     // The receiver runs in the background; let it release its exclusion before the tree is removed.
     const settled = async (): Promise<void> => {
       for (let attempt = 0; attempt < 200 && existsSync(claudeStatusLinePaths(base.clone).lock); attempt++) {

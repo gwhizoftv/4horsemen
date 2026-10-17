@@ -55,7 +55,7 @@ EOF
 done
 
 command -v git >/dev/null 2>&1 || die "Git is required; install git and rerun this command"
-if ! command -v node >/dev/null 2>&1 || ! command -v pnpm >/dev/null 2>&1; then
+if ! command -v pnpm >/dev/null 2>&1; then
   die "Node 26 and pnpm 11 are required; install them, then rerun this command"
 fi
 
@@ -96,8 +96,9 @@ EOF
 fi
 
 printf '%s\n' "coord bootstrap: installing dependencies in $root"
-(cd "$root" && pnpm install --frozen-lockfile)
-(cd "$root" && pnpm build)
+coord_node_bin=$("$root/scripts/lib/node-runtime.sh" --resolve)
+(cd "$root" && PATH="$(dirname "$coord_node_bin"):$PATH" pnpm install --frozen-lockfile)
+(cd "$root" && PATH="$(dirname "$coord_node_bin"):$PATH" pnpm build)
 [ -f "$root/dist/main.js" ] || die "build completed without dist/main.js; inspect the pnpm output above"
 
 if [ "$install_path" = true ]; then
