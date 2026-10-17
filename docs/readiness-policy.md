@@ -78,7 +78,7 @@ Every automatic send passes these checks, re-read before each key batch:
 - the vendor prompt checks: trust dialogs, Claude usage-limit screens,
   Antigravity's verify overlay, a visible prompt after startup, and live turn
   chrome where an Escape-bearing submit would cancel the turn;
-- vim/INSERT prelude selection, and for Codex an empty composer (an owner draft
+- vim/INSERT prelude selection, and for Codex/Muse an empty composer (an owner draft
   would be submitted with the prompt).
 
 A refusal before any key costs nothing and is retried on a later poll. A
@@ -86,10 +86,23 @@ transport failure after reservation keeps its durable charge and creates a
 `delivery-uncertain` hold. The 60/120/240-second repeat spacing and the
 four-send budget remain as a backstop.
 
-Codex, Claude and Cursor receive one tmux command batch: literal prompt text
+Codex, Claude, Cursor and Muse receive one tmux command batch: literal prompt text
 followed by actual submit-key events, with blocking `run-shell` sleeps of 300 ms
 after the text and 150 ms between submit keys. AGY keeps its separate
 literal-text/Enter delivery and delays.
+
+Muse automatic sends wait for its idle composer and footer, and recheck them
+before the key batch. A pending prompt is submitted only when the composer
+matches the complete current action prompt (UUID, digest and path), allowing
+line wrapping and the resend prefix. A UUID mentioned in an owner draft does
+not authorize Enter. Explicit owner reminders retain the bypass described above.
+
+Muse has no lifecycle callbacks or transcript reader. JOIN and ready receipts
+authorize ordinary handoffs without an acknowledgment timer. The watchdog uses
+pane activity and the same bounded resend path; even a static busy pane refuses
+automatic input. A partial-send uncertainty or dead-pane hold uses existing
+owner recovery: inspect/restore the terminal, then release that hold. A restart
+does not fabricate a SessionStart callback or clear an uncertain send.
 
 ## Acknowledgment is display-only
 
@@ -156,6 +169,9 @@ Prompt readiness (`PromptBlockedReason`):
 | `antigravity-no-prompt` | splash or no prompt yet |
 | `codex-turn-chrome` | Codex's `Working (… esc to interrupt)` status line is up |
 | `codex-composer-not-ready` | the Codex composer holds a draft that is not this action's message |
+| `muse-turn-chrome` | a Muse turn is in flight; Enter would steer it |
+| `muse-no-prompt` | no recognized Muse composer and status footer, or an unknown overlay |
+| `muse-composer-not-ready` | a draft differs from the current action prompt, or the composer changed before the send |
 
 In-flight status words (`Thinking`, `Working`, `Generating`, `Running`) match
 only at the start of a line, after whitespace or a spinner glyph, and only with

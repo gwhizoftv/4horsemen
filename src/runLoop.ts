@@ -929,6 +929,9 @@ const DEFERRAL_RATIONALE: Readonly<Record<string, string>> = {
   "antigravity-no-prompt": "no idle prompt is visible in the pane",
   "codex-turn-chrome": "the agent is still working; no intervention needed",
   "codex-composer-not-ready": "the Codex composer holds a draft that is not this action's message",
+  "muse-turn-chrome": "the agent is still working; automatic input would steer its turn",
+  "muse-no-prompt": "no recognized Muse composer and footer are visible; inspect the agent terminal",
+  "muse-composer-not-ready": "the Muse composer holds a draft that is not this action's message",
   "pane-capture-unavailable": "coord cannot read the terminal to check whether input is safe; inspect the agent terminal"
 };
 

@@ -26,7 +26,8 @@ type Installed = { fixture: ProductFixture; clone: string; configPath: string };
 
 const installed = (
   declaration: Record<string, unknown> = { checks: declaredChecks, verify: passingVerify },
-  kind: "go" | "plain" = "go"
+  kind: "go" | "plain" = "go",
+  agent = "claude"
 ): Installed => {
   ensureBuilt();
   const fixture = makeProduct(kind);
@@ -37,7 +38,7 @@ const installed = (
     installRoot: repoRoot,
     productRoot: fixture.productRoot,
     coordRoot: fixture.coordRoot,
-    agents: ["claude"],
+    agents: [agent],
     profile: "solo",
     declarePath: writeDeclaration(fixture.workspaceRoot, declaration),
     writeProduct: false,
@@ -147,6 +148,17 @@ describe("coord doctor", () => {
     const lifecycle = report(fixture).findings.find((item) => item.class === "lifecycleHooks");
     expect(lifecycle?.message).toContain("no supported lifecycle-hook vendor mapping");
     expect(lifecycle?.remediation).toContain("delivery to pull");
+  });
+
+  it("accepts Muse terminal delivery without lifecycle hooks while retaining installation checks", () => {
+    const { fixture, clone, configPath } = installed(undefined, "plain", "muse");
+    expect(readConfig(configPath).agents[0]).toMatchObject({ id: "muse", delivery: "both" });
+    expect(report(fixture).findings).toEqual([]);
+    expect(report(fixture).exitCode).toBe(0);
+    chmodSync(join(clone, ".coord/bin/git"), 0o600);
+    rmSync(join(clone, "start-muse.sh"));
+    expect(report(fixture).findings.map((item) => item.class)).toEqual(expect.arrayContaining(["gitShim", "launcher"]));
+    expect(report(fixture).findings.map((item) => item.class)).not.toContain("lifecycleHooks");
   });
 
   it("reports a missing or crossed agent identity", () => {

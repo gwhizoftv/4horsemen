@@ -152,18 +152,62 @@ reuse the same trust writer. Reinstall preserves unrelated settings and does not
 rewrite unchanged trust entries; `install --dry-run` makes no trust changes.
 Launchers retain their existing sandbox and tool-permission settings.
 
-Muse Code is opt-in: include `muse` in `--agents` when installing or onboarding.
-It uses pull delivery, with Enter-only owner reminders and no vim prelude.
+Muse Code is the fifth default onboarding agent, after Claude, Codex, Cursor and
+Antigravity. Re-onboarding with defaults adds its clone and automatic `both`
+delivery; an explicit `--agents` list remains exact, and existing issues retain
+their frozen roster. Install and authenticate the harnesses you select before
+starting an issue; doctor checks the generated launcher, not whether the vendor
+executable is installed or authenticated.
+
+Muse uses Enter-only submission with no vim prelude; stale Escape+Enter submit
+settings resolve to Enter. Its versioned `muse-bin-*` foreground name, `❯`
+composer, closing rule and model/status footer identify the terminal. Automatic
+sends reject active `(… esc to interrupt)` chrome, unknown tails and owner
+drafts. Pending-prompt recovery matches the full current action prompt rather
+than only its UUID. JOIN and matching ready receipts authorize subsequent
+handoffs without lifecycle callbacks. Explicit owner reminders retain their
+normal readiness bypass.
+
 The launcher passes run-local `--trust-workspace` to load `AGENTS.md` without
-writing persisted trust. It also passes `--disable-sandbox --approval-mode never`
-because Muse's sandbox protects `.git`, preventing the commits required by
-coordination. This permits writes anywhere the owner can write; no filesystem
-isolation is claimed. The existing PATH Git shim remains installed, with live
-coverage unverified; Muse lifecycle hooks, automatic nudges and usage analytics
-are not available. `MUSE_NO_AUTO_UPDATE=1` suppresses wrapper updates during
-version collection and launches; update Muse outside coord sessions. These
-flags were observed with Muse Code 1.4.10. A live Muse run loading instructions,
-committing/pushing and writing receipts has not been verified by the stub tests.
+writing persisted trust, and `--disable-sandbox --approval-mode never` because
+Muse's sandbox protects `.git`. This permits writes anywhere the owner can
+write; no filesystem isolation is claimed. The PATH Git shim remains installed;
+installation alone does not prove live enforcement. Muse lifecycle hooks,
+prompt acknowledgments, transcript watchdog input and usage analytics are
+unavailable. `coord status` reports native hook coverage as unverified, which
+does not block ordinary ready/complete progress. `MUSE_NO_AUTO_UPDATE=1`
+suppresses wrapper updates during version collection and launches; update Muse
+outside coord sessions.
+
+#### Issue 235 verification record
+
+The terminal fixtures use the selected plan author's measured Muse Code 1.4.10
+(`1.4.10-R6427.1`) / tmux 3.7b capture shapes: `muse-bin-1.4.10`, idle `❯` and
+`muse-wonder-1.0` footer, and `◆◇◈` turn chrome above the composer. That probe
+sent two trivial prompts; it did not establish Git or private-response
+publication.
+
+In the Codex implementation environment on 2026-10-17, version-only execution
+reported the same Muse build and tmux version. Live verification was blocked
+before Muse launched: creating an isolated socket in the writable disposable
+workspace failed with `Operation not permitted`. Reproduction (the directory
+exists before the command):
+
+```sh
+tmux -S /private/tmp/coord235-codex-cnr_rqxp/tmux.sock new-session -d \
+  -s muse-probe -x 140 -y 40 -c /private/tmp/coord235-codex-cnr_rqxp/probe \
+  env -u COORD_ISSUE -u COORD_AGENT MUSE_NO_AUTO_UPDATE=1 \
+  muse --approval-mode never --disable-sandbox --trust-workspace
+```
+
+The missing capability is permission to create/use the isolated tmux socket
+and run its terminal. Live JOIN plus two subsequent automatic actions,
+Git/private-response publication, pending prompts, owner drafts, running turns,
+and interruption/restart recovery remain **unverified in this environment**.
+Mocked terminal and run-loop tests do not satisfy that live acceptance gate.
+Re-run those scenarios in a disposable workspace with terminal access, record
+actual artifact SHAs, response digests and complete/ready markers, and verify
+Muse's containment probe rather than inferring shim coverage from installation.
 
 ### Agent editor modes
 
@@ -187,7 +231,7 @@ recreates missing windows or restarts dead panes, including while the issue is
 paused. This leaves holds and task delivery paused until the owner resumes.
 
 Onboard is a preset over the same installer described below. It selects the
-four standard agents and consensus profile, creates the agent wiring, runs
+five standard agents and consensus profile, creates the agent wiring, runs
 doctor, and returns doctor's class-specific non-zero status on any finding.
 Only after doctor succeeds does it record `coord.ownerWorkspaceConfig` in the
 product worktree's **local** Git config. It does not set the three agent-wiring
@@ -204,7 +248,7 @@ vendoring, tracked product changes, origin/base overrides, or dry runs.
 coord install \
   --product /path/to/app \
   --coord-runtime /path/to/coord-runtime \
-  --agents claude,codex,cursor,antigravity \
+  --agents claude,codex,cursor,antigravity,muse \
   --profile consensus
   # --write-product            # opt-in tracked product changes (additive only)
   # --vendor                   # copy hook bodies into agent clones instead of exec'ing them

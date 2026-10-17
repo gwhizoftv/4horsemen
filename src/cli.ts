@@ -29,7 +29,7 @@ import { sha256 } from "./hash.js";
 import { renderHookScope, resolveHookBinding, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { inspectOutgoingChanges, inspectStagedChanges } from "./changeClassification.js";
 import { hookVerificationRecorder } from "./verificationLog.js";
-import { install, onboard, packageVersion, savedGitHubAccount, uninstall } from "./install.js";
+import { DEFAULT_AGENTS, install, onboard, packageVersion, savedGitHubAccount, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
 import { makeAgentClonesBaseReady, makeManualClonesBaseReady, prepareAgentIssueBranches, type CloneBaseReadyResult } from "./prepareAgentBranch.js";
@@ -343,6 +343,7 @@ Called by the agent-clone hooks, not by operators:
 
 Happy path: bootstrap once, onboard a repository once, create GitHub issue N, then run
 \`coord N\` from that onboarded repository. Agents author plans on issue-N/<agent>.
+Onboard defaults to ${DEFAULT_AGENTS.join(",")}; --agents selects an exact roster.
 
 From an agent clone, \`coord next --issue N\` resolves the runtime via
 coord.workspaceConfig and the caller via consensus.agentId (or --agent / COORD_AGENT).
@@ -1389,7 +1390,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     if (command === "onboard") {
       allowedFlags(parsed, ["coord-runtime", "completes-root", "clone-root", "agents", "profile", "declare", "github-account", "base-branch"]);
       if (parsed.positionals.length !== 1) throw new Error("onboard requires exactly one repository path.");
-      const agents = (parsed.flags.get("agents") ?? "claude,codex,cursor,antigravity")
+      const agents = (parsed.flags.get("agents") ?? DEFAULT_AGENTS.join(","))
         .split(",")
         .map((agent) => agent.trim())
         .filter((agent) => agent !== "");

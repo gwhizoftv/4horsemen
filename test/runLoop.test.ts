@@ -239,13 +239,14 @@ const safetyFixture = (vendor = "codex", dependencies: RunLoopDependencies = {})
   const now = () => new Date(nowMs).toISOString();
   const start = readStartState(paths);
   writeFileSync(paths.start, JSON.stringify({ ...start, profile: "solo", originalRoster: [vendor],
-    agents: [{ ...start.agents[0], id: vendor, delivery: "both", harnessProcess: "harness", nudgePrelude: [], nudgeSubmit: ["Enter"] }] }));
+    agents: [{ ...start.agents[0], id: vendor, delivery: "both", harnessProcess: vendor === "muse" ? "muse" : "harness", nudgePrelude: [], nudgeSubmit: ["Enter"] }] }));
   createIssueRuntime(paths, [vendor]);
   const current = readCursorsState(paths);
   writeCursorsState(paths, cursorsStateSchema.parse({ ...current, activeRoster: [vendor], agents: { [vendor]: current.agents.codex } }));
   writeFileSync(paths.agentLifecycle, JSON.stringify(initialAgentLifecycle([vendor], now())));
   // `quiet: false` repaints a line above the composer on every capture, as a working harness does.
-  const ui = { foreground: "harness", busy: false, dead: false, text: IDLE_PANE, quiet: false, failSubmit: false,
+  const ui = { foreground: vendor === "muse" ? "muse-bin-1.4.10" : "harness", busy: false, dead: false, text: vendor === "muse"
+    ? "◆ done\n── Voice input (alt(option)+v to start) ──\n❯ \n────────────────────────\nmuse-wonder-1.0 · high · /scratch · Launch overrides" : IDLE_PANE, quiet: false, failSubmit: false,
     failInspect: false, failCapture: false, waitAtCapture: Infinity, sends: 0, inspections: 0, captures: 0,
     sentTexts: [] as string[],
     onCapture: undefined as (() => void) | undefined, onSend: undefined as (() => void) | undefined };
@@ -1283,16 +1284,16 @@ describe("durable delivery safety", () => {
     expect(held.actionSafety[vendor]?.sends).toBe(4);
   });
 
-  it("charges partial sends and does not retry them on restart", async () => {
-    const f = safetyFixture(); f.ui.failSubmit = true;
+  it.each(["codex", "muse"])("charges %s partial sends and does not retry them on restart", async (vendor) => {
+    const f = safetyFixture(vendor); f.ui.failSubmit = true;
     const held = await f.tick();
     expect(held.holds[0]?.reason).toBe("delivery-uncertain");
-    expect(held.actionSafety.codex).toMatchObject({ sends: 1, reserved: true });
+    expect(held.actionSafety[vendor]).toMatchObject({ sends: 1, reserved: true });
     f.ui.failSubmit = false;
     f.advance(60_000); await f.tick();
     expect(f.ui.sends).toBe(1);
     const released = releaseHold(held, held.holds[0]!.id, false, f.now());
-    expect(released.actionSafety.codex).toMatchObject({ sends: 1, reserved: false });
+    expect(released.actionSafety[vendor]).toMatchObject({ sends: 1, reserved: false });
   });
 
   it.each(["codex", "claude", "cursor"])("reconciles %s's delayed submit hook without pane confirmation or another send", async (vendor) => {
@@ -1632,18 +1633,21 @@ const seedPendingPublication = (paths: ReturnType<typeof fixture>["paths"], fina
 };
 
 describe("effectful run loop", () => {
-  it("records ready before verification and sends the next action exactly once after acceptance", async () => {
-    const f = safetyFixture("claude");
-    await f.tick(); f.advance(10); f.working();
-    const runtime = agentRuntimePaths(f.paths, "claude");
-    const completedId = readCursorsState(f.paths).agents.claude.actionId!;
+  it.each(["claude", "muse"])("records %s ready and sends successive actions once after acceptance", async (vendor) => {
+    const f = safetyFixture(vendor);
+    await f.tick(); f.advance(10); if (vendor !== "muse") f.working();
+    const runtime = agentRuntimePaths(f.paths, vendor);
+    const completedId = readCursorsState(f.paths).agents[vendor]!.actionId!;
     const start = readStartState(f.paths);
-    const sha = "d".repeat(40);
+    let sha = "d".repeat(40);
     const mirror = new BareMirror(f.paths.mirror, start.origin, async (args) => {
       if (args[2] === "rev-parse") return { exitCode: 0, stdout: Buffer.from(`${sha}\n`), stderr: "" };
+      if (args[2] === "show" && args.at(-1)?.includes(".plans/issue-1/plan.md")) return {
+        exitCode: 0, stdout: Buffer.from("## Exact File Map\n`README.md`\n## Reuse and Scope\nReuse the readme.\n## Tests\nRead the text.\n## Alternatives Rejected\nNo code.\n## Risks and Mitigations\nSmall edit.\n## Conclusion\nImplement.\n"), stderr: ""
+      };
       if (args[2] === "show") return { exitCode: 0, stdout: Buffer.from(JSON.stringify({
         protocolVersion: 1, artifact: "participation-ready", issue: start.issue, issueSessionId: start.issueSessionId,
-        agent: "claude", baselineSha: start.baselineSha, automationDigest: start.automationDigest
+        agent: vendor, baselineSha: start.baselineSha, automationDigest: start.automationDigest
       })), stderr: "" };
       return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
     });
@@ -1654,19 +1658,26 @@ describe("effectful run loop", () => {
     const loop = f.makeLoop({ mirror });
     await loop.runTick();
     expect(existsSync(runtime.ready)).toBe(false);
-    expect(readAgentLifecycle(f.paths).agents.claude.ready).toEqual({ actionId: completedId, at: f.now() });
+    expect(readAgentLifecycle(f.paths).agents[vendor]!.ready).toEqual({ actionId: completedId, at: f.now() });
     expect(f.ui.sends).toBe(1);
-    f.ui.foreground = "harness";
+    f.ui.foreground = vendor === "muse" ? "muse-bin-1.4.10" : "harness";
     for (let tick = 0; tick < 5; tick++) { f.advance(1_000); await loop.runTick(); }
-    const next = readCursorsState(f.paths).agents.claude;
+    const next = readCursorsState(f.paths).agents[vendor]!;
     expect(next.lastAcceptedActionId).toBe(completedId);
     expect(next.actionId).not.toBe(completedId);
     expect(f.ui.sends).toBe(2);
     expect(f.ui.sentTexts.at(-1)).toContain(next.actionId!);
-    expect(readAgentLifecycle(f.paths).agents.claude.ready).toBeNull();
+    expect(readAgentLifecycle(f.paths).agents[vendor]!.ready).toBeNull();
     expect(readJournal(f.paths).filter((event) => event.type === "nudged" && event.actionId === next.actionId)).toEqual([
       expect.objectContaining({ details: expect.objectContaining({ readyFor: completedId }) })
     ]);
+    sha = "e".repeat(40);
+    writeFileSync(runtime.complete, sha);
+    writeFileSync(runtime.ready, `ready ${next.actionId}\n`);
+    for (let tick = 0; tick < 5; tick++) { f.advance(1_000); await f.makeLoop({ mirror }).runTick(); }
+    expect(f.ui.sends).toBe(3);
+    expect(readCursorsState(f.paths).agents[vendor]!.lastAcceptedActionId).toBe(next.actionId);
+    if (vendor === "muse") expect(readAgentLifecycle(f.paths).agents[vendor]!.sessionId).toBeNull();
   });
 
   it.each(["valid", "current-id", "hook-after", "wrong-id", "malformed", "missing", "stale"])(
@@ -2790,7 +2801,7 @@ describe("effectful run loop", () => {
     expect(readJournal(f.paths).some((event) => event.details?.event === "prompt-ready-action-absent")).toBe(false);
   });
 
-  it.each(["claude", "codex"])("resends a lost %s prompt once after a quiet minute, then reports [WAIT], with no ack timer", async (vendor) => {
+  it.each(["claude", "codex", "muse"])("resends a lost %s prompt once after a quiet minute, then reports [WAIT], with no ack timer", async (vendor) => {
     const f = safetyFixture(vendor);
     f.ui.quiet = true;
     const loop = f.makeLoop();
@@ -4546,8 +4557,8 @@ describe("ready-driven delivery and stall watchdog", () => {
     expect(f.ui.sends).toBe(ready ? 2 : 1);
   });
 
-  it("resends the current action once after an owner hold release, without ready", async () => {
-    const f = safetyFixture("claude");
+  it.each(["claude", "muse"])("resends %s current action once after an owner hold release, without ready", async (vendor) => {
+    const f = safetyFixture(vendor);
     await f.tick();
     f.ui.dead = true;
     f.advance(60_000);
@@ -4558,7 +4569,7 @@ describe("ready-driven delivery and stall watchdog", () => {
     f.advance(1);
     await f.tick();
     expect(f.ui.sends).toBe(2);
-    expect(readAgentLifecycle(f.paths).agents.claude!.action).toMatchObject({ delivery: "injected", sentHoldGeneration: 1 });
+    expect(readAgentLifecycle(f.paths).agents[vendor]!.action).toMatchObject({ delivery: "injected", sentHoldGeneration: 1 });
     await f.tick();
     expect(f.ui.sends).toBe(2);
   });
@@ -4613,16 +4624,17 @@ describe("ready-driven delivery and stall watchdog", () => {
     expect(f.messages.join("\n")).not.toContain("[WAIT]");
   });
 
-  it("submits a resent Codex prompt still sitting in the composer instead of typing it again", async () => {
-    const f = safetyFixture("codex");
+  it.each(["codex", "muse"])("submits a resent %s prompt still sitting in the composer instead of typing it again", async (vendor) => {
+    const f = safetyFixture(vendor);
     f.ui.quiet = true;
     const loop = f.makeLoop();
     await loop.runTick();
     expect(f.ui.sends).toBe(1);
-    f.ui.text = `• done\n› ${f.ui.sentTexts[0]}\n? for shortcuts`;
+    f.ui.text = vendor === "muse" ? f.ui.text.replace("❯ ", `❯ ${f.ui.sentTexts[0]}`)
+      : `• done\n› ${f.ui.sentTexts[0]}\n? for shortcuts`;
     for (let check = 0; check < 3; check++) { f.advance(60_000); await loop.runTick(); }
     expect(f.ui.sends).toBe(1);
-    expect(readAgentLifecycle(f.paths).agents.codex!.action!.resentAt).not.toBeNull();
+    expect(readAgentLifecycle(f.paths).agents[vendor]!.action!.resentAt).not.toBeNull();
     expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudged",
       details: expect.objectContaining({ resend: true, readiness: "pending-prompt-submitted" }) }));
   });

@@ -12,10 +12,11 @@ Four Horsemen (`4horsemen`) run by using its `coord` command, short for coordina
 
 Instead of trusting a single model with a change, give a team of coding agents
 the same GitHub issue. Four Horsemen runs Claude Code, Codex, Cursor, Antigravity,
-and optionally Meta's Muse Code (pull delivery)
+and Meta's Muse Code
 in separate Git clones, coordinates their plans, plan reviews, competitive implementations and peer code reviews, and verifies
 the exact commits they submit before publishing a pull request. You choose the
-agents, the project's checks, and when to intervene.
+agents, the project's checks, and when to intervene. Muse uses automatic terminal
+delivery and ready receipts; lifecycle hooks and usage analytics are unavailable.
 
 ## How it works
 
@@ -96,9 +97,9 @@ install from a private fork, see [bootstrap options](docs/setup-workspace.md#boo
 coord onboard /path/to/app
 ```
 
-The default is all four agents and your own clone. Onboarding creates
+The default is all five agents and your own clone. Onboarding creates
 the agent clones, proposes checks for the product, and runs `coord doctor`.
-Install all four harnesses, or use this alternative for a one-agent start:
+Install all five harnesses, or use this alternative for a one-agent start:
 
 ```sh
 coord onboard /path/to/app --agents codex --profile solo

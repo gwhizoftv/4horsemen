@@ -237,7 +237,7 @@ describe("coord onboard", () => {
     expect(config.agents.find((agent) => agent.id === "codex")?.nudgeSubmit).toEqual(["Enter"]);
     expect(config.profile).toBe("consensus");
     expect(config.digestPaths).toEqual([]);
-    expect(config.agents.map((agent) => agent.id)).toEqual(["claude", "codex", "cursor", "antigravity"]);
+    expect(config.agents.map((agent) => agent.id)).toEqual(["claude", "codex", "cursor", "antigravity", "muse"]);
     const declaration = join(fixture.workspaceRoot, "policy.json");
     const verification = {
       mode: "coordinator",
@@ -274,7 +274,7 @@ describe("coord onboard", () => {
         }
       })
     ).toBe(0);
-    expect(manualAgents).toEqual([["claude", "codex", "cursor", "antigravity"]]);
+    expect(manualAgents).toEqual([["claude", "codex", "cursor", "antigravity", "muse"]]);
 
     const human = join(fixture.workspaceRoot, "human");
     execFileSync("git", ["clone", "-q", fixture.originPath, human]);
@@ -294,6 +294,34 @@ describe("coord onboard", () => {
     ).toBe(2);
     expect(errors.join("")).toContain("is not onboarded in this worktree");
     expect(existsSync(issueRuntimePaths(coordRoot, 10).issueRoot)).toBe(false);
+  });
+
+  it("adds Muse on default programmatic re-onboarding while existing issues keep their frozen roster", async () => {
+    const fixture = product();
+    const oldRoster = ["claude", "codex", "cursor", "antigravity"];
+    const options = { installRoot: repoRoot, productRoot: fixture.productRoot, home: null, log: () => undefined };
+    const initial = onboard({ ...options, agents: oldRoster });
+    expect(initial.doctor.exitCode).toBe(0);
+    const deps = { processRunner: runner, makeRunLoop: fakeLoop,
+      io: { cwd: fixture.productRoot, stdout: () => undefined } };
+    expect(await runCli(["9"], deps)).toBe(0);
+    const coordRoot = dirname(initial.install.configPath);
+    const paths = issueRuntimePaths(coordRoot, 9);
+    const snapshot = readFileSync(paths.start, "utf8");
+
+    const updated = onboard(options);
+    expect(updated.doctor.exitCode).toBe(0);
+    const config = readConfig(updated.install.configPath);
+    expect(config.agents.map((agent) => agent.id)).toEqual([...oldRoster, "muse"]);
+    expect(config.agents.at(-1)).toMatchObject({ id: "muse", delivery: "both", nudgePrelude: [], nudgeSubmit: ["Enter"] });
+    expect(existsSync(join(agentCloneDirectory(fixture.workspaceRoot, "myserver", "muse"), "start-muse.sh"))).toBe(true);
+    expect(await runCli(["9"], deps)).toBe(0);
+    expect(readFileSync(paths.start, "utf8")).toBe(snapshot);
+    expect(readStartState(paths).originalRoster).toEqual(oldRoster);
+    expect(await runCli(["10"], deps)).toBe(0);
+    expect(readStartState(issueRuntimePaths(coordRoot, 10)).originalRoster).toEqual([...oldRoster, "muse"]);
+    const explicit = onboard({ ...options, agents: ["muse"] });
+    expect(readConfig(explicit.install.configPath).agents.map((agent) => agent.id)).toEqual(["muse"]);
   });
 
   it("persists a selected profile and numeric dispatch resumes without refetching", async () => {

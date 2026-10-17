@@ -90,7 +90,7 @@ launcher_command() {
       printf 'exec gemini\n'
       ;;
     muse)
-      # Opt-in pull participant: Muse's sandbox protects .git, blocking the
+      # Automatic participant without lifecycle hooks: Muse's sandbox protects .git, blocking the
       # commits required by Git actions. Explicitly disable it and approvals,
       # and trust the clone for this run so Muse loads the AGENTS.md overlay.
       # This permits writes anywhere the owner can write, including receipts;

@@ -53,6 +53,8 @@ export const harnessLooksReady = (foreground: string, expected?: string): boolea
   if (expected === "claude" && /^\d+(?:\.\d+)*$/.test(foreground)) return true;
   // Cursor's `agent` CLI often appears as `node` in tmux.
   if (expected === "agent" && foreground === "node") return true;
+  // Muse's executable name includes its version; macOS may truncate the build suffix.
+  if (expected === "muse" && /^muse-bin-\d[\w.-]*$/.test(foreground)) return true;
   // Antigravity may show as agy, antigravity, or node (nvm / verify UI).
   if (expected === "agy" && (foreground === "agy" || foreground === "antigravity" || foreground === "node")) {
     return true;
@@ -71,6 +73,9 @@ export type PromptBlockedReason =
   | "antigravity-no-prompt"
   | "codex-turn-chrome"
   | "codex-composer-not-ready"
+  | "muse-turn-chrome"
+  | "muse-no-prompt"
+  | "muse-composer-not-ready"
   | "pane-capture-unavailable";
 
 export type PromptReadiness =
@@ -143,6 +148,31 @@ const paneLines = (paneText: string): PaneLine[] => paneText.split("\n")
   .map((raw) => ({ raw, plain: stripAnsi(raw).trim() }))
   .filter((line) => line.plain !== "");
 
+/** Muse 1.4.10: live composer, closing rule, then exactly one model/status footer. */
+const museComposer = (paneText: string): PaneLine[] | null => {
+  const lines = paneLines(paneText);
+  const at = lines.map((line) => line.plain.startsWith("❯")).lastIndexOf(true);
+  if (at < 0) return null;
+  const tail = lines.slice(at);
+  const rule = tail.findIndex((line) => /^─+$/.test(line.plain));
+  if (rule < 1 || tail.length !== rule + 2 || !/^muse-[\w.-]+ · .+/.test(tail[rule + 1]!.plain)) return null;
+  return tail.slice(0, rule);
+};
+
+const museComposerEmpty = (paneText: string): boolean => {
+  const composer = museComposer(paneText);
+  return composer?.length === 1 && composer[0]!.plain === "❯";
+};
+
+/** A running Muse turn keeps its composer visible; Enter would steer that turn. */
+const museTurnChrome = (paneText: string): boolean => {
+  const lines = paneLines(paneText);
+  const at = lines.map((line) => line.plain.startsWith("❯")).lastIndexOf(true);
+  return lines.slice(0, at < 0 ? lines.length : at)
+    .filter((line) => !/^── Voice input /.test(line.plain)).slice(-4)
+    .some((line) => /^[◆◇◈]\s.*\([^)]*esc to interrupt\)/.test(line.plain));
+};
+
 /**
  * Codex's composer (which may wrap) and the known footer lines below it;
  * anything else after the composer — a dialog, a new transcript item — fails
@@ -184,12 +214,21 @@ const COMPOSER_LINE = /^[❯›>→]/;
 
 /**
  * True when this action's prompt is still sitting unsent in the composer, so a
- * resend submits it instead of typing it a second time. Codex's composer is
- * parsed; other vendors use the lines from the last composer line down, so
+ * resend submits it instead of typing it a second time. Muse requires the full
+ * expected prompt; Codex's composer is parsed. Other vendors use the lines
+ * from the last composer line down, so
  * already-submitted history above it never counts. Wrapping can split the
  * UUID, so whitespace is ignored.
  */
-export const pendingPromptInComposer = (paneText: string, agentId: string, actionId: string): boolean => {
+export const pendingPromptInComposer = (paneText: string, agentId: string, actionId: string, expectedPrompt?: string): boolean => {
+  if (agentId === "muse") {
+    const composer = museComposer(paneText);
+    if (composer === null || expectedPrompt === undefined) return false;
+    // A UUID in an owner's draft (or a prompt with an obsolete digest) never authorizes Enter.
+    const normalize = (value: string): string => value.replace(/\s+/g, "");
+    const text = normalize(composer.map((line, index) => index === 0 ? line.plain.slice(1) : line.plain).join(""));
+    return text === normalize(expectedPrompt) || text === normalize(RESEND_PREFIX + expectedPrompt);
+  }
   const lines = paneLines(paneText);
   const composerAt = lines.map((line) => COMPOSER_LINE.test(line.plain)).lastIndexOf(true);
   const composer = agentId === "codex" ? codexTail(paneText)?.composer ?? [] : composerAt < 0 ? [] : lines.slice(composerAt);
@@ -252,6 +291,10 @@ export const harnessPromptReadiness = (
     case "codex":
       // Codex accepts keys once the process is up; block only on its live turn status.
       if (codexTurnChrome(plain)) return { ready: false, reason: "codex-turn-chrome" };
+      return ready();
+    case "muse":
+      if (museTurnChrome(paneText)) return { ready: false, reason: "muse-turn-chrome" };
+      if (museComposer(paneText) === null) return { ready: false, reason: "muse-no-prompt" };
       return ready();
     default:
       return ready();
@@ -348,9 +391,9 @@ export const resolveNudgeKeys = (
       (rawSubmit.length === 1 && rawSubmit[0] === "C-m");
     return { prelude, submit: legacy ? ["Enter"] : rawSubmit };
   }
-  // #28 applied Escape+Enter to Antigravity; there Escape cancels.
+  // Escape cancels Antigravity and interrupts Muse; repair stale paired submits.
   if (
-    agent.id === "antigravity" &&
+    (agent.id === "antigravity" || agent.id === "muse") &&
     rawSubmit.length === 2 &&
     rawSubmit[0] === "Escape" &&
     rawSubmit[1] === "Enter"
@@ -1203,7 +1246,8 @@ export class TmuxController {
     if (initial.status !== "ok") {
       return { status: initial.status, reason: initial.reason, stage: "gate", ...(initial.detail === undefined ? {} : { detail: initial.detail }) };
     }
-    const promptPending = (text: string): boolean => actionId !== undefined && pendingPromptInComposer(text, agent.id, actionId);
+    const promptPending = (text: string): boolean => actionId !== undefined &&
+      pendingPromptInComposer(text, agent.id, actionId, renderNudgeText(actionPath, actionId, actionDigest));
     // Keystroke safety only. Codex and Cursor queue a prompt typed mid-turn, so
     // their turn chrome vetoes only keys that include Escape, which cancels a turn.
     const readinessFor = (text: string): PromptReadiness => {
@@ -1216,6 +1260,7 @@ export class TmuxController {
     const proofRefusal = (text: string): PromptBlockedReason | null => {
       const readiness = readinessFor(text);
       if (!readiness.ready) return readiness.reason;
+      if (agent.id === "muse" && !museComposerEmpty(text) && !promptPending(text)) return "muse-composer-not-ready";
       return agent.id === "codex" && !codexComposerEmpty(text) && !promptPending(text) ? "codex-composer-not-ready" : null;
     };
     let paneText = await this.capturePane(target);
@@ -1240,12 +1285,17 @@ export class TmuxController {
       const gate = await this.injectionGate(target, agent, assertAuthority);
       if (gate.status !== "ok") return { status: gate.status, reason: gate.reason,
         stage: began ? "mid-send" : "gate", ...(gate.detail === undefined ? {} : { detail: gate.detail }) };
-      if (agent.id === "claude" || agent.id === "codex") {
+      if (agent.id === "claude" || agent.id === "codex" || agent.id === "muse") {
         const latest = await this.capturePane(target);
         assertAuthority();
         const readiness = readinessFor(latest);
         const refused = began ? (!readiness.ready ? readiness.reason : null) : proofRefusal(latest);
         if (refused !== null) return { status: "busy", reason: refused, stage: began ? "mid-send" : "prompt" };
+        // The batch was selected from the first capture. If a pending prompt appeared or
+        // disappeared, defer without spending credit and choose again on the next poll.
+        if (agent.id === "muse" && promptPending(latest) !== submitOnly) {
+          return { status: "busy", reason: "muse-composer-not-ready", stage: "prompt" };
+        }
       }
       if (!began) { reserveSend(); began = true; }
       const result = await this.runner(args);

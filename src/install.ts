@@ -858,6 +858,8 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
   return { changes: effects.changes, kept };
 };
 
+export const DEFAULT_AGENTS = ["claude", "codex", "cursor", "antigravity", "muse"] as const;
+
 export type OnboardOptions = {
   installRoot: string;
   productRoot: string;
@@ -918,7 +920,7 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     ...(options.completesRoot === undefined ? {} : { completesRoot: resolve(options.completesRoot) }),
     cloneRoot: resolve(options.cloneRoot ?? parent),
     ...(options.declarePath === undefined ? {} : { declarePath: resolve(options.declarePath) }),
-    agents: options.agents ?? ["claude", "codex", "cursor", "antigravity"],
+    agents: options.agents ?? DEFAULT_AGENTS,
     profile: options.profile ?? "consensus",
     writeProduct: false,
     vendor: false,

@@ -424,15 +424,15 @@ Per-agent config controls owner UI:
   rather than running into the prompt
 - `nudgeSubmit` — tmux keys after the text (Claude default: `Escape` then
   `Enter` to leave vim INSERT and dismiss autocomplete; Cursor without vim and
-  Antigravity default:
+  Antigravity and Muse default:
   `Enter` only — Escape dismisses a non-vim Cursor composer and cancels
-  Antigravity; Cursor with `editor.vimMode` uses `Escape` then `Enter` so
+  Antigravity/Muse; Cursor with `editor.vimMode` uses `Escape` then `Enter` so
   INSERT does not treat Enter as a newline; Codex default: `Enter`.
   Old Codex `["C-j", "C-m"]` and `["C-m"]` settings resolve to Enter.
   Stale single `Enter`/`C-m` on Claude, mistaken Escape+Enter on non-vim
-  Cursor/Antigravity, and stale `C-m` on Antigravity, are upgraded)
+  Cursor/Antigravity/Muse, and stale `C-m` on Antigravity, are upgraded)
 
-Codex, Claude and Cursor receive one tmux command batch containing literal
+Codex, Claude, Cursor and Muse receive one tmux command batch containing literal
 text followed by real submit-key events. Blocking `run-shell 'sleep …'` commands
 inside the batch wait 150 ms after each prelude key, 300 ms after text and 150 ms
 between submit keys. The prelude gap lets the vim mode switch (`i`, `a`) land

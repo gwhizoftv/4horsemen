@@ -45,6 +45,10 @@ export const agentHarnessProcess = (agent: string): string => {
   }
 };
 
+/** IDs with explicit terminal readiness adapters; lifecycle hooks are a separate capability. */
+export const hasTerminalDeliveryAdapter = (agent: string): boolean =>
+  ["claude", "codex", "cursor", "antigravity", "muse"].includes(agent);
+
 /**
  * Default per-agent owner UI for nudges and macOS Terminal windows.
  *
@@ -363,9 +367,8 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
       // Config-relative, so a workspace directory can be moved with its clones.
       root: relativeFrom(input.workspaceDir, agentCloneDirectory(input.cloneRoot, input.project, agent)),
       launcher: `start-${agent}.sh`,
-      // Muse has no lifecycle-hook mapping yet; owners deliver its action via pull.
-      // Other agents also receive a short action path through the driver.
-      delivery: agent === "muse" ? "pull" : "both",
+      // Ready receipts authorize handoffs even for agents without lifecycle hooks.
+      delivery: "both",
       harnessProcess: agentHarnessProcess(agent),
       ...agentOwnerUiDefaults(agent)
     })),

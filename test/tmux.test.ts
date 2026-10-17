@@ -83,6 +83,11 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+// Sanitized Muse 1.4.10 capture shape recorded in the selected plan's live probe.
+const musePane = (draft = "", history = "◆ done"): string =>
+  `${history}\n── Voice input (alt(option)+v to start) ──────\n❯ ${draft}\n────────────────────────────────────────────\n` +
+  "muse-wonder-1.0 · high · /scratch · Launch overrides\n";
+
 const promptFor = (agentId: string): string => {
   switch (agentId) {
     case "claude":
@@ -93,6 +98,8 @@ const promptFor = (agentId: string): string => {
       return "Antigravity CLI\n> \n? for shortcuts accept-edits · Gemini\n";
     case "codex":
       return "codex ready\n› \n? for shortcuts\n";
+    case "muse":
+      return musePane();
     default:
       return "ready\n";
   }
@@ -281,10 +288,12 @@ describe("tmux boundary", () => {
   });
 
   it("keeps Muse owner reminders free of vim preludes and Escape", () => {
-    const agent = { id: "muse", root: "/m", launcher: "start-muse.sh", delivery: "pull" as const };
+    const agent = { id: "muse", root: "/m", launcher: "start-muse.sh", delivery: "both" as const };
     expect(vimInsertPrelude("> ", "muse")).toEqual([]);
     expect(resolveNudgeKeys(agent, "> ")).toEqual({ prelude: [], submit: ["Enter"] });
     expect(resolveNudgeKeys({ ...agent, nudgePrelude: [], nudgeSubmit: ["Enter"] }, "> "))
+      .toEqual({ prelude: [], submit: ["Enter"] });
+    expect(resolveNudgeKeys({ ...agent, nudgeSubmit: ["Escape", "Enter"] }, musePane()))
       .toEqual({ prelude: [], submit: ["Enter"] });
   });
 
@@ -796,6 +805,73 @@ describe("tmux boundary", () => {
     expect(harnessLooksReady("node", "agy")).toBe(true);
     expect(harnessLooksReady("antigravity", "agy")).toBe(true);
     expect(harnessLooksReady("agy", "agy")).toBe(true);
+    for (const name of ["muse", "muse-bin-1.4.10", "muse-bin-1.4.7-R6101.1"]) {
+      expect(harnessLooksReady(name, "muse")).toBe(true);
+    }
+    for (const name of ["node", "bash", "muse-bin-", "not-muse-bin-1.4.10"]) {
+      expect(harnessLooksReady(name, "muse")).toBe(false);
+    }
+  });
+
+  it.each([
+    { pane: musePane(), reason: "vendor-prompt" },
+    { pane: musePane("", "❯ previous prompt\n◆ done"), reason: "vendor-prompt" },
+    { pane: musePane("", "◈ Thinking (0s · esc to interrupt)"), reason: "muse-turn-chrome" },
+    { pane: musePane("", "◇ Running command · Sleep — running (7s · esc to interrupt)\n└ (ctrl+alt(option)+b to send to background)"), reason: "muse-turn-chrome" },
+    { pane: musePane("", "Do you trust this folder?"), reason: "trust-dialog" },
+    { pane: "Muse starting…", reason: "muse-no-prompt" },
+    { pane: musePane() + "/help menu overlay\n", reason: "muse-no-prompt" },
+    { pane: "❯\n────────────────────\nunrecognized footer\n", reason: "muse-no-prompt" }
+  ])("recognizes Muse readiness: $reason ($pane)", ({ pane, reason }) => {
+    expect(harnessPromptReadiness(pane, "muse")).toEqual({ ready: reason === "vendor-prompt", reason });
+  });
+
+  it.each(["draft", "quoted-id", "stale-digest", "wrong-path", "pending", "wrapped", "resend", "history", "idle"])(
+    "protects the Muse composer: %s", async (scenario) => {
+      const action = "11111111-2222-3333-4444-555555555555", digest = "a".repeat(64);
+      const prompt = `Read and execute coordinator action ${action} digest ${digest} at /a`;
+      const draft = scenario === "draft" ? "owner draft" : scenario === "quoted-id" ? `Please discuss ${action} later`
+        : scenario === "stale-digest" ? prompt.replace(digest, "b".repeat(64))
+          : scenario === "wrong-path" ? prompt.replace("at /a", "at /b")
+            : scenario === "wrapped" ? prompt.replace(digest, `${digest.slice(0, 20)}\n${digest.slice(20)}`)
+              : scenario === "resend" ? `If you already wrote complete for this action, only write its ready file. ${prompt}`
+                : scenario === "pending" ? prompt : "";
+      const pane = musePane(draft, scenario === "history" ? `❯ ${prompt}\n◆ done` : "◆ done");
+      const calls: Array<{ args: readonly string[] }> = [];
+      let reservations = 0;
+      const controller = new TmuxController(runnerWithPrompt(calls, "0\tmuse-bin-1.4.10\t0\t0", pane), null, null, null, noopSleep);
+      const blocked = ["draft", "quoted-id", "stale-digest", "wrong-path"].includes(scenario);
+      const pending = ["pending", "wrapped", "resend"].includes(scenario);
+      expect(pendingPromptInComposer(pane, "muse", action, prompt)).toBe(pending);
+      const result = await controller.nudge(1,
+        { id: "muse", root: "/m", launcher: "start-muse.sh", delivery: "both", harnessProcess: "muse" },
+        "/a", undefined, action, digest, () => { reservations++; });
+      expect(result).toMatchObject(blocked ? { status: "busy", reason: "muse-composer-not-ready" } : { status: "sent" });
+      expect(reservations).toBe(blocked ? 0 : 1);
+      const keys = calls.flatMap((call) => commandsIn(call.args)).filter((args) => args[0] === "send-keys");
+      expect(keys.filter((args) => args.includes("-l"))).toHaveLength(blocked || pending ? 0 : 1);
+      expect(keys.some((args) => args.includes("Escape") || args.at(-1) === "a" || args.at(-1) === "i")).toBe(false);
+      expect(keys.filter((args) => args.at(-1) === "Enter")).toHaveLength(blocked ? 0 : 1);
+    }
+  );
+
+  it.each(["draft", "busy", "pending"])("recaptures Muse before sending when %s appears", async (scenario) => {
+    const action = "11111111-2222-3333-4444-555555555555";
+    const prompt = `Read and execute coordinator action ${action} at /a`;
+    let captures = 0, reservations = 0;
+    const keys: string[][] = [];
+    const controller = new TmuxController(async (args) => {
+      if (args[0] === "display-message") return ok("0\tmuse-bin-1.4.10\t0\t0");
+      if (args[0] === "capture-pane") return ok(++captures === 1 ? musePane()
+        : scenario === "busy" ? musePane("", "◈ Thinking (0s · esc to interrupt)") : musePane(scenario === "draft" ? "owner draft" : prompt));
+      if (args.includes("send-keys")) keys.push([...args]);
+      return ok();
+    }, null, null, null, noopSleep);
+    expect(await controller.nudge(1, { id: "muse", root: "/m", launcher: "muse", delivery: "both", harnessProcess: "muse" },
+      "/a", undefined, action, undefined, () => { reservations++; })).toMatchObject({ status: "busy" });
+    expect(captures).toBe(2);
+    expect(reservations).toBe(0);
+    expect(keys).toEqual([]);
   });
 
   it("does not read prose about in-flight chrome as in-flight chrome", () => {
@@ -1517,7 +1593,7 @@ describe("explicit owner reminder transport", () => {
     expect(keys.find((args) => args.includes("-l"))?.at(-1)).toBe(mode === "Normal" ? " owner reminder" : "owner reminder");
   });
 
-  it.each(["claude", "codex", "cursor", "antigravity"])("sends to %s despite automatic configuration and pane vetoes", async (id) => {
+  it.each(["claude", "codex", "cursor", "antigravity", "muse"])("sends to %s despite automatic configuration and pane vetoes", async (id) => {
     const calls: string[][] = [];
     const controller = new TmuxController(async (args) => {
       calls.push([...args]);
