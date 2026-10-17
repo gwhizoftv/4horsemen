@@ -1,0 +1,9 @@
+{
+  "protocolVersion": 1,
+  "issue": 238,
+  "issueSessionId": "issue-238:3e4c5dc8e1e565745e5a8528f4e4b3dcd204e0ff",
+  "agent": "antigravity",
+  "artifact": "participation-ready",
+  "baselineSha": "3e4c5dc8e1e565745e5a8528f4e4b3dcd204e0ff",
+  "automationDigest": "31957efd3b354f47dea381e5320404c49a936a7ce23e4e65b39fcdf2564559ad"
+}
