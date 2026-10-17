@@ -1,0 +1,14 @@
+{
+  "actionId": "9613a690-3cfb-49ee-abd3-41d593159ca1",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "ffea7153e25e6ff7ef178686a3e0b4f9e46e5460dbdaadff46162845599beb10",
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "protocolVersion": 2,
+  "rationale": "Revision afa5a56989fb64e1713596ac72867665d0ec8ed6 fixes probe stdin and legacy trust dispatch, resolves callbacks beside their target CLI with a validated runtime fallback while preserving product PATH, and passed focused regressions plus mandatory lint, type checking, 825 fast tests, 254 system tests and 2 e2e tests.",
+  "responseSha256": "da234865d208cc3e7bc0f4c0d6732bdc845dc4345f695fc7ad845619fb1cfdab",
+  "revisionCommitSha": "afa5a56989fb64e1713596ac72867665d0ec8ed6",
+  "round": 1
+}

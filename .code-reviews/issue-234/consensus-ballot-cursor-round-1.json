@@ -1,0 +1,14 @@
+{
+  "actionId": "ae78aea2-391d-4ccb-8a16-68ee1cdad660",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "ffea7153e25e6ff7ef178686a3e0b4f9e46e5460dbdaadff46162845599beb10",
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "protocolVersion": 2,
+  "rationale": "The revision keeps run-time node-runtime.sh selection for callbacks, adds stdin-safe probes and a validated --fallback-node only after PATH/nvm miss, and still preserves product PATH.",
+  "responseSha256": "030c2e4fcdcc00efba20d323324b27f15da683d3b32b3561d5667686f2bd86e3",
+  "revisionCommitSha": "afa5a56989fb64e1713596ac72867665d0ec8ed6",
+  "round": 1
+}

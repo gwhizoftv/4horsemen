@@ -1,0 +1,14 @@
+{
+  "actionId": "6c011a08-b185-4c99-beaf-430327f2890f",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "ffea7153e25e6ff7ef178686a3e0b4f9e46e5460dbdaadff46162845599beb10",
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "protocolVersion": 2,
+  "rationale": "Revision afa5a569 keeps codex's selected behavior and closes the open items within the approved map: it routes setup_common.sh trust through the selector, documents the explicit empty-COORD_NODE refusal, isolates version-probe stdin, and adds a validated install-time fallback for callbacks resolved beside the target CLI; on this host with real Node 16.18.0 and 26.x it chose discovered Node 26 over the fallback, used the fallback only when nothing was discoverable, refused cleanly when the fallback was gone, and passed credential stdin intact while child processes still saw the product's v16.18.0.",
+  "responseSha256": "b4beeaed3038a0c3d139fe229808c51dd7eabe4c1a6320f25bbf1b5f96f66734",
+  "revisionCommitSha": "afa5a56989fb64e1713596ac72867665d0ec8ed6",
+  "round": 1
+}

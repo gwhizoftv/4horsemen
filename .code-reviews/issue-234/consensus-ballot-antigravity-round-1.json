@@ -1,0 +1,14 @@
+{
+  "actionId": "6b275e13-b593-47bb-815b-63412ada8d91",
+  "agent": "antigravity",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "ffea7153e25e6ff7ef178686a3e0b4f9e46e5460dbdaadff46162845599beb10",
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "protocolVersion": 2,
+  "rationale": "Codex's revision afa5a56989fb64e1713596ac72867665d0ec8ed6 resolves all comparison findings by routing scripts/setup_common.sh through scripts/lib/node-runtime.sh, isolating version probe stdin via </dev/null, and deriving callback selector paths from cliEntry with a validated process.execPath fallback.",
+  "responseSha256": "9880245ca481dd4114a9527bdf3d1d61000bdc351b2a29dcca7408bc30c2cdc9",
+  "revisionCommitSha": "afa5a56989fb64e1713596ac72867665d0ec8ed6",
+  "round": 1
+}
