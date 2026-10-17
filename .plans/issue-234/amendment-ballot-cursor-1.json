@@ -1,0 +1,26 @@
+{
+  "actionId": "34892ffa-11bf-47b1-88bd-28a33919ff4d",
+  "agent": "cursor",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "12693ec54645256d4f80b02354f04d5475e8d0ddc1cd7431c56cc30978653dba",
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "plans": [
+    {
+      "agent": "codex",
+      "commitSha": "f42cecbaffc98d1d980eef1294b803e6a16844dc",
+      "path": ".plans/issue-234/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "test/mirror.test.ts must update its BareMirror credential-helper assertion when the plan changes gitCredentialHelperCommand in src/githubAuth.ts, and adding it does not expand intended behavior.",
+  "request": {
+    "agent": "cursor",
+    "commitSha": "ebefaeac60234c6564763131657eea87272ea9a8",
+    "path": ".signals/issue-234/implementation-ready-cursor.json"
+  },
+  "responseSha256": "08ee761a326794a534c42662d9053ae4def516e52ebd2ee5b5c909a973e67371",
+  "sequence": 1
+}

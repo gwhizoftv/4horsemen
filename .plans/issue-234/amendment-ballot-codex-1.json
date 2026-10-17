@@ -1,0 +1,26 @@
+{
+  "actionId": "c8289896-9c25-4d5c-8f5b-2d07d2f82730",
+  "agent": "codex",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "12693ec54645256d4f80b02354f04d5475e8d0ddc1cd7431c56cc30978653dba",
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "plans": [
+    {
+      "agent": "codex",
+      "commitSha": "f42cecbaffc98d1d980eef1294b803e6a16844dc",
+      "path": ".plans/issue-234/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "Adding test/mirror.test.ts is necessary because its existing assertion fixes the legacy ambient-Node credential-helper command that the selected plan changes, so updating it preserves current mirror authentication coverage without expanding behavior.",
+  "request": {
+    "agent": "cursor",
+    "commitSha": "ebefaeac60234c6564763131657eea87272ea9a8",
+    "path": ".signals/issue-234/implementation-ready-cursor.json"
+  },
+  "responseSha256": "153f796645cb6a762e7fceb24ecbe6761f8c0b27b44b227c930060c622685d18",
+  "sequence": 1
+}

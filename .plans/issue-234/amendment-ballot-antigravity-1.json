@@ -1,0 +1,26 @@
+{
+  "actionId": "f9cadfa2-30c4-4b80-bce8-e3dea46db950",
+  "agent": "antigravity",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "12693ec54645256d4f80b02354f04d5475e8d0ddc1cd7431c56cc30978653dba",
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "plans": [
+    {
+      "agent": "codex",
+      "commitSha": "f42cecbaffc98d1d980eef1294b803e6a16844dc",
+      "path": ".plans/issue-234/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "Adding test/mirror.test.ts is necessary because BareMirror uses gitCredentialArgs from src/githubAuth.ts and test/mirror.test.ts:94 asserts the exact credential helper string that the selected plan updates.",
+  "request": {
+    "agent": "cursor",
+    "commitSha": "ebefaeac60234c6564763131657eea87272ea9a8",
+    "path": ".signals/issue-234/implementation-ready-cursor.json"
+  },
+  "responseSha256": "57a1b11005492fcaba8588cca65955ed4989b4b68f3d849d1ec451e818c845bc",
+  "sequence": 1
+}

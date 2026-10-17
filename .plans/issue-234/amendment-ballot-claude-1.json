@@ -1,0 +1,26 @@
+{
+  "actionId": "50eedab9-7970-40b0-84ba-b5bcb9389818",
+  "agent": "claude",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "12693ec54645256d4f80b02354f04d5475e8d0ddc1cd7431c56cc30978653dba",
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "plans": [
+    {
+      "agent": "codex",
+      "commitSha": "f42cecbaffc98d1d980eef1294b803e6a16844dc",
+      "path": ".plans/issue-234/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "test/mirror.test.ts:94 asserts the literal `!/usr/bin/env node ...` credential helper that BareMirror gets from the same gitCredentialArgs the selected plan changes in src/githubAuth.ts, and with that planned change applied the fast suite fails exactly this test plus the already-mapped githubAuth test, so updating that one expectation is required to finish the plan and adds no behavior.",
+  "request": {
+    "agent": "cursor",
+    "commitSha": "ebefaeac60234c6564763131657eea87272ea9a8",
+    "path": ".signals/issue-234/implementation-ready-cursor.json"
+  },
+  "responseSha256": "9c66c2ac7b2455a34cfe1ca492922e6a1d9da12c2d5d867fc40e139007ca72d6",
+  "sequence": 1
+}
