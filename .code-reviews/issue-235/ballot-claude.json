@@ -1,0 +1,29 @@
+{
+  "actionId": "1bca5c2a-7a62-4caf-9efd-8d214ce1f307",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "f0bd6aa4dda49e87de79992939f70a047f5f4ff7",
+      "path": ".signals/issue-235/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "4c4dd97e1d9c54e597e725ec8f899baac010e992",
+      "path": ".signals/issue-235/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "5abfee0b150079ae6114db59a496907596639a22",
+      "path": ".signals/issue-235/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "05e23fa3b92a6a504e66c993785384aaa7cd6ee3765a38df8629bfa8ad62f3c5",
+  "issue": 235,
+  "issueSessionId": "issue-235:2b36122912fb55327e9872646bee3a2c0b32f5ce",
+  "protocolVersion": 2,
+  "rationale": "Claude's pin is the only one verified live against real Muse through the real coord start/run loop (JOIN to finalize plus private response, draft, running-turn, pending-prompt and restart scenarios), its required suite fits the timeouts that codex's five-agent onboarding tests exceed, and its one confirmed defect, the low-likelihood recapture race, is a small fix that revision can take from codex, whereas cursor's resend-over-pending refusal breaks lost-Enter recovery.",
+  "responseSha256": "c17853faf7a73217bf997dae9ed16db8a21714c876fe27365abba0763369edd9"
+}

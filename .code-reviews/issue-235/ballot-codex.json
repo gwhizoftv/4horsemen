@@ -1,0 +1,29 @@
+{
+  "actionId": "a80347da-4b58-40b9-b39e-08424f957d82",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "f0bd6aa4dda49e87de79992939f70a047f5f4ff7",
+      "path": ".signals/issue-235/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "4c4dd97e1d9c54e597e725ec8f899baac010e992",
+      "path": ".signals/issue-235/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "5abfee0b150079ae6114db59a496907596639a22",
+      "path": ".signals/issue-235/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "05e23fa3b92a6a504e66c993785384aaa7cd6ee3765a38df8629bfa8ad62f3c5",
+  "issue": 235,
+  "issueSessionId": "issue-235:2b36122912fb55327e9872646bee3a2c0b32f5ce",
+  "protocolVersion": 2,
+  "rationale": "Claude has the strongest recorded live Muse publication and no-callback handoff evidence and is the preferred revision base, subject to fixing stale send decisions and unvalidated footers, adding the frozen-roster regression, and resolving the shared wrapped-busy-indicator uncertainty identified in the comparison.",
+  "responseSha256": "763d43edb5dbfcd59513b0973cd5f8133adb1527c92048253a0daf63af8fc115"
+}

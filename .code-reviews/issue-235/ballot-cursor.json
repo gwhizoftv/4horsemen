@@ -1,0 +1,29 @@
+{
+  "actionId": "2110af6a-cfdd-4e2c-805d-3ac08ee76871",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "f0bd6aa4dda49e87de79992939f70a047f5f4ff7",
+      "path": ".signals/issue-235/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "4c4dd97e1d9c54e597e725ec8f899baac010e992",
+      "path": ".signals/issue-235/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "5abfee0b150079ae6114db59a496907596639a22",
+      "path": ".signals/issue-235/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "05e23fa3b92a6a504e66c993785384aaa7cd6ee3765a38df8629bfa8ad62f3c5",
+  "issue": 235,
+  "issueSessionId": "issue-235:2b36122912fb55327e9872646bee3a2c0b32f5ce",
+  "protocolVersion": 2,
+  "rationale": "Claude alone strips every Muse Escape and matches both resend and non-resend full prompts for submit-only, avoiding Cursor's quiet-minute retype bug and Codex's bare-Escape hole while sharing the same adapter-based doctor and ready/complete delivery path.",
+  "responseSha256": "e61b7018e684a4ec28316037db551f572b7d7557dbd6033ce11d9bc535e4c1c8"
+}
