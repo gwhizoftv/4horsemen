@@ -37,6 +37,14 @@ const fixture = () => {
 
 const json = (path: string): Record<string, unknown> => JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
 
+/** PATH as an agent pane has it: the product's older Node first, which fails if asked to run anything. */
+const productPath = (root: string): string => {
+  const bin = join(root, "product-bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "node"), "#!/bin/sh\n[ \"$1\" = --version ] && echo v16.18.0 && exit 0\necho OLD_NODE_RAN >&2\nexit 99\n", { mode: 0o700 });
+  return `${bin}:${process.env.PATH ?? ""}`;
+};
+
 describe("agent lifecycle hook synchronization", () => {
   it("reports explicitly disabled guard definitions without reenabling owner settings", () => {
     const { clone, cliEntry } = fixture();
@@ -100,7 +108,8 @@ describe("agent lifecycle hook synchronization", () => {
     const cliEntry = join(root, "test-cli.cjs");
     writeFileSync(cliEntry, 'process.stdout.write("decoded\\n")');
     const command = renderShellGuardHookCommand(cliEntry, clone, vendor);
-    const run = (input: string) => spawnSync("/bin/sh", ["-c", command], { input, encoding: "utf8" });
+    const env = { ...process.env, PATH: productPath(root) };
+    const run = (input: string) => spawnSync("/bin/sh", ["-c", command], { input, encoding: "utf8", env });
     const allow = vendor === "cursor" ? '{"permission":"allow"}\n' : vendor === "antigravity" ? '{"decision":"allow"}\n' : "";
     expect(run('{"command":"echo hello"}').stdout).toBe(allow);
     expect(run('{"command":"git status"}').stdout).toBe("decoded\n");
@@ -120,6 +129,8 @@ describe("agent lifecycle hook synchronization", () => {
       const effects = effectOptions(() => undefined, false);
       expect(syncAgentLifecycleHooks({ clone, agent, cliEntry, options: effects }).changed).toBe(true);
       expect(readFileSync(path, "utf8")).toContain(AGENT_LIFECYCLE_HOOK_MARKER);
+      expect(readFileSync(path, "utf8")).toContain(process.execPath);
+      expect(readFileSync(path, "utf8")).not.toContain("/usr/bin/env node");
       expect(inspectAgentLifecycleHooks({ clone, agent, cliEntry }).kind).toBe("current");
       if (agent === "claude") expect(json(path).editorMode).toBe("normal");
 
@@ -283,10 +294,12 @@ describe("Claude status-line tee", () => {
     writeFileSync(base.cliEntry, `require("fs").writeFileSync(${JSON.stringify(received)}, require("fs").readFileSync(0));\n`);
     const owner = join(base.root, "owner-statusline.sh");
     // Newline-sensitive owner command: \`read\` fails without the terminating newline.
-    writeFileSync(owner, "#!/bin/sh\nread -r first || exit 9\nprintf 'owner:%s|' \"$first\"\ncat\necho owner-stderr >&2\nexit 7\n");
+    writeFileSync(owner, "#!/bin/sh\nread -r first || exit 9\nprintf 'owner:%s|' \"$first\"\ncat\necho owner-stderr >&2\necho \"owner-node=$(node --version)\" >&2\nexit 7\n");
     chmodSync(owner, 0o700);
     const context = { clone: base.clone, home, cliEntry: base.cliEntry, managedSettings: [] as string[] };
-    const run = (input: string) => spawnSync(claudeStatusLinePaths(base.clone).wrapper, { input, encoding: "utf8" });
+    // The pane's PATH selects the product's older Node; only the coord receiver must avoid it.
+    const env = { ...process.env, PATH: productPath(base.root) };
+    const run = (input: string) => spawnSync(claudeStatusLinePaths(base.clone).wrapper, { input, encoding: "utf8", env });
     // The receiver runs in the background; let it release its exclusion before the tree is removed.
     const settled = async (): Promise<void> => {
       for (let attempt = 0; attempt < 200 && existsSync(claudeStatusLinePaths(base.clone).lock); attempt++) {
@@ -309,6 +322,7 @@ describe("Claude status-line tee", () => {
     const result = f.run(payload);
     expect(result.stdout).toBe(`owner:{"session_id":"s1","rate_limits":{}}|second line\n`);
     expect(result.stderr).toContain("owner-stderr");
+    expect(result.stderr).toContain("owner-node=v16.18.0");
     expect(result.status).toBe(7);
     for (let attempt = 0; attempt < 100 && !existsSync(f.received); attempt++) await new Promise((resolve) => setTimeout(resolve, 20));
     expect(readFileSync(f.received, "utf8")).toBe(payload);

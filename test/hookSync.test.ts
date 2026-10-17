@@ -1,8 +1,15 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { inspectCloneHooks, readHookManifest, removeCloneHooks, type HookManifest } from "../src/hookSync.js";
+import {
+  canonicalSourceDigest,
+  inspectCloneHooks,
+  readHookManifest,
+  removeCloneHooks,
+  type HookManifest
+} from "../src/hookSync.js";
 import { install, uninstall } from "../src/install.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { initializeOperationalState, mutateCursorsState, readConfig } from "../src/state.js";
@@ -368,7 +375,7 @@ describe("coordinator verification binding", () => {
 });
 
 describe("vendored delivery", () => {
-  const installVendored = (fixture: ProductFixture) =>
+  const installVendored = (fixture: ProductFixture, verify: unknown = passingVerify) =>
     install({
       home: null,
       installRoot: repoRoot,
@@ -376,7 +383,7 @@ describe("vendored delivery", () => {
       coordRoot: fixture.coordRoot,
       agents: ["claude"],
       profile: "solo",
-      declarePath: writeDeclaration(fixture.workspaceRoot, { checks: declaredChecks, verify: passingVerify }, "vendor"),
+      declarePath: writeDeclaration(fixture.workspaceRoot, { checks: declaredChecks, verify }, "vendor"),
       writeProduct: false,
       vendor: true,
       bootstrap: false,
@@ -402,6 +409,53 @@ describe("vendored delivery", () => {
 
     expect(tryGit(clone, "commit", "-m", "no label").exitCode).not.toBe(0);
     expect(tryGit(clone, "commit", "-m", "Claude: work").exitCode).toBe(0);
+  });
+
+  it.each(["shim", "vendor"] as const)(
+    "%s hooks read checks on coordination's Node while the declared check keeps the product's",
+    (mode) => {
+      // Recorded inside .git so the check leaves the worktree as staged.
+      const verify = {
+        precommit: [{ name: "node", argv: ["sh", "-c", 'node --version > "$(git rev-parse --git-dir)/node-seen.txt"'] }],
+        prepush: []
+      };
+      const { fixture, clone } = installed(mode === "shim" ? verify : passingVerify);
+      if (mode === "vendor") installVendored(fixture, verify);
+      stageWork(clone);
+      const seen = join(clone, ".git", "node-seen.txt");
+      const productBin = join(fixture.workspaceRoot, "product-bin");
+      mkdirSync(productBin);
+      writeFileSync(join(productBin, "node"), "#!/bin/sh\n[ \"$1\" = --version ] && echo v16.18.0 && exit 0\nexit 99\n", { mode: 0o755 });
+      const commit = (path: string) => {
+        const env: NodeJS.ProcessEnv = {
+          ...process.env, PATH: path, NVM_DIR: join(fixture.workspaceRoot, "no-nvm"),
+          GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.com",
+          GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.com"
+        };
+        delete env.COORD_NODE;
+        return spawnSync("git", ["commit", "-m", "Claude: work"], { cwd: clone, encoding: "utf8", env });
+      };
+
+      // No supported Node anywhere: blocked before any declared check runs.
+      const refused = commit(`${productBin}:/usr/bin:/bin`);
+      expect(refused.status).not.toBe(0);
+      expect(refused.stderr).toContain("Node >= 26 is required");
+      expect(existsSync(seen)).toBe(false);
+
+      const committed = commit(`${productBin}:${process.env.PATH ?? ""}`);
+      expect(committed.status, committed.stderr).toBe(0);
+      expect(readFileSync(seen, "utf8")).toBe("v16.18.0\n");
+    }
+  );
+
+  it("counts the Node selector among the files that decide what a hook does", () => {
+    const fixture = makeProduct();
+    fixtures.push(fixture);
+    const root = join(fixture.workspaceRoot, "install-copy");
+    for (const dir of ["githooks", "templates/hooks", "scripts/lib"]) cpSync(join(repoRoot, dir), join(root, dir), { recursive: true });
+    const before = canonicalSourceDigest(root);
+    appendFileSync(join(root, "scripts/lib/node-runtime.sh"), "# edited\n");
+    expect(canonicalSourceDigest(root)).not.toBe(before);
   });
 });
 

@@ -33,8 +33,12 @@ export const coordCliEntry = (): string => resolve(dirname(fileURLToPath(import.
 
 const singleQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
+/**
+ * Git runs the helper with whatever Node the clone's PATH selects, often the
+ * product's older one (issue 234), so it names the Node running coord now.
+ */
 export const gitCredentialHelperCommand = (account: string, cliEntry: string): string =>
-  `!/usr/bin/env node ${singleQuote(cliEntry)}${GITHUB_CREDENTIAL_HELPER_MARKER}${account}`;
+  `!${singleQuote(process.execPath)} ${singleQuote(cliEntry)}${GITHUB_CREDENTIAL_HELPER_MARKER}${account}`;
 
 /**
  * One-shot Git settings: the empty value resets inherited helpers (osxkeychain,

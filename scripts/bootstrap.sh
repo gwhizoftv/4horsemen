@@ -55,9 +55,9 @@ EOF
 done
 
 command -v git >/dev/null 2>&1 || die "Git is required; install git and rerun this command"
-if ! command -v node >/dev/null 2>&1 || ! command -v pnpm >/dev/null 2>&1; then
-  die "Node 26 and pnpm 11 are required; install them, then rerun this command"
-fi
+# Node 26 is chosen after checkout by the install's own selector, which also
+# finds it when the current shell has a product's older Node first on PATH.
+command -v pnpm >/dev/null 2>&1 || die "Node 26 and pnpm 11 are required; install them, then rerun this command"
 
 case "$root" in
   /*) ;;
@@ -95,9 +95,14 @@ if [ "$created" = true ]; then
 EOF
 fi
 
+node_runtime=$root/scripts/lib/node-runtime.sh
+[ -x "$node_runtime" ] || die "$node_runtime is missing; the checkout at $root cannot choose its Node"
+node_bin=$("$node_runtime" --print-path) || die "Node 26 and pnpm 11 are required; install them, then rerun this command"
+node_dir=$(dirname "$node_bin")
+
 printf '%s\n' "coord bootstrap: installing dependencies in $root"
-(cd "$root" && pnpm install --frozen-lockfile)
-(cd "$root" && pnpm build)
+(cd "$root" && PATH="$node_dir:$PATH" pnpm install --frozen-lockfile)
+(cd "$root" && PATH="$node_dir:$PATH" pnpm build)
 [ -f "$root/dist/main.js" ] || die "build completed without dist/main.js; inspect the pnpm output above"
 
 if [ "$install_path" = true ]; then

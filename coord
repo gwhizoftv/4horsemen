@@ -13,7 +13,11 @@ while [[ -L "$SOURCE" ]]; do
   fi
 done
 ROOT="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+# Coordination's own Node, chosen before anything loads (issue 234). The
+# workspace may have an older Node selected for the product; PATH is left as the
+# caller had it, so product commands coord starts still run on that one.
+NODE_BIN="$("$ROOT/scripts/lib/node-runtime.sh" --print-path)"
 if [[ ! -f "$ROOT/dist/main.js" ]] || find "$ROOT/src" -type f -newer "$ROOT/dist/main.js" -print -quit | grep -q .; then
-  (cd "$ROOT" && pnpm build) >&2
+  (cd "$ROOT" && PATH="$(dirname "$NODE_BIN"):$PATH" pnpm build) >&2
 fi
-exec node "$ROOT/dist/main.js" "$@"
+exec "$NODE_BIN" "$ROOT/dist/main.js" "$@"

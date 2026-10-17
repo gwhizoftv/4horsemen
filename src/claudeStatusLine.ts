@@ -127,7 +127,7 @@ const resolveEffective = (
 
 export const renderClaudeStatusLineWrapper = (cliEntry: string, clone: string, downstream: string | null): string => {
   const paths = claudeStatusLinePaths(clone);
-  const receiver = `/usr/bin/env node ${shellQuote(resolve(cliEntry))} agent-event --vendor claude --clone ${shellQuote(resolve(clone))} --event status-line`;
+  const receiver = `${shellQuote(process.execPath)} ${shellQuote(resolve(cliEntry))} agent-event --vendor claude --clone ${shellQuote(resolve(clone))} --event status-line`;
   const run = downstream === null ? ":" : `/bin/sh -c ${shellQuote(downstream)}`;
   return [
     "#!/bin/sh",

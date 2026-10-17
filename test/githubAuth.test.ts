@@ -1,5 +1,10 @@
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  gitCredentialHelperCommand,
   gitCredentialResponse,
   verifyGitHubAccess,
   withGitHubAccount
@@ -56,7 +61,7 @@ describe("GitHub account binding", () => {
     expect(calls.at(-1)!.argv).toEqual([
       "git",
       "-c", "credential.https://github.com.helper=",
-      "-c", "credential.https://github.com.helper=!/usr/bin/env node '/coord/dist/main.js' auth git-credential --account acct",
+      "-c", `credential.https://github.com.helper=!'${process.execPath}' '/coord/dist/main.js' auth git-credential --account acct`,
       "ls-remote", "origin"
     ]);
 
@@ -65,6 +70,32 @@ describe("GitHub account binding", () => {
     expect(calls.at(-1)).toEqual({ argv: ["pnpm", "check"], env: productEnv });
 
     expect(withGitHubAccount(runner, null)).toBe(runner);
+  });
+
+  it("runs the helper on coordination's Node when the clone's PATH selects an older one", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-helper-node-"));
+    try {
+      const product = join(root, "product bin");
+      mkdirSync(product);
+      writeFileSync(join(product, "node"), "#!/bin/sh\necho v16.18.0\n", { mode: 0o700 });
+      const entry = join(root, "entry.mjs");
+      writeFileSync(entry, [
+        'import { execFileSync } from "node:child_process";',
+        "console.log(`runtime=${process.version}`);",
+        "console.log(`args=${process.argv.slice(2).join(\" \")}`);",
+        'console.log(`product=${execFileSync("node", ["--version"], { encoding: "utf8" }).trim()}`);'
+      ].join("\n"));
+      // Git runs a `!` helper through the shell with the operation appended.
+      const helper = gitCredentialHelperCommand("acct", entry).slice(1);
+      const result = spawnSync("/bin/sh", ["-c", `${helper} get`], {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${product}:${process.env.PATH ?? ""}` }
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe(`runtime=${process.version}\nargs=auth git-credential --account acct get\nproduct=v16.18.0\n`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("refuses rather than running gh as another account when the saved token is unavailable", async () => {

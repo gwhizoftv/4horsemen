@@ -50,17 +50,21 @@ const fixture = (): BootstrapFixture => {
   writeFileSync(join(source, ".gitignore"), "dist/\n");
   writeFileSync(join(source, "coord"), "#!/bin/sh\nexit 0\n");
   chmodSync(join(source, "coord"), 0o755);
-  git(source, "add", ".gitignore", "package.json", "pnpm-lock.yaml", "coord");
+  mkdirSync(join(source, "scripts", "lib"), { recursive: true });
+  writeFileSync(join(source, "scripts", "lib", "node-runtime.sh"), readFileSync(join(repoRoot, "scripts", "lib", "node-runtime.sh")));
+  chmodSync(join(source, "scripts", "lib", "node-runtime.sh"), 0o755);
+  git(source, "add", ".gitignore", "package.json", "pnpm-lock.yaml", "coord", "scripts");
   git(source, "commit", "-qm", "initial");
   git(source, "remote", "add", "origin", origin);
   git(source, "push", "-q", "-u", "origin", "main");
 
-  writeFileSync(join(fakeBin, "node"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(join(fakeBin, "node"), "#!/bin/sh\n[ \"$1\" = --version ] && echo v26.0.0\nexit 0\n");
   chmodSync(join(fakeBin, "node"), 0o755);
   writeFileSync(
     join(fakeBin, "pnpm"),
     "#!/bin/sh\n" +
       "printf '%s\\n' \"$*\" >>\"$BOOTSTRAP_PNPM_LOG\"\n" +
+      "printf '%s\\n' \"$(command -v node)\" >>\"$BOOTSTRAP_PNPM_LOG.node\"\n" +
       "if [ \"${1:-}\" = build ]; then mkdir -p dist; printf 'built\\n' >dist/main.js; fi\n"
   );
   chmodSync(join(fakeBin, "pnpm"), 0o755);
@@ -71,13 +75,30 @@ const fixture = (): BootstrapFixture => {
     home,
     fakeBin,
     pnpmLog,
-    env: {
+    env: withoutNodeOverride({
       ...process.env,
       HOME: home,
+      NVM_DIR: join(home, ".nvm"),
       PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
       BOOTSTRAP_PNPM_LOG: pnpmLog
-    }
+    })
   };
+};
+
+/** Only fixture runtimes are visible: no inherited COORD_NODE, and NVM_DIR under the fixture home. */
+const withoutNodeOverride = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+  const copy = { ...env };
+  delete copy.COORD_NODE;
+  return copy;
+};
+
+/** A product's older Node first on PATH; when run for anything but the probe it fails loudly. */
+const productNode = (input: BootstrapFixture): string => {
+  const dir = join(input.root, "product-bin");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "node"), "#!/bin/sh\n[ \"$1\" = --version ] && echo v16.18.0 && exit 0\necho OLD_NODE_RAN >&2\nexit 99\n");
+  chmodSync(join(dir, "node"), 0o755);
+  return dir;
 };
 
 const bootstrap = (input: BootstrapFixture, args: readonly string[], env: NodeJS.ProcessEnv = input.env) =>
@@ -159,5 +180,33 @@ describe("coord bootstrap", () => {
     });
     expect(missing.status).not.toBe(0);
     expect(missing.stderr).toContain("Node 26 and pnpm 11 are required");
+  });
+
+  it("installs and builds on a supported Node behind a product's older one, and refuses when there is none", () => {
+    const input = fixture();
+    const product = productNode(input);
+    const installRoot = join(input.root, "install");
+    const result = bootstrap(input, ["--root", installRoot, "--source", input.origin, "--no-path"], {
+      ...input.env,
+      PATH: `${product}:${input.env.PATH ?? ""}`
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(`${input.pnpmLog}.node`, "utf8").trim().split("\n")).toEqual([
+      join(input.fakeBin, "node"),
+      join(input.fakeBin, "node")
+    ]);
+
+    rmSync(input.pnpmLog, { force: true });
+    const pnpmOnly = join(input.root, "pnpm-only");
+    mkdirSync(pnpmOnly);
+    symlinkSync(join(input.fakeBin, "pnpm"), join(pnpmOnly, "pnpm"));
+    const refused = bootstrap(input, ["--root", join(input.root, "unsupported"), "--source", input.origin, "--no-path"], {
+      ...input.env,
+      PATH: `${product}:${pnpmOnly}:/usr/bin:/bin`
+    });
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toContain("node on PATH: v16.18.0");
+    expect(refused.stderr).not.toContain("OLD_NODE_RAN");
+    expect(existsSync(input.pnpmLog)).toBe(false);
   });
 });

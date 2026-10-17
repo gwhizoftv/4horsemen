@@ -30,13 +30,25 @@ coord_cli_entry() {
     return 1
   fi
 
-  if ! command -v node >/dev/null 2>&1; then
-    echo "HOOK BLOCKED: node is not on PATH, so coordination cannot read the declared checks for this clone." >&2
-    echo "  Only agent clones need this; the product itself is never made to depend on Node." >&2
+  printf '%s\n' "$entry"
+}
+
+# coord_node <entry>
+#
+# The install's Node selector, found from the recorded entry rather than from
+# this file: vendored clones carry a copy of this library but no install root.
+# The selector, not PATH, picks the Node that runs the CLI, so a product that
+# pins an older Node (issue 234) keeps it for its own checks. Only agent clones
+# need this; the product itself is never made to depend on Node.
+coord_node() {
+  local runtime
+  runtime="$(dirname "$(dirname "$1")")/scripts/lib/node-runtime.sh"
+  if [[ ! -x "$runtime" ]]; then
+    echo "HOOK BLOCKED: '$runtime' is missing, so coordination cannot choose the Node that reads the declared checks." >&2
+    echo "  The coordination install was moved or is incomplete. Fix: update it, or re-run coord install." >&2
     return 1
   fi
-
-  printf '%s\n' "$entry"
+  printf '%s\n' "$runtime"
 }
 
 # coord_verify <precommit|prepush>
@@ -46,16 +58,18 @@ coord_cli_entry() {
 # Prepush receives the buffered outgoing ref list on stdin; precommit inspects
 # Git's index. Classification and measurement live in the same CLI as coord.
 coord_verify() {
-  local phase="$1" entry
+  local phase="$1" entry runtime
   entry="$(coord_cli_entry)" || return 1
-  node "$entry" hook-verify --clone "$(git rev-parse --show-toplevel)" --phase "$phase"
+  runtime="$(coord_node "$entry")" || return 1
+  "$runtime" "$entry" hook-verify --clone "$(git rev-parse --show-toplevel)" --phase "$phase"
 }
 
 # coord_scope (legacy installed-hook compatibility only)
 #
 # Current hooks use coord_verify's shared classifier, not this older filter.
 coord_scope() {
-  local entry
+  local entry runtime
   entry="$(coord_cli_entry)" || return 1
-  node "$entry" hook-scope --clone "$(git rev-parse --show-toplevel)"
+  runtime="$(coord_node "$entry")" || return 1
+  "$runtime" "$entry" hook-scope --clone "$(git rev-parse --show-toplevel)"
 }

@@ -62,6 +62,40 @@ for public bootstrap. Interactive operation also needs tmux, the configured
 harnesses and the product's own tools. Terminal.app windows are a macOS-only
 integration; on other platforms use tmux without those windows.
 
+### Coordination's Node and the product's Node
+
+Coordination runs its own JavaScript on Node 26 or newer, and it picks that Node
+itself. The product's workspace can stay on an older development Node. Before
+any driver code loads, `scripts/lib/node-runtime.sh` chooses the Node:
+
+1. `COORD_NODE`, if set. It must be an absolute path to an executable named
+   `node` that reports Node 26 or newer. If it doesn't, coord refuses rather
+   than falling back to another Node.
+2. The first `node` on `PATH` that reports Node 26 or newer. Older ones are
+   skipped.
+3. The newest Node 26 or newer installed under `$NVM_DIR/versions/node`
+   (`~/.nvm` by default). nvm itself is not run.
+
+If nothing qualifies, coord stops before building or starting anything. It
+prints the version it found and how to fix it: `nvm install 26`, or set
+`COORD_NODE`. Use `COORD_NODE` for any other version manager.
+
+The `coord` command, `bootstrap.sh`, the git hooks and the setup scripts' trust
+step all run through this selector. Coord never changes `PATH` to do it. Product
+commands that coord starts, such as declared checks or agent sessions, still
+run on the workspace's own Node. Only coordination's own self-builds (`pnpm
+install` and `pnpm build` in the install) put the chosen Node first on their
+`PATH`.
+
+Commands that coord writes into agent clones record the absolute path of the
+Node that ran `coord install` or `coord onboard`: the GitHub credential helper,
+the agent lifecycle and shell-guard hooks, and the status-line receivers. Agent
+panes select the product's Node, so `/usr/bin/env node` would pick the wrong
+one. If you later remove that Node installation, for example with
+`nvm uninstall` or a Homebrew upgrade that cleans up the old version, rerun
+`coord install` or `coord onboard` with a supported Node to regenerate those
+commands.
+
 ## Onboard a product
 
 ```sh
