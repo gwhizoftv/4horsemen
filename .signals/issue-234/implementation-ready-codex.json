@@ -1,0 +1,30 @@
+{
+  "protocolVersion": 1,
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "agent": "codex",
+  "inputSetHash": "10ef1262e5862a276966657579858e687a163382c26b49c4863a1f16e56edaa8",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "ec02c6fc8c8ad68b0fcf8691b1ff93751651d6c0",
+  "scopeHash": "0aafcee7e42310d631fcb24bbb79ebf4fd1434a1acc8fb047524338cab15b2cd",
+  "approvedPaths": [
+    "coord/",
+    "docs/setup-workspace.md",
+    "githooks/lib/policy.sh",
+    "scripts/bootstrap.sh",
+    "scripts/lib/node-runtime.sh",
+    "scripts/setup_common.sh",
+    "src/agentHookSync.ts",
+    "src/claudeStatusLine.ts",
+    "src/githubAuth.ts",
+    "src/hookSync.ts",
+    "src/install.ts",
+    "test/agentHookSync.test.ts",
+    "test/bootstrap.test.ts",
+    "test/githubAuth.test.ts",
+    "test/hookSync.test.ts",
+    "test/install.test.ts",
+    "test/mirror.test.ts",
+    "test/wrapper.test.ts"
+  ]
+}
