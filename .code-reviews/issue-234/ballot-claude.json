@@ -1,0 +1,34 @@
+{
+  "actionId": "f8361963-6599-4ca5-872a-ac36a6e08e3f",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "980e57bcfba8f909c137199f7814c5e1e09850af",
+      "path": ".signals/issue-234/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "5acf3a9d6666cf71a2bbc30e99ddbfd7f47eb215",
+      "path": ".signals/issue-234/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ec02c6fc8c8ad68b0fcf8691b1ff93751651d6c0",
+      "path": ".signals/issue-234/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "f6449d44305990a3620d2805b73a06096e33d5da",
+      "path": ".signals/issue-234/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "6781e4a77358e368d507d0a6be167f89afc816ca579cc119da61cb4c4cdb6e97",
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "protocolVersion": 2,
+  "rationale": "All four pins select Node 26 behind a real Node 16 and keep the product's Node for its children, but codex alone routes generated credential/lifecycle/guard callbacks through the run-time selector so they survive removal of the Node that ran install, and its tests are the most hermetic (mocked bootstrap spawn, shim and vendor hook commits under an old product Node, executed rendered helper), leaving only a minor empty-COORD_NODE refusal versus the test defects in cursor (rewrites the tracked selector mid-suite) and antigravity (host pnpm can shadow its bootstrap fake, no engines-floor test) and claude's accepted process.execPath durability gap.",
+  "responseSha256": "51762ca7a4431acf4a30ae3dee1324a1cf5f1a39e479ee7d38b56f3f87a8baca"
+}

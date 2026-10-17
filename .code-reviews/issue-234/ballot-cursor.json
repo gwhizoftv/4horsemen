@@ -1,0 +1,34 @@
+{
+  "actionId": "b4e59df2-1366-46a6-a58a-10de38c2c62d",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "980e57bcfba8f909c137199f7814c5e1e09850af",
+      "path": ".signals/issue-234/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "5acf3a9d6666cf71a2bbc30e99ddbfd7f47eb215",
+      "path": ".signals/issue-234/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ec02c6fc8c8ad68b0fcf8691b1ff93751651d6c0",
+      "path": ".signals/issue-234/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "f6449d44305990a3620d2805b73a06096e33d5da",
+      "path": ".signals/issue-234/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "6781e4a77358e368d507d0a6be167f89afc816ca579cc119da61cb4c4cdb6e97",
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "protocolVersion": 2,
+  "rationale": "Codex alone routes credential and lifecycle callbacks through scripts/lib/node-runtime.sh at run time, so Node patch upgrades do not break persisted helpers the way baked process.execPath does in the other pins.",
+  "responseSha256": "3bff7365d0a06255c785e3e49480314063c1ac41da180971ed8c8085e9255b73"
+}

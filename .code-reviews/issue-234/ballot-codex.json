@@ -1,0 +1,34 @@
+{
+  "actionId": "761fec5c-83ec-488d-86eb-fb699243da3d",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "980e57bcfba8f909c137199f7814c5e1e09850af",
+      "path": ".signals/issue-234/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "5acf3a9d6666cf71a2bbc30e99ddbfd7f47eb215",
+      "path": ".signals/issue-234/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ec02c6fc8c8ad68b0fcf8691b1ff93751651d6c0",
+      "path": ".signals/issue-234/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "f6449d44305990a3620d2805b73a06096e33d5da",
+      "path": ".signals/issue-234/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "6781e4a77358e368d507d0a6be167f89afc816ca579cc119da61cb4c4cdb6e97",
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "protocolVersion": 2,
+  "rationale": "Codex provides the strongest revision base through strict version validation, literal PATH handling, runtime-resolved callbacks and focused product-isolation coverage, provided revision routes legacy trust through the selector and prevents version probes from consuming callback stdin.",
+  "responseSha256": "b1ff8a4714bdadbd56434de5605ccfa1dbe68e725aa3b30dd0f42b6c1797a52b"
+}
