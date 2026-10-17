@@ -1,0 +1,17 @@
+{
+  "protocolVersion": 1,
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "agent": "antigravity",
+  "inputSetHash": "10ef1262e5862a276966657579858e687a163382c26b49c4863a1f16e56edaa8",
+  "artifact": "plan-amendment-request",
+  "actionId": "ee5afb6f-668a-4d64-9bf7-212253450667",
+  "scopeHash": "d3c58d0cc86ae7972b8313b51508ca216b8839138f126a653dc7a3fcd6a60fcf",
+  "explanation": "The selected plan updates gitCredentialHelperCommand in src/githubAuth.ts to render the shell-quoted absolute process.execPath instead of !/usr/bin/env node, and updates credential-helper expectations in test/githubAuth.test.ts and test/install.test.ts, but omitted test/mirror.test.ts where line 94 asserts the exact gitCredentialArgs string returned by BareMirror.",
+  "additionalPaths": [
+    {
+      "path": "test/mirror.test.ts",
+      "reason": "Update the existing credential.https://github.com.helper assertion at line 94 to match the updated gitCredentialHelperCommand output from src/githubAuth.ts so pnpm check:fast passes."
+    }
+  ]
+}
