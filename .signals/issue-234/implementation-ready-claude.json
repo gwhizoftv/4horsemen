@@ -1,0 +1,17 @@
+{
+  "protocolVersion": 1,
+  "issue": 234,
+  "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
+  "agent": "claude",
+  "inputSetHash": "10ef1262e5862a276966657579858e687a163382c26b49c4863a1f16e56edaa8",
+  "artifact": "plan-amendment-request",
+  "actionId": "de96faf7-211a-4667-8425-a4cd516e2272",
+  "scopeHash": "d3c58d0cc86ae7972b8313b51508ca216b8839138f126a653dc7a3fcd6a60fcf",
+  "explanation": "The selected plan changes gitCredentialHelperCommand in src/githubAuth.ts to render the absolute process.execPath instead of /usr/bin/env node, and its map lists the credential-helper expectations in test/githubAuth.test.ts and test/install.test.ts, but it omits test/mirror.test.ts. That existing fast test asserts the exact old helper string for every BareMirror Git call, because BareMirror builds its arguments with the same gitCredentialArgs/gitCredentialHelperCommand. With the planned src/githubAuth.ts change in place, `pnpm exec vitest run --config vitest.config.ts` fails exactly two tests: test/githubAuth.test.ts (in the map) and test/mirror.test.ts > owner bare mirror > binds every mirror Git call to a selected GitHub account without persisting it (not in the map). So the hook-owned check:fast cannot pass without updating that one expectation. This is the plan's own credential-helper behavior, not new scope; codex's plan review (finding 5) identified the same omission.",
+  "additionalPaths": [
+    {
+      "path": "test/mirror.test.ts",
+      "reason": "Line 94 compares each mirror Git call's credential helper against the literal `!/usr/bin/env node '/coord/dist/main.js' auth git-credential --account acct`; the planned src/githubAuth.ts rendering makes that `!'<process.execPath>' '/coord/dist/main.js' auth git-credential --account acct`, so this one expectation must be updated (no new test, fixture, or abstraction) for check:fast to pass."
+    }
+  ]
+}
