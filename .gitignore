@@ -8,5 +8,6 @@ coverage/
 .cursor/
 .antigravity/
 .agents/
+.muse/
 /tags
 .pnpm-store/

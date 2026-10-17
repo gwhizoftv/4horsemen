@@ -153,7 +153,11 @@ type ParsedArgs = { positionals: string[]; flags: Map<string, string> };
 const coordinatorSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const agentExecutables = new Map([
-  ["codex", "codex"], ["claude", "claude"], ["cursor", "agent"], ["antigravity", "agy"]
+  ["codex", { executable: "codex", update: true }],
+  ["claude", { executable: "claude", update: true }],
+  ["cursor", { executable: "agent", update: true }],
+  ["antigravity", { executable: "agy", update: true }],
+  ["muse", { executable: "muse", update: false }]
 ]);
 const AGENT_UPDATE_TIMEOUT_MS = 180_000;
 const AGENT_VERSION_TIMEOUT_MS = 5_000;
@@ -168,7 +172,7 @@ const updateAgentVersions = async (
     io.stderr(`WARNING: ${id} ${step}: ${summary}; continuing with the installed version.\n`);
   };
   const run = async (agent: CoordinatorConfig["agents"][number], step: "update" | "--version") => {
-    const executable = agentExecutables.get(agent.id)!;
+    const { executable } = agentExecutables.get(agent.id)!;
     try {
       const result = await runner([
         "bash", "-c", 'set -euo pipefail\n. "$1"\nlauncher_environment "$2" >/dev/null\nshift 2\nexec "$@"',
@@ -184,8 +188,13 @@ const updateAgentVersions = async (
   // Finish every updater before collecting versions or launching any agent.
   for (const agent of agents) {
     versions[agent.id] = null;
-    if (!agentExecutables.has(agent.id)) {
+    const maintenance = agentExecutables.get(agent.id);
+    if (maintenance === undefined) {
       warn(agent.id, "update skipped", "no known vendor command");
+      continue;
+    }
+    if (!maintenance.update) {
+      io.stdout(`${agent.id} has no update command; recording the installed version.\n`);
       continue;
     }
     io.stdout(`Updating ${agent.id} (timeout ${AGENT_UPDATE_TIMEOUT_MS / 1_000}s)...\n`);

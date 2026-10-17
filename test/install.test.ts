@@ -8,6 +8,7 @@ import { assertInstallDeletionAllowed, install, uninstall } from "../src/install
 import { readConfig } from "../src/state.js";
 import { cloneGitHubWiringProblem } from "../src/setupWorkspace.js";
 import { nestedConfigPath } from "../src/workspace.js";
+import { DEFAULT_CLONE_IGNORES } from "../src/productIgnore.js";
 import {
   declaredChecks,
   ensureBuilt,
@@ -1210,6 +1211,46 @@ describe("generated git shim", () => {
 });
 
 describe("generated agent launchers", () => {
+  it("launches Muse unsandboxed with pull delivery and no self-update", () => {
+    const fixture = product("plain");
+    const home = join(fixture.workspaceRoot, "home with spaces");
+    const completesRoot = join(fixture.workspaceRoot, "completion mailbox");
+    const result = installOnce(fixture, { agents: ["muse"], completesRoot, home });
+    const clone = result.clones[0] as string;
+    for (const directory of [
+      join(completesRoot, "issue-17", "muse"),
+      join(fixture.coordRoot, "issue-17", "agents", "muse", "responses"),
+      join(fixture.coordRoot, "issue-17", "inputs"),
+      join(fixture.coordRoot, "issue-17", "worktrees")
+    ]) mkdirSync(directory, { recursive: true });
+    const bin = join(home, ".local", "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "muse"), '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$CAPTURE"\n' +
+      'printf \'%s\\n\' "$MUSE_NO_AUTO_UPDATE" "$(command -v git)" "$COORD_ISSUE" > "$CAPTURE.env"\n',
+    { mode: 0o755 });
+    for (const issue of ["17", ""]) {
+      const capture = join(fixture.workspaceRoot, `muse-${issue || "manual"}.args`);
+      execFileSync("/bin/bash", [join(clone, "start-muse.sh")], {
+        cwd: clone,
+        env: { ...process.env, HOME: home, PATH: "/usr/bin:/bin", COORD_ISSUE: issue, CAPTURE: capture },
+        stdio: "pipe"
+      });
+      expect(readFileSync(capture, "utf8").trimEnd().split("\n")).toEqual([
+        "--approval-mode", "never", "--disable-sandbox", "--trust-workspace"
+      ]);
+      expect(readFileSync(`${capture}.env`, "utf8")).toBe(`1\n${clone}/.coord/bin/git\n${issue}\n`);
+    }
+    expect(readConfig(result.configPath).agents).toMatchObject([{
+      id: "muse", delivery: "pull", nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Basic"
+    }]);
+    expect(DEFAULT_CLONE_IGNORES).toContain(".muse/");
+    for (const path of [".gitignore", "templates/product/gitignore.coordination.block"]) {
+      expect(readFileSync(join(repoRoot, path), "utf8").split("\n")).toContain(".muse/");
+    }
+    expect(git(clone, "check-ignore", ".muse/hooks.json")).toBe(".muse/hooks.json");
+    expect(existsSync(join(clone, ".muse/hooks.json"))).toBe(false);
+  });
+
   /**
    * `--mode accept-edits` is an execution mode, not a permission grant, so on
    * its own it left every out-of-whitelist tool call waiting on an owner

@@ -49,10 +49,10 @@ export const agentHarnessProcess = (agent: string): string => {
  * Default per-agent owner UI for nudges and macOS Terminal windows.
  *
  * Claude needs Escape then Enter after `send-keys -l` (autocomplete / multiline).
- * Cursor without vim and Antigravity submit on Enter; Escape dismisses that
+ * Cursor without vim, Antigravity and Muse submit on Enter; Escape dismisses that
  * Cursor composer and cancels Antigravity. Cursor with `editor.vimMode` uses
  * vim `a` (when not INSERT) and Escape then Enter so INSERT does not treat
- * Enter as a newline. Codex uses vim insert (`i`) and `Enter`.
+ * Enter as a newline. Muse's Escape interrupts a turn. Codex uses vim insert (`i`) and `Enter`.
  * Operators override via config.json (non-vim Cursor Escape+Enter is still
  * upgraded to Enter).
  */
@@ -68,6 +68,8 @@ export const agentOwnerUiDefaults = (
       return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Cursor 1" };
     case "antigravity":
       return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Gemini 1" };
+    case "muse":
+      return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Basic" };
     default:
       return { nudgePrelude: [], nudgeSubmit: ["Escape", "Enter"], terminalProfile: "Basic" };
   }
@@ -361,8 +363,9 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
       // Config-relative, so a workspace directory can be moved with its clones.
       root: relativeFrom(input.workspaceDir, agentCloneDirectory(input.cloneRoot, input.project, agent)),
       launcher: `start-${agent}.sh`,
-      // both: driver pastes a short action path; agents can also pull via `coord next`.
-      delivery: "both",
+      // Muse has no lifecycle-hook mapping yet; owners deliver its action via pull.
+      // Other agents also receive a short action path through the driver.
+      delivery: agent === "muse" ? "pull" : "both",
       harnessProcess: agentHarnessProcess(agent),
       ...agentOwnerUiDefaults(agent)
     })),
