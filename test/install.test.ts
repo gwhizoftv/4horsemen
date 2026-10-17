@@ -336,7 +336,7 @@ describe("coord install — two-mode footprint", () => {
     const fixture = product();
     const origin = "https://acct@github.com/example/myserver.git";
     const helper = "credential.https://github.com.helper";
-    const coordHelper = `!/usr/bin/env node '${join(repoRoot, "dist", "main.js")}' auth git-credential --account acct`;
+    const coordHelper = `!${`'${process.execPath.replaceAll("'", "'\\''")}'`} '${join(repoRoot, "dist", "main.js")}' auth git-credential --account acct`;
     const helpers = () => tryGit(clone, "config", "--local", "--get-all", helper).stdout.split("\n").slice(0, -1);
     const result = installOnce(fixture, { origin, githubAccount: "acct" });
     const clone = result.clones[0] as string;

@@ -13,7 +13,15 @@ while [[ -L "$SOURCE" ]]; do
   fi
 done
 ROOT="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-if [[ ! -f "$ROOT/dist/main.js" ]] || find "$ROOT/src" -type f -newer "$ROOT/dist/main.js" -print -quit | grep -q .; then
-  (cd "$ROOT" && pnpm build) >&2
+RUNTIME="$ROOT/scripts/lib/node-runtime.sh"
+if [[ ! -x "$RUNTIME" ]]; then
+  echo "coord: missing executable Node selector at $RUNTIME; repair the install (re-run bootstrap or restore scripts/lib/node-runtime.sh)." >&2
+  exit 1
 fi
-exec node "$ROOT/dist/main.js" "$@"
+NODE_BIN="$("$RUNTIME" --print-path)" || exit 1
+if [[ ! -f "$ROOT/dist/main.js" ]] || find "$ROOT/src" -type f -newer "$ROOT/dist/main.js" -print -quit | grep -q .; then
+  (cd "$ROOT" && PATH="$(dirname "$NODE_BIN"):$PATH" pnpm build) >&2
+fi
+# Exec the selected Node with the original PATH so product children keep the
+# workspace development runtime.
+exec "$NODE_BIN" "$ROOT/dist/main.js" "$@"

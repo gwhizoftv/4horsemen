@@ -56,6 +56,9 @@ describe("agent lifecycle hook synchronization", () => {
     const options = effectOptions(() => undefined, false);
     syncAgentLifecycleHooks({ clone, agent, cliEntry, options });
     const document = json(path);
+    const rendered = readFileSync(path, "utf8");
+    expect(rendered).toContain(process.execPath);
+    expect(rendered).not.toContain("/usr/bin/env node");
     const events = (agent === "antigravity" ? document["coord-agent-lifecycle"] : document.hooks) as Record<string, unknown[]>;
     const event = agent === "cursor" ? "beforeShellExecution" : "PreToolUse";
     const group = events[event]![0] as { matcher?: string; hooks?: unknown[]; command?: string };

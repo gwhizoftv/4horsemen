@@ -14,7 +14,7 @@
 # what a workspace config means.
 
 coord_cli_entry() {
-  local entry
+  local entry runtime
   entry="$(git config --local --get coord.cliEntry 2>/dev/null || true)"
 
   if [[ -z "$entry" ]]; then
@@ -30,13 +30,23 @@ coord_cli_entry() {
     return 1
   fi
 
-  if ! command -v node >/dev/null 2>&1; then
-    echo "HOOK BLOCKED: node is not on PATH, so coordination cannot read the declared checks for this clone." >&2
-    echo "  Only agent clones need this; the product itself is never made to depend on Node." >&2
+  # Vendor mode copies this library into the clone; locate the selector from the
+  # recorded CLI entry's install root (…/dist/main.js → …/scripts/lib/…).
+  runtime="$(cd "$(dirname "$entry")/.." && pwd)/scripts/lib/node-runtime.sh"
+  if [[ ! -x "$runtime" ]]; then
+    echo "HOOK BLOCKED: coordinator Node selector is missing at '$runtime'." >&2
+    echo "  The coordination install was moved or is incomplete. Fix: restore scripts/lib/node-runtime.sh" >&2
+    echo "  in the install root, or re-run coord install / bootstrap." >&2
     return 1
   fi
 
   printf '%s\n' "$entry"
+}
+
+coord_node_runtime() {
+  local entry
+  entry="$(coord_cli_entry)" || return 1
+  printf '%s\n' "$(cd "$(dirname "$entry")/.." && pwd)/scripts/lib/node-runtime.sh"
 }
 
 # coord_verify <precommit|prepush>
@@ -46,16 +56,18 @@ coord_cli_entry() {
 # Prepush receives the buffered outgoing ref list on stdin; precommit inspects
 # Git's index. Classification and measurement live in the same CLI as coord.
 coord_verify() {
-  local phase="$1" entry
+  local phase="$1" entry runtime
   entry="$(coord_cli_entry)" || return 1
-  node "$entry" hook-verify --clone "$(git rev-parse --show-toplevel)" --phase "$phase"
+  runtime="$(coord_node_runtime)" || return 1
+  "$runtime" "$entry" hook-verify --clone "$(git rev-parse --show-toplevel)" --phase "$phase"
 }
 
 # coord_scope (legacy installed-hook compatibility only)
 #
 # Current hooks use coord_verify's shared classifier, not this older filter.
 coord_scope() {
-  local entry
+  local entry runtime
   entry="$(coord_cli_entry)" || return 1
-  node "$entry" hook-scope --clone "$(git rev-parse --show-toplevel)"
+  runtime="$(coord_node_runtime)" || return 1
+  "$runtime" "$entry" hook-scope --clone "$(git rev-parse --show-toplevel)"
 }

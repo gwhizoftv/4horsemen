@@ -304,7 +304,10 @@ common_configure_trust() {
     || die "Clone $CLONE_DIR records no coord.installRoot (vendored install?). Folder trust is written by coord install/onboard; re-run that instead."
   [[ -f "$install_root/dist/agentTrust.js" ]] \
     || die "$install_root/dist/agentTrust.js is missing. Rebuild coord there (pnpm build), then re-run this script."
-  node --input-type=module - "$install_root/dist/agentTrust.js" "$AGENT_NAME" "$MASTER_ROOT" "$CLONE_DIR" "$DRY_RUN" <<'NODE'
+  local runtime="$install_root/scripts/lib/node-runtime.sh"
+  [[ -x "$runtime" ]] \
+    || die "$runtime is missing. Restore scripts/lib/node-runtime.sh or re-run bootstrap, then re-run this script."
+  "$runtime" --input-type=module - "$install_root/dist/agentTrust.js" "$AGENT_NAME" "$MASTER_ROOT" "$CLONE_DIR" "$DRY_RUN" <<'NODE'
 import { pathToFileURL } from 'node:url';
 const [modulePath, agent, productRoot, clone, dryRun] = process.argv.slice(2);
 const { syncAgentTrust } = await import(pathToFileURL(modulePath).href);

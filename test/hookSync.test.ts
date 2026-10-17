@@ -1,8 +1,15 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { inspectCloneHooks, readHookManifest, removeCloneHooks, type HookManifest } from "../src/hookSync.js";
+import {
+  canonicalSourceDigest,
+  inspectCloneHooks,
+  readHookManifest,
+  removeCloneHooks,
+  type HookManifest
+} from "../src/hookSync.js";
 import { install, uninstall } from "../src/install.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { initializeOperationalState, mutateCursorsState, readConfig } from "../src/state.js";
@@ -564,5 +571,54 @@ describe("pre-push gates", () => {
     const pushed = tryGit(clone, "push", "origin", "issue-1/claude");
     expect(pushed.exitCode).not.toBe(0);
     expect(`${pushed.stdout}${pushed.stderr}`).toContain("must-fail");
+  });
+
+  it("includes the Node selector in the canonical digest and runs hooks through it", () => {
+    ensureBuilt();
+    const runtime = join(repoRoot, "scripts/lib/node-runtime.sh");
+    const original = readFileSync(runtime, "utf8");
+    const before = canonicalSourceDigest(repoRoot);
+    writeFileSync(runtime, `${original}\n# digest-probe\n`);
+    try {
+      expect(canonicalSourceDigest(repoRoot)).not.toBe(before);
+    } finally {
+      writeFileSync(runtime, original);
+    }
+
+    const { clone } = installed();
+    const entry = git(clone, "config", "--local", "--get", "coord.cliEntry");
+    const discoverEnv = { ...process.env };
+    delete discoverEnv.COORD_NODE;
+    const selected = spawnSync(runtime, ["--print-path"], { encoding: "utf8", env: discoverEnv });
+    expect(selected.status, selected.stderr).toBe(0);
+    const coordNode = selected.stdout.trim();
+    const probe = spawnSync(
+      "bash",
+      [
+        "-c",
+        `
+          set -euo pipefail
+          . "$1"
+          cd "$2"
+          runtime=$(coord_node_runtime)
+          "$runtime" -p 'process.versions.node'
+        `,
+        "_",
+        join(repoRoot, "githooks/lib/policy.sh"),
+        clone
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `/missing-node-bin:/usr/bin:/bin`,
+          COORD_NODE: coordNode,
+          NVM_DIR: join(clone, "empty-nvm")
+        }
+      }
+    );
+    expect(probe.status, probe.stderr).toBe(0);
+    expect(probe.stdout.trim()).toMatch(/^\d+\./);
+    expect(entry).toContain("main.js");
   });
 });

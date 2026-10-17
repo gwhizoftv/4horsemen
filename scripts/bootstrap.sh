@@ -55,9 +55,7 @@ EOF
 done
 
 command -v git >/dev/null 2>&1 || die "Git is required; install git and rerun this command"
-if ! command -v node >/dev/null 2>&1 || ! command -v pnpm >/dev/null 2>&1; then
-  die "Node 26 and pnpm 11 are required; install them, then rerun this command"
-fi
+command -v pnpm >/dev/null 2>&1 || die "pnpm 11 is required; install it, then rerun this command"
 
 case "$root" in
   /*) ;;
@@ -95,9 +93,15 @@ if [ "$created" = true ]; then
 EOF
 fi
 
+# After checkout the shared selector can find Node 26 on PATH or under nvm.
+runtime=$root/scripts/lib/node-runtime.sh
+[ -x "$runtime" ] || die "missing Node selector at $runtime; the checkout is incomplete"
+node_bin=$("$runtime" --print-path) || exit 1
+coord_path="$(dirname "$node_bin"):$PATH"
+
 printf '%s\n' "coord bootstrap: installing dependencies in $root"
-(cd "$root" && pnpm install --frozen-lockfile)
-(cd "$root" && pnpm build)
+(cd "$root" && PATH="$coord_path" pnpm install --frozen-lockfile)
+(cd "$root" && PATH="$coord_path" pnpm build)
 [ -f "$root/dist/main.js" ] || die "build completed without dist/main.js; inspect the pnpm output above"
 
 if [ "$install_path" = true ]; then

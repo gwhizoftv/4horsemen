@@ -24,8 +24,9 @@ them alone. "No hooks for humans" means none *from coordination*.
 
 ## Bootstrap once
 
-With Node 26, pnpm 11 and Git installed, bootstrap from the public URL without
-GitHub CLI authentication to Four Horsemen:
+With Git and pnpm 11 available, and Node 26 installed somewhere the coordinator
+can find it (`PATH`, nvm under `$NVM_DIR`/`~/.nvm`, or `COORD_NODE`), bootstrap
+from the public URL without GitHub CLI authentication to Four Horsemen:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/gwhizoftv/4horsemen/main/scripts/bootstrap.sh | sh
@@ -41,11 +42,20 @@ sh 4horsemen-src/scripts/bootstrap.sh --source "$PWD/4horsemen-src"
 
 The POSIX shell bootstrap clones or updates a complete install at
 `${COORD_INSTALL_ROOT:-$HOME/.local/share/coordination}` (override with
-`--root`), runs `pnpm install --frozen-lockfile` and `pnpm build`, and creates
-the managed `$HOME/.local/bin/coord` symlink unless `--no-path` is set.
-`--source` accepts a local path or git URL. A rerun fast-forwards a clean
-`main` checkout; it refuses dirty, diverged, non-worktree, or foreign launcher
-paths without resetting or deleting anything.
+`--root`), selects a Node >=26 via `scripts/lib/node-runtime.sh` (after the
+checkout exists), runs `pnpm install --frozen-lockfile` and `pnpm build` with
+that Node first on those subprocess PATHs only, and creates the managed
+`$HOME/.local/bin/coord` symlink unless `--no-path` is set. `--source` accepts
+a local path or git URL. A rerun fast-forwards a clean `main` checkout; it
+refuses dirty, diverged, non-worktree, or foreign launcher paths without
+resetting or deleting anything.
+
+The `coord` wrapper uses the same selector before any driver JavaScript loads,
+so a product workspace may keep an older development Node on `PATH`. Set
+`COORD_NODE` to an absolute `node` binary to override discovery. Generated
+credential helpers and agent lifecycle callbacks pin `process.execPath` from
+the install that wrote them; if that Node installation is removed, re-run
+`coord onboard` / `coord install` under a supported runtime to regenerate them.
 
 Only a checkout created by bootstrap receives ownership metadata under its
 `.git/` directory. Building a developer checkout never makes uninstall the
@@ -455,7 +465,8 @@ publication. The journal records which tier failed.
 
 ### Product languages
 
-The driver needs Node 26 and pnpm 11, but the product does not. Installation
+The driver needs Node 26 and pnpm 11, but the product does not; coord selects
+its own Node without rewriting the product's development runtime. Installation
 uses `proposeProjectPolicy` in `src/setupWorkspace.ts` to propose the policy
 below. Cargo and Go keep first priority, followed by existing Node checks and
 a Makefile with a `test` target. New language defaults preserve those working

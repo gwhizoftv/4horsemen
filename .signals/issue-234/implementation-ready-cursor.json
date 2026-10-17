@@ -4,14 +4,27 @@
   "issueSessionId": "issue-234:f11d9e7c2023d294a63a3d380bd65844c2869906",
   "agent": "cursor",
   "inputSetHash": "10ef1262e5862a276966657579858e687a163382c26b49c4863a1f16e56edaa8",
-  "artifact": "plan-amendment-request",
-  "actionId": "38d60675-5022-4622-8827-e148b9a09e4c",
-  "scopeHash": "d3c58d0cc86ae7972b8313b51508ca216b8839138f126a653dc7a3fcd6a60fcf",
-  "explanation": "The selected plan changes src/githubAuth.ts so credential helpers render shell-quoted process.execPath instead of /usr/bin/env node, but its approved test list omits test/mirror.test.ts, which already asserts that exact legacy helper string on every BareMirror Git call.",
-  "additionalPaths": [
-    {
-      "path": "test/mirror.test.ts",
-      "reason": "BareMirror uses gitCredentialArgs from src/githubAuth.ts; test/mirror.test.ts:94 expects !/usr/bin/env node '/coord/dist/main.js' auth git-credential, so following the plan's githubAuth change fails this existing fast test unless that assertion is updated in-scope."
-    }
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "ebefaeac60234c6564763131657eea87272ea9a8",
+  "scopeHash": "0aafcee7e42310d631fcb24bbb79ebf4fd1434a1acc8fb047524338cab15b2cd",
+  "approvedPaths": [
+    "coord/",
+    "docs/setup-workspace.md",
+    "githooks/lib/policy.sh",
+    "scripts/bootstrap.sh",
+    "scripts/lib/node-runtime.sh",
+    "scripts/setup_common.sh",
+    "src/agentHookSync.ts",
+    "src/claudeStatusLine.ts",
+    "src/githubAuth.ts",
+    "src/hookSync.ts",
+    "src/install.ts",
+    "test/agentHookSync.test.ts",
+    "test/bootstrap.test.ts",
+    "test/githubAuth.test.ts",
+    "test/hookSync.test.ts",
+    "test/install.test.ts",
+    "test/mirror.test.ts",
+    "test/wrapper.test.ts"
   ]
 }

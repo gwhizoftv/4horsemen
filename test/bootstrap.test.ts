@@ -50,17 +50,27 @@ const fixture = (): BootstrapFixture => {
   writeFileSync(join(source, ".gitignore"), "dist/\n");
   writeFileSync(join(source, "coord"), "#!/bin/sh\nexit 0\n");
   chmodSync(join(source, "coord"), 0o755);
-  git(source, "add", ".gitignore", "package.json", "pnpm-lock.yaml", "coord");
+  mkdirSync(join(source, "scripts/lib"), { recursive: true });
+  writeFileSync(
+    join(source, "scripts/lib/node-runtime.sh"),
+    readFileSync(join(repoRoot, "scripts/lib/node-runtime.sh"), "utf8"),
+    { mode: 0o755 }
+  );
+  chmodSync(join(source, "scripts/lib/node-runtime.sh"), 0o755);
+  git(source, "add", ".gitignore", "package.json", "pnpm-lock.yaml", "coord", "scripts/lib/node-runtime.sh");
   git(source, "commit", "-qm", "initial");
   git(source, "remote", "add", "origin", origin);
   git(source, "push", "-q", "-u", "origin", "main");
 
-  writeFileSync(join(fakeBin, "node"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(
+    join(fakeBin, "node"),
+    "#!/bin/sh\nif [ \"$1\" = \"--version\" ] || [ \"$1\" = \"-v\" ]; then printf 'v26.0.0\\n'; exit 0; fi\nexit 0\n"
+  );
   chmodSync(join(fakeBin, "node"), 0o755);
   writeFileSync(
     join(fakeBin, "pnpm"),
     "#!/bin/sh\n" +
-      "printf '%s\\n' \"$*\" >>\"$BOOTSTRAP_PNPM_LOG\"\n" +
+      "printf '%s\\n' \"node=$(command -v node) $*\" >>\"$BOOTSTRAP_PNPM_LOG\"\n" +
       "if [ \"${1:-}\" = build ]; then mkdir -p dist; printf 'built\\n' >dist/main.js; fi\n"
   );
   chmodSync(join(fakeBin, "pnpm"), 0o755);
@@ -71,12 +81,18 @@ const fixture = (): BootstrapFixture => {
     home,
     fakeBin,
     pnpmLog,
-    env: {
-      ...process.env,
-      HOME: home,
-      PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
-      BOOTSTRAP_PNPM_LOG: pnpmLog
-    }
+    env: (() => {
+      const rest = { ...process.env };
+      delete rest.COORD_NODE;
+      delete rest.NVM_DIR;
+      return {
+        ...rest,
+        HOME: home,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        BOOTSTRAP_PNPM_LOG: pnpmLog,
+        NVM_DIR: join(root, "unused-nvm")
+      };
+    })()
   };
 };
 
@@ -99,8 +115,8 @@ describe("coord bootstrap", () => {
     expect(existsSync(join(installRoot, "dist", "main.js"))).toBe(true);
     expect(existsSync(ignoredRoot)).toBe(false);
     expect(readFileSync(input.pnpmLog, "utf8").trim().split("\n")).toEqual([
-      "install --frozen-lockfile",
-      "build"
+      `node=${join(input.fakeBin, "node")} install --frozen-lockfile`,
+      `node=${join(input.fakeBin, "node")} build`
     ]);
     expect(readFileSync(join(installRoot, ".git", "coord-bootstrap.json"), "utf8")).toContain(
       '"ownsInstallRoot": true'
@@ -153,11 +169,26 @@ describe("coord bootstrap", () => {
     expect(foreign.stderr).toContain("already exists and is not the managed link");
     expect(readlinkSync(launcher)).toBe("/foreign/coord");
 
-    const missing = bootstrap(input, ["--root", join(input.root, "missing-tools"), "--source", input.origin], {
+    const missingPnpm = bootstrap(input, ["--root", join(input.root, "missing-tools"), "--source", input.origin], {
       ...input.env,
       PATH: "/usr/bin:/bin"
     });
-    expect(missing.status).not.toBe(0);
-    expect(missing.stderr).toContain("Node 26 and pnpm 11 are required");
+    expect(missingPnpm.status).not.toBe(0);
+    expect(missingPnpm.stderr).toContain("pnpm 11 is required");
+
+    writeFileSync(
+      join(input.fakeBin, "node"),
+      "#!/bin/sh\nif [ \"$1\" = \"--version\" ] || [ \"$1\" = \"-v\" ]; then printf 'v16.18.0\\n'; exit 0; fi\nexit 0\n"
+    );
+    chmodSync(join(input.fakeBin, "node"), 0o755);
+    const oldNode = bootstrap(input, ["--root", join(input.root, "old-node"), "--source", input.origin], {
+      ...input.env,
+      PATH: `${input.fakeBin}:/usr/bin:/bin`,
+      NVM_DIR: join(input.root, "empty-nvm"),
+      COORD_NODE: undefined
+    });
+    expect(oldNode.status).not.toBe(0);
+    expect(oldNode.stderr).toMatch(/Node >=26/);
+    expect(existsSync(join(input.root, "old-node", "dist", "main.js"))).toBe(false);
   });
 });

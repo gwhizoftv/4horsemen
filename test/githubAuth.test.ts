@@ -1,5 +1,10 @@
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  gitCredentialHelperCommand,
   gitCredentialResponse,
   verifyGitHubAccess,
   withGitHubAccount
@@ -56,7 +61,7 @@ describe("GitHub account binding", () => {
     expect(calls.at(-1)!.argv).toEqual([
       "git",
       "-c", "credential.https://github.com.helper=",
-      "-c", "credential.https://github.com.helper=!/usr/bin/env node '/coord/dist/main.js' auth git-credential --account acct",
+      "-c", `credential.https://github.com.helper=${gitCredentialHelperCommand("acct", "/coord/dist/main.js")}`,
       "ls-remote", "origin"
     ]);
 
@@ -91,6 +96,27 @@ describe("GitHub account binding", () => {
       .rejects.toThrow("GitHub account acct cannot access acme/app: HTTP 404: Not Found.");
     await expect(verifyGitHubAccess({ account: "acct", origin: "git@github.com:acme/app.git", cwd: "/work",
       runner: fakeRunner({ token: "tok" }).runner })).rejects.toThrow("needs an https://github.com/");
+  });
+
+  it("pins credential helpers to process.execPath rather than PATH node", () => {
+    const helper = gitCredentialHelperCommand("acct", "/coord/dist/main.js");
+    expect(helper).toContain(process.execPath);
+    expect(helper).not.toContain("/usr/bin/env node");
+
+    const root = mkdtempSync(join(tmpdir(), "coord-cred-node-"));
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "node"), "#!/bin/sh\nprintf 'AMBIENT_NODE\\n' >&2\nexit 99\n", { mode: 0o700 });
+    chmodSync(join(bin, "node"), 0o700);
+    const quoted = `'${process.execPath.replaceAll("'", "'\\''")}'`;
+    const result = spawnSync("sh", ["-c", `${quoted} -e "process.stdout.write('pinned')"`], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` }
+    });
+    rmSync(root, { recursive: true, force: true });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("pinned");
+    expect(result.stderr).not.toContain("AMBIENT_NODE");
   });
 
   it("answers Git's credential protocol only for github.com https, and stops Git on failure", async () => {

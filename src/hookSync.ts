@@ -1,5 +1,5 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { z } from "zod";
 import { sha256, sha256OfFile } from "./hash.js";
 import { git, gitDir, localConfigGet, localConfigUnset } from "./gitExec.js";
@@ -162,7 +162,8 @@ export const canonicalSourceDigest = (installRoot: string): string => {
     ["githooks/lib/identity.sh", bodyPath(installRoot, "lib/identity.sh")] as const,
     ["githooks/lib/policy.sh", bodyPath(installRoot, "lib/policy.sh")] as const,
     ["templates/hooks/shim.sh", shimTemplatePath(installRoot)] as const,
-    ["scripts/lib/launcher.sh", launcherLibraryPath(installRoot)] as const
+    ["scripts/lib/launcher.sh", launcherLibraryPath(installRoot)] as const,
+    ["scripts/lib/node-runtime.sh", resolve(installRoot, "scripts/lib/node-runtime.sh")] as const
   ];
   const canonical = sources
     .map(([id, path]) => `${id}:${sha256OfFile(path)}`)
