@@ -304,8 +304,12 @@ const logProjectPolicy = (
   }
   if (effectiveCommands.some((check) => check.argv[0] === "flutter")) {
     lines.push("  Flutter commands require the Flutter SDK and prepared product dependencies.");
-    if (effectiveCommands.some((check) => check.argv[0] === "flutter" && check.argv.includes("--no-fatal-infos"))) {
-      lines.push("  --no-fatal-infos leaves analyzer warnings and errors fatal; informational diagnostics do not block.");
+    const analyze = effectiveCommands.filter((check) => check.argv[0] === "flutter" && check.argv[1] === "analyze");
+    // Keep the shared explanation accurate when a declaration makes one stage stricter.
+    if (analyze.length > 0 && analyze.every((check) => check.argv.includes("--no-fatal-infos"))) {
+      lines.push(analyze.every((check) => check.argv.includes("--no-fatal-warnings"))
+        ? "  --no-fatal-infos --no-fatal-warnings leave only analyzer errors fatal; warnings and informational diagnostics do not block."
+        : "  --no-fatal-infos leaves analyzer warnings and errors fatal; informational diagnostics do not block.");
     }
   }
   lines.push("  Use --declare <file.json> to override policy fields; keep that declaration for reinstalls.");
