@@ -182,7 +182,7 @@ describe("installer proposals", () => {
       writeFileSync(join(root, "pubspec.yaml"), String(manifest));
       const proposal = proposeProjectPolicy(root);
       if (flutter) {
-        const analyze = { name: "analyze", argv: ["flutter", "analyze", "--no-fatal-infos"] };
+        const analyze = { name: "analyze", argv: ["flutter", "analyze", "--no-fatal-infos", "--no-fatal-warnings"] };
         const test = { name: "test", argv: ["flutter", "test"] };
         expect(proposal).toEqual({
           toolchain: "flutter", verify: { precommit: [analyze], prepush: [test] }, checks: [analyze, test],
