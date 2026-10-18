@@ -1,0 +1,34 @@
+{
+  "actionId": "df4d14df-c43e-4fff-bf79-2d4feb103f90",
+  "agent": "antigravity",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "94b0da3d60ef3dc5e05b1019b81afb19b6396462",
+      "path": ".signals/issue-238/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "6f585a13e6c88058c917d6c725f37e6092475c05",
+      "path": ".signals/issue-238/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "0968ef2b00bd7fa79c910360dc037d2906b1a39b",
+      "path": ".signals/issue-238/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "b454bb3430e636f3144d19e59b169043b8ab8fd1",
+      "path": ".signals/issue-238/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "d779d75c4bee55e8f6c62c645dbb9d35ab6654432023974f2e16448f5e790f04",
+  "issue": 238,
+  "issueSessionId": "issue-238:3e4c5dc8e1e565745e5a8528f4e4b3dcd204e0ff",
+  "protocolVersion": 2,
+  "rationale": "Codex's implementation at 0968ef2b00bd7fa79c910360dc037d2906b1a39b stays within the five approved files, checks that every flutter analyze command includes --no-fatal-infos before claiming informational diagnostics do not block and --no-fatal-warnings before claiming warnings do not block, and tests both --no-fatal-infos-only and plain flutter analyze overrides.",
+  "responseSha256": "d4476c8deee03d40f7cf8e0567416c96998b27ebc5ac3d2ccc9eb6721c72b3e3"
+}

@@ -1,0 +1,34 @@
+{
+  "actionId": "264f14f8-41ac-4e23-b806-b48c57a34076",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "94b0da3d60ef3dc5e05b1019b81afb19b6396462",
+      "path": ".signals/issue-238/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "6f585a13e6c88058c917d6c725f37e6092475c05",
+      "path": ".signals/issue-238/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "0968ef2b00bd7fa79c910360dc037d2906b1a39b",
+      "path": ".signals/issue-238/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "b454bb3430e636f3144d19e59b169043b8ab8fd1",
+      "path": ".signals/issue-238/implementation-ready-cursor.json"
+    }
+  ],
+  "inputSetHash": "d779d75c4bee55e8f6c62c645dbb9d35ab6654432023974f2e16448f5e790f04",
+  "issue": 238,
+  "issueSessionId": "issue-238:3e4c5dc8e1e565745e5a8528f4e4b3dcd204e0ff",
+  "protocolVersion": 2,
+  "rationale": "Codex at 0968ef2b00bd7fa79c910360dc037d2906b1a39b implements the requested shared Flutter analyzer defaults within the five-file scope, reuses existing tests with focused stricter-declaration coverage, and avoids the misleading severity summaries reproduced in the other three candidates.",
+  "responseSha256": "00008b49611e97d4872f2be0377438b03cddea02695e3331efbe81a68ef393b3"
+}
