@@ -1,0 +1,56 @@
+{
+  "actionId": "9e44ce73-4744-4f33-b56e-b4b3d46b9e8d",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "7da819ec5425a76cb35e8d21bcf04db3efdecac4f91cbb11944b99bfaa052e81",
+  "issue": 238,
+  "issueSessionId": "issue-238:3e4c5dc8e1e565745e5a8528f4e4b3dcd204e0ff",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "0cc8e654282591984cea541cf79a18106ade04f1",
+      "path": ".plans/issue-238/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "9f7d9207003e367a3fcc7df2f7c4ee7c5d5d1b7e",
+      "path": ".plans/issue-238/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "baccd4b9c16a97f2f3715377d7d7d9521e18cc90",
+      "path": ".plans/issue-238/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "906c261150c48bfe2671010c4a2b1ef6425d9b4d",
+      "path": ".plans/issue-238/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex's plan is the only one whose extracted approved map is exactly the five issue files (I re-ran extractApprovedPaths: claude's adds dist/ and stray tokens, cursor and antigravity add non-file tokens) and whose install explanation stays accurate for mixed and warnings-only declarations, where claude's filter misreports a plain strict finalization analyze and antigravity's warnings-only text is false; its extra flag handling is broader than necessary but correct and within the issue's 'reflect whether warnings are fatal' requirement.",
+  "responseSha256": "b564bac135673d9a9fd10675377dfc280f5a581943ab98b9ccdcc3167f018bd2",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "ecd40f92c9f8a1855af78b4ecf558e386f6d69b2",
+      "path": ".plans/issue-238/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "19eefd05c998b12f43054200f1e92fc1ef2a3e54",
+      "path": ".plans/issue-238/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "0d2512948caecbea2c4ba1830273766d4b605ef2",
+      "path": ".plans/issue-238/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "fe2764f1631b84c63467cde27d2732d98786da4c",
+      "path": ".plans/issue-238/review.md"
+    }
+  ]
+}

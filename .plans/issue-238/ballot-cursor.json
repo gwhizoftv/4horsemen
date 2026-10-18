@@ -1,0 +1,56 @@
+{
+  "actionId": "7091fa3b-b11e-4fbf-bf54-67bd161eef4c",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "7da819ec5425a76cb35e8d21bcf04db3efdecac4f91cbb11944b99bfaa052e81",
+  "issue": 238,
+  "issueSessionId": "issue-238:3e4c5dc8e1e565745e5a8528f4e4b3dcd204e0ff",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "0cc8e654282591984cea541cf79a18106ade04f1",
+      "path": ".plans/issue-238/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "9f7d9207003e367a3fcc7df2f7c4ee7c5d5d1b7e",
+      "path": ".plans/issue-238/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "baccd4b9c16a97f2f3715377d7d7d9521e18cc90",
+      "path": ".plans/issue-238/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "906c261150c48bfe2671010c4a2b1ef6425d9b4d",
+      "path": ".plans/issue-238/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude alone among eligible plans pairs the shared analyze argv edit with a minimal every-based install explanation and one declared infos-only onboard assertion, without Codex’s flag parser or Antigravity’s false warnings-only branch.",
+  "responseSha256": "40bd8a13401126e3d10bfb2c202cef9fb53705fdc9be00ac282111736d919ed8",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "ecd40f92c9f8a1855af78b4ecf558e386f6d69b2",
+      "path": ".plans/issue-238/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "19eefd05c998b12f43054200f1e92fc1ef2a3e54",
+      "path": ".plans/issue-238/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "0d2512948caecbea2c4ba1830273766d4b605ef2",
+      "path": ".plans/issue-238/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "fe2764f1631b84c63467cde27d2732d98786da4c",
+      "path": ".plans/issue-238/review.md"
+    }
+  ]
+}
