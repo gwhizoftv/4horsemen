@@ -1,0 +1,22 @@
+{
+  "protocolVersion": 1,
+  "issue": 238,
+  "issueSessionId": "issue-238:3e4c5dc8e1e565745e5a8528f4e4b3dcd204e0ff",
+  "agent": "antigravity",
+  "inputSetHash": "952787ab1f5f0ccdd8f871278d9dda7ba557a6a0b92ff2f2ca99e5fea25c6b67",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "94b0da3d60ef3dc5e05b1019b81afb19b6396462",
+  "scopeHash": "43bb5b1a51a4dfcd433cabf1cf2b4bd5a9b245534745f3e4463b905728a873ec",
+  "approvedPaths": [
+    "analyze.argv",
+    "dist/",
+    "docs/setup-workspace.md",
+    "install.ts",
+    "it.each",
+    "src/install.ts",
+    "src/setupWorkspace.ts",
+    "test/onboard.test.ts",
+    "test/verify-config.test.ts",
+    "verify.precommit"
+  ]
+}
