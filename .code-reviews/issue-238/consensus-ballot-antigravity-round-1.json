@@ -1,0 +1,14 @@
+{
+  "actionId": "6fd6e095-f706-4b40-9319-da9f83561957",
+  "agent": "antigravity",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "818d92e14665fd0f64e68da723824752d1253f67663bea7d26a78b1893361737",
+  "issue": 238,
+  "issueSessionId": "issue-238:3e4c5dc8e1e565745e5a8528f4e4b3dcd204e0ff",
+  "protocolVersion": 2,
+  "rationale": "Codex's revision at 0968ef2b00bd7fa79c910360dc037d2906b1a39b accurately updates the Flutter analyze default to include --no-fatal-warnings, makes the install explanation reflect whether warnings and informational diagnostics remain fatal across all effective analyze gates, and covers the default and declared-strict cases in tests and docs.",
+  "responseSha256": "0a4e81e563ef4f5194f38a0f5f0c42d47b1d684b2e7b31e2999a28fd357554e0",
+  "revisionCommitSha": "0968ef2b00bd7fa79c910360dc037d2906b1a39b",
+  "round": 1
+}

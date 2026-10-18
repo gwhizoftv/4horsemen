@@ -1,0 +1,14 @@
+{
+  "actionId": "0f416bcb-e0dd-4580-a164-ba21d4adc59e",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "818d92e14665fd0f64e68da723824752d1253f67663bea7d26a78b1893361737",
+  "issue": 238,
+  "issueSessionId": "issue-238:3e4c5dc8e1e565745e5a8528f4e4b3dcd204e0ff",
+  "protocolVersion": 2,
+  "rationale": "Codex pin 0968ef2b delivers the shared Flutter analyze argv, keeps flutter test unchanged, and correctly avoids mislabeling a plain analyze finalization beside a relaxed precommit.",
+  "responseSha256": "ef23b8de3f773dd946e44fc515b706d64d86bcf3a6ad73dc49cec988d576cf01",
+  "revisionCommitSha": "0968ef2b00bd7fa79c910360dc037d2906b1a39b",
+  "round": 1
+}

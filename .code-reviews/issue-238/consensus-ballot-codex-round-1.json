@@ -1,0 +1,14 @@
+{
+  "actionId": "10707134-7a90-447b-bdcc-e1d449274943",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "818d92e14665fd0f64e68da723824752d1253f67663bea7d26a78b1893361737",
+  "issue": 238,
+  "issueSessionId": "issue-238:3e4c5dc8e1e565745e5a8528f4e4b3dcd204e0ff",
+  "protocolVersion": 2,
+  "rationale": "Approve unchanged revision 0968ef2b00bd7fa79c910360dc037d2906b1a39b because it applies both nonfatal analyzer flags to the shared default, preserves stricter declarations without misleading summaries, stays within the approved scope, and retains the reviewed focused coverage and successful recorded hook checks.",
+  "responseSha256": "bd71817659c9837f23fcfc666f47af797117db125a26b247949b1d6b1ae7ecc6",
+  "revisionCommitSha": "0968ef2b00bd7fa79c910360dc037d2906b1a39b",
+  "round": 1
+}
