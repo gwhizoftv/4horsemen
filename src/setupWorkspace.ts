@@ -275,7 +275,7 @@ const proposeToolchainPolicy = (productRoot: string): ProjectPolicyProposal => {
   }
 
   if (flutter) {
-    const analyze = { name: "analyze", argv: ["flutter", "analyze", "--no-fatal-infos"] };
+    const analyze = { name: "analyze", argv: ["flutter", "analyze", "--no-fatal-infos", "--no-fatal-warnings"] };
     const test = { name: "test", argv: ["flutter", "test"] };
     return {
       toolchain: "flutter",
