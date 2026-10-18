@@ -542,7 +542,7 @@ need an explicit declaration instead.
 | `go.mod` | `go` | `go vet ./...` / `go test ./...` | `go build ./...`, `go test ./...` |
 | `package.json` | `pnpm`, `yarn`, or `npm` (lockfile-selected) | first existing `check:fast`, `check`, `lint` / existing `test:e2e` | first existing `check`, `test` |
 | `test` target in `Makefile` | `make` | `make check` if present / none | `make test` |
-| Flutter SDK dependency in `pubspec.yaml` | `flutter` | `flutter analyze --no-fatal-infos` / `flutter test` | analyze, then test, with the same arguments |
+| Flutter SDK dependency in `pubspec.yaml` | `flutter` | `flutter analyze --no-fatal-infos --no-fatal-warnings` / `flutter test` | analyze, then test, with the same arguments |
 | `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt` | `python` | `pytest -q` / none | `pytest -q` |
 | other recognized targets in `Makefile` | `make` | `make check` if present / none | no inference; supply `--declare` |
 | none of these | unspecified | no inference | no inference; supply `--declare` |
@@ -576,9 +576,10 @@ Flutter detection reads the YAML dependency mappings, including quoted values,
 comments, and inline mappings. It recognizes a Flutter SDK dependency named
 `flutter`, or a development dependency named `flutter` or `flutter_test` with
 `sdk: flutter`. A plain Dart pubspec or descriptive text mentioning Flutter
-does not select the Flutter SDK. The analyzer default leaves warnings and
-errors fatal while allowing informational diagnostics; declare `flutter analyze`
-without `--no-fatal-infos` to enforce those too. The default requires the Flutter
+does not select the Flutter SDK. The analyzer default fails only on errors;
+warnings and informational diagnostics do not block. Declare `flutter analyze`
+without `--no-fatal-warnings` and/or `--no-fatal-infos` to make warnings and
+infos fatal again. The default requires the Flutter
 SDK, prepared project dependencies, and runnable tests; it does not select an
 emulator, device, or platform build target.
 
