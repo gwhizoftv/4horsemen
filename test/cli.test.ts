@@ -345,33 +345,45 @@ describe("fresh-start agent maintenance", () => {
     expect(readFileSync(paths.start, "utf8")).toBe(before);
   });
 
-  it.each(["codex", "antigravity"])("updates and launches the same %s installation after nvm setup", async (id) => {
+  it.each(["codex", "antigravity", "claude", "cursor"])("updates and launches the same %s installation after nvm setup", async (id) => {
+    ensureBuilt();
     const f = setup();
-    const clone = join(f.root, "clone-codex");
+    const clone = join(f.root, `clone-${id}`);
     const home = join(f.root, "home"), nvm = join(home, ".nvm");
-    const ownerBin = join(f.root, "owner bin"), pinnedBin = join(f.root, "pinned bin"), localBin = join(home, ".local/bin");
-    for (const dir of [nvm, ownerBin, pinnedBin, localBin]) mkdirSync(dir, { recursive: true });
-    const executable = id === "codex" ? "codex" : "agy";
+    const ownerBin = join(f.root, "owner bin"), pinnedBin = join(f.root, "pinned bin");
+    const localBin = join(home, ".local/bin"), coordBin = join(f.root, "coord bin");
+    for (const dir of [nvm, ownerBin, pinnedBin, localBin, coordBin, clone]) mkdirSync(dir, { recursive: true });
+    const executable = id === "cursor" ? "agent" : id === "antigravity" ? "agy" : id;
     const log = join(f.root, "vendor.log");
-    for (const [dir, label] of [[ownerBin, "owner"], [pinnedBin, "pinned"], [localBin, "home"]]) {
-      writeFileSync(join(dir!, executable), `#!/bin/sh\nprintf '%s|%s\\n' '${label}' "$*" >> "$VENDOR_LOG"\n` +
-        `if [ "$1" = --version ]; then printf '%s\\n' '${label}-version'; fi\n`, { mode: 0o700 });
+    const stub = (label: string): string =>
+      `printf '%s|%s\\n' '${label}' "$*" >> "$VENDOR_LOG"\n` +
+      `if [ "$1" = --version ]; then printf '%s\\n' '${label}-version'; fi\n`;
+    for (const [dir, label] of [[ownerBin, "owner"], [pinnedBin, "pinned"], [localBin, "home"]] as const) {
+      writeFileSync(join(dir, executable), `#!/bin/sh\n${stub(label)}`, { mode: 0o700 });
     }
+    writeFileSync(join(coordBin, executable), `#!/usr/bin/env node\n${stub("coord")}`, { mode: 0o700 });
+    writeFileSync(join(coordBin, "node"), "#!/bin/sh\nif [ \"$1\" = --version ]; then echo v26.1.0; exit 0; fi\nexec /bin/sh \"$@\"\n", { mode: 0o700 });
     writeFileSync(join(pinnedBin, "node"), "#!/bin/sh\necho fixture-node\n", { mode: 0o700 });
     writeFileSync(join(nvm, "nvm.sh"), 'nvm() { export PATH="$PINNED_BIN:$PATH"; echo "nvm setup noise"; }\n');
     writeFileSync(join(clone, ".nvmrc"), "fixture-node\n");
     writeAgentLauncher({ installRoot: repoRoot, clone, agent: id, label: id, baseBranch: "main", options: effectOptions(() => undefined, false) });
+    fixtureGit(clone, "init", "-q");
+    fixtureGit(clone, "add", "-A");
+    fixtureGit(clone, "commit", "-q", "-m", "fixture");
+    fixtureGit(clone, "config", "coord.cliEntry", join(repoRoot, "dist/main.js"));
     const config = JSON.parse(readFileSync(f.configPath, "utf8"));
     config.agents = [{ id, root: clone, launcher: `start-${id}.sh` }];
     writeFileSync(f.configPath, JSON.stringify(config));
-    const env = { ...process.env, HOME: home, NVM_DIR: nvm, PINNED_BIN: pinnedBin,
-      PATH: `${ownerBin}:/usr/bin:/bin`, VENDOR_LOG: log, COORD_ISSUE: "" };
+    const env = {
+      ...process.env, HOME: home, NVM_DIR: nvm, PINNED_BIN: pinnedBin, COORD_NODE: join(coordBin, "node"),
+      PATH: `${ownerBin}:/usr/bin:/bin`, VENDOR_LOG: log, COORD_ISSUE: ""
+    };
     expect(await runCli(["start", "1", "--config", f.configPath, "--coord-runtime", f.runtime], {
       makeRunLoop: fakeLoop, io: { env, stdout: () => undefined },
       processRunner: (argv, cwd, options) => argv[3] === "coord-agent-maintenance" ? runArgv(argv, cwd, options) : successfulStartGit(argv)
     })).toBe(0);
     execFileSync("/bin/bash", [join(clone, `start-${id}.sh`)], { cwd: clone, env, stdio: "pipe" });
-    const label = id === "codex" ? "pinned" : "home";
+    const label = id === "antigravity" ? "home" : "coord";
     const lines = readFileSync(log, "utf8").trim().split("\n");
     expect(lines.slice(0, 2)).toEqual([`${label}|update`, `${label}|--version`]);
     expect(lines).toHaveLength(3);

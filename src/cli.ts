@@ -175,7 +175,8 @@ const updateAgentVersions = async (
     const { executable } = agentExecutables.get(agent.id)!;
     try {
       const result = await runner([
-        "bash", "-c", 'set -euo pipefail\n. "$1"\nlauncher_environment "$2" >/dev/null\nshift 2\nexec "$@"',
+        "bash", "-c",
+        'set -euo pipefail\n. "$1"\nlauncher_environment "$2" "$3" >/dev/null\nshift 3\nexec "${coord_agent_cmd[@]}" "$@"',
         "coord-agent-maintenance", resolve(coordinatorSourceRoot, "scripts/lib/launcher.sh"), agent.id, executable, step
       ], agent.root, { timeoutMs: step === "update" ? AGENT_UPDATE_TIMEOUT_MS : AGENT_VERSION_TIMEOUT_MS, env: io.env });
       if (result.exitCode === 0) return result;

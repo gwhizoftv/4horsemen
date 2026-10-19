@@ -14,9 +14,66 @@
 # A second copy of this template drifted from the first within a day of being
 # written. Keep both callers on these functions.
 
+# Map agent id → vendor executable name (generation-time and docs).
+launcher_executable() {
+  case "$1" in
+    cursor) printf '%s\n' agent ;;
+    antigravity) printf '%s\n' agy ;;
+    claude|codex|gemini|muse) printf '%s\n' "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
 # Shared by generated launchers and coord's fresh-start maintenance command.
-# A clone's .nvmrc can select a different global CLI from coord's own PATH.
+# Resolve the vendor CLI beside coord's Node before the product's .nvmrc can
+# put an older Node (and its global shims) first on PATH. Product nvm use still
+# runs afterward so agent children keep the product pin.
+# Usage: launcher_environment <agent> <executable>
 launcher_environment() {
+  local agent="$1" executable="$2"
+  local entry="" selector="" coord_node="" coord_node_bin="" search bin first
+  local pre_nvm_path="$PATH"
+
+  entry="$(git config --local --get coord.cliEntry 2>/dev/null || true)"
+  if [[ -n "$entry" && -f "$entry" ]]; then
+    selector="$(dirname "$entry")/../scripts/lib/node-runtime.sh"
+    if [[ -x "$selector" ]]; then
+      if coord_node="$("$selector" --resolve 2>/dev/null)" && [[ -n "$coord_node" ]]; then
+        coord_node_bin="$(dirname "$coord_node")"
+      else
+        echo "WARNING: coord Node selector failed for $entry; resolving $executable on the pre-nvm PATH." >&2
+      fi
+    else
+      echo "WARNING: coord Node selector missing beside $entry; resolving $executable on the pre-nvm PATH." >&2
+    fi
+  fi
+
+  if [[ "$agent" == antigravity || "$agent" == muse ]]; then
+    if [[ -n "$coord_node_bin" ]]; then
+      search="$HOME/.local/bin:$coord_node_bin:$pre_nvm_path"
+    else
+      search="$HOME/.local/bin:$pre_nvm_path"
+    fi
+  elif [[ -n "$coord_node_bin" ]]; then
+    search="$coord_node_bin:$pre_nvm_path"
+  else
+    search="$pre_nvm_path"
+  fi
+
+  bin="$(PATH="$search" command -v "$executable" || true)"
+  if [[ -z "$bin" ]]; then
+    echo "ERROR: $executable was not found beside coord's Node (${coord_node_bin:-none}) or on PATH" >&2
+    return 1
+  fi
+
+  coord_agent_cmd=("$bin")
+  if [[ -n "$coord_node" ]]; then
+    first="$(head -c 128 "$bin" 2>/dev/null | head -n 1 || true)"
+    case "$first" in
+      "#!"*node*) coord_agent_cmd=("$coord_node" "$bin") ;;
+    esac
+  fi
+
   if [[ -f .nvmrc ]]; then
     export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
     if [[ ! -s "$NVM_DIR/nvm.sh" ]]; then
@@ -27,10 +84,10 @@ launcher_environment() {
     nvm use
     echo "Node: $(node --version)"
   fi
-  if [[ "$1" == antigravity || "$1" == muse ]]; then
+  if [[ "$agent" == antigravity || "$agent" == muse ]]; then
     export PATH="$HOME/.local/bin:$PATH"
   fi
-  if [[ "$1" == muse ]]; then
+  if [[ "$agent" == muse ]]; then
     export MUSE_NO_AUTO_UPDATE=1
   fi
 }
@@ -49,7 +106,7 @@ launcher_environment() {
 launcher_command() {
   case "$1" in
     claude)
-      printf 'exec claude --permission-mode auto ${coord_grant[@]+"${coord_grant[@]}"}\n'
+      printf 'exec "${coord_agent_cmd[@]}" --permission-mode auto ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     codex)
       # The completion receipt now lives in the mailbox, which is granted
@@ -61,7 +118,7 @@ launcher_command() {
       # COORD_ISSUE of whichever launch started it, not this pane's (issue 186).
       # coord start updates before launch; never self-update inside the pane.
       # Inline mode keeps output in tmux history for mouse scrolling.
-      printf 'exec codex -c check_for_update_on_startup=false -c tui.vim_mode_default=false --ask-for-approval never --sandbox workspace-write --no-alt-screen --no-daemon ${coord_grant[@]+"${coord_grant[@]}"}\n'
+      printf 'exec "${coord_agent_cmd[@]}" -c check_for_update_on_startup=false -c tui.vim_mode_default=false --ask-for-approval never --sandbox workspace-write --no-alt-screen --no-daemon ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     antigravity)
       # agy installs into ~/.local/bin, which a login shell does not always
@@ -82,12 +139,12 @@ launcher_command() {
       # also contradicts --dangerously-skip-permissions on the same line. The
       # add-dir below is therefore advisory for this vendor until the sandbox
       # can be verified against a real agy run that pushes.
-      printf 'exec agy --mode accept-edits --dangerously-skip-permissions ${coord_grant[@]+"${coord_grant[@]}"}\n'
+      printf 'exec "${coord_agent_cmd[@]}" --mode accept-edits --dangerously-skip-permissions ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     gemini)
       # No mailbox grant: gemini is not a configured coordination harness and
       # has no completion receipt to write.
-      printf 'exec gemini\n'
+      printf 'exec "${coord_agent_cmd[@]}"\n'
       ;;
     muse)
       # Automatic participant without lifecycle hooks: Muse's sandbox protects .git, blocking the
@@ -96,14 +153,14 @@ launcher_command() {
       # This permits writes anywhere the owner can write, including receipts;
       # Muse has no --add-dir, so do not pass coord_grant. The PATH Git shim is
       # still installed, but native hooks and live containment are unverified.
-      printf 'exec muse --approval-mode never --disable-sandbox --trust-workspace\n'
+      printf 'exec "${coord_agent_cmd[@]}" --approval-mode never --disable-sandbox --trust-workspace\n'
       ;;
     cursor)
       # --add-dir only means something if the harness is sandboxed: an
       # unsandboxed agent can already write anywhere, so the narrow grant would
       # be decoration. `agent --sandbox` documents the exact choices
       # enabled|disabled, so state it rather than relying on the vendor default.
-      printf 'if (( ${#coord_grant[@]} > 0 )); then\n  exec agent --sandbox enabled "${coord_grant[@]}"\nelse\n  exec agent\nfi\n'
+      printf 'if (( ${#coord_grant[@]} > 0 )); then\n  exec "${coord_agent_cmd[@]}" --sandbox enabled "${coord_grant[@]}"\nelse\n  exec "${coord_agent_cmd[@]}"\nfi\n'
       ;;
     *)
       return 1
@@ -346,9 +403,10 @@ COORD_GIT_WRAPPER
 # COORD_ISSUE, which coordination exports on the tmux session before the harness
 # starts.
 write_launcher() {
-  local path="$1" agent="$2" label="$3" shared="$4" command
+  local path="$1" agent="$2" label="$3" shared="$4" command executable
 
   command="$(launcher_command "$agent")" || return 1
+  executable="$(launcher_executable "$agent")" || return 1
 
   # cd by script location, not by a baked-in absolute path: a clone that moves
   # keeps working, and the file stays free of machine-specific state.
@@ -365,7 +423,7 @@ set -euo pipefail
 cd "\$(dirname "\${BASH_SOURCE[0]}")"
 
 $(declare -f launcher_environment)
-launcher_environment "$agent"
+launcher_environment "$agent" "$executable"
 
 # Prefer pnpm via Corepack when this is a pnpm repo.
 if [[ -f pnpm-lock.yaml ]] && command -v corepack >/dev/null; then
