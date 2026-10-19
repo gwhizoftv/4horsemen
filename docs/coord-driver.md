@@ -313,12 +313,16 @@ the clone's Node pin. They use the Node >=26 selector beside the clone's recorde
 over the inherited PATH; Antigravity and Muse still prefer `~/.local/bin`.
 An installation reachable only through the product's nvm pin remains a final
 fallback. Both paths execute the resolved vendor by absolute path, and standard
-Node-shebang CLIs use coordination's Node explicitly. Maintenance also puts that
+Node-shebang CLIs use coordination's Node explicitly. Direct `.../node` shebangs
+retain their optional interpreter argument; `/usr/bin/env -S node ...` retains
+its flags and `env`'s argument quoting and expansion. Maintenance also puts that
 Node first on its child PATH so updater subprocesses use it. Interactive agent
 children keep the product PATH and Node pin for development commands and checks.
 A configured selector failure stops that invocation rather than falling back to
-an incompatible Node. Without `coord.cliEntry`, maintenance uses the selector
-beside the running coordinator; launchers warn and fall back to PATH discovery.
+an incompatible Node. Maintenance catches that failure, warns, and continues
+with a null version; a generated launcher reports the error and exits. Without
+`coord.cliEntry`, maintenance uses the selector beside the running coordinator;
+launchers warn and fall back to PATH discovery.
 Custom agent IDs without a known updater warn and skip it.
 
 Existing generated launchers must be refreshed with `coord install` (or

@@ -70,13 +70,35 @@ launcher_environment() {
   case "$bin" in /*) ;; *) bin="$PWD/$bin" ;; esac
   coord_agent_cmd=("$bin")
   if [[ -n "$coord_agent_node" && -r "$bin" ]]; then
-    # Bounded read works for native binaries too; only a complete, plain Node
-    # shebang is replaced. Shell wrappers and shebang arguments stay intact.
+    # Bound reads of native binaries, but do not truncate interpreter arguments.
+    # Leave unrelated interpreters intact, including paths that contain "node".
     first_line=""
-    IFS= read -r -n 128 first_line < "$bin" || true
-    local node_shebang='^#![[:space:]]*([^[:space:]]*/node|/usr/bin/env[[:space:]]+node)[[:space:]]*$'
-    if [[ "$first_line" =~ $node_shebang ]]; then
+    IFS= read -r -n 1024 first_line < "$bin" || true
+    local node_shebang='^#![[:space:]]*[^[:space:]]*/node([[:space:]]+(.*))?$'
+    local env_node_shebang='^#![[:space:]]*/usr/bin/env[[:space:]]+node[[:space:]]*$'
+    local split_node_shebang='^#![[:space:]]*/usr/bin/env[[:space:]]+-S[[:space:]]+node([[:space:]].*)?$'
+    if [[ "$first_line" == '#!'* && ${#first_line} -ge 1024 ]]; then
+      echo "ERROR: vendor interpreter line exceeds 1023 characters: $bin" >&2
+      return 1
+    elif [[ "$first_line" =~ $node_shebang ]]; then
+      local node_options="${BASH_REMATCH[2]:-}"
+      node_options="${node_options%"${node_options##*[![:space:]]}"}"
+      coord_agent_cmd=("$coord_agent_node")
+      # A direct interpreter shebang has one optional argument, not shell words.
+      if [[ -n "$node_options" ]]; then
+        coord_agent_cmd+=("$node_options")
+      fi
+      coord_agent_cmd+=("$bin")
+    elif [[ "$first_line" =~ $env_node_shebang ]]; then
       coord_agent_cmd=("$coord_agent_node" "$bin")
+    elif [[ "$first_line" =~ $split_node_shebang ]]; then
+      local node_options="${BASH_REMATCH[1]:-}" quoted_node="$coord_agent_node"
+      # Let env retain its own -S quoting/expansion rules; never eval the shebang.
+      # Quote only the replacement executable so its path remains literal.
+      quoted_node="${quoted_node//\\/\\\\}"
+      quoted_node="${quoted_node//\"/\\\"}"
+      quoted_node="${quoted_node//\$/\\\$}"
+      coord_agent_cmd=(/usr/bin/env -S "\"$quoted_node\"$node_options" "$bin")
     fi
   fi
 }
