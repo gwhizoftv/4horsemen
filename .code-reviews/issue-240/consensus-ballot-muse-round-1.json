@@ -1,0 +1,14 @@
+{
+  "actionId": "8cffe08a-d09c-4bd6-92fb-83467da9a8d3",
+  "agent": "muse",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "8e405f4cd26e671ab50c3734166e7d97f06712d493477acdf488a38496bc0519",
+  "issue": 240,
+  "issueSessionId": "issue-240:a85a915722c3445299eea9d8d3eb5933267a7778",
+  "protocolVersion": 2,
+  "rationale": "The revision keeps the selected implementation's coord-Node resolution, pinned-only fallback, and maintenance child PATH intact and additionally preserves direct, env, and env -S Node shebang arguments for vendor CLIs, covered by a dedicated fixture test.",
+  "responseSha256": "8012aa8ae7713817d9f14cafff45402f16183cc9f7fbf5034aa3d1e5686eb684",
+  "revisionCommitSha": "0ef35f8306d7377abf1ac2601495bafe9cf93a0f",
+  "round": 1
+}

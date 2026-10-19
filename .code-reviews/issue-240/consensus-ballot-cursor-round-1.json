@@ -1,0 +1,14 @@
+{
+  "actionId": "020f948d-04d6-4175-8bf3-5eab6ed17b3d",
+  "agent": "cursor",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "8e405f4cd26e671ab50c3734166e7d97f06712d493477acdf488a38496bc0519",
+  "issue": 240,
+  "issueSessionId": "issue-240:a85a915722c3445299eea9d8d3eb5933267a7778",
+  "protocolVersion": 2,
+  "rationale": "Codex revision keeps resolve-before-nvm, maintenance PATH prepend, and dual Node tests, and tightens shebang handling while making configured selector failures warn-and-continue without silently using an old Node.",
+  "responseSha256": "42e773edad433e4078bc665246200aef1d21b263b8946deb4fd557cc627f325a",
+  "revisionCommitSha": "0ef35f8306d7377abf1ac2601495bafe9cf93a0f",
+  "round": 1
+}

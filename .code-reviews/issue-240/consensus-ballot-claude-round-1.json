@@ -1,0 +1,14 @@
+{
+  "actionId": "81211239-2180-49c0-a777-6370073339eb",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "8e405f4cd26e671ab50c3734166e7d97f06712d493477acdf488a38496bc0519",
+  "issue": 240,
+  "issueSessionId": "issue-240:a85a915722c3445299eea9d8d3eb5933267a7778",
+  "protocolVersion": 2,
+  "rationale": "Revision 0ef35f83 keeps the selected implementation's coord-Node vendor resolution, post-nvm fallback, updater-child Node and test isolation, and only adds narrowly scoped, tested handling for direct and env -S Node shebang arguments plus a covered warn-and-continue path for a rejected coord Node selector.",
+  "responseSha256": "e441a78aafa6d42588a531859c56e8274622677f78d305bcc9a26f7f1d427e17",
+  "revisionCommitSha": "0ef35f8306d7377abf1ac2601495bafe9cf93a0f",
+  "round": 1
+}
