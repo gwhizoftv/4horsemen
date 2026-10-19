@@ -1,0 +1,34 @@
+{
+  "actionId": "a01be10b-3b20-4b84-a36c-328dc33aba84",
+  "agent": "cursor",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "16dd9d5a4e1242ff63dd36250caf9c24ff564626",
+      "path": ".signals/issue-240/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "613dfd04d651c73b180a1033753e6c974dc45301",
+      "path": ".signals/issue-240/implementation-ready-codex.json"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "76db847bd32cde6a0adb55d5a68792caf23270bb",
+      "path": ".signals/issue-240/implementation-ready-cursor.json"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "2f48a6b3cdc68d2a8c7ac32e84d37b13a24f725d",
+      "path": ".signals/issue-240/implementation-ready-muse.json"
+    }
+  ],
+  "inputSetHash": "9ae61cc12519e85f88e861c55f6d31186cb49548b1902f97969c2a9d2394b8f1",
+  "issue": 240,
+  "issueSessionId": "issue-240:a85a915722c3445299eea9d8d3eb5933267a7778",
+  "protocolVersion": 2,
+  "rationale": "Codex alone pairs resolve-before-nvm with a maintenance PATH prepend and the broadest tests proving update children see coord Node while launch children keep the product pin.",
+  "responseSha256": "2ce6be70fe53cccb814aa90f294ffc209b7670bb231eaffdf5308ee3a3d11294"
+}
