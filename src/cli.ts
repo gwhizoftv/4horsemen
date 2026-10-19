@@ -162,7 +162,11 @@ const agentExecutables = new Map([
 const AGENT_UPDATE_TIMEOUT_MS = 180_000;
 const AGENT_VERSION_TIMEOUT_MS = 5_000;
 
-/** Fresh-start only: share the launcher's Node/PATH setup, without starting a pane. */
+/**
+ * Fresh-start only: resolve the vendor CLI exactly as the launcher does, without
+ * starting a pane. Unlike the pane, the updater's own children also get coord's
+ * Node first on PATH, so a vendor update never runs on an older product pin.
+ */
 const updateAgentVersions = async (
   agents: CoordinatorConfig["agents"], runner: ProcessRunner, io: CliIo
 ): Promise<Record<string, string | null>> => {
@@ -175,7 +179,9 @@ const updateAgentVersions = async (
     const { executable } = agentExecutables.get(agent.id)!;
     try {
       const result = await runner([
-        "bash", "-c", 'set -euo pipefail\n. "$1"\nlauncher_environment "$2" >/dev/null\nshift 2\nexec "$@"',
+        "bash", "-c", 'set -euo pipefail\n. "$1"\nlauncher_environment "$2" "$3" >/dev/null\n' +
+          'if [[ -n "$coord_agent_node" ]]; then export PATH="$(dirname "$coord_agent_node"):$PATH"; fi\n' +
+          'shift 3\nexec "${coord_agent_cmd[@]}" "$@"',
         "coord-agent-maintenance", resolve(coordinatorSourceRoot, "scripts/lib/launcher.sh"), agent.id, executable, step
       ], agent.root, { timeoutMs: step === "update" ? AGENT_UPDATE_TIMEOUT_MS : AGENT_VERSION_TIMEOUT_MS, env: io.env });
       if (result.exitCode === 0) return result;

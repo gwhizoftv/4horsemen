@@ -328,7 +328,8 @@ describe("coord install — two-mode footprint", () => {
     const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
     expect(launcher).toContain("Owner-driven manual mode");
     expect(launcher).toContain("claude/<name>");
-    expect(launcher).toContain("exec claude --permission-mode auto");
+    expect(launcher).toContain('launcher_environment "claude" "claude"\n');
+    expect(launcher).toContain('exec "${coord_agent_cmd[@]}" --permission-mode auto');
     expect(git(clone, "config", "--local", "--get", "consensus.agentId")).toBe("claude");
     expect(git(clone, "config", "--local", "--get", "coord.installRoot")).toBe(repoRoot);
     expect(git(clone, "config", "--local", "--get", "coord.workspaceConfig")).toBe(result.configPath);
@@ -1318,7 +1319,8 @@ describe("generated agent launchers", () => {
     const result = installOnce(fixture, { agents: ["antigravity"] });
     const clone = result.clones[0] as string;
     const launcher = readFileSync(join(clone, "start-antigravity.sh"), "utf8");
-    expect(launcher).toContain("exec agy --mode accept-edits --dangerously-skip-permissions");
+    expect(launcher).toContain('launcher_environment "antigravity" "agy"\n');
+    expect(launcher).toContain('exec "${coord_agent_cmd[@]}" --mode accept-edits --dangerously-skip-permissions');
     expect(launcher).toContain('export PATH="$HOME/.local/bin:$PATH"');
     // The user-global status line lands in the fixture, never the owner's home.
     expect(existsSync(join(fixture.workspaceRoot, "home", ".gemini", "antigravity-cli", "settings.json"))).toBe(true);

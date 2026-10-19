@@ -307,9 +307,19 @@ first `coord N`) updates each known agent in roster order: `codex update`,
 `claude update`, `agent update` for Cursor, and `agy update` for Antigravity.
 Each attempt has a three-minute timeout, with up to one second for process-group
 termination; failures warn and continue with the available installation.
-Maintenance shares the generated launcher's nvm setup for the clone's Node pin
-and Antigravity's home-local-bin PATH precedence, so it selects the installation
-the launcher will use. Custom agent IDs without a known updater warn and skip it.
+Maintenance shares the generated launcher's vendor resolution, so it updates the
+installation the launcher will run. The vendor CLI is looked up beside coord's
+own Node (the `node-runtime.sh` selection found through the clone's
+`coord.cliEntry`) before the clone's `.nvmrc` is applied, then on the owner's
+PATH, then on the pinned Node's PATH. Antigravity and Muse look in
+`~/.local/bin` first. A CLI whose first line is a Node shebang runs on coord's
+Node. A product pinned to an older Node therefore cannot select a broken global
+install. The pane keeps the product's Node first on PATH for the commands the
+agent runs. Update and version probes also put coord's Node first for the
+vendor's own child processes. Launchers generated before this behaviour keep
+the old lookup until `coord install` re-renders them; `githooks/post-merge`
+only regenerates a missing launcher. Custom agent IDs without a known updater
+warn and skip it.
 
 After all updates finish, start probes `--version` (five-second timeout plus the
 same cleanup allowance), prints a line per agent, and freezes the results in
