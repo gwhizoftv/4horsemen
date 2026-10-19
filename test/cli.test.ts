@@ -345,39 +345,69 @@ describe("fresh-start agent maintenance", () => {
     expect(readFileSync(paths.start, "utf8")).toBe(before);
   });
 
-  it.each(["codex", "antigravity"])("updates and launches the same %s installation after nvm setup", async (id) => {
+  it.each([
+    { id: "codex", label: "coord", nodeScript: true, pinned: true },
+    { id: "claude", label: "coord", nodeScript: true, pinned: true },
+    { id: "cursor", label: "coord", nodeScript: false, pinned: true },
+    { id: "antigravity", label: "home", nodeScript: false, pinned: true },
+    { id: "muse", label: "home", nodeScript: false, pinned: true },
+    { id: "claude", label: "pinned", nodeScript: true, pinned: true },
+    { id: "claude", label: "coord", nodeScript: true, pinned: false }
+  ])("updates and launches the same $id installation ($label, product pin: $pinned)", async ({ id, label, nodeScript, pinned }) => {
     const f = setup();
     const clone = join(f.root, "clone-codex");
     const home = join(f.root, "home"), nvm = join(home, ".nvm");
     const ownerBin = join(f.root, "owner bin"), pinnedBin = join(f.root, "pinned bin"), localBin = join(home, ".local/bin");
-    for (const dir of [nvm, ownerBin, pinnedBin, localBin]) mkdirSync(dir, { recursive: true });
-    const executable = id === "codex" ? "codex" : "agy";
+    const coordBin = join(f.root, "coord bin");
+    for (const dir of [nvm, ownerBin, pinnedBin, localBin, coordBin]) mkdirSync(dir, { recursive: true });
+    const executable = id === "cursor" ? "agent" : id === "antigravity" ? "agy" : id;
     const log = join(f.root, "vendor.log");
-    for (const [dir, label] of [[ownerBin, "owner"], [pinnedBin, "pinned"], [localBin, "home"]]) {
-      writeFileSync(join(dir!, executable), `#!/bin/sh\nprintf '%s|%s\\n' '${label}' "$*" >> "$VENDOR_LOG"\n` +
-        `if [ "$1" = --version ]; then printf '%s\\n' '${label}-version'; fi\n`, { mode: 0o700 });
+    for (const [dir, candidate] of [[ownerBin, "owner"], [pinnedBin, "pinned"], [localBin, "home"], [coordBin, "coord"]]) {
+      // The fallback case has an installation discoverable only after nvm use.
+      if (label === "pinned" && candidate !== "pinned") continue;
+      writeFileSync(join(dir!, executable), (nodeScript ? "#!/usr/bin/env node\n" : "#!/bin/sh\n") +
+        `printf '%s|%s|%s|%s|%s\\n' '${candidate}' "$*" "$(node --version)" "\${VENDOR_INTERPRETER:-native}" "\${MUSE_NO_AUTO_UPDATE:-}" >> "$VENDOR_LOG"\n` +
+        'case "$1" in update|--version) [ "$(node --version)" = v26.1.0 ] || exit 42 ;; esac\n' +
+        `if [ "$1" = --version ]; then printf '%s\\n' '${candidate}-version'; fi\n`, { mode: 0o700 });
     }
-    writeFileSync(join(pinnedBin, "node"), "#!/bin/sh\necho fixture-node\n", { mode: 0o700 });
+    for (const dir of [ownerBin, pinnedBin]) {
+      writeFileSync(join(dir, "node"), '#!/bin/sh\nif [ "$1" = --version ]; then echo v16.18.0; else exit 42; fi\n', { mode: 0o700 });
+    }
+    // No host vendor can shadow these stubs: the real selector resolves this
+    // fixture Node, whose interpreter deliberately executes our shell stubs.
+    writeFileSync(join(coordBin, "node"), '#!/bin/sh\nif [ "$1" = --version ]; then echo v26.1.0; exit 0; fi\n' +
+      'export VENDOR_INTERPRETER=coord\nexec /bin/sh "$@"\n', { mode: 0o700 });
     writeFileSync(join(nvm, "nvm.sh"), 'nvm() { export PATH="$PINNED_BIN:$PATH"; echo "nvm setup noise"; }\n');
-    writeFileSync(join(clone, ".nvmrc"), "fixture-node\n");
+    if (pinned) writeFileSync(join(clone, ".nvmrc"), "16\n");
+    fixtureGit(clone, "init", "-q", "-b", `issue-1/${id}`);
+    fixtureGit(clone, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "commit", "-q", "--allow-empty", "-m", "base");
+    fixtureGit(clone, "config", "coord.cliEntry", join(repoRoot, "dist/main.js"));
     writeAgentLauncher({ installRoot: repoRoot, clone, agent: id, label: id, baseBranch: "main", options: effectOptions(() => undefined, false) });
     const config = JSON.parse(readFileSync(f.configPath, "utf8"));
     config.agents = [{ id, root: clone, launcher: `start-${id}.sh` }];
     writeFileSync(f.configPath, JSON.stringify(config));
     const env = { ...process.env, HOME: home, NVM_DIR: nvm, PINNED_BIN: pinnedBin,
-      PATH: `${ownerBin}:/usr/bin:/bin`, VENDOR_LOG: log, COORD_ISSUE: "" };
-    expect(await runCli(["start", "1", "--config", f.configPath, "--coord-runtime", f.runtime], {
-      makeRunLoop: fakeLoop, io: { env, stdout: () => undefined },
+      PATH: `${ownerBin}:/usr/bin:/bin`, VENDOR_LOG: log, COORD_ISSUE: "", COORD_NODE: join(coordBin, "node"),
+      VENDOR_INTERPRETER: undefined, MUSE_NO_AUTO_UPDATE: undefined };
+    const before = { ...env };
+    const errors: string[] = [];
+    const result = await runCli(["start", "1", "--config", f.configPath, "--coord-runtime", f.runtime], {
+      makeRunLoop: fakeLoop, io: { env, stdout: () => undefined, stderr: (line) => errors.push(line) },
       processRunner: (argv, cwd, options) => argv[3] === "coord-agent-maintenance" ? runArgv(argv, cwd, options) : successfulStartGit(argv)
-    })).toBe(0);
+    });
+    expect(result, errors.join("")).toBe(0);
+    expect(errors).toEqual([]);
     execFileSync("/bin/bash", [join(clone, `start-${id}.sh`)], { cwd: clone, env, stdio: "pipe" });
-    const label = id === "codex" ? "pinned" : "home";
     const lines = readFileSync(log, "utf8").trim().split("\n");
-    expect(lines.slice(0, 2)).toEqual([`${label}|update`, `${label}|--version`]);
-    expect(lines).toHaveLength(3);
-    expect(lines[2]).toMatch(new RegExp(`^${label}\\|`));
-    if (id === "codex") expect(lines[2]).toContain("-c check_for_update_on_startup=false");
+    const runtime = `${nodeScript ? "coord" : "native"}|${id === "muse" ? "1" : ""}`;
+    const steps = id === "muse" ? ["--version"] : ["update", "--version"];
+    expect(lines.slice(0, -1)).toEqual(steps.map((step) => `${label}|${step}|v26.1.0|${runtime}`));
+    expect(lines).toHaveLength(steps.length + 1);
+    expect(lines.at(-1)).toMatch(new RegExp(`^${label}\\|`));
+    expect(lines.at(-1)).toContain(`|v16.18.0|${runtime}`);
+    if (id === "codex") expect(lines.at(-1)).toContain("-c check_for_update_on_startup=false");
     expect(readStartState(issueRuntimePaths(f.runtime, 1)).agentVersions).toEqual({ [id]: `${label}-version` });
+    expect(env).toEqual(before);
   });
 });
 

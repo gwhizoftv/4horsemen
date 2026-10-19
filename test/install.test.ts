@@ -1,5 +1,5 @@
 import childProcess, { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -328,7 +328,7 @@ describe("coord install — two-mode footprint", () => {
     const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
     expect(launcher).toContain("Owner-driven manual mode");
     expect(launcher).toContain("claude/<name>");
-    expect(launcher).toContain("exec claude --permission-mode auto");
+    expect(launcher).toContain('exec "${coord_agent_cmd[@]}" --permission-mode auto');
     expect(git(clone, "config", "--local", "--get", "consensus.agentId")).toBe("claude");
     expect(git(clone, "config", "--local", "--get", "coord.installRoot")).toBe(repoRoot);
     expect(git(clone, "config", "--local", "--get", "coord.workspaceConfig")).toBe(result.configPath);
@@ -404,6 +404,7 @@ describe("coord install — two-mode footprint", () => {
     const clone = installOnce(fixture, { origin: "https://github.com/example/myserver.git", githubAccount: "acct" }).clones[0] as string;
     const bin = join(fixture.workspaceRoot, "fake-bin");
     mkdirSync(bin);
+    symlinkSync(process.execPath, join(bin, "node"));
     writeFileSync(join(bin, "gh"), [
       "#!/usr/bin/env bash",
       'case "$1 $2" in',
@@ -419,7 +420,8 @@ describe("coord install — two-mode footprint", () => {
     writeFileSync(join(bin, "claude"), '#!/usr/bin/env bash\necho "harness GH_TOKEN=$GH_TOKEN GITHUB_TOKEN=${GITHUB_TOKEN:-}"\n', { mode: 0o755 });
     const launch = (mode: string) => spawnSync("bash", [join(clone, "start-claude.sh")], {
       cwd: clone, encoding: "utf8",
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, FAKE_GH: mode, GH_TOKEN: "ambient", GITHUB_TOKEN: "ambient", COORD_ISSUE: "" }
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_NODE: join(bin, "node"),
+        FAKE_GH: mode, GH_TOKEN: "ambient", GITHUB_TOKEN: "ambient", COORD_ISSUE: "" }
     });
 
     for (const mode of ["ok", "offline"]) {
@@ -921,6 +923,8 @@ describe("completion mailbox wiring", () => {
     const result = installOnce(fixture, { agents, completesRoot, home });
     const bin = join(fixture.workspaceRoot, "stub-bin");
     mkdirSync(bin);
+    // Keep runtime selection beside the fake vendors, never the host installs.
+    symlinkSync(process.execPath, join(bin, "node"));
     for (const command of ["claude", "codex", "agent", "agy"]) {
       writeFileSync(join(bin, command), '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$CAPTURE"\n', { mode: 0o755 });
     }
@@ -951,7 +955,7 @@ describe("completion mailbox wiring", () => {
       // machine has.
       execFileSync("/bin/bash", [join(clone, `start-${agent}.sh`)], {
         cwd: clone,
-        env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_ISSUE: "17", CAPTURE: capture },
+        env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_NODE: join(bin, "node"), COORD_ISSUE: "17", CAPTURE: capture },
         stdio: "ignore"
       });
       const argv = readFileSync(capture, "utf8").trimEnd().split("\n");
@@ -979,7 +983,7 @@ describe("completion mailbox wiring", () => {
       const manual = join(fixture.workspaceRoot, `${agent}-manual.args`);
       execFileSync("/bin/bash", [join(clone, `start-${agent}.sh`)], {
         cwd: clone,
-        env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_ISSUE: "", CAPTURE: manual },
+        env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_NODE: join(bin, "node"), COORD_ISSUE: "", CAPTURE: manual },
         stdio: "ignore"
       });
       expect(readFileSync(manual, "utf8").trimEnd().split("\n")).toEqual(expected[agent as "claude" | "codex"]);
@@ -1280,6 +1284,7 @@ describe("generated agent launchers", () => {
     ]) mkdirSync(directory, { recursive: true });
     const bin = join(home, ".local", "bin");
     mkdirSync(bin, { recursive: true });
+    symlinkSync(process.execPath, join(bin, "node"));
     writeFileSync(join(bin, "muse"), '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$CAPTURE"\n' +
       'printf \'%s\\n\' "$MUSE_NO_AUTO_UPDATE" "$(command -v git)" "$COORD_ISSUE" > "$CAPTURE.env"\n',
     { mode: 0o755 });
@@ -1287,7 +1292,7 @@ describe("generated agent launchers", () => {
       const capture = join(fixture.workspaceRoot, `muse-${issue || "manual"}.args`);
       execFileSync("/bin/bash", [join(clone, "start-muse.sh")], {
         cwd: clone,
-        env: { ...process.env, HOME: home, PATH: "/usr/bin:/bin", COORD_ISSUE: issue, CAPTURE: capture },
+        env: { ...process.env, HOME: home, PATH: "/usr/bin:/bin", COORD_NODE: join(bin, "node"), COORD_ISSUE: issue, CAPTURE: capture },
         stdio: "pipe"
       });
       expect(readFileSync(capture, "utf8").trimEnd().split("\n")).toEqual([
@@ -1318,7 +1323,7 @@ describe("generated agent launchers", () => {
     const result = installOnce(fixture, { agents: ["antigravity"] });
     const clone = result.clones[0] as string;
     const launcher = readFileSync(join(clone, "start-antigravity.sh"), "utf8");
-    expect(launcher).toContain("exec agy --mode accept-edits --dangerously-skip-permissions");
+    expect(launcher).toContain('exec "${coord_agent_cmd[@]}" --mode accept-edits --dangerously-skip-permissions');
     expect(launcher).toContain('export PATH="$HOME/.local/bin:$PATH"');
     // The user-global status line lands in the fixture, never the owner's home.
     expect(existsSync(join(fixture.workspaceRoot, "home", ".gemini", "antigravity-cli", "settings.json"))).toBe(true);

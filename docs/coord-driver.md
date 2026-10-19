@@ -307,9 +307,23 @@ first `coord N`) updates each known agent in roster order: `codex update`,
 `claude update`, `agent update` for Cursor, and `agy update` for Antigravity.
 Each attempt has a three-minute timeout, with up to one second for process-group
 termination; failures warn and continue with the available installation.
-Maintenance shares the generated launcher's nvm setup for the clone's Node pin
-and Antigravity's home-local-bin PATH precedence, so it selects the installation
-the launcher will use. Custom agent IDs without a known updater warn and skip it.
+Maintenance and generated launchers resolve the vendor executable before applying
+the clone's Node pin. They use the Node >=26 selector beside the clone's recorded
+`coord.cliEntry` (including `COORD_NODE`), preferring that Node's bin directory
+over the inherited PATH; Antigravity and Muse still prefer `~/.local/bin`.
+An installation reachable only through the product's nvm pin remains a final
+fallback. Both paths execute the resolved vendor by absolute path, and standard
+Node-shebang CLIs use coordination's Node explicitly. Maintenance also puts that
+Node first on its child PATH so updater subprocesses use it. Interactive agent
+children keep the product PATH and Node pin for development commands and checks.
+A configured selector failure stops that invocation rather than falling back to
+an incompatible Node. Without `coord.cliEntry`, maintenance uses the selector
+beside the running coordinator; launchers warn and fall back to PATH discovery.
+Custom agent IDs without a known updater warn and skip it.
+
+Existing generated launchers must be refreshed with `coord install` (or
+onboarding) after upgrading coordination. A pull alone does not refresh an
+existing launcher: the post-merge hook regenerates only missing launchers.
 
 After all updates finish, start probes `--version` (five-second timeout plus the
 same cleanup allowance), prints a line per agent, and freezes the results in
