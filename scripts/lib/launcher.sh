@@ -14,9 +14,33 @@
 # A second copy of this template drifted from the first within a day of being
 # written. Keep both callers on these functions.
 
-# Shared by generated launchers and coord's fresh-start maintenance command.
-# A clone's .nvmrc can select a different global CLI from coord's own PATH.
+# launcher_environment <agent> <executable> [fallback-node-selector]
+# Bind the vendor before product nvm setup, but keep the product PATH for the
+# harness's children. Maintenance alone prepends coord_agent_node afterward.
 launcher_environment() {
+  local owner_path="$PATH" entry selector="${3:-}" search bin first_line
+  coord_agent_node=""
+  entry="$(git config --local --get coord.cliEntry 2>/dev/null || true)"
+  if [[ -n "$entry" ]]; then
+    selector="$(dirname "$entry")/../scripts/lib/node-runtime.sh"
+  fi
+  if [[ -n "$selector" ]]; then
+    # Use the existing validation, including rejection of an invalid override.
+    # Never silently fall back to an old Node after a configured selector fails.
+    coord_agent_node="$("$selector" --resolve)" || return 1
+  else
+    echo "WARNING: coord.cliEntry is unset; resolving $2 from PATH. Re-run coord install to select coordination's Node." >&2
+  fi
+
+  search="$owner_path"
+  if [[ -n "$coord_agent_node" ]]; then
+    search="$(dirname "$coord_agent_node"):$search"
+  fi
+  if [[ "$1" == antigravity || "$1" == muse ]]; then
+    search="$HOME/.local/bin:$search"
+  fi
+  bin="$(PATH="$search" type -P "$2" || true)"
+
   if [[ -f .nvmrc ]]; then
     export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
     if [[ ! -s "$NVM_DIR/nvm.sh" ]]; then
@@ -33,6 +57,59 @@ launcher_environment() {
   if [[ "$1" == muse ]]; then
     export MUSE_NO_AUTO_UPDATE=1
   fi
+
+  # Keep installations reachable only through the product pin as a final
+  # fallback, without allowing that pin to shadow the preferred vendor.
+  if [[ -z "$bin" ]]; then
+    bin="$(type -P "$2" || true)"
+  fi
+  if [[ -z "$bin" ]]; then
+    echo "ERROR: $2 was not found beside coordination's Node or on PATH (including the product pin)." >&2
+    return 1
+  fi
+  case "$bin" in /*) ;; *) bin="$PWD/$bin" ;; esac
+  coord_agent_cmd=("$bin")
+  if [[ -n "$coord_agent_node" && -r "$bin" ]]; then
+    # Bound reads of native binaries, but do not truncate interpreter arguments.
+    # Leave unrelated interpreters intact, including paths that contain "node".
+    first_line=""
+    IFS= read -r -n 1024 first_line < "$bin" || true
+    local node_shebang='^#![[:space:]]*[^[:space:]]*/node([[:space:]]+(.*))?$'
+    local env_node_shebang='^#![[:space:]]*/usr/bin/env[[:space:]]+node[[:space:]]*$'
+    local split_node_shebang='^#![[:space:]]*/usr/bin/env[[:space:]]+-S[[:space:]]+node([[:space:]].*)?$'
+    if [[ "$first_line" == '#!'* && ${#first_line} -ge 1024 ]]; then
+      echo "ERROR: vendor interpreter line exceeds 1023 characters: $bin" >&2
+      return 1
+    elif [[ "$first_line" =~ $node_shebang ]]; then
+      local node_options="${BASH_REMATCH[2]:-}"
+      node_options="${node_options%"${node_options##*[![:space:]]}"}"
+      coord_agent_cmd=("$coord_agent_node")
+      # A direct interpreter shebang has one optional argument, not shell words.
+      if [[ -n "$node_options" ]]; then
+        coord_agent_cmd+=("$node_options")
+      fi
+      coord_agent_cmd+=("$bin")
+    elif [[ "$first_line" =~ $env_node_shebang ]]; then
+      coord_agent_cmd=("$coord_agent_node" "$bin")
+    elif [[ "$first_line" =~ $split_node_shebang ]]; then
+      local node_options="${BASH_REMATCH[1]:-}" quoted_node="$coord_agent_node"
+      # Let env retain its own -S quoting/expansion rules; never eval the shebang.
+      # Quote only the replacement executable so its path remains literal.
+      quoted_node="${quoted_node//\\/\\\\}"
+      quoted_node="${quoted_node//\"/\\\"}"
+      quoted_node="${quoted_node//\$/\\\$}"
+      coord_agent_cmd=(/usr/bin/env -S "\"$quoted_node\"$node_options" "$bin")
+    fi
+  fi
+}
+
+launcher_executable() {
+  case "$1" in
+    cursor) printf 'agent\n' ;;
+    antigravity) printf 'agy\n' ;;
+    claude|codex|gemini|muse) printf '%s\n' "$1" ;;
+    *) return 1 ;;
+  esac
 }
 
 # launcher_command <agent>
@@ -49,7 +126,7 @@ launcher_environment() {
 launcher_command() {
   case "$1" in
     claude)
-      printf 'exec claude --permission-mode auto ${coord_grant[@]+"${coord_grant[@]}"}\n'
+      printf 'exec "${coord_agent_cmd[@]}" --permission-mode auto ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     codex)
       # The completion receipt now lives in the mailbox, which is granted
@@ -61,7 +138,7 @@ launcher_command() {
       # COORD_ISSUE of whichever launch started it, not this pane's (issue 186).
       # coord start updates before launch; never self-update inside the pane.
       # Inline mode keeps output in tmux history for mouse scrolling.
-      printf 'exec codex -c check_for_update_on_startup=false -c tui.vim_mode_default=false --ask-for-approval never --sandbox workspace-write --no-alt-screen --no-daemon ${coord_grant[@]+"${coord_grant[@]}"}\n'
+      printf 'exec "${coord_agent_cmd[@]}" -c check_for_update_on_startup=false -c tui.vim_mode_default=false --ask-for-approval never --sandbox workspace-write --no-alt-screen --no-daemon ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     antigravity)
       # agy installs into ~/.local/bin, which a login shell does not always
@@ -82,12 +159,12 @@ launcher_command() {
       # also contradicts --dangerously-skip-permissions on the same line. The
       # add-dir below is therefore advisory for this vendor until the sandbox
       # can be verified against a real agy run that pushes.
-      printf 'exec agy --mode accept-edits --dangerously-skip-permissions ${coord_grant[@]+"${coord_grant[@]}"}\n'
+      printf 'exec "${coord_agent_cmd[@]}" --mode accept-edits --dangerously-skip-permissions ${coord_grant[@]+"${coord_grant[@]}"}\n'
       ;;
     gemini)
       # No mailbox grant: gemini is not a configured coordination harness and
       # has no completion receipt to write.
-      printf 'exec gemini\n'
+      printf 'exec "${coord_agent_cmd[@]}"\n'
       ;;
     muse)
       # Automatic participant without lifecycle hooks: Muse's sandbox protects .git, blocking the
@@ -96,14 +173,14 @@ launcher_command() {
       # This permits writes anywhere the owner can write, including receipts;
       # Muse has no --add-dir, so do not pass coord_grant. The PATH Git shim is
       # still installed, but native hooks and live containment are unverified.
-      printf 'exec muse --approval-mode never --disable-sandbox --trust-workspace\n'
+      printf 'exec "${coord_agent_cmd[@]}" --approval-mode never --disable-sandbox --trust-workspace\n'
       ;;
     cursor)
       # --add-dir only means something if the harness is sandboxed: an
       # unsandboxed agent can already write anywhere, so the narrow grant would
       # be decoration. `agent --sandbox` documents the exact choices
       # enabled|disabled, so state it rather than relying on the vendor default.
-      printf 'if (( ${#coord_grant[@]} > 0 )); then\n  exec agent --sandbox enabled "${coord_grant[@]}"\nelse\n  exec agent\nfi\n'
+      printf 'if (( ${#coord_grant[@]} > 0 )); then\n  exec "${coord_agent_cmd[@]}" --sandbox enabled "${coord_grant[@]}"\nelse\n  exec "${coord_agent_cmd[@]}"\nfi\n'
       ;;
     *)
       return 1
@@ -346,9 +423,10 @@ COORD_GIT_WRAPPER
 # COORD_ISSUE, which coordination exports on the tmux session before the harness
 # starts.
 write_launcher() {
-  local path="$1" agent="$2" label="$3" shared="$4" command
+  local path="$1" agent="$2" label="$3" shared="$4" command executable
 
   command="$(launcher_command "$agent")" || return 1
+  executable="$(launcher_executable "$agent")" || return 1
 
   # cd by script location, not by a baked-in absolute path: a clone that moves
   # keeps working, and the file stays free of machine-specific state.
@@ -365,7 +443,7 @@ set -euo pipefail
 cd "\$(dirname "\${BASH_SOURCE[0]}")"
 
 $(declare -f launcher_environment)
-launcher_environment "$agent"
+launcher_environment "$agent" "$executable"
 
 # Prefer pnpm via Corepack when this is a pnpm repo.
 if [[ -f pnpm-lock.yaml ]] && command -v corepack >/dev/null; then
