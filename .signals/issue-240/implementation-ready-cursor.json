@@ -1,0 +1,27 @@
+{
+  "protocolVersion": 1,
+  "issue": 240,
+  "issueSessionId": "issue-240:a85a915722c3445299eea9d8d3eb5933267a7778",
+  "agent": "cursor",
+  "inputSetHash": "3de360c6f4c57a23141754db18ba369d750d1cb175fa30f4a658b23bb683fd65",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "76db847bd32cde6a0adb55d5a68792caf23270bb",
+  "scopeHash": "18c1db0e38bbff4d768445ea09dca4685dfd45b4bd2b284aeb4b5dfa043a64a7",
+  "approvedPaths": [
+    ".nvmrc",
+    "coord.cliEntry",
+    "docs/coord-driver.md",
+    "githooks/lib/policy.sh",
+    "githooks/post-merge",
+    "it.each",
+    "node-runtime.sh",
+    "process.execPath",
+    "scripts/lib/launcher.sh",
+    "scripts/lib/node-runtime.sh",
+    "src/cli.ts",
+    "src/setupWorkspace.ts",
+    "test/cli.test.ts",
+    "test/install.test.ts",
+    "v26.1.0"
+  ]
+}
