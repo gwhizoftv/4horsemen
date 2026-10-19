@@ -895,15 +895,18 @@ describe("completion mailbox wiring", () => {
     expect(launcher).not.toContain(resolve(fixture.coordRoot));
   });
 
-  it("stops launching Codex with blanket filesystem access", () => {
+  it("installs and restores Codex automatic approval review without blanket filesystem access", () => {
     const fixture = product();
     const result = installOnce(fixture, { agents: ["codex"] });
-    const launcher = readFileSync(join(result.clones[0] as string, "start-codex.sh"), "utf8");
-    // danger-full-access existed only because `complete` sat under the coord
-    // root; the mailbox grant replaces the reason for it.
+    const path = join(result.clones[0] as string, "start-codex.sh");
+    const launcher = readFileSync(path, "utf8");
     expect(launcher).not.toContain("danger-full-access");
-    expect(launcher).toContain("--sandbox workspace-write");
-    expect(launcher).toContain("--ask-for-approval never");
+    expect(launcher).toContain("--approve-for-me");
+    expect(launcher).not.toContain("--sandbox");
+    expect(launcher).not.toContain("--ask-for-approval");
+    writeFileSync(path, launcher.replace("--approve-for-me", "--ask-for-approval never --sandbox workspace-write"));
+    installOnce(fixture, { agents: ["codex"] });
+    expect(readFileSync(path, "utf8")).toBe(launcher);
   });
 
   /**
@@ -931,7 +934,7 @@ describe("completion mailbox wiring", () => {
 
     const expected = {
       claude: ["--permission-mode", "auto"],
-      codex: ["-c", "check_for_update_on_startup=false", "-c", "tui.vim_mode_default=false", "--ask-for-approval", "never", "--sandbox", "workspace-write", "--no-alt-screen", "--no-daemon"],
+      codex: ["-c", "check_for_update_on_startup=false", "-c", "tui.vim_mode_default=false", "--approve-for-me", "--no-alt-screen", "--no-daemon"],
       cursor: ["--sandbox", "enabled"],
       antigravity: ["--mode", "accept-edits", "--dangerously-skip-permissions"]
     } as const;
