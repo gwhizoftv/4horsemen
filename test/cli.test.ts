@@ -345,33 +345,55 @@ describe("fresh-start agent maintenance", () => {
     expect(readFileSync(paths.start, "utf8")).toBe(before);
   });
 
-  it.each(["codex", "antigravity"])("updates and launches the same %s installation after nvm setup", async (id) => {
+  it.each(["codex", "antigravity", "claude", "cursor"])("updates and launches the same %s installation after nvm setup", async (id) => {
     const f = setup();
-    const clone = join(f.root, "clone-codex");
+    const clone = join(f.root, `clone-${id}`);
     const home = join(f.root, "home"), nvm = join(home, ".nvm");
     const ownerBin = join(f.root, "owner bin"), pinnedBin = join(f.root, "pinned bin"), localBin = join(home, ".local/bin");
-    for (const dir of [nvm, ownerBin, pinnedBin, localBin]) mkdirSync(dir, { recursive: true });
-    const executable = id === "codex" ? "codex" : "agy";
+    const coordBin = join(f.root, "coord bin");
+    for (const dir of [clone, nvm, ownerBin, pinnedBin, localBin, coordBin]) mkdirSync(dir, { recursive: true });
+    const executable = { codex: "codex", antigravity: "agy", claude: "claude", cursor: "agent" }[id]!;
     const log = join(f.root, "vendor.log");
     for (const [dir, label] of [[ownerBin, "owner"], [pinnedBin, "pinned"], [localBin, "home"]]) {
       writeFileSync(join(dir!, executable), `#!/bin/sh\nprintf '%s|%s\\n' '${label}' "$*" >> "$VENDOR_LOG"\n` +
         `if [ "$1" = --version ]; then printf '%s\\n' '${label}-version'; fi\n`, { mode: 0o700 });
     }
+    // A vendor CLI installed beside coord's Node, as a Node script: it must be
+    // interpreted by coord's Node (the fake below), never the pinned Node,
+    // whose stub prints fixture-node and runs nothing.
+    writeFileSync(join(coordBin, executable), `#!/usr/bin/env node\nprintf '%s|%s\\n' 'coord' "$*" >> "$VENDOR_LOG"\n` +
+      `if [ "$1" = --version ]; then printf '%s\\n' 'coord-version'; fi\n`, { mode: 0o700 });
+    writeFileSync(join(coordBin, "node"), "#!/bin/sh\n" +
+      "if [ \"$1\" = --version ]; then printf '%s\\n' 'v26.1.0'; exit 0; fi\n" +
+      "exec /bin/sh \"$@\"\n", { mode: 0o700 });
     writeFileSync(join(pinnedBin, "node"), "#!/bin/sh\necho fixture-node\n", { mode: 0o700 });
     writeFileSync(join(nvm, "nvm.sh"), 'nvm() { export PATH="$PINNED_BIN:$PATH"; echo "nvm setup noise"; }\n');
     writeFileSync(join(clone, ".nvmrc"), "fixture-node\n");
+    fixtureGit(clone, "init");
+    // A fixture coordination install in the real layout, so the launcher's
+    // coord.cliEntry -> ../scripts/lib/node-runtime.sh route resolves regardless
+    // of whether this checkout has been built.
+    const installRoot = join(f.root, "coord install");
+    mkdirSync(join(installRoot, "dist"), { recursive: true });
+    mkdirSync(join(installRoot, "scripts", "lib"), { recursive: true });
+    writeFileSync(join(installRoot, "dist", "main.js"), "");
+    writeFileSync(join(installRoot, "scripts", "lib", "node-runtime.sh"),
+      readFileSync(join(repoRoot, "scripts", "lib", "node-runtime.sh"), "utf8"), { mode: 0o700 });
+    fixtureGit(clone, "config", "coord.cliEntry", join(installRoot, "dist", "main.js"));
     writeAgentLauncher({ installRoot: repoRoot, clone, agent: id, label: id, baseBranch: "main", options: effectOptions(() => undefined, false) });
+    fixtureGit(clone, "add", ".nvmrc", `start-${id}.sh`);
+    fixtureGit(clone, "commit", "-m", "fixture clone");
     const config = JSON.parse(readFileSync(f.configPath, "utf8"));
     config.agents = [{ id, root: clone, launcher: `start-${id}.sh` }];
     writeFileSync(f.configPath, JSON.stringify(config));
-    const env = { ...process.env, HOME: home, NVM_DIR: nvm, PINNED_BIN: pinnedBin,
+    const env = { ...process.env, HOME: home, NVM_DIR: nvm, PINNED_BIN: pinnedBin, COORD_NODE: join(coordBin, "node"),
       PATH: `${ownerBin}:/usr/bin:/bin`, VENDOR_LOG: log, COORD_ISSUE: "" };
     expect(await runCli(["start", "1", "--config", f.configPath, "--coord-runtime", f.runtime], {
       makeRunLoop: fakeLoop, io: { env, stdout: () => undefined },
       processRunner: (argv, cwd, options) => argv[3] === "coord-agent-maintenance" ? runArgv(argv, cwd, options) : successfulStartGit(argv)
     })).toBe(0);
     execFileSync("/bin/bash", [join(clone, `start-${id}.sh`)], { cwd: clone, env, stdio: "pipe" });
-    const label = id === "codex" ? "pinned" : "home";
+    const label = id === "antigravity" ? "home" : "coord";
     const lines = readFileSync(log, "utf8").trim().split("\n");
     expect(lines.slice(0, 2)).toEqual([`${label}|update`, `${label}|--version`]);
     expect(lines).toHaveLength(3);
