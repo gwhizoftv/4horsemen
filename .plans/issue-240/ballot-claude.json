@@ -1,0 +1,56 @@
+{
+  "actionId": "b2d3577a-1635-4651-a46f-6828d9e280d9",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "9faaaae9f43d1b5fe815ba31b9fcf4022ceeff0e013c1ef545dd320ef9d44b12",
+  "issue": 240,
+  "issueSessionId": "issue-240:a85a915722c3445299eea9d8d3eb5933267a7778",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "998ee7f73d1fbc36b3f5c5b956052ed0ef804249",
+      "path": ".plans/issue-240/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "3926ba07d27b27512435ca07e4b0e87f6de18ff4",
+      "path": ".plans/issue-240/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "b6795003b1eb3501e214dfb40041a278983b69c2",
+      "path": ".plans/issue-240/plan.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "289ccb9f71ea759c72a8011fb9730e12c7b9df44",
+      "path": ".plans/issue-240/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "It is the only plan that fixes the reported update, version-probe, and pane-launch failures together by resolving the vendor CLI beside coord's Node before the product nvm pin while keeping the product Node on PATH, and all four reviews name it the strongest basis subject to fixable corrections (system vitest config, post-nvm discovery fallback, maintenance child Node PATH, tighter file map).",
+  "responseSha256": "6dd95ac1ea425a769037be35021978d0f18b0ed443be9108b3b3292dd64f6cd3",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "e86455a7be4e4dfa3e16f6fbd9bf0c546797085d",
+      "path": ".plans/issue-240/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a7bfbec50ade845ff39a8f2b0058f6926b4b6d37",
+      "path": ".plans/issue-240/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "8e9a1594f36080d9662be6b1501c4a890da02171",
+      "path": ".plans/issue-240/review.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "70ec7de1b5dccf4bb5868455f0e5cb7b89cb780d",
+      "path": ".plans/issue-240/review.md"
+    }
+  ]
+}

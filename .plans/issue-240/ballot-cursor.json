@@ -1,0 +1,56 @@
+{
+  "actionId": "a4362c4b-cf12-40de-a752-2415c060250a",
+  "agent": "cursor",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "9faaaae9f43d1b5fe815ba31b9fcf4022ceeff0e013c1ef545dd320ef9d44b12",
+  "issue": 240,
+  "issueSessionId": "issue-240:a85a915722c3445299eea9d8d3eb5933267a7778",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "998ee7f73d1fbc36b3f5c5b956052ed0ef804249",
+      "path": ".plans/issue-240/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "3926ba07d27b27512435ca07e4b0e87f6de18ff4",
+      "path": ".plans/issue-240/plan.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "b6795003b1eb3501e214dfb40041a278983b69c2",
+      "path": ".plans/issue-240/plan.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "289ccb9f71ea759c72a8011fb9730e12c7b9df44",
+      "path": ".plans/issue-240/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude alone resolves the same vendor CLI for update and launch beside coord Node before product nvm use, without putting Node 26 on the agent PATH the way cursor does or leaving the broken pane that muse/codex accept.",
+  "responseSha256": "ae102b6ab9a065f8ba76d88e4eec597d6fbc374e92390d31658cc79f59d1d247",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "e86455a7be4e4dfa3e16f6fbd9bf0c546797085d",
+      "path": ".plans/issue-240/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "a7bfbec50ade845ff39a8f2b0058f6926b4b6d37",
+      "path": ".plans/issue-240/review.md"
+    },
+    {
+      "agent": "cursor",
+      "commitSha": "8e9a1594f36080d9662be6b1501c4a890da02171",
+      "path": ".plans/issue-240/review.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "70ec7de1b5dccf4bb5868455f0e5cb7b89cb780d",
+      "path": ".plans/issue-240/review.md"
+    }
+  ]
+}
