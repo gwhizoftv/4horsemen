@@ -150,7 +150,7 @@ describe("coord onboard", () => {
       expect(await runCli(argv, { home: null, processRunner: runner, io: { stdout: log, stderr: log } })).toBe(0);
       const configured = readConfig(configPath);
       const checks = language === "python" ? [{ name: "test", argv: ["pytest", "-q"] }] : [
-        { name: "analyze", argv: ["flutter", "analyze", "--no-fatal-infos"] }, { name: "test", argv: ["flutter", "test"] }
+        { name: "analyze", argv: ["flutter", "analyze", "--no-fatal-infos", "--no-fatal-warnings"] }, { name: "test", argv: ["flutter", "test"] }
       ];
       expect(configured.toolchain).toBe(language);
       expect(configured.checks).toEqual(checks);
@@ -162,7 +162,7 @@ describe("coord onboard", () => {
       for (const check of checks) expect(summary).toContain(`${check.name} ${JSON.stringify(check.argv)}`);
       expect(summary).toContain("documentation-only (inferred)");
       expect(summary).toContain("product dependencies are not installed");
-      expect(summary).toContain(language === "python" ? "no tests collected is a failure" : "informational diagnostics do not block");
+      expect(summary).toContain(language === "python" ? "no tests collected is a failure" : "warnings and informational diagnostics do not block");
       expect(existsSync(`${tool}.called`)).toBe(false);
       expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
 
@@ -176,6 +176,27 @@ describe("coord onboard", () => {
       expect(output.join("")).toContain("local precommit (declared): none");
       expect(output.join("")).toContain('critical prefixes (declared): ["custom/"]');
       expect(output.join("")).not.toContain("local precommit (inferred)");
+
+      if (language === "flutter") {
+        const strict = { name: "analyze", argv: ["flutter", "analyze", "--no-fatal-infos"] };
+        writeDeclaration(fixture.workspaceRoot, { checks: [strict] });
+        output.length = 0;
+        expect(await runCli([...argv, "--declare", declaration], { home: null, processRunner: runner, io: { stdout: log, stderr: log } })).toBe(0);
+        expect(readConfig(configPath).checks).toEqual([strict]);
+        expect(readConfig(configPath).verify?.precommit).toEqual([checks[0]]);
+        expect(output.join("")).toContain("leaves analyzer warnings and errors fatal");
+        expect(output.join("")).not.toContain("leave only analyzer errors fatal");
+
+        // A plain strict finalization command must not inherit the relaxed precommit explanation.
+        writeDeclaration(fixture.workspaceRoot, { checks: [{ name: "analyze", argv: ["flutter", "analyze"] }] });
+        output.length = 0;
+        expect(await runCli([...argv, "--declare", declaration], { home: null, processRunner: runner, io: { stdout: log, stderr: log } })).toBe(0);
+        expect(readConfig(configPath).verify?.precommit).toEqual([checks[0]]);
+        expect(output.join("")).toContain('finalization (declared): analyze ["flutter","analyze"]');
+        expect(output.join("")).not.toContain("informational diagnostics do not block");
+        expect(output.join("")).not.toContain("leave only analyzer errors fatal");
+        expect(existsSync(`${tool}.called`)).toBe(false);
+      }
 
       if (language === "python") {
         // Coordinator-mode labels must keep local, coordinated, candidate and final commands distinct.
