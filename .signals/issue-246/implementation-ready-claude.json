@@ -1,0 +1,24 @@
+{
+  "protocolVersion": 1,
+  "issue": 246,
+  "issueSessionId": "issue-246:991d54db1d310097ecc53adc04072b9bc183534c",
+  "agent": "claude",
+  "inputSetHash": "bc43d5ca7b50059be83fb32e81140f16aaff0b45b2383b60ea352cfd08f8f40f",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "95eb83150d5cddf63d747bac3d95f9c0903366b3",
+  "scopeHash": "eef5a4d75e2b62e5a4644fe9b91c27bc8fb6889e31c7dfbd1c8141f869287bac",
+  "approvedPaths": [
+    "README.md",
+    "config.agents",
+    "config.example.json",
+    "config.product.example.json",
+    "docs/coord-driver.md",
+    "docs/setup-workspace.md",
+    "src/",
+    "src/install.ts",
+    "test/",
+    "test/cli.test.ts",
+    "test/onboard.test.ts",
+    "test/verify-config.test.ts"
+  ]
+}
