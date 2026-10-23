@@ -1,0 +1,26 @@
+{
+  "actionId": "5b36d056-ae07-437f-945e-d04513a4e732",
+  "agent": "codex",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "373387974a5fee2dc7fbecfa2f005c21265e332d8e4e7d35d5e1cb165197c425",
+  "issue": 248,
+  "issueSessionId": "issue-248:6f9c66678a814ae3b461edc545e226474ec128d8",
+  "plans": [
+    {
+      "agent": "codex",
+      "commitSha": "1847a180a836755906a74fea179d2e4caef0d9da",
+      "path": ".plans/issue-248/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "Both additions are necessary for the selected pnpm 12 upgrade because scripts/setup_common.sh currently re-enables an incompatible Corepack shim or skips an available native pnpm when Corepack fails, and test/install.test.ts already contains the setup-helper fixtures needed to verify native installation and dry-run behavior without expanding product scope.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "482b6777354cf3810d79bfc642405ea658cfd1f6",
+    "path": ".signals/issue-248/implementation-ready-codex.json"
+  },
+  "responseSha256": "2c5a18f4326721a01985064cadaff9382870c5621d9bf6ba946421012d2c2182",
+  "sequence": 1
+}
