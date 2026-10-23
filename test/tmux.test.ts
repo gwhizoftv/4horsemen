@@ -1092,6 +1092,9 @@ describe("tmux boundary", () => {
     const action = "11111111-2222-3333-4444-555555555555";
     const digest = "f".repeat(64);
     const current = renderNudgeText("/a", action, digest);
+    const hint = "Ask to monitor a running build or log and get pinged on changes";
+    const placeholder = `${esc}[38;2;103;108;116m${hint}${esc}[39m`;
+    const placeholderPane = musePane("", placeholder).replace("❯ ", `${esc}[0m${esc}[38;2;90;160;255m❯ `);
     /** Later captures repeat the last one; the second is the final pre-send recapture. */
     const museNudge = async (...captures: string[]) => {
       const calls: string[][] = [];
@@ -1103,22 +1106,63 @@ describe("tmux boundary", () => {
       }, null, null, null, noopSleep);
       const outcome = await controller.nudge(1, { id: "muse", root: "/clone", launcher: "start-muse.sh", delivery: "both",
         harnessProcess: "muse", nudgePrelude: [], nudgeSubmit: ["Enter"] }, "/a", undefined, action, digest);
-      return { outcome, keys: calls.filter((args) => args.includes("send-keys")).flatMap(commandsIn) };
+      return { outcome, keys: calls.filter((args) => args.includes("send-keys")).flatMap(commandsIn),
+        captures: calls.filter((args) => args[0] === "capture-pane").length };
     };
 
-    it("types the action and Enter into an idle composer, with no prelude or Escape", async () => {
-      const { outcome, keys } = await museNudge(musePane("❯ earlier prompt\n◆ done\n"));
+    it.each([
+      { state: "an empty composer", pane: musePane("❯ earlier prompt\n◆ done\n") },
+      { state: "the measured placeholder", pane: placeholderPane },
+      { state: "a wrapped placeholder", pane: placeholderPane.replace("build or log", "build\n  or log") },
+      { state: "a placeholder with background and underline colors", pane: placeholderPane.replace(hint,
+        `${esc}[48;2;0;2;0m${esc}[58;5;0m${hint}`) }
+    ])("types the action and Enter over $state, with no prelude or Escape", async ({ pane }) => {
+      const { outcome, keys } = await museNudge(pane);
       expect(outcome).toMatchObject({ status: "sent", reason: "sent" });
       expect(keys.map((args) => args.includes("-l") ? "-l" : args.at(-1))).toEqual(["-l", "sleep 0.3", "Enter"]);
       expect(keys.find((args) => args.includes("-l"))?.at(-1)).toBe(current);
     });
 
     it.each([
+      { style: "normal foreground", sgr: "38;2;204;211;219" },
+      { style: "no ANSI", sgr: null },
+      { style: "dim only", sgr: "2" },
+      { style: "an unmeasured gray", sgr: "38;2;104;108;116" },
+      { style: "placeholder RGB as background", sgr: "48;2;103;108;116" },
+      { style: "placeholder RGB as underline color", sgr: "58;2;103;108;116" }
+    ])("protects the same hint typed with $style", async ({ sgr }) => {
+      const draft = sgr === null ? hint : `${esc}[${sgr}m${hint}${esc}[0m`;
+      const { outcome, keys } = await museNudge(musePane("", draft));
+      expect(outcome).toMatchObject({ status: "busy", reason: "muse-composer-not-ready" });
+      expect(keys).toEqual([]);
+    });
+
+    it.each(["39", "0", "", "37", "97", "38;5;2", "38;2;204;211;219", "38;2;0;2;0"])(
+      "protects a draft after a placeholder and SGR %s", async (sgr) => {
+        const pane = placeholderPane.replace(`${esc}[39m`, `\n  ${esc}[${sgr}mowner draft text`);
+        const { outcome, keys } = await museNudge(pane);
+        expect(outcome).toMatchObject({ status: "busy", reason: "muse-composer-not-ready" });
+        expect(keys).toEqual([]);
+      }
+    );
+
+    it("recaptures the placeholder before sending and protects a replacement draft", async () => {
+      const { outcome, keys, captures } = await museNudge(placeholderPane, musePane("", "owner draft text"));
+      expect(captures).toBe(2);
+      expect(outcome).toMatchObject({ status: "busy", reason: "muse-composer-not-ready", stage: "prompt" });
+      expect(keys).toEqual([]);
+    });
+
+    it.each([
       { state: "an owner draft", pane: musePane("", "owner draft text"), reason: "muse-composer-not-ready" },
+      { state: "a draft before placeholder-colored text", pane: musePane("", `owner draft text ${placeholder}`),
+        reason: "muse-composer-not-ready" },
       { state: "a draft quoting the action id", pane: musePane("", `please look at ${action} later`), reason: "muse-composer-not-ready" },
       { state: "this action's prompt for an older digest", pane: musePane("", renderNudgeText("/a", action, "0".repeat(64))),
         reason: "muse-composer-not-ready" },
       { state: "a running turn", pane: musePane("◈ Thinking (2s · esc to interrupt)\n"), reason: "muse-turn-chrome" },
+      { state: "a running turn with a placeholder", pane: musePane("◈ Thinking (2s · esc to interrupt)\n", placeholder),
+        reason: "muse-turn-chrome" },
       { state: "a draft typed before the final recapture", pane: [musePane(""), musePane("", "owner draft text")],
         reason: "muse-composer-not-ready" },
       { state: "a turn started before the final recapture", pane: [musePane(""), musePane("◈ Thinking (0s · esc to interrupt)\n")],

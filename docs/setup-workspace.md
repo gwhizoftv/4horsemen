@@ -305,8 +305,12 @@ painted and shows `◈ Thinking (3s · esc to interrupt)` above it, so coord
 refuses delivery (`muse-turn-chrome`): Enter would steer the running turn.
 Narrow panes shorten or clip that line (`runn… (24s · esc to interrupt)`,
 `◇ Thinking (0s · esc to interr` at 30 columns), so the elapsed timer
-`(…s ·` is what identifies it. Any other text in the composer is an owner
-draft (`muse-composer-not-ready`) unless it is this action's complete current
+`(…s ·` is what identifies it. The measured placeholder uses foreground RGB
+`103,108,116` (`SGR 38;2;103;108;116`), which counts as empty even when the hint
+wraps across lines. Matching hint words, SGR dim alone, and unknown colors do
+not establish an empty composer. Text after a foreground reset or a switch to
+another foreground color is an owner draft (`muse-composer-not-ready`), as is
+any other non-placeholder text, unless it is this action's complete current
 prompt, which is then submitted without retyping. If the composer changes
 between the first check and the final recapture, delivery defers and decides
 again on the next poll. An unknown screen, including a missing or replaced
