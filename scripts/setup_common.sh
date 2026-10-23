@@ -185,7 +185,7 @@ common_detect_project() {
   if [[ "$PROJECT_TYPE" =~ ^(javascript|typescript|react|react-native)$ && ! -d "$CLONE_DIR/node_modules" ]]; then
     if [[ -f "$CLONE_DIR/pnpm-lock.yaml" ]]; then
       echo "Installing pnpm dependencies with frozen lockfile..."
-      run bash -c "cd '$CLONE_DIR' && corepack enable pnpm && pnpm install --frozen-lockfile" \
+      run bash -c "cd '$CLONE_DIR' && pnpm install --frozen-lockfile" \
         || echo "WARNING: pnpm install --frozen-lockfile failed; agent may need to run it after lockfile/dependency issues are fixed."
     elif [[ -f "$CLONE_DIR/package-lock.json" ]]; then
       echo "Installing npm dependencies..."

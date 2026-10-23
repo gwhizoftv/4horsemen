@@ -181,6 +181,6 @@ describe("coord bootstrap", () => {
       PATH: "/usr/bin:/bin"
     });
     expect(missing.status).not.toBe(0);
-    expect(missing.stderr).toContain("Node 26 and pnpm 11 are required");
+    expect(missing.stderr).toContain("Node 26 and pnpm 12 are required");
   });
 });

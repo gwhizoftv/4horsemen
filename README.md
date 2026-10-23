@@ -66,13 +66,15 @@ security sandbox. Peer agreement and passing checks still need your judgment.
 
 ## Requirements
 
-- **Node 26, pnpm 11, and Git** to install and run the driver.
+- **Node 26, pnpm 12, and Git** to install and run the driver.
 - **GitHub CLI (`gh`)**, authenticated for your product's issue and PR operations.
 - **tmux** and the coding-agent harnesses you select, installed and authenticated.
 - **Your product's tools**, such as Go, Cargo, pytest, or the Flutter SDK, with its dependencies prepared.
 
 The driver uses Node/pnpm regardless of your product's language. Public
 bootstrap needs no GitHub CLI authentication; product operations do.
+See the [toolchain upgrade guide](docs/setup-workspace.md#toolchain-versions-and-upgrades)
+for the selected patch versions, installation steps, and deferred major updates.
 
 ## Quick start
 
@@ -180,7 +182,7 @@ platforms use tmux without that integration; native Windows is not promised.
 
 ## Development
 
-From a checkout of this repository, with Node 26 and pnpm 11:
+From a checkout of this repository, with the Node version in `.nvmrc` and pnpm 12:
 
 ```sh
 pnpm install --frozen-lockfile

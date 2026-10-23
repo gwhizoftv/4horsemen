@@ -24,7 +24,7 @@ them alone. "No hooks for humans" means none *from coordination*.
 
 ## Bootstrap once
 
-With Node 26, pnpm 11 and Git installed, bootstrap from the public URL without
+With Node 26, pnpm 12 and Git installed, bootstrap from the public URL without
 GitHub CLI authentication to Four Horsemen:
 
 ```sh
@@ -62,7 +62,7 @@ not download Node, source nvm, or change your version-manager defaults.
 
 The driver and its installed Git/harness callbacks use that compatible runtime,
 while product commands retain their original PATH. Only coordination's own
-dependency installation and builds prepend the selected Node directory. pnpm 11
+dependency installation and builds prepend the selected Node directory. pnpm 12
 must also be available for those steps. If no compatible Node is found, coord
 stops before loading JavaScript and explains how to install one or set the
 override. Re-run onboarding after upgrading coord to refresh existing generated
@@ -86,6 +86,142 @@ GitHub CLI (`gh`) authentication is needed for product issue/PR operations, not
 for public bootstrap. Interactive operation also needs tmux, the configured
 harnesses and the product's own tools. Terminal.app windows are a macOS-only
 integration; on other platforms use tmux without those windows.
+
+## Toolchain versions and upgrades
+
+The project pins pnpm **12.15.0** in `package.json` and Node **26.12.1** in
+`.nvmrc`. Release CI reads both declarations. Node >=26 remains the supported
+runtime floor. pnpm 12 is a native executable; the driver still needs Node.
+
+The following stable releases were checked on **2026-10-22 PDT**. Versions in
+the latest column are a dated inventory, not floating installation targets.
+
+| Tool | Before this upgrade | Latest checked | Selection |
+| --- | --- | --- | --- |
+| pnpm | 11.10.0 in this checkout | 12.15.0 | 12.15.0 |
+| GitHub CLI | 2.102.0 | 2.103.0 | 2.103.0 |
+| Node | 26.7.0 | 26.12.1 Current; 24.22.1 LTS | 26.12.1; Node 24 is below the driver's floor |
+| npm | 11.19.0 | 12.2.1 | Use Node 26.12.1's bundled 11.20.0; the project installs with pnpm |
+| Git | Apple Git 2.50.1 | 2.56.0 | Optional host upgrade after coordination is idle |
+| tmux | 3.7b | 3.8 | Optional host upgrade after existing sessions finish |
+| Homebrew | 7.0.8 | 7.0.10 | 7.0.10 through brew update |
+
+Sources: [pnpm releases](https://github.com/pnpm/pnpm/releases),
+[gh 2.103.0](https://github.com/cli/cli/releases/tag/v2.103.0),
+[Node releases](https://nodejs.org/dist/index.json),
+[npm metadata](https://registry.npmjs.org/npm/latest),
+[Git formula](https://formulae.brew.sh/formula/git),
+[tmux formula](https://formulae.brew.sh/formula/tmux), and
+[Homebrew 7.0.10](https://github.com/Homebrew/brew/releases/tag/7.0.10).
+Node 26.12.1 is a [security release](https://nodejs.org/en/blog/release/v26.12.1).
+The pnpm setup action moves to
+[v6.1.0](https://github.com/pnpm/action-setup/releases/tag/v6.1.0), which adds
+pnpm 12 support. The newer
+[setup-node v7.1.0](https://github.com/actions/setup-node/releases/tag/v7.1.0)
+and [checkout v7.0.1](https://github.com/actions/checkout/releases/tag/v7.0.1)
+remain separate migrations because they change runner and authentication behavior.
+
+The dependency choices keep the existing schema and test coverage in place:
+
+| Package | Previous lockfile | Latest checked | Selected resolution |
+| --- | --- | --- | --- |
+| zod | 4.4.3 | 4.6.7 | 4.6.7 |
+| typescript-eslint | 8.66.0 | 8.72.0 | 8.72.0 |
+| @types/node | 24.13.3 | 26.6.5 | 26.6.5, matching the runtime major |
+| vitest | 4.1.11 | 5.0.5 | 4.1.12, latest 4.x |
+| js-yaml | 4.3.2 | 5.5.0 | 4.3.2, latest 4.x |
+| @types/js-yaml | 4.0.9 | 4.0.9 | 4.0.9 |
+| eslint | 9.39.5 | 10.13.0 | 9.39.5, migration outstanding |
+| @eslint/js | 9.39.5 | 10.0.1 | 9.39.5 with ESLint 9 |
+| typescript | 5.9.3 | 7.0.2 | 5.9.3 |
+
+These versions were checked against the npm registry. In particular,
+[typescript-eslint 8.72.0](https://registry.npmjs.org/typescript-eslint/8.72.0)
+supports TypeScript >=4.8.4 and <6.1.0, so TypeScript 7 is incompatible with
+that parser. TypeScript 6 is a separate compiler migration. Vitest 5 changes
+[mock clearing and runner behavior](https://vitest.dev/guide/migration/), and
+js-yaml 5 needs validation of workspace declaration parsing.
+
+**ESLint 9 is end-of-life**, according to its
+[support policy](https://eslint.org/version-support/). Retaining it is an
+outstanding support risk. ESLint 10's
+[updated recommended rules](https://eslint.org/docs/latest/use/migrate-to-10.0.0)
+include `preserve-caught-error`; existing error wrappers need a source review
+before that migration. This upgrade does not disable those checks, claim every
+package is current, or resolve every dependency advisory.
+
+### Upgrade an existing macOS installation
+
+Run shared host upgrades once, not independently from each agent clone. On an
+nvm-managed machine, install the selected Node version without removing the old
+runtime or changing the default alias:
+
+```sh
+nvm install 26.12.1
+nvm use 26.12.1
+brew update
+brew info gh pnpm
+```
+
+Confirm the formula versions are still gh 2.103.0 and pnpm 12.15.0 before
+proceeding. Reassess any newer target rather than treating this dated procedure
+as approval for another major version.
+
+```sh
+brew upgrade gh
+brew install pnpm # use brew upgrade pnpm if already managed by Homebrew
+```
+
+If an old Corepack shim owns `pnpm`, inspect it with
+`ls -l "$(command -v pnpm)"`. Corepack 0.32.0 was observed failing to launch
+pnpm 12 with a missing `bin/pnpm.cjs` error. If Homebrew installed pnpm but could
+not link it because of those shims, remove only Corepack's pnpm/pnpx shims and
+link the installed formula:
+
+```sh
+corepack disable pnpm --install-directory "$(brew --prefix)/bin"
+brew link pnpm
+hash -r
+```
+
+Use this recovery only when those paths belong to Corepack; do not overwrite
+another installation blindly or unlink the entire Node installation. Other
+platforms can use the [official pnpm installation instructions](https://pnpm.io/installation).
+Do not re-enable the incompatible Corepack pnpm shim after installing native pnpm.
+The agent setup helper uses the selected `pnpm` executable directly, so a
+missing or older Corepack installation does not replace it or prevent the
+frozen dependency install.
+
+From the driver checkout, verify the effective versions and a reproducible
+installation. The project pin can differ from the global launcher's version.
+
+```sh
+nvm use
+command -v node pnpm gh
+node --version
+pnpm --version
+gh --version
+pnpm install --frozen-lockfile --strict-peer-dependencies
+pnpm list --depth 0
+gh auth status
+gh issue view 248 --repo gwhizoftv/4horsemen --json number,title,url
+gh pr list --repo gwhizoftv/4horsemen --limit 1 --json number,url
+```
+
+Keep existing GitHub authentication settings; the new expiring-token preview is
+not required. Run the repository's declared checks before accepting dependency
+updates; coordinated agents follow their action's verification responsibilities.
+
+### Recorded host results for issue 248
+
+On the upgrade machine, Node 26.12.1 was installed under nvm, pnpm 12.15.0 was
+installed and linked through Homebrew, gh was upgraded to 2.103.0, and Homebrew
+reported 7.0.10. pnpm and gh resolved from `/opt/homebrew/bin`; the old pnpm
+command there had been a Corepack 0.32.0 shim, not an installed pnpm formula.
+The prior Node installation and nvm default alias were retained. GitHub auth,
+issue JSON, and PR-list JSON checks passed. Git, tmux, and the unrelated
+Homebrew formulae were not upgraded. These are host observations; a repository
+checkout alone does not perform these system upgrades.
 
 ## Onboard a product
 
@@ -529,7 +665,7 @@ publication. The journal records which tier failed.
 
 ### Product languages
 
-The driver needs Node 26 and pnpm 11, but the product does not. Installation
+The driver needs Node 26 and pnpm 12, but the product does not. Installation
 uses `proposeProjectPolicy` in `src/setupWorkspace.ts` to propose the policy
 below. Cargo and Go keep first priority, followed by existing Node checks and
 a Makefile with a `test` target. New language defaults preserve those working

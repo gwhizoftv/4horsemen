@@ -56,7 +56,7 @@ done
 
 command -v git >/dev/null 2>&1 || die "Git is required; install git and rerun this command"
 if ! command -v pnpm >/dev/null 2>&1; then
-  die "Node 26 and pnpm 11 are required; install them, then rerun this command"
+  die "Node 26 and pnpm 12 are required; install them, then rerun this command"
 fi
 
 case "$root" in
