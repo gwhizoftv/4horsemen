@@ -862,8 +862,11 @@ export const uninstall = (options: UninstallOptions): UninstallResult => {
   return { changes: effects.changes, kept };
 };
 
-/** The roster `coord onboard` uses when no agents are named; an explicit list is exact. */
-export const DEFAULT_AGENTS = ["claude", "codex", "cursor", "antigravity", "muse"] as const;
+/**
+ * The roster `coord onboard` uses when no agents are named; an explicit list is exact.
+ * The first entry is the agent `--profile solo` runs.
+ */
+export const DEFAULT_AGENTS = ["codex", "claude", "cursor", "antigravity", "muse"] as const;
 
 export type OnboardOptions = {
   installRoot: string;

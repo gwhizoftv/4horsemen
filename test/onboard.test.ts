@@ -258,7 +258,7 @@ describe("coord onboard", () => {
     expect(config.agents.find((agent) => agent.id === "codex")?.nudgeSubmit).toEqual(["Enter"]);
     expect(config.profile).toBe("consensus");
     expect(config.digestPaths).toEqual([]);
-    expect(config.agents.map((agent) => agent.id)).toEqual(["claude", "codex", "cursor", "antigravity", "muse"]);
+    expect(config.agents.map((agent) => agent.id)).toEqual(["codex", "claude", "cursor", "antigravity", "muse"]);
     expect(config.agents.find((agent) => agent.id === "muse")).toMatchObject({ delivery: "both", nudgeSubmit: ["Enter"] });
     const declaration = join(fixture.workspaceRoot, "policy.json");
     const verification = {
@@ -296,7 +296,7 @@ describe("coord onboard", () => {
         }
       })
     ).toBe(0);
-    expect(manualAgents).toEqual([["claude", "codex", "cursor", "antigravity", "muse"]]);
+    expect(manualAgents).toEqual([["codex", "claude", "cursor", "antigravity", "muse"]]);
 
     const human = join(fixture.workspaceRoot, "human");
     execFileSync("git", ["clone", "-q", fixture.originPath, human]);
@@ -320,7 +320,7 @@ describe("coord onboard", () => {
 
   it("adds Muse on default re-onboarding while a started issue keeps its frozen roster", async () => {
     const fixture = product();
-    const fourAgents = ["claude", "codex", "cursor", "antigravity"];
+    const fourAgents = ["codex", "claude", "cursor", "antigravity"];
     const options = { installRoot: repoRoot, productRoot: fixture.productRoot, home: null, log: () => undefined };
     const initial = onboard({ ...options, agents: fourAgents });
     expect(initial.doctor.exitCode).toBe(0);
