@@ -4,18 +4,21 @@
   "issueSessionId": "issue-248:6f9c66678a814ae3b461edc545e226474ec128d8",
   "agent": "codex",
   "inputSetHash": "a4b199e24534cdc31f822e65ac16a39ee1794cac57b599ca7ce4cdaa9bcdc5b4",
-  "artifact": "plan-amendment-request",
-  "actionId": "9d6c76ec-feb1-4ed2-9242-3424c11a1f79",
-  "scopeHash": "d21f034426c1321210696acc76c2b83d7b52a69abfc32916c2dd1b46332f1f6b",
-  "explanation": "The pnpm 12 migration exposed a necessary setup compatibility change omitted from the selected plan. The existing /opt/homebrew/bin/pnpm was a Corepack 0.32.0 shim; attempting the approved pnpm 12.15.0 pin failed because Corepack tried to execute the nonexistent bin/pnpm.cjs. Installing native Homebrew pnpm resolved that failure, and the clean frozen install, 78 focused tests, and build passed. However, common_detect_project in scripts/setup_common.sh still unconditionally runs corepack enable pnpm before installing dependencies in a fresh agent clone. That command can replace the working native launcher with the incompatible shim; if Corepack is missing or fails, the && also prevents an available native pnpm from running. An isolated probe reproduced the latter failure with an available pnpm stub and a failing Corepack stub: corepack received 'enable pnpm', the helper printed an install failure, and pnpm was never called. Fixing this existing setup path is necessary for the original toolchain upgrade, not additional product behavior. The current product edits remain unstaged; only this request is submitted.",
-  "additionalPaths": [
-    {
-      "path": "scripts/setup_common.sh",
-      "reason": "Make the existing pnpm dependency-install branch use the already selected pnpm executable without unconditionally enabling Corepack or replacing its shims. Preserve frozen-lockfile installation, dry-run behavior, and the other package-manager branches. This prevents legacy agent setup from undoing the approved native pnpm 12 installation or skipping it when Corepack is unavailable."
-    },
-    {
-      "path": "test/install.test.ts",
-      "reason": "Extend the existing setup-helper coverage, reusing product()/makeProduct and the existing bash invocation pattern, with a focused native-pnpm regression. In an isolated fixture, provide pnpm and a Corepack stub that must not run; assert the helper invokes pnpm install --frozen-lockfile and never touches Corepack. Cover dry-run without invoking either executable. This fails on the current helper and guards the migration without a new test file or real global shim changes."
-    }
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "4bb4bac08a40c4d39749a0d362e38cb6005c42b8",
+  "scopeHash": "93f34c9b58cbce036863edc716d5e28e28693c42afc91fe742b3120a8ede7c14",
+  "approvedPaths": [
+    ".github/workflows/version-bump-on-merge.yml",
+    ".nvmrc",
+    "CONTRIBUTING.md",
+    "README.md",
+    "docs/setup-workspace.md",
+    "package.json",
+    "pnpm-lock.yaml",
+    "scripts/bootstrap.sh",
+    "scripts/setup_common.sh",
+    "test/bootstrap.test.ts",
+    "test/install.test.ts",
+    "test/workflows.test.ts"
   ]
 }
