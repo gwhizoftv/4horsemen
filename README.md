@@ -95,10 +95,11 @@ install from a private fork, see [bootstrap options](docs/setup-workspace.md#boo
 coord onboard /path/to/app
 ```
 
-The default is all five agents (Claude, Codex, Cursor, Antigravity and Muse)
-and your own clone. Onboarding creates the agent clones, proposes checks for the
-product, and runs `coord doctor`. Install all five harnesses, or name exactly the
-agents you have with `--agents`; this is a one-agent start:
+The default is all five agents (Codex, Claude, Cursor, Antigravity and Muse)
+and your own clone. The first listed agent is the one `--profile solo` runs.
+Onboarding creates the agent clones, proposes checks for the product, and runs
+`coord doctor`. Install all five harnesses, or name exactly the agents you have
+with `--agents`; this is a one-agent start:
 
 ```sh
 coord onboard /path/to/app --agents codex --profile solo

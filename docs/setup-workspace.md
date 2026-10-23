@@ -253,7 +253,7 @@ vendoring, tracked product changes, origin/base overrides, or dry runs.
 coord install \
   --product /path/to/app \
   --coord-runtime /path/to/coord-runtime \
-  --agents claude,codex,cursor,antigravity,muse \
+  --agents codex,claude,cursor,antigravity,muse \
   --profile consensus
   # --write-product            # opt-in tracked product changes (additive only)
   # --vendor                   # copy hook bodies into agent clones instead of exec'ing them

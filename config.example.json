@@ -3,16 +3,6 @@
   "origin": "https://github.com/example/4horsemen.git",
   "agents": [
     {
-      "id": "claude",
-      "root": "../4horsemen-claude",
-      "launcher": "start-claude.sh",
-      "delivery": "nudge",
-      "harnessProcess": "claude",
-      "nudgePrelude": [],
-      "nudgeSubmit": ["Escape", "Enter"],
-      "terminalProfile": "Pro"
-    },
-    {
       "id": "codex",
       "root": "../4horsemen-codex",
       "launcher": "start-codex.sh",
@@ -21,6 +11,16 @@
       "nudgePrelude": ["i"],
       "nudgeSubmit": ["Enter"],
       "terminalProfile": "Grass"
+    },
+    {
+      "id": "claude",
+      "root": "../4horsemen-claude",
+      "launcher": "start-claude.sh",
+      "delivery": "nudge",
+      "harnessProcess": "claude",
+      "nudgePrelude": [],
+      "nudgeSubmit": ["Escape", "Enter"],
+      "terminalProfile": "Pro"
     },
     {
       "id": "cursor",

@@ -3,8 +3,8 @@
   "origin": "https://github.com/example/myserver.git",
   "toolchain": "go",
   "agents": [
-    { "id": "claude", "root": "../myserver-claude", "launcher": "start-claude.sh", "delivery": "nudge", "harnessProcess": "claude" },
-    { "id": "codex", "root": "../myserver-codex", "launcher": "start-codex.sh", "delivery": "pull", "harnessProcess": "codex" }
+    { "id": "codex", "root": "../myserver-codex", "launcher": "start-codex.sh", "delivery": "pull", "harnessProcess": "codex" },
+    { "id": "claude", "root": "../myserver-claude", "launcher": "start-claude.sh", "delivery": "nudge", "harnessProcess": "claude" }
   ],
   "branch": "issue-{issue}/{agent}",
   "baseBranch": "main",

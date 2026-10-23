@@ -593,7 +593,7 @@ COORD_AGENT=codex coord next --issue 42 --coord-runtime /path/to/runtime
 
 ## Profiles
 
-- `solo`: one configured agent; plan, implementation, and finalization use solo
+- `solo`: the first configured agent; plan, implementation, and finalization use solo
   checks.
 - `reviewed`: all configured reviewers participate in plan selection, one
   designated implementer continues with solo final checks.
