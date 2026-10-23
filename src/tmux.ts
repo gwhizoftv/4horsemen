@@ -116,27 +116,35 @@ const codexTurnChrome = (plain: string): boolean =>
 const CODEX_FOOTER = /^(?:(?:←\s+for agents\s+·\s+)?\?\s+for shortcuts|Context \d+% left|\d+% context left)/;
 
 /**
- * True when the composer after `›` holds nothing but the placeholder Codex
- * paints dim (SGR 2). Undimmed text is a draft the owner has not sent, and a
- * nudge typed after it would be appended to it and submitted with it.
+ * Ignore each vendor's measured placeholder styling: Codex paints it dim
+ * (SGR 2); Muse uses foreground RGB 103,108,116. Other text is an unsent
+ * draft, which a nudge must not append to and submit.
  */
-const composerLineEmpty = (rawLine: string): boolean => {
+const composerLineEmpty = (rawLine: string, vendor: "codex" | "muse" = "codex"): boolean => {
   const esc = String.fromCharCode(0x1b);
+  const marker = vendor === "muse" ? "❯" : "›";
   let dim = false;
+  let foreground: string | null = null;
   let visible = "";
-  for (const part of rawLine.slice(rawLine.indexOf("›") + 1).split(new RegExp(`(${esc}\\[[0-9;]*m)`))) {
+  for (const part of rawLine.slice(rawLine.indexOf(marker) + 1).split(new RegExp(`(${esc}\\[[0-9;]*m)`))) {
     const sgr = new RegExp(`^${esc}\\[([0-9;]*)m$`).exec(part);
     if (sgr === null) {
-      if (!dim) visible += stripAnsi(part);
+      const placeholder = vendor === "codex" ? dim : foreground === "2;103;108;116";
+      if (!placeholder) visible += stripAnsi(part);
       continue;
     }
     const codes = sgr[1] === "" ? ["0"] : sgr[1]!.split(";");
     for (let index = 0; index < codes.length; index += 1) {
       const code = codes[index];
       // Extended colours carry operands (`38;2;r;g;b`, `38;5;n`) that are not attributes.
-      if (code === "38" || code === "48" || code === "58") index += codes[index + 1] === "5" ? 2 : 4;
-      else if (code === "2") dim = true;
-      else if (code === "0" || code === "22") dim = false;
+      if (code === "38" || code === "48" || code === "58") {
+        const operands = codes[index + 1] === "5" ? 2 : 4;
+        if (code === "38") foreground = codes.slice(index + 1, index + operands + 1).join(";");
+        index += operands;
+      } else if (code === "2") dim = true;
+      else if (code === "0") { dim = false; foreground = null; }
+      else if (code === "22") dim = false;
+      else if (code === "39" || /^(?:3[0-7]|9[0-7])$/.test(code ?? "")) foreground = null;
     }
   }
   return visible.trim() === "";
@@ -197,7 +205,7 @@ const museComposer = (paneText: string): PaneLine[] | null => {
 
 const museComposerEmpty = (paneText: string): boolean => {
   const composer = museComposer(paneText);
-  return composer !== null && composer.length === 1 && composer[0]!.plain === "❯";
+  return composer !== null && composerLineEmpty(composer.map((line) => line.raw).join("\n"), "muse");
 };
 
 /**
