@@ -25,7 +25,7 @@ type Workflow = {
   permissions?: Record<string, string>;
   jobs?: Record<string, {
     if?: unknown;
-    steps?: { id?: string; run?: string; env?: Record<string, string> }[];
+    steps?: { id?: string; uses?: string; with?: Record<string, unknown>; run?: string; env?: Record<string, string> }[];
   }>;
 };
 
@@ -68,6 +68,17 @@ describe("version-bump-on-merge", () => {
   const triggersOf = (parsed: Workflow): { push?: { branches?: string[] } } =>
     // `on` is a YAML 1.1 boolean, so js-yaml keys the trigger block under `true`.
     (parsed.on ?? parsed.true) as { push?: { branches?: string[] } };
+
+  it("uses the repository's Node and pnpm declarations without version overrides", () => {
+    const steps = parse("version-bump-on-merge.yml").jobs?.bump?.steps ?? [];
+    const nodeSetup = steps.find((step) => step.uses?.startsWith("actions/setup-node@"));
+    const pnpmSetup = steps.find((step) => step.uses?.startsWith("pnpm/action-setup@"));
+    expect(nodeSetup).toBeDefined();
+    expect(nodeSetup?.with?.["node-version-file"]).toBe(".nvmrc");
+    expect(nodeSetup?.with?.["node-version"]).toBeUndefined();
+    expect(pnpmSetup).toBeDefined();
+    expect(pnpmSetup?.with?.version).toBeUndefined();
+  });
 
   it("triggers only on pushes to main", () => {
     const triggers = triggersOf(parse("version-bump-on-merge.yml"));

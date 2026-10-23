@@ -59,6 +59,35 @@ const installOnce = (
 };
 
 describe("coord install — two-mode footprint", () => {
+  it("uses the selected pnpm in setup helpers without enabling Corepack, and keeps dry-run inert", () => {
+    const fixture = product("plain");
+    const bin = join(fixture.workspaceRoot, "native-pnpm");
+    const pnpmLog = join(fixture.workspaceRoot, "pnpm.log");
+    const corepackLog = join(fixture.workspaceRoot, "corepack.log");
+    mkdirSync(bin);
+    writeFileSync(join(fixture.productRoot, "package.json"), JSON.stringify({ name: "native-pnpm-fixture" }));
+    writeFileSync(join(fixture.productRoot, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    writeFileSync(join(bin, "pnpm"), '#!/bin/sh\nprintf "%s\\n" "$PWD" "$*" >"$SETUP_PNPM_LOG"\n', { mode: 0o700 });
+    writeFileSync(join(bin, "corepack"), '#!/bin/sh\necho invoked >"$SETUP_COREPACK_LOG"\nexit 42\n', { mode: 0o700 });
+    const setup = (dryRun: boolean) => spawnSync("bash", ["-c",
+      '. "$1"; CLONE_DIR="$2"; DRY_RUN="$3"; common_detect_project',
+      "_", join(repoRoot, "scripts/setup_common.sh"), fixture.productRoot, String(dryRun)], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, SETUP_PNPM_LOG: pnpmLog, SETUP_COREPACK_LOG: corepackLog }
+    });
+
+    const dryRun = setup(true);
+    expect(dryRun.status, dryRun.stderr).toBe(0);
+    expect(dryRun.stdout).toContain("DRY-RUN:");
+    expect(existsSync(pnpmLog)).toBe(false);
+    expect(existsSync(corepackLog)).toBe(false);
+
+    const installed = setup(false);
+    expect(installed.status, installed.stderr).toBe(0);
+    expect(existsSync(corepackLog)).toBe(false);
+    expect(readFileSync(pnpmLog, "utf8")).toBe(`${fixture.productRoot}\ninstall --frozen-lockfile\n`);
+  });
+
   it("isolates its bootstrap Node PATH from the product environment", () => {
     const fixture = product();
     const oldBin = join(fixture.workspaceRoot, "old-node");

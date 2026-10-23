@@ -8,14 +8,17 @@ not merge PRs automatically.
 
 ## Local development
 
-Use Node 26, pnpm 11 and Git:
+Use the Node version in `.nvmrc`, pnpm 12 and Git:
 
 ```sh
-nvm use 26 # if you use nvm; otherwise select Node 26 with your usual tooling
+nvm use # if you use nvm; otherwise select the version in .nvmrc with your usual tooling
 pnpm install --frozen-lockfile
 pnpm check:fast
 pnpm check
 ```
+
+The [toolchain upgrade guide](docs/setup-workspace.md#toolchain-versions-and-upgrades)
+lists the selected versions and installation steps.
 
 Run `pnpm check:fast` before commits: lint, source/test typechecking and fast
 tests. Run `pnpm check` for full acceptance: build, the fast suite and e2e.
