@@ -1302,6 +1302,54 @@ describe("generated git shim", () => {
 });
 
 describe("generated agent launchers", () => {
+  it.each([
+    { pnpm: true, corepack: true, lockfile: true },
+    { pnpm: true, corepack: false, lockfile: true },
+    { pnpm: false, corepack: true, lockfile: true },
+    { pnpm: true, corepack: true, lockfile: false }
+  ])("uses native pnpm without Corepack (pnpm=$pnpm, corepack=$corepack, lockfile=$lockfile)", (available) => {
+    const fixture = product("plain");
+    const home = join(fixture.workspaceRoot, "home");
+    const clone = installOnce(fixture, { home }).clones[0] as string;
+    const bin = join(fixture.workspaceRoot, "bin");
+    const pnpmLog = join(fixture.workspaceRoot, "pnpm.log");
+    const corepackLog = join(fixture.workspaceRoot, "corepack.log");
+    const capture = join(fixture.workspaceRoot, "claude.args");
+    mkdirSync(bin);
+    // Expose only launcher prerequisites; host pnpm/Corepack installs must not
+    // leak into the cases that deliberately omit them.
+    for (const command of ["dirname", "git"]) {
+      const executable = execFileSync("/bin/bash", ["-c", 'command -v "$1"', "_", command], { encoding: "utf8" }).trim();
+      symlinkSync(executable, join(bin, command));
+    }
+    symlinkSync(process.execPath, join(bin, "node"));
+    if (available.lockfile) writeFileSync(join(clone, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    if (available.pnpm) writeFileSync(join(bin, "pnpm"),
+      '#!/bin/sh\nprintf "%s\\n" "$PWD" "$*" >"$PNPM_LOG"\necho 12.15.0\n', { mode: 0o755 });
+    if (available.corepack) writeFileSync(join(bin, "corepack"),
+      '#!/bin/sh\necho invoked >"$COREPACK_LOG"\nexit 42\n', { mode: 0o755 });
+    writeFileSync(join(bin, "claude"), '#!/bin/sh\nprintf "%s\\n" "$@" >"$CAPTURE"\n', { mode: 0o755 });
+
+    const launched = spawnSync("/bin/bash", [join(clone, "start-claude.sh")], {
+      cwd: clone,
+      encoding: "utf8",
+      env: {
+        ...process.env, HOME: home, PATH: bin, COORD_NODE: join(bin, "node"),
+        COORD_ISSUE: "", PNPM_LOG: pnpmLog, COREPACK_LOG: corepackLog, CAPTURE: capture
+      }
+    });
+    expect(launched.status, launched.stderr).toBe(0);
+    expect(readFileSync(capture, "utf8")).toBe("--permission-mode\nauto\n");
+    expect(existsSync(corepackLog)).toBe(false);
+    if (available.pnpm && available.lockfile) {
+      expect(readFileSync(pnpmLog, "utf8")).toBe(`${clone}\n--version\n`);
+      expect(launched.stdout).toContain("pnpm: 12.15.0");
+    } else {
+      expect(existsSync(pnpmLog)).toBe(false);
+      expect(launched.stdout).not.toContain("pnpm:");
+    }
+  });
+
   it("launches Muse unsandboxed with automatic delivery and no self-update", () => {
     const fixture = product("plain");
     const home = join(fixture.workspaceRoot, "home with spaces");

@@ -188,9 +188,9 @@ Use this recovery only when those paths belong to Corepack; do not overwrite
 another installation blindly or unlink the entire Node installation. Other
 platforms can use the [official pnpm installation instructions](https://pnpm.io/installation).
 Do not re-enable the incompatible Corepack pnpm shim after installing native pnpm.
-The agent setup helper uses the selected `pnpm` executable directly, so a
-missing or older Corepack installation does not replace it or prevent the
-frozen dependency install.
+The agent setup helper and generated launchers use the selected `pnpm`
+executable directly, so a missing or older Corepack installation does not
+replace it or prevent the frozen dependency install or agent startup.
 
 From the driver checkout, verify the effective versions and a reproducible
 installation. The project pin can differ from the global launcher's version.
