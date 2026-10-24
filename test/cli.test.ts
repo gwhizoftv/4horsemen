@@ -358,13 +358,18 @@ describe("fresh-start agent maintenance", () => {
 
   it.each([
     { id: "codex", label: "coord", nodeScript: true, pinned: true },
-    { id: "claude", label: "coord", nodeScript: true, pinned: true },
+    { id: "claude", label: "home", nodeScript: false, pinned: true, coordClaude: false },
+    { id: "claude", label: "home", nodeScript: false, pinned: true },
+    { id: "claude", label: "coord", nodeScript: true, pinned: true, nativeClaude: "absent" },
+    { id: "claude", label: "coord", nodeScript: true, pinned: true, nativeClaude: "not-executable" },
     { id: "cursor", label: "coord", nodeScript: false, pinned: true },
     { id: "antigravity", label: "home", nodeScript: false, pinned: true },
     { id: "muse", label: "home", nodeScript: false, pinned: true },
     { id: "claude", label: "pinned", nodeScript: true, pinned: true },
-    { id: "claude", label: "coord", nodeScript: true, pinned: false }
-  ])("updates and launches the same $id installation ($label, product pin: $pinned)", async ({ id, label, nodeScript, pinned }) => {
+    { id: "claude", label: "coord", nodeScript: true, pinned: false, nativeClaude: "absent" }
+  ])("updates and launches the same $id installation ($label, product pin: $pinned, case %#)", async ({
+    id, label, nodeScript, pinned, nativeClaude = "executable", coordClaude = true
+  }) => {
     const f = setup();
     const clone = join(f.root, "clone-codex");
     const home = join(f.root, "home"), nvm = join(home, ".nvm");
@@ -376,10 +381,20 @@ describe("fresh-start agent maintenance", () => {
     for (const [dir, candidate] of [[ownerBin, "owner"], [pinnedBin, "pinned"], [localBin, "home"], [coordBin, "coord"]]) {
       // The fallback case has an installation discoverable only after nvm use.
       if (label === "pinned" && candidate !== "pinned") continue;
+      if (id === "claude") {
+        if (candidate === "coord" && !coordClaude) continue;
+        if (candidate === "home" && nativeClaude === "absent") continue;
+        if (candidate === "owner" && label === "home") {
+          writeFileSync(join(dir!, executable), '#!/bin/sh\necho "Error: claude native binary not installed." >&2\nexit 1\n', { mode: 0o700 });
+          continue;
+        }
+      }
       writeFileSync(join(dir!, executable), (nodeScript ? "#!/usr/bin/env node\n" : "#!/bin/sh\n") +
         `printf '%s|%s|%s|%s|%s\\n' '${candidate}' "$*" "$(node --version)" "\${VENDOR_INTERPRETER:-native}" "\${MUSE_NO_AUTO_UPDATE:-}" >> "$VENDOR_LOG"\n` +
         'case "$1" in update|--version) [ "$(node --version)" = v26.1.0 ] || exit 42 ;; esac\n' +
-        `if [ "$1" = --version ]; then printf '%s\\n' '${candidate}-version'; fi\n`, { mode: 0o700 });
+        `if [ "$1" = --version ]; then printf '%s\\n' '${candidate}-version'; fi\n`, {
+        mode: id === "claude" && candidate === "home" && nativeClaude === "not-executable" ? 0o600 : 0o700
+      });
     }
     for (const dir of [ownerBin, pinnedBin]) {
       writeFileSync(join(dir, "node"), '#!/bin/sh\nif [ "$1" = --version ]; then echo v16.18.0; else exit 42; fi\n', { mode: 0o700 });

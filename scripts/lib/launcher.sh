@@ -36,7 +36,7 @@ launcher_environment() {
   if [[ -n "$coord_agent_node" ]]; then
     search="$(dirname "$coord_agent_node"):$search"
   fi
-  if [[ "$1" == antigravity || "$1" == muse ]]; then
+  if [[ "$1" == claude || "$1" == antigravity || "$1" == muse ]]; then
     search="$HOME/.local/bin:$search"
   fi
   bin="$(PATH="$search" type -P "$2" || true)"
