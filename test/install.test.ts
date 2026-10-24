@@ -1316,6 +1316,13 @@ describe("generated agent launchers", () => {
     const corepackLog = join(fixture.workspaceRoot, "corepack.log");
     const capture = join(fixture.workspaceRoot, "claude.args");
     mkdirSync(bin);
+    // Expose only launcher prerequisites; host pnpm/Corepack installs must not
+    // leak into the cases that deliberately omit them.
+    for (const command of ["dirname", "git"]) {
+      const executable = execFileSync("/bin/bash", ["-c", 'command -v "$1"', "_", command], { encoding: "utf8" }).trim();
+      symlinkSync(executable, join(bin, command));
+    }
+    symlinkSync(process.execPath, join(bin, "node"));
     if (available.lockfile) writeFileSync(join(clone, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
     if (available.pnpm) writeFileSync(join(bin, "pnpm"),
       '#!/bin/sh\nprintf "%s\\n" "$PWD" "$*" >"$PNPM_LOG"\necho 12.15.0\n', { mode: 0o755 });
@@ -1327,7 +1334,7 @@ describe("generated agent launchers", () => {
       cwd: clone,
       encoding: "utf8",
       env: {
-        ...process.env, HOME: home, PATH: `${bin}:/usr/bin:/bin`, COORD_NODE: process.execPath,
+        ...process.env, HOME: home, PATH: bin, COORD_NODE: join(bin, "node"),
         COORD_ISSUE: "", PNPM_LOG: pnpmLog, COREPACK_LOG: corepackLog, CAPTURE: capture
       }
     });
