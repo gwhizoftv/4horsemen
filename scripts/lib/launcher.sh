@@ -442,10 +442,10 @@ cd "\$(dirname "\${BASH_SOURCE[0]}")"
 $(declare -f launcher_environment)
 launcher_environment "$agent" "$executable"
 
-# Prefer pnpm via Corepack when this is a pnpm repo.
-if [[ -f pnpm-lock.yaml ]] && command -v corepack >/dev/null; then
-  corepack enable pnpm >/dev/null 2>&1 || true
-  command -v pnpm >/dev/null && echo "pnpm: \$(pnpm --version)"
+# Use the selected pnpm directly; enabling Corepack can replace native pnpm
+# with an incompatible shim. Starting an agent must not change the toolchain.
+if [[ -f pnpm-lock.yaml ]] && command -v pnpm >/dev/null; then
+  echo "pnpm: \$(pnpm --version)"
 fi
 
 # Grant this harness two narrow writable directories for an automated issue:
