@@ -564,7 +564,7 @@ export const applyLifecycleObservation = (
   return agentLifecycleEntrySchema.parse({
     ...entry,
     lastFailure,
-    containment: sessionChanged || observation.kind === "session-end" ? null : entry.containment,
+    containment: sessionChanged ? null : entry.containment,
     action,
     sessionId,
     retiredSessionIds,
