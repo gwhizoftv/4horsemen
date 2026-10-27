@@ -1,0 +1,34 @@
+{
+  "actionId": "047f7e91-5770-4e1f-8889-c17a0593914a",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "e94da6c745f4664780e16639d79a3d4ea7089f03",
+      "path": ".signals/issue-254/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "d754062d6cb5625d85192bb08f4ebc15ee30fc1d",
+      "path": ".signals/issue-254/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "1a454ab38abbf96baa19960dfd8938d0530165e8",
+      "path": ".signals/issue-254/implementation-ready-codex.json"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "8146353438a00ba7a5bd380db682d8ddba88776e",
+      "path": ".signals/issue-254/implementation-ready-muse.json"
+    }
+  ],
+  "inputSetHash": "ca97acfe68b06d7d313a845c47fa3fcc8f0de1fd0b598f0af6a27e2dcfb09668",
+  "issue": 254,
+  "issueSessionId": "issue-254:7a8fc0272c80e364681d08437111f4534cd7a181",
+  "protocolVersion": 2,
+  "rationale": "Claude's implementation preserves verified history with the minimal fix, documents the completed/live distinction, isolates the healthy-agent live-binding regression, and has passing recorded commit and push checks.",
+  "responseSha256": "8ea94660a85d82bcf91979f0504a23564e1d47ac219b4df7fee9370630b32edf"
+}
