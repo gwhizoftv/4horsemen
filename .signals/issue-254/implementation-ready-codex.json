@@ -1,0 +1,25 @@
+{
+  "protocolVersion": 1,
+  "issue": 254,
+  "issueSessionId": "issue-254:7a8fc0272c80e364681d08437111f4534cd7a181",
+  "agent": "codex",
+  "inputSetHash": "efd3de1c13494e101c56f9697743091bded20784584a5a86228bb975e3e742df",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "1a454ab38abbf96baa19960dfd8938d0530165e8",
+  "scopeHash": "a7605fb4955f180f86825806e6d68d068ea216495a87d5207e7d6161719b1322",
+  "approvedPaths": [
+    "R1.join",
+    "R7.finalize",
+    "current.containment",
+    "cursors.completed",
+    "issueReport.ts",
+    "runLoop.reportStartup",
+    "runLoop.ts",
+    "shellGuard.ts",
+    "src/agentLifecycle.ts",
+    "src/issueReport.ts",
+    "test/agentLifecycle.test.ts",
+    "test/cli.test.ts",
+    "test/issueReport.test.ts"
+  ]
+}
