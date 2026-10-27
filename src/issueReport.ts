@@ -91,7 +91,7 @@ export const renderIssueReport = (
         ? "complete"
         : (stageNames[cursors.issueCursor.stepId] ?? "running");
   const needsAction = cursors.paused || cursors.holds.length > 0 || cursors.ownerQuestion != null || cursors.publication.status === "failed";
-  const uncertain = lifecycle !== undefined && cursors.activeRoster.some((id) => {
+  const uncertain = !cursors.completed && lifecycle !== undefined && cursors.activeRoster.some((id) => {
     const entry = lifecycle.agents[id];
     const root = start.agents.find((agent) => agent.id === id)?.root;
     return entry === undefined || entry.health !== "healthy" ||
@@ -230,7 +230,7 @@ export const renderIssueReport = (
       if (!cursors.activeRoster.includes(agent.id)) continue;
       if (entry === undefined) { lines.push(`[WARN] Agent ${agent.id}: no activity report yet; inspect the terminal and hook setup.`); continue; }
       const alert = entry.degradedCause === null ? "" : `, alert=${entry.degradedCause}`;
-      const coverage = containmentCoverage(entry, containmentPolicy(agent.root, agent.id)?.binding ?? null);
+      const coverage = containmentCoverage(entry, cursors.completed ? undefined : containmentPolicy(agent.root, agent.id)?.binding ?? null);
       const probe = entry.containment?.probe;
       const delivery = { ordered: "task file published; not yet sent", injected: "task message sent",
         accepted: "agent acknowledged the task" };
