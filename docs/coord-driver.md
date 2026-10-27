@@ -310,7 +310,9 @@ termination; failures warn and continue with the available installation.
 Maintenance and generated launchers resolve the vendor executable before applying
 the clone's Node pin. They use the Node >=26 selector beside the clone's recorded
 `coord.cliEntry` (including `COORD_NODE`), preferring that Node's bin directory
-over the inherited PATH; Antigravity and Muse still prefer `~/.local/bin`.
+over the inherited PATH; Claude, Antigravity and Muse prefer executable launchers
+in `~/.local/bin` ahead of both. If Claude's native launcher is absent or not
+executable, the existing Node-bin and PATH search remains available.
 An installation reachable only through the product's nvm pin remains a final
 fallback. Both paths execute the resolved vendor by absolute path, and standard
 Node-shebang CLIs use coordination's Node explicitly. Direct `.../node` shebangs

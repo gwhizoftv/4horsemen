@@ -449,7 +449,7 @@ describe("coord install — two-mode footprint", () => {
     writeFileSync(join(bin, "claude"), '#!/usr/bin/env bash\necho "harness GH_TOKEN=$GH_TOKEN GITHUB_TOKEN=${GITHUB_TOKEN:-}"\n', { mode: 0o755 });
     const launch = (mode: string) => spawnSync("bash", [join(clone, "start-claude.sh")], {
       cwd: clone, encoding: "utf8",
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_NODE: join(bin, "node"),
+      env: { ...process.env, HOME: join(fixture.workspaceRoot, "home"), PATH: `${bin}:${process.env.PATH ?? ""}`, COORD_NODE: join(bin, "node"),
         FAKE_GH: mode, GH_TOKEN: "ambient", GITHUB_TOKEN: "ambient", COORD_ISSUE: "" }
     });
 
@@ -768,6 +768,38 @@ describe("coord install — preflight before effects", () => {
 });
 
 describe("coord install — reinstall", () => {
+  it("refreshes Claude's native preference in installed launchers with old Node first", () => {
+    const fixture = product("plain"), home = join(fixture.workspaceRoot, "home");
+    const clone = installOnce(fixture, { home }).clones[0] as string;
+    const ownerBin = join(home, ".nvm/versions/node/v16.18.0/bin");
+    const coordBin = join(fixture.workspaceRoot, "coord-bin"), localBin = join(home, ".local/bin");
+    for (const dir of [ownerBin, coordBin, localBin]) mkdirSync(dir, { recursive: true });
+    symlinkSync(process.execPath, join(coordBin, "node"));
+    writeFileSync(join(ownerBin, "node"), '#!/bin/sh\necho v16.18.0\n', { mode: 0o755 });
+    writeFileSync(join(ownerBin, "claude"), '#!/bin/sh\necho "Error: claude native binary not installed." >&2\nexit 1\n', { mode: 0o755 });
+    writeFileSync(join(localBin, "claude"), '#!/bin/sh\nprintf "%s|%s\\n" "$0" "$(node --version)"\n', { mode: 0o755 });
+    const path = join(clone, "start-claude.sh");
+    const current = readFileSync(path, "utf8");
+    // Simulate the pre-#243 embedded helper left by an earlier installation.
+    const stale = current.replace(' "$1" == claude ||', "");
+    expect(stale).not.toBe(current);
+    writeFileSync(path, stale);
+    const launch = () => spawnSync("/bin/bash", [path], {
+      cwd: clone, encoding: "utf8",
+      env: { ...process.env, HOME: home, NVM_DIR: join(home, ".nvm"),
+        PATH: `${ownerBin}:${coordBin}:/usr/bin:/bin`, COORD_NODE: join(coordBin, "node"), COORD_ISSUE: "" }
+    });
+    const broken = launch();
+    expect(broken.status).toBe(1);
+    expect(broken.stderr).toContain("Error: claude native binary not installed.");
+
+    installOnce(fixture, { home });
+    const repaired = launch();
+    expect(repaired.status, repaired.stderr).toBe(0);
+    expect(repaired.stdout).toContain(`${join(localBin, "claude")}|v16.18.0`);
+    expect(repaired.stderr).not.toContain("claude native binary not installed");
+  });
+
   it("fast-forwards a clean clone and refuses to rewrite a dirty one", () => {
     const fixture = product();
     const clone = installOnce(fixture).clones[0] as string;
