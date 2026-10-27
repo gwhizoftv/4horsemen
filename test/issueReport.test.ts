@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderIssueReport } from "../src/issueReport.js";
-import { initialAgentLifecycle } from "../src/agentLifecycle.js";
+import { applyLifecycleObservation, initialAgentLifecycle } from "../src/agentLifecycle.js";
 import type { CursorsState, StartState } from "../src/state.js";
 import { cursorsStateSchema, initialCursors } from "../src/state.js";
 
@@ -232,6 +232,27 @@ describe("issue report", () => {
     expect(renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle)).toContain(
       "Agent cursor: task message sent; quiet, waiting on the owner; activity reports healthy"
     );
+  });
+
+  it("keeps a completed issue [OK] with in-run containment after session end and binding drift", () => {
+    const at = "2026-08-13T00:00:00.000Z";
+    const identity = { sessionId: "s", policyRevision: "policy", binding: "a".repeat(64), at };
+    const lifecycle = initialAgentLifecycle(["cursor"], at);
+    // The fixture root /c has no policy on disk, so its live binding no longer matches the probe's.
+    lifecycle.agents.cursor = applyLifecycleObservation({ ...lifecycle.agents.cursor!, sessionId: "s", health: "healthy",
+      containment: { hookDenial: { ...identity, probe: true }, probe: { ...identity, vendorVersion: "1.2.3",
+        resolvedGit: "/c/.coord/bin/git", issueEnv: true, shim: "unverified", toolResult: "hook-denied" } } },
+    { kind: "session-end", eventName: "SessionEnd", sessionId: "s" }, at);
+    let text = renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle);
+    expect(text).toContain("[OK] Issue 1: complete");
+    expect(text).toContain("containment hook=active");
+    expect(text).not.toContain("runtime hook trust/activity not yet verified");
+    lifecycle.agents.cursor = { ...lifecycle.agents.cursor!, health: "degraded" };
+    expect(renderIssueReport(start("coord-open-unmerged"), complete(), lifecycle)).toContain("[OK] Issue 1: complete");
+    lifecycle.agents.cursor = { ...lifecycle.agents.cursor!, health: "healthy" };
+    text = renderIssueReport(start("coord-open-unmerged"), { ...complete(), completed: false }, lifecycle);
+    expect(text).toContain("[WARN] Issue 1:");
+    expect(text).toContain("containment hook=unverified");
   });
 
   it("frames the whole report and quotes recovery paths without changing control vocabulary", () => {
