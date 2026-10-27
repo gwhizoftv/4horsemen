@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderIssueReport } from "../src/issueReport.js";
-import { initialAgentLifecycle } from "../src/agentLifecycle.js";
+import { applyLifecycleObservation, initialAgentLifecycle } from "../src/agentLifecycle.js";
 import type { CursorsState, StartState } from "../src/state.js";
 import { cursorsStateSchema, initialCursors } from "../src/state.js";
 
@@ -110,6 +110,34 @@ const complete = (overrides: Partial<CursorsState["publication"]> = {}): Cursors
   }) as CursorsState;
 
 describe("issue report", () => {
+  it("keeps completed containment verified after session end despite a changed live binding or health", () => {
+    const at = "2026-08-13T00:00:00.000Z";
+    const lifecycle = initialAgentLifecycle(["cursor"], at);
+    const current = lifecycle.agents.cursor!;
+    const identity = { sessionId: "s", policyRevision: "policy", binding: "a".repeat(64), at };
+    current.sessionId = "s";
+    current.health = "healthy";
+    current.containment = {
+      hookDenial: { ...identity, probe: true },
+      probe: { ...identity, vendorVersion: "1.2.3", resolvedGit: "/c/.coord/bin/git",
+        issueEnv: true, shim: "unverified", toolResult: "hook-denied" }
+    };
+    const ended = applyLifecycleObservation(current, { kind: "session-end", eventName: "SessionEnd", sessionId: "s" }, at);
+    lifecycle.agents.cursor = ended;
+    const config = start("coord-open-unmerged");
+    // The fixture's absent /c policy no longer matches the recorded binding.
+    const text = renderIssueReport(config, complete(), lifecycle);
+    expect(text).toContain("[OK] Issue 1: complete");
+    expect(text).toContain("containment hook=active");
+    expect(text).not.toContain("runtime hook trust/activity not yet verified");
+    ended.health = "degraded";
+    expect(renderIssueReport(config, complete(), lifecycle)).toContain("[OK] Issue 1: complete");
+    ended.health = "healthy";
+    const live = renderIssueReport(config, { ...complete(), completed: false }, lifecycle);
+    expect(live).toContain("[WARN] Issue 1:");
+    expect(live).toContain("containment hook=unverified");
+  });
+
   it("shows only the current action's scrollback wait and qualifies a paused observation", () => {
     const config = start("owner-only");
     const cursors = initialCursors(config);

@@ -79,10 +79,15 @@ describe("agent lifecycle policy", () => {
     expect(containmentCoverage(current, "b".repeat(64)).hook).toBe("unverified");
     current.containment.probe.vendorVersion = "unknown";
     expect(containmentCoverage(current).hook).toBe("unverified");
+    current.containment.probe.vendorVersion = "1.2.3";
+    for (const sessionId of ["s", undefined]) {
+      const ended = applyLifecycleObservation(current, { kind: "session-end", eventName: "SessionEnd", sessionId }, later);
+      expect(ended.containment).toEqual(current.containment);
+      expect(containmentCoverage(ended, digest)).toEqual({ hook: "active", shim: "unverified" });
+    }
     const restarted = applyLifecycleObservation(current, { kind: "session-start", eventName: "SessionStart", sessionId: "next" }, later);
     expect(restarted.containment).toBeNull();
     expect(containmentCoverage(restarted).hook).toBe("unverified");
-    expect(applyLifecycleObservation(current, { kind: "session-end", eventName: "SessionEnd" }, later).containment).toBeNull();
     const legacy = { ...entry(), containment: undefined };
     expect(agentLifecycleEntrySchema.parse(legacy).containment).toBeNull();
   });
