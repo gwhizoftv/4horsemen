@@ -1,0 +1,14 @@
+{
+  "actionId": "87943cac-3498-448e-a988-d0ac04a61e70",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "14ef8294c013078c6ba3517e6fa4684cd2b6b263b3d42fc09d418a252cd49fd0",
+  "issue": 254,
+  "issueSessionId": "issue-254:7a8fc0272c80e364681d08437111f4534cd7a181",
+  "protocolVersion": 2,
+  "rationale": "Revision d754062d6cb5625d85192bb08f4ebc15ee30fc1d keeps same-session containment across SessionEnd and renders completed issues from in-run corroborated evidence without live-binding or post-run health downgrades, stays within the four approved files, and drew no findings from any comparison.",
+  "responseSha256": "b7feeb260b4d38f46add3cb72710e44556bda0f04a14551847395321abae23b6",
+  "revisionCommitSha": "d754062d6cb5625d85192bb08f4ebc15ee30fc1d",
+  "round": 1
+}
