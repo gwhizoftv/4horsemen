@@ -1,0 +1,56 @@
+{
+  "actionId": "446fe027-ec2c-452b-b48f-d06c475ef389",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "55f2104a489508e7281d3188d65951cccca6f8c38f0ca84a933854849b1fe893",
+  "issue": 254,
+  "issueSessionId": "issue-254:7a8fc0272c80e364681d08437111f4534cd7a181",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "61adde90c2fd4cf2f0a7b7b87176b9b35ccd456b",
+      "path": ".plans/issue-254/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "46d506425be4ec2fb9ff6207fd7276c8e7c86e20",
+      "path": ".plans/issue-254/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "f88e18d0584622bc231dad87277aa19ed58cc943",
+      "path": ".plans/issue-254/plan.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "8ea5f65dd9cf9321ab3a1a9467bea19d7db0afa4",
+      "path": ".plans/issue-254/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "The claude plan makes the minimal two-line production change with no new helpers or fixtures, explicitly handles the vendorVersion mutation trap in the existing lifecycle test, and isolates binding drift, degraded health and the live completed:false control; the one gap peers noted (applying SessionEnd before rendering in the report test) is a one-line addition already covered at the lifecycle level.",
+  "responseSha256": "2f4e17539fc5c9e1225bdbcb55f8e21d8eeff77a417c94671caff57c4dd9c03f",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "95a041468780411cc6d2b7ff564a55337d5c1e4f",
+      "path": ".plans/issue-254/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "9855f47d6bfc9b7c059c9d2968256aad5504a518",
+      "path": ".plans/issue-254/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "3b2582b61bddc60576c4514c68c453a3017c57f1",
+      "path": ".plans/issue-254/review.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "97d6d35403b5192277747fa5571e49ea97722930",
+      "path": ".plans/issue-254/review.md"
+    }
+  ]
+}
