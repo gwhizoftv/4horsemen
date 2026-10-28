@@ -1,0 +1,29 @@
+{
+  "actionId": "6024e230-fd5d-41a9-b2c1-299713ad4037",
+  "agent": "muse",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "5dbe2f46a3a15eb79689715c8e50894586e09d8f",
+      "path": ".signals/issue-255/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "166878e2904afb5a1c28164920bf04ed3948c4a3",
+      "path": ".signals/issue-255/implementation-ready-codex.json"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "cb89b2d10600833586af4201dbb68adf53320142",
+      "path": ".signals/issue-255/implementation-ready-muse.json"
+    }
+  ],
+  "inputSetHash": "da95c2d55d06c82715c33a3b720647834fa8f456e11120e57c4e4fdbc33b76bf",
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "protocolVersion": 2,
+  "rationale": "The claude implementation is the only one that resolves the full shared-turn matrix — keyed tools, live unkeyed tokens, tied same-phase prompts, and the in-progress unstopped last action bounded by its phase — while keeping unresolved records honestly partial.",
+  "responseSha256": "b2e01edbdbf56e8c5c58b3b644023bbe43395eb4577b32c6b9ec53e61ddf7de4"
+}

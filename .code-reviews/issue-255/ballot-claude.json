@@ -1,0 +1,29 @@
+{
+  "actionId": "e2c1f22c-be32-410d-9ea5-811c0ed4708a",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "5dbe2f46a3a15eb79689715c8e50894586e09d8f",
+      "path": ".signals/issue-255/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "166878e2904afb5a1c28164920bf04ed3948c4a3",
+      "path": ".signals/issue-255/implementation-ready-codex.json"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "cb89b2d10600833586af4201dbb68adf53320142",
+      "path": ".signals/issue-255/implementation-ready-muse.json"
+    }
+  ],
+  "inputSetHash": "da95c2d55d06c82715c33a3b720647834fa8f456e11120e57c4e4fdbc33b76bf",
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "protocolVersion": 2,
+  "rationale": "All three pins produce identical attribution for the issue's completed-run symptom, and codex 166878e2 is the strongest of them because it gates the shared-turn path to Codex as the issue scopes, reuses the existing sharedCodexJournal helper instead of duplicating it, and has the broadest focused regressions (prompt-boundary instant, missing timestamp, earlier sample beside later tie, custom_tool_call staying partial), all of which passed in my cross-run.",
+  "responseSha256": "d7dfda5230f9cea7461d64af5a9154a560471f60fe915a0d4c4c0542d508897d"
+}

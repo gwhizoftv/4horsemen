@@ -1,0 +1,29 @@
+{
+  "actionId": "df5a7523-e837-4184-a7a1-02abfea49e7a",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "5dbe2f46a3a15eb79689715c8e50894586e09d8f",
+      "path": ".signals/issue-255/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "166878e2904afb5a1c28164920bf04ed3948c4a3",
+      "path": ".signals/issue-255/implementation-ready-codex.json"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "cb89b2d10600833586af4201dbb68adf53320142",
+      "path": ".signals/issue-255/implementation-ready-muse.json"
+    }
+  ],
+  "inputSetHash": "da95c2d55d06c82715c33a3b720647834fa8f456e11120e57c4e4fdbc33b76bf",
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "protocolVersion": 2,
+  "rationale": "Claude at 5dbe2f46a3a15eb79689715c8e50894586e09d8f is the strongest revision base because it already resolves finite phase bounds and same-phase ties, but approval still requires fixing the unkeyed live-token path that discards unstopped actions even when a later sibling prompt bounds their window and adding the focused regression documented in my comparison.",
+  "responseSha256": "b0e6ae54f4ed4033308dec4c287491c4e97d7d19adf7f92a83e65b50dda4f566"
+}
