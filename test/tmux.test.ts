@@ -9,6 +9,7 @@ import {
   harnessPromptReadiness,
   nudgePreludeKeys,
   paneActivityDigest,
+  paneBusyIndicator,
   pendingPromptInComposer,
   ownerTerminalCloseAppleScript,
   ownerTerminalOpenAppleScript,
@@ -157,6 +158,20 @@ describe("Claude usage-wait veto", () => {
     expect(result).toMatchObject({ status: "busy", reason: "claude-usage-wait", stage: "prompt" });
     expect(keys).not.toContain("Enter");
     expect(reservations).toBe(0);
+  });
+});
+
+describe("pane busy indicator", () => {
+  it("recognizes live vendor status chrome near the pane tail", () => {
+    expect(paneBusyIndicator("⠋ Thinking…\n> ", "antigravity")).toBe(true);
+    expect(paneBusyIndicator("• Working (3m 2s • esc to interrupt)\n› \n? for shortcuts", "codex")).toBe(true);
+    expect(paneBusyIndicator(musePane("◈ Thinking (3s · esc to interrupt)\n"), "muse")).toBe(true);
+  });
+
+  it("rejects idle panes, owner drafts and quoted prose", () => {
+    expect(paneBusyIndicator("❯ Antigravity Gemini >\n› \n? for shortcuts", "antigravity")).toBe(false);
+    expect(paneBusyIndicator("The notes mention Thinking… and Working here\n> draft the user is typing", "cursor")).toBe(false);
+    expect(paneBusyIndicator("```\nThinking…\n```\n> ", "antigravity")).toBe(false);
   });
 });
 

@@ -273,6 +273,35 @@ export const paneActivityDigest = (paneText: string): string => {
 };
 
 /**
+ * Watchdog-only busy evidence: live vendor status chrome near the pane tail.
+ * This never grants or revokes delivery authority; prompt readiness remains
+ * the keystroke-safety check. Fenced code and prose that merely mentions
+ * thinking or working do not count.
+ */
+export const paneBusyIndicator = (paneText: string, agentId: string): boolean => {
+  const plain = stripAnsi(paneText);
+  let fenced = false;
+  const visible = plain.split("\n").filter((line) => {
+    if (/^\s*```/.test(line)) { fenced = !fenced; return false; }
+    return !fenced;
+  }).join("\n");
+  switch (agentId) {
+    case "codex":
+      return codexTurnChrome(visible);
+    case "muse":
+      return museTurnChrome(paneText);
+    case "cursor":
+      return /esc to cancel/i.test(visible) || inFlightStatusLine(visible, "Generating|Running|Working|Thinking");
+    case "antigravity":
+      return /esc to cancel/i.test(visible) || inFlightStatusLine(visible, "Generating|Running|Working|Thinking");
+    case "claude":
+      return /esc to cancel/i.test(visible) || inFlightStatusLine(visible, "Generating|Running|Working|Thinking");
+    default:
+      return false;
+  }
+};
+
+/**
  * Whether the TUI has an idle prompt that can accept typed input, and why not.
  *
  * Process-name readiness alone is not enough: Antigravity/`agy` can be

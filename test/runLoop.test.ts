@@ -4605,6 +4605,33 @@ describe("ready-driven delivery and stall watchdog", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("never resends while a hookless agent edits its clone, then resends once it goes quiet", async () => {
+    const f = safetyFixture("antigravity");
+    f.ui.quiet = true;
+    const root = mkdtempSync(join(tmpdir(), "coord-clone-activity-"));
+    execFileSync("git", ["init", "-q", root]);
+    execFileSync("git", ["-C", root, "config", "user.email", "t@t"]);
+    execFileSync("git", ["-C", root, "config", "user.name", "t"]);
+    writeFileSync(join(root, "work.txt"), "one\n");
+    execFileSync("git", ["-C", root, "add", "-A"]);
+    execFileSync("git", ["-C", root, "commit", "-qm", "init"]);
+    const start = readStartState(f.paths);
+    writeFileSync(f.paths.start, JSON.stringify({ ...start,
+      agents: start.agents.map((agent) => ({ ...agent, root })) }));
+    const loop = f.makeLoop();
+    await loop.runTick(); f.advance(1); f.working();
+    for (let minute = 0; minute < 6; minute++) {
+      f.advance(60_000);
+      writeFileSync(join(root, "work.txt"), `edit ${minute} with more content\n`);
+      await loop.runTick();
+    }
+    expect(f.ui.sends).toBe(1);
+    expect(readJournal(f.paths).some((event) => event.details.code === "stalled")).toBe(false);
+    f.advance(60_000); await loop.runTick();
+    expect(f.ui.sends).toBe(2);
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("never resends during a long tool call, then resends once after it ends and the agent goes quiet", async () => {
     const f = safetyFixture("claude");
     f.ui.quiet = true;

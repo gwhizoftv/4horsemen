@@ -2,7 +2,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { git, localConfigGet } from "./gitExec.js";
-import { issueRuntimePaths } from "./paths.js";
+import { readAction } from "./action.js";
+import { agentRuntimePaths, issueRuntimePaths } from "./paths.js";
 import {
   readConfig,
   readCursorsState,
@@ -176,6 +177,94 @@ export const resolveHookBinding = (input: {
     return { bound: true, issue, commands: coordinated };
   } catch (error) {
     return { bound: false, reason: `runtime state unavailable (${error instanceof Error ? error.message.split("\n")[0] : String(error)})` };
+  }
+};
+
+const ZERO_SHA = "0".repeat(40);
+
+/**
+ * Local required-artifact guard for Git-mode publication, independent of
+ * verification mode: the coordinator-mode test in `resolveHookBinding` must
+ * not decide whether an automated action exists. Returns an immediate local
+ * error naming the action, path and state, or null when the push may proceed.
+ * Absent/inactive/manual/response contexts retain existing behaviour; a
+ * malformed or mismatched action on an otherwise established active Git
+ * action is a diagnostic, never a silent pass.
+ */
+export const requiredArtifactError = (input: {
+  clone: string;
+  configPath: string;
+  /** Pre-push ref lines exactly as Git supplied them on stdin. */
+  refs?: string;
+}): string | null => {
+  const lines = (input.refs ?? "").split("\n").filter((line) => line.trim() !== "");
+  const updates = lines.map((line) => line.trim().split(/\s+/)).filter((parts) => parts.length >= 4);
+  const issueUpdates = updates.filter((parts) => /^refs\/heads\/issue-[1-9][0-9]*\/[a-z0-9-]+$/.test(parts[2] as string)
+    && (parts[1] as string) !== ZERO_SHA);
+  if (issueUpdates.length === 0) return null;
+  try {
+    const agent = localConfigGet(input.clone, "consensus.agentId");
+    if (agent === null) return null;
+    const first = issueUpdates[0] as string[];
+    const branch = (first[2] as string).slice("refs/heads/".length);
+    const match = /^issue-([1-9][0-9]*)\/([a-z0-9-]+)$/.exec(branch);
+    if (match === null || match[2] !== agent) return null;
+    const paths = issueRuntimePaths(workspaceLocationFromConfig(input.configPath).workspaceRoot, Number(match[1]));
+    const start = readStartState(paths);
+    const cursors = readCursorsState(paths);
+    if (!start.agents.some((entry) => entry.id === agent && resolve(entry.root) === resolve(input.clone))) return null;
+    if (cursors.completed || cursors.abandoned || !cursors.activeRoster.includes(agent)) return null;
+    const cursor = cursors.agents[agent];
+    if (cursor === undefined || cursor.actionId === null || cursor.stepId === null) return null;
+    if (cursor.submissionMode !== "git") return null;
+    let action: ReturnType<typeof readAction>;
+    try {
+      action = readAction(agentRuntimePaths(paths, agent).action);
+    } catch (error) {
+      return `required artifact check failed for action ${cursor.actionId}: cannot read the current action (${error instanceof Error ? error.message.split("\n")[0] : String(error)}). Do not write complete; restore the current action.md, then commit and push the required artifact first.`;
+    }
+    if (action.submissionMode !== "git") return null;
+    if (action.actionId !== cursor.actionId || action.agent !== agent) {
+      return `required artifact check failed: action.md names action ${action.actionId} for ${action.agent}, but the active action is ${cursor.actionId} for ${agent}. Do not write complete; re-read the current action.md, then commit and push its required artifact first.`;
+    }
+    const requiredPath = action.requiredPath;
+    const remedy = "Commit and push the required artifact first; only after that push succeeds, write the pushed commit SHA to complete.";
+    for (const parts of issueUpdates) {
+      const localSha = parts[1] as string;
+      const remoteBranch = (parts[2] as string).slice("refs/heads/".length);
+      if (remoteBranch !== branch) continue;
+      const type = git(input.clone, "cat-file", "-t", `${localSha}:${requiredPath}`);
+      const inTree = type.exitCode === 0 && type.stdout.trim() === "blob";
+      if (!inTree) {
+        const absentEverywhere = !existsSync(join(input.clone, requiredPath))
+          && git(input.clone, "ls-files", "--error-unmatch", "--", requiredPath).exitCode !== 0;
+        if ((cursor.stepId === "R4.implement" || cursor.stepId === "R6.revise") && absentEverywhere) continue;
+        return `required artifact ${requiredPath} for action ${action.actionId} is missing from the pushed commit ${localSha}. ${remedy}`;
+      }
+      const treeOid = git(input.clone, "rev-parse", `${localSha}:${requiredPath}`);
+      if (treeOid.exitCode !== 0) {
+        return `required artifact ${requiredPath} for action ${action.actionId} could not be inspected in commit ${localSha}. ${remedy}`;
+      }
+      const index = git(input.clone, "ls-files", "-s", "--", requiredPath);
+      const indexLines = index.stdout.split("\n").filter((line) => line.trim() !== "");
+      if (index.exitCode !== 0 || indexLines.length !== 1 || !(indexLines[0] as string).includes("\t")) {
+        return `required artifact ${requiredPath} for action ${action.actionId} is deleted, unmerged or not committed in the index. ${remedy}`;
+      }
+      const indexOid = (indexLines[0] as string).trim().split(/\s+/)[1] ?? "";
+      if (indexOid !== treeOid.stdout.trim()) {
+        return `required artifact ${requiredPath} for action ${action.actionId} has staged changes that commit ${localSha} does not contain. ${remedy}`;
+      }
+      if (!existsSync(join(input.clone, requiredPath))) {
+        return `required artifact ${requiredPath} for action ${action.actionId} is deleted in the working tree. ${remedy}`;
+      }
+      const worktree = git(input.clone, "hash-object", "--", requiredPath);
+      if (worktree.exitCode !== 0 || worktree.stdout.trim() !== treeOid.stdout.trim()) {
+        return `required artifact ${requiredPath} for action ${action.actionId} has uncommitted working-tree changes that commit ${localSha} does not contain. ${remedy}`;
+      }
+    }
+    return null;
+  } catch {
+    return null;
   }
 };
 

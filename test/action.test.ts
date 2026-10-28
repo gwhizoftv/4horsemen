@@ -63,6 +63,18 @@ describe("verification instructions", () => {
     expect(renderAction(order("/runtime"))).not.toContain("Coordinator check results");
   });
 
+  it("requires a successful push of a commit containing requiredPath before complete", () => {
+    const git = renderAction({ ...order("/runtime"), stepId: "R3.review" });
+    expect(git).toContain("The pushed commit's tree must contain");
+    expect(git).toContain("Only after that push succeeds");
+    expect(git).toContain("untracked, unstaged or uncommitted");
+    expect(git.indexOf("Only after that push succeeds")).toBeLessThan(git.indexOf("/runtime/completes/issue-1/codex/complete"));
+    const response = renderAction({ ...order("/runtime"), submissionMode: "response", stepId: "R6.ballot",
+      requiredPath: "", responsePath: "/runtime/response.json" });
+    expect(response).not.toContain("Only after that push succeeds");
+    expect(response).toContain("ready");
+  });
+
   it("preserves response-only ballots without product suite instructions", () => {
     const raw = renderAction({ ...order("/runtime"), submissionMode: "response", stepId: "R6.ballot",
       requiredPath: "", responsePath: "/runtime/response.json" });

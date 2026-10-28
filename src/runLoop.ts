@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { clearCompletion, clearReady, createActionId, readAction, readCompletion, readReady, writeAction } from "./action.js";
 import {
@@ -114,7 +114,8 @@ import { inspectStartupAgent } from "./doctor.js";
 import { assessFollowUpIssue, followUpKey, formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import { coordCliEntry, withGitHubAccount } from "./githubAuth.js";
-import { harnessPromptReadiness, paneActivityDigest, renderNudgeText, TmuxController, type OwnerReminderOutcome } from "./tmux.js";
+import { harnessPromptReadiness, paneActivityDigest, paneBusyIndicator, renderNudgeText, TmuxController, type OwnerReminderOutcome } from "./tmux.js";
+import { git } from "./gitExec.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
@@ -2049,10 +2050,66 @@ export class CoordinatorRunLoop {
   }
 
   /**
+   * Bounded clone-activity stamp: metadata for tracked and non-ignored
+   * untracked files plus the real Git index. `ls-files` does not refresh the
+   * index, so the probe never manufactures its own activity. A missing clone
+   * is a constant "none"; an incomplete enumeration is "unavailable", which
+   * defers the quiet decision rather than asserting inactivity.
+   */
+  private cloneActivityStamp(start: StartState, agent: string): string {
+    const root = start.agents.find((entry) => entry.id === agent)?.root;
+    if (root === undefined || !existsSync(root)) return "none";
+    try {
+      const dotGit = join(root, ".git");
+      if (!existsSync(dotGit)) return "none";
+      const gitDir = statSync(dotGit).isDirectory() ? dotGit
+        : resolve(root, readFileSync(dotGit, "utf8").trim().replace(/^gitdir:\s*/, ""));
+      const listed = git(root, "ls-files", "-z", "--modified", "--others", "--exclude-standard");
+      if (listed.exitCode !== 0) return "unavailable";
+      const paths = listed.stdout.split("\0").filter((path) => path !== "").sort();
+      if (paths.length > 1024) return "unavailable";
+      const entries = paths.map((path) => {
+        try {
+          const stat = statSync(join(root, path));
+          return `${path}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+        } catch {
+          return `${path}:gone`;
+        }
+      });
+      try {
+        const index = statSync(join(gitDir, "index"));
+        entries.push(`.git/index:${index.mtimeMs}:${index.ctimeMs}:${index.size}`);
+      } catch {
+        entries.push(".git/index:gone");
+      }
+      return sha256(JSON.stringify(entries));
+    } catch {
+      return "unavailable";
+    }
+  }
+
+  /** Raw per-run terminal output (`run-*.log`) for this agent, if any. */
+  private terminalLogStamp(agent: string): string {
+    try {
+      const dir = agentRuntimePaths(this.paths, agent).terminalLogs;
+      const entries = readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && /^run-.*\.log$/.test(entry.name))
+        .map((entry) => {
+          const stat = statSync(join(dir, entry.name));
+          return `${entry.name}:${stat.mtimeMs}:${stat.size}`;
+        }).sort();
+      return entries.length === 0 ? "none" : sha256(JSON.stringify(entries));
+    } catch {
+      return "none";
+    }
+  }
+
+  /**
    * Stall watchdog for an agent that owes work. Once a minute it compares
-   * transcript, tool-hook and pane activity. A quiet minute earns one resend;
-   * still quiet after that, one `[WAIT]` line. Hook silence alone never counts
-   * as quiet, because the pane and transcript must also be static.
+   * transcript, tool-hook, pane, clone-file/index, terminal-log and vendor
+   * busy activity. A quiet minute earns one resend; still quiet after that,
+   * one `[WAIT]` line. Hook silence alone never counts as quiet, because the
+   * other observations must also be static and no busy indicator may show.
    */
   private async watchOwedWork(start: StartState, cursors: CursorsState, agent: string, actionId: string): Promise<CursorsState> {
     if (this.tmux === null) return cursors;
@@ -2073,10 +2130,13 @@ export class CoordinatorRunLoop {
         { watch: { checkedAt: now, quietSince: now, fingerprint: `unavailable:${now}` } }, now);
       return cursors;
     }
+    const cloneStamp = this.cloneActivityStamp(start, agent);
+    const busy = paneBusyIndicator(text, agent);
     const fingerprint = sha256(JSON.stringify([this.transcriptStamp(agent, entry.sessionId),
-      entry.toolActivity.sequence, paneActivityDigest(text)]));
+      entry.toolActivity.sequence, paneActivityDigest(text), cloneStamp, this.terminalLogStamp(agent), busy]));
     const previous = action.watch;
-    const quiet = previous !== null && previous.fingerprint === fingerprint && entry.toolActivity.pending === 0;
+    const quiet = previous !== null && previous.fingerprint === fingerprint && entry.toolActivity.pending === 0
+      && !busy && cloneStamp !== "unavailable";
     const quietSince = quiet ? previous.quietSince : now;
     updateActionWatch(this.paths, agent, actionId, action.actionDigest, { watch: { checkedAt: now, quietSince, fingerprint } }, now);
     if (!quiet) return cursors;

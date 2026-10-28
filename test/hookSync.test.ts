@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { canonicalSourceDigest, inspectCloneHooks, readHookManifest, removeCloneHooks, type HookManifest } from "../src/hookSync.js";
 import { install, uninstall } from "../src/install.js";
-import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { initializeOperationalState, mutateCursorsState, readConfig } from "../src/state.js";
 import { workspaceLocationFromConfig } from "../src/workspace.js";
 import {
@@ -367,6 +367,34 @@ describe("coordinator verification binding", () => {
     const peer = tryGit(clone, "push", "origin", "issue-1/claude:refs/heads/issue-1/codex");
     expect(peer.exitCode).not.toBe(0);
     expect(peer.stderr).toContain("belongs to agent 'codex'");
+  });
+
+  it("blocks pre-push when the current action's required artifact is missing or dirty, and allows it when committed clean", () => {
+    const { clone, configPath } = installed(passingVerify, "go", { verification });
+    const paths = activeRun(clone, configPath);
+    stageWork(clone);
+    expect(tryGit(clone, "commit", "-m", "Claude: work").exitCode).toBe(0);
+    const actionId = "11111111-1111-4111-8111-111111111111";
+    mutateCursorsState(paths, (cursors) => ({ ...cursors, agents: { ...cursors.agents,
+      claude: { ...cursors.agents.claude!, stepId: "R2.plan", actionId, submissionMode: "git" } } }));
+    writeFileSync(agentRuntimePaths(paths, "claude").action,
+      `---\nactionId: ${actionId}\nagent: claude\nsubmissionMode: git\nrequiredPath: .plans/issue-1/plan.md\n---\n\ntask\n`);
+    const missing = tryGit(clone, "push", "origin", "issue-1/claude");
+    expect(missing.exitCode).not.toBe(0);
+    expect(missing.stdout + missing.stderr).toContain(".plans/issue-1/plan.md");
+    expect(git(clone, "ls-remote", "origin", "issue-1/claude")).toBe("");
+    mkdirSync(join(clone, ".plans/issue-1"), { recursive: true });
+    writeFileSync(join(clone, ".plans/issue-1/plan.md"), "# plan\n");
+    git(clone, "add", "-A");
+    expect(tryGit(clone, "commit", "-m", "Claude: plan").exitCode).toBe(0);
+    expect(tryGit(clone, "push", "origin", "issue-1/claude").exitCode).toBe(0);
+    writeFileSync(join(clone, ".plans/issue-1/plan.md"), "# plan v2 uncommitted\n");
+    writeFileSync(join(clone, "cmd/more.go"), "package main\n");
+    git(clone, "add", "cmd/more.go");
+    expect(tryGit(clone, "commit", "-m", "Claude: more").exitCode).toBe(0);
+    const dirty = tryGit(clone, "push", "origin", "issue-1/claude");
+    expect(dirty.exitCode).not.toBe(0);
+    expect(dirty.stdout + dirty.stderr).toContain(".plans/issue-1/plan.md");
   });
 
   it("falls back to the local lists, saying why, for manual branches, multi-ref pushes and unusable runtime state", () => {

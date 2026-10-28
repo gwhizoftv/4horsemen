@@ -212,10 +212,14 @@ Use these exact inputs (dropped agents are intentionally omitted):
 
 ${inputText(order)}${scopeInputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}${verificationSection(order)}${ownerGuidanceSection(order.ownerGuidance)}
 
-Push the commit containing the artifact to \`${order.branch}\`. Then write that
-exact 40-character lowercase commit SHA as the sole contents of:
+Commit the required artifact at \`${order.requiredPath}\` and push that commit to \`${order.branch}\`.
+The pushed commit's tree must contain \`${order.requiredPath}\`. Only after that push succeeds, write that
+pushed commit's exact 40-character lowercase commit SHA as the sole contents of:
 
 \`${order.completePath}\`
+
+Do not write \`complete\` while the artifact is untracked, unstaged or uncommitted, or after a failed or
+still-running push: that SHA is rejected and costs a resend. A failed push is not completion.
 
 After writing that SHA, keep this file. Before waiting for more input, re-read
 it. If \`actionId\` in the front matter has changed, execute the new instructions

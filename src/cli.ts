@@ -26,7 +26,7 @@ import {
 } from "./githubAuth.js";
 import { cloneGitHubWiringProblem } from "./setupWorkspace.js";
 import { sha256 } from "./hash.js";
-import { renderHookScope, resolveHookBinding, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
+import { renderHookScope, requiredArtifactError, resolveHookBinding, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { inspectOutgoingChanges, inspectStagedChanges } from "./changeClassification.js";
 import { hookVerificationRecorder } from "./verificationLog.js";
 import { DEFAULT_AGENTS, install, onboard, packageVersion, savedGitHubAccount, uninstall } from "./install.js";
@@ -1603,6 +1603,13 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const binding = resolveHookBinding({ clone, configPath, phase, refs });
       io.stdout(binding.bound ? `coord ${phase}: coordinator-bound issue ${binding.issue} — coordinated checks\n`
         : `coord ${phase}: local verification — ${binding.reason}\n`);
+      if (phase === "prepush") {
+        const artifactError = requiredArtifactError({ clone, configPath, refs });
+        if (artifactError !== null) {
+          io.stderr(`HOOK BLOCKED: ${artifactError}\n`);
+          return 1;
+        }
+      }
       const result = runVerifyPhase({ clone, config, phase, changes, log: io.stdout,
         record: hookVerificationRecorder(clone, configPath, io.stderr),
         ...(binding.bound ? { bound: binding.commands } : {}) });
