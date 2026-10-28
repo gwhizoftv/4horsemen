@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { clearCompletion, clearReady, createActionId, readAction, readCompletion, readReady, writeAction } from "./action.js";
 import {
@@ -114,7 +114,7 @@ import { inspectStartupAgent } from "./doctor.js";
 import { assessFollowUpIssue, followUpKey, formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import { coordCliEntry, withGitHubAccount } from "./githubAuth.js";
-import { harnessPromptReadiness, paneActivityDigest, renderNudgeText, TmuxController, type OwnerReminderOutcome } from "./tmux.js";
+import { harnessPromptReadiness, paneActivityDigest, renderNudgeText, TmuxController, vendorBusyIndicator, type OwnerReminderOutcome } from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
@@ -941,6 +941,11 @@ const deferralRationale = (code: string): string =>
 // Delivery protection is independent of the wait before checking for lost delivery.
 const NUDGE_REPEAT_DELAYS_MS = [60_000, 120_000, 240_000];
 const OBSERVATION_INTERVAL_MS = 60_000;
+/** Bounds for the watchdog's clone probe; exceeding either makes the sample unavailable, never quiet. */
+const CLONE_PROBE_TIMEOUT_MS = 10_000;
+const CLONE_PROBE_MAX_PATHS = 2_000;
+/** `runArgv` keeps only this much stdout when a timeout is set; reaching it means the list may be cut. */
+const PROBE_OUTPUT_LIMIT_BYTES = 32 * 1024;
 const SCROLLBACK_REMINDER_MS = 180_000;
 const UNKNOWN_DEFERRAL_LIMIT = 8;
 /** A provider deadline authorizes one recheck this long after it, never a resume. */
@@ -2049,10 +2054,58 @@ export class CoordinatorRunLoop {
   }
 
   /**
+   * Clone activity for agents without tool hooks: path/metadata stamps for
+   * modified and non-ignored untracked files plus the Git index. `ls-files`
+   * never refreshes the index, so the probe cannot manufacture its own
+   * activity. A missing clone is absence; a failed, timed-out or cut-off
+   * enumeration is unavailable (null), never a complete quiet sample.
+   */
+  private async cloneActivityStamp(start: StartState, agent: string): Promise<string | null> {
+    const root = start.agents.find((entry) => entry.id === agent)?.root;
+    if (root === undefined || !existsSync(root)) return "absent";
+    const run = (args: readonly string[]) => this.processRunner(["git", ...args], root, { timeoutMs: CLONE_PROBE_TIMEOUT_MS });
+    try {
+      const index = await run(["rev-parse", "--git-path", "index"]);
+      const listed = await run(["ls-files", "-z", "--modified", "--others", "--exclude-standard"]);
+      if (index.exitCode !== 0 || listed.exitCode !== 0 || Buffer.byteLength(listed.stdout) >= PROBE_OUTPUT_LIMIT_BYTES) return null;
+      const paths = [...new Set(listed.stdout.split("\0").filter((path) => path !== ""))].sort();
+      if (paths.length > CLONE_PROBE_MAX_PATHS) return null;
+      const metadata = (path: string): string => {
+        try {
+          const stat = lstatSync(path);
+          return `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return "gone";
+          throw error;
+        }
+      };
+      return sha256(JSON.stringify([metadata(resolve(root, index.stdout.trim())), ...paths.map((path) => [path, metadata(join(root, path))])]));
+    } catch {
+      return null;
+    }
+  }
+
+  /** Raw terminal output: `run-*.log` names, sizes and mtimes, so append and rotation count. Null when unreadable. */
+  private terminalLogStamp(agent: string): string | null {
+    const dir = agentRuntimePaths(this.paths, agent).terminalLogs;
+    try {
+      if (!existsSync(dir)) return "absent";
+      return sha256(JSON.stringify(readdirSync(dir).filter((name) => /^run-.*\.log$/.test(name)).sort().flatMap((name) => {
+        const stat = lstatSync(join(dir, name));
+        return stat.isFile() ? [[name, stat.size, stat.mtimeMs]] : [];
+      })));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Stall watchdog for an agent that owes work. Once a minute it compares
-   * transcript, tool-hook and pane activity. A quiet minute earns one resend;
-   * still quiet after that, one `[WAIT]` line. Hook silence alone never counts
-   * as quiet, because the pane and transcript must also be static.
+   * transcript, tool-hook, pane, clone and terminal-log activity. A quiet
+   * minute earns one resend; still quiet after that, one `[WAIT]` line. Hook
+   * silence alone never counts as quiet, because every other source must also
+   * be static, and live vendor turn chrome keeps the agent busy even unchanged.
+   * An unavailable source defers the decision instead of reading as quiet.
    */
   private async watchOwedWork(start: StartState, cursors: CursorsState, agent: string, actionId: string): Promise<CursorsState> {
     if (this.tmux === null) return cursors;
@@ -2065,18 +2118,25 @@ export class CoordinatorRunLoop {
       this.verbose(`Issue ${start.issue}: ${agent} stall watchdog could not read the pane: ${error}`);
       return null;
     });
+    const pane = text === null || text.trim() === "" ? null : text;
+    const clone = pane === null ? null : await this.cloneActivityStamp(start, agent);
+    const logs = this.terminalLogStamp(agent);
     this.authority(cursors);
     // A failed (or blank, as tmux returns on a nonzero exit) observation is checked
     // but never quiet, so it stays bounded and cannot trigger a resend.
-    if (text === null || text.trim() === "") {
+    if (pane === null || clone === null || logs === null) {
+      if (pane !== null) {
+        this.verbose(`Issue ${start.issue}: ${agent} stall watchdog could not observe its ${clone === null ? "clone" : "terminal logs"}; deferring`);
+      }
       updateActionWatch(this.paths, agent, actionId, action.actionDigest,
         { watch: { checkedAt: now, quietSince: now, fingerprint: `unavailable:${now}` } }, now);
       return cursors;
     }
     const fingerprint = sha256(JSON.stringify([this.transcriptStamp(agent, entry.sessionId),
-      entry.toolActivity.sequence, paneActivityDigest(text)]));
+      entry.toolActivity.sequence, paneActivityDigest(pane), clone, logs]));
     const previous = action.watch;
-    const quiet = previous !== null && previous.fingerprint === fingerprint && entry.toolActivity.pending === 0;
+    const quiet = previous !== null && previous.fingerprint === fingerprint && entry.toolActivity.pending === 0 &&
+      !vendorBusyIndicator(pane, agent);
     const quietSince = quiet ? previous.quietSince : now;
     updateActionWatch(this.paths, agent, actionId, action.actionDigest, { watch: { checkedAt: now, quietSince, fingerprint } }, now);
     if (!quiet) return cursors;

@@ -1,11 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { canonicalSourceDigest, inspectCloneHooks, readHookManifest, removeCloneHooks, type HookManifest } from "../src/hookSync.js";
 import { install, uninstall } from "../src/install.js";
-import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { initializeOperationalState, mutateCursorsState, readConfig } from "../src/state.js";
 import { workspaceLocationFromConfig } from "../src/workspace.js";
 import {
@@ -349,7 +349,7 @@ describe("coordinator verification binding", () => {
       automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }], trustedSourceCommit: "c".repeat(40),
       origin: config.origin, coordRoot: paths.coordRoot, configPath, checks: config.checks, pollIntervalMs: 1000,
       agents: [{ id: "claude", root: clone, launcher: "start-claude.sh", delivery: "pull" }],
-      verification: config.verification!, verificationDigest: "d".repeat(64)
+      ...(config.verification === undefined ? {} : { verification: config.verification, verificationDigest: "d".repeat(64) })
     });
     return paths;
   };
@@ -389,6 +389,117 @@ describe("coordinator verification binding", () => {
     blocked(tryGit(clone, "commit", "-m", "Claude: late"), "issue 1 is no longer active");
     writeFileSync(paths.cursors, "{ corrupt");
     blocked(tryGit(clone, "commit", "-m", "Claude: broken runtime"), "runtime state unavailable");
+  });
+
+  /** Make `claude` owe a Git action whose action.md names `requiredPath`. */
+  const oweAction = (paths: ReturnType<typeof activeRun>, stepId: "R3.review" | "R4.implement", requiredPath: string): string => {
+    const actionId = randomUUID();
+    mutateCursorsState(paths, (cursors) => ({ ...cursors, agents: { ...cursors.agents,
+      claude: { ...cursors.agents.claude!, stepId, actionId, submissionMode: "git", status: "ordered" } } }));
+    writeFileSync(agentRuntimePaths(paths, "claude").action,
+      `---\nactionId: ${actionId}\nagent: claude\nsubmissionMode: git\nrequiredPath: ${requiredPath}\n---\n\nPublish it.\n`);
+    return actionId;
+  };
+  let products = 0;
+  const commitProduct = (clone: string): void => {
+    writeFileSync(join(clone, "cmd", `step-${++products}.go`), "package main\n");
+    git(clone, "add", "cmd");
+    git(clone, "commit", "-qm", "Claude: product");
+  };
+  const remoteHead = (clone: string): string => git(clone, "ls-remote", "origin", "refs/heads/issue-1/claude");
+
+  it.each(["local", "coordinator"] as const)(
+    "refuses each unpublished state of the current review artifact before the remote ref moves (%s verification)", (mode) => {
+      const { clone, configPath } = mode === "local" ? installed() : installed(localFails, "go", { verification });
+      const paths = activeRun(clone, configPath);
+      const review = ".plans/issue-1/review.md";
+      const file = join(clone, review);
+      const actionId = oweAction(paths, "R3.review", review);
+      stageWork(clone);
+      git(clone, "commit", "-qm", "Claude: work");
+      const refused = (state: string, refspec = "issue-1/claude") => {
+        const before = remoteHead(clone);
+        const pushed = tryGit(clone, "push", "origin", refspec);
+        expect(pushed.exitCode, state).not.toBe(0);
+        expect(pushed.stderr).toContain(`HOOK BLOCKED: action ${actionId} requires "${review}" in pushed commit`);
+        expect(pushed.stderr).toContain(state);
+        expect(pushed.stderr).toContain("only after the push succeeds write its SHA to complete");
+        expect(remoteHead(clone)).toBe(before);
+      };
+      refused("it is missing");
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, "## Findings\n\nA\n");
+      refused("it is untracked");
+      git(clone, "add", review);
+      refused("it is staged but not committed");
+      git(clone, "commit", "-qm", "Claude: review A");
+      writeFileSync(file, "## Findings\n\nB\n");
+      refused("it has unstaged changes");
+      git(clone, "add", review);
+      writeFileSync(file, "## Findings\n\nA\n");
+      // The working copy matches the commit again; the staged B still does not.
+      refused("the index holds a different version");
+      git(clone, "checkout", "--", review);
+      git(clone, "commit", "-qm", "Claude: review B");
+      rmSync(file);
+      refused("it is deleted from the working tree");
+      git(clone, "rm", "-q", review);
+      refused("its deletion is staged");
+      git(clone, "reset", "-q", "HEAD", "--", review);
+      git(clone, "checkout", "--", review);
+      refused("the index holds a different version", "HEAD~1:refs/heads/issue-1/claude");
+      expect(tryGit(clone, "push", "-q", "origin", "issue-1/claude").exitCode).toBe(0);
+      expect(remoteHead(clone)).toContain(git(clone, "rev-parse", "HEAD"));
+    });
+
+  it("lets implementation push product before its signal exists, refuses an uncommitted signal, and accepts a committed amendment request", () => {
+    const { clone, configPath } = installed();
+    const paths = activeRun(clone, configPath);
+    const signal = ".signals/issue-1/implementation-ready-claude.json";
+    oweAction(paths, "R4.implement", signal);
+    stageWork(clone);
+    git(clone, "commit", "-qm", "Claude: product");
+    expect(tryGit(clone, "push", "-q", "origin", "issue-1/claude").exitCode).toBe(0);
+    mkdirSync(join(clone, ".signals", "issue-1"), { recursive: true });
+    writeFileSync(join(clone, signal), "{}\n");
+    commitProduct(clone);
+    const early = tryGit(clone, "push", "origin", "issue-1/claude");
+    expect(early.exitCode).not.toBe(0);
+    expect(early.stderr).toContain("it is untracked");
+    writeFileSync(join(clone, signal), `${JSON.stringify({ artifact: "plan-amendment-request" })}\n`);
+    git(clone, "add", signal);
+    git(clone, "commit", "-qm", "Claude: request plan amendment");
+    writeFileSync(join(clone, "cmd", "feature.go"), "package main\n\n// unfinished\n");
+    const request = tryGit(clone, "push", "-q", "origin", "issue-1/claude");
+    expect(request.exitCode, request.stderr).toBe(0);
+  });
+
+  it("leaves manual branches, response and settled actions, and finished runs to the existing gates, but refuses a mismatched action.md", () => {
+    const { clone, configPath } = installed();
+    const paths = activeRun(clone, configPath);
+    oweAction(paths, "R3.review", ".plans/issue-1/review.md");
+    stageWork(clone, "claude/scratch");
+    git(clone, "commit", "-qm", "Claude: scratch");
+    expect(tryGit(clone, "push", "-q", "origin", "claude/scratch").exitCode).toBe(0);
+    git(clone, "checkout", "-qb", "issue-1/claude");
+    const passes = (change: Parameters<typeof mutateCursorsState>[1]) => {
+      mutateCursorsState(paths, change);
+      commitProduct(clone);
+      const pushed = tryGit(clone, "push", "-q", "origin", "issue-1/claude");
+      expect(pushed.exitCode, pushed.stderr).toBe(0);
+    };
+    passes((cursors) => ({ ...cursors, agents: { ...cursors.agents, claude: { ...cursors.agents.claude!, submissionMode: "response" } } }));
+    passes((cursors) => ({ ...cursors, agents: { ...cursors.agents,
+      claude: { ...cursors.agents.claude!, submissionMode: "git", status: "waiting-peer" } } }));
+    passes((cursors) => ({ ...cursors, completed: true, agents: { ...cursors.agents,
+      claude: { ...cursors.agents.claude!, status: "ordered" } } }));
+    mutateCursorsState(paths, (cursors) => ({ ...cursors, completed: false }));
+    const action = agentRuntimePaths(paths, "claude").action;
+    writeFileSync(action, readFileSync(action, "utf8").replace(/^actionId: .*$/m, `actionId: ${randomUUID()}`));
+    commitProduct(clone);
+    const mismatched = tryGit(clone, "push", "origin", "issue-1/claude");
+    expect(mismatched.exitCode).not.toBe(0);
+    expect(mismatched.stderr).toContain("action.md does not match current Git action");
   });
 });
 

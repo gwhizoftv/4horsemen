@@ -1,14 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, lstatSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { readAction, type PublicAction } from "./action.js";
 import { git, localConfigGet } from "./gitExec.js";
-import { issueRuntimePaths } from "./paths.js";
+import { agentRuntimePaths, issueRuntimePaths, type IssueRuntimePaths } from "./paths.js";
 import {
   readConfig,
   readCursorsState,
   readStartState,
   type CheckCommand,
   type CoordinatorConfig,
+  type CursorsState,
+  type StartState,
   type VerifyConfig,
   type VerifyPhase
 } from "./state.js";
@@ -132,6 +135,29 @@ export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): st
 
 export type HookBinding = { bound: true; issue: number; commands: VerifyConfig } | { bound: false; reason: string };
 
+type IssueBranchContext = {
+  issue: number;
+  agent: string;
+  paths: IssueRuntimePaths;
+  start: StartState;
+  cursors: CursorsState;
+};
+
+/** `branch` is this agent's issue branch, on an issue whose start state runs this exact clone. Throws on unreadable state. */
+const issueBranchContext = (clone: string, configPath: string, branch: string): IssueBranchContext | { reason: string } => {
+  const agent = localConfigGet(clone, "consensus.agentId");
+  const match = /^issue-([1-9][0-9]*)\/([a-z0-9-]+)$/.exec(branch);
+  if (match === null || agent === null || match[2] !== agent) return { reason: `branch ${branch} is not this agent's issue branch` };
+  const issue = Number(match[1]);
+  const paths = issueRuntimePaths(workspaceLocationFromConfig(configPath).workspaceRoot, issue);
+  const start = readStartState(paths);
+  const cursors = readCursorsState(paths);
+  if (!start.agents.some((entry) => entry.id === agent && resolve(entry.root) === resolve(clone))) {
+    return { reason: `issue ${issue} does not run this clone` };
+  }
+  return { issue, agent, paths, start, cursors };
+};
+
 /**
  * Coordinated hook lists apply only to a provably active coordinator run for
  * this exact clone: the committed or single pushed branch is this agent's
@@ -159,16 +185,9 @@ export const resolveHookBinding = (input: {
       if (!remoteRef.startsWith("refs/heads/")) return { bound: false, reason: "outgoing ref is not a branch" };
       branch = remoteRef.slice("refs/heads/".length);
     }
-    const agent = localConfigGet(input.clone, "consensus.agentId");
-    const match = /^issue-([1-9][0-9]*)\/([a-z0-9-]+)$/.exec(branch);
-    if (match === null || agent === null || match[2] !== agent) return { bound: false, reason: `branch ${branch} is not this agent's issue branch` };
-    const issue = Number(match[1]);
-    const paths = issueRuntimePaths(workspaceLocationFromConfig(input.configPath).workspaceRoot, issue);
-    const start = readStartState(paths);
-    const cursors = readCursorsState(paths);
-    if (!start.agents.some((entry) => entry.id === agent && resolve(entry.root) === resolve(input.clone))) {
-      return { bound: false, reason: `issue ${issue} does not run this clone` };
-    }
+    const context = issueBranchContext(input.clone, input.configPath, branch);
+    if ("reason" in context) return { bound: false, reason: context.reason };
+    const { issue, agent, start, cursors } = context;
     const coordinated = start.verification?.mode === "coordinator" ? start.verification.coordinated : undefined;
     if (coordinated === undefined) return { bound: false, reason: `issue ${issue} is not in coordinator verification mode` };
     if (cursors.completed || cursors.abandoned) return { bound: false, reason: `issue ${issue} is no longer active` };
@@ -177,6 +196,103 @@ export const resolveHookBinding = (input: {
   } catch (error) {
     return { bound: false, reason: `runtime state unavailable (${error instanceof Error ? error.message.split("\n")[0] : String(error)})` };
   }
+};
+
+export type ArtifactCheck = { ok: true } | { ok: false; message: string };
+
+/** Cursor states in which the agent still owes the current Git action's artifact. */
+const OWED_ACTION_STATUSES: ReadonlySet<string> = new Set(["ordered", "intent", "verifying", "failed", "paused"]);
+/** These steps push the product commit before the signal that pins it exists. */
+const PRODUCT_BEFORE_SIGNAL_STEPS: ReadonlySet<string> = new Set(["R4.implement", "R6.revise"]);
+const ZERO_SHA = "0".repeat(40);
+
+/** Path-scoped plumbing: `--literal-pathspecs` keeps a glob-like artifact name from matching other paths. */
+const plumbing = (clone: string, ...args: string[]): string => {
+  const result = git(clone, "--literal-pathspecs", ...args);
+  if (result.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
+  return result.stdout;
+};
+
+const nulRecords = (stdout: string): string[] => stdout.split("\0").filter((record) => record !== "");
+
+/** What is wrong with `path` as the artifact published by pushing `sha`, or null when it is exactly committed. */
+const artifactProblem = (clone: string, sha: string, path: string, stepId: string | null): string | null => {
+  const tree = nulRecords(plumbing(clone, "ls-tree", "-z", "--full-tree", sha, "--", path))
+    .map((record) => /^(\d+) (\w+) ([0-9a-f]+)\t([\s\S]*)$/.exec(record))
+    .find((match) => match?.[4] === path) ?? null;
+  const index = nulRecords(plumbing(clone, "ls-files", "-z", "--stage", "--", path))
+    .map((record) => /^(\d+) ([0-9a-f]+) (\d)\t([\s\S]*)$/.exec(record))
+    .filter((match): match is RegExpExecArray => match?.[4] === path);
+  let worktree: "absent" | "file" | "other" = "absent";
+  try {
+    worktree = lstatSync(join(clone, path)).isFile() ? "file" : "other";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (tree === null) {
+    // An intermediate product push precedes the signal; an existing signal must already be committed.
+    if (index.length === 0 && worktree === "absent" && stepId !== null && PRODUCT_BEFORE_SIGNAL_STEPS.has(stepId)) return null;
+    if (index.length > 0) return "it is staged but not committed";
+    return worktree === "absent" ? "it is missing" : "it is untracked";
+  }
+  if (tree[2] !== "blob" || !["100644", "100755"].includes(tree[1]!)) return "the pushed commit holds it as something other than a regular file";
+  if (index.some((match) => match[3] !== "0")) return "it has an unresolved merge conflict in the index";
+  const staged = index[0];
+  if (staged === undefined) return "its deletion is staged";
+  if (staged[2] !== tree[3]) return "the index holds a different version than the pushed commit (staged changes, or the pushed commit is not the one you just made)";
+  if (worktree === "absent") return "it is deleted from the working tree";
+  if (worktree === "other") return "the working tree holds it as something other than a regular file";
+  if (plumbing(clone, "hash-object", "--", path).trim() !== staged[2]) return "it has unstaged changes";
+  return null;
+};
+
+/**
+ * Pre-push publication guard for the current Git action.
+ *
+ * Applies to each outgoing update of this agent's own issue branch while the
+ * issue's cursor says the agent owes a Git action, in either verification
+ * mode. Everything else (manual branches, deletions, response actions,
+ * inactive runs, unreadable runtime) keeps the hook's existing behaviour.
+ * Once an owed action is established, an unreadable or mismatched action.md
+ * and any inspection failure refuse the push rather than pass it.
+ */
+export const checkRequiredArtifact = (input: { clone: string; configPath: string; refs: string }): ArtifactCheck => {
+  for (const line of input.refs.split("\n")) {
+    const [, localSha, remoteRef] = line.trim().split(/\s+/);
+    if (localSha === undefined || remoteRef === undefined || localSha === ZERO_SHA || !remoteRef.startsWith("refs/heads/")) continue;
+    let context: IssueBranchContext | { reason: string };
+    try {
+      context = issueBranchContext(input.clone, input.configPath, remoteRef.slice("refs/heads/".length));
+    } catch {
+      continue;
+    }
+    if ("reason" in context) continue;
+    const { agent, paths, cursors } = context;
+    const cursor = cursors.agents[agent];
+    if (cursors.completed || cursors.abandoned || !cursors.activeRoster.includes(agent) || cursor === undefined ||
+      cursor.actionId === null || cursor.submissionMode !== "git" || !OWED_ACTION_STATUSES.has(cursor.status)) continue;
+    const refuse = (detail: string): ArtifactCheck => ({ ok: false, message: `${detail}\n` +
+      "  Commit the required artifact, push that commit, and only after the push succeeds write its SHA to complete.\n" });
+    let action: PublicAction;
+    try {
+      action = readAction(agentRuntimePaths(paths, agent).action);
+    } catch (error) {
+      return refuse(`current action ${cursor.actionId} could not be read: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}.`);
+    }
+    if (action.actionId.toLowerCase() !== cursor.actionId.toLowerCase() || action.agent !== agent || action.submissionMode !== "git") {
+      return refuse(`action.md does not match current Git action ${cursor.actionId}; re-read it before publishing.`);
+    }
+    let problem: string | null;
+    try {
+      problem = artifactProblem(input.clone, localSha, action.requiredPath, cursor.stepId);
+    } catch (error) {
+      problem = `it could not be inspected (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`;
+    }
+    if (problem !== null) {
+      return refuse(`action ${action.actionId} requires ${JSON.stringify(action.requiredPath)} in pushed commit ${localSha}, but ${problem}.`);
+    }
+  }
+  return { ok: true };
 };
 
 export type VerifyRunResult = { ok: true } | { ok: false; failed: CheckCommand; exitCode: number };

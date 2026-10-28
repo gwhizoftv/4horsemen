@@ -22,6 +22,7 @@ import {
   runTmux,
   TmuxController,
   vimInsertPrelude,
+  vendorBusyIndicator,
   type TmuxResult,
   type TmuxRunner
 } from "../src/tmux.js";
@@ -929,6 +930,29 @@ describe("tmux boundary", () => {
     expect(paneActivityDigest(`${esc}[2m${pane("✻ Thinking… (45s)", "", "? for shortcuts")}${esc}[0m`)).toBe(base);
     expect(paneActivityDigest(pane("✻ Thinking… (46s)", "", "? for shortcuts"))).not.toBe(base);
     expect(paneActivityDigest("no composer\nline")).not.toBe(paneActivityDigest("no composer\nline 2"));
+  });
+
+  it("recognizes static live turn chrome as watchdog busy, but not idle panes, drafts, prose or wait states", () => {
+    const muse = "⏺ Reading\n◈ Thinking (3s · esc to interrupt)\n❯\n────────────────\n  muse-wonder-1.0 · high · /clone · Launch overrides";
+    for (const [agent, pane] of [
+      ["antigravity", "⏺ Editing src/a.ts\n⠋ Thinking…\n> \nAntigravity Gemini · accept-edits"],
+      ["antigravity", "Working (12s)\n> \nAntigravity Gemini"],
+      ["cursor", "⠋ Generating…\n→ Plan, search, build anything\nAuto · 1%"],
+      ["codex", "• Working (3m 2s • esc to interrupt)\n› \n? for shortcuts"],
+      ["muse", muse]
+    ] as const) expect(vendorBusyIndicator(pane, agent), `${agent}: ${pane}`).toBe(true);
+    for (const [agent, pane] of [
+      ["antigravity", "❯ Antigravity Gemini >\n› \n? for shortcuts"],
+      ["antigravity", "- `Thinking…` appears while the turn runs\n> Working... is quoted prose\n> \nAntigravity Gemini"],
+      ["antigravity", "> Thinking… about the owner's draft"],
+      ["cursor", "→ Thinking… typed by the owner\nAuto · 1%"],
+      ["cursor", "Do you trust the contents of this directory?\n→ Plan, search, build anything"],
+      ["codex", "• Worked for 3m 2s\n› Working (draft • esc to interrupt)\n? for shortcuts"],
+      ["muse", "⏺ Done · 20s · ctrl+o\n❯\n────────────────\n  muse-wonder-1.0 · high · /clone · Launch overrides"],
+      ["claude", "✻ Thinking… (45s · esc to interrupt)\n❯ \n? for shortcuts"],
+      ["claude", "Usage limit reached · continuing automatically\n❯"],
+      ["antigravity", `⠋ Thinking…\n${"output line\n".repeat(10)}> \nAntigravity Gemini`]
+    ] as const) expect(vendorBusyIndicator(pane, agent), `${agent}: ${pane}`).toBe(false);
   });
 
   it("finds this action's unsent prompt in the Codex composer or the pane tail", () => {

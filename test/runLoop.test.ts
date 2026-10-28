@@ -4605,6 +4605,106 @@ describe("ready-driven delivery and stall watchdog", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  describe("clone, terminal-log and busy activity without tool hooks", () => {
+    /** A committed clone as the agent's root, with one already-dirty tracked file and an ignored build tree. */
+    const withClone = (f: ReturnType<typeof safetyFixture>): { clone: string; logs: string } => {
+      const clone = mkdtempSync(join(tmpdir(), "coord-watch-clone-"));
+      roots.push(clone);
+      git(clone, "init", "-q");
+      writeFileSync(join(clone, ".gitignore"), "build/\n");
+      writeFileSync(join(clone, "a.txt"), "base\n");
+      git(clone, "add", "-A");
+      git(clone, "commit", "-qm", "base");
+      writeFileSync(join(clone, "a.txt"), "dirty\n");
+      const start = readStartState(f.paths);
+      writeFileSync(f.paths.start, JSON.stringify({ ...start, agents: start.agents.map((agent) => ({ ...agent, root: clone })) }));
+      const logs = agentRuntimePaths(f.paths, start.agents[0]!.id).terminalLogs;
+      mkdirSync(logs, { recursive: true });
+      return { clone, logs };
+    };
+    const minutes = async (f: ReturnType<typeof safetyFixture>, count: number, act: (minute: number) => void = () => undefined) => {
+      for (let minute = 0; minute < count; minute++) { f.advance(60_000); act(minute); await f.tick(); }
+    };
+    const stalled = (f: ReturnType<typeof safetyFixture>) => readJournal(f.paths).filter((event) => event.details.code === "stalled");
+
+    it.each([
+      { activity: "a second edit to an already-dirty tracked file",
+        act: (clone: string, _logs: string, n: number) => writeFileSync(join(clone, "a.txt"), `dirty ${n}\n`) },
+      { activity: "untracked file creation and deletion",
+        act: (clone: string, _logs: string, n: number) => {
+          writeFileSync(join(clone, `new-${n}.txt`), "x");
+          rmSync(join(clone, `new-${n - 2}.txt`), { force: true });
+        } },
+      { activity: "index changes",
+        act: (clone: string, _logs: string, n: number) => { writeFileSync(join(clone, "a.txt"), `staged ${n}\n`); git(clone, "add", "a.txt"); } },
+      { activity: "terminal log appends",
+        act: (_clone: string, logs: string, n: number) => writeFileSync(join(logs, "run-1.log"), `${n}\n`, { flag: "a" }) },
+      { activity: "terminal log rotation",
+        act: (_clone: string, logs: string, n: number) => writeFileSync(join(logs, `run-${n}.log`), "x") }
+    ])("never resends during $activity with a static pane and no hooks, then recovers once it stops", async ({ act }) => {
+      const f = safetyFixture("cursor");
+      f.ui.quiet = true;
+      const { clone, logs } = withClone(f);
+      await f.tick(); f.advance(1); f.working();
+      const gaps = [50_000, 66_000, 58_000, 62_000];
+      for (let elapsed = 0, n = 0; elapsed < 18 * 60_000; n++) {
+        const gap = gaps[n % gaps.length]!;
+        f.advance(gap); elapsed += gap;
+        act(clone, logs, n);
+        await f.tick();
+      }
+      expect(f.ui.sends).toBe(1);
+      expect(f.messages.join("\n")).not.toContain("[WAIT]");
+      expect(stalled(f)).toHaveLength(0);
+      await minutes(f, 6);
+      expect(f.ui.sends).toBe(2);
+      expect(f.messages.filter((message) => message.startsWith("[WAIT]"))).toHaveLength(1);
+      expect(stalled(f)).toHaveLength(1);
+    });
+
+    it("still resends once when only ignored files and coordinator bookkeeping change", async () => {
+      const f = safetyFixture("cursor");
+      f.ui.quiet = true;
+      const { clone, logs } = withClone(f);
+      mkdirSync(join(clone, "build"));
+      await f.tick(); f.advance(1); f.working();
+      await minutes(f, 3, (minute) => {
+        writeFileSync(join(clone, "build", "out.js"), `${minute}`);
+        writeFileSync(join(logs, "run-1.exit.json"), `${minute}`);
+        writeFileSync(agentRuntimePaths(f.paths, "cursor").renderLog, `${minute}\n`, { flag: "a" });
+      });
+      expect(f.ui.sends).toBe(2);
+    });
+
+    it("defers instead of resending while the clone enumeration is incomplete, then recovers", async () => {
+      const f = safetyFixture("cursor");
+      f.ui.quiet = true;
+      const { clone } = withClone(f);
+      mkdirSync(join(clone, "many"));
+      for (let index = 0; index <= 2_000; index++) writeFileSync(join(clone, "many", `f-${index}.txt`), "");
+      await f.tick(); f.advance(1); f.working();
+      await minutes(f, 5);
+      expect(f.ui.sends).toBe(1);
+      expect(stalled(f)).toHaveLength(0);
+      rmSync(join(clone, "many"), { recursive: true, force: true });
+      await minutes(f, 2);
+      expect(f.ui.sends).toBe(2);
+    });
+
+    it("treats an unchanged Antigravity thinking line as busy, then resends once after it clears and a quiet minute passes", async () => {
+      const f = safetyFixture("antigravity");
+      f.ui.quiet = true;
+      await f.tick(); f.advance(1); f.working();
+      f.ui.text = "⏺ Editing src/a.ts\n⠋ Thinking…\n> \nAntigravity Gemini · accept-edits";
+      await minutes(f, 10);
+      expect(f.ui.sends).toBe(1);
+      expect(stalled(f)).toHaveLength(0);
+      f.ui.text = IDLE_PANE;
+      await minutes(f, 2);
+      expect(f.ui.sends).toBe(2);
+    });
+  });
+
   it("never resends during a long tool call, then resends once after it ends and the agent goes quiet", async () => {
     const f = safetyFixture("claude");
     f.ui.quiet = true;

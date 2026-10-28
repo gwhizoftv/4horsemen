@@ -273,6 +273,28 @@ export const paneActivityDigest = (paneText: string): string => {
 };
 
 /**
+ * Live turn chrome that the stall watchdog counts as work even when it does not
+ * repaint. Narrower than `harnessPromptReadiness`: trust dialogs, missing
+ * composers, usage waits and owner drafts are not busy, and only anchored
+ * status lines in the pane tail count, so prose that quotes `Thinking…` does
+ * not. Claude is observed through its transcript and hooks instead.
+ */
+export const vendorBusyIndicator = (paneText: string, agentId: string): boolean => {
+  const tail = stripAnsi(paneText).split("\n").filter((line) => line.trim() !== "").slice(-8).join("\n");
+  switch (agentId) {
+    case "cursor":
+    case "antigravity":
+      return inFlightStatusLine(tail, "Generating|Running|Working|Thinking");
+    case "codex":
+      return codexTurnChrome(tail);
+    case "muse":
+      return museTurnChrome(paneText);
+    default:
+      return false;
+  }
+};
+
+/**
  * Whether the TUI has an idle prompt that can accept typed input, and why not.
  *
  * Process-name readiness alone is not enough: Antigravity/`agy` can be

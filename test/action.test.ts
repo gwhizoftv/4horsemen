@@ -69,6 +69,20 @@ describe("verification instructions", () => {
     expect(raw).toContain("do not run a product suite merely to cast a ballot");
     expect(raw).toContain("Do not `git add`, `git commit`, or `git push`");
   });
+
+  it.each(["R3.review", "R5.compare", "R4.implement"] as const)(
+    "requires %s's artifact in the pushed tree and a successful push before complete", (stepId) => {
+      const raw = renderAction({ ...order("/runtime"), stepId }).replace(/\s+/g, " ");
+      expect(raw).toContain("The pushed commit's tree must contain `.plans/issue-1/review.md`");
+      expect(raw).toContain("an untracked, unstaged, staged-but-uncommitted or unpushed artifact is rejected");
+      expect(raw).toContain("A failed or still-running push is not completion.");
+      expect(raw.indexOf("Only after `git push` succeeds, write that exact 40-character lowercase commit SHA"))
+        .toBeLessThan(raw.indexOf("/runtime/completes/issue-1/codex/complete"));
+      const response = renderAction({ ...order("/runtime"), submissionMode: "response", stepId: "R6.ballot",
+        requiredPath: "", responsePath: "/runtime/response.json" });
+      expect(response).not.toContain("git push` succeeds");
+      expect(response).toContain("ready b2337d85-6617-4e9f-8ace-901453764aa4");
+    });
 });
 
 describe("agent actions", () => {
