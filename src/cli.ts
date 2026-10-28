@@ -26,7 +26,7 @@ import {
 } from "./githubAuth.js";
 import { cloneGitHubWiringProblem } from "./setupWorkspace.js";
 import { sha256 } from "./hash.js";
-import { renderHookScope, resolveHookBinding, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
+import { assertRequiredArtifact, renderHookScope, resolveHookBinding, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { inspectOutgoingChanges, inspectStagedChanges } from "./changeClassification.js";
 import { hookVerificationRecorder } from "./verificationLog.js";
 import { DEFAULT_AGENTS, install, onboard, packageVersion, savedGitHubAccount, uninstall } from "./install.js";
@@ -1597,6 +1597,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const { config, configPath } = resolveWorkspaceConfig(clone);
       // Git's ref lines can be read once; binding and classification share them.
       const refs = phase === "prepush" ? io.stdin() : "";
+      if (phase === "prepush") assertRequiredArtifact({ clone, configPath, refs });
       const changes = phase === "precommit" ? inspectStagedChanges(clone)
         : inspectOutgoingChanges(clone, refs, localConfigGet(clone, "consensus.remoteName") ?? "origin",
           localConfigGet(clone, "consensus.sharedBranch") ?? "main");

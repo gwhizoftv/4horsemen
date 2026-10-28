@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, statSync, unlinkSync } from "node:fs";
+import { lstat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { clearCompletion, clearReady, createActionId, readAction, readCompletion, readReady, writeAction } from "./action.js";
 import {
@@ -46,6 +47,8 @@ import { renderArtifactScaffold } from "./orderScaffold.js";
 import {
   agentResponsePath,
   agentRuntimePaths,
+  assertNoSymlink,
+  containedPath,
   evidenceWorktreePath,
   resourceBindingPaths,
   type IssueRuntimePaths
@@ -114,7 +117,7 @@ import { inspectStartupAgent } from "./doctor.js";
 import { assessFollowUpIssue, followUpKey, formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
 import { coordCliEntry, withGitHubAccount } from "./githubAuth.js";
-import { harnessPromptReadiness, paneActivityDigest, renderNudgeText, TmuxController, type OwnerReminderOutcome } from "./tmux.js";
+import { harnessPromptReadiness, paneActivityDigest, paneHasBusyIndicator, renderNudgeText, TmuxController, type OwnerReminderOutcome } from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
@@ -2048,15 +2051,66 @@ export class CoordinatorRunLoop {
     }
   }
 
+  /** Read-only metadata, including repeated edits to an already dirty file.
+   * A partial/error observation is null, never evidence of a quiet clone. */
+  private async cloneActivityStamp(start: StartState, agent: string): Promise<string | null> {
+    const root = start.agents.find((entry) => entry.id === agent)?.root;
+    if (root === undefined) return "none";
+    try {
+      try { await lstat(join(root, ".git")); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return "none";
+        throw error;
+      }
+      const inspect = async (args: string[]): Promise<string> => {
+        const result = await this.processRunner(["git", ...args], root, { timeoutMs: 5_000 });
+        // runArgv retains only 32 KiB when bounded. Never parse its tail as a full list.
+        if (result.exitCode !== 0 || Buffer.byteLength(result.stdout) >= 32 * 1024) throw new Error("Git activity observation failed or exceeded its output limit");
+        return result.stdout;
+      };
+      const [listed, index] = await Promise.all([
+        // A large clean repository must not exhaust the observation budget.
+        inspect(["ls-files", "-z", "--modified", "--others", "--exclude-standard"]),
+        inspect(["rev-parse", "--path-format=absolute", "--git-path", "index"])
+      ]);
+      if ((listed !== "" && !listed.endsWith("\0")) || index.trim() === "") throw new Error("incomplete Git activity observation");
+      const files = [...new Set(listed.split("\0").filter((path) => path !== "" && !/^(?:\.coord|\.git|\.codex)\//.test(path)))].sort();
+      if (files.length > 4_096) throw new Error("Git activity observation exceeded its file limit");
+      const metadata = async (path: string): Promise<string> => {
+        try {
+          const stat = await lstat(path);
+          return `${stat.mode}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return "gone";
+          throw error;
+        }
+      };
+      const records: string[] = [];
+      const deadline = Date.now() + 5_000;
+      for (const file of files) {
+        if (Date.now() > deadline) throw new Error("file metadata observation exceeded its time limit");
+        const path = containedPath(root, file);
+        // A tracked symlink is observed with lstat, never followed into another tree.
+        assertNoSymlink(root, dirname(path));
+        records.push(file, await metadata(path));
+      }
+      records.push("index", index.trim(), await metadata(index.trim()));
+      return sha256(JSON.stringify(records));
+    } catch (error) {
+      this.verbose(`${agent}: clone activity unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
   /**
    * Stall watchdog for an agent that owes work. Once a minute it compares
-   * transcript, tool-hook and pane activity. A quiet minute earns one resend;
+   * transcript, clone/index, tool-hook and pane activity. A quiet minute earns one resend;
    * still quiet after that, one `[WAIT]` line. Hook silence alone never counts
    * as quiet, because the pane and transcript must also be static.
    */
   private async watchOwedWork(start: StartState, cursors: CursorsState, agent: string, actionId: string): Promise<CursorsState> {
     if (this.tmux === null) return cursors;
-    const entry = readAgentLifecycle(this.paths).agents[agent];
+    let entry = readAgentLifecycle(this.paths).agents[agent];
     const action = entry?.action;
     if (entry === undefined || action == null || action.actionId !== actionId || action.workflowCompleteAt !== null) return cursors;
     const now = this.now();
@@ -2073,14 +2127,35 @@ export class CoordinatorRunLoop {
         { watch: { checkedAt: now, quietSince: now, fingerprint: `unavailable:${now}` } }, now);
       return cursors;
     }
-    const fingerprint = sha256(JSON.stringify([this.transcriptStamp(agent, entry.sessionId),
-      entry.toolActivity.sequence, paneActivityDigest(text)]));
+    const cloneStamp = await this.cloneActivityStamp(start, agent);
+    this.authority(cursors);
+    // Hooks can arrive while Git/filesystem observation is in flight.
+    entry = readAgentLifecycle(this.paths).agents[agent];
+    if (entry?.action?.actionId !== actionId || entry.action.actionDigest !== action.actionDigest || entry.action.workflowCompleteAt !== null) return cursors;
+    if (cloneStamp === null) {
+      if (!action.watch?.fingerprint.startsWith("unavailable:")) {
+        this.log(`[WARN] Issue ${start.issue}: ${agent} clone activity could not be fully observed; stall detection deferred.`);
+      }
+      updateActionWatch(this.paths, agent, actionId, action.actionDigest,
+        { watch: { checkedAt: now, quietSince: now, fingerprint: `unavailable:${now}` } }, now);
+      return cursors;
+    }
+    // Raw terminal logs also include owner drafts/footer repaint, so they cannot
+    // establish activity. Keep the existing normalized pane/transcript evidence.
+    const busy = paneHasBusyIndicator(text, agent);
+    const fingerprint = sha256(JSON.stringify([this.transcriptStamp(agent, entry.sessionId), cloneStamp,
+      entry.toolActivity.sequence, paneActivityDigest(text), busy]));
     const previous = action.watch;
     const quiet = previous !== null && previous.fingerprint === fingerprint && entry.toolActivity.pending === 0;
     const quietSince = quiet ? previous.quietSince : now;
     updateActionWatch(this.paths, agent, actionId, action.actionDigest, { watch: { checkedAt: now, quietSince, fingerprint } }, now);
     if (!quiet) return cursors;
-    if (action.resentAt === null) {
+    // A silent live tool can leave static chrome; give it five quiet minutes.
+    // Persist the unchanged baseline so frozen chrome cannot suppress recovery forever.
+    if (busy && Date.parse(now) - Date.parse(quietSince) < 5 * OBSERVATION_INTERVAL_MS) return cursors;
+    // Frozen busy chrome eventually reports WAIT without typing into an unsafe
+    // running turn. Once idle, the ordinary single-resend path remains available.
+    if (action.resentAt === null && !busy) {
       this.verbose(`${agent}: quiet for a minute while owing action ${actionId}; resending once`);
       return this.deliver(start, cursors, agent, actionId, action.actionDigest, "resend");
     }

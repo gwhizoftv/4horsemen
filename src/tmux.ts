@@ -272,6 +272,25 @@ export const paneActivityDigest = (paneText: string): string => {
   return sha256((composerAt < 0 ? lines : lines.slice(0, composerAt)).join("\n"));
 };
 
+/** Watchdog-only evidence; delivery readiness and explicit reminders keep their
+ * own authority. Ignore drafts, footers, and fenced/quoted discussion of chrome. */
+export const paneHasBusyIndicator = (paneText: string, agentId: string): boolean => {
+  const lines = stripAnsi(paneText).split("\n");
+  const composerAt = lines.map((line) => COMPOSER_LINE.test(line.trim())).lastIndexOf(true);
+  let fenced = false;
+  const live = (composerAt < 0 ? lines : lines.slice(0, composerAt)).filter((line) => {
+    if (/^\s*(?:```|~~~)/.test(line)) { fenced = !fenced; return false; }
+    return !fenced && !/^\s*[-*>`]/.test(line);
+  }).filter((line) => line.trim() !== "").slice(-8).join("\n");
+  switch (agentId) {
+    case "codex": return codexTurnChrome(live);
+    case "muse": return museTurnChrome(live);
+    case "cursor":
+    case "antigravity": return inFlightStatusLine(live, "Generating|Running|Working|Thinking");
+    default: return false;
+  }
+};
+
 /**
  * Whether the TUI has an idle prompt that can accept typed input, and why not.
  *

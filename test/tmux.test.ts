@@ -9,6 +9,7 @@ import {
   harnessPromptReadiness,
   nudgePreludeKeys,
   paneActivityDigest,
+  paneHasBusyIndicator,
   pendingPromptInComposer,
   ownerTerminalCloseAppleScript,
   ownerTerminalOpenAppleScript,
@@ -43,6 +44,18 @@ const musePane = (above: string, composer = ""): string =>
   "──────────────────────────────────────────────────\n  muse-wonder-1.0 · high · /clone · Launch overrides\n";
 /** The idle line agents used to print; it is no longer evidence of anything. */
 const COORD_IDLE_SENTINEL = "COORD-IDLE: waiting for the next coordinator action file";
+
+it("recognizes watchdog busy chrome without treating drafts, prose, fences or waits as work", () => {
+  expect(paneHasBusyIndicator("Thinking…\n> \nAntigravity", "antigravity")).toBe(true);
+  expect(paneHasBusyIndicator("⠋ Working for 12s\n→ ", "cursor")).toBe(true);
+  expect(paneHasBusyIndicator("• Working (12s • esc to interrupt)\n› \n? for shortcuts", "codex")).toBe(true);
+  expect(paneHasBusyIndicator(musePane("◈ Thinking (3s · esc to interrupt)\n"), "muse")).toBe(true);
+  for (const prose of ["- Thinking…", "> Thinking...", "`Thinking…`", "```\nThinking…\n```", "Thinking about the task"]) {
+    expect(paneHasBusyIndicator(`${prose}\n> \nAntigravity`, "antigravity")).toBe(false);
+  }
+  expect(paneHasBusyIndicator("done\n> Thinking…\nWorking (12s)", "antigravity")).toBe(false);
+  expect(paneHasBusyIndicator("Usage limit reached\n❯", "claude")).toBe(false);
+});
 
 it("reports issue environment wiring without claiming child-process trust", async () => {
   const calls: string[][] = [];

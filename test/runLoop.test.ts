@@ -4483,6 +4483,103 @@ describe("third revision closeout", () => {
 });
 
 describe("ready-driven delivery and stall watchdog", () => {
+  const editingFixture = () => {
+    const f = safetyFixture("antigravity");
+    f.ui.quiet = true;
+    const root = mkdtempSync(join(tmpdir(), "coord-watch-clone-"));
+    roots.push(root);
+    git(root, "init", "-q");
+    writeFileSync(join(root, "work.txt"), "base\n");
+    writeFileSync(join(root, ".gitignore"), ".coord/\nignored/\n");
+    git(root, "add", "work.txt", ".gitignore");
+    git(root, "commit", "-qm", "baseline");
+    const start = readStartState(f.paths);
+    writeFileSync(f.paths.start, JSON.stringify({ ...start, agents: [{ ...start.agents[0], root }] }));
+    return { ...f, root };
+  };
+
+  it("observes repeated edits, untracked files and index changes across restarts, then recovers after quiet", async () => {
+    const f = editingFixture();
+    await f.tick();
+    f.advance(1); f.working();
+    const operations = [
+      () => writeFileSync(join(f.root, "work.txt"), "dirty\n"),
+      () => writeFileSync(join(f.root, "work.txt"), "still editing the same dirty file\n"),
+      () => writeFileSync(join(f.root, "new.txt"), "new\n"),
+      () => rmSync(join(f.root, "new.txt")),
+      () => git(f.root, "add", "work.txt")
+    ];
+    for (const edit of operations) {
+      edit(); f.advance(60_000); await f.tick();
+      expect(f.ui.sends).toBe(1);
+      expect(readJournal(f.paths).some((event) => event.details.code === "stalled")).toBe(false);
+    }
+    // Coordinator bookkeeping, raw terminal repaint and ignored output must not
+    // perpetuate activity after the actual edits have stopped.
+    const terminal = agentRuntimePaths(f.paths, "antigravity").terminalLogs;
+    mkdirSync(terminal, { recursive: true });
+    for (const dir of ["ignored", ".coord"]) mkdirSync(join(f.root, dir));
+    for (let minute = 0; minute < 3; minute++) {
+      writeFileSync(join(terminal, `run-${minute}.log`), "owner draft and idle footer repaint\n");
+      writeFileSync(join(f.root, "ignored", "output"), String(minute));
+      writeFileSync(join(f.root, ".coord", "observation"), String(minute));
+      f.advance(60_000); await f.tick();
+    }
+    expect(f.ui.sends).toBe(2);
+    expect(readJournal(f.paths).filter((event) => event.details.code === "stalled")).toHaveLength(1);
+  });
+
+  it("recovers a lost prompt in a large clean clone", async () => {
+    const f = editingFixture();
+    for (let index = 0; index < 1_200; index++) {
+      const dir = join(f.root, "src", "components", `module-${String(index).padStart(4, "0")}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "index.ts"), "export {};\n");
+    }
+    git(f.root, "add", "src");
+    git(f.root, "commit", "-qm", "large clean baseline");
+    expect(Buffer.byteLength(git(f.root, "ls-files", "-z", "--cached"))).toBeGreaterThan(32 * 1024);
+    await f.tick();
+    f.advance(1); f.working();
+    for (let minute = 0; minute < 4; minute++) { f.advance(60_000); await f.tick(); }
+    expect(f.ui.sends).toBe(2);
+    expect(readJournal(f.paths).filter((event) => event.details.code === "stalled")).toHaveLength(1);
+    expect(f.messages.join("\n")).not.toContain("clone activity could not be fully observed");
+  });
+
+  it.each(["truncated", "failed"])("never declares quiet from %s file enumeration", async (kind) => {
+    const f = editingFixture();
+    const processRunner: RunLoopDependencies["processRunner"] = async (argv, cwd, options) => argv[1] === "ls-files"
+      ? { exitCode: kind === "failed" ? 124 : 0, stdout: kind === "truncated" ? "x".repeat(32 * 1024 - 1) + "\0" : "", stderr: "unavailable" }
+      : runArgv(argv, cwd, options);
+    await f.makeLoop({ processRunner }).runTick();
+    for (let minute = 0; minute < 3; minute++) { f.advance(60_000); await f.makeLoop({ processRunner }).runTick(); }
+    expect(f.ui.sends).toBe(1);
+    expect(readJournal(f.paths).some((event) => event.details.code === "stalled")).toBe(false);
+    f.advance(60_000); await f.tick(); // complete observation establishes a new baseline
+    expect(f.ui.sends).toBe(1);
+    f.advance(60_000); await f.tick();
+    expect(f.ui.sends).toBe(2);
+  });
+
+  it("waits through unchanged busy chrome, reports frozen work once, and recovers after idle", async () => {
+    const f = safetyFixture("antigravity");
+    f.ui.quiet = true;
+    await f.tick();
+    f.ui.text = "Antigravity\nThinking…\n> \n? for shortcuts accept-edits";
+    for (let minute = 0; minute < 5; minute++) { f.advance(60_000); await f.tick(); }
+    expect(f.ui.sends).toBe(1);
+    expect(f.messages.join("\n")).not.toContain("[WAIT]");
+    for (let minute = 0; minute < 3; minute++) { f.advance(60_000); await f.tick(); }
+    expect(readJournal(f.paths).filter((event) => event.details.code === "stalled")).toHaveLength(1);
+    expect(f.ui.sends).toBe(1); // never type into a turn that may still be running
+    f.ui.text = IDLE_PANE;
+    f.advance(60_000); await f.tick();
+    expect(f.ui.sends).toBe(1);
+    f.advance(60_000); await f.tick();
+    expect(f.ui.sends).toBe(2);
+  });
+
   /** Replace the agent's current action with a new one, as the coordinator does after accepting the previous. */
   const nextAction = (f: ReturnType<typeof safetyFixture>, vendor: string): { previous: string; next: string } => {
     const runtime = agentRuntimePaths(f.paths, vendor);

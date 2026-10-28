@@ -33,6 +33,18 @@ const order = (root: string): InternalOrder => ({
 });
 
 describe("verification instructions", () => {
+  it("requires a committed artifact and successful push before Git completion", () => {
+    for (const stepId of ["R3.review", "R5.compare"] as const) {
+      const raw = renderAction({ ...order("/runtime"), stepId });
+      expect(raw).toContain("tree must contain that path");
+      expect(raw).toContain("`git push` to succeed before writing `complete`");
+      expect(raw).toContain("A failed or still-running\npush is not completion");
+      expect(raw).toContain("untracked, staged-only, or modified artifact");
+    }
+    expect(renderAction({ ...order("/runtime"), submissionMode: "response", stepId: "R3.plan-ballot",
+      requiredPath: "", responsePath: "/runtime/response.json" })).not.toContain("tree must contain that path");
+  });
+
   it.each(["R1.join", "R2.plan", "R3.review", "R4.implement", "R5.compare", "R6.revise", "R7.finalize"] as const)(
     "states check ownership for %s", (stepId) => {
       const raw = renderAction({ ...order("/runtime"), stepId });
