@@ -1,0 +1,14 @@
+{
+  "actionId": "04106a3d-c64e-4800-a1fb-3455aed23cfb",
+  "agent": "muse",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "d3618678a4f0130118f371ec2c12172d53a2e7dbf655c552c190570443938ef1",
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "protocolVersion": 2,
+  "rationale": "The round-2 claude revision retains the corrected Codex-gated, phase-bounded shared-turn resolution and now pins the cross-turn ambiguity case, leaving an unkeyed record unassigned when a shared-turn slice and another turn's window both claim it.",
+  "responseSha256": "1a6d29b91514a3a834459da2c075857525dd58873a04514715c1bcfda1b765f8",
+  "revisionCommitSha": "dd3839c92721df6ab65dbb066564dddf04d5247f",
+  "round": 2
+}

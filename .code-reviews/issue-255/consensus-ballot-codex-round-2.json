@@ -1,0 +1,14 @@
+{
+  "actionId": "09cb93b6-e26e-4ea9-bc67-156e68e753c5",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "d3618678a4f0130118f371ec2c12172d53a2e7dbf655c552c190570443938ef1",
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "protocolVersion": 2,
+  "rationale": "Approve dd3839c92721df6ab65dbb066564dddf04d5247f because the bounded shared-turn attribution now preserves cross-turn ambiguity as unassigned partial usage, the focused replay passed both the previously failing overlap and the normal complete case, the existing test file and documentation cover the correction within the approved scope, and journal sequences 306 and 308 record successful check:fast and test:e2e hook runs.",
+  "responseSha256": "7f4e17df82e7b9e5e549d007120cf014e6c68607a8f18a83cf81bf7762ce59af",
+  "revisionCommitSha": "dd3839c92721df6ab65dbb066564dddf04d5247f",
+  "round": 2
+}

@@ -1,0 +1,14 @@
+{
+  "actionId": "8b243b54-1da1-489d-8011-90be0655eadb",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "d3618678a4f0130118f371ec2c12172d53a2e7dbf655c552c190570443938ef1",
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "protocolVersion": 2,
+  "rationale": "Revision dd3839c9 fixes codex's round-1 finding at src/analytics.ts:754 by leaving an unkeyed record unassigned (partial) whenever a shared-turn slice and another turn's complete window, or two shared turns, both claim it, adds that exact no-stop/other-turn regression (which fails on 048fac69 and passes here), keeps every other route unchanged, and passed the commit hook's check:fast (869 fast and 272 system tests).",
+  "responseSha256": "2857d672283029f2eb323a76c8579ac8c05fdfa60c219fb89bbf7885c6fe3cb4",
+  "revisionCommitSha": "dd3839c92721df6ab65dbb066564dddf04d5247f",
+  "round": 2
+}
