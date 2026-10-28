@@ -1,0 +1,14 @@
+{
+  "actionId": "d7560691-5a07-4377-9eb0-77f3a8447506",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "d6e65897632ee9aec66d0ee4e46473a4d3548c6a2fd5505a992f10add47b17cb",
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "protocolVersion": 2,
+  "rationale": "Revision 048fac69 resolves the consensus condition by letting unkeyed live token rows consult each shared Codex turn's next-prompt or phase-bounded slices before a stop is journaled, while a complete window from another turn still keeps the record conservative, and it adds the unkeyed no-stop regression (which fails on 5dbe2f46 and passes here) alongside the hook-recorded check:fast pass (868 fast and 272 system tests).",
+  "responseSha256": "b66e960b8b1b19529925b5024cebbd3b121c3c8b47f70cf155128b95c4e3de69",
+  "revisionCommitSha": "048fac696eda1fe7b9ee648ea8b202eb3338df55",
+  "round": 1
+}

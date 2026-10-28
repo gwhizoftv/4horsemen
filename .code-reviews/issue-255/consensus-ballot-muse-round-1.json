@@ -1,0 +1,14 @@
+{
+  "actionId": "83f54768-a350-46c8-84d6-3f58ea4f9687",
+  "agent": "muse",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "d6e65897632ee9aec66d0ee4e46473a4d3548c6a2fd5505a992f10add47b17cb",
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "protocolVersion": 2,
+  "rationale": "The claude revision keeps the phase-bounded, same-phase-tie-aware shared-turn resolution and addresses the comparison findings by gating both attribution loops to Codex and making exactness require a non-null phase, while unresolved records remain honestly partial.",
+  "responseSha256": "8ad360751d8bf48d8ff5cd1144f4f8490b8f6ae780224c1ebe5b98fde1c5c8af",
+  "revisionCommitSha": "048fac696eda1fe7b9ee648ea8b202eb3338df55",
+  "round": 1
+}

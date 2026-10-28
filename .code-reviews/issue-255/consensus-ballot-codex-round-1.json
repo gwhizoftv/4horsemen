@@ -1,0 +1,14 @@
+{
+  "actionId": "bc0913c6-86a7-46f0-b3c1-9731cd6c2cd4",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "d6e65897632ee9aec66d0ee4e46473a4d3548c6a2fd5505a992f10add47b17cb",
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "protocolVersion": 2,
+  "rationale": "At revision 048fac696eda1fe7b9ee648ea8b202eb3338df55 src/analytics.ts:754, an unkeyed record claimed by a shared-turn slice and a complete window of another turn must remain unassigned with partial coverage, but rejecting the slice falls through to assign(resolved.phaseIndex, record, resolved.exact) and falsely reports complete coverage: using the existing shared-turn token fixture, omit the shared stop, retain prompts at 02s/12s across the R1/R2 boundary at 10s, and add another same-session turn prepared at 03s, prompted at 04s and stopped at 20s, which assigns the ambiguous 15s token to R1 and produces phase inputs [20,0] with a non-null total; preserve that cross-turn ambiguity through fallback and add this regression.",
+  "responseSha256": "cda268b24f5111af4b7865dd1bb7d8cafdff658d7a92eadbd46a80af57714f6c",
+  "revisionCommitSha": "048fac696eda1fe7b9ee648ea8b202eb3338df55",
+  "round": 1
+}
