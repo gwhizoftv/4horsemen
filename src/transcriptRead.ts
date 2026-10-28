@@ -21,12 +21,22 @@ export type TokenUsage = {
   reasoning: number | null;
 };
 
+/** One turn-keyed record, kept so a turn shared by several actions can be split by timestamp. */
+export type TranscriptSample = {
+  at: string | null;
+  tokens: TokenUsage;
+  toolCalls: number;
+  tokenRecords: number;
+  toolRecords: number;
+};
+
 export type TranscriptUsage = {
   turnId: string;
   tokens: TokenUsage;
   toolCalls: number;
   tokenRecords: number;
   toolRecords: number;
+  samples?: TranscriptSample[];
 };
 
 export type UnattributedTranscriptUsage = {
@@ -465,12 +475,20 @@ const aggregateSamples = (samples: readonly UsageSample[]): Pick<TranscriptReadR
       tokens: emptyTokens(),
       toolCalls: 0,
       tokenRecords: 0,
-      toolRecords: 0
+      toolRecords: 0,
+      samples: []
     };
     current.tokens = addTokens(current.tokens, sample.tokens);
     current.toolCalls += sample.toolCalls;
     current.tokenRecords += sample.tokenRecords;
     current.toolRecords += sample.toolRecords;
+    current.samples?.push({
+      at: sample.at,
+      tokens: sample.tokens,
+      toolCalls: sample.toolCalls,
+      tokenRecords: sample.tokenRecords,
+      toolRecords: sample.toolRecords
+    });
     turns.set(sample.turnId, current);
   }
   return {

@@ -631,8 +631,11 @@ describe("analytics aggregation", () => {
     expect(renderAnalytics(report)).toContain("duration=unavailable");
   });
 
-  it("assigns overlapping windows from one shared Codex turn as a named partial fallback", () => {
-    const codex = sharedCodexTranscriptRoot();
+  it.each([
+    ["unkeyed", false],
+    ["turn-keyed", true]
+  ])("splits %s records of one shared Codex turn by their timestamps", (_label, explicitTurnId) => {
+    const codex = sharedCodexTranscriptRoot(explicitTurnId);
     const report = buildAnalytics({
       start,
       journal: sharedCodexJournal(),
@@ -642,36 +645,119 @@ describe("analytics aggregation", () => {
     const codexUsage = report.usage?.agents[0];
 
     expect(codexUsage).toMatchObject({
-      tokenCoverage: "partial",
+      tokenCoverage: "complete",
+      tokenReason: null,
       phases: [
         { phase: "R1.join", tokens: { input: 10, output: 2, cacheRead: 10 } },
         { phase: "R2.plan", tokens: { input: 10, output: 4, cacheRead: 30 } }
       ],
       unassigned: { tokenRecords: 0 }
     });
-    expect(codexUsage?.tokenReason).toContain("shared by one vendor turn across several actions");
+    expect(report.usage?.tokenTotal).toEqual({ input: 20, output: 6, cacheRead: 40, cacheWrite: 0, reasoning: 3 });
   });
 
-  it("labels a turn-keyed aggregate partial when one vendor turn maps to multiple actions", () => {
+  it("keeps an earlier shared-turn sample exact beside tied later prompts and bounds an unstopped turn by its phase", () => {
     const codex = sharedCodexTranscriptRoot(true);
+    const tiedAction = "ffffffff-ffff-4fff-8fff-fffffffffffe";
+    const journal = [
+      ...sharedCodexJournal().filter((event) => Date.parse(event.at) < Date.parse("2026-08-21T00:00:22.000Z")),
+      ...[
+        { at: "2026-08-21T00:00:11.000Z", type: "action-prepared", agent: "codex", actionId: tiedAction, details: {} },
+        { at: "2026-08-21T00:00:12.000Z", type: "agent-lifecycle", agent: "codex", actionId: tiedAction, details: { vendor: "codex", kind: "prompt-submitted", sessionId: "session-shared", turnId: "turn-shared" } }
+      ].map((event, index) => journalEventSchema.parse({ formatVersion: 4, sequence: 100 + index, ...event }))
+    ];
     const report = buildAnalytics({
       start,
-      journal: sharedCodexJournal(),
+      journal,
       activeRoster: ["codex"],
+      now: "2026-08-21T00:00:25.000Z",
       transcriptRoots: { codex }
     });
-    const codexUsage = report.usage?.agents[0];
 
-    expect(codexUsage).toMatchObject({
-      tokenCoverage: "partial",
+    expect(report.usage?.agents[0]).toMatchObject({
+      tokenCoverage: "complete",
       phases: [
-        { phase: "R1.join", tokens: { input: 0, output: 0, cacheRead: 0 } },
-        { phase: "R2.plan", tokens: { input: 20, output: 6, cacheRead: 40 } }
+        { phase: "R1.join", tokens: { input: 10, output: 2, cacheRead: 10 } },
+        { phase: "R2.plan", tokens: { input: 10, output: 4, cacheRead: 30 } }
       ],
       unassigned: { tokenRecords: 0 }
     });
-    expect(codexUsage?.tokenReason).toContain("shared by one vendor turn across several actions");
-    expect(report.usage?.tokenTotal).toBeNull();
+  });
+
+  it("attributes one shared Codex turn across R1/R2/R4/R7 by record timestamp", () => {
+    const sessionId = "session-shared";
+    const turnId = "turn-shared";
+    const at = (seconds: number): string => new Date(Date.parse(start.createdAt) + seconds * 1000).toISOString();
+    const phaseNames = ["R1.join", "R2.plan", "R4.implement", "R7.finalize"];
+    const raw: Record<string, unknown>[] = [{ at: at(0), type: "started", details: { issue: 89, profile: "solo" } }];
+    phaseNames.forEach((name, index) => {
+      const actionId = `${index + 1}`.repeat(8) + "-1111-4111-8111-" + `${index + 1}`.repeat(12);
+      raw.push(
+        { at: at(index * 10 + 1), type: "action-prepared", agent: "codex", actionId, details: {} },
+        { at: at(index * 10 + 2), type: "agent-lifecycle", agent: "codex", actionId, details: { vendor: "codex", kind: "prompt-submitted", sessionId, turnId } }
+      );
+      if (index === phaseNames.length - 1) {
+        raw.push({ at: at(38), type: "agent-lifecycle", agent: "codex", details: { vendor: "codex", kind: "stopped", sessionId, turnId } });
+      }
+      raw.push({ at: at(index * 10 + 10), type: "gate-advanced", details: { from: name, to: phaseNames[index + 1] ?? null, round: null } });
+    });
+    const journal = raw.map((event, sequence) => journalEventSchema.parse({ formatVersion: 4, sequence, ...event }));
+
+    const tool = (seconds: number, id: string) => ({
+      timestamp: at(seconds),
+      type: "event_msg",
+      payload: { type: "item_completed", thread_id: sessionId, turn_id: turnId, item: { type: "CommandExecution", id } }
+    });
+    const token = (seconds: number, input: number) => ({
+      timestamp: at(seconds),
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: { last_token_usage: { input_tokens: input, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }
+      }
+    });
+    const records = [
+      tool(3, "r1-a"), token(5, 10),
+      tool(13, "r2-a"), tool(14, "r2-b"), token(15, 20),
+      tool(23, "r4-a"), tool(24, "r4-b"), tool(25, "r4-c"), token(26, 30),
+      tool(33, "r7-a"), token(35, 40)
+    ];
+    const root = mkdtempSync(join(tmpdir(), "coord-codex-multiphase-"));
+    roots.push(root);
+    const codex = join(root, ".codex");
+    const transcript = join(codex, "sessions", "2026", "08", "21", `rollout-fixture-${sessionId}.jsonl`);
+    mkdirSync(dirname(transcript), { recursive: true });
+    const write = (rows: readonly object[]): void =>
+      writeFileSync(transcript, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    write(records);
+
+    const report = buildAnalytics({ start, journal, activeRoster: ["codex"], transcriptRoots: { codex } });
+    expect(report.usage?.agents[0]).toMatchObject({
+      tokenCoverage: "complete",
+      tokenReason: null,
+      toolCoverage: "complete",
+      toolReason: null,
+      phases: [
+        { phase: "R1.join", toolCalls: 1, tokens: { input: 10, output: 1 } },
+        { phase: "R2.plan", toolCalls: 2, tokens: { input: 20, output: 1 } },
+        { phase: "R4.implement", toolCalls: 3, tokens: { input: 30, output: 1 } },
+        { phase: "R7.finalize", toolCalls: 1, tokens: { input: 40, output: 1 } }
+      ],
+      unassigned: { records: 0 }
+    });
+    expect(report.usage?.tokenTotal).toEqual({ input: 100, output: 4, cacheRead: 0, cacheWrite: 0, reasoning: 0 });
+
+    // A record after the shared stop lies outside every action slice: it keeps the latest-action fallback.
+    write([...records, tool(39, "after-stop")]);
+    const residual = buildAnalytics({ start, journal, activeRoster: ["codex"], transcriptRoots: { codex } });
+    const residualUsage = residual.usage?.agents[0];
+    expect(residualUsage).toMatchObject({
+      tokenCoverage: "complete",
+      toolCoverage: "partial",
+      phases: [{ toolCalls: 1 }, { toolCalls: 2 }, { toolCalls: 3 }, { toolCalls: 2 }]
+    });
+    expect(residualUsage?.toolReason).toContain("shared by one vendor turn across several actions");
+    expect(residual.usage?.tokenTotal).not.toBeNull();
   });
 
   it("unlocks a Cursor/Codex total only when normalized Cursor tokens are complete", () => {
