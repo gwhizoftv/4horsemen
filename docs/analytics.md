@@ -484,16 +484,25 @@ containing its `action-prepared` record.
   `~/.codex/sessions/YYYY/MM/DD/*-<sessionId>.jsonl`. Current `token_count`
   records do **not** carry `turn_id` or consistently carry `ordinal`; token
   deltas are assigned when their timestamp lies inside a complete,
-  same-session coordinator `prompt-submitted` → `stopped` window. If overlapping
-  windows all share one vendor `sessionId`/`turnId`, the most recently started
-  action receives the record as an explicitly `partial` shared-turn fallback;
-  overlaps across different turn ids remain unassigned. Transcript records that
-  already carry a turn id use the same rule when that turn maps to multiple
-  coordinator actions: they are never silently assigned to the first action as
-  exact coverage.
+  same-session coordinator `prompt-submitted` → `stopped` window. When
+  several actions share one vendor `sessionId`/`turnId`, each record —
+  turn-keyed tool samples and live unkeyed token records alike — is resolved
+  individually by its recorded timestamp against the sibling action slices:
+  a sibling owns a timestamp from its own `prompt-submitted` start until the
+  next sibling's start, bounded by its `stopped` end, and a last sibling
+  with no recorded stop owns nothing because an open window is not a bound.
+  A record that maps to exactly one slice is attributed to that action's
+  phase as exact coverage. A record whose timestamp is missing, before the
+  first prompt, after a stop, in a gap between a stop and the next prompt,
+  or ambiguous across slices (including equal sibling starts) instead
+  receives the most recently started action as an explicitly `partial`
+  shared-turn fallback; overlaps across different turn ids remain
+  unassigned.
   Tool counts use `item_completed.turn_id`; `Extension` is a tool item, while
   `EnteredReviewMode` and `ExitedReviewMode` are controls. `custom_tool_call`
-  alone is not treated as exact because it has no supported top-level turn key.
+  alone is not treated as exact because it has no supported top-level turn key,
+  and a uniquely timestamped `custom_tool_call` fallback record keeps that
+  `partial` evidence distinction.
 
 The coordinator resolves these paths beneath configured vendor roots; it never
 opens a path supplied by a hook. The parser snapshots the file's initial byte
