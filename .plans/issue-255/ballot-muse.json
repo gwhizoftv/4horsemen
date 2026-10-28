@@ -1,0 +1,46 @@
+{
+  "actionId": "1049b72c-91f1-4838-ad56-59996a84e82b",
+  "agent": "muse",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "8f9b5eaa7c9fc9b217eb20b8427c90767a6036ba03ae9e28f68892e1e0c41ceb",
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "8972b77767d9f982a048fe2d1b5c70bbd6df99d0",
+      "path": ".plans/issue-255/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c3f3a2504e8c503f3ecb46c94caf761e107c1c45",
+      "path": ".plans/issue-255/plan.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "365a094cff47adec222d55c12974f6c0b01175d3",
+      "path": ".plans/issue-255/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "The claude plan is the only one that resolves each shared-turn sample in both the turn-keyed and live unkeyed paths with one decidable prompt-to-next-prompt slice rule, adds no new files, and needs only the docs update and open-ended last-sibling correction noted in review.",
+  "responseSha256": "07d02f04a6a81b2255bf146092d30d6eda28f7abc59bf4f8844fbae78d935035",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "022d7b39e1fb9aec5fd3acc4c7c2a55aa904f1fb",
+      "path": ".plans/issue-255/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ef61aaebc739f78893b3dd7d239bdd85146cacda",
+      "path": ".plans/issue-255/review.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "dfdafb572e2633d51431444d12092cfb718734a7",
+      "path": ".plans/issue-255/review.md"
+    }
+  ]
+}

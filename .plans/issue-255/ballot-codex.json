@@ -1,0 +1,46 @@
+{
+  "actionId": "88620bf8-6ac8-4a71-a2b2-035d379e6054",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "8f9b5eaa7c9fc9b217eb20b8427c90767a6036ba03ae9e28f68892e1e0c41ceb",
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "8972b77767d9f982a048fe2d1b5c70bbd6df99d0",
+      "path": ".plans/issue-255/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c3f3a2504e8c503f3ecb46c94caf761e107c1c45",
+      "path": ".plans/issue-255/plan.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "365a094cff47adec222d55c12974f6c0b01175d3",
+      "path": ".plans/issue-255/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Claude's plan is the smallest basis that fixes live unkeyed tokens and keyed tools without promoting fallback evidence, with the reviewed timestamp-tie, bounded open-window, and documentation file-map corrections still required.",
+  "responseSha256": "b5c2a639335a865eff5cedffdd2d05450ce83d1790a9f61c9b5b5929cfd7c4ee",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "022d7b39e1fb9aec5fd3acc4c7c2a55aa904f1fb",
+      "path": ".plans/issue-255/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ef61aaebc739f78893b3dd7d239bdd85146cacda",
+      "path": ".plans/issue-255/review.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "dfdafb572e2633d51431444d12092cfb718734a7",
+      "path": ".plans/issue-255/review.md"
+    }
+  ]
+}
