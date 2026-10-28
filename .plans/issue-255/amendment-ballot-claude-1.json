@@ -1,0 +1,26 @@
+{
+  "actionId": "928a9867-9cf9-47a5-8f53-011ed3239232",
+  "agent": "claude",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "e8a02e07afcebd3bc0d4a0d6b7f981220b9da02e85003ebfe53e607d5e56252f",
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "8972b77767d9f982a048fe2d1b5c70bbd6df99d0",
+      "path": ".plans/issue-255/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "docs/analytics.md lines 483-493 document the always-partial latest-action shared-turn fallback that the selected plan replaces, so updating only that Exact attribution paragraph is needed to ship the plan's own behaviour without contradicting the operator contract and adds no new functionality.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "99c7e0e3ab20e27fb0a24f8d9d7ff922de442450",
+    "path": ".signals/issue-255/implementation-ready-codex.json"
+  },
+  "responseSha256": "eabf458870f834301657cf919d9e67f3b2a34d3106acf458dd15fa3b67d6a47f",
+  "sequence": 1
+}

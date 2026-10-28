@@ -1,0 +1,26 @@
+{
+  "actionId": "7b23bb18-76c5-438b-9907-c58a7db2fff0",
+  "agent": "codex",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "e8a02e07afcebd3bc0d4a0d6b7f981220b9da02e85003ebfe53e607d5e56252f",
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "8972b77767d9f982a048fe2d1b5c70bbd6df99d0",
+      "path": ".plans/issue-255/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "Updating docs/analytics.md is necessary to make its existing shared-turn attribution and coverage contract match the selected plan, and the single requested documentation edit adds no behavior beyond issue 255.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "99c7e0e3ab20e27fb0a24f8d9d7ff922de442450",
+    "path": ".signals/issue-255/implementation-ready-codex.json"
+  },
+  "responseSha256": "7d27b155775864e5f804a0757b0286fb557d25b4593c143251266ebf585307fc",
+  "sequence": 1
+}

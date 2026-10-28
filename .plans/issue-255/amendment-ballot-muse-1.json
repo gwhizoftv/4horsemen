@@ -1,0 +1,26 @@
+{
+  "actionId": "7739df98-7c32-43d9-b3eb-1eb134db09c2",
+  "agent": "muse",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "e8a02e07afcebd3bc0d4a0d6b7f981220b9da02e85003ebfe53e607d5e56252f",
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "8972b77767d9f982a048fe2d1b5c70bbd6df99d0",
+      "path": ".plans/issue-255/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "docs/analytics.md is necessary because its Exact attribution paragraph documents the old always-partial shared-turn fallback that the selected plan repeals, and updating only that paragraph documents the original issue 255 behavior without adding functionality.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "99c7e0e3ab20e27fb0a24f8d9d7ff922de442450",
+    "path": ".signals/issue-255/implementation-ready-codex.json"
+  },
+  "responseSha256": "54a312f387b0de3a597cc72cfcb91d3ead5a4d09f9249b4d2a75424a3e47d572",
+  "sequence": 1
+}
