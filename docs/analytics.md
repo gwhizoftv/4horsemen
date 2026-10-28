@@ -484,13 +484,27 @@ containing its `action-prepared` record.
   `~/.codex/sessions/YYYY/MM/DD/*-<sessionId>.jsonl`. Current `token_count`
   records do **not** carry `turn_id` or consistently carry `ordinal`; token
   deltas are assigned when their timestamp lies inside a complete,
-  same-session coordinator `prompt-submitted` → `stopped` window. If overlapping
-  windows all share one vendor `sessionId`/`turnId`, the most recently started
-  action receives the record as an explicitly `partial` shared-turn fallback;
-  overlaps across different turn ids remain unassigned. Transcript records that
-  already carry a turn id use the same rule when that turn maps to multiple
-  coordinator actions: they are never silently assigned to the first action as
-  exact coverage.
+  same-session coordinator `prompt-submitted` → `stopped` window. When one
+  Codex `sessionId`/`turnId` spans several coordinator actions, its records
+  are placed one at a time, by timestamp, in one action's slice. This happens
+  because chained prompts share one stop, so their windows overlap.
+
+  A slice runs from that action's prompt up to the next sibling prompt, and
+  never past the action's own stop. An action with no stop yet is bounded by
+  the next sibling prompt or, if it is the last, by its phase. This applies to
+  token rows without a turn id and to records that carry one, such as tool
+  items.
+
+  A record that falls in exactly one slice keeps its normal exactness. A
+  turn-keyed record falls back to the most recently started action, as an
+  explicitly `partial` shared-turn fallback, if it has no timestamp, lies
+  outside every slice, or is claimed by tied prompts in different phases.
+  A token row without a turn id is assigned only if its timestamp lies inside
+  a slice or a complete window. If it lies inside overlapping complete windows
+  of one shared turn but no single slice, it takes the same `partial`
+  fallback; otherwise it stays unassigned. Overlaps across different turn ids
+  remain unassigned. That includes a slice that overlaps another turn's
+  complete window.
   Tool counts use `item_completed.turn_id`; `Extension` is a tool item, while
   `EnteredReviewMode` and `ExitedReviewMode` are controls. `custom_tool_call`
   alone is not treated as exact because it has no supported top-level turn key.

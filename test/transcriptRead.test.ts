@@ -46,7 +46,17 @@ describe("vendor transcript reader", () => {
         tokens: { input: 3, output: 5, cacheRead: 7, cacheWrite: 11, reasoning: 2 },
         toolCalls: 1,
         tokenRecords: 1,
-        toolRecords: 1
+        toolRecords: 1,
+        samples: [
+          {
+            at: "2026-08-21T00:00:02.000Z",
+            tokens: { input: 3, output: 5, cacheRead: 7, cacheWrite: 11, reasoning: 2 },
+            toolCalls: 0,
+            tokenRecords: 1,
+            toolRecords: 0
+          },
+          { at: "2026-08-21T00:00:03.000Z", tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: null }, toolCalls: 1, tokenRecords: 0, toolRecords: 1 }
+        ]
       }
     ]);
     expect(result.unattributed).toHaveLength(2);
@@ -54,7 +64,7 @@ describe("vendor transcript reader", () => {
     expect(result.unattributed.reduce((total, row) => total + row.tokens.input, 0)).toBe(13);
   });
 
-  it("reads live Codex token_count rows without turn_id or ordinal and classifies live item variants", () => {
+  it("reads live Codex token_count rows without turn_id or ordinal, classifies live item variants, and keeps keyed sample timestamps", () => {
     const { root } = installFixture("codex", "session-codex");
     const result = readTranscript({ vendor: "codex", sessionId: "session-codex", root });
 
@@ -65,14 +75,16 @@ describe("vendor transcript reader", () => {
         tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: null },
         toolCalls: 1,
         tokenRecords: 0,
-        toolRecords: 1
+        toolRecords: 1,
+        samples: [{ at: "2026-08-21T00:01:25.000Z", tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: null }, toolCalls: 1, tokenRecords: 0, toolRecords: 1 }]
       },
       {
         turnId: "turn-codex-2",
         tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: null },
         toolCalls: 1,
         tokenRecords: 0,
-        toolRecords: 1
+        toolRecords: 1,
+        samples: [{ at: "2026-08-21T00:01:35.000Z", tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: null }, toolCalls: 1, tokenRecords: 0, toolRecords: 1 }]
       }
     ]);
     expect(result.unattributed).toHaveLength(2);
