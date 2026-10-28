@@ -160,6 +160,21 @@ const resolveTurnPhase = (
   return { phaseIndex: selected.phaseIndex, exact: false, sharedVendorTurn: true };
 };
 
+const sharedTurnOwner = (siblings: readonly ActionTurn[], at: number | null): ActionTurn | null => {
+  if (at === null) return null;
+  const ordered = [...siblings].sort((left, right) => left.startedMs - right.startedMs);
+  const owners = ordered.filter((turn, index) => {
+    if (ordered.some((other) => other !== turn && other.startedMs === turn.startedMs)) return false;
+    if (at < turn.startedMs) return false;
+    const next = ordered[index + 1];
+    if (next !== undefined && at >= next.startedMs) return false;
+    if (turn.endedMs !== null && at > turn.endedMs) return false;
+    if (next === undefined && turn.endedMs === null) return false;
+    return true;
+  });
+  return owners.length === 1 ? (owners[0] ?? null) : null;
+};
+
 const object = (value: unknown): JsonObject | null =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : null;
 const string = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
@@ -676,6 +691,21 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
             (turn) => turn.sessionId === result.sessionId && turn.turnId === turnUsage.turnId
           );
           const resolved = resolveTurnPhase(matching, true);
+          if (resolved.sharedVendorTurn && turnUsage.samples !== undefined) {
+            for (const sample of turnUsage.samples) {
+              const owner = sharedTurnOwner(matching, sample.at === null ? null : milliseconds(sample.at));
+              if (owner !== null) {
+                assign(owner.phaseIndex, sample, owner.phaseIndex !== null);
+                continue;
+              }
+              if (resolved.phaseIndex !== null) {
+                if (sample.tokenRecords > 0) sharedTurnTokenFallbackUsed = true;
+                if (sample.toolRecords > 0) sharedTurnToolFallbackUsed = true;
+              }
+              assign(resolved.phaseIndex, sample, false);
+            }
+            continue;
+          }
           if (resolved.sharedVendorTurn && resolved.phaseIndex !== null) {
             if (turnUsage.tokenRecords > 0) sharedTurnTokenFallbackUsed = true;
             if (turnUsage.toolRecords > 0) sharedTurnToolFallbackUsed = true;
@@ -695,6 +725,20 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
                     at <= turn.endedMs
                 );
           const resolved = resolveTurnPhase(matching, record.windowAttribution === "exact");
+          if (resolved.sharedVendorTurn) {
+            const first = matching[0];
+            const siblings =
+              first === undefined
+                ? []
+                : agentTurns.filter(
+                    (turn) => turn.sessionId === first.sessionId && turn.turnId === first.turnId
+                  );
+            const owner = sharedTurnOwner(siblings, at);
+            if (owner !== null) {
+              assign(owner.phaseIndex, record, record.windowAttribution === "exact");
+              continue;
+            }
+          }
           if (resolved.sharedVendorTurn && resolved.phaseIndex !== null) {
             if (record.tokenRecords > 0) sharedTurnTokenFallbackUsed = true;
             if (record.toolRecords > 0) sharedTurnToolFallbackUsed = true;
