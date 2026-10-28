@@ -1,0 +1,46 @@
+{
+  "actionId": "4f8ba03b-80b0-4c1d-9b1c-6efb7a068d5a",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "2d5b941cee588452d40d2a883019895612745ef829efbbfdd43c46b81fda5183",
+  "issue": 256,
+  "issueSessionId": "issue-256:d646aedcc21a43dde942c86c65b64aba649c1964",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "6630d4b4bd3ce2c16d578ee2a70bf356055d0637",
+      "path": ".plans/issue-256/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "0155280a858a776d3e8db3acc00c87f5bddcc6cc",
+      "path": ".plans/issue-256/plan.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "46547e48ade505e871e4de91ceb06895151a4b1a",
+      "path": ".plans/issue-256/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex provides the strongest current-action and outgoing-SHA artifact guard, preserves product/signal sequencing, defines an exact file map, and handles incomplete observations, with the peer-review corrections to exclude raw terminal-log noise and avoid indefinite suppression by stale busy indicators incorporated during implementation.",
+  "responseSha256": "745477ffd536f62263eacd9255c66f557c74dc3b753b3747cd20485a274336b5",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "fa7bcbdc1b5bee02a2897c747155708e8bcc4408",
+      "path": ".plans/issue-256/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "46745e4a737e018dac4ae05a4c140645e3dab7bd",
+      "path": ".plans/issue-256/review.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "b2a788eb7380fdf0c729b94c76ba38e74e2698ff",
+      "path": ".plans/issue-256/review.md"
+    }
+  ]
+}
