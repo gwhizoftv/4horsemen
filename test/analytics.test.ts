@@ -687,6 +687,31 @@ describe("analytics aggregation", () => {
     });
   });
 
+  it("leaves an unkeyed record unassigned when a shared-turn slice and another turn's window both claim it", () => {
+    const codex = sharedCodexTranscriptRoot();
+    const otherAction = "ffffffff-ffff-4fff-8fff-fffffffffffd";
+    const journal = [
+      // Drop the shared turn's only stop (22s) so its actions are bounded by slices alone.
+      ...sharedCodexJournal().filter((event) => event.at !== "2026-08-21T00:00:22.000Z"),
+      ...[
+        { at: "2026-08-21T00:00:03.000Z", type: "action-prepared", agent: "codex", actionId: otherAction, details: {} },
+        { at: "2026-08-21T00:00:04.000Z", type: "agent-lifecycle", agent: "codex", actionId: otherAction, details: { vendor: "codex", kind: "prompt-submitted", sessionId: "session-shared", turnId: "turn-other" } },
+        { at: "2026-08-21T00:00:20.000Z", type: "agent-lifecycle", agent: "codex", details: { vendor: "codex", kind: "stopped", sessionId: "session-shared", turnId: "turn-other" } }
+      ].map((event, index) => journalEventSchema.parse({ formatVersion: 4, sequence: 100 + index, ...event }))
+    ];
+    const report = buildAnalytics({ start, journal, activeRoster: ["codex"], transcriptRoots: { codex } });
+
+    expect(report.usage?.agents[0]).toMatchObject({
+      tokenCoverage: "partial",
+      phases: [
+        { phase: "R1.join", tokens: { input: 0 } },
+        { phase: "R2.plan", tokens: { input: 0 } }
+      ],
+      unassigned: { tokenRecords: 2 }
+    });
+    expect(report.usage?.tokenTotal).toBeNull();
+  });
+
   it("attributes one shared Codex turn across R1/R2/R4/R7 by record timestamp", () => {
     const sessionId = "session-shared";
     const turnId = "turn-shared";

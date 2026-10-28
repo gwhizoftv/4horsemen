@@ -750,9 +750,13 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
             .filter((group) => group[0]?.sessionId === result.sessionId)
             .map((group) => sharedTurnOwner(group, phases, record.at))
             .filter((owner): owner is ActionTurn => owner !== null);
-          const owner = owners.length === 1 ? owners[0] : undefined;
-          if (owner !== undefined && matching.every((turn) => turn.turnId === owner.turnId)) {
-            assign(owner.phaseIndex, record, owner.phaseIndex !== null && record.windowAttribution === "exact");
+          const owner = owners[0];
+          if (owner !== undefined) {
+            if (owners.length === 1 && matching.every((turn) => turn.turnId === owner.turnId)) {
+              assign(owner.phaseIndex, record, owner.phaseIndex !== null && record.windowAttribution === "exact");
+            } else {
+              assign(null, record, false);
+            }
             continue;
           }
           if (resolved.sharedVendorTurn && resolved.phaseIndex !== null) {

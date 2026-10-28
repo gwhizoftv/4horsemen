@@ -503,7 +503,8 @@ containing its `action-prepared` record.
   a slice or a complete window. If it lies inside overlapping complete windows
   of one shared turn but no single slice, it takes the same `partial`
   fallback; otherwise it stays unassigned. Overlaps across different turn ids
-  remain unassigned.
+  remain unassigned. That includes a slice that overlaps another turn's
+  complete window.
   Tool counts use `item_completed.turn_id`; `Extension` is a tool item, while
   `EnteredReviewMode` and `ExitedReviewMode` are controls. `custom_tool_call`
   alone is not treated as exact because it has no supported top-level turn key.
