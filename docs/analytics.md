@@ -484,13 +484,23 @@ containing its `action-prepared` record.
   `~/.codex/sessions/YYYY/MM/DD/*-<sessionId>.jsonl`. Current `token_count`
   records do **not** carry `turn_id` or consistently carry `ordinal`; token
   deltas are assigned when their timestamp lies inside a complete,
-  same-session coordinator `prompt-submitted` → `stopped` window. If overlapping
-  windows all share one vendor `sessionId`/`turnId`, the most recently started
-  action receives the record as an explicitly `partial` shared-turn fallback;
-  overlaps across different turn ids remain unassigned. Transcript records that
-  already carry a turn id use the same rule when that turn maps to multiple
-  coordinator actions: they are never silently assigned to the first action as
-  exact coverage.
+  same-session coordinator `prompt-submitted` → `stopped` window. When several
+  actions share one vendor `sessionId`/`turnId`, their token and tool samples
+  retain individual timestamps and resolve against action slices: a slice
+  starts at its prompt, ends before the next sibling prompt, and cannot extend
+  past its own recorded stop. A timestamp at the next prompt belongs to the new
+  action; a timestamp at a recorded stop is included unless the next prompt has
+  already started. Without a stop, a following sibling prompt can bound the
+  slice; the last unstopped action remains non-exact. A unique owner receives
+  the sample in the phase containing that action's preparation, so a gate
+  advance alone does not move work to the next action. This rule handles both
+  live unkeyed token rows and records with an explicit turn id. Missing or
+  invalid timestamps, gaps, records after a stop, and competing owners at an
+  equal prompt time retain the named `partial` latest-action fallback for an
+  identified shared turn; unkeyed records outside complete windows remain
+  unassigned. Overlaps across different turn ids remain unassigned. Valid
+  samples are not collapsed together with unresolved siblings, and fully
+  resolved shared turns can have complete coverage.
   Tool counts use `item_completed.turn_id`; `Extension` is a tool item, while
   `EnteredReviewMode` and `ExitedReviewMode` are controls. `custom_tool_call`
   alone is not treated as exact because it has no supported top-level turn key.

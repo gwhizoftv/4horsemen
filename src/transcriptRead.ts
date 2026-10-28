@@ -27,6 +27,15 @@ export type TranscriptUsage = {
   toolCalls: number;
   tokenRecords: number;
   toolRecords: number;
+  samples?: TranscriptSample[];
+};
+
+export type TranscriptSample = {
+  at: string | null;
+  tokens: TokenUsage;
+  toolCalls: number;
+  tokenRecords: number;
+  toolRecords: number;
 };
 
 export type UnattributedTranscriptUsage = {
@@ -460,7 +469,7 @@ const aggregateSamples = (samples: readonly UsageSample[]): Pick<TranscriptReadR
       });
       continue;
     }
-    const current = turns.get(sample.turnId) ?? {
+    const current: TranscriptUsage = turns.get(sample.turnId) ?? {
       turnId: sample.turnId,
       tokens: emptyTokens(),
       toolCalls: 0,
@@ -471,6 +480,13 @@ const aggregateSamples = (samples: readonly UsageSample[]): Pick<TranscriptReadR
     current.toolCalls += sample.toolCalls;
     current.tokenRecords += sample.tokenRecords;
     current.toolRecords += sample.toolRecords;
+    (current.samples ??= []).push({
+      at: sample.at,
+      tokens: sample.tokens,
+      toolCalls: sample.toolCalls,
+      tokenRecords: sample.tokenRecords,
+      toolRecords: sample.toolRecords
+    });
     turns.set(sample.turnId, current);
   }
   return {
