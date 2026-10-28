@@ -1,0 +1,29 @@
+{
+  "actionId": "1895bc91-f958-4da6-8c7a-399beda928fd",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "f768700b2183852d0606e0877675314ff04c1acc",
+      "path": ".signals/issue-256/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "4a41284dacb1380fa4687ef0ed7479b38f85a815",
+      "path": ".signals/issue-256/implementation-ready-codex.json"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "4d1f81306a72f6629cfc05fdb86d5c969ec7a18e",
+      "path": ".signals/issue-256/implementation-ready-muse.json"
+    }
+  ],
+  "inputSetHash": "b3bb59599bd58857c2896556974650dc5308d1d9a22dbf61705a067d6dd9ba3c",
+  "issue": 256,
+  "issueSessionId": "issue-256:d646aedcc21a43dde942c86c65b64aba649c1964",
+  "protocolVersion": 2,
+  "rationale": "Codex 4a41284dacb1380fa4687ef0ed7479b38f85a815 stays within the approved scope and passed the focused staged-artifact, multi-ref, frozen-busy and noisy-log probes that exposed publication or watchdog failures in the bound Muse and Claude implementations.",
+  "responseSha256": "8d116cb0bd23c4dad12715c5404213a6ea268f79578f643ee677a5313638184b"
+}

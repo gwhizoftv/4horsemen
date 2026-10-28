@@ -1,0 +1,29 @@
+{
+  "actionId": "194ba102-788e-4416-aa1e-11274c8b220b",
+  "agent": "muse",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "f768700b2183852d0606e0877675314ff04c1acc",
+      "path": ".signals/issue-256/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "4a41284dacb1380fa4687ef0ed7479b38f85a815",
+      "path": ".signals/issue-256/implementation-ready-codex.json"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "4d1f81306a72f6629cfc05fdb86d5c969ec7a18e",
+      "path": ".signals/issue-256/implementation-ready-muse.json"
+    }
+  ],
+  "inputSetHash": "b3bb59599bd58857c2896556974650dc5308d1d9a22dbf61705a067d6dd9ba3c",
+  "issue": 256,
+  "issueSessionId": "issue-256:d646aedcc21a43dde942c86c65b64aba649c1964",
+  "protocolVersion": 2,
+  "rationale": "The claude implementation pairs a per-ref, owed-status, literal-pathspec artifact guard with an asynchronous truncation-aware watchdog probe, needing only small corrections, while the muse guard skips later refs in a multi-ref push and the codex guard blocks legitimate non-HEAD pushes.",
+  "responseSha256": "c6f467bd266a172789187bba1e207c4924e4d475bd357c1607e0968ecf26494e"
+}

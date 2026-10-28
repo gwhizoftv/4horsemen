@@ -1,0 +1,29 @@
+{
+  "actionId": "f31424bd-aa24-4d9d-96b9-fb913d2b4d78",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "f768700b2183852d0606e0877675314ff04c1acc",
+      "path": ".signals/issue-256/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "4a41284dacb1380fa4687ef0ed7479b38f85a815",
+      "path": ".signals/issue-256/implementation-ready-codex.json"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "4d1f81306a72f6629cfc05fdb86d5c969ec7a18e",
+      "path": ".signals/issue-256/implementation-ready-muse.json"
+    }
+  ],
+  "inputSetHash": "b3bb59599bd58857c2896556974650dc5308d1d9a22dbf61705a067d6dd9ba3c",
+  "issue": 256,
+  "issueSessionId": "issue-256:d646aedcc21a43dde942c86c65b64aba649c1964",
+  "protocolVersion": 2,
+  "rationale": "Codex's pin is the best revision base because it alone bounds frozen busy chrome (WAIT after five minutes without typing into the turn) and avoids raw terminal-log activity, with a strong blocking guard and focused tests, but its clone probe must enumerate --modified instead of --cached in revision, since listing every tracked file exceeds the 32 KiB bound on medium repositories and disables all stall recovery.",
+  "responseSha256": "3e1ccabb77fe532ac6334b38c9fba1985ed3e9329a1738690b0525902324f91f"
+}
