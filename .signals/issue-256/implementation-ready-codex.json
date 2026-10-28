@@ -1,0 +1,21 @@
+{
+  "protocolVersion": 1,
+  "issue": 256,
+  "issueSessionId": "issue-256:d646aedcc21a43dde942c86c65b64aba649c1964",
+  "agent": "codex",
+  "inputSetHash": "0843fc2f9042486914c892990dd2af05fd757495e0a70e7fe4b5aef251f1fe33",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "4a41284dacb1380fa4687ef0ed7479b38f85a815",
+  "scopeHash": "c383e2fde74770100768141930138ce962b5d9f454261e54bd67d75c6e828404",
+  "approvedPaths": [
+    "src/action.ts",
+    "src/cli.ts",
+    "src/hookPolicy.ts",
+    "src/runLoop.ts",
+    "src/tmux.ts",
+    "test/action.test.ts",
+    "test/hookSync.test.ts",
+    "test/runLoop.test.ts",
+    "test/tmux.test.ts"
+  ]
+}
