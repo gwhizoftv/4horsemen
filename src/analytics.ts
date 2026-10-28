@@ -697,17 +697,24 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
         }
       };
 
+      const turnGroups = new Map<string, ActionTurn[]>();
+      for (const turn of agentTurns) {
+        const key = `${turn.sessionId}\u0000${turn.turnId}`;
+        turnGroups.set(key, [...(turnGroups.get(key) ?? []), turn]);
+      }
+      const sharedTurnGroups = vendor === "codex" ? [...turnGroups.values()].filter((group) => group.length > 1) : [];
+
       for (const result of results) {
         for (const turnUsage of result.turns) {
           const matching = agentTurns.filter(
             (turn) => turn.sessionId === result.sessionId && turn.turnId === turnUsage.turnId
           );
           const resolved = resolveTurnPhase(matching, true);
-          if (resolved.sharedVendorTurn && turnUsage.samples !== undefined) {
+          if (vendor === "codex" && resolved.sharedVendorTurn && turnUsage.samples !== undefined) {
             for (const sample of turnUsage.samples) {
               const owner = sharedTurnOwner(matching, phases, sample.at);
               if (owner !== null) {
-                assign(owner.phaseIndex, sample, true);
+                assign(owner.phaseIndex, sample, owner.phaseIndex !== null);
                 continue;
               }
               if (resolved.phaseIndex !== null) {
@@ -737,17 +744,15 @@ export const buildAnalytics = (input: BuildAnalyticsInput): AnalyticsReport => {
                     at <= turn.endedMs
                 );
           const resolved = resolveTurnPhase(matching, record.windowAttribution === "exact");
-          const owner = resolved.sharedVendorTurn
-            ? sharedTurnOwner(
-                agentTurns.filter(
-                  (turn) => turn.sessionId === result.sessionId && turn.turnId === matching[0]?.turnId
-                ),
-                phases,
-                record.at
-              )
-            : null;
-          if (owner !== null) {
-            assign(owner.phaseIndex, record, record.windowAttribution === "exact");
+          // A shared turn's slices bound its actions even before a stop is journaled; a complete
+          // window from another turn still makes the record ambiguous.
+          const owners = sharedTurnGroups
+            .filter((group) => group[0]?.sessionId === result.sessionId)
+            .map((group) => sharedTurnOwner(group, phases, record.at))
+            .filter((owner): owner is ActionTurn => owner !== null);
+          const owner = owners.length === 1 ? owners[0] : undefined;
+          if (owner !== undefined && matching.every((turn) => turn.turnId === owner.turnId)) {
+            assign(owner.phaseIndex, record, owner.phaseIndex !== null && record.windowAttribution === "exact");
             continue;
           }
           if (resolved.sharedVendorTurn && resolved.phaseIndex !== null) {

@@ -656,8 +656,11 @@ describe("analytics aggregation", () => {
     expect(report.usage?.tokenTotal).toEqual({ input: 20, output: 6, cacheRead: 40, cacheWrite: 0, reasoning: 3 });
   });
 
-  it("keeps an earlier shared-turn sample exact beside tied later prompts and bounds an unstopped turn by its phase", () => {
-    const codex = sharedCodexTranscriptRoot(true);
+  it.each([
+    ["unkeyed", false],
+    ["turn-keyed", true]
+  ])("keeps an earlier %s shared-turn sample exact beside tied later prompts and bounds an unstopped turn by its phase", (_label, explicitTurnId) => {
+    const codex = sharedCodexTranscriptRoot(explicitTurnId);
     const tiedAction = "ffffffff-ffff-4fff-8fff-fffffffffffe";
     const journal = [
       ...sharedCodexJournal().filter((event) => Date.parse(event.at) < Date.parse("2026-08-21T00:00:22.000Z")),
