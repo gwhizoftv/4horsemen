@@ -1,0 +1,14 @@
+{
+  "actionId": "c850ded0-f660-44ba-b3cb-0caa94659e2b",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "cbae6d92c25fde5946a0d0344df34059421c5f1e23bd9cc6c375534d64113dc1",
+  "issue": 256,
+  "issueSessionId": "issue-256:d646aedcc21a43dde942c86c65b64aba649c1964",
+  "protocolVersion": 2,
+  "rationale": "Revision 7d218eb6 fixes both comparison findings with regression tests: the clone probe now enumerates --modified --others so a large clean repository (the new 1,200-file case exceeding 32 KiB) still recovers a lost prompt, and unreadable start or cursors state falls back to local push checks instead of blocking, while the bounded busy handling and blocking artifact guard are unchanged.",
+  "responseSha256": "496c59c3c4abddd0e846ea96e205629e7eb732ce26f95608af5a2260b6b22127",
+  "revisionCommitSha": "7d218eb609db021c2a7ad084a0313fc991fce5a7",
+  "round": 1
+}

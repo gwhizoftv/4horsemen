@@ -1,0 +1,14 @@
+{
+  "actionId": "1a4cdd36-cd2e-490a-a497-5978ae8b9ade",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "cbae6d92c25fde5946a0d0344df34059421c5f1e23bd9cc6c375534d64113dc1",
+  "issue": 256,
+  "issueSessionId": "issue-256:d646aedcc21a43dde942c86c65b64aba649c1964",
+  "protocolVersion": 2,
+  "rationale": "Revision 7d218eb609db021c2a7ad084a0313fc991fce5a7 fixes large-clean-clone recovery and unreadable-runtime fallback within the approved scope, preserves staged-artifact rejection and valid non-HEAD publication, and passed focused regressions plus hook-owned lint, typecheck, 876 fast tests, 279 system tests and 2 end-to-end tests.",
+  "responseSha256": "f1a5cb7c753cefbc9ca8b9cf1259f85e626f525cd778b0df81494da1217f2f99",
+  "revisionCommitSha": "7d218eb609db021c2a7ad084a0313fc991fce5a7",
+  "round": 1
+}
