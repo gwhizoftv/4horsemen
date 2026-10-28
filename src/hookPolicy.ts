@@ -194,8 +194,16 @@ export const assertRequiredArtifact = (input: { clone: string; configPath: strin
     const branch = /^refs\/heads\/issue-([1-9][0-9]*)\/([a-z0-9-]+)$/.exec(remoteRef ?? "");
     if (branch === null || branch[2] !== agent || tip === "0".repeat(40)) continue;
     const paths = issueRuntimePaths(workspaceLocationFromConfig(input.configPath).workspaceRoot, Number(branch[1]));
-    if (!existsSync(paths.start)) continue; // An owner can use an issue-shaped manual branch.
-    const start = readStartState(paths), cursors = readCursorsState(paths);
+    let start: ReturnType<typeof readStartState>;
+    let cursors: ReturnType<typeof readCursorsState>;
+    try {
+      start = readStartState(paths);
+      cursors = readCursorsState(paths);
+    } catch {
+      // Without a readable run, retain the hook's existing local verification.
+      // Once an action is established below, inspection failures still refuse.
+      continue;
+    }
     if (cursors.completed || cursors.abandoned || !cursors.activeRoster.includes(agent) ||
       !start.agents.some((entry) => entry.id === agent && resolve(entry.root) === resolve(input.clone))) continue;
     const cursor = cursors.agents[agent];

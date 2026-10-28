@@ -4529,6 +4529,24 @@ describe("ready-driven delivery and stall watchdog", () => {
     expect(readJournal(f.paths).filter((event) => event.details.code === "stalled")).toHaveLength(1);
   });
 
+  it("recovers a lost prompt in a large clean clone", async () => {
+    const f = editingFixture();
+    for (let index = 0; index < 1_200; index++) {
+      const dir = join(f.root, "src", "components", `module-${String(index).padStart(4, "0")}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "index.ts"), "export {};\n");
+    }
+    git(f.root, "add", "src");
+    git(f.root, "commit", "-qm", "large clean baseline");
+    expect(Buffer.byteLength(git(f.root, "ls-files", "-z", "--cached"))).toBeGreaterThan(32 * 1024);
+    await f.tick();
+    f.advance(1); f.working();
+    for (let minute = 0; minute < 4; minute++) { f.advance(60_000); await f.tick(); }
+    expect(f.ui.sends).toBe(2);
+    expect(readJournal(f.paths).filter((event) => event.details.code === "stalled")).toHaveLength(1);
+    expect(f.messages.join("\n")).not.toContain("clone activity could not be fully observed");
+  });
+
   it.each(["truncated", "failed"])("never declares quiet from %s file enumeration", async (kind) => {
     const f = editingFixture();
     const processRunner: RunLoopDependencies["processRunner"] = async (argv, cwd, options) => argv[1] === "ls-files"

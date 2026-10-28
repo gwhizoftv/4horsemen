@@ -2069,7 +2069,8 @@ export class CoordinatorRunLoop {
         return result.stdout;
       };
       const [listed, index] = await Promise.all([
-        inspect(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]),
+        // A large clean repository must not exhaust the observation budget.
+        inspect(["ls-files", "-z", "--modified", "--others", "--exclude-standard"]),
         inspect(["rev-parse", "--path-format=absolute", "--git-path", "index"])
       ]);
       if ((listed !== "" && !listed.endsWith("\0")) || index.trim() === "") throw new Error("incomplete Git activity observation");

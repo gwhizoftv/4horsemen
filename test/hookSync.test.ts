@@ -407,6 +407,12 @@ describe("coordinator verification binding", () => {
     blocked(`${artifactA}:refs/heads/issue-1/claude`); // staged reversion matching an older outgoing tree
     writeFileSync(file, "review B\n");
     git(clone, "add", required);
+    const artifactB = git(clone, "rev-parse", "HEAD");
+    writeFileSync(join(clone, "cmd/unrelated.go"), "package main\n");
+    git(clone, "add", "cmd/unrelated.go");
+    git(clone, "commit", "-qm", "Claude: unrelated product change");
+    expect(tryGit(clone, "push", "origin", `${artifactB}:refs/heads/issue-1/claude`).exitCode).toBe(0);
+    expect(git(fixture.originPath, "rev-parse", "refs/heads/issue-1/claude")).toBe(artifactB);
     expect(tryGit(clone, "push", "origin", "issue-1/claude").exitCode).toBe(0);
     expect(git(fixture.originPath, "rev-parse", "refs/heads/issue-1/claude")).toBe(git(clone, "rev-parse", "HEAD"));
   });
@@ -442,6 +448,18 @@ describe("coordinator verification binding", () => {
     mutateCursorsState(paths, (state) => ({ ...state, agents: { ...state.agents,
       claude: { ...state.agents.claude!, submissionMode: "response" } } }));
     expect(tryGit(clone, "push", "origin", "issue-1/claude").exitCode).toBe(0);
+  });
+
+  it.each(["start", "cursors"] as const)("keeps local push checks when %s runtime state is unreadable", (stateFile) => {
+    const { clone, configPath } = installed();
+    const paths = activeRun(clone, configPath);
+    stageWork(clone);
+    git(clone, "commit", "-qm", "Claude: product");
+    currentArtifact(paths);
+    writeFileSync(paths[stateFile], "{ corrupt");
+    const pushed = tryGit(clone, "push", "origin", "issue-1/claude");
+    expect(pushed.exitCode, pushed.stderr).toBe(0);
+    expect(pushed.stdout + pushed.stderr).toContain("local verification — runtime state unavailable");
   });
 
   it("runs the coordinated lists only for this agent's active issue branch, keeping integrity gates", () => {
