@@ -1,0 +1,17 @@
+{
+  "protocolVersion": 1,
+  "issue": 255,
+  "issueSessionId": "issue-255:b45b725f7801df79bbcac6377deec2d195b4e320",
+  "agent": "codex",
+  "inputSetHash": "746b0587eb1c4fe56daab39aa0ecdd2b349f86f4f5ad98ff25f1053b363680af",
+  "artifact": "plan-amendment-request",
+  "actionId": "db716156-8970-40ec-8533-6825eb3ea3bf",
+  "scopeHash": "50cbe7e6e9c3ae49c5310c527c9b018f4a5a117a365bf4e74c9cc2671e2faede",
+  "explanation": "The selected plan changes shared Codex turn attribution from an always-partial latest-action fallback to per-sample exact attribution, but its four-file map omits docs/analytics.md, whose Exact attribution section explicitly documents the old behavior; shipping the planned fix without updating that existing contract would leave operators with incorrect guidance about phase placement and coverage.",
+  "additionalPaths": [
+    {
+      "path": "docs/analytics.md",
+      "reason": "Update only the existing Codex Exact attribution paragraph to describe per-sample timestamp resolution for keyed tools and live unkeyed token records, the chosen action-window boundaries, and the residual partial fallback for unresolved samples while retaining the custom-tool fallback evidence distinction; this documents the original issue 255 behavior and adds no functionality."
+    }
+  ]
+}
