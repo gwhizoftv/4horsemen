@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { git, localConfigGet } from "./gitExec.js";
-import { issueRuntimePaths } from "./paths.js";
+import { agentRuntimePaths, assertNoSymlink, containedPath, issueRuntimePaths } from "./paths.js";
+import { parseAction } from "./action.js";
+import { sha256 } from "./hash.js";
 import {
   readConfig,
   readCursorsState,
@@ -13,7 +15,7 @@ import {
   type VerifyPhase
 } from "./state.js";
 import { workspaceLocationFromConfig } from "./workspace.js";
-import { selectVerification, type ChangeInput } from "./changeClassification.js";
+import { inspectOutgoingChanges, isCoordinationEvidencePath, selectVerification, type ChangeInput } from "./changeClassification.js";
 import { verificationMeasurement, type VerificationMeasurement } from "./verificationLog.js";
 
 /**
@@ -180,6 +182,74 @@ export const resolveHookBinding = (input: {
 };
 
 export type VerifyRunResult = { ok: true } | { ok: false; failed: CheckCommand; exitCode: number };
+
+/** Check publication, not product commits: a readiness signal names an already
+ * committed product pin. This guard is independent of verification ownership. */
+export const assertRequiredArtifact = (input: { clone: string; configPath: string; refs: string }): void => {
+  const agent = localConfigGet(input.clone, "consensus.agentId");
+  if (agent === null) return; // The existing identity gate handles uninstalled clones.
+  for (const line of input.refs.split("\n").filter((line) => line.trim() !== "")) {
+    const fields = line.trim().split(/\s+/);
+    const [, tip, remoteRef] = fields;
+    const branch = /^refs\/heads\/issue-([1-9][0-9]*)\/([a-z0-9-]+)$/.exec(remoteRef ?? "");
+    if (branch === null || branch[2] !== agent || tip === "0".repeat(40)) continue;
+    const paths = issueRuntimePaths(workspaceLocationFromConfig(input.configPath).workspaceRoot, Number(branch[1]));
+    if (!existsSync(paths.start)) continue; // An owner can use an issue-shaped manual branch.
+    const start = readStartState(paths), cursors = readCursorsState(paths);
+    if (cursors.completed || cursors.abandoned || !cursors.activeRoster.includes(agent) ||
+      !start.agents.some((entry) => entry.id === agent && resolve(entry.root) === resolve(input.clone))) continue;
+    const cursor = cursors.agents[agent];
+    if (cursor?.actionId == null || cursor.submissionMode === "response") continue;
+    const fail: (message: string) => never = (message) => {
+      throw new HookPolicyError(`HOOK BLOCKED: action ${cursor.actionId}: ${message}. ` +
+        "Commit the required artifact, push successfully, then write complete with that pushed SHA.");
+    };
+    try {
+      if (fields.length !== 4 || !/^[0-9a-f]{40}$/.test(tip ?? "")) fail("invalid outgoing commit");
+      const raw = readFileSync(agentRuntimePaths(paths, agent).action, "utf8");
+      const action = parseAction(raw);
+      if (action.agent !== agent || action.actionId !== cursor.actionId ||
+        (cursor.actionDigest !== null && sha256(raw) !== cursor.actionDigest)) fail("current action identity/digest mismatch");
+      if (action.submissionMode !== "git") fail("current Git action has response-mode instructions");
+      const required = action.requiredPath;
+      const inspect = (...args: string[]): string => {
+        const result = git(input.clone, "--literal-pathspecs", ...args);
+        if (result.exitCode !== 0) fail(`cannot inspect required artifact ${required}: ${result.stderr.trim()}`);
+        return result.stdout;
+      };
+      const path = containedPath(input.clone, required);
+      assertNoSymlink(input.clone, path);
+      let file;
+      try { file = lstatSync(path); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      const tree = inspect("ls-tree", "-z", tip!, "--", required);
+      const index = inspect("ls-files", "--stage", "-z", "--", required);
+      if (tree === "" && index === "" && file === undefined &&
+        (cursor.stepId === "R4.implement" || cursor.stepId === "R6.revise")) {
+        const changes = inspectOutgoingChanges(input.clone, line,
+          localConfigGet(input.clone, "consensus.remoteName") ?? "origin",
+          localConfigGet(input.clone, "consensus.sharedBranch") ?? "main");
+        if (changes.changes?.some((change) => change.paths.some((path) => !isCoordinationEvidencePath(path.toString("utf8"))))) continue;
+      }
+      const committed = /^(100644|100755) blob ([0-9a-f]{40})\t[^\0]+\0$/.exec(tree);
+      const staged = /^(100644|100755) ([0-9a-f]{40}) 0\t[^\0]+\0$/.exec(index);
+      if (committed === null) fail(`required artifact ${required} is missing or not a regular blob in pushed commit ${tip}`);
+      if (staged === null || staged[1] !== committed[1] || staged[2] !== committed[2] ||
+        inspect("ls-tree", "-z", "HEAD", "--", required) !== tree) {
+        fail(`required artifact ${required} is untracked, unmerged, staged but uncommitted, or differs from pushed commit ${tip}`);
+      }
+      if (!file?.isFile()) fail(`required artifact ${required} is missing from the working tree or not a regular file`);
+      const hash = inspect("hash-object", `--path=${required}`, "--", required).trim();
+      if (hash !== committed[2] || (localConfigGet(input.clone, "core.filemode") !== "false" &&
+        ((file.mode & 0o111) !== 0) !== (committed[1] === "100755"))) {
+        fail(`required artifact ${required} has uncommitted working-tree changes`);
+      }
+    } catch (error) {
+      if (error instanceof HookPolicyError) throw error;
+      fail(`cannot validate the current required artifact: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+};
 
 export type VerifyRunner = (command: CheckCommand, cwd: string) => number;
 

@@ -1,11 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { canonicalSourceDigest, inspectCloneHooks, readHookManifest, removeCloneHooks, type HookManifest } from "../src/hookSync.js";
 import { install, uninstall } from "../src/install.js";
-import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import { agentRuntimePaths, createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { initializeOperationalState, mutateCursorsState, readConfig } from "../src/state.js";
 import { workspaceLocationFromConfig } from "../src/workspace.js";
 import {
@@ -353,6 +353,96 @@ describe("coordinator verification binding", () => {
     });
     return paths;
   };
+
+  const currentArtifact = (paths: ReturnType<typeof activeRun>, stepId: "R3.review" | "R4.implement" | "R6.revise" = "R3.review") => {
+    const actionId = randomUUID();
+    const required = stepId === "R3.review" ? ".plans/issue-1/review.md" : `.signals/issue-1/${stepId}-claude.json`;
+    const raw = `---\nactionId: ${actionId}\nagent: claude\nsubmissionMode: git\nrequiredPath: ${required}\n---\nPublish artifact.\n`;
+    const action = agentRuntimePaths(paths, "claude").action;
+    writeFileSync(action, raw);
+    mutateCursorsState(paths, (state) => ({ ...state, agents: { ...state.agents,
+      claude: { ...state.agents.claude!, status: "ordered", actionId, stepId, submissionMode: "git",
+        actionDigest: createHash("sha256").update(raw).digest("hex") } } }));
+    return { required, action, raw };
+  };
+
+  it.each(["local", "coordinator"])("guards the pushed artifact tree, index and working file in %s mode", (mode) => {
+    const { clone, configPath, fixture } = installed(passingVerify, "go", mode === "coordinator" ? { verification } : {});
+    const paths = activeRun(clone, configPath);
+    stageWork(clone);
+    git(clone, "commit", "-qm", "Claude: product");
+    const product = git(clone, "rev-parse", "HEAD");
+    const { required } = currentArtifact(paths);
+    const file = join(clone, required);
+    mkdirSync(join(file, ".."), { recursive: true });
+    const blocked = (ref = "issue-1/claude") => {
+      const pushed = tryGit(clone, "push", "origin", ref);
+      expect(pushed.exitCode).not.toBe(0);
+      expect(pushed.stderr).toContain("HOOK BLOCKED");
+      expect(pushed.stderr).toContain(required);
+      expect(tryGit(fixture.originPath, "rev-parse", "--verify", "refs/heads/issue-1/claude").exitCode).not.toBe(0);
+    };
+    blocked(); // absent
+    writeFileSync(file, "review A\n");
+    blocked(); // untracked
+    git(clone, "add", required);
+    blocked(); // staged but absent from outgoing tree
+    git(clone, "commit", "-qm", "Claude: review");
+    blocked(`${product}:refs/heads/issue-1/claude`); // inspect the outgoing SHA, not HEAD
+    writeFileSync(file, "review B\n");
+    blocked(); // unstaged
+    git(clone, "add", required);
+    writeFileSync(file, "review A\n");
+    blocked(); // staged B while working copy matches committed A
+    git(clone, "add", required);
+    rmSync(file);
+    blocked(); // deleted working file
+    writeFileSync(file, "review A\n");
+    const artifactA = git(clone, "rev-parse", "HEAD");
+    writeFileSync(file, "review B\n");
+    git(clone, "add", required);
+    git(clone, "commit", "-qm", "Claude: newer review");
+    writeFileSync(file, "review A\n");
+    git(clone, "add", required);
+    blocked(`${artifactA}:refs/heads/issue-1/claude`); // staged reversion matching an older outgoing tree
+    writeFileSync(file, "review B\n");
+    git(clone, "add", required);
+    expect(tryGit(clone, "push", "origin", "issue-1/claude").exitCode).toBe(0);
+    expect(git(fixture.originPath, "rev-parse", "refs/heads/issue-1/claude")).toBe(git(clone, "rev-parse", "HEAD"));
+  });
+
+  it.each(["R4.implement", "R6.revise"] as const)("allows %s product-before-signal and amendment publication with dirty product work", (step) => {
+    const { clone, configPath } = installed();
+    const paths = activeRun(clone, configPath);
+    stageWork(clone);
+    const { required } = currentArtifact(paths, step);
+    git(clone, "commit", "-qm", "Claude: product before signal");
+    expect(tryGit(clone, "push", "origin", "issue-1/claude").exitCode).toBe(0);
+    const file = join(clone, required);
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, JSON.stringify({ artifact: "plan-amendment-request" }));
+    writeFileSync(join(clone, "cmd/feature.go"), "package main\n// unfinished\n");
+    git(clone, "add", required);
+    git(clone, "commit", "-qm", "Claude: amendment request");
+    expect(tryGit(clone, "push", "origin", "issue-1/claude").exitCode).toBe(0);
+  });
+
+  it("rejects a stale current action but leaves response and manual pushes alone", () => {
+    const { clone, configPath } = installed();
+    const paths = activeRun(clone, configPath);
+    stageWork(clone);
+    git(clone, "commit", "-qm", "Claude: product");
+    const { action, raw } = currentArtifact(paths);
+    writeFileSync(action, raw.replace("Publish artifact.", "Replacement instructions."));
+    const stale = tryGit(clone, "push", "origin", "issue-1/claude");
+    expect(stale.exitCode).not.toBe(0);
+    expect(stale.stderr).toContain("identity/digest mismatch");
+    git(clone, "branch", "claude/scratch");
+    expect(tryGit(clone, "push", "origin", "claude/scratch").exitCode).toBe(0);
+    mutateCursorsState(paths, (state) => ({ ...state, agents: { ...state.agents,
+      claude: { ...state.agents.claude!, submissionMode: "response" } } }));
+    expect(tryGit(clone, "push", "origin", "issue-1/claude").exitCode).toBe(0);
+  });
 
   it("runs the coordinated lists only for this agent's active issue branch, keeping integrity gates", () => {
     const { clone, configPath } = installed(localFails, "go", { verification });

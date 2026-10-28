@@ -212,8 +212,12 @@ Use these exact inputs (dropped agents are intentionally omitted):
 
 ${inputText(order)}${scopeInputText(order)}${boundInputFilesSection(order.materialized)}${repoContextSection(order.contextPaths)}${changeScopeSection(order.changeScope)}${verificationSection(order)}${ownerGuidanceSection(order.ownerGuidance)}
 
-Push the commit containing the artifact to \`${order.branch}\`. Then write that
-exact 40-character lowercase commit SHA as the sole contents of:
+Commit the required artifact at \`${order.requiredPath}\`; the submitted commit's
+tree must contain that path. An untracked, staged-only, or modified artifact is
+not ready for completion. Push that commit to \`${order.branch}\` and wait for
+\`git push\` to succeed before writing \`complete\`. A failed or still-running
+push is not completion. Only after the push succeeds, write that exact
+40-character lowercase commit SHA as the sole contents of:
 
 \`${order.completePath}\`
 
