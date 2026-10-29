@@ -1,0 +1,14 @@
+{
+  "actionId": "f54b1fdc-e0f4-46d2-b344-efe5d9a07e26",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "067ff874289cfc0b6f19a598f956e164a39cbf85946271d75b49c06d4f192bad",
+  "issue": 257,
+  "issueSessionId": "issue-257:ac57c3a543ff2c6f3f16e5bc3f46c61efb1c4d52",
+  "protocolVersion": 2,
+  "rationale": "Revision 7d43efb9 closes the one open comparison finding (C3): the model regex now rejects empty segments, with openrouter//x and openrouter/x/ in the reject tests, while keeping the quoted OpenCode launch, the PATH-first lookup with ~/.opencode/bin as fallback, and the Enter-only owner reminders.",
+  "responseSha256": "6b8af257297e1b9857260a6a7a071439217d6da4ac14b1139c5691ff2ad2fa8e",
+  "revisionCommitSha": "7d43efb92b1b0dc55bc2dd1b2ecfc13a2e5a02ec",
+  "round": 1
+}
