@@ -1,0 +1,24 @@
+{
+  "actionId": "ce7f578c-d1f3-4b94-87e3-7c7a6198cf9b",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "0ee801e2ad6838e8eaab800fd5965167da24f419",
+      "path": ".signals/issue-257/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "46c3e3b9ec822f32e882b3d0fc84b014be56e51e",
+      "path": ".signals/issue-257/implementation-ready-codex.json"
+    }
+  ],
+  "inputSetHash": "04e6b24f6a57ce7c5dcefd1454287f849dc8336a7777a3edb63cbd779c8085b1",
+  "issue": 257,
+  "issueSessionId": "issue-257:ac57c3a543ff2c6f3f16e5bc3f46c61efb1c4d52",
+  "protocolVersion": 2,
+  "rationale": "Codex preserves no-model launches in paths containing spaces and enforces OpenCode constraints in frozen state, while focused reproductions expose both gaps in Claude despite both implementations having passing hook checks.",
+  "responseSha256": "6a0e0fa69958cce4e9845689de247f5bb4c2f0839fd92b0ecd282f4a6bcfbbfa"
+}

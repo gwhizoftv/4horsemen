@@ -1,0 +1,24 @@
+{
+  "actionId": "cd362c4e-3753-469a-8add-dfb66b3a617c",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "0ee801e2ad6838e8eaab800fd5965167da24f419",
+      "path": ".signals/issue-257/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "46c3e3b9ec822f32e882b3d0fc84b014be56e51e",
+      "path": ".signals/issue-257/implementation-ready-codex.json"
+    }
+  ],
+  "inputSetHash": "04e6b24f6a57ce7c5dcefd1454287f849dc8336a7777a3edb63cbd779c8085b1",
+  "issue": 257,
+  "issueSessionId": "issue-257:ac57c3a543ff2c6f3f16e5bc3f46c61efb1c4d52",
+  "protocolVersion": 2,
+  "rationale": "The codex pin matches claude on the core behaviour, quotes the OpenCode launcher on every launch rather than only when a model is set, keeps the owner's PATH install ahead of ~/.opencode/bin as the plan requires, and has broader tests proving owner permissions and native config are untouched; its one weakness, a looser model regex, is a low-severity revision item.",
+  "responseSha256": "35943d5cbdd85cc967570949d2816e320bfb43f45e79d35b64eed8fa84fb1bb6"
+}
