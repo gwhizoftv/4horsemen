@@ -1,0 +1,17 @@
+{
+  "protocolVersion": 1,
+  "issue": 261,
+  "issueSessionId": "issue-261:c97bde22150e7a85694e999f4d6930b79122fcaf",
+  "agent": "codex",
+  "inputSetHash": "e6751d4ce4fa6754a9fcbb69cd8f2daf51c304d5c1e396a2ff9465f029de4586",
+  "artifact": "plan-amendment-request",
+  "actionId": "adad307d-a2ae-4638-9014-181581c27151",
+  "scopeHash": "310236e4564e8f2051c435bb0f658c65af004dc3ffc1a61dabeda1bdab09f853",
+  "explanation": "The approved plan omitted the doctor regression fixture that assumes a plain repository remains without verify after installation. The mandatory product commit hook ran pnpm check:fast: lint and typechecking passed, and fast tests reported 891 passed / 1 failed. The sole failure is test/doctor.test.ts:221, expecting verifyUndeclared after onboarding now intentionally records empty local commands. Updating this fixture is necessary to test the original issue behavior while retaining the genuine missing-verify diagnostic; no product behavior or scope is added. The product commit was blocked and all unfinished product edits remain unstaged.",
+  "additionalPaths": [
+    {
+      "path": "test/doctor.test.ts",
+      "reason": "Update the obsolete installation assumption at lines 217-221: assert deliberately empty local verification is valid, then explicitly remove verify from the saved fixture to retain coverage that truly undeclared verification produces DOCTOR_CODES.verifyUndeclared. This aligns doctor coverage with the approved no-check onboarding behavior without weakening missing-setting diagnostics."
+    }
+  ]
+}
