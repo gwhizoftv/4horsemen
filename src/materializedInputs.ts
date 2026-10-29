@@ -29,7 +29,7 @@ import type { BoundInput, MaterializedInputEntry, MaterializedInputs, Materializ
  */
 export const MATERIALIZED_MARKDOWN_KINDS: ReadonlySet<string> = new Set([
   "plan", "review", "selected-plan", "amendment-request", "approved-amendment-request", "amendment-approval",
-  "consensus-ballot"
+  "consensus-ballot", "check-proposal"
 ]);
 
 /**

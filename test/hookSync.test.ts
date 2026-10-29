@@ -29,7 +29,7 @@ afterEach(() => {
 
 type Installed = { fixture: ProductFixture; clone: string; configPath: string };
 
-/** `verify: null` installs a workspace that declares no verification at all. */
+/** `verify: null` models a manually authored config with undeclared verification. */
 const installed = (verify: unknown = passingVerify, kind: "go" | "plain" = "go", extra: Record<string, unknown> = {}, vendor = false): Installed => {
   ensureBuilt();
   const fixture = makeProduct(kind);
@@ -50,6 +50,13 @@ const installed = (verify: unknown = passingVerify, kind: "go" | "plain" = "go",
     dryRun: false,
     log: silence().log
   });
+  if (verify === null) {
+    // Onboarding records an explicit empty list; remove it only for the
+    // legacy/hand-authored undeclared-policy cases exercised by these tests.
+    const config = readConfig(result.configPath);
+    delete config.verify;
+    writeFileSync(result.configPath, `${JSON.stringify(config, null, 2)}\n`);
+  }
   return { fixture, clone: result.clones[0] as string, configPath: result.configPath };
 };
 

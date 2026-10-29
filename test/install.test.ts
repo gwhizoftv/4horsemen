@@ -542,13 +542,10 @@ describe("coord install — emitted config", () => {
     expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
   });
 
-  it("refuses to install a workspace whose finalization checks nobody declared", () => {
+  it("installs a new workspace with intentional empty final checks", () => {
     const fixture = product("plain");
-    expect(() =>
-      installOnce(fixture, {
-        declarePath: writeDeclaration(fixture.workspaceRoot, { verify: passingVerify }, "verify-only")
-      })
-    ).toThrow(/Cannot infer finalization checks/);
+    const result = installOnce(fixture, { declarePath: writeDeclaration(fixture.workspaceRoot, { verify: passingVerify }, "verify-only") });
+    expect(readConfig(result.configPath).checks).toEqual([]);
   });
 });
 
@@ -732,15 +729,10 @@ describe("coord install — preflight before effects", () => {
     expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(false);
   });
 
-  it("refuses an undeclarable product without leaving a wired clone behind", () => {
+  it("keeps invalid declarations from leaving a wired clone behind", () => {
     const fixture = product("plain");
-    expect(() =>
-      installOnce(fixture, {
-        declarePath: writeDeclaration(fixture.workspaceRoot, { verify: passingVerify }, "no-checks")
-      })
-    ).toThrow(/Cannot infer finalization checks/);
+    expect(() => installOnce(fixture, { declarePath: writeDeclaration(fixture.workspaceRoot, { checks: [{ name: "invalid", argv: [] }] }, "bad-checks") })).toThrow(/Invalid --declare/);
     expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(false);
-    expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
   });
 
   it("refuses to adopt a directory that is not a clone of this product", () => {
@@ -1440,4 +1432,21 @@ describe("generated agent launchers", () => {
     // The user-global status line lands in the fixture, never the owner's home.
     expect(existsSync(join(fixture.workspaceRoot, "home", ".gemini", "antigravity-cli", "settings.json"))).toBe(true);
   });
+});
+
+it("preserves chosen timing on reinstall and refuses malformed saved settings", () => {
+  const fixture = product("plain");
+  const settings = { checks: [], verify: { precommit: [{ name: "build", argv: ["true"] }], prepush: [] } };
+  const first = installOnce(fixture, { declarePath: undefined, checkSettings: settings });
+  git(first.clones[0]!, "checkout", "-qb", "claude/work");
+  installOnce(fixture, { declarePath: undefined });
+  expect(readConfig(first.configPath)).toMatchObject(settings);
+  const legacy = readConfig(first.configPath);
+  delete legacy.verify;
+  writeFileSync(first.configPath, JSON.stringify(legacy));
+  installOnce(fixture, { declarePath: undefined });
+  expect(readConfig(first.configPath).verify).toBeUndefined();
+  expect(readConfig(first.configPath).checks).toEqual(settings.checks);
+  writeFileSync(first.configPath, "{");
+  expect(() => installOnce(fixture, { declarePath: undefined })).toThrow();
 });

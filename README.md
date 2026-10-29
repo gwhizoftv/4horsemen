@@ -142,25 +142,26 @@ For work assigned directly in agent chats without an issue, use
 [hold recovery](docs/coord-driver.md#delivery-safety-and-unknown-holds) are in the
 operator guide; stopping the coordinator does not stop its agent harnesses.
 
-## Supported languages
+## Build and test settings
 
-| Product | Detection / setup |
-| --- | --- |
-| Go | `go.mod`: automatically proposes Go checks |
-| Rust | `Cargo.toml`: automatically proposes Cargo checks |
-| Node | `package.json`: pnpm, yarn, or npm selected by lockfile; uses existing scripts |
-| Make | Recognized `Makefile` targets supply checks |
-| Python | `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt`: proposes pytest checks |
-| Flutter | Flutter SDK dependency in `pubspec.yaml`: proposes analyze and test checks |
+`coord onboard` inspects existing project scripts, package commands, Make targets,
+CMake presets, shared Xcode schemes and Swift packages without running project
+code. It shows the source of each suggestion and lets you choose commands, enter
+another ordered command list, or continue without automated checks. Multiple
+build systems remain separate choices. Test source files provide context; they
+are not executable commands.
 
-Plain `coord onboard <repository>` handles Python and Flutter without a declaration.
-Installation prints the effective commands and their inferred or declared origin;
-review them and make the product's tools available to agents and finalization worktrees.
-Existing usable Node and Make test gates keep their priority. A language marker
-alone does not guarantee usable checks, and installation refuses missing finalization
-checks. Other languages and custom workflows use explicit command declarations. See
-[product languages and declarations](docs/setup-workspace.md#product-languages)
-for detection precedence, tool requirements, and a Python override example.
+For nonempty commands, choose before each agent commit, before opening a pull
+request, or both. Onboarding prints the saved runtime config path. Re-onboarding
+offers to keep or change those settings; reinstall preserves them. Noninteractive
+runs use explicit declarations, then saved settings, then one fully resolved
+suggestion. Ambiguous native parameters require a declaration.
+
+A project with no configured checks can still proceed. Reports say
+`Automated checks skipped: none configured.` Build-only commands are reported as
+build results. Missing tools, invalid config and failing commands remain errors.
+See [workspace setup](docs/setup-workspace.md#product-languages) for native
+commands, timing, and how reviewed checks become required during an issue.
 
 ## Platforms
 

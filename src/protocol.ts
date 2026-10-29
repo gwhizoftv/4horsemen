@@ -21,6 +21,51 @@ export const repositoryPathSchema = z
   .max(1024)
   .refine((path) => !path.startsWith("/") && !path.split("/").includes(".."), "expected a safe repository-relative path");
 
+/**
+ * Which inputs a coordinator receipt may treat as equivalent. Absent means the
+ * command is never cached; commands that read Git history, commit identity,
+ * external services or undeclared environment must stay uncached.
+ */
+export const checkCacheSchema = z
+  .object({
+    inputs: z.enum(["tree", "tree-excluding-evidence"]),
+    env: z.array(z.string().regex(/^[A-Z_][A-Z0-9_]*$/)).default([]),
+    probes: z.array(z.array(z.string()).min(1)).default([]),
+    /**
+     * Untracked worktree inputs the command reads, such as installed
+     * dependencies, hashed when the command runs and again afterwards.
+     */
+    dependencies: z.array(repositoryPathSchema).default([]),
+    /**
+     * Exact paths inside `dependencies` left out of the digest: tool state that
+     * changes on every install or run (timestamps, caches) and is not an input.
+     */
+    dependencyExcludes: z.array(repositoryPathSchema).default([])
+  })
+  .strict();
+
+export const checkCommandSchema = z
+  .object({
+    name: z.string().min(1),
+    argv: z.array(z.string()).min(1).refine((args) => Boolean(args[0]?.trim()), "executable must not be blank"),
+    /** Coordinator-run commands only: bounded by `maxConcurrentExpensive`. */
+    expensive: z.boolean().optional(),
+    cache: checkCacheSchema.optional(),
+    /** Diagnostic re-runs after a failure; the original failure stays the outcome. */
+    retry: z.number().int().min(0).max(2).optional()
+  })
+  .strict();
+
+/** An additive check proposal is reviewed with the code it names. */
+export const checkProposalSchema = z.object({
+  implementationCommitSha: gitShaSchema,
+  commands: z.array(checkCommandSchema.pick({ name: true, argv: true })).min(1).max(32),
+  entryPointPaths: z.array(repositoryPathSchema).min(1).max(100),
+  description: z.string().trim().min(1).max(4000)
+}).strict().refine((proposal) => new Set(proposal.commands.map((command) => command.name)).size === proposal.commands.length,
+  "proposed command names must be unique");
+export type CheckProposal = z.infer<typeof checkProposalSchema>;
+
 export const artifactCitationSchema = z
   .object({
     agent: agentIdSchema,
@@ -142,6 +187,7 @@ export const implementationReadyArtifactSchema = z
     artifact: z.literal("implementation-ready"),
     inputSetHash: digestSchema,
     implementationCommitSha: gitShaSchema,
+    checkProposal: checkProposalSchema.optional(),
     scopeHash: digestSchema.optional(),
     approvedPaths: z.array(repositoryPathSchema).min(1)
   })
@@ -164,6 +210,7 @@ export const revisionReadyArtifactSchema = z
     inputSetHash: digestSchema,
     round: z.number().int().min(1),
     revisedBranchHead: gitShaSchema,
+    checkProposal: checkProposalSchema.optional(),
     scopeHash: digestSchema.optional(),
     basedOn: z.array(gitShaSchema).min(1)
   })

@@ -473,3 +473,10 @@ describe("context paths", () => {
     expect(start.contextPaths).toEqual([]);
   });
 });
+
+it("round trips intentional empty checks and frozen hook timing", () => {
+  const { start } = initialize();
+  const empty = startStateSchema.parse({ ...start, checks: [], verify: { precommit: [], prepush: [] }, pendingChecks: ["unmerged native suite"] });
+  expect(startStateSchema.parse(JSON.parse(JSON.stringify(empty)))).toMatchObject({ checks: [], verify: { precommit: [], prepush: [] }, pendingChecks: ["unmerged native suite"] });
+  expect(startStateSchema.safeParse({ ...empty, checks: [{ name: "bad", argv: [""] }] }).success).toBe(false);
+});

@@ -1,8 +1,10 @@
+import { activateCheckAdditions, persistCheckAdditions } from "./checkAmendments.js";
+import { chooseProjectChecks, NO_CHECKS } from "./projectChecks.js";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readAction } from "./action.js";
 import { handleAgentEvent, lifecycleVendorSchema } from "./agentEvent.js";
@@ -29,7 +31,7 @@ import { sha256 } from "./hash.js";
 import { assertRequiredArtifact, renderHookScope, resolveHookBinding, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { inspectOutgoingChanges, inspectStagedChanges } from "./changeClassification.js";
 import { hookVerificationRecorder } from "./verificationLog.js";
-import { DEFAULT_AGENTS, install, onboard, packageVersion, savedGitHubAccount, uninstall } from "./install.js";
+import { DEFAULT_AGENTS, install, onboard, packageVersion, savedGitHubAccount, readPreviousConfig, readDeclaration, uninstall } from "./install.js";
 import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
 import { makeAgentClonesBaseReady, makeManualClonesBaseReady, prepareAgentIssueBranches, type CloneBaseReadyResult } from "./prepareAgentBranch.js";
@@ -78,6 +80,7 @@ import {
 } from "./tmux.js";
 import {
   listIssueNumbersInWorkspace,
+  selectWorkspaceLocation,
   resolveWorkspaceFromProduct,
   resolveWorkspaceFromWorktree,
   workspaceLocationFromConfig,
@@ -133,6 +136,7 @@ export type CliDependencies = {
   confirm?: (question: string) => Promise<boolean>;
   /** Test/embedding override for an owner menu choice; the default returns null without a TTY. */
   choose?: (question: string, choices: readonly string[]) => Promise<string | null>;
+  ask?: (question: string) => Promise<string | null>;
   /** Test/embedding override for an owner-attended command sharing this terminal (gh auth login). */
   interactive?: (argv: readonly string[], cwd: string) => Promise<number>;
 };
@@ -526,6 +530,13 @@ const defaultConfirm = async (question: string): Promise<boolean> => {
   } finally {
     prompt.close();
   }
+};
+
+const defaultAsk = async (question: string): Promise<string | null> => {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return null;
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try { return await prompt.question(`${question} `); }
+  finally { prompt.close(); }
 };
 
 const defaultChoose = async (question: string, choices: readonly string[]): Promise<string | null> => {
@@ -1196,7 +1207,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     const githubRunner = withGitHubAccount(runner, githubAccount);
     const snapshot = await fetchGitHubIssue({ origin: config.origin, issue, cwd: io.cwd, runner: githubRunner });
     const snapshotBytes = renderGitHubIssueSnapshot(snapshot);
-    const digest = automationDigestMaterial(configPath, config, issue, snapshotBytes);
+    let digest = automationDigestMaterial(configPath, config, issue, snapshotBytes);
     const baselineResult = await githubRunner(
       ["git", "ls-remote", "--exit-code", config.origin, `refs/heads/${config.baseBranch}`],
       io.cwd
@@ -1221,6 +1232,12 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       installRoot: config.coordination?.installRoot ?? coordinatorSourceRoot,
       log: io.stdout
     });
+
+    const effective = activateCheckAdditions(roster[0]!.root, parsedBaseline.data, config);
+    persistCheckAdditions(configPath, effective.active);
+    if (effective.active.length) digest = automationDigestMaterial(configPath, config, issue, snapshotBytes);
+    for (const reason of effective.pending) io.stdout(`Pending check: ${reason}\n`);
+    if (effective.checks.length === 0) io.stdout(`${NO_CHECKS}\n`);
 
     // Do this before resumable state exists: attach/recovery must not launch a
     // pane while a fresh-start updater is still replacing its executable.
@@ -1249,11 +1266,13 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         configPath,
         agents: roster,
         agentVersions,
-        checks: config.checks,
+        checks: effective.checks,
+        verify: config.verify,
+        pendingChecks: effective.pending,
         documentation: config.documentation,
         ...(config.verification === undefined ? {} : {
           verification: config.verification,
-          verificationDigest: sha256(JSON.stringify({ verification: config.verification, checks: config.checks,
+          verificationDigest: sha256(JSON.stringify({ verification: config.verification, checks: effective.checks,
             documentation: config.documentation ?? null }))
         }),
         workflowCriticalPrefixes: config.workflowCriticalPrefixes,
@@ -1405,7 +1424,18 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const githubAccount = parsed.flags.get("github-account") ?? saved.account ?? await chooseOnboardAccount();
       if (githubAccount !== undefined) await verifyInstallAccount(githubAccount, productRoot, undefined);
       const baseBranch = await resolveInstallBaseBranch(productRoot, undefined, githubAccount, parsed.flags.get("base-branch"));
+      readPreviousConfig(resolve(saved.coordRoot, "config.json"));
+      const checkConfigPath = selectWorkspaceLocation(saved.coordRoot, basename(productRoot)).configPath;
+      const savedChecks = readPreviousConfig(checkConfigPath);
+      const checkDeclaration = parsed.flags.has("declare") ? readDeclaration(resolve(io.cwd, requireFlag(parsed, "declare"))) : null;
+      const canSelectChecks = dependencies.ask !== undefined ||
+        (process.env.VITEST === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true);
+      const selection = await chooseProjectChecks(productRoot, checkDeclaration, savedChecks, canSelectChecks ? {
+        choose, ask: dependencies.ask ?? defaultAsk, print: io.stdout
+      } : undefined);
       const result = onboard({
+        checkSettings: selection,
+        replaceCheckSettings: selection.changed,
         baseBranch,
         ...(githubAccount === undefined ? {} : { githubAccount }),
         coordRoot: saved.coordRoot,
@@ -1602,9 +1632,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         : inspectOutgoingChanges(clone, refs, localConfigGet(clone, "consensus.remoteName") ?? "origin",
           localConfigGet(clone, "consensus.sharedBranch") ?? "main");
       const binding = resolveHookBinding({ clone, configPath, phase, refs });
-      io.stdout(binding.bound ? `coord ${phase}: coordinator-bound issue ${binding.issue} — coordinated checks\n`
+      io.stdout(binding.bound ? `coord ${phase}: coordinator-bound issue ${binding.issue} — ${binding.kind === "frozen" ? "checks saved at issue start" : "coordinated checks"}\n`
         : `coord ${phase}: local verification — ${binding.reason}\n`);
-      const result = runVerifyPhase({ clone, config, phase, changes, log: io.stdout,
+      const result = runVerifyPhase({ clone, config: binding.bound && binding.policy ? { ...config, ...binding.policy } : config, phase, changes, log: io.stdout,
         record: hookVerificationRecorder(clone, configPath, io.stderr),
         ...(binding.bound ? { bound: binding.commands } : {}) });
       if (result.ok) return 0;

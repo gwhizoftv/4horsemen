@@ -293,3 +293,16 @@ describe("verification runner", () => {
     expect(readReceipt(paths.coordRoot, receiptKey(material(flaky))).status).toBe("miss");
   });
 });
+
+it("cannot reuse an earlier policy receipt after adding a check obligation", async () => {
+  const { input } = setup();
+  const command = cached("test");
+  let runs = 0;
+  const runner = async () => { runs++; return ok(); };
+  await runVerification(input([command], runner));
+  await runVerification(input([command], runner, { policyDigest: "e".repeat(64) }));
+  expect(runs).toBe(2);
+  const reused = await runVerification(input([command], runner, { policyDigest: "e".repeat(64) }));
+  expect(reused.results[0]?.reused).toBe(true);
+  expect(runs).toBe(2);
+});

@@ -1,3 +1,4 @@
+import { resolveProjectChecks, NO_CHECKS, type CheckSettings } from "./projectChecks.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -99,6 +100,8 @@ export type InstallOptions = {
   profile: string;
   cloneRoot?: string;
   declarePath?: string;
+  checkSettings?: CheckSettings;
+  replaceCheckSettings?: boolean;
   origin?: string;
   baseBranch?: string;
   writeProduct: boolean;
@@ -184,7 +187,7 @@ export const assertInstallDeletionAllowed = (installRoot: string, context: Insta
   }
 };
 
-const readDeclaration = (path: string): WorkspaceDeclaration => {
+export const readDeclaration = (path: string): WorkspaceDeclaration => {
   let value: unknown;
   try {
     value = JSON.parse(readFileSync(path, "utf8")) as unknown;
@@ -228,14 +231,8 @@ const validateAgentIds = (agents: readonly string[], installRoot: string): strin
   return [...agents];
 };
 
-const readPreviousConfig = (configPath: string): CoordinatorConfig | null => {
-  if (!existsSync(configPath)) return null;
-  try {
-    return readConfig(configPath);
-  } catch {
-    return null;
-  }
-};
+export const readPreviousConfig = (configPath: string): CoordinatorConfig | null =>
+  existsSync(configPath) ? readConfig(configPath) : null;
 
 const requireWorktree = (path: string, description: string): string => {
   const result = git(path, "rev-parse", "--show-toplevel");
@@ -339,6 +336,8 @@ export const install = (options: InstallOptions): InstallResult => {
     agentRoots: options.agents.map((agent) => agentCloneDirectory(cloneRoot, project, agent)),
     create: !options.dryRun
   });
+  // A malformed flat config is not permission to create a replacement nested workspace.
+  readPreviousConfig(flatConfigPath(coordRoot));
   const workspace = selectWorkspaceLocation(coordRoot, project);
   // Resolved before any clone is wired: an unsafe mailbox must fail the install
   // rather than be discovered when the first agent cannot publish its SHA.
@@ -400,7 +399,10 @@ export const install = (options: InstallOptions): InstallResult => {
 
   const configPath = workspace.configPath;
   const proposal = proposeProjectPolicy(productRoot);
-  const declared = options.declarePath === undefined ? null : readDeclaration(options.declarePath);
+  const explicit = options.declarePath === undefined ? null : readDeclaration(options.declarePath);
+  const previous = readPreviousConfig(configPath);
+  const checkSettings = options.checkSettings ?? resolveProjectChecks(productRoot, explicit, previous);
+  const declared = { ...explicit, ...checkSettings };
   const mode: HookMode = options.vendor ? "vendor" : "shim";
   const sourceCommit = installSourceCommit(installRoot);
   const version = packageVersion(installRoot);
@@ -431,10 +433,7 @@ export const install = (options: InstallOptions): InstallResult => {
     wroteAgentsMd: options.writeProduct && !existsSync(agentsMdPath),
     completesRoot
   };
-  // Only used to carry a timestamp forward. A config that no longer parses —
-  // typically one written before a schema change — must not stop the installer
-  // that exists to rewrite it; regenerating is the repair.
-  const previous = readPreviousConfig(configPath);
+  // Invalid saved policies fail before replacement; reinstall preserves owner settings.
   const config = buildWorkspaceConfig(
     {
       project,
@@ -445,6 +444,7 @@ export const install = (options: InstallOptions): InstallResult => {
       cloneRoot,
       workspaceDir: workspace.workspaceRoot,
       declared,
+      saved: previous,
       proposal,
       completesRoot,
       githubAccount
@@ -459,7 +459,14 @@ export const install = (options: InstallOptions): InstallResult => {
       : stamp
   );
 
-  logProjectPolicy(config, declared, effects);
+  if (options.replaceCheckSettings) {
+    config.adoptedChecks = [];
+    delete config.verification;
+    if (config.documentation) config.documentation = { ...config.documentation, verify: { precommit: [], prepush: [] }, checks: [] };
+  }
+  logProjectPolicy(config, explicit, effects);
+  effects.log(`Build and test settings (${options.checkSettings ? "selected" : explicit ? "declared" : previous ? "saved" : "detected"}): ${configPath}\n`);
+  if (config.checks.length === 0 && (config.verify?.precommit.length ?? 0) === 0 && (config.verify?.prepush.length ?? 0) === 0) effects.log(`${NO_CHECKS}\n`);
 
   // ---- steps 2-5: per-agent clone wiring ----------------------------------
   const clones: string[] = [];
@@ -581,7 +588,7 @@ export const install = (options: InstallOptions): InstallResult => {
   }
 
   // ---- step 6: emit the workspace config under coord-runtime ------------------
-  writeWorkspaceConfig(workspace, config, effects);
+  writeWorkspaceConfig(workspace, config, effects, { previous, replaceAdopted: options.replaceCheckSettings });
 
   // ---- step 7: next steps, never run for the operator ----------------------
   options.log(
@@ -876,6 +883,8 @@ export type OnboardOptions = {
   completesRoot?: string;
   cloneRoot?: string;
   declarePath?: string;
+  checkSettings?: CheckSettings;
+  replaceCheckSettings?: boolean;
   agents?: readonly string[];
   profile?: string;
   log: Logger;
@@ -928,6 +937,8 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     ...(options.completesRoot === undefined ? {} : { completesRoot: resolve(options.completesRoot) }),
     cloneRoot: resolve(options.cloneRoot ?? parent),
     ...(options.declarePath === undefined ? {} : { declarePath: resolve(options.declarePath) }),
+    checkSettings: options.checkSettings,
+    replaceCheckSettings: options.replaceCheckSettings,
     agents: options.agents ?? DEFAULT_AGENTS,
     profile: options.profile ?? "consensus",
     writeProduct: false,

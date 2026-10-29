@@ -16,6 +16,8 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { z } from "zod";
 import {
   actionIdSchema,
+  checkCommandSchema,
+  checkProposalSchema,
   artifactCitationSchema,
   planAmendmentRequestSchema,
   agentIdSchema,
@@ -93,40 +95,7 @@ const evidenceIdSchema = z.enum([
 const ballotStepIdSchema = z.enum(["R3.plan-ballot", "R5.compare-ballot", "R6.ballot", "R4.amend-ballot"]);
 const timestampSchema = z.string().datetime({ offset: true });
 
-/**
- * Which inputs a coordinator receipt may treat as equivalent. Absent means the
- * command is never cached; commands that read Git history, commit identity,
- * external services or undeclared environment must stay uncached.
- */
-export const checkCacheSchema = z
-  .object({
-    inputs: z.enum(["tree", "tree-excluding-evidence"]),
-    env: z.array(z.string().regex(/^[A-Z_][A-Z0-9_]*$/)).default([]),
-    probes: z.array(z.array(z.string()).min(1)).default([]),
-    /**
-     * Untracked worktree inputs the command reads, such as installed
-     * dependencies, hashed when the command runs and again afterwards.
-     */
-    dependencies: z.array(repositoryPathSchema).default([]),
-    /**
-     * Exact paths inside `dependencies` left out of the digest: tool state that
-     * changes on every install or run (timestamps, caches) and is not an input.
-     */
-    dependencyExcludes: z.array(repositoryPathSchema).default([])
-  })
-  .strict();
-
-export const checkCommandSchema = z
-  .object({
-    name: z.string().min(1),
-    argv: z.array(z.string()).min(1),
-    /** Coordinator-run commands only: bounded by `maxConcurrentExpensive`. */
-    expensive: z.boolean().optional(),
-    cache: checkCacheSchema.optional(),
-    /** Diagnostic re-runs after a failure; the original failure stays the outcome. */
-    retry: z.number().int().min(0).max(2).optional()
-  })
-  .strict();
+export { checkCommandSchema, checkCacheSchema } from "./protocol.js";
 
 /**
  * Local verification the agent-clone hooks run, declared as argument vectors so
@@ -177,7 +146,7 @@ export const verificationPolicySchema = z
     coordinated: verifyConfigSchema.optional(),
     candidate: z
       .object({
-        checks: z.array(checkCommandSchema).min(1),
+        checks: z.array(checkCommandSchema),
         covers: z.object(pathMatchShape).strict(),
         rules: z
           .array(
@@ -268,6 +237,26 @@ export const agentConfigSchema = z
   })
   .strict();
 
+/** Conditional future checks; never applied to a baseline lacking the entry point. */
+export const adoptedCheckSchema = z.object({
+  id: digestSchema,
+  issue: issueSchema,
+  proposal: checkProposalSchema,
+  blobs: z.record(repositoryPathSchema, gitShaSchema),
+  activationPins: z.array(gitShaSchema).default([])
+}).strict();
+export type AdoptedCheck = z.infer<typeof adoptedCheckSchema>;
+
+export const checkAmendmentSchema = z.object({
+  id: digestSchema,
+  authorizedPin: gitShaSchema,
+  additions: z.array(adoptedCheckSchema),
+  commands: z.array(checkCommandSchema),
+  policyDigest: digestSchema,
+  recordedAt: timestampSchema
+}).strict();
+export type CheckAmendment = z.infer<typeof checkAmendmentSchema>;
+
 export const coordinatorConfigSchema = z
   .object({
     project: z.string().min(1),
@@ -294,7 +283,8 @@ export const coordinatorConfigSchema = z
           .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "context path must be confined")
       )
       .default([]),
-    checks: z.array(checkCommandSchema).min(1),
+    checks: z.array(checkCommandSchema),
+    adoptedChecks: z.array(adoptedCheckSchema).optional(),
     pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000),
     toolchain: z.string().min(1).optional(),
     verify: verifyConfigSchema.optional(),
@@ -390,7 +380,7 @@ export const workspaceDeclarationSchema = z
     verification: verificationPolicySchema.optional(),
     workflowCriticalPrefixes: z.array(pathTokenSchema).optional(),
     workflowCriticalFiles: z.array(pathTokenSchema).optional(),
-    checks: z.array(checkCommandSchema).min(1).optional(),
+    checks: z.array(checkCommandSchema).optional(),
     branch: z
       .string()
       .refine((value) => value.includes("{issue}") && value.includes("{agent}"))
@@ -462,7 +452,9 @@ export const startStateSchema = z
     agents: z.array(agentConfigSchema).min(1),
     /** Observed after fresh-start updates, before launch; absent on older runs. */
     agentVersions: z.record(agentIdSchema, z.string().trim().min(1).nullable()).optional(),
-    checks: z.array(checkCommandSchema).min(1),
+    checks: z.array(checkCommandSchema),
+    verify: verifyConfigSchema.optional(),
+    pendingChecks: z.array(z.string()).optional(),
     pollIntervalMs: z.number().int().min(100).max(60_000),
     documentation: documentationProfileSchema.optional(),
     /**
@@ -632,6 +624,8 @@ export const acceptedSubmissionSchema = z
     round: z.number().int().min(1).nullable(),
     submissionSha: gitShaSchema,
     productPin: gitShaSchema.optional(),
+    checkProposal: checkProposalSchema.optional(),
+    policyDigest: digestSchema.optional(),
     followUp: followUpEvidenceSchema.optional(),
     disposition: z.enum(["approve", "revise", "escalate"]).optional(),
     approvedPaths: z.array(z.string().min(1)).optional(),
@@ -815,6 +809,7 @@ export const cursorsStateSchema = z
     amendmentSequence: z.number().int().nonnegative().default(0),
     pendingAmendment: pendingAmendmentSchema.nullable().default(null),
     amendments: z.array(amendmentDecisionSchema).default([]),
+    checkAmendments: z.array(checkAmendmentSchema).optional(),
     // Durable cleanup intent: never delete an old request before its transition is saved.
     amendmentRetirements: z.array(z.object({ agent: agentIdSchema, actionId: z.string().uuid() }).strict()).default([]),
     ownerQuestion: z
@@ -869,6 +864,7 @@ export const cursorsStateSchema = z
 
 const journalEventTypeSchema = z.enum([
   "started",
+  "check-amendment-recorded",
   "action-prepared",
   "nudged",
   "agent-lifecycle",

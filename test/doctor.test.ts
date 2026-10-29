@@ -1,9 +1,10 @@
 import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeCloneAgentsProtocol } from "../src/agentsProtocol.js";
 import { DOCTOR_CODES, doctor, inspectStartupAgent, renderDoctorReport } from "../src/doctor.js";
-import { readConfig, type StartState } from "../src/state.js";
+import { initializeOperationalState, readConfig, writeCursorsState, type StartState } from "../src/state.js";
+import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import { install } from "../src/install.js";
 import {
   declaredChecks,
@@ -59,6 +60,40 @@ const editConfig = (configPath: string, mutate: (config: Record<string, unknown>
 };
 
 describe("coord doctor", () => {
+  it.each(["local", "coordinator"] as const)("inspects the active %s policy after saved settings change", (mode) => {
+    const { fixture, clone, configPath } = installed();
+    const config = readConfig(configPath);
+    const paths = issueRuntimePaths(dirname(configPath), 161, join(fixture.workspaceRoot, "completes"));
+    createIssueRuntime(paths, ["claude"]);
+    const { start, cursors } = initializeOperationalState(paths, {
+      issue: 161, issueSessionId: `issue-161:${"a".repeat(40)}`, baselineSha: "a".repeat(40),
+      profile: "solo", originalRoster: ["claude"], branchTemplate: config.branch,
+      baseBranch: config.baseBranch, maxRevisionRounds: 3, prPolicy: "owner-only",
+      automationDigest: "b".repeat(64), automationDigestScheme: "sha256-length-prefixed-v1",
+      automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }], trustedSourceCommit: "c".repeat(40),
+      origin: config.origin, coordRoot: dirname(configPath), configPath, agents: config.agents,
+      checks: [{ name: "frozen-final", argv: ["missing-frozen-check-261"] }],
+      verify: mode === "local" ? passingVerify : { precommit: [{ name: "unused-local", argv: ["unused-local-check-261"] }], prepush: [] },
+      ...(mode === "coordinator" ? { verification: { mode, coordinated: passingVerify, maxConcurrentExpensive: 1,
+        candidate: { checks: declaredChecks, covers: { prefixes: [], files: [] }, rules: [] } } } : {}),
+      pollIntervalMs: 100
+    });
+    git(clone, "checkout", "-qb", "issue-161/claude");
+    editConfig(configPath, (saved) => {
+      saved.checks = [];
+      saved.verify = { precommit: [{ name: "future", argv: ["missing-future-check-261"] }], prepush: [] };
+    });
+    const active = report(fixture).findings.filter((entry) => entry.class === "toolchain");
+    expect(active.map((entry) => entry.subject)).toEqual(["missing-frozen-check-261"]);
+    expect(active[0]?.message).toContain("Active issue 161");
+    const startup = inspectStartupAgent(start, config.agents[0]!).join("\n");
+    expect(startup).toContain("missing-frozen-check-261");
+    expect(startup).not.toMatch(/missing-future|unused-local/);
+    writeCursorsState(paths, { ...cursors, completed: true });
+    expect(report(fixture).findings.filter((entry) => entry.class === "toolchain").map((entry) => entry.subject))
+      .toEqual(["missing-future-check-261"]);
+  });
+
   it("reuses installation checks for startup without claiming runtime trust", () => {
     const { clone, configPath } = installed();
     const agent = readConfig(configPath).agents[0]!;
@@ -214,10 +249,11 @@ describe("coord doctor", () => {
     expect(findings.find((item) => item.class === "toolchain")?.subject).toBe("definitely-not-a-real-binary-xyz");
   });
 
-  it("reports an undeclared verify, which would block every agent commit", () => {
-    // A tree with no recognisable ecosystem gets no proposed verify either,
-    // so nothing quietly fills the gap.
-    const { fixture } = installed({ checks: declaredChecks }, "plain");
+  it("accepts intentional empty local checks but reports truly undeclared verify", () => {
+    const { fixture, configPath } = installed({ checks: declaredChecks }, "plain");
+    expect(readConfig(configPath).verify).toEqual({ precommit: [], prepush: [] });
+    expect(report(fixture).findings.map((item) => item.code)).not.toContain(DOCTOR_CODES.verifyUndeclared);
+    editConfig(configPath, (config) => { delete config.verify; });
     expect(report(fixture).findings.map((item) => item.code)).toContain(DOCTOR_CODES.verifyUndeclared);
   });
 

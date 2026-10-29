@@ -196,5 +196,9 @@ export const renderArtifactScaffold = (ctx: ArtifactScaffoldContext): string => 
     ? "\n\nThis revision concluded at the three-revision limit with objections recorded in linked follow-up issues. " +
       "It was not unanimously approved. The legacy consensusSha field names the exact authorized final revision; only the usual current-issue cleanup is permitted."
     : "";
-  return filing + conclusion + preamble + "```json\n" + `${json}\n` + "```" + request;
+  const checks = ["R4.implement", "R6.revise"].includes(ctx.stepId)
+    ? '\n\nWhen adding a new build/test entry point, optionally add "checkProposal" to this signal: { "implementationCommitSha": "<the product pin in this signal>", "commands": [{ "name": "<new check name>", "argv": ["<executable>", "<argument>"] }], "entryPointPaths": ["<tracked script or metadata path>"], "description": "<what these ordered commands check>" }. Use commands only to add requirements; do not remove or replace required checks. Existing commands automatically pick up new test cases. Review the bound proposal signals along with their code. Pending proposals carry through revisions when omitted; an explicit proposal for the same entry-point paths corrects that pending proposal before adoption. Coordination runs accepted additions before publication and saves them for eligible future issues; agents must not edit runtime settings.\n'
+    : '';
+  const reviewChecks = ctx.inputs.some((input) => input.kind === "check-proposal") ? "\n\nReview each bound check-proposal signal with its product code. The normal review decision authorizes these additional commands for final verification and eligible future issues.\n" : "";
+  return reviewChecks + checks + filing + conclusion + preamble + "```json\n" + `${json}\n` + "```" + request;
 };

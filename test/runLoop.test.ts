@@ -3513,7 +3513,11 @@ describe("coordinator verification gates", () => {
       }) }));
     const calls: string[] = [];
     let failing: string | null = null;
-    const processRunner = async (argv: readonly string[]) => {
+    const processRunner = async (argv: readonly string[], cwd: string) => {
+      if (argv[0] === "native") {
+        expect(cwd).not.toBe(seed);
+        expect(readFileSync(join(cwd, "src/a.ts"), "utf8")).toBe("implementation\n");
+      }
       calls.push(argv[0]!);
       if (argv[0] === "probe") return { exitCode: 0, stdout: "probe 1.0\n", stderr: "" };
       return argv[0] === failing ? { exitCode: 1, stdout: "", stderr: `${argv[0]} broke` } : { exitCode: 0, stdout: "ok", stderr: "" };
@@ -3526,6 +3530,72 @@ describe("coordinator verification gates", () => {
     };
     return { paths, calls, loop, observe, implementationPin, consensusSha, finalSha, fail: (name: string | null) => { failing = name; } };
   };
+
+  it.each(["solo", "reviewed", "consensus"] as const)("adopts checks and retries saving before publication in %s", async (profile) => {
+    const gate = gateFixture("local");
+    const start = { ...readStartState(gate.paths), profile, checks: [], origin: "https://github.com/example/project.git" };
+    writeFileSync(gate.paths.start, JSON.stringify(start));
+    seedPendingPublication(gate.paths, gate.finalSha);
+    let cursors = readCursorsState(gate.paths);
+    cursors.activeRoster = profile === "solo" ? ["codex"] : ["claude", "codex"];
+    cursors.derived.implementationSelection!.implementationPin = gate.implementationPin;
+    const proposal = { implementationCommitSha: gate.implementationPin, commands: [{ name: "native", argv: ["native"] }], entryPointPaths: ["src/a.ts"], description: "Native regression" };
+    cursors.accepted = [
+      { stepId: "R4.implement", agent: "claude", round: null, submissionSha: gate.implementationPin, productPin: gate.implementationPin, path: ".signals/issue-1/implementation-ready-claude.json", acceptedAt: cursors.updatedAt, checkProposal: { ...proposal, commands: [{ name: "losing", argv: ["must-not-run"] }] } },
+      { stepId: "R4.implement", agent: "codex", round: null, submissionSha: gate.implementationPin, productPin: gate.implementationPin,
+        path: ".signals/issue-1/implementation-ready-codex.json", acceptedAt: cursors.updatedAt, checkProposal: proposal },
+      ...cursors.accepted];
+    const common = { inputSetHash: "b".repeat(64), activeRoster: cursors.activeRoster, supersedes: null, decidedAt: cursors.updatedAt };
+    if (profile === "consensus") {
+      const revision = { stepId: "R6.revise" as const, agent: "codex", round: 1, submissionSha: gate.consensusSha, productPin: gate.consensusSha,
+        path: ".signals/issue-1/revision-ready-codex.json", acceptedAt: cursors.updatedAt };
+      cursors.accepted.push(revision);
+      cursors.derived.consensus = { ...common, kind: "consensus", algorithm: "unanimous-active-roster-v1", round: 1,
+        decisionId: `consensus:${common.inputSetHash}:r1`, consensusPin: gate.consensusSha,
+        inputs: [{ kind: "revision", agent: revision.agent, submissionSha: revision.submissionSha, productPin: revision.productPin, path: revision.path }] };
+    } else {
+      cursors.derived.implementationSelection = null;
+      if (profile === "reviewed") cursors.derived.planSelection = { ...common, kind: "plan-selection", algorithm: "plurality-active-roster-v1",
+        decisionId: `plan-selection:${common.inputSetHash}`, selectedAgents: ["codex"],
+        inputs: [{ kind: "plan", agent: "codex", submissionSha: gate.implementationPin, path: ".plans/issue-1/plan.md" }] };
+    }
+    writeCursorsState(gate.paths, cursors);
+    const order = buildOrder(gate.paths, start, cursors, "codex", "R7.finalize", null);
+    expect(order.inputs.find((input) => input.kind === "consensus")?.commitSha)
+      .toBe(profile === "consensus" ? gate.consensusSha : gate.implementationPin);
+    const observation = { agent: "codex", actionId: order.actionId, submissionSha: gate.finalSha, productPin: gate.finalSha, status: "satisfied" as const, outstanding: [] };
+    const frozenBytes = readFileSync(gate.paths.start, "utf8");
+    const loop = gate.loop();
+    cursors = await loop["prepareCheckAmendment"](start, order, observation, cursors);
+    expect(cursors.checkAmendments).toHaveLength(1);
+    expect(cursors.checkAmendments![0]!.commands).toEqual(proposal.commands);
+    expect(readFileSync(gate.paths.start, "utf8")).toBe(frozenBytes);
+    expect(await gate.loop()["prepareCheckAmendment"](start, order, observation, cursors)).toEqual(cursors);
+    gate.fail("native");
+    expect((await loop.verifyFinalizationChecks(start, order, observation, cursors)).status).toBe("rejected");
+    gate.fail(null);
+    const verified = await gate.loop().verifyFinalizationChecks(start, order, observation, cursors);
+    expect(verified).toMatchObject({ status: "satisfied", policyDigest: cursors.checkAmendments![0]!.policyDigest });
+    const final = cursors.accepted.find((entry) => entry.stepId === "R7.finalize")!;
+    final.policyDigest = verified.policyDigest;
+    final.checkResults = verified.checkResults?.map((result) => ({ ...result, argv: [...result.argv] }));
+    writeCursorsState(gate.paths, cursors);
+    const mirror = new BareMirror(gate.paths.mirror, start.origin);
+    let pushes = 0;
+    mirror.publishBranch = async () => { pushes++; };
+    const publishLoop = () => new CoordinatorRunLoop(gate.paths, { tmux: null, mirror,
+      pullRequestOpener: async () => ({ url: "https://github.com/example/project/pull/1" }) });
+    // Missing config must leave a reachable retry; no branch or PR is published.
+    const failed = await publishLoop().runTick();
+    expect(failed.publication).toMatchObject({ status: "failed", error: expect.stringContaining("config missing") });
+    expect(pushes).toBe(0);
+    writeFileSync(start.configPath, JSON.stringify({ project: "fixture", origin: start.origin, agents: start.agents,
+      branch: start.branchTemplate, checks: [], verify: { precommit: [], prepush: [] }, pollIntervalMs: 4321 }));
+    const completed = await publishLoop().runTick();
+    expect(completed.publication.status).toBe("completed");
+    expect(pushes).toBe(1);
+    expect(stateModule.readConfig(start.configPath)).toMatchObject({ pollIntervalMs: 4321, checks: [], adoptedChecks: [expect.objectContaining({ proposal })] });
+  });
 
   it("rejects a failing candidate with its command and log, and fails again after a restart", async () => {
     const gate = gateFixture("coordinator");

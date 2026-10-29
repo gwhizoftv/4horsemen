@@ -1,3 +1,6 @@
+import { resolveHookBinding } from "../src/hookPolicy.js";
+import { activateCheckAdditions, recordCheckAddition, persistCheckAdditions } from "../src/checkAmendments.js";
+import { coordinatorConfigSchema } from "../src/state.js";
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 
@@ -2377,4 +2380,64 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     ).toBe(0);
     expect(JSON.parse(output.join(""))).toEqual({ decision: "allow" });
   });
+});
+
+it("activates adopted commands from code evidence, not an old manifest's pathname", () => {
+  const fixture = makeProduct("plain"); productFixtures.push(fixture);
+  const root = fixture.productRoot;
+  writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: {} }));
+  fixtureGit(root, "add", "."); fixtureGit(root, "commit", "-qm", "manifest before tests");
+  const baseline = fixtureGit(root, "rev-parse", "HEAD");
+  writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { "test:native": "node native.js" } }));
+  fixtureGit(root, "commit", "-qam", "new native entry point");
+  const pin = fixtureGit(root, "rev-parse", "HEAD");
+  const proposal = { implementationCommitSha: pin, commands: [{ name: "native", argv: ["npm", "run", "test:native"] }], entryPointPaths: ["package.json"], description: "Native suite" };
+  const addition = recordCheckAddition(root, 1, proposal);
+  const config = coordinatorConfigSchema.parse({ project: "test", origin: "/origin", agents: [{ id: "codex", root, launcher: "start-codex.sh" }], branch: "issue-{issue}/{agent}", checks: [], verify: { precommit: [], prepush: [] }, adoptedChecks: [addition] });
+  expect(activateCheckAdditions(root, baseline, config)).toMatchObject({ checks: [], pending: [expect.stringContaining("does not yet prove")] });
+  expect(activateCheckAdditions(root, pin, config).checks).toEqual(proposal.commands);
+  const coord = join(fixture.workspaceRoot, "coord-runtime"); mkdirSync(coord);
+  const path = join(coord, "config.json"); writeFileSync(path, JSON.stringify({ ...config, adoptedChecks: [] }));
+  persistCheckAdditions(path, [addition]); persistCheckAdditions(path, [addition]);
+  expect(readConfig(path).adoptedChecks).toHaveLength(1);
+  const changed = { ...readConfig(path), pollIntervalMs: 4321 }; writeFileSync(path, JSON.stringify(changed));
+  persistCheckAdditions(path, [addition]); expect(readConfig(path).pollIntervalMs).toBe(4321);
+  fixtureGit(root, "checkout", "-qb", "squashed", baseline);
+  writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { "test:native": "node native.js" } }));
+  fixtureGit(root, "commit", "-qam", "squashed entrypoint");
+  const squash = fixtureGit(root, "rev-parse", "HEAD");
+  const witnessed = activateCheckAdditions(root, squash, config);
+  expect(witnessed.checks).toEqual(proposal.commands);
+  persistCheckAdditions(path, witnessed.active);
+  writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { "test:native": "node native.js", build: "build" } }));
+  fixtureGit(root, "commit", "-qam", "later manifest edit");
+  expect(activateCheckAdditions(root, fixtureGit(root, "rev-parse", "HEAD"), readConfig(path)).checks).toEqual(proposal.commands);
+  fixtureGit(root, "checkout", "-");
+  fixtureGit(root, "rm", "package.json"); fixtureGit(root, "commit", "-qm", "remove entrypoint");
+  expect(() => activateCheckAdditions(root, fixtureGit(root, "rev-parse", "HEAD"), config)).toThrow(/entry point was removed/);
+});
+
+it("freezes local hooks for a running issue when saved settings change", async () => {
+  const f = setup();
+  const configPath = join(f.runtime, "config.json"); mkdirSync(f.runtime);
+  const config = JSON.parse(readFileSync(f.configPath, "utf8"));
+  for (const agent of config.agents) agent.root = join(f.root, agent.root);
+  config.verify = { precommit: [{ name: "old", argv: ["true"] }], prepush: [] };
+  writeFileSync(configPath, JSON.stringify(config));
+  expect(await runCli(["start", "1", "--profile", "solo", "--config", configPath, "--coord-runtime", f.runtime], {
+    makeRunLoop: fakeLoop, processRunner: successfulStartGit, io: { stdout: () => undefined }
+  })).toBe(0);
+  const clone = join(f.root, "clone-codex");
+  fixtureGit(clone, "init", "-q", "--initial-branch=issue-1/codex");
+  fixtureGit(clone, "config", "consensus.agentId", "codex");
+  const frozen = readStartState(issueRuntimePaths(f.runtime, 1));
+  expect(frozen.verify).toEqual(config.verify);
+  config.verify = { precommit: [{ name: "new", argv: ["false"] }], prepush: [] };
+  writeFileSync(configPath, JSON.stringify(config));
+  expect(resolveHookBinding({ clone, configPath, phase: "precommit" })).toMatchObject({ bound: true, kind: "frozen", commands: frozen.verify });
+  rmSync(join(clone, ".git"), { recursive: true, force: true });
+  expect(await runCli(["start", "2", "--profile", "solo", "--config", configPath, "--coord-runtime", f.runtime], {
+    makeRunLoop: fakeLoop, processRunner: successfulStartGit, io: { stdout: () => undefined }
+  })).toBe(0);
+  expect(readStartState(issueRuntimePaths(f.runtime, 2)).verify).toEqual(config.verify);
 });

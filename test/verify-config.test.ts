@@ -1,3 +1,4 @@
+import { discoverProjectChecks, chooseProjectChecks, parseCheckCommand, resolveProjectChecks, settingsForChecks } from "../src/projectChecks.js";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, matchesGlob } from "node:path";
@@ -275,7 +276,7 @@ describe("installer proposals", () => {
       }
       expect(classifyChanges(changes(["README.md", "docs/build.ts"]), configured).kind).toBe("product");
       expect(classifyChanges(changes(["docs/untracked.md"]), configured).kind).toBe("product");
-      expect(() => config({ checks: [] })).toThrow();
+      expect(config({ checks: [] }).checks).toEqual([]);
     } finally {
       fixture.cleanup();
     }
@@ -630,4 +631,89 @@ describe("managed ignore block", () => {
     expect(() => removeManagedBlock(truncated)).toThrow(ManagedBlockError);
     expect(() => applyManagedBlock(truncated, ["/start-*.sh"])).toThrow(/end marker/);
   });
+});
+
+describe("guided project checks", () => {
+  const tree = (files: Record<string, string>, run: (root: string) => void) => {
+    const root = mkdtempSync(join(tmpdir(), "coord-check-discovery-"));
+    try {
+      for (const [path, content] of Object.entries(files)) { mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), content); }
+      run(root);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  };
+  it("labels native evidence, resolves preset inheritance, and requires a choice among plans without execution", () => {
+    tree({
+      "scripts/check.sh": "#!/bin/sh\ntouch SHOULD-NOT-EXIST\n",
+      "tests/MusicDocumentTests.cpp": "// tests",
+      "CMakePresets.json": JSON.stringify({ version: 4, include: ["cmake/base.json"],
+        configurePresets: [{ name: "dev", inherits: "base" }], buildPresets: [{ name: "build", configurePreset: "dev" }],
+        testPresets: [{ name: "test", configurePreset: "dev" }] }),
+      "cmake/base.json": JSON.stringify({ configurePresets: [{ name: "base", hidden: true, binaryDir: "${sourceDir}/build/dev" }] })
+    }, (root) => {
+      const discovery = discoverProjectChecks(root);
+      expect(discovery.evidence.join("\n")).toContain("tests/MusicDocumentTests.cpp");
+      expect(discovery.plans[1]?.commands.map((command) => command.argv)).toEqual([
+        ["cmake", "--preset", "dev"], ["cmake", "--build", "--preset", "build"],
+        ["ctest", "--preset", "test", "--output-on-failure", "--no-tests=error"]
+      ]);
+      expect(() => resolveProjectChecks(root, null, null)).toThrow(/Ambiguous/);
+      expect(readdirSync(root)).not.toContain("SHOULD-NOT-EXIST");
+    });
+  });
+  it("requires Xcode destination and preserves project/scheme arguments with spaces", () => {
+    tree({ "My App.xcodeproj/xcshareddata/xcschemes/My Tests.xcscheme": '<Scheme><TestAction buildConfiguration="Debug"><Testables><TestableReference skipped="NO"/></Testables></TestAction></Scheme>' }, (root) => {
+      const plan = discoverProjectChecks(root).plans[0]!;
+      expect(plan.source).toContain("My Tests.xcscheme");
+      expect(plan.commands[0]?.argv).toContain("My Tests");
+      expect(plan.unresolved).toEqual(["destination"]);
+      expect(() => resolveProjectChecks(root, null, null)).toThrow(/destination/);
+    });
+  });
+  it("distinguishes build-only, no checks, saved empty settings and malformed metadata", () => {
+    tree({ "Package.swift": "let package = Package(name: \"Empty\")" }, (root) => {
+      expect(resolveProjectChecks(root, null, null).checks).toEqual([{ name: "build", argv: ["swift", "build"] }]);
+      const saved = config({ checks: [], verify: { precommit: [], prepush: [] } });
+      expect(resolveProjectChecks(root, null, saved).checks).toEqual([]);
+    });
+    tree({}, (root) => expect(resolveProjectChecks(root, null, null)).toEqual({ checks: [], verify: { precommit: [], prepush: [] } }));
+    tree({ "package.json": "{" }, (root) => expect(() => resolveProjectChecks(root, null, null)).toThrow(/Invalid project metadata/));
+  });
+  it("tokenizes arguments without expansion and rejects incomplete commands", () => {
+    expect(parseCheckCommand('tool "two words" \'\' path\\ with\\ spaces')).toEqual(["tool", "two words", "", "path with spaces"]);
+    for (const text of ["echo $(touch bad)", "a | b", "a; b", 'a "unterminated', "a\\"]) expect(() => parseCheckCommand(text)).toThrow();
+    expect(parseCheckCommand("sh -c 'echo hello | cat'")).toEqual(["sh", "-c", "echo hello | cat"]);
+    expect(parseCheckCommand(String.raw`python3 -c "import re; assert re.fullmatch(r'\d+', '123')"`))
+      .toEqual(["python3", "-c", String.raw`import re; assert re.fullmatch(r'\d+', '123')`]);
+    expect(parseCheckCommand(String.raw`tool "a\"b" "a\\b" "\$literal"`))
+      .toEqual(["tool", 'a"b', "a\\b", "$literal"]);
+  });
+  it.each(["Before each agent commit", "Before opening a pull request", "Both"])("maps %s without adding a push gate", (timing) => {
+    const commands = [{ name: "build", argv: ["tool", "two words"] }];
+    const settings = settingsForChecks(commands, timing);
+    expect(settings.verify?.prepush).toEqual([]);
+    expect(settings.verify?.precommit.length).toBe(timing === "Before opening a pull request" ? 0 : 1);
+    expect(settings.checks.length).toBe(timing === "Before each agent commit" ? 0 : 1);
+  });
+  it("skips timing for intentional no checks and preserves saved settings on cancel", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-check-menu-"));
+    try {
+      let questions = 0;
+      const result = await chooseProjectChecks(root, null, null, { choose: async () => { questions++; return "Continue without automated checks for now"; }, ask: async () => null, print: () => {} });
+      expect(questions).toBe(1); expect(result.checks).toEqual([]);
+      await expect(chooseProjectChecks(root, null, config(), { choose: async () => null, ask: async () => null, print: () => {} })).rejects.toThrow(/cancelled/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+it("keeps saved choices and explicitly changes commands with quoted arguments", async () => {
+  const root = mkdtempSync(join(tmpdir(), "coord-check-edit-"));
+  const saved = config({ checks: [], verify: { precommit: [], prepush: [] } });
+  try {
+    const kept = await chooseProjectChecks(root, null, saved, { choose: async () => "Keep these settings", ask: async () => { throw new Error("unexpected command question"); }, print: () => {} });
+    expect(kept).toMatchObject({ checks: [], changed: false });
+    const answers = ["Change settings", "Enter another build or test command", "Both"];
+    const commands = ['tool "two words"', ""];
+    const changed = await chooseProjectChecks(root, null, saved, { choose: async () => answers.shift()!, ask: async () => commands.shift()!, print: () => {} });
+    expect(changed).toMatchObject({ changed: true, checks: [{ name: "check-1", argv: ["tool", "two words"] }], verify: { precommit: [{ name: "check-1", argv: ["tool", "two words"] }], prepush: [] } });
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
