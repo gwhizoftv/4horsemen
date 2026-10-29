@@ -19,13 +19,15 @@ import {
   artifactCitationSchema,
   planAmendmentRequestSchema,
   agentIdSchema,
+  checkProposalSchema,
   citationDigestSchema,
   digestSchema,
   gitShaSchema,
   followUpEvidenceSchema,
   issueSchema,
   issueSessionIdSchema,
-  repositoryPathSchema
+  repositoryPathSchema,
+  type CheckProposal
 } from "./protocol.js";
 import { githubLoginSchema } from "./githubAuth.js";
 import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.js";
@@ -268,6 +270,23 @@ export const agentConfigSchema = z
   })
   .strict();
 
+/**
+ * A check adoption persisted for future issues (#261). Written only by
+ * coordination, after the proposed commands passed at the reviewed pin.
+ * A later issue activates a record only when every entry point exists at
+ * that issue's starting baseline, so an unmerged test cannot break it.
+ */
+export const adoptedCheckSchema = z
+  .object({
+    commands: z.array(checkCommandSchema).min(1),
+    entryPointPaths: z.array(repositoryPathSchema).min(1),
+    purpose: z.string().trim().min(1),
+    sourceIssue: issueSchema,
+    sourcePin: gitShaSchema,
+    adoptedAt: timestampSchema
+  })
+  .strict();
+
 export const coordinatorConfigSchema = z
   .object({
     project: z.string().min(1),
@@ -294,7 +313,10 @@ export const coordinatorConfigSchema = z
           .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "context path must be confined")
       )
       .default([]),
-    checks: z.array(checkCommandSchema).min(1),
+    // Empty is the recorded "no automated checks yet" state (#261); absent
+    // would be undeclared. Only install/onboard writes it, never a proposal.
+    checks: z.array(checkCommandSchema),
+    adoptedChecks: z.array(adoptedCheckSchema).default([]),
     pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000),
     toolchain: z.string().min(1).optional(),
     verify: verifyConfigSchema.optional(),
@@ -390,7 +412,9 @@ export const workspaceDeclarationSchema = z
     verification: verificationPolicySchema.optional(),
     workflowCriticalPrefixes: z.array(pathTokenSchema).optional(),
     workflowCriticalFiles: z.array(pathTokenSchema).optional(),
-    checks: z.array(checkCommandSchema).min(1).optional(),
+    // Explicit [] is the owner's recorded no-checks choice (#261); omitting
+    // the field keeps detection/saved settings in charge.
+    checks: z.array(checkCommandSchema).optional(),
     branch: z
       .string()
       .refine((value) => value.includes("{issue}") && value.includes("{agent}"))
@@ -462,7 +486,11 @@ export const startStateSchema = z
     agents: z.array(agentConfigSchema).min(1),
     /** Observed after fresh-start updates, before launch; absent on older runs. */
     agentVersions: z.record(agentIdSchema, z.string().trim().min(1).nullable()).optional(),
-    checks: z.array(checkCommandSchema).min(1),
+    // Frozen effective final checks (config + activated adoptions). Empty is
+    // the recorded no-checks state; see coordinatorConfigSchema.
+    checks: z.array(checkCommandSchema),
+    /** Frozen local hook lists (#261); absent on runs started before freezing. */
+    verify: verifyConfigSchema.optional(),
     pollIntervalMs: z.number().int().min(100).max(60_000),
     documentation: documentationProfileSchema.optional(),
     /**
@@ -625,6 +653,26 @@ export const derivedStateSchema = z
   })
   .strict();
 
+/**
+ * Coordinator-owned record of an accepted additive check proposal (#261).
+ * Recorded before the effective commands run, so a restart re-derives the
+ * same policy instead of losing or duplicating the addition.
+ */
+export const checkAmendmentSchema = z
+  .object({
+    id: z.string().uuid(),
+    consensusPin: gitShaSchema,
+    agent: agentIdSchema,
+    submissionSha: gitShaSchema,
+    proposal: checkProposalSchema,
+    effectiveChecks: z.array(checkCommandSchema),
+    policyDigest: digestSchema,
+    status: z.enum(["recorded", "verified", "adopted"]),
+    recordedAt: timestampSchema,
+    adoptedAt: timestampSchema.optional()
+  })
+  .strict();
+
 export const acceptedSubmissionSchema = z
   .object({
     stepId: stepIdSchema,
@@ -632,6 +680,10 @@ export const acceptedSubmissionSchema = z
     round: z.number().int().min(1).nullable(),
     submissionSha: gitShaSchema,
     productPin: gitShaSchema.optional(),
+    /** Validated additive check proposal carried by this submission (#261). */
+    checkProposal: checkProposalSchema.optional(),
+    /** Effective-policy digest the accepted final check results were bound to. */
+    checkPolicyDigest: digestSchema.optional(),
     followUp: followUpEvidenceSchema.optional(),
     disposition: z.enum(["approve", "revise", "escalate"]).optional(),
     approvedPaths: z.array(z.string().min(1)).optional(),
@@ -861,6 +913,8 @@ export const cursorsStateSchema = z
     completed: z.boolean(),
     agents: z.record(agentIdSchema, agentCursorSchema),
     accepted: z.array(acceptedSubmissionSchema),
+    /** Additive check amendments recorded at finalization (#261). */
+    checkAmendments: z.array(checkAmendmentSchema).default([]),
     acceptedResponses: z.array(acceptedResponseSchema),
     ballotBatches: z.array(ballotBatchSchema),
     updatedAt: timestampSchema
@@ -910,7 +964,9 @@ const journalEventTypeSchema = z.enum([
   "ballot-batch-invalidated",
   "clone-readiness-refused",
   "amendment-requested",
-  "amendment-decided"
+  "amendment-decided",
+  "check-amendment-recorded",
+  "checks-adopted"
 ]);
 
 export const journalEventSchema = z
@@ -940,6 +996,9 @@ export type WorkspaceDeclaration = z.infer<typeof workspaceDeclarationSchema>;
 export type StartState = z.infer<typeof startStateSchema>;
 export type StartStateHeader = z.infer<typeof startStateHeaderSchema>;
 export type AgentCursor = z.infer<typeof agentCursorSchema>;
+export type AdoptedCheck = z.infer<typeof adoptedCheckSchema>;
+export type CheckAmendment = z.infer<typeof checkAmendmentSchema>;
+export type { CheckProposal };
 export type AcceptedSubmission = z.infer<typeof acceptedSubmissionSchema>;
 export type AcceptedResponse = z.infer<typeof acceptedResponseSchema>;
 export type BallotBatch = z.infer<typeof ballotBatchSchema>;
@@ -951,7 +1010,7 @@ export type ConsensusDerived = z.infer<typeof consensusDerivedSchema>;
 export type DerivedState = z.infer<typeof derivedStateSchema>;
 // Preserve source compatibility for clients constructing pre-amendment state;
 // durable reads still validate and fill the new defaults with the schema.
-type AmendmentStateKeys = "amendmentSequence" | "pendingAmendment" | "amendments" | "amendmentRetirements" | "ownerGuidance";
+type AmendmentStateKeys = "amendmentSequence" | "pendingAmendment" | "amendments" | "amendmentRetirements" | "ownerGuidance" | "checkAmendments";
 export type CursorsState = Omit<z.infer<typeof cursorsStateSchema>, AmendmentStateKeys> &
   Partial<Pick<z.infer<typeof cursorsStateSchema>, AmendmentStateKeys>>;
 export type JournalEvent = z.infer<typeof journalEventSchema>;

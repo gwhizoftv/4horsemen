@@ -30,6 +30,11 @@ import { assertRequiredArtifact, renderHookScope, resolveHookBinding, resolveWor
 import { inspectOutgoingChanges, inspectStagedChanges } from "./changeClassification.js";
 import { hookVerificationRecorder } from "./verificationLog.js";
 import { DEFAULT_AGENTS, install, onboard, packageVersion, savedGitHubAccount, uninstall } from "./install.js";
+import {
+  describeCheckOutcome, discoverChecks, NO_CHECKS_MESSAGE, parseCommandLine, settingsForTiming,
+  type CheckTiming
+} from "./projectChecks.js";
+import { eligibleAdoptedChecks } from "./checkAmendments.js";
 import { BareMirror } from "./mirror.js";
 import { localConfigGet, worktreeRoot } from "./gitExec.js";
 import { makeAgentClonesBaseReady, makeManualClonesBaseReady, prepareAgentIssueBranches, type CloneBaseReadyResult } from "./prepareAgentBranch.js";
@@ -64,8 +69,10 @@ import {
   readStartStateHeader,
   replaceCursor,
   verifyPhaseSchema,
+  type CheckCommand,
   type CoordinatorConfig,
-  type CursorsState
+  type CursorsState,
+  type VerifyConfig
 } from "./state.js";
 import { type WorkflowProfile } from "./steps.js";
 import { applyOwnerAnswer, clearAgentLocalWork, dropOwnerAgent, invalidateUnpublishedBatches,
@@ -133,6 +140,8 @@ export type CliDependencies = {
   confirm?: (question: string) => Promise<boolean>;
   /** Test/embedding override for an owner menu choice; the default returns null without a TTY. */
   choose?: (question: string, choices: readonly string[]) => Promise<string | null>;
+  /** Test/embedding override for one line of owner input; the default returns null without a TTY. */
+  askLine?: (question: string) => Promise<string | null>;
   /** Test/embedding override for an owner-attended command sharing this terminal (gh auth login). */
   interactive?: (argv: readonly string[], cwd: string) => Promise<number>;
 };
@@ -540,6 +549,16 @@ const defaultChoose = async (question: string, choices: readonly string[]): Prom
   }
 };
 
+const defaultAskLine = async (question: string): Promise<string | null> => {
+  if (process.env.VITEST !== undefined || process.stdin.isTTY !== true || process.stdout.isTTY !== true) return null;
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await prompt.question(`${question} `);
+  } finally {
+    prompt.close();
+  }
+};
+
 const defaultInteractive = (argv: readonly string[], cwd: string): Promise<number> =>
   new Promise((resolvePromise, reject) => {
     const [command, ...args] = argv;
@@ -873,6 +892,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
 
   const confirm = dependencies.confirm ?? defaultConfirm;
   const choose = dependencies.choose ?? defaultChoose;
+  const askLine = dependencies.askLine ?? defaultAskLine;
   const interactive = dependencies.interactive ?? defaultInteractive;
 
   /**
@@ -940,6 +960,71 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       throw new Error(`Signed in as ${signedIn}, but this workspace uses ${expected}. Run coord auth login again and sign in as ${expected}.`);
     }
     return signedIn;
+  };
+
+  /**
+   * Guided build/test check selection (#261). Returns undefined when no
+   * interactive choice was made (no terminal, or keeping saved settings),
+   * so install's explicit > saved > detected resolution decides instead.
+   * Selection never runs the commands it records.
+   */
+  const selectCheckSettings = async (
+    productRoot: string
+  ): Promise<{ verify: VerifyConfig; checks: CheckCommand[] } | undefined> => {
+    const canChoose = dependencies.choose !== undefined || dependencies.askLine !== undefined ||
+      (process.env.VITEST === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true);
+    if (!canChoose) return undefined;
+    const discovery = discoverChecks(productRoot);
+    const found = [
+      "How do you check that changes to this project are ready?",
+      "",
+      "Found:",
+      ...discovery.evidence.map((entry) => `  ${entry.path}  ${entry.label}`),
+      ...discovery.plans.map((plan) => `  ${plan.source}  ${plan.label}`)
+    ].join("\n");
+    io.stdout(`${found}\n`);
+    const customLabel = "Enter another build or test command";
+    const noneLabel = "Continue without automated checks for now";
+    const choice = await choose("How do you check that changes to this project are ready?",
+      [...discovery.plans.map((plan) => `Use ${plan.label}`), customLabel, noneLabel]);
+    if (choice === null) return undefined;
+    let commands: CheckCommand[] = [];
+    if (choice === noneLabel) {
+      io.stdout(`${NO_CHECKS_MESSAGE}\n`);
+      return settingsForTiming([], "none");
+    }
+    if (choice === customLabel) {
+      for (;;) {
+        const line = await askLine("Build or test command (empty line to finish):");
+        if (line === null || line.trim() === "") break;
+        const argv = parseCommandLine(line);
+        commands.push({ name: argv[0] as string, argv });
+      }
+      if (commands.length === 0) return settingsForTiming([], "none");
+    } else {
+      const plan = discovery.plans.find((entry) => `Use ${entry.label}` === choice);
+      if (plan === undefined) return undefined;
+      commands = plan.commands.map((command) => ({ ...command, argv: [...command.argv] }));
+      for (const unresolved of plan.unresolved) {
+        const answer = await askLine(`Value needed for ${unresolved}:`);
+        if (answer === null || answer.trim() === "") {
+          throw new Error(`Onboarding needs a value for: ${unresolved}. Re-run and provide it, or declare the commands with --declare.`);
+        }
+        if (unresolved.startsWith("destination")) {
+          commands = commands.map((command) => ({ ...command, argv: [...command.argv, "-destination", answer.trim()] }));
+        }
+      }
+    }
+    const timingChoice = await choose("When should these build and test commands run?", [
+      "Before each agent commit",
+      "Before opening a pull request",
+      "Both"
+    ]);
+    const timing: CheckTiming = timingChoice === "Before each agent commit" ? "commit"
+      : timingChoice === "Both" ? "both" : "pr";
+    const settings = settingsForTiming(commands, timing);
+    io.stdout(`${describeCheckOutcome(commands)} — timing: ${timingChoice ?? "Before opening a pull request"}. These commands are recorded, not run now.\n`);
+    return settings;
   };
 
   /** Onboarding asks once, only when neither --github-account nor a saved selection names one. */
@@ -1222,6 +1307,31 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       log: io.stdout
     });
 
+    // Freeze the effective check policy for this issue (#261): configured
+    // checks plus adopted checks whose entry points exist at the baseline.
+    // Re-onboarding later changes only new issues, never this snapshot.
+    const adopted = config.adoptedChecks ?? [];
+    const eligibilityRoot = (roster[0] as CoordinatorConfig["agents"][number]).root;
+    const { active: activeAdopted, pending: pendingAdopted } = adopted.length === 0
+      ? { active: [], pending: [] }
+      : eligibleAdoptedChecks(adopted, eligibilityRoot, parsedBaseline.data);
+    const configuredNames = new Set(config.checks.map((check) => check.name));
+    const effectiveChecks: CheckCommand[] = [...config.checks];
+    for (const record of activeAdopted) {
+      for (const command of record.commands) {
+        if (configuredNames.has(command.name)) {
+          io.stdout(`Adopted check '${command.name}' from issue ${record.sourceIssue} is skipped: a configured check already uses that name.\n`);
+          continue;
+        }
+        configuredNames.add(command.name);
+        effectiveChecks.push(command);
+      }
+    }
+    for (const record of pendingAdopted) {
+      io.stdout(`Adopted check from issue ${record.sourceIssue} stays pending: its entry point is not in this issue's starting code.\n`);
+    }
+    if (effectiveChecks.length === 0) io.stdout(`${NO_CHECKS_MESSAGE}\n`);
+
     // Do this before resumable state exists: attach/recovery must not launch a
     // pane while a fresh-start updater is still replacing its executable.
     const agentVersions = await updateAgentVersions(roster, runner, io);
@@ -1249,11 +1359,12 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         configPath,
         agents: roster,
         agentVersions,
-        checks: config.checks,
+        checks: effectiveChecks,
+        ...(config.verify === undefined ? {} : { verify: config.verify }),
         documentation: config.documentation,
         ...(config.verification === undefined ? {} : {
           verification: config.verification,
-          verificationDigest: sha256(JSON.stringify({ verification: config.verification, checks: config.checks,
+          verificationDigest: sha256(JSON.stringify({ verification: config.verification, checks: effectiveChecks,
             documentation: config.documentation ?? null }))
         }),
         workflowCriticalPrefixes: config.workflowCriticalPrefixes,
@@ -1405,9 +1516,11 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const githubAccount = parsed.flags.get("github-account") ?? saved.account ?? await chooseOnboardAccount();
       if (githubAccount !== undefined) await verifyInstallAccount(githubAccount, productRoot, undefined);
       const baseBranch = await resolveInstallBaseBranch(productRoot, undefined, githubAccount, parsed.flags.get("base-branch"));
+      const checkSettings = parsed.flags.has("declare") ? undefined : await selectCheckSettings(productRoot);
       const result = onboard({
         baseBranch,
         ...(githubAccount === undefined ? {} : { githubAccount }),
+        ...(checkSettings === undefined ? {} : { checkSettings }),
         coordRoot: saved.coordRoot,
         installRoot: coordinatorSourceRoot,
         productRoot,
@@ -1602,7 +1715,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         : inspectOutgoingChanges(clone, refs, localConfigGet(clone, "consensus.remoteName") ?? "origin",
           localConfigGet(clone, "consensus.sharedBranch") ?? "main");
       const binding = resolveHookBinding({ clone, configPath, phase, refs });
-      io.stdout(binding.bound ? `coord ${phase}: coordinator-bound issue ${binding.issue} — coordinated checks\n`
+      io.stdout(binding.bound
+        ? binding.kind === "frozen"
+          ? `coord ${phase}: issue ${binding.issue} — checks saved at issue start\n`
+          : `coord ${phase}: coordinator-bound issue ${binding.issue} — coordinated checks\n`
         : `coord ${phase}: local verification — ${binding.reason}\n`);
       const result = runVerifyPhase({ clone, config, phase, changes, log: io.stdout,
         record: hookVerificationRecorder(clone, configPath, io.stderr),

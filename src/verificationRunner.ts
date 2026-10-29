@@ -49,6 +49,8 @@ export type RunVerificationInput = {
   pin: string;
   classification: { kind: "coordination" | "documentation" | "product"; reason: string; inputIdentity: string };
   commands: readonly CheckCommand[];
+  /** Effective-policy digest override (#261); receipts never cross policies. */
+  policyDigest?: string;
   environment?: { platform: string; arch: string; node: string; env: NodeJS.ProcessEnv };
   sleep?: (ms: number) => Promise<void>;
   pollMs?: number;
@@ -121,7 +123,8 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
   /** Key material, or the reason this command cannot be cached right now. */
   const keyFor = async (command: CheckCommand): Promise<ReceiptKeyMaterial | string> => {
     if (command.cache === undefined) return "not cached: no cache declaration";
-    if (start.verificationDigest === undefined) return "not cached: no frozen verification policy";
+    const policyDigest = input.policyDigest ?? start.verificationDigest;
+    if (policyDigest === undefined) return "not cached: no frozen verification policy";
     const mode = command.cache.inputs;
     let identity = identities.get(mode);
     if (identity === undefined) {
@@ -147,7 +150,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
     catch (error) { return `not cached: ${error instanceof Error ? error.message : String(error)}`; }
     return {
       v: 1, origin: start.origin, inputsMode: mode, inputIdentity: identity, argv: [...command.argv],
-      policyDigest: start.verificationDigest, platform: environment.platform, arch: environment.arch,
+      policyDigest, platform: environment.platform, arch: environment.arch,
       node: environment.node, probes: probeResults, env: envDigests(command.cache.env, environment.env), dependencies
     };
   };

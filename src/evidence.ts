@@ -13,6 +13,8 @@ import {
 } from "./protocol.js";
 import type { BoundInput, EvidenceObservation, InternalOrder } from "./steps.js";
 import type { PinValidationResult } from "./pinValidation.js";
+import { proposalConflict } from "./checkAmendments.js";
+import type { CheckCommand, CheckProposal } from "./state.js";
 
 export type EvidenceMirror = {
   fetchBranch(branch: string): Promise<FetchResult>;
@@ -194,7 +196,7 @@ const satisfied = (
   sha: string,
   extra: Pick<
     EvidenceObservation,
-    "productPin" | "disposition" | "approvedPaths" | "choice" | "checkResults"
+    "productPin" | "disposition" | "approvedPaths" | "choice" | "checkResults" | "checkProposal" | "checkPolicyDigest"
   > = {}
 ): EvidenceObservation => ({
   agent: order.agent,
@@ -240,11 +242,37 @@ const pinErrors = async (
   return outstanding;
 };
 
+/**
+ * Validate an optional additive check proposal against its pin (#261):
+ * the proposal must name the submitted product commit, every entry point
+ * must exist at that commit, and the commands may only add checks.
+ */
+const proposalErrors = async (
+  proposal: CheckProposal,
+  pin: string,
+  frozenChecks: readonly CheckCommand[],
+  mirror: EvidenceMirror
+): Promise<string[]> => {
+  const errors: string[] = [];
+  if (proposal.commitSha !== pin) {
+    errors.push(`check proposal commitSha ${proposal.commitSha} does not equal the submitted product pin ${pin}`);
+  }
+  const conflict = proposalConflict(frozenChecks, proposal);
+  if (conflict !== null) errors.push(conflict);
+  for (const path of proposal.entryPointPaths) {
+    if ((await mirror.readBlob(pin, path)) === null) {
+      errors.push(`check proposal entry point ${path} does not exist at the submitted product pin`);
+    }
+  }
+  return errors;
+};
+
 export const evaluateEvidence = async (
   order: InternalOrder,
   submissionSha: string,
   mirror: EvidenceMirror,
-  assertAuthority: () => void = () => undefined
+  assertAuthority: () => void = () => undefined,
+  frozenChecks: readonly CheckCommand[] = []
 ): Promise<EvidenceObservation> => {
   if (order.submissionMode === "response") {
     return rejected(order, submissionSha, ["ballot steps cannot be satisfied through a repository artifact"]);
@@ -348,8 +376,14 @@ export const evaluateEvidence = async (
       );
       if (disallowed.length > 0) errors.push(`implementation changes paths outside the approved file map: ${disallowed.join(", ")}`);
     }
+    if (errors.length === 0 && parsed.value.checkProposal !== undefined) {
+      errors.push(...(await proposalErrors(parsed.value.checkProposal, parsed.value.implementationCommitSha, frozenChecks, mirror)));
+    }
     return errors.length === 0
-      ? satisfied(order, submissionSha, { productPin: parsed.value.implementationCommitSha })
+      ? satisfied(order, submissionSha, {
+        productPin: parsed.value.implementationCommitSha,
+        ...(parsed.value.checkProposal === undefined ? {} : { checkProposal: parsed.value.checkProposal })
+      })
       : rejected(order, submissionSha, errors);
   }
 
@@ -378,8 +412,14 @@ export const evaluateEvidence = async (
       );
       if (disallowed.length > 0) errors.push(`revision changes paths outside the approved file map: ${disallowed.join(", ")}`);
     }
+    if (errors.length === 0 && parsed.value.checkProposal !== undefined) {
+      errors.push(...(await proposalErrors(parsed.value.checkProposal, parsed.value.revisedBranchHead, frozenChecks, mirror)));
+    }
     return errors.length === 0
-      ? satisfied(order, submissionSha, { productPin: parsed.value.revisedBranchHead })
+      ? satisfied(order, submissionSha, {
+        productPin: parsed.value.revisedBranchHead,
+        ...(parsed.value.checkProposal === undefined ? {} : { checkProposal: parsed.value.checkProposal })
+      })
       : rejected(order, submissionSha, errors);
   }
 

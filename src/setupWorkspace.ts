@@ -341,6 +341,8 @@ export type WorkspaceConfigInput = {
   completesRoot: string;
   /** Selected GitHub account name; absent or null for ambient credentials. */
   githubAccount?: string | null;
+  /** Coordinator-adopted checks carried forward across reinstalls (#261). */
+  adoptedChecks?: CoordinatorConfig["adoptedChecks"];
 };
 
 /**
@@ -350,15 +352,11 @@ export type WorkspaceConfigInput = {
  */
 export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: CoordinatorConfig["coordination"]): CoordinatorConfig => {
   const declared = input.declared ?? {};
-  const checks = declared.checks ?? input.proposal.checks;
-  if (checks === undefined || checks.length === 0) {
-    throw new Error(
-      `Cannot infer finalization checks for ${input.project}. Declare them explicitly and re-run:\n` +
-        "  coord install … --declare <file.json>\n" +
-        "  where the file contains at least: { \"checks\": [{ \"name\": \"test\", \"argv\": [\"…\"] }] }\n" +
-        "  See config.product.example.json in the coordination install."
-    );
-  }
+  // Empty is a valid recorded state (#261): install/onboard resolves
+  // explicit > saved > detected > announced-empty before calling here, so
+  // reaching this line with no commands means the owner already chose (or
+  // was told about) the no-checks outcome. Nothing here invents commands.
+  const checks = declared.checks ?? input.proposal.checks ?? [];
   const verify = declared.verify ?? input.proposal.verify;
   const toolchain = declared.toolchain ?? input.proposal.toolchain;
   const documentation = declared.documentation ?? input.proposal.documentation;
@@ -384,6 +382,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     digestPaths: declared.digestPaths ?? [],
     contextPaths: declared.contextPaths ?? [],
     checks,
+    adoptedChecks: input.adoptedChecks ?? [],
     pollIntervalMs: declared.pollIntervalMs ?? 1_000,
     ...(toolchain === undefined ? {} : { toolchain }),
     ...(verify === undefined ? {} : { verify }),

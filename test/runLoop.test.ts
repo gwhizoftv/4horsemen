@@ -3472,6 +3472,82 @@ describe("effectful run loop", () => {
   });
 });
 
+describe("additive check adoption (#261)", () => {
+  const adoptionFixture = (runnerExit: number) => {
+    const { root, paths } = fixture({ prPolicy: "coord-open-unmerged", origin: "https://github.com/example/project.git" });
+    const start = readStartState(paths);
+    writeFileSync(paths.start, JSON.stringify({ ...start, checks: [] }));
+    const seed = join(root, "adopt-seed");
+    execFileSync("git", ["init", "-q", seed]);
+    const commit = (message: string) => {
+      execFileSync("git", ["-C", seed, "add", "-A"]);
+      execFileSync("git", ["-C", seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", message]);
+      return execFileSync("git", ["-C", seed, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    };
+    mkdirSync(join(seed, "scripts"), { recursive: true });
+    writeFileSync(join(seed, "scripts/check-native.sh"), "#!/bin/sh\ntrue\n");
+    const pin = commit("product with native tests");
+    mkdirSync(join(seed, ".signals/issue-1"), { recursive: true });
+    writeFileSync(join(seed, ".signals/issue-1/revision-ready-codex.json"), "{}\n");
+    const signal = commit("signal");
+    rmSync(join(seed, ".signals/issue-1"), { recursive: true });
+    const finalSha = commit("cleanup");
+    execFileSync("git", ["clone", "--bare", "-q", seed, paths.mirror]);
+    const mirror = new BareMirror(paths.mirror, "https://github.com/example/project.git");
+    const ran: string[][] = [];
+    const loop = new CoordinatorRunLoop(paths, {
+      tmux: null,
+      mirror,
+      processRunner: async (argv) => {
+        ran.push([...argv]);
+        return { exitCode: runnerExit, stdout: "", stderr: runnerExit === 0 ? "" : "native failed" };
+      },
+      pullRequestOpener: async () => ({ url: "https://github.com/example/project/pull/9" })
+    });
+    const proposal = {
+      commands: [{ name: "native", argv: ["sh", "scripts/check-native.sh"] }],
+      entryPointPaths: ["scripts/check-native.sh"],
+      purpose: "Runs the native tests.",
+      commitSha: pin
+    };
+    const cursors = {
+      ...readCursorsState(paths),
+      accepted: [{
+        stepId: "R4.implement" as const, agent: "codex" as const, round: null,
+        submissionSha: signal, productPin: pin,
+        path: ".signals/issue-1/implementation-ready-codex.json",
+        acceptedAt: "2026-08-21T00:00:00.000Z", checkProposal: proposal
+      }]
+    };
+    const frozen = readStartState(paths);
+    const baseOrder = buildOrder(paths, frozen, cursors, "codex", "R7.finalize", null);
+    const order = { ...baseOrder, inputs: [{ agent: "codex", commitSha: pin, path: ".signals/issue-1/revision-ready-codex.json", kind: "consensus" }] };
+    const observation = {
+      agent: "codex", actionId: order.actionId, submissionSha: signal,
+      status: "satisfied" as const, outstanding: [] as string[], productPin: finalSha
+    };
+    return { paths, loop, frozen, cursors, order, observation, ran, proposal, pin };
+  };
+
+  it("runs a reviewed proposal during a no-checks issue and binds the result to the effective policy", async () => {
+    const { paths, loop, frozen, cursors, order, observation, ran } = adoptionFixture(0);
+    const result = await loop.verifyFinalizationChecks(frozen, order, observation, cursors);
+    expect(result.status).toBe("satisfied");
+    expect(ran).toEqual([["sh", "scripts/check-native.sh"]]);
+    expect(result.checkResults).toMatchObject([{ name: "native", exitCode: 0 }]);
+    expect(result.checkPolicyDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.checkProposal?.purpose).toBe("Runs the native tests.");
+    expect(readJournal(paths).some((event) => event.type === "check-amendment-recorded")).toBe(true);
+  });
+
+  it("rejects finalization when an adopted command fails", async () => {
+    const { loop, frozen, cursors, order, observation } = adoptionFixture(1);
+    const result = await loop.verifyFinalizationChecks(frozen, order, observation, cursors);
+    expect(result.status).toBe("rejected");
+    expect(result.outstanding.join(" ")).toContain("native");
+  });
+});
+
 describe("coordinator verification gates", () => {
   const cached = { inputs: "tree-excluding-evidence" as const, env: [], probes: [["probe"]] };
   const gateFixture = (mode: "coordinator" | "local") => {

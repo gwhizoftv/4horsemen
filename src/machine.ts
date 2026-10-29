@@ -162,6 +162,8 @@ export const decide = (input: MachineInput): readonly MachineDecision[] => {
         ...(observation.approvedPaths === undefined ? {} : { approvedPaths: observation.approvedPaths }),
         ...(observation.choice === undefined ? {} : { choice: observation.choice }),
         ...(observation.checkResults === undefined ? {} : { checkResults: observation.checkResults }),
+        ...(observation.checkProposal === undefined ? {} : { checkProposal: observation.checkProposal }),
+        ...(observation.checkPolicyDigest === undefined ? {} : { checkPolicyDigest: observation.checkPolicyDigest }),
         ...(observation.followUp === undefined ? {} : { followUp: observation.followUp })
       });
     }

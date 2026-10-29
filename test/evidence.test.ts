@@ -749,6 +749,58 @@ Implement it.
 });
 
 
+describe("additive check proposals (#261)", () => {
+  const pin = sha("d");
+  const proposal = {
+    commands: [{ name: "native", argv: ["sh", "scripts/check-native.sh"] }],
+    entryPointPaths: ["scripts/check-native.sh"],
+    purpose: "Runs the native tests added by this change.",
+    commitSha: pin
+  };
+  const action = order({
+    stepId: "R4.implement", evidenceId: "implementation-pinned",
+    requiredPath: ".signals/issue-1/implementation-ready-codex.json",
+    approvedPaths: ["src/product.ts"]
+  });
+  const artifact = {
+    protocolVersion: 1, issue: 1, issueSessionId: action.issueSessionId, agent: "codex",
+    artifact: "implementation-ready", inputSetHash: computeInputSetHash(action.inputs),
+    implementationCommitSha: pin, approvedPaths: ["src/product.ts"], checkProposal: proposal
+  };
+  const blobs = (entries: Record<string, string | null>) => mirror(null, {
+    readBlob: async (_sha: string, path: string) => entries[path] ?? null
+  });
+
+  it("carries a validated proposal on the satisfied observation", async () => {
+    const evidence = blobs({
+      ".signals/issue-1/implementation-ready-codex.json": JSON.stringify(artifact),
+      "scripts/check-native.sh": "#!/bin/sh\ntrue\n"
+    });
+    const result = await evaluateEvidence(action, sha("e"), evidence, () => undefined,
+      [{ name: "test", argv: ["true"] }]);
+    expect(result).toMatchObject({ status: "satisfied", productPin: pin, checkProposal: proposal });
+  });
+
+  it("rejects a mismatched pin, a missing entry point, and a name collision", async () => {
+    const signal = ".signals/issue-1/implementation-ready-codex.json";
+    const present = { [signal]: JSON.stringify(artifact), "scripts/check-native.sh": "x" };
+    const frozen = [{ name: "test", argv: ["true"] }];
+    expect((await evaluateEvidence(action, sha("e"),
+      blobs({ ...present, [signal]: JSON.stringify({ ...artifact, checkProposal: { ...proposal, commitSha: sha("9") } }) }),
+      () => undefined, frozen)).status).toBe("rejected");
+    expect((await evaluateEvidence(action, sha("e"),
+      blobs({ [signal]: JSON.stringify(artifact) }), () => undefined, frozen)).status).toBe("rejected");
+    expect((await evaluateEvidence(action, sha("e"), blobs(present), () => undefined,
+      [{ name: "native", argv: ["make", "native"] }])).status).toBe("rejected");
+    // Signals without a proposal remain valid.
+    const bare = { protocolVersion: 1, issue: 1, issueSessionId: action.issueSessionId, agent: "codex",
+      artifact: "implementation-ready", inputSetHash: computeInputSetHash(action.inputs),
+      implementationCommitSha: pin, approvedPaths: ["src/product.ts"] };
+    expect((await evaluateEvidence(action, sha("e"),
+      blobs({ [signal]: JSON.stringify(bare) }), () => undefined, frozen)).status).toBe("satisfied");
+  });
+});
+
 describe("follow-up filing receipts", () => {
   it("binds a receipt to this action, published ballot set and exact revision", async () => {
     const action = order({ stepId: "R6.follow-up", evidenceId: "follow-up-published", round: 3,

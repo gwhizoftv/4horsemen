@@ -1,4 +1,4 @@
-import type { FollowUpEvidence, FollowUpIssueArtifact, PlanAmendmentRequest } from "./protocol.js";
+import type { CheckProposal, FollowUpEvidence, FollowUpIssueArtifact, PlanAmendmentRequest } from "./protocol.js";
 
 export const DEFAULT_MAX_REVISION_ROUNDS = 3;
 
@@ -396,6 +396,10 @@ export type EvidenceObservation = {
   approvedPaths?: readonly string[];
   choice?: string;
   checkResults?: readonly CheckResult[];
+  /** Validated additive check proposal carried by this submission (#261). */
+  checkProposal?: CheckProposal;
+  /** Effective-policy digest the final check results were bound to (#261). */
+  checkPolicyDigest?: string;
   /** Present when the observation came from a private ballot response. */
   responseSha256?: string;
   rationale?: string;
@@ -417,6 +421,8 @@ export type MachineDecision =
       approvedPaths?: readonly string[];
       choice?: string;
       checkResults?: readonly CheckResult[];
+      checkProposal?: CheckProposal;
+      checkPolicyDigest?: string;
       followUp?: FollowUpEvidence;
     }
   | {

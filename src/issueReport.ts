@@ -1,4 +1,5 @@
 import type { BallotBatch, CursorsState, StartState } from "./state.js";
+import { describeCheckOutcome, NO_CHECKS_MESSAGE } from "./projectChecks.js";
 import { coordMergesPullRequest, describeWorkflowStep, type WorkflowStepId } from "./steps.js";
 import { containmentCoverage } from "./agentLifecycle.js";
 import { containmentPolicy } from "./shellGuard.js";
@@ -129,6 +130,20 @@ export const renderIssueReport = (
         : `Follow-up filed by ${agent}: ${receipt.followUp.url}`);
     }
     if (cursors.droppedAgents.length > 0) lines.push(`Dropped agents: ${cursors.droppedAgents.join(", ")}; historical objections are not approvals or filing receipts.`);
+  }
+  // Build/test check state (#261): skipped is reported as skipped, never
+  // as a passing suite; adopted additions name their verification binding.
+  if (start.checks.length === 0) {
+    lines.push(`Checks: ${NO_CHECKS_MESSAGE}`);
+  } else if (r7?.checkResults !== undefined) {
+    lines.push(`Checks: ${describeCheckOutcome(start.checks, r7.checkResults)}`);
+  }
+  for (const amendment of cursors.checkAmendments ?? []) {
+    lines.push(
+      `Adopted checks (from ${amendment.agent}, saved for future issues): ` +
+      `${amendment.proposal.commands.map((command) => `${command.name}: ${command.argv.join(" ")}`).join("; ")} ` +
+      `(policy ${amendment.policyDigest.slice(0, 12)})`
+    );
   }
   if (cursors.manualPaused) lines.push(`Manual pause: active (${issueCommand("resume", start.issue, start.coordRoot)} clears only this pause).`);
   for (const agent of cursors.activeRoster) {

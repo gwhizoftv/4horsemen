@@ -31,9 +31,14 @@ const product = (name = "myserver", files: Record<string, string> = {
   ensureBuilt();
   const fixture = makeProduct("plain", name);
   products.push(fixture);
-  for (const [path, contents] of Object.entries(files)) writeFileSync(join(fixture.productRoot, path), contents);
-  git(fixture.productRoot, "add", ...Object.keys(files));
-  git(fixture.productRoot, "commit", "-qm", "add checks");
+  for (const [path, contents] of Object.entries(files)) {
+    mkdirSync(dirname(join(fixture.productRoot, path)), { recursive: true });
+    writeFileSync(join(fixture.productRoot, path), contents);
+  }
+  if (Object.keys(files).length > 0) {
+    git(fixture.productRoot, "add", ...Object.keys(files));
+    git(fixture.productRoot, "commit", "-qm", "add checks");
+  }
   git(fixture.productRoot, "push", "-q", "origin", "main");
   git(fixture.productRoot, "remote", "set-url", "origin", `https://github.com/acme/${name}.git`);
   return fixture;
@@ -386,6 +391,53 @@ describe("coord onboard", () => {
       })
     ).toBe(0);
     expect(readStartState(issueRuntimePaths(coordRoot, 10)).profile).toBe("reviewed");
+  });
+
+  it("saves an interactively selected plan with its timing, running nothing", async () => {
+    const fixture = product("nativeapp", {
+      "scripts/check.sh": "#!/bin/sh\ntrue\n",
+      "tests/NativeTests.cpp": "int main() {}\n"
+    });
+    const lines: string[] = [];
+    const log = (message: string) => lines.push(message);
+    const commands = [{ name: "check", argv: ["sh", "scripts/check.sh"] }];
+    expect(await runCli(["onboard", fixture.productRoot, "--agents", "claude", "--profile", "solo"], {
+      home: null,
+      processRunner: runner,
+      io: { stdout: log, stderr: log },
+      choose: async (question, choices) => {
+        if (question.includes("GitHub account")) return null;
+        if (question.includes("When should")) return "Both";
+        return choices.find((choice) => choice.includes("scripts/check.sh")) ?? null;
+      },
+      askLine: async () => null
+    })).toBe(0);
+    const configPath = join(fixture.workspaceRoot, "coord-runtime", "config.json");
+    const config = readConfig(configPath);
+    expect(config.checks).toEqual(commands);
+    expect(config.verify?.precommit).toEqual(commands);
+    expect(lines.join("")).toContain(configPath);
+    expect(lines.join("")).toContain("tests/NativeTests.cpp");
+  });
+
+  it("onboards a first-time project with no recognized command as announced empty settings", async () => {
+    const fixture = product("brandnew", {});
+    const lines: string[] = [];
+    const log = (message: string) => lines.push(message);
+    expect(await runCli(["onboard", fixture.productRoot, "--agents", "claude", "--profile", "solo"], {
+      home: null, processRunner: runner, io: { stdout: log, stderr: log }
+    })).toBe(0);
+    const config = readConfig(join(fixture.workspaceRoot, "coord-runtime", "config.json"));
+    expect(config.checks).toEqual([]);
+    expect(config.verify).toEqual({ precommit: [], prepush: [] });
+    expect(lines.join("")).toContain("Automated checks skipped: none configured.");
+    // The frozen issue state keeps the empty policy and the saved verify lists.
+    expect(await runCli(["start", "11", "--product", fixture.productRoot], {
+      processRunner: runner, makeRunLoop: fakeLoop, io: { stdout: log, stderr: log }
+    })).toBe(0);
+    const start = readStartState(issueRuntimePaths(join(fixture.workspaceRoot, "coord-runtime"), 11));
+    expect(start.checks).toEqual([]);
+    expect(start.verify).toEqual({ precommit: [], prepush: [] });
   });
 
   it("isolates the same issue number for two products sharing an outer runtime", async () => {

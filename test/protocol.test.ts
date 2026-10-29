@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   comparisonBallotArtifactSchema,
   planAmendmentRequestSchema,
+  checkProposalSchema,
   consensusBallotResponseSchema,
   implementationReadyArtifactSchema,
   participationReadyArtifactSchema,
@@ -146,5 +147,37 @@ describe("published protocol schemas", () => {
         reviews: undefined
       }).success
     ).toBe(false);
+  });
+
+  it("accepts an additive check proposal and rejects replacement-shaped or unbounded ones", () => {
+    const pin = "d".repeat(40);
+    const proposal = {
+      commands: [{ name: "native", argv: ["sh", "scripts/check-native.sh"] }],
+      entryPointPaths: ["scripts/check-native.sh"],
+      purpose: "Runs the native test suite added by this change.",
+      commitSha: pin
+    };
+    expect(checkProposalSchema.parse(proposal)).toEqual(proposal);
+    const implementation = {
+      ...common, artifact: "implementation-ready", inputSetHash: digest,
+      implementationCommitSha: pin, approvedPaths: ["src/machine.ts"], checkProposal: proposal
+    };
+    expect(implementationReadyArtifactSchema.safeParse(implementation).success).toBe(true);
+    const revision = {
+      ...common, artifact: "revision-ready", inputSetHash: digest, round: 1,
+      revisedBranchHead: pin, basedOn: ["e".repeat(40)], checkProposal: proposal
+    };
+    expect(revisionReadyArtifactSchema.safeParse(revision).success).toBe(true);
+    for (const bad of [
+      { ...proposal, remove: ["test"] },
+      { ...proposal, replace: true },
+      { ...proposal, commands: [...proposal.commands, ...proposal.commands] },
+      { ...proposal, entryPointPaths: [...proposal.entryPointPaths, ...proposal.entryPointPaths] },
+      { ...proposal, purpose: " " },
+      { ...proposal, commands: [] },
+      { ...proposal, commands: [{ name: "x", argv: ["true"], cache: { inputs: "tree" } }] }
+    ]) {
+      expect(checkProposalSchema.safeParse(bad).success).toBe(false);
+    }
   });
 });

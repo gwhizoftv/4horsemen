@@ -110,6 +110,35 @@ const complete = (overrides: Partial<CursorsState["publication"]> = {}): Cursors
   }) as CursorsState;
 
 describe("issue report", () => {
+  it("reports skipped checks as skipped and names adopted additions", () => {
+    const noChecks = { ...start("owner-only"), checks: [] } as StartState;
+    expect(renderIssueReport(noChecks, initialCursors(noChecks)))
+      .toContain("Automated checks skipped: none configured.");
+    const adopted = {
+      ...complete(),
+      checkAmendments: [{
+        id: "10000000-0000-4000-8000-000000000001",
+        consensusPin: pin,
+        agent: "cursor",
+        submissionSha: "c".repeat(40),
+        proposal: {
+          commands: [{ name: "native", argv: ["sh", "scripts/check-native.sh"] }],
+          entryPointPaths: ["scripts/check-native.sh"],
+          purpose: "Native tests.",
+          commitSha: pin
+        },
+        effectiveChecks: [{ name: "native", argv: ["sh", "scripts/check-native.sh"] }],
+        policyDigest: "d".repeat(64),
+        status: "adopted" as const,
+        recordedAt: "2026-08-13T00:00:00.000Z",
+        adoptedAt: "2026-08-13T00:00:00.000Z"
+      }]
+    } as CursorsState;
+    const report = renderIssueReport(start("owner-only"), adopted);
+    expect(report).toContain("Adopted checks (from cursor, saved for future issues): native: sh scripts/check-native.sh");
+    expect(report).not.toContain("skipped: none configured");
+  });
+
   it("shows only the current action's scrollback wait and qualifies a paused observation", () => {
     const config = start("owner-only");
     const cursors = initialCursors(config);

@@ -53,10 +53,13 @@ import {
 import {
   readConfig,
   workspaceDeclarationSchema,
+  type CheckCommand,
   type CoordinatorConfig,
   type InstallStamp,
+  type VerifyConfig,
   type WorkspaceDeclaration
 } from "./state.js";
+import { discoverChecks, NO_CHECKS_MESSAGE, resolveUnambiguousPlan, settingsForTiming } from "./projectChecks.js";
 import { agentIdSchema } from "./protocol.js";
 import { githubLoginSchema, requireHttpsGitHubOrigin } from "./githubAuth.js";
 import {
@@ -120,6 +123,11 @@ export type InstallOptions = {
    * the account the existing workspace config already selects, if any.
    */
   githubAccount?: string;
+  /**
+   * Build/test check settings already chosen interactively (#261). Highest
+   * precedence: they override declaration, saved, and detected settings.
+   */
+  checkSettings?: { verify: VerifyConfig; checks: CheckCommand[] };
 };
 
 export type InstallResult = {
@@ -264,11 +272,14 @@ const bootstrapCoordination = (installRoot: string, options: EffectOptions): voi
   }
 };
 
+export type CheckSettingsSource = "selected" | "declared" | "saved" | "detected" | "none";
+
 /** Describe the merged policy, including partial declarations, without recording a mutation. */
 const logProjectPolicy = (
   config: CoordinatorConfig,
   declared: WorkspaceDeclaration | null,
-  options: EffectOptions
+  options: EffectOptions,
+  meta?: { source: CheckSettingsSource; configPath: string }
 ): void => {
   const source = (field: keyof WorkspaceDeclaration): string => declared?.[field] === undefined ? "inferred" : "declared";
   const commands = (checks: CoordinatorConfig["checks"] | undefined): string => checks === undefined
@@ -313,7 +324,77 @@ const logProjectPolicy = (
     }
   }
   lines.push("  Use --declare <file.json> to override policy fields; keep that declaration for reinstalls.");
+  if (meta !== undefined) {
+    const timing = config.checks.length > 0 && (config.verify?.precommit.length ?? 0) > 0
+      ? "before each agent commit and before opening a pull request"
+      : config.checks.length > 0 ? "before opening a pull request"
+        : (config.verify?.precommit.length ?? 0) > 0 ? "before each agent commit" : "none";
+    lines.push(`  check settings source: ${meta.source}; timing: ${timing}`);
+    lines.push(`  settings saved in: ${meta.configPath}`);
+    if (config.checks.length === 0 && (config.verify?.precommit.length ?? 0) === 0) {
+      lines.push(`  ${NO_CHECKS_MESSAGE}`);
+    }
+  }
   options.log(`${lines.join("\n")}\n`);
+};
+
+/**
+ * Resolve build/test check settings with explicit > saved > detected
+ * precedence (#261). A selection already made interactively wins outright.
+ * Saving happens through buildWorkspaceConfig; this only decides the
+ * declaration-equivalent fields and where they came from.
+ */
+const resolveCheckDeclaration = (input: {
+  declared: WorkspaceDeclaration | null;
+  previous: CoordinatorConfig | null;
+  proposalChecks: CheckCommand[] | undefined;
+  productRoot: string;
+  installRoot: string;
+  project: string;
+}): { declared: WorkspaceDeclaration | null; source: CheckSettingsSource } => {
+  const { declared, previous, proposalChecks } = input;
+  if (declared?.checks !== undefined) return { declared, source: "declared" };
+  const saved: WorkspaceDeclaration | null = previous === null ? null : {
+    ...(previous.toolchain === undefined ? {} : { toolchain: previous.toolchain }),
+    ...(previous.verify === undefined ? {} : { verify: previous.verify }),
+    checks: previous.checks,
+    ...(previous.documentation === undefined ? {} : { documentation: previous.documentation }),
+    ...(previous.verification === undefined ? {} : { verification: previous.verification }),
+    workflowCriticalPrefixes: previous.workflowCriticalPrefixes,
+    workflowCriticalFiles: previous.workflowCriticalFiles
+  };
+  // Partial declarations override only the fields they actually supply.
+  const withDeclared = (base: WorkspaceDeclaration | null): WorkspaceDeclaration | null => {
+    if (declared === null) return base;
+    if (base === null) return declared;
+    const merged: WorkspaceDeclaration = { ...base };
+    for (const [key, value] of Object.entries(declared)) {
+      if (value !== undefined) (merged as Record<string, unknown>)[key] = value;
+    }
+    return merged;
+  };
+  if (saved !== null) return { declared: withDeclared(saved), source: declared === null ? "saved" : "declared" };
+  if (proposalChecks !== undefined) return { declared, source: "detected" };
+  const discovery = discoverChecks(input.productRoot);
+  const resolved = resolveUnambiguousPlan(discovery);
+  if (resolved.plan !== null) {
+    const settings = settingsForTiming(resolved.plan.commands, "pr");
+    return { declared: withDeclared({ verify: settings.verify, checks: settings.checks }), source: "detected" };
+  }
+  if (resolved.ambiguous) {
+    const listing = discovery.plans
+      .map((plan) => `    - ${plan.label} (from ${plan.source})${plan.unresolved.length > 0 ? ` — needs: ${plan.unresolved.join(", ")}` : ""}`)
+      .join("\n");
+    throw new Error(
+      `Several runnable build/test plans were found for ${input.project}, and choosing one arbitrarily would record the wrong policy:\n${listing}\n` +
+        "  Run coord onboard in a terminal to choose, or declare the commands explicitly:\n" +
+        "    coord onboard <repository> --declare <file.json>\n" +
+        '    where the file contains at least: { "checks": [{ "name": "test", "argv": ["…"] }] }\n' +
+        `  See ${join(input.installRoot, "config.product.example.json")}.`
+    );
+  }
+  // First-time project with nothing recognized: announced empty settings.
+  return { declared: withDeclared({ verify: { precommit: [], prepush: [] }, checks: [] }), source: "none" };
 };
 
 export const install = (options: InstallOptions): InstallResult => {
@@ -433,8 +514,14 @@ export const install = (options: InstallOptions): InstallResult => {
   };
   // Only used to carry a timestamp forward. A config that no longer parses —
   // typically one written before a schema change — must not stop the installer
-  // that exists to rewrite it; regenerating is the repair.
+  // that exists to rewrite it; regenerating is the repair. Doctor reports an
+  // unreadable config as its own finding rather than install guessing here.
   const previous = readPreviousConfig(configPath);
+  const resolvedChecks = options.checkSettings !== undefined
+    ? { declared: { verify: options.checkSettings.verify, checks: options.checkSettings.checks } as WorkspaceDeclaration, source: "selected" as CheckSettingsSource }
+    : resolveCheckDeclaration({ declared, previous, proposalChecks: proposal.checks, productRoot, installRoot, project });
+  const effectiveDeclared = resolvedChecks.declared;
+
   const config = buildWorkspaceConfig(
     {
       project,
@@ -444,10 +531,11 @@ export const install = (options: InstallOptions): InstallResult => {
       profile: options.profile,
       cloneRoot,
       workspaceDir: workspace.workspaceRoot,
-      declared,
+      declared: effectiveDeclared,
       proposal,
       completesRoot,
-      githubAccount
+      githubAccount,
+      adoptedChecks: previous?.adoptedChecks ?? []
     },
     // A re-install must not look like a change just because time passed — but
     // only the timestamp may be carried over. Comparing three fields let a run
@@ -459,7 +547,7 @@ export const install = (options: InstallOptions): InstallResult => {
       : stamp
   );
 
-  logProjectPolicy(config, declared, effects);
+  logProjectPolicy(config, declared, effects, { source: resolvedChecks.source, configPath });
 
   // ---- steps 2-5: per-agent clone wiring ----------------------------------
   const clones: string[] = [];
@@ -872,6 +960,8 @@ export type OnboardOptions = {
   installRoot: string;
   productRoot: string;
   coordRoot?: string;
+  /** Interactive check selection already made by the CLI (#261). */
+  checkSettings?: { verify: VerifyConfig; checks: CheckCommand[] };
   /** Owner override for the completion mailbox root; see InstallOptions. */
   completesRoot?: string;
   cloneRoot?: string;
@@ -928,6 +1018,7 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     ...(options.completesRoot === undefined ? {} : { completesRoot: resolve(options.completesRoot) }),
     cloneRoot: resolve(options.cloneRoot ?? parent),
     ...(options.declarePath === undefined ? {} : { declarePath: resolve(options.declarePath) }),
+    ...(options.checkSettings === undefined ? {} : { checkSettings: options.checkSettings }),
     agents: options.agents ?? DEFAULT_AGENTS,
     profile: options.profile ?? "consensus",
     writeProduct: false,

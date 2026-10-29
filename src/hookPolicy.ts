@@ -16,6 +16,7 @@ import {
 } from "./state.js";
 import { workspaceLocationFromConfig } from "./workspace.js";
 import { inspectOutgoingChanges, isCoordinationEvidencePath, selectVerification, type ChangeInput } from "./changeClassification.js";
+import { NO_CHECKS_MESSAGE } from "./projectChecks.js";
 import { verificationMeasurement, type VerificationMeasurement } from "./verificationLog.js";
 
 /**
@@ -132,7 +133,9 @@ export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): st
   return [...missing].sort();
 };
 
-export type HookBinding = { bound: true; issue: number; commands: VerifyConfig } | { bound: false; reason: string };
+export type HookBinding =
+  | { bound: true; issue: number; commands: VerifyConfig; kind: "coordinated" | "frozen" }
+  | { bound: false; reason: string };
 
 /**
  * Coordinated hook lists apply only to a provably active coordinator run for
@@ -140,6 +143,9 @@ export type HookBinding = { bound: true; issue: number; commands: VerifyConfig }
  * issue branch, that issue's frozen policy is coordinator mode, the run is
  * neither completed nor abandoned, and the agent is still on the roster. Any
  * other answer, including unreadable runtime state, keeps the local lists.
+ *
+ * A local-mode run with frozen verify lists (#261) binds the same way, so
+ * re-onboarding mid-issue cannot change what an active issue's hooks run.
  */
 export const resolveHookBinding = (input: {
   clone: string;
@@ -171,11 +177,12 @@ export const resolveHookBinding = (input: {
     if (!start.agents.some((entry) => entry.id === agent && resolve(entry.root) === resolve(input.clone))) {
       return { bound: false, reason: `issue ${issue} does not run this clone` };
     }
-    const coordinated = start.verification?.mode === "coordinator" ? start.verification.coordinated : undefined;
-    if (coordinated === undefined) return { bound: false, reason: `issue ${issue} is not in coordinator verification mode` };
     if (cursors.completed || cursors.abandoned) return { bound: false, reason: `issue ${issue} is no longer active` };
     if (!cursors.activeRoster.includes(agent)) return { bound: false, reason: `${agent} is not on issue ${issue}'s active roster` };
-    return { bound: true, issue, commands: coordinated };
+    const coordinated = start.verification?.mode === "coordinator" ? start.verification.coordinated : undefined;
+    if (coordinated !== undefined) return { bound: true, issue, commands: coordinated, kind: "coordinated" };
+    if (start.verify !== undefined) return { bound: true, issue, commands: start.verify, kind: "frozen" };
+    return { bound: false, reason: `issue ${issue} is not in coordinator verification mode` };
   } catch (error) {
     return { bound: false, reason: `runtime state unavailable (${error instanceof Error ? error.message.split("\n")[0] : String(error)})` };
   }
@@ -300,7 +307,9 @@ export const runVerifyPhase = (input: {
       ...(error === undefined ? {} : { error }) }));
   };
   if (commands.length === 0) {
-    input.log(`coord ${input.phase}: skipping declared checks — ${selected.reason} (no commands).\n`);
+    input.log(selected.kind === "product"
+      ? `coord ${input.phase}: ${NO_CHECKS_MESSAGE}\n`
+      : `coord ${input.phase}: skipping declared checks — ${selected.reason} (no commands).\n`);
     record(null, new Date().toISOString(), 0);
     return { ok: true };
   }

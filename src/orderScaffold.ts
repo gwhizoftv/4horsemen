@@ -196,5 +196,14 @@ export const renderArtifactScaffold = (ctx: ArtifactScaffoldContext): string => 
     ? "\n\nThis revision concluded at the three-revision limit with objections recorded in linked follow-up issues. " +
       "It was not unanimously approved. The legacy consensusSha field names the exact authorized final revision; only the usual current-issue cleanup is permitted."
     : "";
-  return filing + conclusion + preamble + "```json\n" + `${json}\n` + "```" + request;
+  const proposal = ctx.stepId === "R4.implement" || ctx.stepId === "R6.revise"
+    ? "\n\nOptional: when this change creates a new test entry point (a script, target, or suite no existing " +
+      "command runs), you may add a `checkProposal` field to the JSON above: " +
+      '`{ "commands": [{ "name": "…", "argv": ["…"] }], "entryPointPaths": ["<test-or-script-path>"], ' +
+      '"purpose": "<what these commands check>", "commitSha": "<the same product commit this signal pins>" }. ' +
+      "Proposals may only add checks; they cannot replace or remove existing ones. Reviewers judge the proposal " +
+      "with this implementation, coordination runs the added commands before publication, and accepted commands " +
+      "are saved for future issues. Omit the field when existing commands already cover the new tests."
+    : "";
+  return filing + conclusion + proposal + preamble + "```json\n" + `${json}\n` + "```" + request;
 };

@@ -687,6 +687,32 @@ need an explicit declaration instead.
 | other recognized targets in `Makefile` | `make` | `make check` if present / none | no inference; supply `--declare` |
 | none of these | unspecified | no inference | no inference; supply `--declare` |
 
+### Guided check selection and projects with no tests yet
+
+Beyond the proposals above, `coord onboard` discovers runnable build/test
+commands from repository files only (it never runs project code): project
+scripts under `scripts/`, CMake presets (`configure → build → test`, with
+`ctest --output-on-failure --no-tests=error`), shared Xcode schemes with
+tests, and Swift packages. Test sources and CI workflows are shown as
+context, never as runnable selections. In a terminal, onboarding lists what
+it found, asks which commands to use and when to run them (before each agent
+commit, before opening a pull request, or both), and saves the choice into
+the existing workspace `config.json`, printing its absolute path. Settings
+resolve as explicit (`--declare`) over saved over detected. Noninteractive
+onboarding adopts a single unambiguous detected plan; competing plans fail
+with the choices listed instead of an arbitrary pick.
+
+A project with no recognized command — a new repository, or a native
+C++/Objective-C/Swift app whose scheme destination cannot be guessed — is
+onboarded with empty command lists and the announcement
+`Automated checks skipped: none configured.` That is never reported as a
+passing test suite. When agents later create a test entry point, their
+implementation/revision signal may carry an additive `checkProposal`;
+coordination runs those commands before publication, saves them in the
+config's `adoptedChecks`, and activates them for a future issue only when
+the entry point exists in that issue's starting code. Re-running onboarding
+shows saved settings and lets the owner keep or change them.
+
 For Node, the entries name package scripts, not bare executables. A Node
 manifest without `check` or `test` still requires a declaration, even alongside
 a Python marker. A confirmed Flutter SDK dependency is the exception: an

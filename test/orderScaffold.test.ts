@@ -124,6 +124,10 @@ describe("orderScaffold", () => {
     });
     expect(rendered).toContain("```json");
     expect(rendered).toContain('"artifact": "implementation-ready"');
+    // The optional additive check proposal is explained, never scaffolded (#261).
+    expect(rendered).toContain("checkProposal");
+    expect(rendered).toContain("may only add checks");
+    expect(rendered).not.toContain('"checkProposal"');
   });
 
   it("lists required plan headings for R2.plan", () => {

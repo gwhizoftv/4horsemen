@@ -154,11 +154,16 @@ operator guide; stopping the coordinator does not stop its agent harnesses.
 | Flutter | Flutter SDK dependency in `pubspec.yaml`: proposes analyze and test checks |
 
 Plain `coord onboard <repository>` handles Python and Flutter without a declaration.
+Onboarding also discovers project scripts, CMake presets, shared Xcode schemes,
+and Swift packages, and in a terminal it guides the owner through choosing the
+build/test commands and when they run, saving the choice automatically.
 Installation prints the effective commands and their inferred or declared origin;
 review them and make the product's tools available to agents and finalization worktrees.
-Existing usable Node and Make test gates keep their priority. A language marker
-alone does not guarantee usable checks, and installation refuses missing finalization
-checks. Other languages and custom workflows use explicit command declarations. See
+Existing usable Node and Make test gates keep their priority. A repository with
+no tests yet — including a new project in any language — onboards with no
+automated checks and the notice "Automated checks skipped: none configured.";
+checks agents add later can be adopted without re-onboarding. Other languages
+and custom workflows use explicit command declarations. See
 [product languages and declarations](docs/setup-workspace.md#product-languages)
 for detection precedence, tool requirements, and a Python override example.
 

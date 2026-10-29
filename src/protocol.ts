@@ -136,6 +136,32 @@ export const planBallotArtifactSchema = z
   })
   .strict();
 
+/**
+ * Optional additive check proposal carried by an implementation/revision
+ * signal (#261). Additive only: strict parsing rejects any remove/replace
+ * field, and coordination validates the commands against the pinned commit
+ * before they can run. Commands are plain argv vectors — no cache or retry
+ * shortcuts an agent could use to weaken a gate.
+ */
+export const checkProposalCommandSchema = z
+  .object({ name: z.string().min(1), argv: z.array(z.string().min(1)).min(1) })
+  .strict();
+
+export const checkProposalSchema = z
+  .object({
+    commands: z.array(checkProposalCommandSchema).min(1).max(8),
+    entryPointPaths: z.array(repositoryPathSchema).min(1).max(20),
+    purpose: amendmentReasonSchema,
+    commitSha: gitShaSchema
+  })
+  .strict()
+  .refine((value) => new Set(value.commands.map((command) => command.name)).size === value.commands.length,
+    "check proposal command names must be unique")
+  .refine((value) => new Set(value.entryPointPaths).size === value.entryPointPaths.length,
+    "check proposal entry point paths must be unique");
+
+export type CheckProposal = z.infer<typeof checkProposalSchema>;
+
 export const implementationReadyArtifactSchema = z
   .object({
     ...commonArtifactFields,
@@ -143,7 +169,8 @@ export const implementationReadyArtifactSchema = z
     inputSetHash: digestSchema,
     implementationCommitSha: gitShaSchema,
     scopeHash: digestSchema.optional(),
-    approvedPaths: z.array(repositoryPathSchema).min(1)
+    approvedPaths: z.array(repositoryPathSchema).min(1),
+    checkProposal: checkProposalSchema.optional()
   })
   .strict();
 
@@ -165,7 +192,8 @@ export const revisionReadyArtifactSchema = z
     round: z.number().int().min(1),
     revisedBranchHead: gitShaSchema,
     scopeHash: digestSchema.optional(),
-    basedOn: z.array(gitShaSchema).min(1)
+    basedOn: z.array(gitShaSchema).min(1),
+    checkProposal: checkProposalSchema.optional()
   })
   .strict();
 

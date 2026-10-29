@@ -89,6 +89,20 @@ describe("verification receipts", () => {
     expect(messages.join("\n")).toContain("[ACTION] fail: failed");
     expect(messages.join("\n")).not.toContain("private process detail");
   });
+  it("never reuses a receipt across an effective-policy override", async () => {
+    const { input } = setup();
+    const lint = cached("lint");
+    let runs = 0;
+    const runner = async () => { runs++; return ok(); };
+    expect((await runVerification(input([lint], runner))).status).toBe("passed");
+    expect(runs).toBe(1);
+    expect((await runVerification(input([lint], runner, { policyDigest: "e".repeat(64) }))).status).toBe("passed");
+    expect(runs).toBe(2);
+    // The amended policy now reuses its own receipt, not the frozen one.
+    expect((await runVerification(input([lint], runner, { policyDigest: "e".repeat(64) }))).status).toBe("passed");
+    expect(runs).toBe(2);
+  });
+
   it("keys on every declared input and ignores only coordination evidence when asked", () => {
     const { paths, pin, evidencePin, productPin, material } = setup();
     const base = material(cached("lint"));

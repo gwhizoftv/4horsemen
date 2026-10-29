@@ -473,3 +473,53 @@ describe("context paths", () => {
     expect(start.contextPaths).toEqual([]);
   });
 });
+
+describe("empty check policies (#261)", () => {
+  const baseConfig = {
+    project: "myserver",
+    origin: "https://github.com/example/myserver.git",
+    agents: [{ id: "claude", root: "../myserver-claude", launcher: "start-claude.sh" }],
+    branch: "issue-{issue}/{agent}"
+  };
+
+  it("accepts empty checks in config and start state, with adopted checks defaulted", () => {
+    const config = coordinatorConfigSchema.parse({ ...baseConfig, checks: [] });
+    expect(config.checks).toEqual([]);
+    expect(config.adoptedChecks).toEqual([]);
+    // Absent is still undeclared: the field itself remains required.
+    expect(coordinatorConfigSchema.safeParse(baseConfig).success).toBe(false);
+    const workspace = mkdtempSync(join(tmpdir(), "coord-state-empty-"));
+    roots.push(workspace);
+    const root = join(workspace, "coord-runtime");
+    mkdirSync(root, { recursive: true });
+    const paths = issueRuntimePaths(root, 1, join(workspace, "completes"));
+    createIssueRuntime(paths, ["claude"]);
+    const { start } = initializeOperationalState(paths, {
+      issue: 1,
+      issueSessionId: `issue-1:${"a".repeat(40)}`,
+      baselineSha: "a".repeat(40),
+      profile: "solo",
+      originalRoster: ["claude"],
+      branchTemplate: "issue-{issue}/{agent}",
+      baseBranch: "main",
+      maxRevisionRounds: 3,
+      prPolicy: "owner-only",
+      automationDigest: "b".repeat(64),
+      automationDigestScheme: "sha256-length-prefixed-v1",
+      automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }],
+      trustedSourceCommit: "c".repeat(40),
+      origin: "file:///origin.git",
+      coordRoot: root,
+      configPath: join(root, "config.json"),
+      agents: [{ id: "claude", root: "/clones/claude", launcher: "start-claude.sh", delivery: "nudge" }],
+      checks: [],
+      verify: { precommit: [], prepush: [] },
+      pollIntervalMs: 1000
+    }, "2026-08-11T10:00:00.000Z");
+    expect(start.checks).toEqual([]);
+    expect(start.verify).toEqual({ precommit: [], prepush: [] });
+    expect(readStartState(paths).checks).toEqual([]);
+    // Cursors gain the amendment list by default, so older constructors work.
+    expect(readCursorsState(paths).checkAmendments).toEqual([]);
+  });
+});

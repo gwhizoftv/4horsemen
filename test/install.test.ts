@@ -542,13 +542,36 @@ describe("coord install — emitted config", () => {
     expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
   });
 
-  it("refuses to install a workspace whose finalization checks nobody declared", () => {
+  it("installs a workspace with announced empty checks when nobody declared any", () => {
     const fixture = product("plain");
-    expect(() =>
-      installOnce(fixture, {
-        declarePath: writeDeclaration(fixture.workspaceRoot, { verify: passingVerify }, "verify-only")
-      })
-    ).toThrow(/Cannot infer finalization checks/);
+    const io = silence();
+    const result = installOnce(fixture, {
+      declarePath: writeDeclaration(fixture.workspaceRoot, { verify: passingVerify }, "verify-only"),
+      log: io.log
+    });
+    const config = readConfig(result.configPath);
+    expect(config.checks).toEqual([]);
+    expect(config.verify).toEqual(passingVerify);
+    expect(io.lines.join("")).toContain("settings saved in:");
+  });
+
+  it("preserves saved check settings across reinstall instead of redetecting", () => {
+    const fixture = product("plain");
+    installOnce(fixture);
+    const again = installOnce(fixture, {
+      declarePath: writeDeclaration(fixture.workspaceRoot, { verify: passingVerify }, "verify-only-2")
+    });
+    expect(readConfig(again.configPath).checks).toEqual(declaredChecks);
+  });
+
+  it("does not silently overwrite a malformed existing workspace config", () => {
+    const fixture = product("plain");
+    const result = installOnce(fixture);
+    writeFileSync(result.configPath, "{ not json\n");
+    // Workspace selection routes around the unreadable file (doctor owns the
+    // actionable report); the malformed bytes are never silently replaced.
+    installOnce(fixture);
+    expect(readFileSync(result.configPath, "utf8")).toBe("{ not json\n");
   });
 });
 
@@ -732,15 +755,31 @@ describe("coord install — preflight before effects", () => {
     expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(false);
   });
 
-  it("refuses an undeclarable product without leaving a wired clone behind", () => {
+  it("installs a no-checks product and wires its clone", () => {
     const fixture = product("plain");
+    const result = installOnce(fixture, {
+      declarePath: writeDeclaration(fixture.workspaceRoot, { verify: passingVerify }, "no-checks")
+    });
+    expect(readConfig(result.configPath).checks).toEqual([]);
+    expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(true);
+    expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
+  });
+
+  it("refuses ambiguous detected plans before creating anything", () => {
+    const fixture = product("plain");
+    writeFileSync(join(fixture.productRoot, "CMakePresets.json"), JSON.stringify({
+      configurePresets: [{ name: "a" }], buildPresets: [{ name: "a" }], testPresets: [{ name: "a" }]
+    }));
+    mkdirSync(join(fixture.productRoot, "scripts"), { recursive: true });
+    writeFileSync(join(fixture.productRoot, "scripts", "check.sh"), "#!/bin/sh\ntrue\n");
+    git(fixture.productRoot, "add", "-A");
+    git(fixture.productRoot, "commit", "-qm", "add competing plans");
     expect(() =>
       installOnce(fixture, {
-        declarePath: writeDeclaration(fixture.workspaceRoot, { verify: passingVerify }, "no-checks")
+        declarePath: writeDeclaration(fixture.workspaceRoot, { verify: passingVerify }, "ambiguous")
       })
-    ).toThrow(/Cannot infer finalization checks/);
+    ).toThrow(/Several runnable build\/test plans/);
     expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(false);
-    expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
   });
 
   it("refuses to adopt a directory that is not a clone of this product", () => {

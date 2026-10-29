@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, matchesGlob } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -11,6 +11,11 @@ import {
 } from "../src/hookPolicy.js";
 import { buildWorkspaceConfig, proposeProjectPolicy } from "../src/setupWorkspace.js";
 import {
+  describeCheckOutcome, discoverChecks, NO_CHECKS_MESSAGE, parseCommandLine,
+  resolveUnambiguousPlan, settingsForTiming
+} from "../src/projectChecks.js";
+import { eligibleAdoptedChecks, persistAdoptedCheck, policyDigestFor } from "../src/checkAmendments.js";
+import {
   classifyChanges,
   inspectOutgoingChanges,
   inspectRangeChanges,
@@ -21,7 +26,7 @@ import {
 } from "../src/changeClassification.js";
 import { renderAgentsProtocolBlock } from "../src/agentsProtocol.js";
 import { applyManagedBlock, ManagedBlockError, removeManagedBlock } from "../src/productIgnore.js";
-import { coordinatorConfigSchema, workspaceDeclarationSchema, type CoordinatorConfig } from "../src/state.js";
+import { coordinatorConfigSchema, readConfig, workspaceDeclarationSchema, type CoordinatorConfig } from "../src/state.js";
 import { git, makeProduct, repoRoot } from "./support/workspaceFixture.js";
 import fastConfig from "../vitest.config.js";
 import systemConfig from "../vitest.system.config.js";
@@ -275,7 +280,8 @@ describe("installer proposals", () => {
       }
       expect(classifyChanges(changes(["README.md", "docs/build.ts"]), configured).kind).toBe("product");
       expect(classifyChanges(changes(["docs/untracked.md"]), configured).kind).toBe("product");
-      expect(() => config({ checks: [] })).toThrow();
+      // Empty checks are the recorded no-checks state now (#261), not an error.
+      expect(config({ checks: [] }).checks).toEqual([]);
     } finally {
       fixture.cleanup();
     }
@@ -603,6 +609,140 @@ describe("workspace declaration", () => {
     ]) {
       expect(() => build({ checks, verification: invalid }), JSON.stringify(invalid)).toThrow();
     }
+  });
+});
+
+describe("guided check discovery (#261)", () => {
+  const tempRoot = (files: Record<string, string>): string => {
+    const root = mkdtempSync(join(tmpdir(), "coord-discover-"));
+    for (const [path, contents] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), contents);
+    }
+    return root;
+  };
+
+  it("discovers a CMake configure/build/test chain and never executes project code", () => {
+    const marker = join(tmpdir(), `coord-discovery-ran-${Date.now()}`);
+    const root = tempRoot({
+      "CMakePresets.json": JSON.stringify({
+        configurePresets: [{ name: "dev" }],
+        buildPresets: [{ name: "dev" }],
+        testPresets: [{ name: "dev" }]
+      }),
+      "CMakeLists.txt": "cmake_minimum_required(VERSION 3.25)\n",
+      "scripts/check.sh": `#!/bin/sh\ntouch ${marker}\n`,
+      "tests/MusicDocumentTests.cpp": "int main() {}\n"
+    });
+    try {
+      const discovery = discoverChecks(root);
+      const cmake = discovery.plans.find((plan) => plan.source === "CMakePresets.json");
+      expect(cmake?.commands.map((command) => command.argv)).toEqual([
+        ["cmake", "--preset", "dev"],
+        ["cmake", "--build", "--preset", "dev"],
+        ["ctest", "--preset", "dev", "--output-on-failure", "--no-tests=error"]
+      ]);
+      expect(discovery.evidence).toContainEqual({ path: "tests/MusicDocumentTests.cpp", label: expect.stringContaining("test source") });
+      expect(existsSync(marker)).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("labels an Xcode scheme plan with an unresolved destination instead of guessing one", () => {
+    const root = tempRoot({
+      "FinaleRev.xcodeproj/project.pbxproj": "// project\n",
+      "FinaleRev.xcodeproj/xcshareddata/xcschemes/FinaleRev.xcscheme":
+        "<Scheme><TestAction><Testables><TestableReference/></Testables></TestAction></Scheme>\n"
+    });
+    try {
+      const discovery = discoverChecks(root);
+      const xcode = discovery.plans.find((plan) => plan.label.includes("Xcode"));
+      expect(xcode?.commands[0]?.argv).toEqual(["xcodebuild", "test", "-project", "FinaleRev.xcodeproj", "-scheme", "FinaleRev"]);
+      expect(xcode?.unresolved.join(" ")).toContain("destination");
+      expect(resolveUnambiguousPlan(discovery).ambiguous).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("treats competing plans as ambiguous and no plans as an honest empty result", () => {
+    const root = tempRoot({
+      "CMakePresets.json": JSON.stringify({
+        configurePresets: [{ name: "a" }], buildPresets: [{ name: "a" }], testPresets: [{ name: "a" }]
+      }),
+      "scripts/check.sh": "#!/bin/sh\ntrue\n"
+    });
+    try {
+      expect(discoverChecks(root).plans.length).toBeGreaterThan(1);
+      expect(resolveUnambiguousPlan(discoverChecks(root)).ambiguous).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+    const empty = tempRoot({ "README.md": "# new\n" });
+    try {
+      expect(discoverChecks(empty).plans).toEqual([]);
+      expect(resolveUnambiguousPlan(discoverChecks(empty))).toEqual({ plan: null, ambiguous: false });
+    } finally { rmSync(empty, { recursive: true, force: true }); }
+  });
+
+  it("tokenizes quoted arguments and refuses shell operators", () => {
+    expect(parseCommandLine(`xcodebuild test -destination 'platform=macOS,arch=arm64' -scheme "My App"`)).toEqual([
+      "xcodebuild", "test", "-destination", "platform=macOS,arch=arm64", "-scheme", "My App"
+    ]);
+    expect(parseCommandLine(`run '' x`)).toEqual(["run", "", "x"]);
+    for (const bad of ["make test | tee log", "make test; rm x", "echo $(whoami)", "make test > out"]) {
+      expect(() => parseCommandLine(bad), bad).toThrow(/script/);
+    }
+    expect(() => parseCommandLine("echo 'unterminated")).toThrow(/quote/);
+  });
+
+  it("maps timing onto verify/checks and words outcomes without inventing tests", () => {
+    const commands = [{ name: "test", argv: ["make", "test"] }];
+    expect(settingsForTiming(commands, "commit")).toEqual({ verify: { precommit: commands, prepush: [] }, checks: [] });
+    expect(settingsForTiming(commands, "pr")).toEqual({ verify: { precommit: [], prepush: [] }, checks: commands });
+    expect(settingsForTiming(commands, "both").checks).toEqual(commands);
+    expect(settingsForTiming([], "none")).toEqual({ verify: { precommit: [], prepush: [] }, checks: [] });
+    expect(describeCheckOutcome([])).toBe(NO_CHECKS_MESSAGE);
+    expect(describeCheckOutcome([{ name: "build", argv: ["cmake", "--build"] }], [{ name: "build", exitCode: 0 }]))
+      .toContain("Build result: passed");
+    expect(describeCheckOutcome(commands, [{ name: "test", exitCode: 2 }])).toContain("Build and test result: failed");
+  });
+
+  it("persists adoptions once and activates them only when the entry point is at the baseline", () => {
+    const fixture = makeProduct("go");
+    try {
+      const root = fixture.workspaceRoot;
+      const configPath = join(root, "config.json");
+      writeFileSync(configPath, `${JSON.stringify({
+        project: "myserver", origin: "https://github.com/example/myserver.git",
+        agents: [{ id: "claude", root: "../myserver-claude", launcher: "start-claude.sh" }],
+        branch: "issue-{issue}/{agent}", checks: []
+      }, null, 2)}\n`);
+      const record = {
+        commands: [{ name: "native", argv: ["sh", "scripts/check-native.sh"] }],
+        entryPointPaths: ["cmd/main.go"],
+        purpose: "Native tests.",
+        sourceIssue: 7,
+        sourcePin: "a".repeat(40),
+        adoptedAt: "2026-08-21T00:00:00.000Z"
+      };
+      expect(persistAdoptedCheck(root, configPath, record)).toBe(true);
+      expect(persistAdoptedCheck(root, configPath, record)).toBe(false);
+      expect(readConfig(configPath).adoptedChecks).toEqual([record]);
+      const baseline = git(fixture.productRoot, "rev-parse", "HEAD");
+      const eligible = eligibleAdoptedChecks([record], fixture.productRoot, baseline);
+      expect(eligible.active).toEqual([record]);
+      const missing = eligibleAdoptedChecks(
+        [{ ...record, entryPointPaths: ["scripts/not-there.sh"] }], fixture.productRoot, baseline);
+      expect(missing.pending).toHaveLength(1);
+      expect(policyDigestFor([{ name: "a", argv: ["true"] }], ["x"]))
+        .not.toBe(policyDigestFor([{ name: "a", argv: ["true"] }], ["y"]));
+    } finally { fixture.cleanup(); }
+  });
+
+  it("builds a workspace config with explicitly empty checks instead of throwing", () => {
+    const configured = buildWorkspaceConfig({ project: "fixture", origin: "https://example.com/fixture.git",
+      baseBranch: "main", agents: ["codex"], profile: "solo", cloneRoot: "/clones", workspaceDir: "/runtime",
+      completesRoot: "/completes",
+      declared: workspaceDeclarationSchema.parse({ verify: { precommit: [], prepush: [] }, checks: [] }),
+      proposal: { workflowCriticalPrefixes: [], workflowCriticalFiles: [] } }, undefined);
+    expect(configured.checks).toEqual([]);
+    expect(workspaceDeclarationSchema.safeParse({ checks: [] }).success).toBe(true);
   });
 });
 
