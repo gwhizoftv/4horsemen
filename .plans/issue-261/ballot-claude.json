@@ -1,0 +1,46 @@
+{
+  "actionId": "a74fd4f4-a91d-4e84-be3c-fee0bee76246",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "564f1ec78c33765e843b786af6aa0e6ac73f32953441c5bfca5156dc82b3e62c",
+  "issue": 261,
+  "issueSessionId": "issue-261:c97bde22150e7a85694e999f4d6930b79122fcaf",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "daa87d045eafce23b9ee9532f64e6ec8ce253334",
+      "path": ".plans/issue-261/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "f1d01874ea5d2ccda3d0d07259113c9f9537c8ad",
+      "path": ".plans/issue-261/plan.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "8b78468a623f703332f004a9c98f50ceaee71e16",
+      "path": ".plans/issue-261/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex's plan is the only one complete against the owner's design comment, covering proposal visibility and binding in review inputs, the authorized-lineage carry-forward, publication-gated serialized adoption, baseline-evidence activation that handles new scripts in existing manifests, and the existing install tests; the muse plan omits required behavior and mine has the review-binding, activation and persistence gaps identified in all three reviews, while codex's remaining points (candidate checks non-empty, PR-body formatter, schema-move importers) are small corrections.",
+  "responseSha256": "49b21c0ad5ec3fdb836c791f2772d2f3c35fc7ba357bf6d8a28813089f842e82",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "043daca779c49a140d28d48fca6f157e739108b8",
+      "path": ".plans/issue-261/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "bf14aedd1e47fcda9ac3651562fc82364623e793",
+      "path": ".plans/issue-261/review.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "01d8c4be74e35a30872b0ba3c1a3066d48977b09",
+      "path": ".plans/issue-261/review.md"
+    }
+  ]
+}

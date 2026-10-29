@@ -1,0 +1,46 @@
+{
+  "actionId": "9da29ae4-e14d-4600-8794-f45e475631e4",
+  "agent": "muse",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "564f1ec78c33765e843b786af6aa0e6ac73f32953441c5bfca5156dc82b3e62c",
+  "issue": 261,
+  "issueSessionId": "issue-261:c97bde22150e7a85694e999f4d6930b79122fcaf",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "daa87d045eafce23b9ee9532f64e6ec8ce253334",
+      "path": ".plans/issue-261/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "f1d01874ea5d2ccda3d0d07259113c9f9537c8ad",
+      "path": ".plans/issue-261/plan.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "8b78468a623f703332f004a9c98f50ceaee71e16",
+      "path": ".plans/issue-261/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "The codex plan is the only one covering the full design comment (discovery, timing, saved-settings precedence, reviewed additive adoption, and baseline-safe activation) with a clean file map; the muse plan omits required behavior and the claude plan leaves proposals invisible to reviewers.",
+  "responseSha256": "5a317362f2f7245d5503f47e8831721853708053dc949f13aac86225fe898761",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "043daca779c49a140d28d48fca6f157e739108b8",
+      "path": ".plans/issue-261/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "bf14aedd1e47fcda9ac3651562fc82364623e793",
+      "path": ".plans/issue-261/review.md"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "01d8c4be74e35a30872b0ba3c1a3066d48977b09",
+      "path": ".plans/issue-261/review.md"
+    }
+  ]
+}
