@@ -5,13 +5,13 @@
   "agent": "codex",
   "inputSetHash": "e6751d4ce4fa6754a9fcbb69cd8f2daf51c304d5c1e396a2ff9465f029de4586",
   "artifact": "plan-amendment-request",
-  "actionId": "adad307d-a2ae-4638-9014-181581c27151",
-  "scopeHash": "310236e4564e8f2051c435bb0f658c65af004dc3ffc1a61dabeda1bdab09f853",
-  "explanation": "The approved plan omitted the doctor regression fixture that assumes a plain repository remains without verify after installation. The mandatory product commit hook ran pnpm check:fast: lint and typechecking passed, and fast tests reported 891 passed / 1 failed. The sole failure is test/doctor.test.ts:221, expecting verifyUndeclared after onboarding now intentionally records empty local commands. Updating this fixture is necessary to test the original issue behavior while retaining the genuine missing-verify diagnostic; no product behavior or scope is added. The product commit was blocked and all unfinished product edits remain unstaged.",
+  "actionId": "17af7110-cafb-462b-b80f-838590a6b6c8",
+  "scopeHash": "fe3f8c2451d67421177e52f41c61a0f232d88e1e8128b6eb978e720d8f170a55",
+  "explanation": "After the approved doctor fixture correction, the mandatory product commit hook passed lint, typechecking and all 892 fast tests, then reached the system tier and reported 280 passed / 2 failed. Both remaining failures are obsolete installed(null, plain) fixtures in test/hookSync.test.ts:240 and :309: onboarding now records empty local verification, but these cases still assume installation leaves verify absent. The selected plan requires preserving genuine undeclared-policy failures, so these fixtures must explicitly remove verify after installation. Product edits remain unstaged and the blocked product commit did not publish.",
   "additionalPaths": [
     {
-      "path": "test/doctor.test.ts",
-      "reason": "Update the obsolete installation assumption at lines 217-221: assert deliberately empty local verification is valid, then explicitly remove verify from the saved fixture to retain coverage that truly undeclared verification produces DOCTOR_CODES.verifyUndeclared. This aligns doctor coverage with the approved no-check onboarding behavior without weakening missing-setting diagnostics."
+      "path": "test/hookSync.test.ts",
+      "reason": "Update the existing installed helper for its verify:null case (around line 32) to explicitly remove verify from the saved config after onboarding, keeping the two actual Git-hook regressions at lines 233-241 and 299-310 meaningful. This preserves coverage that truly undeclared product verification blocks commits, including with a complete documentation profile, while allowing the approved intentional-empty onboarding behavior; it adds no product behavior and changes no hook bodies."
     }
   ]
 }
