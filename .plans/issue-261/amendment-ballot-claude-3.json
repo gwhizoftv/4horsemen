@@ -1,0 +1,42 @@
+{
+  "actionId": "dbae5722-77ff-44e5-99e5-f9a718b902eb",
+  "agent": "claude",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "1a6c3ac8c1d7bcc230032f48382ccb35850f7abd0c4f4518b18665c568ca8068",
+  "issue": 261,
+  "issueSessionId": "issue-261:c97bde22150e7a85694e999f4d6930b79122fcaf",
+  "plans": [
+    {
+      "agent": "codex",
+      "commitSha": "f1d01874ea5d2ccda3d0d07259113c9f9537c8ad",
+      "path": ".plans/issue-261/plan.md"
+    }
+  ],
+  "priorApprovals": [
+    {
+      "agent": "claude",
+      "commitSha": "c3bcc47a49476d5a1c2644295bd85345ae14d74e",
+      "path": ".plans/issue-261/amendment-ballot-claude-1.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c3bcc47a49476d5a1c2644295bd85345ae14d74e",
+      "path": ".plans/issue-261/amendment-ballot-codex-1.json"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "c3bcc47a49476d5a1c2644295bd85345ae14d74e",
+      "path": ".plans/issue-261/amendment-ballot-muse-1.json"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "test/hookSync.test.ts is a test-only fixture correction needed because the plan's announced empty-checks onboarding now saves verify for plain installs, and removing verify explicitly in the installed(null) helper keeps the existing undeclared-policy hook regressions meaningful without adding product behavior.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "17dd50e3edc5349ba25081b445821f62b0e7c11b",
+    "path": ".signals/issue-261/implementation-ready-codex.json"
+  },
+  "responseSha256": "86746e3233205ab29c9a76c6ee53488bdc131afb4e2763aa1b83da2efee28037",
+  "sequence": 3
+}
