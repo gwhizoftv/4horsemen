@@ -76,6 +76,29 @@ const initialize = () => {
 };
 
 describe("operational state", () => {
+  it("validates OpenCode models and pull delivery in config and frozen start state", () => {
+    const { paths } = initialize();
+    const legacy = readStartState(paths);
+    const agent = { id: "opencode", root: "/clones/opencode", launcher: "start-opencode.sh" };
+    const config = { project: "p", origin: "file:///origin.git", branch: "issue-{issue}/{agent}", checks: [], agents: [agent] };
+    for (const model of [undefined, "anthropic/claude-sonnet-4", "openrouter/deepseek/deepseek-chat:free", "openrouter/vendor/model:nitro"]) {
+      const parsed = coordinatorConfigSchema.parse({ ...config, agents: [{ ...agent, model }] });
+      expect(parsed.agents[0]).toMatchObject({ id: "opencode", delivery: "pull", model });
+      const snapshot = startStateSchema.parse({ ...legacy, agents: parsed.agents, originalRoster: ["opencode"] });
+      expect(startStateSchema.parse(JSON.parse(JSON.stringify(snapshot))).agents[0]?.model).toBe(model);
+    }
+    for (const model of ["", "model", "/model", "provider/", "provider/model name", "provider/model\n", "provider/\u0000model", "provider/\u007fmodel"]) {
+      expect(() => coordinatorConfigSchema.parse({ ...config, agents: [{ ...agent, model }] })).toThrow(/provider\/model/);
+    }
+    for (const delivery of ["both", "nudge"]) {
+      expect(() => coordinatorConfigSchema.parse({ ...config, agents: [{ ...agent, delivery }] })).toThrow(/requires pull delivery/);
+      expect(() => startStateSchema.parse({ ...legacy, agents: [{ ...agent, delivery }] })).toThrow(/requires pull delivery/);
+    }
+    expect(() => coordinatorConfigSchema.parse({ ...config, agents: [{ ...agent, id: "claude", model: "provider/model" }] }))
+      .toThrow(/only supported on the opencode agent/);
+    expect(startStateSchema.parse(legacy)).toEqual(legacy);
+  });
+
   it("reads legacy action safety and preserves scrollback reminder timing across restart", () => {
     const { paths, cursors } = initialize();
     const actionId = "10000000-0000-4000-8000-000000000001";

@@ -161,7 +161,8 @@ const agentExecutables = new Map([
   ["claude", { executable: "claude", update: true }],
   ["cursor", { executable: "agent", update: true }],
   ["antigravity", { executable: "agy", update: true }],
-  ["muse", { executable: "muse", update: false }]
+  ["muse", { executable: "muse", update: false }],
+  ["opencode", { executable: "opencode", update: false }]
 ]);
 const AGENT_UPDATE_TIMEOUT_MS = 180_000;
 const AGENT_VERSION_TIMEOUT_MS = 5_000;
@@ -200,7 +201,7 @@ const updateAgentVersions = async (
       continue;
     }
     if (!maintenance.update) {
-      io.stdout(`${agent.id} has no update command; recording the installed version.\n`);
+      io.stdout(`${agent.id}: skipping automatic update; recording the installed version.\n`);
       continue;
     }
     io.stdout(`Updating ${agent.id} (timeout ${AGENT_UPDATE_TIMEOUT_MS / 1_000}s)...\n`);

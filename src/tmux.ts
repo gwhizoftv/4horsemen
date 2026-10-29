@@ -349,13 +349,13 @@ export const harnessPromptReadiness = (
 /**
  * Vim-mode TUIs swallow the first nudge character in NORMAL. Enter insert with
  * `a` when INSERT is not visible. Codex keeps its configured `i` prelude.
- * Antigravity and Muse use no vim prelude. Cursor uses `a` only when `editor.vimMode` is on
+ * Antigravity, Muse and OpenCode use no vim prelude. Cursor uses `a` only when `editor.vimMode` is on
  * (see `readCursorVimMode`). Claude often omits a mode indicator — still send
  * `a` unless INSERT is shown. resolveNudgeKeys skips this fallback when the
  * installed Claude settings explicitly disable vim.
  */
 export const vimInsertPrelude = (paneText: string, agentId: string): readonly string[] => {
-  if (agentId === "antigravity" || agentId === "codex" || agentId === "muse") return [];
+  if (agentId === "antigravity" || agentId === "codex" || agentId === "muse" || agentId === "opencode") return [];
   const plain = stripAnsi(paneText);
   if (/--\s*INSERT\s*--/i.test(plain) || /Vim:\s*Insert/i.test(plain)) return [];
   if (/--\s*VISUAL(?:\s+LINE)?\s*--/i.test(plain)) return ["Escape", "a"];
@@ -416,6 +416,12 @@ export const resolveNudgeKeys = (
   agent: AgentConfig,
   paneText = ""
 ): { prelude: readonly string[]; submit: readonly string[] } => {
+  // Pull delivery still permits owner reminders. OpenCode has no vim prelude;
+  // Escape interrupts, and its Enter must not take the legacy submit repair.
+  if (agent.id === "opencode") {
+    const defaults = agentOwnerUiDefaults(agent.id);
+    return { prelude: agent.nudgePrelude ?? defaults.nudgePrelude, submit: agent.nudgeSubmit ?? defaults.nudgeSubmit };
+  }
   // Without vim, Escape dismisses Cursor's composer (issue 384). With vim,
   // Enter is a newline in INSERT — Escape then Enter (issue 84). vim `a`
   // comes from `editor.vimMode` / a non-empty `nudgePrelude`.
@@ -1180,6 +1186,9 @@ export class TmuxController {
    */
   private async launchAgent(target: string, agent: AgentConfig, launcher: string, logDir: string | undefined): Promise<TmuxResult> {
     const log = logDir === undefined ? null : newTerminalLog(logDir);
+    const command = agent.id === "opencode"
+      ? [launcher, ...(agent.model === undefined ? [] : ["--model", agent.model])].map(shellQuote).join(" ")
+      : launcher;
     return this.runner([
       "set-option", "-w", "-t", target, "remain-on-exit", "on",
       ...windowScrollOptions(target, agent.id).flatMap((args) => [";", ...args]),
@@ -1187,7 +1196,7 @@ export class TmuxController {
         ";", "set-option", "-w", "-t", target, "@coord-log", log,
         ";", "pipe-pane", "-t", target, pipeToLog(log)
       ]),
-      ";", "respawn-pane", "-k", "-t", target, "-c", resolve(agent.root), launcher
+      ";", "respawn-pane", "-k", "-t", target, "-c", resolve(agent.root), command
     ]);
   }
 
