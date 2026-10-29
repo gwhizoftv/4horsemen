@@ -1,0 +1,36 @@
+{
+  "actionId": "f49fb35c-1622-474c-887d-8fa01dfeb923",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "97ea79986b8de8f5cff1c5f7f399fd2e6772d38ea8dabf2095f28b52568b63e6",
+  "issue": 257,
+  "issueSessionId": "issue-257:ac57c3a543ff2c6f3f16e5bc3f46c61efb1c4d52",
+  "plans": [
+    {
+      "agent": "claude",
+      "commitSha": "200ca23013a8a94bf29759b68b9595d91547c24b",
+      "path": ".plans/issue-257/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "1db91964c3920092fd1a74bd081a0ad6f4e7dc15",
+      "path": ".plans/issue-257/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "The codex plan covers both routes the issue names (a frozen config model passed as one quoted --model, plus in-pane /connect and /models) and sends correct owner-reminder keys, while both reviews found blocking defects in the claude plan (reminders send a vim 'a' and Escape, the permission override replaces owner rules, and the file map is over-broad); its remaining gaps (permission prompts after each relaunch, ':' in model ids, a test that does not fail on the baseline) can be fixed in implementation.",
+  "responseSha256": "1e312e57b7fc340755eb4af907463a29fc50f9502740231f1c839f4c8c156fab",
+  "reviews": [
+    {
+      "agent": "claude",
+      "commitSha": "9ea28ad52bf4296af2c8be14f8d6f37831efed31",
+      "path": ".plans/issue-257/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "8286ab7ff442f2b21006bcd3698cbc21bbd2ad6a",
+      "path": ".plans/issue-257/review.md"
+    }
+  ]
+}
