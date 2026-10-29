@@ -1,0 +1,26 @@
+{
+  "actionId": "a813131c-c410-40c5-b90a-2cfa23d66058",
+  "agent": "muse",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "2580fe29645ae872ba2aed2d72bf978ea83d3fdc82d76a13255c29b8fc25b29d",
+  "issue": 261,
+  "issueSessionId": "issue-261:c97bde22150e7a85694e999f4d6930b79122fcaf",
+  "plans": [
+    {
+      "agent": "codex",
+      "commitSha": "f1d01874ea5d2ccda3d0d07259113c9f9537c8ad",
+      "path": ".plans/issue-261/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "test/doctor.test.ts only updates the fixture that assumed onboarding leaves verify undeclared, which the selected plan intentionally changes, while keeping genuine undeclared-verify coverage by explicitly removing verify.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "0bc07848e507449b3f401baa49c276f1ff36b724",
+    "path": ".signals/issue-261/implementation-ready-codex.json"
+  },
+  "responseSha256": "c25f199ca18a2d73c92befe6844e1ec94b258acc8986272252667e265e7f25d9",
+  "sequence": 1
+}

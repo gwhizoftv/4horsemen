@@ -1,0 +1,26 @@
+{
+  "actionId": "2707fc54-0dfa-4d3e-848a-2fac59664adf",
+  "agent": "claude",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "2580fe29645ae872ba2aed2d72bf978ea83d3fdc82d76a13255c29b8fc25b29d",
+  "issue": 261,
+  "issueSessionId": "issue-261:c97bde22150e7a85694e999f4d6930b79122fcaf",
+  "plans": [
+    {
+      "agent": "codex",
+      "commitSha": "f1d01874ea5d2ccda3d0d07259113c9f9537c8ad",
+      "path": ".plans/issue-261/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "The selected plan says a first-time project with no recognized command persists empty verify and checks lists, which directly contradicts the doctor fixture at test/doctor.test.ts:217-221 that expects verifyUndeclared after installing a plain repository, so updating that one test file is needed to keep the product suite passing while the proposed rewrite still covers a genuinely missing verify; it adds no product behavior or scope.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "0bc07848e507449b3f401baa49c276f1ff36b724",
+    "path": ".signals/issue-261/implementation-ready-codex.json"
+  },
+  "responseSha256": "dffc03d02559efd59e1d8c6abfa42826e32313dc4b8018e95d6e26bb4e815566",
+  "sequence": 1
+}

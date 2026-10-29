@@ -1,0 +1,26 @@
+{
+  "actionId": "47edd530-a7f3-4006-934b-a16ef58e72c3",
+  "agent": "codex",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "2580fe29645ae872ba2aed2d72bf978ea83d3fdc82d76a13255c29b8fc25b29d",
+  "issue": 261,
+  "issueSessionId": "issue-261:c97bde22150e7a85694e999f4d6930b79122fcaf",
+  "plans": [
+    {
+      "agent": "codex",
+      "commitSha": "f1d01874ea5d2ccda3d0d07259113c9f9537c8ad",
+      "path": ".plans/issue-261/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "The sole addition, test/doctor.test.ts, is necessary to update the obsolete onboarding fixture for intentional empty verification while preserving coverage of truly undeclared verify settings, as required by the selected plan.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "0bc07848e507449b3f401baa49c276f1ff36b724",
+    "path": ".signals/issue-261/implementation-ready-codex.json"
+  },
+  "responseSha256": "525a90cd8138264d16a6cac22b9a55b09b2794129f29c8b603be0443fd5b778e",
+  "sequence": 1
+}
