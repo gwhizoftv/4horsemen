@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import { additionStatusAt, mergeAdditions, proposalConflicts } from "../src/checkAmendments.js";
 import {
   appendJournal,
   enqueueOwnerGuidance,
@@ -27,6 +28,7 @@ import {
   StateConflictError,
   startStateSchema,
   coordinatorConfigSchema,
+  workspaceDeclarationSchema,
   writeCursorsState
 } from "../src/state.js";
 
@@ -471,5 +473,54 @@ describe("context paths", () => {
   it("keeps the field optional at the typed initializer boundary", () => {
     const { start } = initialize();
     expect(start.contextPaths).toEqual([]);
+  });
+});
+
+describe("check settings and saved additions (#261)", () => {
+  const command = { name: "native-test", argv: ["sh", "scripts/test.sh"] };
+  const base = { project: "p", origin: "/o.git", agents: [{ id: "codex", root: "/c", launcher: "start-codex.sh" }],
+    branch: "issue-{issue}/{agent}" };
+
+  it("accepts explicit empty lists in declarations, workspace settings and saved issue state", () => {
+    expect(workspaceDeclarationSchema.parse({ checks: [], verify: { precommit: [], prepush: [] } }).checks).toEqual([]);
+    const config = coordinatorConfigSchema.parse({ ...base, checks: [] });
+    expect(config.checks).toEqual([]);
+    expect(config.checkAdditions).toEqual([]);
+    expect(coordinatorConfigSchema.safeParse({ ...base }).success).toBe(false);
+    const { start } = initialize();
+    expect(startStateSchema.parse({ ...start, checks: [], verify: { precommit: [], prepush: [] } }).checks).toEqual([]);
+    // A start.json written before frozen local lists still parses.
+    expect(startStateSchema.parse(start).verify).toBeUndefined();
+  });
+
+  it("merges additions after required checks and refuses a replacement", () => {
+    const required = [{ name: "test", argv: ["make", "test"] }];
+    expect(mergeAdditions(required, [command, { name: "test", argv: ["make", "test"] }])).toEqual([...required, command]);
+    expect(() => mergeAdditions(required, [{ name: "test", argv: ["true"] }])).toThrow(/conflicts/);
+    expect(proposalConflicts({ implementationCommitSha: "d".repeat(40), commands: [{ name: "test", argv: ["true"] }],
+      entryPointPaths: ["scripts/test.sh"], description: "x" }, required)[0]).toMatch(/may only add checks/);
+  });
+
+  it("activates a saved addition only when the baseline provably contains its entry points", () => {
+    const addition = {
+      id: "a".repeat(64), issue: 7, issueSessionId: "issue-7:x", agent: "codex", productPin: "d".repeat(40),
+      commands: [command], entryPoints: [{ path: "scripts/test.sh", sha256: "e".repeat(64) }],
+      description: "native tests", acceptedAt: "2026-10-01T00:00:00.000Z", activationBaselines: []
+    };
+    const reader = (content: string | null, ancestors: readonly string[] = []) => ({
+      contentSha256: () => content, isAncestor: (commit: string) => ancestors.includes(commit)
+    });
+    // Unmerged: the entry point is not in another issue's baseline.
+    expect(additionStatusAt(addition, reader(null)).status).toBe("pending");
+    // Squash-merged: no ancestry, but the approved content is present; record the witness.
+    expect(additionStatusAt(addition, reader("e".repeat(64)))).toMatchObject({ status: "active", witnessed: true });
+    // Merged and later edited: ancestry (or a witnessed baseline) keeps it active.
+    expect(additionStatusAt(addition, reader("f".repeat(64), ["d".repeat(40)])).status).toBe("active");
+    expect(additionStatusAt({ ...addition, activationBaselines: ["b".repeat(40)] }, reader("f".repeat(64), ["b".repeat(40)])).status)
+      .toBe("active");
+    // Edited without proof of merge: pending, never guessed.
+    expect(additionStatusAt(addition, reader("f".repeat(64))).status).toBe("pending");
+    // Merged, then the entry point disappeared: a stale policy for the owner.
+    expect(additionStatusAt(addition, reader(null, ["d".repeat(40)]))).toMatchObject({ status: "stale" });
   });
 });

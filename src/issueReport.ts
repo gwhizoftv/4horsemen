@@ -1,4 +1,6 @@
-import type { BallotBatch, CursorsState, StartState } from "./state.js";
+import type { AcceptedSubmission, BallotBatch, CursorsState, StartState } from "./state.js";
+import { effectiveFinalChecks } from "./checkAmendments.js";
+import { describeCheckOutcome, describeSequence, NO_CHECKS_MESSAGE } from "./projectChecks.js";
 import { coordMergesPullRequest, describeWorkflowStep, type WorkflowStepId } from "./steps.js";
 import { containmentCoverage } from "./agentLifecycle.js";
 import { containmentPolicy } from "./shellGuard.js";
@@ -37,6 +39,34 @@ export const holdDescription = (reason: CursorsState["holds"][number]["reason"])
   "vendor-failure": "the agent application reported a failure; inspect its terminal",
   unobservable: "the terminal cannot be inspected; restore terminal access before releasing this hold"
 })[reason];
+
+/**
+ * Plain-language check status: an empty policy is reported as skipped, never
+ * as passing tests, and an adopted proposal names its source and future rule.
+ */
+const checkLines = (start: StartState, cursors: CursorsState, r7: AcceptedSubmission | undefined): string[] => {
+  const amendment = r7?.checkAmendment ?? null;
+  const effective = effectiveFinalChecks(start, amendment);
+  const lines: string[] = [];
+  if (r7 !== undefined) {
+    const results = r7.checkResults ?? [];
+    lines.push(`Final checks: ${effective.length === 0 ? NO_CHECKS_MESSAGE
+      : results.length === 0 ? "none selected for this change" : describeCheckOutcome(results, results)}`);
+  } else if (effective.length === 0) {
+    lines.push(`Final checks: ${NO_CHECKS_MESSAGE}`);
+  }
+  if (amendment !== null) {
+    lines.push(`Added checks from ${amendment.agent} (commit ${amendment.productPin}): ${describeSequence(amendment.proposal.commands)}; ` +
+      `saved for later issues whose starting code contains ${amendment.proposal.entryPointPaths.join(", ")}.`);
+  } else if (r7 === undefined) {
+    const pending = cursors.accepted.filter((submission) => submission.checkProposal !== undefined &&
+      (submission.stepId === "R4.implement" || submission.stepId === "R6.revise"));
+    for (const submission of pending) {
+      lines.push(`Check proposal from ${submission.agent} awaiting review: ${describeSequence(submission.checkProposal!.commands)}.`);
+    }
+  }
+  return lines;
+};
 
 const finalization = (cursors: CursorsState) =>
   [...cursors.accepted].reverse().find((submission) => submission.stepId === "R7.finalize");
@@ -108,7 +138,8 @@ export const renderIssueReport = (
     `Chosen agent: ${chosen ?? "(not selected yet)"}`,
     `Implementation commit: ${implementationPin ?? "(none)"}`,
     `Final commit (PR head): ${pin ?? "(none)"}`,
-    `Published branch: ${branch ?? "(not pushed yet)"}`
+    `Published branch: ${branch ?? "(not pushed yet)"}`,
+    ...checkLines(start, cursors, r7)
   ];
   const conclusion = cursors.derived.consensus;
   if (conclusion?.round === start.maxRevisionRounds &&

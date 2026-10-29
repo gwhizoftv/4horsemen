@@ -9,9 +9,11 @@ import {
   planAmendmentRequestSchema,
   parseJsonWithSchema,
   revisionReadyArtifactSchema,
-  validateCommonArtifactFields
+  validateCommonArtifactFields,
+  type CheckProposal
 } from "./protocol.js";
 import type { BoundInput, EvidenceObservation, InternalOrder } from "./steps.js";
+import { proposalConflicts } from "./checkAmendments.js";
 import type { PinValidationResult } from "./pinValidation.js";
 
 export type EvidenceMirror = {
@@ -194,7 +196,7 @@ const satisfied = (
   sha: string,
   extra: Pick<
     EvidenceObservation,
-    "productPin" | "disposition" | "approvedPaths" | "choice" | "checkResults"
+    "productPin" | "disposition" | "approvedPaths" | "choice" | "checkResults" | "checkProposal"
   > = {}
 ): EvidenceObservation => ({
   agent: order.agent,
@@ -238,6 +240,33 @@ const pinErrors = async (
   });
   if (!phase.ok) outstanding.push(phase.details);
   return outstanding;
+};
+
+/**
+ * An optional check proposal must name this signal's own product pin, point at
+ * entry points tracked as files in that pinned tree (never an agent worktree),
+ * and only add to the frozen issue checks.
+ */
+const proposalErrors = async (
+  proposal: CheckProposal | undefined,
+  pin: string,
+  order: InternalOrder,
+  mirror: EvidenceMirror
+): Promise<string[]> => {
+  if (proposal === undefined) return [];
+  const errors: string[] = [];
+  if (proposal.implementationCommitSha !== pin) {
+    errors.push("checkProposal implementationCommitSha must equal this signal's product commit");
+    return errors;
+  }
+  for (const path of proposal.entryPointPaths) {
+    const blob = await mirror.readBlob(pin, path);
+    if (blob === null || blob.startsWith(`tree ${pin}:${path}\n`)) {
+      errors.push(`checkProposal entry point ${path} is not a tracked file at ${pin}`);
+    }
+  }
+  errors.push(...proposalConflicts(proposal, (order.requiredChecks ?? []).map((check) => ({ name: check.name, argv: [...check.argv] }))));
+  return errors;
 };
 
 export const evaluateEvidence = async (
@@ -348,8 +377,10 @@ export const evaluateEvidence = async (
       );
       if (disallowed.length > 0) errors.push(`implementation changes paths outside the approved file map: ${disallowed.join(", ")}`);
     }
+    errors.push(...(await proposalErrors(parsed.value.checkProposal, parsed.value.implementationCommitSha, order, mirror)));
     return errors.length === 0
-      ? satisfied(order, submissionSha, { productPin: parsed.value.implementationCommitSha })
+      ? satisfied(order, submissionSha, { productPin: parsed.value.implementationCommitSha,
+        ...(parsed.value.checkProposal === undefined ? {} : { checkProposal: parsed.value.checkProposal }) })
       : rejected(order, submissionSha, errors);
   }
 
@@ -378,8 +409,10 @@ export const evaluateEvidence = async (
       );
       if (disallowed.length > 0) errors.push(`revision changes paths outside the approved file map: ${disallowed.join(", ")}`);
     }
+    errors.push(...(await proposalErrors(parsed.value.checkProposal, parsed.value.revisedBranchHead, order, mirror)));
     return errors.length === 0
-      ? satisfied(order, submissionSha, { productPin: parsed.value.revisedBranchHead })
+      ? satisfied(order, submissionSha, { productPin: parsed.value.revisedBranchHead,
+        ...(parsed.value.checkProposal === undefined ? {} : { checkProposal: parsed.value.checkProposal }) })
       : rejected(order, submissionSha, errors);
   }
 

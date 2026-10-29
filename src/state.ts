@@ -25,6 +25,10 @@ import {
   followUpEvidenceSchema,
   issueSchema,
   issueSessionIdSchema,
+  checkCacheSchema,
+  checkCommandSchema,
+  proposalCommandSchema,
+  checkProposalSchema,
   repositoryPathSchema
 } from "./protocol.js";
 import { githubLoginSchema } from "./githubAuth.js";
@@ -39,6 +43,9 @@ import {
   type WorkflowProfile,
   type WorkflowStepId
 } from "./steps.js";
+
+// Command schemas live in protocol so agent artifacts can share them.
+export { checkCacheSchema, checkCommandSchema };
 
 export const RUNTIME_FORMAT_VERSION = 4;
 
@@ -94,41 +101,6 @@ const ballotStepIdSchema = z.enum(["R3.plan-ballot", "R5.compare-ballot", "R6.ba
 const timestampSchema = z.string().datetime({ offset: true });
 
 /**
- * Which inputs a coordinator receipt may treat as equivalent. Absent means the
- * command is never cached; commands that read Git history, commit identity,
- * external services or undeclared environment must stay uncached.
- */
-export const checkCacheSchema = z
-  .object({
-    inputs: z.enum(["tree", "tree-excluding-evidence"]),
-    env: z.array(z.string().regex(/^[A-Z_][A-Z0-9_]*$/)).default([]),
-    probes: z.array(z.array(z.string()).min(1)).default([]),
-    /**
-     * Untracked worktree inputs the command reads, such as installed
-     * dependencies, hashed when the command runs and again afterwards.
-     */
-    dependencies: z.array(repositoryPathSchema).default([]),
-    /**
-     * Exact paths inside `dependencies` left out of the digest: tool state that
-     * changes on every install or run (timestamps, caches) and is not an input.
-     */
-    dependencyExcludes: z.array(repositoryPathSchema).default([])
-  })
-  .strict();
-
-export const checkCommandSchema = z
-  .object({
-    name: z.string().min(1),
-    argv: z.array(z.string()).min(1),
-    /** Coordinator-run commands only: bounded by `maxConcurrentExpensive`. */
-    expensive: z.boolean().optional(),
-    cache: checkCacheSchema.optional(),
-    /** Diagnostic re-runs after a failure; the original failure stays the outcome. */
-    retry: z.number().int().min(0).max(2).optional()
-  })
-  .strict();
-
-/**
  * Local verification the agent-clone hooks run, declared as argument vectors so
  * the hook bodies never branch on an ecosystem marker or grep the product for a
  * script name. Absent means "undeclared" and fails an agent clone closed; the
@@ -177,7 +149,7 @@ export const verificationPolicySchema = z
     coordinated: verifyConfigSchema.optional(),
     candidate: z
       .object({
-        checks: z.array(checkCommandSchema).min(1),
+        checks: z.array(checkCommandSchema),
         covers: z.object(pathMatchShape).strict(),
         rules: z
           .array(
@@ -193,6 +165,27 @@ export const verificationPolicySchema = z
       .strict()
       .optional(),
     maxConcurrentExpensive: z.number().int().min(1).max(8).default(1)
+  })
+  .strict();
+
+/**
+ * One accepted agent-proposed addition, persisted for later issues. Entry
+ * point digests and witnessed baselines let a new issue prove its starting
+ * code contains the approved entry points before the commands become required.
+ */
+export const checkAdditionSchema = z
+  .object({
+    id: digestSchema,
+    issue: issueSchema,
+    issueSessionId: issueSessionIdSchema,
+    agent: agentIdSchema,
+    productPin: gitShaSchema,
+    commands: z.array(proposalCommandSchema).min(1),
+    entryPoints: z.array(z.object({ path: repositoryPathSchema, sha256: digestSchema }).strict()).min(1),
+    description: z.string().min(1),
+    acceptedAt: timestampSchema,
+    /** Baselines already shown to contain the approved entry points. */
+    activationBaselines: z.array(gitShaSchema).default([])
   })
   .strict();
 
@@ -294,7 +287,8 @@ export const coordinatorConfigSchema = z
           .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), "context path must be confined")
       )
       .default([]),
-    checks: z.array(checkCommandSchema).min(1),
+    /** Empty is a deliberate, reported "no automated checks" setting. */
+    checks: z.array(checkCommandSchema),
     pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000),
     toolchain: z.string().min(1).optional(),
     verify: verifyConfigSchema.optional(),
@@ -315,6 +309,12 @@ export const coordinatorConfigSchema = z
      * ambient gh/git credentials, exactly as before the selection existed.
      */
     github: z.object({ account: githubLoginSchema }).strict().optional(),
+    /**
+     * Agent-proposed checks a reviewed issue accepted (#261). Coordinator-owned:
+     * declarations cannot author them, and each activates for a new issue only
+     * when that issue's baseline provably contains its entry points.
+     */
+    checkAdditions: z.array(checkAdditionSchema).default([]),
     coordination: installStampSchema.optional()
   })
   .strict()
@@ -390,7 +390,7 @@ export const workspaceDeclarationSchema = z
     verification: verificationPolicySchema.optional(),
     workflowCriticalPrefixes: z.array(pathTokenSchema).optional(),
     workflowCriticalFiles: z.array(pathTokenSchema).optional(),
-    checks: z.array(checkCommandSchema).min(1).optional(),
+    checks: z.array(checkCommandSchema).optional(),
     branch: z
       .string()
       .refine((value) => value.includes("{issue}") && value.includes("{agent}"))
@@ -462,8 +462,13 @@ export const startStateSchema = z
     agents: z.array(agentConfigSchema).min(1),
     /** Observed after fresh-start updates, before launch; absent on older runs. */
     agentVersions: z.record(agentIdSchema, z.string().trim().min(1).nullable()).optional(),
-    checks: z.array(checkCommandSchema).min(1),
+    checks: z.array(checkCommandSchema),
     pollIntervalMs: z.number().int().min(100).max(60_000),
+    /**
+     * Local hook lists frozen at start, so re-onboarding changes new issues
+     * only. Absent on older runs, whose hooks keep reading workspace config.
+     */
+    verify: verifyConfigSchema.optional(),
     documentation: documentationProfileSchema.optional(),
     /**
      * Frozen at start so a mid-issue `coord install` cannot switch hooks or
@@ -625,6 +630,18 @@ export const derivedStateSchema = z
   })
   .strict();
 
+/** The proposal a finalization adopted, with the signal that carried it. */
+export const checkAmendmentSchema = z
+  .object({
+    id: digestSchema,
+    agent: agentIdSchema,
+    submissionSha: gitShaSchema,
+    path: z.string().min(1),
+    productPin: gitShaSchema,
+    proposal: checkProposalSchema
+  })
+  .strict();
+
 export const acceptedSubmissionSchema = z
   .object({
     stepId: stepIdSchema,
@@ -652,6 +669,12 @@ export const acceptedSubmissionSchema = z
           .strict()
       )
       .optional(),
+    /** Validated additive proposal carried by an implementation or revision signal. */
+    checkProposal: checkProposalSchema.optional(),
+    /** Finalization only: the effective check policy its results are bound to. */
+    policyDigest: digestSchema.optional(),
+    /** Finalization only: the additive amendment adopted for this issue, if any. */
+    checkAmendment: checkAmendmentSchema.optional(),
     path: z.string().min(1),
     acceptedAt: timestampSchema
   })
@@ -910,7 +933,9 @@ const journalEventTypeSchema = z.enum([
   "ballot-batch-invalidated",
   "clone-readiness-refused",
   "amendment-requested",
-  "amendment-decided"
+  "amendment-decided",
+  "check-amendment-recorded",
+  "check-addition-saved"
 ]);
 
 export const journalEventSchema = z
@@ -932,6 +957,8 @@ export const journalEventSchema = z
 export type CoordinatorConfig = z.infer<typeof coordinatorConfigSchema>;
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
 export type CheckCommand = z.infer<typeof checkCommandSchema>;
+export type CheckAddition = z.infer<typeof checkAdditionSchema>;
+export type CheckAmendment = z.infer<typeof checkAmendmentSchema>;
 export type VerifyConfig = z.infer<typeof verifyConfigSchema>;
 export type VerifyPhase = z.infer<typeof verifyPhaseSchema>;
 export type VerificationPolicy = z.infer<typeof verificationPolicySchema>;

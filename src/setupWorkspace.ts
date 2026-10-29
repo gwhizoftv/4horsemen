@@ -2,7 +2,6 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { load } from "js-yaml";
 import {
   git,
   gitOrThrow,
@@ -26,11 +25,13 @@ import { DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile, clearManagedIgnoreFile }
 import {
   atomicWriteJson,
   coordinatorConfigSchema,
-  type CheckCommand,
   type CoordinatorConfig,
+  type VerificationPolicy,
   type WorkspaceDeclaration
 } from "./state.js";
 import { repositoryPathSchema } from "./protocol.js";
+import { proposeToolchainPolicy, type CheckSettings, type ProjectPolicyProposal } from "./projectChecks.js";
+import { mergeCheckAdditionLists, withWorkspaceConfigLock } from "./checkAmendments.js";
 import type { WorkspaceLocation } from "./workspace.js";
 
 /** Pane command names that `tmux display-message` reports for each harness. */
@@ -138,168 +139,7 @@ export const agentCloneDirectory = (cloneRoot: string, project: string, agent: s
 
 // --------------------------------------------------------------- proposals --
 
-export type ProjectPolicyProposal = {
-  toolchain?: string;
-  verify?: { precommit: CheckCommand[]; prepush: CheckCommand[] };
-  checks?: CheckCommand[];
-  documentation?: CoordinatorConfig["documentation"];
-  workflowCriticalPrefixes: string[];
-  workflowCriticalFiles: string[];
-};
-
-const nodeScripts = (productRoot: string): Set<string> => {
-  try {
-    const parsed = JSON.parse(readFileSync(join(productRoot, "package.json"), "utf8")) as {
-      scripts?: Record<string, unknown>;
-    };
-    return new Set(Object.keys(parsed.scripts ?? {}));
-  } catch {
-    return new Set<string>();
-  }
-};
-
-const makeTargets = (productRoot: string): Set<string> => {
-  try {
-    const content = readFileSync(join(productRoot, "Makefile"), "utf8");
-    return new Set([...content.matchAll(/^([A-Za-z0-9_.-]+):/gm)].map((match) => match[1] as string));
-  } catch {
-    return new Set<string>();
-  }
-};
-
-const hasFlutterSdk = (productRoot: string): boolean => {
-  const mapping = (value: unknown): Record<string, unknown> =>
-    typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
-  try {
-    const pubspec = mapping(load(readFileSync(join(productRoot, "pubspec.yaml"), "utf8")));
-    const dependencies = mapping(pubspec.dependencies);
-    const development = mapping(pubspec.dev_dependencies);
-    return [dependencies.flutter, development.flutter, development.flutter_test]
-      .some((dependency) => mapping(dependency).sdk === "flutter");
-  } catch {
-    return false;
-  }
-};
-
-/**
- * A proposal only carries `verify` when it actually found something to run.
- *
- * Emitting `{ precommit: [], prepush: [] }` because nothing was recognised
- * writes the operator's explicit opt-out on their behalf: the hooks then read a
- * deliberate "this project has no local checks" and allow every commit. Missing
- * must stay missing so the hooks fail closed and say what to declare.
- */
-const proposedVerify = (
-  precommit: CheckCommand[],
-  prepush: CheckCommand[]
-): { verify?: { precommit: CheckCommand[]; prepush: CheckCommand[] } } =>
-  precommit.length === 0 && prepush.length === 0 ? {} : { verify: { precommit, prepush } };
-
-/**
- * Scaffold a project's declared policy from what its tree obviously is.
- *
- * This is the ONLY place ecosystem detection is allowed, and its output is
- * written into the workspace config for an operator to review. No hook body
- * ever sniffs: a proposal made once and recorded is reviewable, whereas a
- * decision remade silently on every commit is the drift this issue exists to
- * remove.
- */
-const proposeToolchainPolicy = (productRoot: string): ProjectPolicyProposal => {
-  const has = (relative: string): boolean => existsSync(join(productRoot, relative));
-
-  if (has("Cargo.toml")) {
-    return {
-      toolchain: "cargo",
-      verify: {
-        precommit: [{ name: "check", argv: ["cargo", "check", "--all-targets"] }],
-        prepush: [{ name: "test", argv: ["cargo", "test"] }]
-      },
-      checks: [{ name: "test", argv: ["cargo", "test"] }],
-      workflowCriticalPrefixes: ["src/", "tests/"],
-      workflowCriticalFiles: ["Cargo.toml", "Cargo.lock"]
-    };
-  }
-
-  if (has("go.mod")) {
-    return {
-      toolchain: "go",
-      verify: {
-        precommit: [{ name: "vet", argv: ["go", "vet", "./..."] }],
-        prepush: [{ name: "test", argv: ["go", "test", "./..."] }]
-      },
-      checks: [
-        { name: "build", argv: ["go", "build", "./..."] },
-        { name: "test", argv: ["go", "test", "./..."] }
-      ],
-      workflowCriticalPrefixes: ["cmd/", "internal/", "pkg/"],
-      workflowCriticalFiles: ["go.mod", "go.sum"]
-    };
-  }
-
-  const flutter = hasFlutterSdk(productRoot);
-  if (has("package.json")) {
-    const scripts = nodeScripts(productRoot);
-    const manager = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : "npm";
-    const runScript = (name: string): CheckCommand => ({
-      name,
-      argv: manager === "npm" ? ["npm", "run", "--silent", name] : [manager, "run", name]
-    });
-    const precommit = ["check:fast", "check", "lint"].filter((name) => scripts.has(name)).slice(0, 1);
-    const prepush = ["test:e2e"].filter((name) => scripts.has(name));
-    const finalization = ["check", "test"].filter((name) => scripts.has(name)).slice(0, 1);
-    const proposal: ProjectPolicyProposal = {
-      toolchain: manager,
-      ...proposedVerify(precommit.map(runScript), prepush.map(runScript)),
-      checks: finalization.length === 0 ? undefined : finalization.map(runScript),
-      workflowCriticalPrefixes: ["src/", "test/", "scripts/", "githooks/"],
-      workflowCriticalFiles: ["package.json", has("pnpm-lock.yaml") ? "pnpm-lock.yaml" : has("yarn.lock") ? "yarn.lock" : "package-lock.json"]
-    };
-    // Preserve existing Node gates; only a confirmed Flutter app may fall
-    // through an incidental Node manifest with no finalization script.
-    if (proposal.checks !== undefined || !flutter) return proposal;
-  }
-
-  const targets = makeTargets(productRoot);
-  let make: ProjectPolicyProposal | undefined;
-  if (targets.size > 0) {
-    const target = (name: string): CheckCommand => ({ name, argv: ["make", name] });
-    make = {
-      toolchain: "make",
-      ...proposedVerify(targets.has("check") ? [target("check")] : [], []),
-      checks: targets.has("test") ? [target("test")] : undefined,
-      workflowCriticalPrefixes: [],
-      workflowCriticalFiles: ["Makefile"]
-    };
-    // Reinstall must not replace an already usable project test workflow.
-    if (make.checks !== undefined) return make;
-  }
-
-  if (flutter) {
-    const analyze = { name: "analyze", argv: ["flutter", "analyze", "--no-fatal-infos", "--no-fatal-warnings"] };
-    const test = { name: "test", argv: ["flutter", "test"] };
-    return {
-      toolchain: "flutter",
-      verify: { precommit: [analyze], prepush: [test] },
-      checks: [analyze, test],
-      workflowCriticalPrefixes: ["lib/", "test/", "integration_test/", "android/", "ios/", "web/", "macos/", "windows/", "linux/"],
-      workflowCriticalFiles: ["pubspec.yaml", "pubspec.lock", "analysis_options.yaml"]
-    };
-  }
-
-  if (["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"].some(has)) {
-    const test = { name: "test", argv: ["pytest", "-q"] };
-    return {
-      toolchain: "python",
-      verify: { precommit: [test], prepush: [] },
-      checks: [test],
-      workflowCriticalPrefixes: ["src/", "tests/", "test/"],
-      workflowCriticalFiles: ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "pytest.ini", "tox.ini",
-        "uv.lock", "poetry.lock", "Pipfile", "Pipfile.lock"]
-    };
-  }
-
-  return make ?? { workflowCriticalPrefixes: [], workflowCriticalFiles: [] };
-};
+export type { ProjectPolicyProposal } from "./projectChecks.js";
 
 export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal => {
   const proposal = proposeToolchainPolicy(productRoot);
@@ -341,6 +181,12 @@ export type WorkspaceConfigInput = {
   completesRoot: string;
   /** Selected GitHub account name; absent or null for ambient credentials. */
   githubAccount?: string | null;
+  /** Resolved commit and pull-request check lists; explicit empty lists are valid. */
+  checkSettings?: CheckSettings;
+  /** The existing workspace config: saved policy outranks fresh detection. */
+  previous?: CoordinatorConfig | null;
+  /** Resolved coordinator verification; null removes it, undefined uses the declaration. */
+  verification?: VerificationPolicy | null;
 };
 
 /**
@@ -350,18 +196,12 @@ export type WorkspaceConfigInput = {
  */
 export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: CoordinatorConfig["coordination"]): CoordinatorConfig => {
   const declared = input.declared ?? {};
-  const checks = declared.checks ?? input.proposal.checks;
-  if (checks === undefined || checks.length === 0) {
-    throw new Error(
-      `Cannot infer finalization checks for ${input.project}. Declare them explicitly and re-run:\n` +
-        "  coord install … --declare <file.json>\n" +
-        "  where the file contains at least: { \"checks\": [{ \"name\": \"test\", \"argv\": [\"…\"] }] }\n" +
-        "  See config.product.example.json in the coordination install."
-    );
-  }
-  const verify = declared.verify ?? input.proposal.verify;
-  const toolchain = declared.toolchain ?? input.proposal.toolchain;
-  const documentation = declared.documentation ?? input.proposal.documentation;
+  const previous = input.previous ?? null;
+  const checks = input.checkSettings?.checks ?? declared.checks ?? input.proposal.checks ?? [];
+  const verify = input.checkSettings !== undefined ? input.checkSettings.verify : declared.verify ?? input.proposal.verify;
+  const toolchain = declared.toolchain ?? previous?.toolchain ?? input.proposal.toolchain;
+  const documentation = declared.documentation ?? previous?.documentation ?? input.proposal.documentation;
+  const verification = input.verification === undefined ? declared.verification : input.verification ?? undefined;
 
   return coordinatorConfigSchema.parse({
     project: input.project,
@@ -388,11 +228,12 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     ...(toolchain === undefined ? {} : { toolchain }),
     ...(verify === undefined ? {} : { verify }),
     ...(documentation === undefined ? {} : { documentation }),
-    ...(declared.verification === undefined ? {} : { verification: declared.verification }),
-    workflowCriticalPrefixes: declared.workflowCriticalPrefixes ?? input.proposal.workflowCriticalPrefixes,
-    workflowCriticalFiles: declared.workflowCriticalFiles ?? input.proposal.workflowCriticalFiles,
+    ...(verification === undefined ? {} : { verification }),
+    workflowCriticalPrefixes: declared.workflowCriticalPrefixes ?? previous?.workflowCriticalPrefixes ?? input.proposal.workflowCriticalPrefixes,
+    workflowCriticalFiles: declared.workflowCriticalFiles ?? previous?.workflowCriticalFiles ?? input.proposal.workflowCriticalFiles,
     completesRoot: input.completesRoot,
     ...(input.githubAccount === null || input.githubAccount === undefined ? {} : { github: { account: input.githubAccount } }),
+    checkAdditions: previous?.checkAdditions ?? [],
     coordination: stamp
   });
 };
@@ -413,16 +254,31 @@ export const writeWorkspaceConfig = (
 ): string => {
   const directory = workspace.workspaceRoot;
   const path = workspace.configPath;
-  const existing = existsSync(path) ? readFileSync(path, "utf8") : null;
-  const rendered = `${JSON.stringify(config, null, 2)}\n`;
-  if (existing === rendered) {
-    options.log(`workspace config already current at ${path}\n`);
+  /** Accepted additions saved since this config was built are merged, never dropped. */
+  const current = (): { existing: string | null; next: CoordinatorConfig } => {
+    const existing = existsSync(path) ? readFileSync(path, "utf8") : null;
+    let saved: CoordinatorConfig["checkAdditions"] = [];
+    try {
+      if (existing !== null) saved = coordinatorConfigSchema.parse(JSON.parse(existing)).checkAdditions;
+    } catch {
+      // install() already refused an unreadable saved config before any effect.
+    }
+    return { existing, next: { ...config, checkAdditions: mergeCheckAdditionLists(saved, config.checkAdditions) } };
+  };
+  const write = (): void => {
+    const { existing, next } = current();
+    if (existing === `${JSON.stringify(next, null, 2)}\n`) {
+      options.log(`workspace config already current at ${path}\n`);
+      return;
+    }
+    act(options, `write workspace config ${path}`, () => atomicWriteJson(workspace.coordRoot, path, next));
+  };
+  if (options.dryRun) {
+    write();
     return path;
   }
-  act(options, `write workspace config ${path}`, () => {
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    atomicWriteJson(workspace.coordRoot, path, config);
-  });
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  withWorkspaceConfigLock(path, write);
   return path;
 };
 

@@ -21,6 +21,41 @@ export const repositoryPathSchema = z
   .max(1024)
   .refine((path) => !path.startsWith("/") && !path.split("/").includes(".."), "expected a safe repository-relative path");
 
+/**
+ * Which inputs a coordinator receipt may treat as equivalent. Absent means the
+ * command is never cached; commands that read Git history, commit identity,
+ * external services or undeclared environment must stay uncached.
+ */
+export const checkCacheSchema = z
+  .object({
+    inputs: z.enum(["tree", "tree-excluding-evidence"]),
+    env: z.array(z.string().regex(/^[A-Z_][A-Z0-9_]*$/)).default([]),
+    probes: z.array(z.array(z.string()).min(1)).default([]),
+    /**
+     * Untracked worktree inputs the command reads, such as installed
+     * dependencies, hashed when the command runs and again afterwards.
+     */
+    dependencies: z.array(repositoryPathSchema).default([]),
+    /**
+     * Exact paths inside `dependencies` left out of the digest: tool state that
+     * changes on every install or run (timestamps, caches) and is not an input.
+     */
+    dependencyExcludes: z.array(repositoryPathSchema).default([])
+  })
+  .strict();
+
+export const checkCommandSchema = z
+  .object({
+    name: z.string().min(1),
+    argv: z.array(z.string()).min(1),
+    /** Coordinator-run commands only: bounded by `maxConcurrentExpensive`. */
+    expensive: z.boolean().optional(),
+    cache: checkCacheSchema.optional(),
+    /** Diagnostic re-runs after a failure; the original failure stays the outcome. */
+    retry: z.number().int().min(0).max(2).optional()
+  })
+  .strict();
+
 export const artifactCitationSchema = z
   .object({
     agent: agentIdSchema,
@@ -136,6 +171,35 @@ export const planBallotArtifactSchema = z
   })
   .strict();
 
+/** An agent-proposed command: an argument vector only, never cache or retry shortcuts. */
+export const proposalCommandSchema = z
+  .object({
+    name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/, "expected a short command name"),
+    argv: z.array(z.string()).min(1).refine((argv) => argv[0] !== "", "argv[0] must name an executable")
+  })
+  .strict();
+
+/**
+ * Optional, additive check proposal carried by an implementation or revision
+ * signal. It names the commands, the tracked entry points that justify them,
+ * and the product commit containing those entry points. Strict on purpose: a
+ * proposal cannot carry fields that replace or remove existing checks.
+ */
+export const checkProposalSchema = z
+  .object({
+    implementationCommitSha: gitShaSchema,
+    commands: z.array(proposalCommandSchema).min(1).max(8),
+    entryPointPaths: z.array(amendmentPathSchema).min(1).max(20),
+    description: amendmentReasonSchema
+  })
+  .strict()
+  .refine((value) => new Set(value.commands.map((command) => command.name)).size === value.commands.length,
+    "proposed command names must be unique")
+  .refine((value) => new Set(value.entryPointPaths).size === value.entryPointPaths.length, "entry point paths must be unique");
+
+export type ProposalCommand = z.infer<typeof proposalCommandSchema>;
+export type CheckProposal = z.infer<typeof checkProposalSchema>;
+
 export const implementationReadyArtifactSchema = z
   .object({
     ...commonArtifactFields,
@@ -143,7 +207,8 @@ export const implementationReadyArtifactSchema = z
     inputSetHash: digestSchema,
     implementationCommitSha: gitShaSchema,
     scopeHash: digestSchema.optional(),
-    approvedPaths: z.array(repositoryPathSchema).min(1)
+    approvedPaths: z.array(repositoryPathSchema).min(1),
+    checkProposal: checkProposalSchema.optional()
   })
   .strict();
 
@@ -165,7 +230,8 @@ export const revisionReadyArtifactSchema = z
     round: z.number().int().min(1),
     revisedBranchHead: gitShaSchema,
     scopeHash: digestSchema.optional(),
-    basedOn: z.array(gitShaSchema).min(1)
+    basedOn: z.array(gitShaSchema).min(1),
+    checkProposal: checkProposalSchema.optional()
   })
   .strict();
 

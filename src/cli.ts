@@ -29,9 +29,11 @@ import { sha256 } from "./hash.js";
 import { assertRequiredArtifact, renderHookScope, resolveHookBinding, resolveWorkspaceConfig, runVerifyPhase, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { inspectOutgoingChanges, inspectStagedChanges } from "./changeClassification.js";
 import { hookVerificationRecorder } from "./verificationLog.js";
-import { DEFAULT_AGENTS, install, onboard, packageVersion, savedGitHubAccount, uninstall } from "./install.js";
+import { DEFAULT_AGENTS, install, onboard, packageVersion, readDeclaration, savedGitHubAccount, uninstall } from "./install.js";
+import { describeCheckSettings, discoverProjectChecks, NO_CHECKS_MESSAGE, promptCheckSettings, type CheckSelection } from "./projectChecks.js";
 import { BareMirror } from "./mirror.js";
-import { localConfigGet, worktreeRoot } from "./gitExec.js";
+import { git, localConfigGet, worktreeRoot } from "./gitExec.js";
+import { additionStatusAt, mergeAdditions, recordActivationBaseline, type BaselineReader } from "./checkAmendments.js";
 import { makeAgentClonesBaseReady, makeManualClonesBaseReady, prepareAgentIssueBranches, type CloneBaseReadyResult } from "./prepareAgentBranch.js";
 import {
   agentRuntimePaths,
@@ -64,6 +66,7 @@ import {
   readStartStateHeader,
   replaceCursor,
   verifyPhaseSchema,
+  type CheckCommand,
   type CoordinatorConfig,
   type CursorsState
 } from "./state.js";
@@ -133,6 +136,8 @@ export type CliDependencies = {
   confirm?: (question: string) => Promise<boolean>;
   /** Test/embedding override for an owner menu choice; the default returns null without a TTY. */
   choose?: (question: string, choices: readonly string[]) => Promise<string | null>;
+  /** Test/embedding override for one owner line of text; the default returns null without a TTY. */
+  ask?: (question: string) => Promise<string | null>;
   /** Test/embedding override for an owner-attended command sharing this terminal (gh auth login). */
   interactive?: (argv: readonly string[], cwd: string) => Promise<number>;
 };
@@ -397,6 +402,11 @@ missing, expired or revoked, coord stops and says: Run: coord auth login.
 again through gh (or replaces the token with --with-token on stdin) and restores gh's
 previously active account. Without a selection, ambient gh and git credentials apply.
 
+In a terminal, onboard shows the build and test commands it found and asks which to save and
+when to run them (before each agent commit, before opening a pull request, or both); it runs
+nothing and prints the settings file. Without a terminal it keeps saved settings or uses one
+clear detected plan. --declare <file.json> remains the advanced way to state commands.
+
 install remains the advanced explicit interface. Onboard and install leave the repository's
 tracked tree untouched; a fresh human clone receives no coordination hooks or metadata.
 COORD_ISSUE and COORD_AGENT may replace their corresponding owner-control options.
@@ -538,6 +548,61 @@ const defaultChoose = async (question: string, choices: readonly string[]): Prom
   } finally {
     prompt.close();
   }
+};
+
+const defaultAsk = async (question: string): Promise<string | null> => {
+  if (process.env.VITEST !== undefined || process.stdin.isTTY !== true || process.stdout.isTTY !== true) return null;
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    // EOF closes the interface without an answer; that is a cancellation.
+    return await new Promise<string | null>((resolvePromise) => {
+      prompt.once("close", () => resolvePromise(null));
+      prompt.question(`${question} `).then(resolvePromise, () => resolvePromise(null));
+    });
+  } finally {
+    prompt.close();
+  }
+};
+
+/**
+ * The issue's final checks: configured commands plus saved additions whose
+ * entry points this baseline provably contains. A merged addition whose entry
+ * point disappeared is a stale policy the owner must resolve before starting.
+ */
+const activeIssueChecks = (
+  config: CoordinatorConfig, configPath: string, clone: string, baseline: string, log: (message: string) => void
+): CheckCommand[] => {
+  if (config.checkAdditions.length === 0) return [...config.checks];
+  // An unreadable clone proves nothing: absent content and no ancestry keep additions pending.
+  const read = (...args: string[]) => { try { return git(clone, ...args); } catch { return null; } };
+  const reader: BaselineReader = {
+    contentSha256: (path) => {
+      const blob = read("cat-file", "blob", `${baseline}:${path}`);
+      return blob?.exitCode === 0 ? sha256(blob.stdout) : null;
+    },
+    isAncestor: (commit) => read("merge-base", "--is-ancestor", commit, baseline)?.exitCode === 0
+  };
+  const statuses = config.checkAdditions.map((addition) => additionStatusAt(addition, reader));
+  const stale = statuses.filter((status) => status.status === "stale");
+  if (stale.length > 0) {
+    throw new Error(`${stale.map((status) => status.reason).join("\n")}\n` +
+      `  Restore the entry point on ${config.baseBranch}, or remove that entry from checkAdditions in ${configPath}.`);
+  }
+  let checks = [...config.checks];
+  for (const status of statuses) {
+    if (status.status === "active") {
+      try {
+        checks = mergeAdditions(checks, status.addition.commands);
+      } catch (error) {
+        log(`[WARN] ${status.reason}, but not activated: ${error instanceof Error ? error.message : String(error)}\n`);
+        continue;
+      }
+    }
+    log(`${status.status === "active" ? "[OK]" : "[WAIT]"} ${status.reason}.\n`);
+  }
+  const witnessed = statuses.filter((status) => status.status === "active" && status.witnessed).map((status) => status.addition.id);
+  if (witnessed.length > 0) recordActivationBaseline(configPath, witnessed, baseline);
+  return checks;
 };
 
 const defaultInteractive = (argv: readonly string[], cwd: string): Promise<number> =>
@@ -873,6 +938,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
 
   const confirm = dependencies.confirm ?? defaultConfirm;
   const choose = dependencies.choose ?? defaultChoose;
+  const ask = dependencies.ask ?? defaultAsk;
   const interactive = dependencies.interactive ?? defaultInteractive;
 
   /**
@@ -951,6 +1017,35 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     const choice = await choose("Which GitHub account should this workspace use?", [...accounts.logins, SIGN_IN_ANOTHER_ACCOUNT]);
     if (choice === null) return undefined;
     return choice === SIGN_IN_ANOTHER_ACCOUNT ? signInGitHub(null, false) : choice;
+  };
+
+  /**
+   * Ask which build and test commands to save, only in a terminal and only
+   * when a declaration does not already state both lists. Nothing chosen here
+   * runs; cancelling leaves the saved settings untouched.
+   */
+  const chooseOnboardChecks = async (
+    productRoot: string,
+    saved: ReturnType<typeof savedGitHubAccount>,
+    declarePath: string | undefined
+  ): Promise<CheckSelection | undefined> => {
+    const canAsk = dependencies.ask !== undefined ||
+      (process.env.VITEST === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true);
+    if (!canAsk) return undefined;
+    const declared = declarePath === undefined ? null : readDeclaration(declarePath);
+    if (declared?.checks !== undefined && declared.verify !== undefined) return undefined;
+    const selection = await promptCheckSettings({
+      discovery: discoverProjectChecks(productRoot),
+      saved: saved.saved === null ? null
+        : { ...(saved.saved.verify === undefined ? {} : { verify: saved.saved.verify }), checks: saved.saved.checks },
+      prompts: { choose, ask, print: io.stdout }
+    });
+    if (selection === null) throw new Error(`Onboarding cancelled; the settings in ${saved.configPath} are unchanged.`);
+    if (selection.kind === "change") {
+      io.stdout(["", "These settings will be saved (the commands are not run now):",
+        ...describeCheckSettings(selection.settings).map((line) => `  ${line}`), `  Settings file: ${saved.configPath}`, ""].join("\n") + "\n");
+    }
+    return selection;
   };
 
   const verifyInstallAccount = async (account: string, productRoot: string, origin: string | undefined): Promise<void> => {
@@ -1222,6 +1317,14 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       log: io.stdout
     });
 
+    // Saved additions activate per issue, at this exact baseline, before any
+    // agent starts; the frozen list below is the issue's policy from now on.
+    const checks = activeIssueChecks(config, configPath, roster[0]!.root, parsedBaseline.data, io.stdout);
+    if (checks.length === 0) {
+      io.stdout(config.verify !== undefined && config.verify.precommit.length === 0 && config.verify.prepush.length === 0
+        ? `${NO_CHECKS_MESSAGE}\n` : "No build or test commands run before opening the pull request.\n");
+    }
+
     // Do this before resumable state exists: attach/recovery must not launch a
     // pane while a fresh-start updater is still replacing its executable.
     const agentVersions = await updateAgentVersions(roster, runner, io);
@@ -1249,11 +1352,12 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         configPath,
         agents: roster,
         agentVersions,
-        checks: config.checks,
+        checks,
+        ...(config.verify === undefined ? {} : { verify: config.verify }),
         documentation: config.documentation,
         ...(config.verification === undefined ? {} : {
           verification: config.verification,
-          verificationDigest: sha256(JSON.stringify({ verification: config.verification, checks: config.checks,
+          verificationDigest: sha256(JSON.stringify({ verification: config.verification, checks,
             documentation: config.documentation ?? null }))
         }),
         workflowCriticalPrefixes: config.workflowCriticalPrefixes,
@@ -1405,7 +1509,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const githubAccount = parsed.flags.get("github-account") ?? saved.account ?? await chooseOnboardAccount();
       if (githubAccount !== undefined) await verifyInstallAccount(githubAccount, productRoot, undefined);
       const baseBranch = await resolveInstallBaseBranch(productRoot, undefined, githubAccount, parsed.flags.get("base-branch"));
+      const declarePath = parsed.flags.has("declare") ? resolve(io.cwd, requireFlag(parsed, "declare")) : undefined;
+      const checkSelection = await chooseOnboardChecks(productRoot, saved, declarePath);
       const result = onboard({
+        ...(checkSelection === undefined ? {} : { checkSelection }),
         baseBranch,
         ...(githubAccount === undefined ? {} : { githubAccount }),
         coordRoot: saved.coordRoot,
@@ -1413,7 +1520,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         productRoot,
         agents,
         profile,
-        ...(parsed.flags.has("declare") ? { declarePath: resolve(io.cwd, requireFlag(parsed, "declare")) } : {}),
+        ...(declarePath === undefined ? {} : { declarePath }),
         ...(parsed.flags.has("completes-root")
           ? { completesRoot: resolve(io.cwd, requireFlag(parsed, "completes-root")) }
           : {}),
@@ -1602,8 +1709,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         : inspectOutgoingChanges(clone, refs, localConfigGet(clone, "consensus.remoteName") ?? "origin",
           localConfigGet(clone, "consensus.sharedBranch") ?? "main");
       const binding = resolveHookBinding({ clone, configPath, phase, refs });
-      io.stdout(binding.bound ? `coord ${phase}: coordinator-bound issue ${binding.issue} — coordinated checks\n`
-        : `coord ${phase}: local verification — ${binding.reason}\n`);
+      io.stdout(!binding.bound ? `coord ${phase}: local verification — ${binding.reason}\n`
+        : binding.kind === "coordinated" ? `coord ${phase}: coordinator-bound issue ${binding.issue} — coordinated checks\n`
+          : `coord ${phase}: issue ${binding.issue} — checks saved at issue start\n`);
       const result = runVerifyPhase({ clone, config, phase, changes, log: io.stdout,
         record: hookVerificationRecorder(clone, configPath, io.stderr),
         ...(binding.bound ? { bound: binding.commands } : {}) });

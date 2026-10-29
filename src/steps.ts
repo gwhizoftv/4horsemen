@@ -1,4 +1,5 @@
-import type { FollowUpEvidence, FollowUpIssueArtifact, PlanAmendmentRequest } from "./protocol.js";
+import type { CheckProposal, FollowUpEvidence, FollowUpIssueArtifact, PlanAmendmentRequest, ProposalCommand } from "./protocol.js";
+import type { CheckAmendment } from "./state.js";
 
 export const DEFAULT_MAX_REVISION_ROUNDS = 3;
 
@@ -367,6 +368,8 @@ export type InternalOrder = {
   /** Optional: orders built before coordinator verification render as local mode. */
   verificationMode?: "local" | "coordinator";
   candidateResults?: readonly CandidateResults[];
+  /** Frozen issue checks an implementation or revision proposal may only add to. */
+  requiredChecks?: readonly Pick<ProposalCommand, "name" | "argv">[];
 };
 
 export type CheckResult = {
@@ -396,6 +399,10 @@ export type EvidenceObservation = {
   approvedPaths?: readonly string[];
   choice?: string;
   checkResults?: readonly CheckResult[];
+  checkProposal?: CheckProposal;
+  /** Finalization: the effective policy the results are bound to, and its amendment. */
+  policyDigest?: string;
+  checkAmendment?: CheckAmendment;
   /** Present when the observation came from a private ballot response. */
   responseSha256?: string;
   rationale?: string;
@@ -417,6 +424,9 @@ export type MachineDecision =
       approvedPaths?: readonly string[];
       choice?: string;
       checkResults?: readonly CheckResult[];
+      checkProposal?: CheckProposal;
+      policyDigest?: string;
+      checkAmendment?: CheckAmendment;
       followUp?: FollowUpEvidence;
     }
   | {

@@ -3596,6 +3596,115 @@ describe("coordinator verification gates", () => {
   });
 });
 
+describe("agent-proposed check adoption (#261)", () => {
+  it("adopts only the authorized proposal during a no-checks issue, binds results to the effective policy, and saves it once", async () => {
+    const { root, paths } = fixture({ prPolicy: "coord-open-unmerged", origin: "https://github.com/example/project.git" });
+    const seed = join(root, "proposal-seed");
+    mkdirSync(seed);
+    git(seed, "init", "-q");
+    writeFileSync(join(seed, "README.md"), "baseline\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "baseline");
+    const baselineSha = git(seed, "rev-parse", "HEAD");
+    const script = "#!/bin/sh\nexit 0\n";
+    mkdirSync(join(seed, "scripts"));
+    writeFileSync(join(seed, "scripts/test.sh"), script);
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "implementation with a new test entry point");
+    const pin = git(seed, "rev-parse", "HEAD");
+    mkdirSync(join(seed, ".signals/issue-1"), { recursive: true });
+    writeFileSync(join(seed, ".signals/issue-1/implementation-ready-codex.json"), "{}\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "signal");
+    const signalSha = git(seed, "rev-parse", "HEAD");
+    rmSync(join(seed, ".signals"), { recursive: true });
+    git(seed, "add", "-A");
+    git(seed, "commit", "-qm", "cleanup");
+    const finalSha = git(seed, "rev-parse", "HEAD");
+    git(root, "clone", "--bare", "-q", seed, paths.mirror);
+    const configPath = join(root, "config.json");
+    writeFileSync(configPath, JSON.stringify(stateModule.coordinatorConfigSchema.parse({ project: "project",
+      origin: "https://github.com/example/project.git", agents: [{ id: "codex", root: "/clones/codex", launcher: "start-codex.sh" }],
+      branch: "issue-{issue}/{agent}", checks: [] })));
+    writeFileSync(paths.start, JSON.stringify({ ...readStartState(paths), baselineSha, checks: [] }));
+    const startBytes = readFileSync(paths.start, "utf8");
+    const start = readStartState(paths);
+    const now = "2026-10-01T00:00:00.000Z";
+    const proposal = { implementationCommitSha: pin, commands: [{ name: "native-test", argv: ["sh", "scripts/test.sh"] }],
+      entryPointPaths: ["scripts/test.sh"], description: "Runs the new native tests." };
+    const losing = { implementationCommitSha: baselineSha, commands: [{ name: "other", argv: ["other-test"] }],
+      entryPointPaths: ["README.md"], description: "A losing implementation's proposal." };
+    const current = readCursorsState(paths);
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...current,
+      issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
+      derived: { ...current.derived, implementationSelection: {
+        kind: "implementation-selection", algorithm: "plurality-active-roster-v1", inputSetHash: "e".repeat(64),
+        activeRoster: current.activeRoster, inputs: [{ kind: "implementation", agent: "codex", submissionSha: signalSha,
+          path: ".signals/issue-1/implementation-ready-codex.json", productPin: pin }],
+        decisionId: `implementation-selection:${"e".repeat(64)}`, supersedes: null, decidedAt: now,
+        winner: "codex", implementationPin: pin, reviser: "codex" } },
+      accepted: [
+        { stepId: "R4.implement", agent: "codex", round: null, submissionSha: signalSha, productPin: pin,
+          path: ".signals/issue-1/implementation-ready-codex.json", acceptedAt: now, checkProposal: proposal },
+        { stepId: "R4.implement", agent: "claude", round: null, submissionSha: baselineSha, productPin: baselineSha,
+          path: ".signals/issue-1/implementation-ready-claude.json", acceptedAt: now, checkProposal: losing }
+      ] }));
+    const cursors = readCursorsState(paths);
+    const order = buildOrder(paths, start, cursors, "codex", "R7.finalize", null);
+    expect(order.inputs).toEqual([{ agent: "codex", commitSha: pin, path: ".signals/issue-1/implementation-ready-codex.json", kind: "consensus" }]);
+    const observation = { agent: "codex", actionId: order.actionId, submissionSha: finalSha,
+      status: "satisfied" as const, outstanding: [], productPin: finalSha };
+    const calls: string[][] = [];
+    const messages: string[] = [];
+    const loop = (exitCode: number) => new CoordinatorRunLoop(paths, { tmux: null, mirror: new BareMirror(paths.mirror, seed),
+      log: (message) => messages.push(message),
+      processRunner: async (argv: readonly string[]) => { calls.push([...argv]); return { exitCode, stdout: "", stderr: "" }; } });
+
+    const failed = await loop(1).verifyFinalizationChecks(start, order, observation, cursors);
+    expect(failed.status).toBe("rejected");
+    expect(failed.outstanding.join(" ")).toContain("native-test failed");
+    expect(stateModule.readConfig(configPath).checkAdditions).toEqual([]);
+
+    const passed = await loop(0).verifyFinalizationChecks(start, order, observation, cursors);
+    expect(passed.status).toBe("satisfied");
+    // The added command ran in a fresh worktree at the final pin; the losing proposal never ran.
+    expect(calls).toEqual([["sh", "scripts/test.sh"], ["sh", "scripts/test.sh"]]);
+    expect(passed.checkAmendment?.proposal).toEqual(proposal);
+    expect(passed.policyDigest).toBeDefined();
+    expect(passed.policyDigest).not.toBe(start.verificationDigest);
+    const saved = stateModule.readConfig(configPath).checkAdditions;
+    expect(saved).toMatchObject([{ issue: 1, agent: "codex", productPin: pin, commands: proposal.commands,
+      entryPoints: [{ path: "scripts/test.sh", sha256: createHash("sha256").update(script).digest("hex") }] }]);
+    expect(readFileSync(paths.start, "utf8")).toBe(startBytes);
+    expect(readJournal(paths).map((event) => event.type)).toEqual(expect.arrayContaining(["check-amendment-recorded", "check-addition-saved"]));
+    expect(messages.join("\n")).toContain("Final checks for");
+    // A restart re-verifies without duplicating the saved addition.
+    expect((await loop(0).verifyFinalizationChecks(start, order, observation, cursors)).status).toBe("satisfied");
+    expect(stateModule.readConfig(configPath).checkAdditions).toHaveLength(1);
+
+    // Publication requires final results bound to the effective policy.
+    writeFileSync(paths.issueSnapshot, JSON.stringify({ repository: "example/project", number: 1, title: "Native checks",
+      body: "Add checks.", url: "https://github.com/example/project/issues/1" }));
+    const publish = async (policyDigest: string | undefined) => {
+      const state = readCursorsState(paths);
+      writeCursorsState(paths, cursorsStateSchema.parse({ ...state,
+        publication: { status: "pending", finalSha, branch: "issue-1/codex-final", url: null, error: null, attempts: 0 },
+        accepted: [...state.accepted.filter((submission) => submission.stepId !== "R7.finalize"),
+          { stepId: "R7.finalize", agent: "codex", round: null, submissionSha: finalSha, productPin: finalSha,
+            path: ".signals/issue-1/finalization-codex.json", acceptedAt: now, checkResults: passed.checkResults,
+            ...(policyDigest === undefined ? {} : { policyDigest }) }] }));
+      const mirror = new BareMirror(paths.mirror, seed);
+      mirror.publishBranch = async () => undefined;
+      return new CoordinatorRunLoop(paths, { tmux: null, mirror, log: () => undefined,
+        pullRequestOpener: async () => ({ url: "https://github.com/example/project/pull/2" }) }).runTick();
+    };
+    const stale = await publish(undefined);
+    expect(stale.publication.status).toBe("failed");
+    expect(stale.publication.error).toContain("the added checks must pass at this commit before publication");
+    expect((await publish(passed.policyDigest)).publication.status).toBe("completed");
+  });
+});
+
 describe("advisory verification ingestion", () => {
   const measurementFixture = () => {
     const { root, paths } = fixture();

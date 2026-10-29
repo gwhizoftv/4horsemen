@@ -218,6 +218,54 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
   return { exitCode: 0, stdout: execFileSync(command, args, { cwd, encoding: "utf8" }), stderr: "" };
 };
 
+describe("issue check settings at start (#261)", () => {
+  it("freezes local lists and activates a saved addition only at a baseline containing its entry point", async () => {
+    const f = setup();
+    const clone = join(f.root, "clone-codex");
+    fixtureGit(clone, "init", "-q", "--initial-branch=main");
+    mkdirSync(join(clone, "scripts"));
+    writeFileSync(join(clone, "scripts/test.sh"), "#!/bin/sh\nexit 0\n");
+    fixtureGit(clone, "add", "scripts");
+    fixtureGit(clone, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "entry point");
+    const merged = fixtureGit(clone, "rev-parse", "HEAD");
+    fixtureGit(clone, "checkout", "-qb", "issue-1/codex");
+    const config = JSON.parse(readFileSync(f.configPath, "utf8"));
+    const native = { name: "native-test", argv: ["sh", "scripts/test.sh"] };
+    const addition = (id: string, productPin: string, path: string) => ({ id: id.repeat(64), issue: 7, issueSessionId: "issue-7:x",
+      agent: "claude", productPin, commands: [native], entryPoints: [{ path, sha256: "e".repeat(64) }],
+      description: "native tests", acceptedAt: "2026-10-01T00:00:00.000Z", activationBaselines: [] });
+    writeFileSync(f.configPath, JSON.stringify({ ...config, checks: [], verify: { precommit: [], prepush: [] },
+      checkAdditions: [addition("a", merged, "scripts/test.sh"), addition("b", "f".repeat(40), "scripts/unmerged.sh")] }));
+    const output: string[] = [];
+    expect(await runCli(["start", "1", "--profile", "solo", "--config", f.configPath, "--coord-runtime", f.runtime], {
+      makeRunLoop: fakeLoop, io: { stdout: (line) => output.push(line), stderr: (line) => output.push(line) },
+      processRunner: async (argv) => argv.includes("ls-remote")
+        ? { exitCode: 0, stdout: `${merged}\trefs/heads/main\n`, stderr: "" } : successfulStartGit(argv)
+    })).toBe(0);
+    const start = readStartState(issueRuntimePaths(f.runtime, 1));
+    expect(start.checks).toEqual([native]);
+    expect(start.verify).toEqual({ precommit: [], prepush: [] });
+    expect(output.join("")).toMatch(/\[OK\] accepted check from issue 7 \(native-test\): baseline contains the accepted change/);
+    expect(output.join("")).toMatch(/\[WAIT\] accepted check from issue 7 \(native-test\) stays pending: scripts\/unmerged\.sh not in this baseline yet/);
+    // Later onboarding edits apply to new issues; the running issue keeps its frozen lists.
+    writeFileSync(f.configPath, JSON.stringify({ ...JSON.parse(readFileSync(f.configPath, "utf8")),
+      verify: { precommit: [{ name: "edited", argv: ["false"] }], prepush: [] } }));
+    expect(readStartState(issueRuntimePaths(f.runtime, 1)).verify).toEqual({ precommit: [], prepush: [] });
+  });
+
+  it("starts a no-checks issue and says so plainly", async () => {
+    const f = setup();
+    const config = JSON.parse(readFileSync(f.configPath, "utf8"));
+    writeFileSync(f.configPath, JSON.stringify({ ...config, checks: [], verify: { precommit: [], prepush: [] } }));
+    const output: string[] = [];
+    expect(await runCli(["start", "1", "--profile", "solo", "--config", f.configPath, "--coord-runtime", f.runtime], {
+      makeRunLoop: fakeLoop, processRunner: successfulStartGit, io: { stdout: (line) => output.push(line) }
+    })).toBe(0);
+    expect(readStartState(issueRuntimePaths(f.runtime, 1)).checks).toEqual([]);
+    expect(output.join("")).toContain("Automated checks skipped: none configured.");
+  });
+});
+
 describe("fresh-start agent maintenance", () => {
   it("records Muse's version without running an update command", async () => {
     const f = setup();

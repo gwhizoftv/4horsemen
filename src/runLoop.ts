@@ -36,6 +36,17 @@ import { computeInputSetHash, evaluateEvidence, extractApprovedPaths, type Evide
 import { verifyFinalization } from "./finalization.js";
 import { inspectRangeChanges, selectCandidateVerification, selectVerification } from "./changeClassification.js";
 import { runVerification, type RunVerificationResult } from "./verificationRunner.js";
+import {
+  additionFromAmendment,
+  authorizedLineage,
+  checkAmendmentFor,
+  effectiveFinalChecks,
+  effectivePolicyDigest,
+  mergeAdditions,
+  pendingProposalSubmission,
+  saveCheckAddition
+} from "./checkAmendments.js";
+import { describeCheckOutcome, describeSequence } from "./projectChecks.js";
 import { createVerificationIngestor, verificationMeasurement } from "./verificationLog.js";
 import { BareMirror, GitCommandError, hermeticGitEnv, isTransientGitFailure } from "./mirror.js";
 import {
@@ -83,6 +94,7 @@ import {
   StateConflictError,
   type AcceptedResponse,
   type AcceptedSubmission,
+  type CheckAmendment,
   type BallotBatch,
   type CheckCommand,
   type ConsensusDerived,
@@ -276,6 +288,20 @@ const inputFromSubmission = (submission: AcceptedSubmission, kind: string, usePi
   path: submission.path,
   kind
 });
+
+/**
+ * The signal carrying a check proposal, bound beside its product pin: the pin's
+ * worktree cannot show the later signal commit, and binding its bytes means a
+ * changed proposal can never ride on a review of the same code.
+ */
+const proposalInput = (submission: AcceptedSubmission | null | undefined): BoundInput[] =>
+  submission?.checkProposal === undefined ? [] : [{
+    agent: submission.agent, commitSha: submission.submissionSha, path: submission.path, kind: "check-proposal"
+  }];
+
+/** A revision's pending proposal comes from its authorized lineage: omission carries it forward. */
+const lineageProposalInput = (cursors: CursorsState, revision: AcceptedSubmission): BoundInput[] =>
+  revision.productPin === undefined ? [] : proposalInput(pendingProposalSubmission(authorizedLineage(cursors, revision.productPin)));
 
 const acceptedAt = (
   cursors: CursorsState,
@@ -626,14 +652,15 @@ export const deriveBoundInputs = (
       .map((value) => inputFromSubmission(value, "selected-plan"));
   }
   if (stepId === "R5.compare" || stepId === "R5.compare-ballot") {
-    return acceptedAt(cursors, "R4.implement").map((value) => inputFromSubmission(value, "implementation", true));
+    return acceptedAt(cursors, "R4.implement").flatMap((value) =>
+      [inputFromSubmission(value, "implementation", true), ...proposalInput(value)]);
   }
   if (stepId === "R6.revise") {
     if ((round ?? 1) > 1) {
       const previousRound = (round ?? 1) - 1;
       return [
-        ...acceptedAt(cursors, "R6.revise", true, previousRound).map((value) =>
-          inputFromSubmission(value, "prior-revision", true)),
+        ...acceptedAt(cursors, "R6.revise", true, previousRound).flatMap((value) =>
+          [inputFromSubmission(value, "prior-revision", true), ...lineageProposalInput(cursors, value)]),
         ...consensusBallotInputs(publishedBallotBatch(cursors, "R6.ballot", previousRound))
       ];
     }
@@ -643,12 +670,14 @@ export const deriveBoundInputs = (
     );
     return selected === undefined ? [] : [
       inputFromSubmission(selected, "implementation", true),
+      ...proposalInput(selected),
       ...consensusBallotInputs(publishedBallotBatch(cursors, "R5.compare-ballot", null)),
       ...acceptedAt(cursors, "R5.compare").map((value) => inputFromSubmission(value, "review"))
     ];
   }
   if (stepId === "R6.ballot") {
-    return acceptedAt(cursors, "R6.revise", true, round).map((value) => inputFromSubmission(value, "revision", true));
+    return acceptedAt(cursors, "R6.revise", true, round).flatMap((value) =>
+      [inputFromSubmission(value, "revision", true), ...lineageProposalInput(cursors, value)]);
   }
   if (stepId === "R6.follow-up") {
     const conclusion = cursors.derived.consensus;
@@ -899,6 +928,7 @@ export const buildOrder = (
     ...(materialized === undefined ? {} : { materialized }),
     ...(start.verification?.mode === "coordinator" ? { verificationMode: "coordinator" as const } : {}),
     ...(candidateResults.length === 0 ? {} : { candidateResults }),
+    ...(isWork ? { requiredChecks: start.checks } : {}),
     activeRoster: [...cursors.activeRoster],
     eligibleChoices
   };
@@ -2198,7 +2228,10 @@ export class CoordinatorRunLoop {
       ...(decision.followUp === undefined ? {} : { followUp: decision.followUp }),
       ...(decision.checkResults === undefined
         ? {}
-        : { checkResults: decision.checkResults.map((result) => ({ ...result, argv: [...result.argv] })) })
+        : { checkResults: decision.checkResults.map((result) => ({ ...result, argv: [...result.argv] })) }),
+      ...(decision.checkProposal === undefined ? {} : { checkProposal: decision.checkProposal }),
+      ...(decision.policyDigest === undefined ? {} : { policyDigest: decision.policyDigest }),
+      ...(decision.checkAmendment === undefined ? {} : { checkAmendment: decision.checkAmendment })
     };
     const withoutPrior = cursors.accepted.filter(
       (item) => !(item.stepId === accepted.stepId && item.agent === accepted.agent && item.round === accepted.round)
@@ -2844,12 +2877,28 @@ export class CoordinatorRunLoop {
     const verified = verifyFinalization({ root: this.mirror.path, issue: start.issue, consensusSha, finalSha: observation.productPin });
     if (!verified.ok) return { ...observation, status: "rejected", outstanding: [verified.details] };
 
+    // The authorized lineage's proposal amends this issue's checks additively;
+    // the frozen start state and issue snapshot stay exactly as they were.
+    const amendment = checkAmendmentFor(cursors, consensusSha);
+    const policyDigest = effectivePolicyDigest(start, amendment);
+    if (amendment !== null) {
+      this.authority(cursors);
+      appendJournal(this.paths, { type: "check-amendment-recorded", agent: order.agent, actionId: order.actionId, details: {
+        amendmentId: amendment.id, sourceAgent: amendment.agent, submissionSha: amendment.submissionSha,
+        productPin: amendment.productPin, consensusSha, commands: amendment.proposal.commands,
+        entryPointPaths: amendment.proposal.entryPointPaths, policyDigest, eventId: `check-amendment:${amendment.id}:${order.actionId}`
+      } }, this.now());
+      this.log(`[WAIT] Adding the reviewed check proposal from ${amendment.agent} to issue ${start.issue}: ` +
+        `${describeSequence(amendment.proposal.commands)}.`);
+    }
     // Evidence cleanup is the final commit, not the full issue change. Always
     // classify from the frozen issue baseline, never the cleanup's parent.
     const selected = selectVerification(inspectRangeChanges(this.mirror.path, start.baselineSha, observation.productPin),
-      start, "finalization", start.checks);
+      start, "finalization", effectiveFinalChecks(start, amendment));
+    // Added checks are a before-publication obligation whatever the change classifies as.
+    const commands = amendment === null ? selected.commands : mergeAdditions(selected.commands, amendment.proposal.commands);
     const checked = await this.runGateVerification(start, order, cursors, "finalization", observation.productPin, selected,
-      selected.commands);
+      commands, amendment === null ? undefined : policyDigest);
     if (checked.status === "waiting") return waitingObservation(observation, checked.waitingFor);
     if (checked.status === "failed") {
       return {
@@ -2861,7 +2910,39 @@ export class CoordinatorRunLoop {
         ]
       };
     }
-    return { ...observation, checkResults: checked.results };
+    this.log(`[OK] Final checks for ${observation.productPin.slice(0, 12)}: ${describeCheckOutcome(commands, checked.results)}`);
+    if (amendment !== null) {
+      try {
+        await this.saveAcceptedChecks(start, order, amendment);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.log(`[ACTION] The added checks passed but could not be saved for future issues: ${message}`);
+        return { ...observation, status: "retry",
+          outstanding: [`added checks passed but saving them for future issues failed (${message}); retrying before publication`] };
+      }
+    }
+    return { ...observation, checkResults: checked.results, policyDigest, ...(amendment === null ? {} : { checkAmendment: amendment }) };
+  }
+
+  /**
+   * Persist an adopted amendment for later issues before publication is ready.
+   * Entry point digests come from the mirror at the approved pin; the save is
+   * idempotent, so a restart at any point completes it without duplicates.
+   */
+  private async saveAcceptedChecks(start: StartState, order: InternalOrder, amendment: CheckAmendment): Promise<void> {
+    const entryPoints: { path: string; sha256: string }[] = [];
+    for (const path of amendment.proposal.entryPointPaths) {
+      const blob = await this.mirror.readBlob(amendment.productPin, path);
+      if (blob === null) throw new Error(`entry point ${path} is unreadable at ${amendment.productPin}`);
+      entryPoints.push({ path, sha256: sha256(blob) });
+    }
+    const saved = saveCheckAddition(start.configPath, additionFromAmendment(start, amendment, entryPoints, this.now()));
+    if (!saved) return;
+    appendJournal(this.paths, { type: "check-addition-saved", agent: order.agent, actionId: order.actionId, details: {
+      amendmentId: amendment.id, configPath: start.configPath, entryPointPaths: amendment.proposal.entryPointPaths
+    } }, this.now());
+    this.log(`[OK] Saved the added checks for future issues in ${start.configPath}; ` +
+      `each new issue runs them once its starting code contains ${amendment.proposal.entryPointPaths.join(", ")}.`);
   }
 
   /**
@@ -2911,7 +2992,8 @@ export class CoordinatorRunLoop {
     phase: "candidate" | "finalization",
     pin: string,
     classification: { kind: "coordination" | "documentation" | "product"; reason: string; inputIdentity: string },
-    commands: readonly CheckCommand[]
+    commands: readonly CheckCommand[],
+    policyDigest?: string
   ): Promise<RunVerificationResult> {
     if (commands.length === 0) {
       const at = this.now();
@@ -2928,8 +3010,28 @@ export class CoordinatorRunLoop {
       checkpoint: () => { this.authority(cursors); },
       journal: (type, details, at) => appendJournal(this.paths, { type, agent: order.agent, actionId: order.actionId, details }, at),
       progress: (message) => this.log(`${order.agent}: ${message}`),
-      phase, pin, classification, commands
+      phase, pin, classification, commands,
+      ...(policyDigest === undefined ? {} : { policyDigest })
     });
+  }
+
+  /**
+   * Publication requires final results bound to the policy in force now: an
+   * amendment adopted after those results, or results from an older policy,
+   * cannot authorize the expanded checks.
+   */
+  private assertFinalPolicyBinding(start: StartState, cursors: CursorsState, finalSha: string): void {
+    const accepted = [...cursors.accepted].reverse().find((submission) =>
+      submission.stepId === "R7.finalize" && submission.productPin === finalSha);
+    const consensusSha = deriveBoundInputs(start, cursors, "R7.finalize", null).find((input) => input.kind === "consensus")?.commitSha;
+    if (accepted === undefined || consensusSha === undefined) return;
+    const amendment = checkAmendmentFor(cursors, consensusSha);
+    if (amendment === null && accepted.policyDigest === undefined) return;
+    const expected = effectivePolicyDigest(start, amendment);
+    if (accepted.policyDigest !== expected) {
+      throw new Error(`Final checks for ${finalSha} were verified under check policy ${accepted.policyDigest ?? "(none recorded)"}, ` +
+        `but the effective policy is ${expected}; the added checks must pass at this commit before publication.`);
+    }
   }
 
   private async publishAcceptedFinalization(start: StartState, cursors: CursorsState): Promise<CursorsState> {
@@ -2939,6 +3041,7 @@ export class CoordinatorRunLoop {
     let openedUrl = cursors.publication.url;
     try {
       if (finalSha === null || branch === null) throw new Error("Pending publication is missing its final pin or branch.");
+      this.assertFinalPolicyBinding(start, cursors, finalSha);
       const repository = githubRepositoryFromOrigin(start.origin);
       if (repository === null) throw new Error(`Cannot derive a GitHub repository from origin ${start.origin}.`);
       const issueSnapshot = readGitHubIssueSnapshot(this.paths.issueSnapshot);

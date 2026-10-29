@@ -542,13 +542,26 @@ describe("coord install — emitted config", () => {
     expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
   });
 
-  it("refuses to install a workspace whose finalization checks nobody declared", () => {
+  it("installs a product with no recognized checks as an announced empty pre-PR list", () => {
     const fixture = product("plain");
-    expect(() =>
-      installOnce(fixture, {
-        declarePath: writeDeclaration(fixture.workspaceRoot, { verify: passingVerify }, "verify-only")
-      })
-    ).toThrow(/Cannot infer finalization checks/);
+    const output: string[] = [];
+    const result = installOnce(fixture, {
+      declarePath: writeDeclaration(fixture.workspaceRoot, { verify: passingVerify }, "verify-only"),
+      log: (message) => output.push(message)
+    });
+    const config = readConfig(result.configPath);
+    expect(config.checks).toEqual([]);
+    expect(config.verify).toEqual(passingVerify);
+    expect(output.join("")).toContain("Before opening a pull request: none");
+    expect(output.join("")).toContain(`Settings saved in ${result.configPath}`);
+
+    // Nothing declared or recognized: both lists are empty and reported plainly.
+    const bare = product("plain");
+    const bareOutput: string[] = [];
+    const empty = readConfig(installOnce(bare, { declarePath: undefined, log: (message) => bareOutput.push(message) }).configPath);
+    expect(empty.verify).toEqual({ precommit: [], prepush: [] });
+    expect(empty.checks).toEqual([]);
+    expect(bareOutput.join("")).toContain("Automated checks skipped: none configured.");
   });
 });
 
@@ -732,15 +745,25 @@ describe("coord install — preflight before effects", () => {
     expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(false);
   });
 
-  it("refuses an undeclarable product without leaving a wired clone behind", () => {
+  it("refuses an ambiguous product without a terminal, leaving no wired clone behind", () => {
     const fixture = product("plain");
-    expect(() =>
-      installOnce(fixture, {
-        declarePath: writeDeclaration(fixture.workspaceRoot, { verify: passingVerify }, "no-checks")
-      })
-    ).toThrow(/Cannot infer finalization checks/);
+    mkdirSync(join(fixture.productRoot, "scripts"), { recursive: true });
+    writeFileSync(join(fixture.productRoot, "scripts/check.sh"), "#!/bin/sh\nexit 0\n");
+    writeFileSync(join(fixture.productRoot, "scripts/test.sh"), "#!/bin/sh\nexit 0\n");
+    git(fixture.productRoot, "add", "scripts");
+    git(fixture.productRoot, "commit", "-qm", "two check scripts");
+    expect(() => installOnce(fixture, { declarePath: undefined })).toThrow(/Several ways to check this project[\s\S]*sh scripts\/check\.sh[\s\S]*--declare/);
     expect(existsSync(join(fixture.workspaceRoot, "myserver-claude"))).toBe(false);
+    expect(existsSync(join(fixture.coordRoot, "config.json"))).toBe(false);
     expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
+
+    // A malformed saved config is reported with its path, never silently regenerated.
+    const saved = product("plain");
+    const configPath = join(saved.coordRoot, "workspaces", "myserver", "config.json");
+    mkdirSync(dirname(configPath), { recursive: true });
+    writeFileSync(configPath, "{ not json");
+    expect(() => installOnce(saved)).toThrow(`The saved workspace settings at ${configPath} cannot be read`);
+    expect(readFileSync(configPath, "utf8")).toBe("{ not json");
   });
 
   it("refuses to adopt a directory that is not a clone of this product", () => {

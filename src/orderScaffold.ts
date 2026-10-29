@@ -161,9 +161,33 @@ const markdownHeadingScaffold = (ctx: ArtifactScaffoldContext): string => {
   }
 };
 
+const CHECK_PROPOSAL_EXAMPLE = JSON.stringify({
+  implementationCommitSha: "<the same product commit>",
+  commands: [{ name: "<short-name>", argv: ["<program>", "<argument>"] }],
+  entryPointPaths: ["<tracked test or script path the commands run>"],
+  description: "<what these commands check>"
+});
+
+/** Optional additive check proposals: how to offer one, and how to review one. */
+const checkProposalNote = (ctx: ArtifactScaffoldContext): string => {
+  const bound = ctx.inputs.some((input) => input.kind === "check-proposal");
+  if (ctx.stepId === "R4.implement" || ctx.stepId === "R6.revise") {
+    return "\n\nOptional: if you added a new test entry point (a script, test target or preset) that no existing check runs, " +
+      `add a "checkProposal" field to the JSON above: ${CHECK_PROPOSAL_EXAMPLE}. ` +
+      "Reviewers evaluate it with your code; once accepted, coord runs these commands before opening the pull request and saves them for later issues. " +
+      "A proposal may only add checks: never reuse an existing check name for a different command. " +
+      "New test cases that an existing command already runs need no proposal." +
+      (bound ? " A bound check-proposal input below is still pending; it carries forward unless you supply a corrected checkProposal." : "");
+  }
+  return bound
+    ? "\n\nA bound check-proposal input below carries commands its author proposed to add to this issue's checks. " +
+      "Evaluate those commands and entry points together with the implementation they accompany."
+    : "";
+};
+
 export const renderArtifactScaffold = (ctx: ArtifactScaffoldContext): string => {
   const markdown = markdownHeadingScaffold(ctx);
-  if (markdown !== "") return markdown;
+  if (markdown !== "") return markdown + checkProposalNote(ctx);
   const value = artifactScaffoldValue(ctx);
   if (value === null) return "";
   const json = JSON.stringify(value, null, 2);
@@ -196,5 +220,5 @@ export const renderArtifactScaffold = (ctx: ArtifactScaffoldContext): string => 
     ? "\n\nThis revision concluded at the three-revision limit with objections recorded in linked follow-up issues. " +
       "It was not unanimously approved. The legacy consensusSha field names the exact authorized final revision; only the usual current-issue cleanup is permitted."
     : "";
-  return filing + conclusion + preamble + "```json\n" + `${json}\n` + "```" + request;
+  return filing + conclusion + preamble + "```json\n" + `${json}\n` + "```" + checkProposalNote(ctx) + request;
 };

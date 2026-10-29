@@ -83,6 +83,40 @@ describe("agreed file-map amendments", () => {
   });
 });
 
+describe("additive check proposals (#261)", () => {
+  it.each(["R4.implement", "R6.revise"] as const)("validates %s proposals against the pinned tree and keeps them additive", async (stepId) => {
+    const input = { kind: "implementation", agent: "codex", commitSha: sha("2"), path: ".signals/issue-1/implementation-ready-codex.json" };
+    const action = order({ stepId, evidenceId: stepId === "R4.implement" ? "implementation-pinned" : "revision-pinned",
+      round: stepId === "R6.revise" ? 1 : null, inputs: stepId === "R6.revise" ? [input] : [],
+      approvedPaths: ["src/product.ts", "scripts/test.sh"], requiredChecks: [{ name: "test", argv: ["make", "test"] }] });
+    const pin = sha("d");
+    const proposal = { implementationCommitSha: pin, commands: [{ name: "native-test", argv: ["sh", "scripts/test.sh"] }],
+      entryPointPaths: ["scripts/test.sh"], description: "Runs the new native tests." };
+    const signal = { protocolVersion: 1, issue: 1, issueSessionId: action.issueSessionId, agent: action.agent,
+      inputSetHash: computeInputSetHash(action.inputs), ...(stepId === "R4.implement"
+        ? { artifact: "implementation-ready", implementationCommitSha: pin, approvedPaths: action.approvedPaths }
+        : { artifact: "revision-ready", revisedBranchHead: pin, basedOn: [input.commitSha], round: 1 }) };
+    const files: Record<string, string> = { "scripts/test.sh": "#!/bin/sh\nexit 0\n", "scripts": `tree ${pin}:scripts\n\ntest.sh\n` };
+    const evaluate = (patch: object) => evaluateEvidence(action, sha("e"), mirror(null, {
+      readBlob: async (commit, path) => path === action.requiredPath ? JSON.stringify({ ...signal, checkProposal: { ...proposal, ...patch } })
+        : commit === pin ? files[path] ?? null : null
+    }));
+    expect(await evaluate({})).toMatchObject({ status: "satisfied", productPin: pin, checkProposal: proposal });
+    const rejected = async (patch: object, message: RegExp) => {
+      const observation = await evaluate(patch);
+      expect(observation.status, JSON.stringify(patch)).toBe("rejected");
+      expect(observation.outstanding.join("\n")).toMatch(message);
+    };
+    await rejected({ implementationCommitSha: sha("c") }, /must equal this signal's product commit/);
+    await rejected({ entryPointPaths: ["scripts/missing.sh"] }, /not a tracked file/);
+    await rejected({ entryPointPaths: ["scripts"] }, /not a tracked file/);
+    await rejected({ commands: [{ name: "test", argv: ["true"] }] }, /may only add checks/);
+    await rejected({ remove: ["test"] }, /invalid/);
+    // Restating a required command exactly is not a replacement.
+    expect((await evaluate({ commands: [{ name: "test", argv: ["make", "test"] }, proposal.commands[0]] })).status).toBe("satisfied");
+  });
+});
+
 describe("plan file-map path extraction", () => {
   it("accepts nested repository paths including monorepo prefixes", () => {
     expect(isFileMapPath("packages/core/src/domain/model.ts")).toBe(true);

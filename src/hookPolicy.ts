@@ -17,6 +17,7 @@ import {
 import { workspaceLocationFromConfig } from "./workspace.js";
 import { inspectOutgoingChanges, isCoordinationEvidencePath, selectVerification, type ChangeInput } from "./changeClassification.js";
 import { verificationMeasurement, type VerificationMeasurement } from "./verificationLog.js";
+import { NO_CHECKS_MESSAGE } from "./projectChecks.js";
 
 /**
  * The bridge between the shell hook bodies and the workspace config.
@@ -132,14 +133,18 @@ export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): st
   return [...missing].sort();
 };
 
-export type HookBinding = { bound: true; issue: number; commands: VerifyConfig } | { bound: false; reason: string };
+export type HookBinding =
+  | { bound: true; kind: "coordinated" | "frozen"; issue: number; commands: VerifyConfig }
+  | { bound: false; reason: string };
 
 /**
- * Coordinated hook lists apply only to a provably active coordinator run for
- * this exact clone: the committed or single pushed branch is this agent's
- * issue branch, that issue's frozen policy is coordinator mode, the run is
- * neither completed nor abandoned, and the agent is still on the roster. Any
- * other answer, including unreadable runtime state, keeps the local lists.
+ * An issue's own lists apply only to a provably active run for this exact
+ * clone: the committed or single pushed branch is this agent's issue branch,
+ * the run is neither completed nor abandoned, and the agent is still on the
+ * roster. Coordinator mode binds its coordinated lists; local mode binds the
+ * lists frozen when the issue started, so re-onboarding changes new issues
+ * only. Any other answer, including unreadable runtime state or an issue that
+ * predates frozen lists, keeps the workspace config's lists.
  */
 export const resolveHookBinding = (input: {
   clone: string;
@@ -172,10 +177,13 @@ export const resolveHookBinding = (input: {
       return { bound: false, reason: `issue ${issue} does not run this clone` };
     }
     const coordinated = start.verification?.mode === "coordinator" ? start.verification.coordinated : undefined;
-    if (coordinated === undefined) return { bound: false, reason: `issue ${issue} is not in coordinator verification mode` };
+    if (coordinated === undefined && start.verify === undefined) {
+      return { bound: false, reason: `issue ${issue} is not in coordinator verification mode` };
+    }
     if (cursors.completed || cursors.abandoned) return { bound: false, reason: `issue ${issue} is no longer active` };
     if (!cursors.activeRoster.includes(agent)) return { bound: false, reason: `${agent} is not on issue ${issue}'s active roster` };
-    return { bound: true, issue, commands: coordinated };
+    return coordinated !== undefined ? { bound: true, kind: "coordinated", issue, commands: coordinated }
+      : { bound: true, kind: "frozen", issue, commands: start.verify! };
   } catch (error) {
     return { bound: false, reason: `runtime state unavailable (${error instanceof Error ? error.message.split("\n")[0] : String(error)})` };
   }
@@ -300,7 +308,10 @@ export const runVerifyPhase = (input: {
       ...(error === undefined ? {} : { error }) }));
   };
   if (commands.length === 0) {
-    input.log(`coord ${input.phase}: skipping declared checks — ${selected.reason} (no commands).\n`);
+    input.log(selected.kind === "product" && input.bound === undefined && input.config.verify !== undefined &&
+      input.config.verify.precommit.length === 0 && input.config.verify.prepush.length === 0 && input.config.checks.length === 0
+      ? `coord ${input.phase}: ${NO_CHECKS_MESSAGE}\n`
+      : `coord ${input.phase}: skipping declared checks — ${selected.reason} (no commands).\n`);
     record(null, new Date().toISOString(), 0);
     return { ok: true };
   }

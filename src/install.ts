@@ -55,8 +55,16 @@ import {
   workspaceDeclarationSchema,
   type CoordinatorConfig,
   type InstallStamp,
+  type VerificationPolicy,
   type WorkspaceDeclaration
 } from "./state.js";
+import {
+  describeCheckSettings,
+  discoverProjectChecks,
+  unattendedCheckSettings,
+  type CheckSelection,
+  type CheckSettings
+} from "./projectChecks.js";
 import { agentIdSchema } from "./protocol.js";
 import { githubLoginSchema, requireHttpsGitHubOrigin } from "./githubAuth.js";
 import {
@@ -120,6 +128,11 @@ export type InstallOptions = {
    * the account the existing workspace config already selects, if any.
    */
   githubAccount?: string;
+  /**
+   * The owner's terminal choice (#261). Omitted: declared fields, then saved
+   * settings, then one unambiguous detected plan, then announced empty lists.
+   */
+  checkSelection?: CheckSelection;
 };
 
 export type InstallResult = {
@@ -184,7 +197,7 @@ export const assertInstallDeletionAllowed = (installRoot: string, context: Insta
   }
 };
 
-const readDeclaration = (path: string): WorkspaceDeclaration => {
+export const readDeclaration = (path: string): WorkspaceDeclaration => {
   let value: unknown;
   try {
     value = JSON.parse(readFileSync(path, "utf8")) as unknown;
@@ -228,14 +241,23 @@ const validateAgentIds = (agents: readonly string[], installRoot: string): strin
   return [...agents];
 };
 
-const readPreviousConfig = (configPath: string): CoordinatorConfig | null => {
+/**
+ * Saved settings outrank detection, so an unreadable saved config is an error
+ * for the owner to repair rather than an absence that detection would silently
+ * replace with a different, possibly empty, policy.
+ */
+export const readSavedConfig = (configPath: string): CoordinatorConfig | null => {
   if (!existsSync(configPath)) return null;
   try {
     return readConfig(configPath);
-  } catch {
-    return null;
+  } catch (error) {
+    throw new Error(
+      `The saved workspace settings at ${configPath} cannot be read: ${error instanceof Error ? error.message : String(error)}\n` +
+        "  Repair the file, or move it aside to choose settings again; nothing was changed."
+    );
   }
 };
+const readPreviousConfig = readSavedConfig;
 
 const requireWorktree = (path: string, description: string): string => {
   const result = git(path, "rev-parse", "--show-toplevel");
@@ -268,13 +290,18 @@ const bootstrapCoordination = (installRoot: string, options: EffectOptions): voi
 const logProjectPolicy = (
   config: CoordinatorConfig,
   declared: WorkspaceDeclaration | null,
-  options: EffectOptions
+  options: EffectOptions,
+  context: { checkSource: string; configPath: string; examplePath: string; notes: readonly string[] }
 ): void => {
-  const source = (field: keyof WorkspaceDeclaration): string => declared?.[field] === undefined ? "inferred" : "declared";
+  const source = (field: keyof WorkspaceDeclaration): string => declared?.[field] !== undefined ? "declared"
+    : field === "verify" || field === "checks" ? context.checkSource : "inferred";
   const commands = (checks: CoordinatorConfig["checks"] | undefined): string => checks === undefined
     ? "not configured"
     : checks.length === 0 ? "none" : checks.map((check) => `${check.name} ${JSON.stringify(check.argv)}`).join("; ");
   const lines = [
+    `Build and test commands (${declared?.checks !== undefined && declared.verify !== undefined ? "declared" : context.checkSource}):`,
+    ...describeCheckSettings(config).map((line) => `  ${line}`),
+    ...context.notes.map((note) => `  ${note}`),
     `${options.dryRun ? "Proposed" : "Effective"} verification policy:`,
     `  toolchain (${source("toolchain")}): ${config.toolchain ?? "unspecified"}`,
     `  local precommit (${source("verify")}): ${commands(config.verify?.precommit)}`,
@@ -312,8 +339,60 @@ const logProjectPolicy = (
         : "  --no-fatal-infos leaves analyzer warnings and errors fatal; informational diagnostics do not block.");
     }
   }
-  lines.push("  Use --declare <file.json> to override policy fields; keep that declaration for reinstalls.");
+  lines.push(`  Settings ${options.dryRun ? "would be saved" : "saved"} in ${context.configPath}`,
+    "  Re-run coord onboard to keep or change them. Advanced: --declare <file.json> overrides individual fields;",
+    `  annotated example: ${context.examplePath}`);
   options.log(`${lines.join("\n")}\n`);
+};
+
+/**
+ * Field-wise precedence for the check lists: an explicit declaration, then the
+ * owner's terminal choice, then saved settings, then detection. Keeping saved
+ * settings keeps their advanced coordinator policy; changing the commands
+ * drops it, because its candidate lists name the old commands.
+ */
+const resolveCheckSettings = (input: {
+  productRoot: string;
+  configPath: string;
+  examplePath: string;
+  declared: WorkspaceDeclaration | null;
+  saved: CoordinatorConfig | null;
+  selection: CheckSelection | undefined;
+}): { settings: CheckSettings; source: string; verification: VerificationPolicy | null; notes: string[] } => {
+  const { declared, saved } = input;
+  const notes: string[] = [];
+  let base: CheckSettings;
+  let source: string;
+  let keepsAdvanced = true;
+  if (declared?.checks !== undefined && declared.verify !== undefined) {
+    base = { verify: declared.verify, checks: declared.checks };
+    source = "declared";
+  } else if (input.selection?.kind === "change") {
+    base = input.selection.settings;
+    source = `selected: ${input.selection.description}`;
+    keepsAdvanced = false;
+  } else if (saved !== null) {
+    base = { ...(saved.verify === undefined ? {} : { verify: saved.verify }), checks: saved.checks };
+    source = "saved";
+  } else if (declared?.checks !== undefined || declared?.verify !== undefined) {
+    // A partial declaration fills its other field only from one clear plan;
+    // otherwise that field stays undeclared rather than becoming an opt-out.
+    const discovery = discoverProjectChecks(input.productRoot);
+    const plan = discovery.plans.length === 1 && discovery.plans[0]!.unresolved.length === 0 ? discovery.plans[0]! : null;
+    base = plan === null ? { checks: [] } : unattendedCheckSettings(discovery, input).settings;
+    source = plan === null ? "declared" : `detected: ${plan.detail} (${plan.source})`;
+  } else {
+    const detected = unattendedCheckSettings(discoverProjectChecks(input.productRoot), input);
+    base = detected.settings;
+    source = `detected: ${detected.description}`;
+  }
+  const verify = declared?.verify ?? base.verify;
+  const settings: CheckSettings = { ...(verify === undefined ? {} : { verify }), checks: declared?.checks ?? base.checks };
+  if (declared?.verification !== undefined) return { settings, source, verification: declared.verification, notes };
+  if (!keepsAdvanced && saved?.verification !== undefined) {
+    notes.push("The saved coordinator verification policy was removed because the commands changed; declare it again with --declare if needed.");
+  }
+  return { settings, source, verification: keepsAdvanced ? saved?.verification ?? null : null, notes };
 };
 
 export const install = (options: InstallOptions): InstallResult => {
@@ -401,6 +480,9 @@ export const install = (options: InstallOptions): InstallResult => {
   const configPath = workspace.configPath;
   const proposal = proposeProjectPolicy(productRoot);
   const declared = options.declarePath === undefined ? null : readDeclaration(options.declarePath);
+  const examplePath = join(installRoot, "config.product.example.json");
+  const saved = readSavedConfig(configPath);
+  const resolvedChecks = resolveCheckSettings({ productRoot, configPath, examplePath, declared, saved, selection: options.checkSelection });
   const mode: HookMode = options.vendor ? "vendor" : "shim";
   const sourceCommit = installSourceCommit(installRoot);
   const version = packageVersion(installRoot);
@@ -434,7 +516,7 @@ export const install = (options: InstallOptions): InstallResult => {
   // Only used to carry a timestamp forward. A config that no longer parses —
   // typically one written before a schema change — must not stop the installer
   // that exists to rewrite it; regenerating is the repair.
-  const previous = readPreviousConfig(configPath);
+  const previous = saved;
   const config = buildWorkspaceConfig(
     {
       project,
@@ -447,7 +529,10 @@ export const install = (options: InstallOptions): InstallResult => {
       declared,
       proposal,
       completesRoot,
-      githubAccount
+      githubAccount,
+      checkSettings: resolvedChecks.settings,
+      previous,
+      verification: resolvedChecks.verification
     },
     // A re-install must not look like a change just because time passed — but
     // only the timestamp may be carried over. Comparing three fields let a run
@@ -459,7 +544,8 @@ export const install = (options: InstallOptions): InstallResult => {
       : stamp
   );
 
-  logProjectPolicy(config, declared, effects);
+  logProjectPolicy(config, declared, effects,
+    { checkSource: resolvedChecks.source, configPath, examplePath, notes: resolvedChecks.notes });
 
   // ---- steps 2-5: per-agent clone wiring ----------------------------------
   const clones: string[] = [];
@@ -882,6 +968,8 @@ export type OnboardOptions = {
   home?: string | null;
   githubAccount?: string;
   baseBranch?: string;
+  /** The owner's terminal choice of build and test commands; see InstallOptions. */
+  checkSelection?: CheckSelection;
 };
 
 export type OnboardResult = { install: InstallResult; doctor: DoctorReport };
@@ -905,13 +993,14 @@ const registeredCoordRoot = (productRoot: string): string | null => {
  * Install carries that account forward, so callers verify it before any
  * effect; onboard callers pass the root back to avoid resolving it twice.
  */
-export const savedGitHubAccount = (productRoot: string, coordRoot?: string): { coordRoot: string; account: string | null } => {
+export const savedGitHubAccount = (productRoot: string, coordRoot?: string): {
+  coordRoot: string; account: string | null; configPath: string; saved: CoordinatorConfig | null;
+} => {
   const product = requireWorktree(resolve(productRoot), "The product");
   const root = resolve(coordRoot ?? registeredCoordRoot(product) ?? join(dirname(product), "coord-runtime"));
-  return {
-    coordRoot: root,
-    account: readPreviousConfig(selectWorkspaceLocation(root, productName(product)).configPath)?.github?.account ?? null
-  };
+  const configPath = selectWorkspaceLocation(root, productName(product)).configPath;
+  const saved = readPreviousConfig(configPath);
+  return { coordRoot: root, account: saved?.github?.account ?? null, configPath, saved };
 };
 
 export const onboard = (options: OnboardOptions): OnboardResult => {
@@ -936,7 +1025,8 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     dryRun: false,
     log: options.log,
     ...(options.home === undefined ? {} : { home: options.home }),
-    ...(options.githubAccount === undefined ? {} : { githubAccount: options.githubAccount })
+    ...(options.githubAccount === undefined ? {} : { githubAccount: options.githubAccount }),
+    ...(options.checkSelection === undefined ? {} : { checkSelection: options.checkSelection })
   });
   const report = doctor({ coordRoot, productRoot, ...(options.home === undefined ? {} : { home: options.home }) });
   if (report.exitCode === 0) {

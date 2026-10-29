@@ -106,6 +106,20 @@ describe("verification receipts", () => {
     expect(computeInputIdentity(paths.mirror, evidencePin, "tree")).not.toBe(computeInputIdentity(paths.mirror, pin, "tree"));
   });
 
+  it("never lets a receipt from the frozen policy satisfy an amended effective policy at the same pin (#261)", async () => {
+    const { input } = setup();
+    const lint = cached("lint");
+    let runs = 0;
+    const counted = async () => { runs += 1; return ok(); };
+    expect((await runVerification(input([lint], counted))).status).toBe("passed");
+    expect((await runVerification(input([lint], counted))).status).toBe("passed");
+    expect(runs).toBe(1);
+    const amended = await runVerification(input([lint], counted, { policyDigest: "e".repeat(64) }));
+    expect(amended.status).toBe("passed");
+    expect(runs).toBe(2);
+    expect(amended.results[0]).not.toHaveProperty("reused");
+  });
+
   it("writes no receipt for a failure, and treats corrupt or mismatched receipts as misses", async () => {
     const { paths, input, material } = setup();
     const lint = cached("lint");

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { artifactScaffoldValue, renderArtifactScaffold } from "../src/orderScaffold.js";
 import { computeInputSetHash } from "../src/evidence.js";
+import { findAgentLanguageViolations } from "../src/agentLanguage.js";
 import { followUpIssueArtifactSchema, planAmendmentRequestSchema } from "../src/protocol.js";
 import { BUILD_DISCIPLINE_NOTE, STEP_DEFINITIONS } from "../src/steps.js";
 import { computeImplementationSelectionDerived, deriveBoundInputs } from "../src/runLoop.js";
@@ -256,4 +257,66 @@ it("instructs objectors to reconcile retries and file all objections with bound 
   for (const expected of ["all your remaining objections", "all issue states", "stable-key", "--body-file", "Related to https://github.com/acme/app/issues/1", "Revision: " + "c".repeat(40)]) {
     expect(text).toContain(expected);
   }
+});
+
+describe("check proposals in actions (#261)", () => {
+  it("binds proposal signals beside their pins, carries a pending proposal into revisions, and explains both roles", () => {
+    const now = "2026-08-11T12:00:00.000Z";
+    const agents = ["claude", "codex"];
+    const start = startStateSchema.parse({
+      formatVersion: RUNTIME_FORMAT_VERSION, issue: 1, issueSessionId: `issue-1:${"a".repeat(40)}`,
+      baselineSha: "a".repeat(40), profile: "consensus", originalRoster: agents,
+      branchTemplate: "issue-{issue}/{agent}", baseBranch: "main", maxRevisionRounds: 3, prPolicy: "owner-only",
+      automationDigest: "b".repeat(64), automationDigestScheme: "sha256-length-prefixed-v1",
+      automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }], trustedSourceCommit: "a".repeat(40),
+      origin: "/origin.git", coordRoot: "/runtime", configPath: "/runtime/config.json",
+      agents: agents.map((id) => ({ id, root: `/clones/${id}`, launcher: `start-${id}.sh`, delivery: "pull" })),
+      checks: [], pollIntervalMs: 100, createdAt: now
+    });
+    const proposal = { implementationCommitSha: "c".repeat(40), commands: [{ name: "native-test", argv: ["sh", "scripts/test.sh"] }],
+      entryPointPaths: ["scripts/test.sh"], description: "Runs the new native tests." };
+    const implementation = { stepId: "R4.implement", agent: "codex", round: null, submissionSha: "d".repeat(40),
+      productPin: "c".repeat(40), path: ".signals/issue-1/implementation-ready-codex.json", acceptedAt: now, checkProposal: proposal };
+    const other = { stepId: "R4.implement", agent: "claude", round: null, submissionSha: "1".repeat(40),
+      productPin: "2".repeat(40), path: ".signals/issue-1/implementation-ready-claude.json", acceptedAt: now };
+    const revision = { stepId: "R6.revise", agent: "codex", round: 1, submissionSha: "4".repeat(40),
+      productPin: "5".repeat(40), path: ".signals/issue-1/revision-ready-codex-round-1.json", acceptedAt: now };
+    const cursors = cursorsStateSchema.parse({ ...initialCursors(start, now), accepted: [implementation, other, revision] });
+    cursors.derived.implementationSelection = {
+      kind: "implementation-selection", algorithm: "plurality-active-roster-v1", inputSetHash: "e".repeat(64),
+      activeRoster: agents, inputs: [{ kind: "implementation", agent: "codex", submissionSha: implementation.submissionSha,
+        path: implementation.path, productPin: implementation.productPin }],
+      decisionId: `implementation-selection:${"e".repeat(64)}`, supersedes: null, decidedAt: now,
+      winner: "codex", implementationPin: implementation.productPin, reviser: "codex"
+    };
+    const signal = { kind: "check-proposal", agent: "codex", commitSha: implementation.submissionSha, path: implementation.path };
+    const compare = deriveBoundInputs(start, cursors, "R5.compare", null);
+    expect(compare).toEqual([
+      { kind: "implementation", agent: "codex", commitSha: implementation.productPin, path: implementation.path }, signal,
+      { kind: "implementation", agent: "claude", commitSha: other.productPin, path: other.path }
+    ]);
+    // A revision that omits the optional field still carries the pending proposal to its reviewers.
+    expect(deriveBoundInputs(start, cursors, "R6.ballot", 1)).toContainEqual(signal);
+    const revise = deriveBoundInputs(start, cursors, "R6.revise", 1);
+    expect(revise).toContainEqual(signal);
+    // A changed proposal for the same code changes what reviewers are bound to.
+    const changed = cursorsStateSchema.parse({ ...cursors,
+      accepted: [{ ...implementation, submissionSha: "9".repeat(40) }, other, revision] });
+    expect(computeInputSetHash(deriveBoundInputs(start, changed, "R5.compare", null))).not.toBe(computeInputSetHash(compare));
+
+    const context = (stepId: "R4.implement" | "R5.compare" | "R6.revise", inputs: typeof compare) => ({
+      stepId, issue: 1, issueSessionId: start.issueSessionId, agent: "codex", baselineSha: start.baselineSha,
+      automationDigest: start.automationDigest, inputs, eligibleChoices: [], round: stepId === "R6.revise" ? 1 : null,
+      approvedPaths: ["scripts/test.sh"]
+    });
+    const implement = renderArtifactScaffold(context("R4.implement", []));
+    expect(implement).toContain('add a "checkProposal" field');
+    expect(implement).toContain("may only add checks");
+    expect(artifactScaffoldValue(context("R4.implement", []))).not.toHaveProperty("checkProposal");
+    expect(artifactScaffoldValue(context("R6.revise", revise))).toMatchObject({ basedOn: [implementation.productPin] });
+    expect(renderArtifactScaffold(context("R6.revise", revise))).toContain("carries forward unless you supply a corrected checkProposal");
+    const review = renderArtifactScaffold(context("R5.compare", compare));
+    expect(review).toContain("Evaluate those commands and entry points together with the implementation");
+    for (const text of [implement, review]) expect(findAgentLanguageViolations(text)).toEqual([]);
+  });
 });

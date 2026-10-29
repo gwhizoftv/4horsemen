@@ -25,11 +25,12 @@ import type { BoundInput, MaterializedInputEntry, MaterializedInputs, Materializ
 
 /**
  * Bound inputs whose `commitSha`/`path` names a coordination document. These are
- * small, and are exported as files.
+ * small, and are exported as files. A `check-proposal` is the readiness signal
+ * carrying proposed commands, which a product worktree at its pin cannot show.
  */
 export const MATERIALIZED_MARKDOWN_KINDS: ReadonlySet<string> = new Set([
   "plan", "review", "selected-plan", "amendment-request", "approved-amendment-request", "amendment-approval",
-  "consensus-ballot"
+  "consensus-ballot", "check-proposal"
 ]);
 
 /**

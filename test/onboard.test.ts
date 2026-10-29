@@ -31,7 +31,10 @@ const product = (name = "myserver", files: Record<string, string> = {
   ensureBuilt();
   const fixture = makeProduct("plain", name);
   products.push(fixture);
-  for (const [path, contents] of Object.entries(files)) writeFileSync(join(fixture.productRoot, path), contents);
+  for (const [path, contents] of Object.entries(files)) {
+    mkdirSync(dirname(join(fixture.productRoot, path)), { recursive: true });
+    writeFileSync(join(fixture.productRoot, path), contents);
+  }
   git(fixture.productRoot, "add", ...Object.keys(files));
   git(fixture.productRoot, "commit", "-qm", "add checks");
   git(fixture.productRoot, "push", "-q", "origin", "main");
@@ -183,7 +186,8 @@ describe("coord onboard", () => {
         output.length = 0;
         expect(await runCli([...argv, "--declare", declaration], { home: null, processRunner: runner, io: { stdout: log, stderr: log } })).toBe(0);
         expect(readConfig(configPath).checks).toEqual([strict]);
-        expect(readConfig(configPath).verify?.precommit).toEqual([checks[0]]);
+        // Saved settings outrank detection: the previously declared empty commit list stays (#261).
+        expect(readConfig(configPath).verify?.precommit).toEqual([]);
         expect(output.join("")).toContain("leaves analyzer warnings and errors fatal");
         expect(output.join("")).not.toContain("leave only analyzer errors fatal");
 
@@ -191,7 +195,7 @@ describe("coord onboard", () => {
         writeDeclaration(fixture.workspaceRoot, { checks: [{ name: "analyze", argv: ["flutter", "analyze"] }] });
         output.length = 0;
         expect(await runCli([...argv, "--declare", declaration], { home: null, processRunner: runner, io: { stdout: log, stderr: log } })).toBe(0);
-        expect(readConfig(configPath).verify?.precommit).toEqual([checks[0]]);
+        expect(readConfig(configPath).verify?.precommit).toEqual([]);
         expect(output.join("")).toContain('finalization (declared): analyze ["flutter","analyze"]');
         expect(output.join("")).not.toContain("informational diagnostics do not block");
         expect(output.join("")).not.toContain("leave only analyzer errors fatal");
@@ -532,6 +536,70 @@ describe("coord onboard", () => {
     expect(localConfigGet(second.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBe(nested);
     expect(existsSync(join(dirname(second.productRoot), "coord-runtime"))).toBe(false);
     expect(readFileSync(join(sharedRoot, "config.json"), "utf8")).toBe(firstConfigBytes);
+  });
+
+  it("guides check selection in a terminal, saves it without running it, and keeps, changes or cancels on re-onboarding (#261)", async () => {
+    const fixture = product("native", {
+      "scripts/check.sh": "#!/bin/sh\n: > ran\n",
+      "tests/MusicDocumentTests.cpp": "int main() { return 0; }\n"
+    });
+    const configPath = join(fixture.workspaceRoot, "coord-runtime", "config.json");
+    const output: string[] = [];
+    const questions: string[] = [];
+    let picks: Array<(choices: readonly string[]) => string | null> = [];
+    let lines: Array<string | null> = [];
+    const dependencies = {
+      home: null, processRunner: runner, io: { stdout: (text: string) => output.push(text), stderr: (text: string) => output.push(text) },
+      choose: async (question: string, choices: readonly string[]) => {
+        // This workspace uses ambient credentials; only the check questions are scripted.
+        if (question.startsWith("Which GitHub account")) return null;
+        questions.push(question);
+        return picks.shift()!(choices);
+      },
+      ask: async (question: string) => { questions.push(question); return lines.shift() ?? null; }
+    };
+    const argv = ["onboard", fixture.productRoot, "--agents", "claude", "--profile", "solo"];
+    const pick = (prefix: string) => (choices: readonly string[]) => choices.find((choice) => choice.startsWith(prefix)) ?? null;
+
+    // First onboarding: discovered sources are labeled; the owner types an ordered command with a quoted argument.
+    picks = [pick("Enter another"), pick("Before opening a pull request")];
+    lines = ['sh scripts/check.sh "two words"', ""];
+    expect(await runCli(argv, dependencies)).toBe(0);
+    const typed = { name: "command-1", argv: ["sh", "scripts/check.sh", "two words"] };
+    expect(readConfig(configPath).checks).toEqual([typed]);
+    expect(readConfig(configPath).verify).toEqual({ precommit: [], prepush: [] });
+    const first = output.join("");
+    expect(first).toContain("How do you check that changes to this project are ready?");
+    expect(first).toMatch(/scripts\/check\.sh\s+Project check script/);
+    expect(first).toMatch(/tests\/MusicDocumentTests\.cpp\s+C\+\+ test source/);
+    expect(first).toContain("Before opening a pull request: sh scripts/check.sh 'two words'");
+    expect(first).toContain(`Settings file: ${realpathSync(configPath)}`);
+    expect(existsSync(join(fixture.productRoot, "ran"))).toBe(false);
+
+    // Keeping shows the saved commands and changes nothing.
+    output.length = 0;
+    picks = [pick("Keep these settings")];
+    expect(await runCli(argv, dependencies)).toBe(0);
+    expect(output.join("")).toContain("Saved build and test commands:");
+    expect(readConfig(configPath).checks).toEqual([typed]);
+
+    // Changing to no checks skips the timing question and reports the skip plainly.
+    output.length = 0;
+    questions.length = 0;
+    picks = [pick("Change them"), pick("Continue without automated checks")];
+    expect(await runCli(argv, dependencies)).toBe(0);
+    expect(readConfig(configPath).checks).toEqual([]);
+    expect(readConfig(configPath).verify).toEqual({ precommit: [], prepush: [] });
+    expect(output.join("")).toContain("Automated checks skipped: none configured.");
+    expect(questions).not.toContain("When should these checks run?");
+
+    // Cancelling leaves the saved settings byte-for-byte unchanged.
+    const before = readFileSync(configPath, "utf8");
+    output.length = 0;
+    picks = [() => null];
+    expect(await runCli(argv, dependencies)).not.toBe(0);
+    expect(output.join("")).toContain(`Onboarding cancelled; the settings in ${realpathSync(configPath)} are unchanged.`);
+    expect(readFileSync(configPath, "utf8")).toBe(before);
   });
 
   it("does not publish the owner locator when doctor fails", () => {

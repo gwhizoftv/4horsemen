@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   HookPolicyError,
   renderHookScope,
+  resolveHookBinding,
   runVerifyPhase,
   unresolvableCommands,
   verifyCommands
@@ -21,7 +22,27 @@ import {
 } from "../src/changeClassification.js";
 import { renderAgentsProtocolBlock } from "../src/agentsProtocol.js";
 import { applyManagedBlock, ManagedBlockError, removeManagedBlock } from "../src/productIgnore.js";
-import { coordinatorConfigSchema, workspaceDeclarationSchema, type CoordinatorConfig } from "../src/state.js";
+import {
+  coordinatorConfigSchema,
+  initializeOperationalState,
+  mutateCursorsState,
+  workspaceDeclarationSchema,
+  type CoordinatorConfig
+} from "../src/state.js";
+import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
+import {
+  describeCheckOutcome,
+  describeCheckSettings,
+  describeSequence,
+  discoverProjectChecks,
+  emptyCheckSettings,
+  NO_CHECKS_MESSAGE,
+  parseCommandLine,
+  renderDiscovery,
+  resolvePlanCommands,
+  settingsForTiming,
+  unattendedCheckSettings
+} from "../src/projectChecks.js";
 import { git, makeProduct, repoRoot } from "./support/workspaceFixture.js";
 import fastConfig from "../vitest.config.js";
 import systemConfig from "../vitest.system.config.js";
@@ -275,7 +296,8 @@ describe("installer proposals", () => {
       }
       expect(classifyChanges(changes(["README.md", "docs/build.ts"]), configured).kind).toBe("product");
       expect(classifyChanges(changes(["docs/untracked.md"]), configured).kind).toBe("product");
-      expect(() => config({ checks: [] })).toThrow();
+      // An explicit empty list is the recorded "no automated checks" setting (#261).
+      expect(config({ checks: [] }).checks).toEqual([]);
     } finally {
       fixture.cleanup();
     }
@@ -629,5 +651,160 @@ describe("managed ignore block", () => {
       "keep me\n# >>> coordination managed block — coord install >>>\n/start-*.sh\nIMPORTANT-PRODUCT-RULE\n";
     expect(() => removeManagedBlock(truncated)).toThrow(ManagedBlockError);
     expect(() => applyManagedBlock(truncated, ["/start-*.sh"])).toThrow(/end marker/);
+  });
+});
+
+describe("project check discovery (#261)", () => {
+  /** A committed temporary repository: discovery reads tracked files only. */
+  const repository = (files: Record<string, string>): string => {
+    const root = mkdtempSync(join(tmpdir(), "coord-discovery-"));
+    git(root, "init", "-q");
+    for (const [path, contents] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), contents);
+    }
+    git(root, "add", "-A");
+    git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture");
+    return root;
+  };
+  const context = { productRoot: "/repo", configPath: "/runtime/config.json", examplePath: "/install/config.product.example.json" };
+  const presets = JSON.stringify({
+    version: 6,
+    configurePresets: [{ name: "base", hidden: true, binaryDir: "${sourceDir}/build" }, { name: "dev", inherits: "base" },
+      { name: "release", inherits: "base" }],
+    buildPresets: [{ name: "dev", configurePreset: "dev" }, { name: "release", configurePreset: "release" }],
+    testPresets: [{ name: "dev-template", hidden: true, configurePreset: "dev" }, { name: "dev", inherits: "dev-template" }]
+  });
+
+  it("labels each source, runs CMake configure → build → test with a strict ctest, and executes nothing", () => {
+    const root = repository({
+      "scripts/check.sh": "#!/usr/bin/env bash\ntouch \"$(dirname \"$0\")/../ran\"\n",
+      "tests/MusicDocumentTests.cpp": "int main() { return 0; }\n",
+      "tests/OtherTests.cpp": "int main() { return 0; }\n",
+      "CMakePresets.json": presets,
+      ".github/workflows/ci.yml": "on: push\n"
+    });
+    try {
+      const discovery = discoverProjectChecks(root);
+      expect(discovery.evidence).toEqual([
+        { path: "scripts/check.sh", label: "Project check script" },
+        { path: "tests/MusicDocumentTests.cpp", label: "C++ test source (+1 more in tests/)" },
+        { path: "CMakePresets.json", label: "Build and test presets" },
+        { path: ".github/workflows/ci.yml", label: "CI workflow (context only; not run locally)" }
+      ]);
+      expect(discovery.plans.map((plan) => plan.commands)).toEqual([
+        [{ name: "check", argv: ["bash", "scripts/check.sh"] }],
+        [{ name: "configure", argv: ["cmake", "--preset", "dev"] }, { name: "build", argv: ["cmake", "--build", "--preset", "dev"] },
+          { name: "test", argv: ["ctest", "--preset", "dev", "--output-on-failure", "--no-tests=error"] }],
+        [{ name: "configure", argv: ["cmake", "--preset", "release"] }, { name: "build", argv: ["cmake", "--build", "--preset", "release"] }]
+      ]);
+      expect(discovery.plans.map((plan) => plan.kind)).toEqual(["test", "test", "build"]);
+      const buildOnly = discovery.plans[2]!.commands;
+      expect(describeCheckOutcome(buildOnly, buildOnly.map((command) => ({ name: command.name, exitCode: 0 }))))
+        .toBe("Build result: passed (configure, build).");
+      expect(renderDiscovery(discovery)).toContain("How do you check that changes to this project are ready?");
+      // Competing plans are never resolved by an arbitrary first match.
+      expect(() => unattendedCheckSettings(discovery, context)).toThrow(
+        /Several ways to check[\s\S]*bash scripts\/check\.sh[\s\S]*cmake --preset dev[\s\S]*--declare[\s\S]*\/install\/config\.product\.example\.json[\s\S]*\/runtime\/config\.json/);
+      expect(readdirSync(root)).not.toContain("ran");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("offers tested shared Xcode schemes with whole arguments and leaves the destination to the owner", () => {
+    const tested = '<Scheme><BuildAction><BuildActionEntries><BuildActionEntry/></BuildActionEntries></BuildAction>' +
+      '<TestAction buildConfiguration = "Debug"><Testables><TestableReference/></Testables></TestAction></Scheme>';
+    const root = repository({
+      "My App.xcworkspace/contents.xcworkspacedata": "<Workspace/>\n",
+      "My App.xcodeproj/project.pbxproj": "// project\n",
+      "My App.xcodeproj/project.xcworkspace/contents.xcworkspacedata": "<Workspace/>\n",
+      "My App.xcodeproj/xcshareddata/xcschemes/My App.xcscheme": tested,
+      "My App.xcodeproj/xcshareddata/xcschemes/Notes.xcscheme": "<Scheme></Scheme>"
+    });
+    try {
+      const discovery = discoverProjectChecks(root);
+      expect(discovery.plans).toHaveLength(1);
+      const plan = discovery.plans[0]!;
+      expect(plan.commands[0]!.argv).toEqual(["xcodebuild", "test", "-workspace", "My App.xcworkspace", "-scheme", "My App",
+        "-configuration", "Debug", "-destination", "<destination>"]);
+      expect(plan.unresolved.map((entry) => entry.placeholder)).toEqual(["<destination>"]);
+      expect(() => unattendedCheckSettings(discovery, context)).toThrow(/needs <destination>/);
+      const resolved = resolvePlanCommands(plan, new Map([["<destination>", "platform=macOS,arch=arm64"]]));
+      expect(resolved[0]!.argv.slice(-2)).toEqual(["-destination", "platform=macOS,arch=arm64"]);
+      expect(describeSequence(resolved)).toContain("-workspace 'My App.xcworkspace' -scheme 'My App'");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("suggests Swift package commands, refuses unreadable metadata, and announces an empty first-time policy", () => {
+    const swift = repository({ "Package.swift": "// swift-tools-version:5.9\n", "Tests/AppTests/AppTests.swift": "import XCTest\n" });
+    const broken = repository({ "CMakePresets.json": "{" });
+    const bare = repository({ "README.md": "# new\n" });
+    try {
+      expect(discoverProjectChecks(swift).plans.map((plan) => plan.commands)).toEqual([
+        [{ name: "build", argv: ["swift", "build"] }, { name: "test", argv: ["swift", "test"] }]
+      ]);
+      expect(unattendedCheckSettings(discoverProjectChecks(swift), context).settings).toEqual({
+        verify: { precommit: [], prepush: [] },
+        checks: [{ name: "build", argv: ["swift", "build"] }, { name: "test", argv: ["swift", "test"] }]
+      });
+      const unreadable = discoverProjectChecks(broken);
+      expect(unreadable.problems[0]).toMatch(/^CMakePresets\.json: cannot be parsed as JSON/);
+      expect(() => unattendedCheckSettings(unreadable, context)).toThrow(/could not be read/);
+      expect(unattendedCheckSettings(discoverProjectChecks(bare), context))
+        .toEqual({ settings: emptyCheckSettings(), description: "none configured" });
+      expect(describeCheckSettings(emptyCheckSettings())).toEqual([NO_CHECKS_MESSAGE]);
+    } finally {
+      for (const root of [swift, broken, bare]) rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("tokenizes typed commands without a shell and maps timing to the commit and pull-request lists", () => {
+    expect(parseCommandLine(`ctest --preset "dev build" -R 'a b' "" x\\ y`)).toEqual(["ctest", "--preset", "dev build", "-R", "a b", "", "x y"]);
+    expect(parseCommandLine(`sh -c 'make | tee log'`)).toEqual(["sh", "-c", "make | tee log"]);
+    for (const text of ["make | tee log", "make; make test", "echo $(id)", "\"unterminated", "   "]) {
+      expect(() => parseCommandLine(text), text).toThrow();
+    }
+    const commands = [{ name: "test", argv: ["make", "test"] }];
+    expect(settingsForTiming(commands, "commit")).toEqual({ verify: { precommit: commands, prepush: [] }, checks: [] });
+    expect(settingsForTiming(commands, "pull-request")).toEqual({ verify: { precommit: [], prepush: [] }, checks: commands });
+    expect(settingsForTiming(commands, "both")).toEqual({ verify: { precommit: commands, prepush: [] }, checks: commands });
+    expect(describeCheckOutcome([])).toBe(NO_CHECKS_MESSAGE);
+    expect(describeCheckOutcome(commands, [{ name: "test", exitCode: 1 }])).toBe("Build and test result: failed at test (test).");
+  });
+
+  it("reports a deliberate empty policy in hooks and binds an active local issue to its frozen lists", () => {
+    const logs: string[] = [];
+    const empty = config({ verify: { precommit: [], prepush: [] }, checks: [] });
+    const product = { identity: "index:x", changes: [{ status: "M", paths: [Buffer.from("src/main.go")] }] };
+    expect(runVerifyPhase({ clone: "/tmp/clone", config: empty, phase: "precommit", changes: product, log: (line) => logs.push(line) }))
+      .toEqual({ ok: true });
+    expect(logs.join("")).toContain("Automated checks skipped: none configured.");
+
+    const root = mkdtempSync(join(tmpdir(), "coord-frozen-"));
+    try {
+      const clone = join(root, "clone");
+      mkdirSync(clone);
+      git(clone, "init", "-q");
+      git(clone, "checkout", "-qb", "issue-1/claude");
+      git(clone, "config", "consensus.agentId", "claude");
+      const configPath = join(root, "config.json");
+      const frozen = { precommit: [{ name: "frozen", argv: ["true"] }], prepush: [] };
+      writeFileSync(configPath, JSON.stringify(config({ agents: [{ id: "claude", root: clone, launcher: "start-claude.sh" }],
+        verify: { precommit: [{ name: "edited", argv: ["false"] }], prepush: [] } })));
+      const paths = issueRuntimePaths(root, 1);
+      createIssueRuntime(paths, ["claude"]);
+      initializeOperationalState(paths, {
+        issue: 1, issueSessionId: `issue-1:${"a".repeat(40)}`, baselineSha: "a".repeat(40), profile: "solo",
+        originalRoster: ["claude"], branchTemplate: "issue-{issue}/{agent}", baseBranch: "main", maxRevisionRounds: 3,
+        prPolicy: "owner-only", automationDigest: "b".repeat(64), automationDigestScheme: "sha256-length-prefixed-v1",
+        automationDigestSources: [{ id: "config", sha256: "b".repeat(64) }], trustedSourceCommit: "c".repeat(40),
+        origin: "/origin.git", coordRoot: root, configPath,
+        agents: [{ id: "claude", root: clone, launcher: "start-claude.sh", delivery: "pull" }],
+        checks: [], verify: frozen, pollIntervalMs: 100
+      });
+      expect(resolveHookBinding({ clone, configPath, phase: "precommit" }))
+        .toEqual({ bound: true, kind: "frozen", issue: 1, commands: frozen });
+      mutateCursorsState(paths, (state) => ({ ...state, completed: true }));
+      expect(resolveHookBinding({ clone, configPath, phase: "precommit" })).toMatchObject({ bound: false });
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

@@ -667,11 +667,127 @@ Tiers 2 and 3 run the product's own suite and answer different questions. Tier 2
 is fast feedback in a dirty worktree; tier 3 is hermetic and is what gates
 publication. The journal records which tier failed.
 
+### Choosing build and test checks
+
+In a terminal, `coord onboard /path/to/app` reads the repository's tracked files
+and shows what it found, with the file behind each suggestion:
+
+```text
+How do you check that changes to this project are ready?
+
+Found:
+  scripts/check.sh               Project check script
+  tests/MusicDocumentTests.cpp   C++ test source
+  CMakePresets.json              Build and test presets
+
+  1. Use bash scripts/check.sh (project script; scripts/check.sh)
+  2. Use cmake --preset dev → cmake --build --preset dev → ctest --preset dev --output-on-failure --no-tests=error (...)
+  3. Enter another build or test command
+  4. Continue without automated checks for now
+```
+
+Discovery never runs project code, a build system or CI, and needs no GitHub
+access. Test sources and CI workflows are context only; every selection is a
+runnable command. Sources:
+
+| Evidence | Suggestion |
+| --- | --- |
+| `scripts/check.sh`, `scripts/test.sh`, `check.sh`, `test.sh` | Run the script (executable scripts directly, others with the interpreter named by their shebang, else `sh`) |
+| Existing ecosystems (Cargo, Go, Node scripts, Make, Flutter, Python) | Their established commit and pull-request commands (see below) |
+| `CMakePresets.json` (and tracked local includes) | For each test preset: `cmake --preset <configure>` → `cmake --build --preset <build>` → `ctest --preset <test> --output-on-failure --no-tests=error`; a configure/build pair without a test preset is offered as build only |
+| Shared Xcode schemes in a root-level `.xcworkspace` (preferred) or `.xcodeproj` | `xcodebuild test -workspace\|-project … -scheme … -configuration … -destination …` for schemes with tests; `build` for schemes without tests |
+| `Package.swift` | `swift build`, then `swift test` when `Tests/` exists |
+
+Hidden CMake presets are templates; presets with a `condition` and includes that
+are not tracked repository files are listed as not offered rather than guessed.
+CMake without presets is listed as evidence only, because no build directory is
+invented. Xcode never guesses a device or destination: onboarding asks for it
+(for example `platform=macOS`), and asks for a configuration the scheme does
+not state. `--no-tests=error` makes an accidentally empty test run fail, which
+is different from choosing no automated checks. For complex native setups, a
+checked-in script or a typed command remains the fallback.
+
+A typed command is split like a shell would split quoted words, without a
+shell: quotes and backslashes keep arguments containing spaces whole, nothing is
+expanded, and pipes, redirection, `;` and `$` are refused. Enter several
+commands to run them in order; the first failure stops the rest. Put pipelines
+in a script.
+
+Then choose when to run the commands:
+
+| Choice | `verify.precommit` | `checks` (before opening the pull request) |
+| --- | --- | --- |
+| Before each agent commit | the commands | empty |
+| Before opening a pull request with the completed changes | empty | the commands |
+| Both | the commands | the commands |
+
+`verify.prepush` is empty for a newly chosen setting. Onboarding shows the
+commands and timing, saves them in the project's existing `config.json` under
+`coord-runtime` (including `workspaces/<project>/config.json` in a shared
+runtime), and prints its absolute path. It does not run them. Choosing "no
+automated checks" saves `"verify": { "precommit": [], "prepush": [] }` and
+`"checks": []`, and every report says **Automated checks skipped: none
+configured.** A selection of only configure and build steps is reported as a
+build result. A failing command or a missing tool is never reported as a skip;
+doctor names a selected executable that is not on PATH.
+
+Settings resolve field by field: an explicit `--declare` field, then the
+owner's choice, then saved settings, then detection. Re-running onboarding shows
+the saved settings and offers to keep or change them; cancelling (Ctrl-D)
+leaves them unchanged. Reinstalling keeps saved settings, documentation and
+critical-path settings, coordinator verification and accepted additions;
+detection never overwrites them. Changing the commands removes a saved
+coordinator verification policy, because its candidate lists name the old
+commands, and onboarding says so. A saved config that cannot be read is an
+error naming its path, not a reason to regenerate.
+
+Without a terminal, onboarding uses explicit settings, otherwise saved settings,
+otherwise one unambiguous detected plan, which runs before opening a pull
+request (an established ecosystem keeps its own commit and pull-request
+commands). A first-time project with nothing recognized gets announced empty
+settings. Competing plans, unresolved parameters such as an Xcode destination,
+or unreadable build metadata stop with the choices, a valid `--declare`
+example, and the settings path.
+
+Each issue freezes its settings when it starts: hooks for that issue use the
+commit lists saved at start, so later onboarding changes apply to new issues.
+
+#### Checks added by agents
+
+New test cases covered by an existing command are picked up from the code
+automatically. When an agent adds a new test entry point, it may add an
+optional `checkProposal` to its implementation or revision signal: the ordered
+commands, the tracked entry-point paths they run, what they check, and the
+product commit containing them. Reviewers evaluate it together with that
+implementation; there is no separate approval step. A later revision keeps a
+pending proposal unless it supplies a corrected one, and proposals from
+implementations that were not selected are never used.
+
+At finalization, coord records an additive amendment for the issue: the
+frozen checks, then the proposed commands. It runs them in a fresh
+verification worktree at the final commit before publication, even in an issue
+that started with no checks. Results are bound to the effective policy, so a
+result from the original policy cannot satisfy the added commands, and
+publication refuses a mismatch. The issue's start state and GitHub snapshot are
+not modified, and agents never edit runtime configuration. A proposal may only
+add: reusing an existing check name for a different command is rejected;
+replacing or removing checks is an owner settings change.
+
+After the effective checks pass, coord saves the addition to `checkAdditions`
+in the workspace config before the pull request is opened. A later issue
+activates it only when its starting code contains the accepted change (the
+accepted commit is an ancestor of the baseline) or the exact approved entry
+point contents (for a squash merge), so an unmerged change never makes another
+issue's checks unusable. Otherwise the addition stays pending and `coord start`
+says why. Once merged, a missing entry point stops `coord start` with a stale
+policy error: restore the file, or remove that entry from `checkAdditions`.
+`coord status` reports adopted checks and their results.
+
 ### Product languages
 
 The driver needs Node 26 and pnpm 12, but the product does not. Installation
-uses `proposeProjectPolicy` in `src/setupWorkspace.ts` to propose the policy
-below. Cargo and Go keep first priority, followed by existing Node checks and
+uses `proposeToolchainPolicy` in `src/projectChecks.ts` to propose the policy
+below for the ecosystems it recognizes. Cargo and Go keep first priority, followed by existing Node checks and
 a Makefile with a `test` target. New language defaults preserve those working
 gates on reinstall. Review the generated config; multi-language monorepos may
 need an explicit declaration instead.
@@ -684,8 +800,8 @@ need an explicit declaration instead.
 | `test` target in `Makefile` | `make` | `make check` if present / none | `make test` |
 | Flutter SDK dependency in `pubspec.yaml` | `flutter` | `flutter analyze --no-fatal-infos --no-fatal-warnings` / `flutter test` | analyze, then test, with the same arguments |
 | `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt` | `python` | `pytest -q` / none | `pytest -q` |
-| other recognized targets in `Makefile` | `make` | `make check` if present / none | no inference; supply `--declare` |
-| none of these | unspecified | no inference | no inference; supply `--declare` |
+| other recognized targets in `Makefile` | `make` | `make check` if present / none | no inference; choose in a terminal or supply `--declare` |
+| none of these | unspecified | no inference | native discovery above, otherwise announced empty settings |
 
 For Node, the entries name package scripts, not bare executables. A Node
 manifest without `check` or `test` still requires a declaration, even alongside
@@ -720,8 +836,8 @@ does not select the Flutter SDK. The analyzer default leaves only errors fatal;
 warnings and informational diagnostics do not block precommit or finalization.
 Declare `flutter analyze --no-fatal-infos` to make warnings fatal again, or plain
 `flutter analyze` to make both warnings and informational diagnostics fatal.
-`flutter test` remains unchanged. Existing workspaces adopt the new generated
-default on reinstall or re-onboarding; retained declarations still override it.
+`flutter test` remains unchanged. Saved settings outrank a newly generated
+default on reinstall; choose "Change them" when re-onboarding to adopt it.
 The default requires the Flutter SDK, prepared project dependencies, and runnable
 tests; it does not select an emulator, device, or platform build target.
 
@@ -783,9 +899,10 @@ paths are placeholders to replace, not shell variables or real install stamps.
   explicit: `"verify": { "precommit": [], "prepush": [] }`. This applies only
   where coordination hooks are installed — that is, agent clones. A human clone
   has no coordination hooks and is unaffected whether or not `verify` exists.
-- The installer never writes that product-wide opt-out on your behalf. When its proposal
-  finds no command to run, it omits `verify` entirely, so the hooks fail closed
-  and name the fix rather than recording a decision nobody made.
+- The installer writes that opt-out only when the owner chooses no automated
+  checks, or, announced, for a first-time project where nothing was recognized.
+  A partial declaration whose other field cannot be filled from one clear plan
+  leaves `verify` absent, so the hooks fail closed and name the fix.
 - `coord doctor` fails when a declared `argv[0]` is not on PATH, at install time
   rather than at an agent's first commit.
 

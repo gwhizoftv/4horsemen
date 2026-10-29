@@ -71,6 +71,41 @@ describe("published protocol schemas", () => {
     ).toBe(false);
   });
 
+  it("accepts an optional additive check proposal and refuses replacement, removal and malformed fields", () => {
+    const signal = {
+      ...common,
+      artifact: "implementation-ready",
+      inputSetHash: "c".repeat(64),
+      implementationCommitSha: "d".repeat(40),
+      approvedPaths: ["scripts/test.sh"]
+    };
+    const proposal = {
+      implementationCommitSha: "d".repeat(40),
+      commands: [{ name: "native-test", argv: ["sh", "scripts/test.sh", "--filter", "two words"] }],
+      entryPointPaths: ["scripts/test.sh"],
+      description: "Runs the new native test entry point."
+    };
+    expect(implementationReadyArtifactSchema.safeParse(signal).success).toBe(true);
+    expect(implementationReadyArtifactSchema.safeParse({ ...signal, checkProposal: proposal }).success).toBe(true);
+    expect(revisionReadyArtifactSchema.safeParse({ ...common, artifact: "revision-ready", inputSetHash: "c".repeat(64), round: 1,
+      revisedBranchHead: "d".repeat(40), basedOn: ["e".repeat(40)], checkProposal: proposal }).success).toBe(true);
+    for (const invalid of [
+      { ...proposal, remove: ["test"] },
+      { ...proposal, replace: { test: ["true"] } },
+      { ...proposal, commands: [] },
+      { ...proposal, commands: [{ name: "test", argv: ["a"] }, { name: "test", argv: ["b"] }] },
+      { ...proposal, commands: [{ name: "test", argv: [] }] },
+      { ...proposal, commands: [{ name: "test", argv: ["true"], cache: { inputs: "tree" } }] },
+      { ...proposal, entryPointPaths: [] },
+      { ...proposal, entryPointPaths: [".signals/issue-1/x.json"] },
+      { ...proposal, entryPointPaths: ["../escape.sh"] },
+      { ...proposal, description: " " },
+      { ...proposal, implementationCommitSha: "D".repeat(40) }
+    ]) {
+      expect(implementationReadyArtifactSchema.safeParse({ ...signal, checkProposal: invalid }).success, JSON.stringify(invalid)).toBe(false);
+    }
+  });
+
   it("binds revision rounds and based-on pins", () => {
     expect(
       revisionReadyArtifactSchema.safeParse({

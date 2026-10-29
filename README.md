@@ -152,15 +152,25 @@ operator guide; stopping the coordinator does not stop its agent harnesses.
 | Make | Recognized `Makefile` targets supply checks |
 | Python | `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt`: proposes pytest checks |
 | Flutter | Flutter SDK dependency in `pubspec.yaml`: proposes analyze and test checks |
+| C++ / CMake | `CMakePresets.json`: configure → build → test preset chains, with `ctest --output-on-failure --no-tests=error` |
+| Objective-C / Swift / Xcode | Shared schemes with tests in an `.xcworkspace` or `.xcodeproj`: `xcodebuild test`; you choose the destination |
+| Swift package | `Package.swift`: `swift build`, plus `swift test` when a `Tests/` directory exists |
+| Project scripts | `scripts/check.sh` or `scripts/test.sh` |
+| New repository | No checks yet: onboarding saves empty lists and reports "Automated checks skipped: none configured." |
 
-Plain `coord onboard <repository>` handles Python and Flutter without a declaration.
-Installation prints the effective commands and their inferred or declared origin;
-review them and make the product's tools available to agents and finalization worktrees.
-Existing usable Node and Make test gates keep their priority. A language marker
-alone does not guarantee usable checks, and installation refuses missing finalization
-checks. Other languages and custom workflows use explicit command declarations. See
-[product languages and declarations](docs/setup-workspace.md#product-languages)
-for detection precedence, tool requirements, and a Python override example.
+In a terminal, `coord onboard <repository>` shows what it found (scripts, build
+metadata, test sources and CI files, each with the file behind it) and asks how
+to check changes: one of the suggested commands, another build or test command
+you type, or no automated checks for now. It then asks when to run them: before
+each agent commit, before opening a pull request, or both. The choice is saved
+in the workspace `config.json` under `coord-runtime`, whose path is printed;
+nothing is run during onboarding. Re-running onboarding shows the saved settings
+and lets you keep or change them. Without a terminal, onboarding uses saved
+settings, or one clear detected plan; competing plans or an Xcode destination
+need a terminal or `--declare`. When an agent adds a new test entry point, it
+can propose the command with its implementation; once reviewers accept it, coord
+runs it before opening the pull request and saves it for later issues. See
+[choosing build and test checks](docs/setup-workspace.md#choosing-build-and-test-checks).
 
 ## Platforms
 

@@ -49,6 +49,12 @@ export type RunVerificationInput = {
   pin: string;
   classification: { kind: "coordination" | "documentation" | "product"; reason: string; inputIdentity: string };
   commands: readonly CheckCommand[];
+  /**
+   * The effective policy these results are bound to. Omitted, the frozen issue
+   * digest applies; an amended policy passes its own, so no receipt written
+   * under the frozen policy can satisfy it.
+   */
+  policyDigest?: string;
   environment?: { platform: string; arch: string; node: string; env: NodeJS.ProcessEnv };
   sleep?: (ms: number) => Promise<void>;
   pollMs?: number;
@@ -147,7 +153,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
     catch (error) { return `not cached: ${error instanceof Error ? error.message : String(error)}`; }
     return {
       v: 1, origin: start.origin, inputsMode: mode, inputIdentity: identity, argv: [...command.argv],
-      policyDigest: start.verificationDigest, platform: environment.platform, arch: environment.arch,
+      policyDigest: input.policyDigest ?? start.verificationDigest, platform: environment.platform, arch: environment.arch,
       node: environment.node, probes: probeResults, env: envDigests(command.cache.env, environment.env), dependencies
     };
   };

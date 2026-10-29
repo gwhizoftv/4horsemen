@@ -295,3 +295,36 @@ it("reports pending/filed follow-ups and authorized-reviser recovery without exp
   expect(report).not.toContain("not unanimous approval");
   expect(report).not.toContain("Follow-up pending");
 });
+
+describe("check reporting (#261)", () => {
+  it("reports an empty policy as skipped, a build-only result as a build, and an adopted proposal with its source", () => {
+    const empty = { ...start("owner-only"), checks: [] } as StartState;
+    const finished = complete();
+    const text = renderIssueReport(empty, finished);
+    expect(text).toContain("Final checks: Automated checks skipped: none configured.");
+    expect(text).not.toMatch(/passed/);
+
+    const build = { ...start("owner-only"), checks: [{ name: "configure", argv: ["cmake", "--preset", "dev"] },
+      { name: "build", argv: ["cmake", "--build", "--preset", "dev"] }] } as StartState;
+    const built = complete();
+    built.accepted = [{ ...built.accepted[0]!, checkResults: build.checks.map((check) => ({ ...check, exitCode: 0 })) }];
+    expect(renderIssueReport(build, built)).toContain("Final checks: Build result: passed (configure, build).");
+
+    const proposal = { implementationCommitSha: impl, commands: [{ name: "native-test", argv: ["sh", "scripts/test.sh"] }],
+      entryPointPaths: ["scripts/test.sh"], description: "Runs the new native tests." };
+    const adopted = complete();
+    adopted.accepted = [{ ...adopted.accepted[0]!,
+      checkResults: [{ name: "native-test", argv: ["sh", "scripts/test.sh"], exitCode: 0 }],
+      checkAmendment: { id: "a".repeat(64), agent: "cursor", submissionSha: "c".repeat(40),
+        path: ".signals/issue-1/implementation-ready-cursor.json", productPin: impl, proposal } }];
+    const report = renderIssueReport(empty, adopted);
+    expect(report).toContain("Final checks: Build and test result: passed (native-test).");
+    expect(report).toContain(`Added checks from cursor (commit ${impl}): sh scripts/test.sh; saved for later issues whose starting code contains scripts/test.sh.`);
+
+    const pending = complete();
+    pending.completed = false;
+    pending.accepted = [{ stepId: "R4.implement", agent: "cursor", round: null, submissionSha: "c".repeat(40), productPin: impl,
+      path: ".signals/issue-1/implementation-ready-cursor.json", acceptedAt: pending.updatedAt, checkProposal: proposal }];
+    expect(renderIssueReport(empty, pending)).toContain("Check proposal from cursor awaiting review: sh scripts/test.sh.");
+  });
+});
