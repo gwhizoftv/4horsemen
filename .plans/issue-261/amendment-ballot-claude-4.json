@@ -1,0 +1,52 @@
+{
+  "actionId": "c7c2630b-370e-4b35-95a7-3b9280d01ee1",
+  "agent": "claude",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "23e5484d88276e5a832e3c0ce190fc6a734878b3e759ff1f0d5a8cc750d9d1c0",
+  "issue": 261,
+  "issueSessionId": "issue-261:c97bde22150e7a85694e999f4d6930b79122fcaf",
+  "plans": [
+    {
+      "agent": "codex",
+      "commitSha": "f1d01874ea5d2ccda3d0d07259113c9f9537c8ad",
+      "path": ".plans/issue-261/plan.md"
+    }
+  ],
+  "priorApprovals": [
+    {
+      "agent": "claude",
+      "commitSha": "c3bcc47a49476d5a1c2644295bd85345ae14d74e",
+      "path": ".plans/issue-261/amendment-ballot-claude-1.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "e85cec107bb184578aa1d79101890dea9555e4c4",
+      "path": ".plans/issue-261/amendment-ballot-claude-3.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c3bcc47a49476d5a1c2644295bd85345ae14d74e",
+      "path": ".plans/issue-261/amendment-ballot-codex-1.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "e85cec107bb184578aa1d79101890dea9555e4c4",
+      "path": ".plans/issue-261/amendment-ballot-codex-3.json"
+    },
+    {
+      "agent": "muse",
+      "commitSha": "c3bcc47a49476d5a1c2644295bd85345ae14d74e",
+      "path": ".plans/issue-261/amendment-ballot-muse-1.json"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "The plan's tracked-entry-point validation cannot be enforced through the existing git-show-based readBlob, which returns tree listings and symlink targets, so an optional regular-file mode check in src/mirror.ts with a real-repository regression in test/mirror.test.ts is the minimal necessary fix that makes submission validation agree with adoption without adding new behavior.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "7b2b897e2104fe97a7ee51faef12aedb730eb94c",
+    "path": ".signals/issue-261/revision-ready-codex-round-1.json"
+  },
+  "responseSha256": "78f10d54a70cad8ea46b5a83522c932fe535fd14bcef406b1ad8b1efad7d9e3b",
+  "sequence": 4
+}
