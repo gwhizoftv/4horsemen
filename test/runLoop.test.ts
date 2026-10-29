@@ -3531,23 +3531,38 @@ describe("coordinator verification gates", () => {
     return { paths, calls, loop, observe, implementationPin, consensusSha, finalSha, fail: (name: string | null) => { failing = name; } };
   };
 
-  it("carries reviewed proposals through revisions, persists an amendment and retries saving before publication", async () => {
+  it.each(["solo", "reviewed", "consensus"] as const)("adopts checks and retries saving before publication in %s", async (profile) => {
     const gate = gateFixture("local");
-    const start = { ...readStartState(gate.paths), checks: [], origin: "https://github.com/example/project.git" };
+    const start = { ...readStartState(gate.paths), profile, checks: [], origin: "https://github.com/example/project.git" };
     writeFileSync(gate.paths.start, JSON.stringify(start));
     seedPendingPublication(gate.paths, gate.finalSha);
     let cursors = readCursorsState(gate.paths);
-    cursors.derived.implementationSelection!.implementationPin = gate.consensusSha;
+    cursors.activeRoster = profile === "solo" ? ["codex"] : ["claude", "codex"];
+    cursors.derived.implementationSelection!.implementationPin = gate.implementationPin;
     const proposal = { implementationCommitSha: gate.implementationPin, commands: [{ name: "native", argv: ["native"] }], entryPointPaths: ["src/a.ts"], description: "Native regression" };
     cursors.accepted = [
       { stepId: "R4.implement", agent: "claude", round: null, submissionSha: gate.implementationPin, productPin: gate.implementationPin, path: ".signals/issue-1/implementation-ready-claude.json", acceptedAt: cursors.updatedAt, checkProposal: { ...proposal, commands: [{ name: "losing", argv: ["must-not-run"] }] } },
       { stepId: "R4.implement", agent: "codex", round: null, submissionSha: gate.implementationPin, productPin: gate.implementationPin,
         path: ".signals/issue-1/implementation-ready-codex.json", acceptedAt: cursors.updatedAt, checkProposal: proposal },
-      { stepId: "R6.revise", agent: "codex", round: 1, submissionSha: gate.consensusSha, productPin: gate.consensusSha,
-        path: ".signals/issue-1/revision-ready-codex.json", acceptedAt: cursors.updatedAt }, ...cursors.accepted];
+      ...cursors.accepted];
+    const common = { inputSetHash: "b".repeat(64), activeRoster: cursors.activeRoster, supersedes: null, decidedAt: cursors.updatedAt };
+    if (profile === "consensus") {
+      const revision = { stepId: "R6.revise" as const, agent: "codex", round: 1, submissionSha: gate.consensusSha, productPin: gate.consensusSha,
+        path: ".signals/issue-1/revision-ready-codex.json", acceptedAt: cursors.updatedAt };
+      cursors.accepted.push(revision);
+      cursors.derived.consensus = { ...common, kind: "consensus", algorithm: "unanimous-active-roster-v1", round: 1,
+        decisionId: `consensus:${common.inputSetHash}:r1`, consensusPin: gate.consensusSha,
+        inputs: [{ kind: "revision", agent: revision.agent, submissionSha: revision.submissionSha, productPin: revision.productPin, path: revision.path }] };
+    } else {
+      cursors.derived.implementationSelection = null;
+      if (profile === "reviewed") cursors.derived.planSelection = { ...common, kind: "plan-selection", algorithm: "plurality-active-roster-v1",
+        decisionId: `plan-selection:${common.inputSetHash}`, selectedAgents: ["codex"],
+        inputs: [{ kind: "plan", agent: "codex", submissionSha: gate.implementationPin, path: ".plans/issue-1/plan.md" }] };
+    }
     writeCursorsState(gate.paths, cursors);
-    const order = { ...buildOrder(gate.paths, start, cursors, "codex", "R7.finalize", null),
-      inputs: [{ agent: "codex", commitSha: gate.consensusSha, path: ".signals/issue-1/revision-ready-codex.json", kind: "consensus" }] };
+    const order = buildOrder(gate.paths, start, cursors, "codex", "R7.finalize", null);
+    expect(order.inputs.find((input) => input.kind === "consensus")?.commitSha)
+      .toBe(profile === "consensus" ? gate.consensusSha : gate.implementationPin);
     const observation = { agent: "codex", actionId: order.actionId, submissionSha: gate.finalSha, productPin: gate.finalSha, status: "satisfied" as const, outstanding: [] };
     const frozenBytes = readFileSync(gate.paths.start, "utf8");
     const loop = gate.loop();

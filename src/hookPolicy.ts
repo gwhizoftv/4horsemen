@@ -133,7 +133,7 @@ export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): st
   return [...missing].sort();
 };
 
-export type HookBinding = { bound: true; issue: number; commands: VerifyConfig; kind?: "frozen" | "coordinated"; policy?: Pick<CoordinatorConfig, "documentation" | "workflowCriticalFiles" | "workflowCriticalPrefixes"> } | { bound: false; reason: string };
+export type HookBinding = { bound: true; issue: number; commands: VerifyConfig; kind?: "frozen" | "coordinated"; policy?: Pick<CoordinatorConfig, "checks" | "verification" | "documentation" | "workflowCriticalFiles" | "workflowCriticalPrefixes"> } | { bound: false; reason: string };
 
 /**
  * Coordinated hook lists apply only to a provably active coordinator run for
@@ -177,7 +177,8 @@ export const resolveHookBinding = (input: {
     if (cursors.completed || cursors.abandoned) return { bound: false, reason: `issue ${issue} is no longer active` };
     if (!cursors.activeRoster.includes(agent)) return { bound: false, reason: `${agent} is not on issue ${issue}'s active roster` };
     return { bound: true, issue, commands: coordinated, kind: start.verification?.mode === "coordinator" ? "coordinated" : "frozen",
-      policy: { documentation: start.documentation, workflowCriticalFiles: start.workflowCriticalFiles ?? [], workflowCriticalPrefixes: start.workflowCriticalPrefixes ?? [] } };
+      policy: { checks: start.checks, verification: start.verification, documentation: start.documentation,
+        workflowCriticalFiles: start.workflowCriticalFiles ?? [], workflowCriticalPrefixes: start.workflowCriticalPrefixes ?? [] } };
   } catch (error) {
     return { bound: false, reason: `runtime state unavailable (${error instanceof Error ? error.message.split("\n")[0] : String(error)})` };
   }

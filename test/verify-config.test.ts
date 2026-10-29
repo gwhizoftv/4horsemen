@@ -682,6 +682,10 @@ describe("guided project checks", () => {
     expect(parseCheckCommand('tool "two words" \'\' path\\ with\\ spaces')).toEqual(["tool", "two words", "", "path with spaces"]);
     for (const text of ["echo $(touch bad)", "a | b", "a; b", 'a "unterminated', "a\\"]) expect(() => parseCheckCommand(text)).toThrow();
     expect(parseCheckCommand("sh -c 'echo hello | cat'")).toEqual(["sh", "-c", "echo hello | cat"]);
+    expect(parseCheckCommand(String.raw`python3 -c "import re; assert re.fullmatch(r'\d+', '123')"`))
+      .toEqual(["python3", "-c", String.raw`import re; assert re.fullmatch(r'\d+', '123')`]);
+    expect(parseCheckCommand(String.raw`tool "a\"b" "a\\b" "\$literal"`))
+      .toEqual(["tool", 'a"b', "a\\b", "$literal"]);
   });
   it.each(["Before each agent commit", "Before opening a pull request", "Both"])("maps %s without adding a push gate", (timing) => {
     const commands = [{ name: "build", argv: ["tool", "two words"] }];

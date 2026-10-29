@@ -2999,7 +2999,8 @@ export class CoordinatorRunLoop {
     try {
       if (finalSha === null || branch === null) throw new Error("Pending publication is missing its final pin or branch.");
       const accepted = cursors.accepted.find((entry) => entry.stepId === "R7.finalize" && entry.productPin === finalSha);
-      const authorizedPin = cursors.derived.consensus?.consensusPin ?? cursors.derived.implementationSelection?.implementationPin;
+      const authorizedPin = deriveBoundInputs(start, cursors, "R7.finalize", null)
+        .find((input) => input.kind === "consensus")?.commitSha;
       const amendment = cursors.checkAmendments?.find((entry) => entry.authorizedPin === authorizedPin);
       const selected = selectVerification(inspectRangeChanges(this.mirror.path, start.baselineSha, finalSha), start, "finalization", start.checks);
       const commands = addCheckCommands(selected.commands, amendment?.additions.map((entry) => entry.proposal) ?? []);

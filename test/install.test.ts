@@ -1441,6 +1441,12 @@ it("preserves chosen timing on reinstall and refuses malformed saved settings", 
   git(first.clones[0]!, "checkout", "-qb", "claude/work");
   installOnce(fixture, { declarePath: undefined });
   expect(readConfig(first.configPath)).toMatchObject(settings);
+  const legacy = readConfig(first.configPath);
+  delete legacy.verify;
+  writeFileSync(first.configPath, JSON.stringify(legacy));
+  installOnce(fixture, { declarePath: undefined });
+  expect(readConfig(first.configPath).verify).toBeUndefined();
+  expect(readConfig(first.configPath).checks).toEqual(settings.checks);
   writeFileSync(first.configPath, "{");
   expect(() => installOnce(fixture, { declarePath: undefined })).toThrow();
 });

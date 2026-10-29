@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -38,6 +38,30 @@ const repository = () => {
 };
 
 describe("owner bare mirror", () => {
+  it("constrains proposal reads to ordinary tracked files at the exact pin", async () => {
+    const fixture = repository();
+    mkdirSync(join(fixture.work, ".ci"));
+    writeFileSync(join(fixture.work, ".ci/check.sh"), "exit 0\n");
+    chmodSync(join(fixture.work, ".ci/check.sh"), 0o755);
+    symlinkSync(".ci/check.sh", join(fixture.work, "check-link"));
+    git(fixture.work, "add", ".");
+    git(fixture.work, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "check entry points");
+    const pin = git(fixture.work, "rev-parse", "HEAD");
+    git(fixture.work, "push", "-q", "origin", "issue-1/codex");
+    const mirror = new BareMirror(join(fixture.root, "runtime/mirror.git"), fixture.origin);
+    await mirror.initialize();
+    await mirror.fetchBranch("issue-1/codex");
+    const regularFileOnly = { regularFileOnly: true };
+    expect(await mirror.readBlob(pin, "README.md", regularFileOnly)).toBe("base\n");
+    expect(await mirror.readBlob(pin, ".ci/check.sh", regularFileOnly)).toBe("exit 0\n");
+    for (const path of [".ci", "check-link", "missing", ".ci/*.sh"]) {
+      expect(await mirror.readBlob(pin, path, regularFileOnly)).toBeNull();
+    }
+    expect(await mirror.readBlob(fixture.sha, ".ci/check.sh", regularFileOnly)).toBeNull();
+    expect(await mirror.readBlob(pin, "check-link")).toBe(".ci/check.sh");
+    expect(await mirror.readBlob(pin, ".ci")).toContain("check.sh");
+  });
+
   it("fetches explicit origin refs and reads exact-commit blobs", async () => {
     const fixture = repository();
     const mirror = new BareMirror(join(fixture.root, "runtime/mirror.git"), fixture.origin);

@@ -1,4 +1,5 @@
 import { addCheckCommands } from "./checkAmendments.js";
+import { isCoordinationEvidencePath } from "./changeClassification.js";
 import type { CheckProposal } from "./protocol.js";
 import { agentFacingSubject } from "./agentLanguage.js";
 import { sha256 } from "./hash.js";
@@ -20,7 +21,7 @@ export type EvidenceMirror = {
   fetchBranch(branch: string): Promise<FetchResult>;
   isReachable(sha: string, ref: string): Promise<boolean>;
   isAncestor(base: string, tip: string): Promise<boolean>;
-  readBlob(sha: string, path: string): Promise<string | null>;
+  readBlob(sha: string, path: string, options?: { regularFileOnly?: boolean }): Promise<string | null>;
   changedPaths(base: string, tip: string): Promise<string[]>;
   validatePhasePin(params: {
     pin: string;
@@ -212,7 +213,8 @@ const proposalErrors = async (proposal: CheckProposal | undefined, pin: string, 
   const errors: string[] = [];
   if (proposal.implementationCommitSha !== pin) errors.push("checkProposal must name the submission's exact product pin");
   for (const path of proposal.entryPointPaths) {
-    if (path.startsWith(".") || path.includes("\\") || path.split("/").some((part) => !part || part === "." || part === "..") || await mirror.readBlob(pin, path) === null) {
+    if (isCoordinationEvidencePath(path) || path.includes("\\") || path.split("/").some((part) => !part || part === "." || part === "..") ||
+        await mirror.readBlob(pin, path, { regularFileOnly: true }) === null) {
       errors.push(`checkProposal entry point is not a safe product file at its pin: ${path}`);
     }
   }

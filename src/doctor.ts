@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { git, localConfigGet, worktreeRoot } from "./gitExec.js";
 import { canonicalSourceDigest, inspectCloneHooks, readHookManifest } from "./hookSync.js";
-import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, unresolvableCommands, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
+import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, resolveHookBinding, unresolvableCommands, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { githubRepositoryFromOrigin } from "./githubIssue.js";
 import { GIT_WRAPPER_RELATIVE_PATH, hasTerminalDeliveryAdapter, productName } from "./setupWorkspace.js";
 import { readConfig, type CoordinatorConfig, type StartState } from "./state.js";
@@ -435,9 +435,11 @@ const checkStartCompatibility = (config: CoordinatorConfig, configPath: string):
 export const inspectStartupAgent = (start: StartState, agent: StartState["agents"][number]): string[] => {
   try {
     const saved = readConfig(start.configPath);
-    const config = { ...saved, checks: start.checks, verify: start.verify ?? saved.verify,
+    const config = { ...saved, checks: start.checks ?? saved.checks,
+      verify: start.verification?.mode === "coordinator" ? start.verification.coordinated : start.verify ?? saved.verify,
       verification: start.verification, documentation: start.documentation };
-    const findings = checkClone({ config, configPath: start.configPath, agent, installDigest: null, home: null })
+    const findings = [...checkClone({ config, configPath: start.configPath, agent, installDigest: null, home: null }),
+      ...checkDeclarations(config, start.configPath, cloneOf(start.configPath, agent.root))]
       .filter((entry) => entry.class !== "agentsProtocol" && entry.class !== "resourceTelemetry")
       .map((entry) => `${entry.message} ${entry.remediation}`);
     if (config.coordination === undefined) findings.push("Installation stamp unavailable; installed hook definitions cannot be verified. Repair the workspace installation.");
@@ -524,13 +526,24 @@ export const doctor = (options: DoctorOptions): DoctorReport => {
     }
   }
 
+  const bindings = config.agents.map((agent) => {
+    const clone = cloneOf(configPath, agent.root);
+    return { clone, binding: resolveHookBinding({ clone, configPath, phase: "precommit" }) };
+  });
+  const declarations = bindings.some(({ binding }) => binding.bound)
+    ? bindings.flatMap(({ clone, binding }) => binding.bound
+      ? checkDeclarations({ ...config, ...binding.policy, verify: binding.commands }, configPath, clone)
+        .map((entry) => ({ ...entry, message: `Active issue ${binding.issue}: ${entry.message}` }))
+      : [])
+    : checkDeclarations(config, configPath, dirname(configPath));
+
   const findings = [
     ...checkInstallRoot(config),
     ...config.agents.flatMap((agent) => checkClone({
       config, configPath, agent, installDigest, home: options.home === undefined ? homedir() : options.home
     })),
     ...checkStartCompatibility(config, configPath),
-    ...checkDeclarations(config, configPath, dirname(configPath))
+    ...declarations
   ];
 
   const exitCode = findings.length === 0 ? 0 : Math.min(...findings.map((item) => item.code));

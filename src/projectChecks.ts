@@ -315,9 +315,17 @@ export const discoverProjectChecks = (root: string): CheckDiscovery => {
 /** Tokenization only: no shell expansion, substitution or evaluation. */
 export const parseCheckCommand = (text: string): string[] => {
   const args: string[] = []; let token = "", quote = "", escaped = false, started = false;
-  for (const char of text) {
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]!;
     if (escaped) { token += char; escaped = false; started = true; continue; }
-    if (char === "\\" && quote !== "'") { escaped = true; started = true; continue; }
+    if (char === "\\" && quote !== "'") {
+      // In double quotes a backslash before an ordinary character is literal.
+      if (quote === '"' && !['"', "\\", "$", "`", "\n"].includes(text[index + 1] ?? "")) token += char;
+      else if (text[index + 1] === "\n") index++;
+      else escaped = true;
+      started = true;
+      continue;
+    }
     if (quote) { if (char === quote) quote = ""; else token += char; started = true; continue; }
     if (char === "'" || char === '"') { quote = char; started = true; continue; }
     if (/[|&;<>$`]/.test(char)) throw new Error("Use a project script for shell operators, or explicitly enter a shell command.");
@@ -399,7 +407,7 @@ export const chooseProjectChecks = async (root: string, declared: WorkspaceDecla
 /** Synchronous resolution for install and other noninteractive callers. */
 export const resolveProjectChecks = (root: string, declared: WorkspaceDeclaration | null, saved: CoordinatorConfig | null): CheckSettings => {
   const checks = declared?.checks ?? saved?.checks, verify = declared?.verify ?? saved?.verify;
-  if (checks !== undefined) return { checks, verify: verify ?? { precommit: [], prepush: [] } };
+  if (checks !== undefined) return { checks, verify: saved ? verify : verify ?? { precommit: [], prepush: [] } };
   const discovery = discoverProjectChecks(root);
   if (discovery.plans.length > 1 || discovery.plans.some((plan) => plan.unresolved.length)) {
     throw new Error(`Ambiguous build and test commands: ${discovery.plans.map((plan) => `${plan.label}: ${plan.source} ${plan.unresolved.join(", ")}`).join("; ")}. Run coord onboard in a terminal or pass --declare <file.json>, for example { "verify": { "precommit": [], "prepush": [] }, "checks": [] }.`);

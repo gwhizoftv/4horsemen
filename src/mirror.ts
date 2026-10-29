@@ -159,9 +159,13 @@ export class BareMirror {
     return (await this.git(["merge-base", "--is-ancestor", base, tip], true)).exitCode === 0;
   }
 
-  async readBlob(sha: string, path: string): Promise<string | null> {
+  async readBlob(sha: string, path: string, options: { regularFileOnly?: boolean } = {}): Promise<string | null> {
     gitShaSchema.parse(sha);
     repositoryPathSchema.parse(path);
+    if (options.regularFileOnly) {
+      const entry = await this.git(["--literal-pathspecs", "ls-tree", "-z", sha, "--", path], true);
+      if (entry.exitCode !== 0 || !/^(100644|100755) blob [a-f0-9]{40}\t[^\0]+\0$/.test(entry.stdout.toString("utf8"))) return null;
+    }
     const result = await this.git(["show", `${sha}:${path}`], true);
     if (result.exitCode !== 0) return null;
     return result.stdout.toString("utf8");
