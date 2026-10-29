@@ -295,3 +295,10 @@ it("reports pending/filed follow-ups and authorized-reviser recovery without exp
   expect(report).not.toContain("not unanimous approval");
   expect(report).not.toContain("Follow-up pending");
 });
+
+it("reports empty checks and pending future entry points without fabricating a passed test", () => {
+  const report = renderIssueReport({ ...start("owner-only"), checks: [], pendingChecks: ["Native suite has not merged"] }, complete());
+  expect(report).toContain("Automated checks skipped: none configured.");
+  expect(report).toContain("Pending future check: Native suite has not merged");
+  expect(report).not.toContain("Added checks verified");
+});

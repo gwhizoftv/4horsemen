@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { load } from "js-yaml";
+import { proposeToolchainPolicy } from "./projectChecks.js";
 import {
   git,
   gitOrThrow,
@@ -25,6 +25,8 @@ import { isPathInside } from "./paths.js";
 import { DEFAULT_CLONE_IGNORES, writeManagedIgnoreFile, clearManagedIgnoreFile } from "./productIgnore.js";
 import {
   atomicWriteJson,
+  acquireExclusiveLock,
+  readConfig,
   coordinatorConfigSchema,
   type CheckCommand,
   type CoordinatorConfig,
@@ -147,160 +149,6 @@ export type ProjectPolicyProposal = {
   workflowCriticalFiles: string[];
 };
 
-const nodeScripts = (productRoot: string): Set<string> => {
-  try {
-    const parsed = JSON.parse(readFileSync(join(productRoot, "package.json"), "utf8")) as {
-      scripts?: Record<string, unknown>;
-    };
-    return new Set(Object.keys(parsed.scripts ?? {}));
-  } catch {
-    return new Set<string>();
-  }
-};
-
-const makeTargets = (productRoot: string): Set<string> => {
-  try {
-    const content = readFileSync(join(productRoot, "Makefile"), "utf8");
-    return new Set([...content.matchAll(/^([A-Za-z0-9_.-]+):/gm)].map((match) => match[1] as string));
-  } catch {
-    return new Set<string>();
-  }
-};
-
-const hasFlutterSdk = (productRoot: string): boolean => {
-  const mapping = (value: unknown): Record<string, unknown> =>
-    typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
-  try {
-    const pubspec = mapping(load(readFileSync(join(productRoot, "pubspec.yaml"), "utf8")));
-    const dependencies = mapping(pubspec.dependencies);
-    const development = mapping(pubspec.dev_dependencies);
-    return [dependencies.flutter, development.flutter, development.flutter_test]
-      .some((dependency) => mapping(dependency).sdk === "flutter");
-  } catch {
-    return false;
-  }
-};
-
-/**
- * A proposal only carries `verify` when it actually found something to run.
- *
- * Emitting `{ precommit: [], prepush: [] }` because nothing was recognised
- * writes the operator's explicit opt-out on their behalf: the hooks then read a
- * deliberate "this project has no local checks" and allow every commit. Missing
- * must stay missing so the hooks fail closed and say what to declare.
- */
-const proposedVerify = (
-  precommit: CheckCommand[],
-  prepush: CheckCommand[]
-): { verify?: { precommit: CheckCommand[]; prepush: CheckCommand[] } } =>
-  precommit.length === 0 && prepush.length === 0 ? {} : { verify: { precommit, prepush } };
-
-/**
- * Scaffold a project's declared policy from what its tree obviously is.
- *
- * This is the ONLY place ecosystem detection is allowed, and its output is
- * written into the workspace config for an operator to review. No hook body
- * ever sniffs: a proposal made once and recorded is reviewable, whereas a
- * decision remade silently on every commit is the drift this issue exists to
- * remove.
- */
-const proposeToolchainPolicy = (productRoot: string): ProjectPolicyProposal => {
-  const has = (relative: string): boolean => existsSync(join(productRoot, relative));
-
-  if (has("Cargo.toml")) {
-    return {
-      toolchain: "cargo",
-      verify: {
-        precommit: [{ name: "check", argv: ["cargo", "check", "--all-targets"] }],
-        prepush: [{ name: "test", argv: ["cargo", "test"] }]
-      },
-      checks: [{ name: "test", argv: ["cargo", "test"] }],
-      workflowCriticalPrefixes: ["src/", "tests/"],
-      workflowCriticalFiles: ["Cargo.toml", "Cargo.lock"]
-    };
-  }
-
-  if (has("go.mod")) {
-    return {
-      toolchain: "go",
-      verify: {
-        precommit: [{ name: "vet", argv: ["go", "vet", "./..."] }],
-        prepush: [{ name: "test", argv: ["go", "test", "./..."] }]
-      },
-      checks: [
-        { name: "build", argv: ["go", "build", "./..."] },
-        { name: "test", argv: ["go", "test", "./..."] }
-      ],
-      workflowCriticalPrefixes: ["cmd/", "internal/", "pkg/"],
-      workflowCriticalFiles: ["go.mod", "go.sum"]
-    };
-  }
-
-  const flutter = hasFlutterSdk(productRoot);
-  if (has("package.json")) {
-    const scripts = nodeScripts(productRoot);
-    const manager = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : "npm";
-    const runScript = (name: string): CheckCommand => ({
-      name,
-      argv: manager === "npm" ? ["npm", "run", "--silent", name] : [manager, "run", name]
-    });
-    const precommit = ["check:fast", "check", "lint"].filter((name) => scripts.has(name)).slice(0, 1);
-    const prepush = ["test:e2e"].filter((name) => scripts.has(name));
-    const finalization = ["check", "test"].filter((name) => scripts.has(name)).slice(0, 1);
-    const proposal: ProjectPolicyProposal = {
-      toolchain: manager,
-      ...proposedVerify(precommit.map(runScript), prepush.map(runScript)),
-      checks: finalization.length === 0 ? undefined : finalization.map(runScript),
-      workflowCriticalPrefixes: ["src/", "test/", "scripts/", "githooks/"],
-      workflowCriticalFiles: ["package.json", has("pnpm-lock.yaml") ? "pnpm-lock.yaml" : has("yarn.lock") ? "yarn.lock" : "package-lock.json"]
-    };
-    // Preserve existing Node gates; only a confirmed Flutter app may fall
-    // through an incidental Node manifest with no finalization script.
-    if (proposal.checks !== undefined || !flutter) return proposal;
-  }
-
-  const targets = makeTargets(productRoot);
-  let make: ProjectPolicyProposal | undefined;
-  if (targets.size > 0) {
-    const target = (name: string): CheckCommand => ({ name, argv: ["make", name] });
-    make = {
-      toolchain: "make",
-      ...proposedVerify(targets.has("check") ? [target("check")] : [], []),
-      checks: targets.has("test") ? [target("test")] : undefined,
-      workflowCriticalPrefixes: [],
-      workflowCriticalFiles: ["Makefile"]
-    };
-    // Reinstall must not replace an already usable project test workflow.
-    if (make.checks !== undefined) return make;
-  }
-
-  if (flutter) {
-    const analyze = { name: "analyze", argv: ["flutter", "analyze", "--no-fatal-infos", "--no-fatal-warnings"] };
-    const test = { name: "test", argv: ["flutter", "test"] };
-    return {
-      toolchain: "flutter",
-      verify: { precommit: [analyze], prepush: [test] },
-      checks: [analyze, test],
-      workflowCriticalPrefixes: ["lib/", "test/", "integration_test/", "android/", "ios/", "web/", "macos/", "windows/", "linux/"],
-      workflowCriticalFiles: ["pubspec.yaml", "pubspec.lock", "analysis_options.yaml"]
-    };
-  }
-
-  if (["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"].some(has)) {
-    const test = { name: "test", argv: ["pytest", "-q"] };
-    return {
-      toolchain: "python",
-      verify: { precommit: [test], prepush: [] },
-      checks: [test],
-      workflowCriticalPrefixes: ["src/", "tests/", "test/"],
-      workflowCriticalFiles: ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "pytest.ini", "tox.ini",
-        "uv.lock", "poetry.lock", "Pipfile", "Pipfile.lock"]
-    };
-  }
-
-  return make ?? { workflowCriticalPrefixes: [], workflowCriticalFiles: [] };
-};
-
 export const proposeProjectPolicy = (productRoot: string): ProjectPolicyProposal => {
   const proposal = proposeToolchainPolicy(productRoot);
   const tracked = git(productRoot, "ls-files", "--stage", "-z");
@@ -332,6 +180,7 @@ export type WorkspaceConfigInput = {
   cloneRoot: string;
   workspaceDir: string;
   declared: WorkspaceDeclaration | null;
+  saved?: CoordinatorConfig | null;
   proposal: ProjectPolicyProposal;
   /**
    * Resolved absolute completion mailbox root. Written into the config so
@@ -349,17 +198,9 @@ export type WorkspaceConfigInput = {
  * refuses.
  */
 export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: CoordinatorConfig["coordination"]): CoordinatorConfig => {
-  const declared = input.declared ?? {};
-  const checks = declared.checks ?? input.proposal.checks;
-  if (checks === undefined || checks.length === 0) {
-    throw new Error(
-      `Cannot infer finalization checks for ${input.project}. Declare them explicitly and re-run:\n` +
-        "  coord install … --declare <file.json>\n" +
-        "  where the file contains at least: { \"checks\": [{ \"name\": \"test\", \"argv\": [\"…\"] }] }\n" +
-        "  See config.product.example.json in the coordination install."
-    );
-  }
-  const verify = declared.verify ?? input.proposal.verify;
+  const declared = { ...input.saved, ...input.declared };
+  const checks = declared.checks ?? input.proposal.checks ?? [];
+  const verify = declared.verify ?? (input.saved ? undefined : input.proposal.verify ?? { precommit: [], prepush: [] });
   const toolchain = declared.toolchain ?? input.proposal.toolchain;
   const documentation = declared.documentation ?? input.proposal.documentation;
 
@@ -384,6 +225,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     digestPaths: declared.digestPaths ?? [],
     contextPaths: declared.contextPaths ?? [],
     checks,
+    ...(input.saved?.adoptedChecks === undefined ? {} : { adoptedChecks: input.saved.adoptedChecks }),
     pollIntervalMs: declared.pollIntervalMs ?? 1_000,
     ...(toolchain === undefined ? {} : { toolchain }),
     ...(verify === undefined ? {} : { verify }),
@@ -406,23 +248,32 @@ const relativeFrom = (from: string, to: string): string => {
   return resolve(to);
 };
 
+/** One lock for onboarding and coordinator additions, around the entire read/merge/write. */
+export const withWorkspaceConfigLock = <T>(path: string, work: () => T): T => {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const lockPath = `${path}.lock`, handle = acquireExclusiveLock(lockPath);
+  try { return work(); }
+  finally { closeSync(handle); unlinkSync(lockPath); }
+};
+
 export const writeWorkspaceConfig = (
-  workspace: WorkspaceLocation,
-  config: CoordinatorConfig,
-  options: EffectOptions
+  workspace: WorkspaceLocation, config: CoordinatorConfig, options: EffectOptions,
+  update?: { previous: CoordinatorConfig | null; replaceAdopted?: boolean }
 ): string => {
-  const directory = workspace.workspaceRoot;
   const path = workspace.configPath;
-  const existing = existsSync(path) ? readFileSync(path, "utf8") : null;
-  const rendered = `${JSON.stringify(config, null, 2)}\n`;
-  if (existing === rendered) {
-    options.log(`workspace config already current at ${path}\n`);
-    return path;
-  }
-  act(options, `write workspace config ${path}`, () => {
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    atomicWriteJson(workspace.coordRoot, path, config);
-  });
+  const save = () => {
+    const latest = existsSync(path) ? readConfig(path) : null;
+    const settings = (value: CoordinatorConfig | null) => value === null ? null : { ...value, adoptedChecks: undefined };
+    if (update && JSON.stringify(settings(latest)) !== JSON.stringify(settings(update.previous))) {
+      throw new Error(`Workspace settings changed during onboarding: ${path}. Re-run onboarding to review them.`);
+    }
+    const merged = update && !update.replaceAdopted ? { ...config, ...(latest?.adoptedChecks ? { adoptedChecks: latest.adoptedChecks } : {}) } : config;
+    const validated = coordinatorConfigSchema.parse(merged);
+    if (JSON.stringify(latest) === JSON.stringify(validated)) return;
+    act(options, `write workspace config ${path}`, () => atomicWriteJson(workspace.coordRoot, path, validated));
+  };
+  if (options.dryRun) save();
+  else withWorkspaceConfigLock(path, save);
   return path;
 };
 

@@ -1,3 +1,6 @@
+import { addCheckCommands, effectiveCheckDigest, persistCheckAdditions, recordCheckAddition } from "./checkAmendments.js";
+import { NO_CHECKS } from "./projectChecks.js";
+import type { CheckProposal } from "./protocol.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, statSync, unlinkSync } from "node:fs";
 import { lstat } from "node:fs/promises";
@@ -591,7 +594,7 @@ export const derivedDecisionJournalDetails = (record: DerivedDecisionRecord): Re
       : { round: record.round, consensusPin: record.consensusPin, ...(record.objectors === undefined ? {} : { objectors: record.objectors }) })
 });
 
-export const deriveBoundInputs = (
+const deriveBoundInputsBase = (
   start: StartState,
   cursors: CursorsState,
   stepId: WorkflowStepId,
@@ -682,6 +685,23 @@ export const deriveBoundInputs = (
     return accepted === undefined ? [] : [inputFromSubmission(accepted, "consensus", true)];
   }
   return [];
+};
+
+/** Proposal evidence lives after the product pin; bind and export its own commit. */
+export const deriveBoundInputs = (start: StartState, cursors: CursorsState, stepId: WorkflowStepId, round: number | null): BoundInput[] => {
+  const inputs = deriveBoundInputsBase(start, cursors, stepId, round);
+  const extra: BoundInput[] = [];
+  for (const input of inputs.filter((entry) => ["implementation", "revision", "prior-revision", "consensus"].includes(entry.kind))) {
+    const target = cursors.accepted.find((submission) => submission.productPin === input.commitSha && submission.agent === input.agent);
+    if (!target) continue;
+    const sources = target.stepId === "R4.implement" ? [target] : cursors.accepted.filter((submission) =>
+      submission.stepId === "R4.implement" ? submission.agent === (cursors.derived.implementationSelection?.winner ?? input.agent) :
+      submission.stepId === "R6.revise" && submission.agent === input.agent && (submission.round ?? 0) <= (target.round ?? 0));
+    for (const source of sources.filter((submission) => submission.checkProposal !== undefined)) {
+      if (!extra.some((entry) => entry.commitSha === source.submissionSha)) extra.push(inputFromSubmission(source, "check-proposal"));
+    }
+  }
+  return [...inputs, ...extra];
 };
 
 const selectedPlanAgents = (cursors: CursorsState): string[] => {
@@ -889,6 +909,7 @@ export const buildOrder = (
     task: `${definition.task}${BRANCH_PREPARED_NOTE}${binding}${scaffold}${correction}${amendmentNotice}`,
     inputs,
     approvedPaths,
+    requiredChecks: start.checks,
     scopeHash,
     scopeRequired: isWork && approvedAmendments(cursors).length > 0,
     exactApprovedPaths: isWork ? amendmentPaths(cursors) : [],
@@ -2191,6 +2212,8 @@ export class CoordinatorRunLoop {
       submissionSha: decision.submissionSha,
       path,
       acceptedAt: this.now(),
+      ...(decision.checkProposal === undefined ? {} : { checkProposal: decision.checkProposal }),
+      ...(decision.policyDigest === undefined ? {} : { policyDigest: decision.policyDigest }),
       ...(decision.productPin === undefined ? {} : { productPin: decision.productPin }),
       ...(decision.disposition === undefined ? {} : { disposition: decision.disposition }),
       ...(decision.approvedPaths === undefined ? {} : { approvedPaths: [...decision.approvedPaths] }),
@@ -2832,6 +2855,37 @@ export class CoordinatorRunLoop {
       : { ...observation, status: result.status, outstanding: result.outstanding };
   }
 
+  private async prepareCheckAmendment(start: StartState, order: InternalOrder, observation: EvidenceObservation, cursors: CursorsState): Promise<CursorsState> {
+    if (observation.status !== "satisfied" || order.stepId !== "R7.finalize" || !observation.productPin) return cursors;
+    const authorizedPin = order.inputs.find((input) => input.kind === "consensus")?.commitSha;
+    if (!authorizedPin || (cursors.checkAmendments ?? []).some((entry) => entry.authorizedPin === authorizedPin)) return cursors;
+    const final = verifyFinalization({ root: this.mirror.path, issue: start.issue, consensusSha: authorizedPin, finalSha: observation.productPin });
+    if (!final.ok) return cursors;
+    const pending = new Map<string, CheckProposal>();
+    for (const submission of cursors.accepted) {
+      const proposal = submission.checkProposal;
+      if (!proposal || !submission.productPin ||
+        (submission.stepId === "R4.implement" ? submission.agent !== (cursors.derived.implementationSelection?.winner ?? order.agent) :
+          submission.stepId !== "R6.revise" || submission.agent !== order.agent)) continue;
+      if (await this.mirror.isAncestor(submission.productPin, authorizedPin)) pending.set([...proposal.entryPointPaths].sort().join("\0"), proposal);
+    }
+    this.authority(cursors);
+    if (!pending.size) return cursors;
+    const additions = [...new Map((cursors.checkAmendments ?? []).flatMap((entry) => entry.additions).map((entry) => [entry.id, entry])).values()];
+    for (const proposal of pending.values()) {
+      const addition = recordCheckAddition(this.mirror.path, start.issue, proposal);
+      if (!additions.some((entry) => entry.id === addition.id)) additions.push(addition);
+    }
+    const selected = selectVerification(inspectRangeChanges(this.mirror.path, start.baselineSha, observation.productPin), start, "finalization", start.checks);
+    const commands = addCheckCommands(selected.commands, additions.map((entry) => entry.proposal));
+    const policyDigest = effectiveCheckDigest(start, commands, additions);
+    const amendment = { id: policyDigest, authorizedPin, additions, commands, policyDigest, recordedAt: this.now() };
+    return this.mutate(cursors, (current) => {
+      appendJournal(this.paths, { type: "check-amendment-recorded", details: { authorizedPin, policyDigest, commands } }, this.now());
+      return { ...current, checkAmendments: [...(current.checkAmendments ?? []), amendment] };
+    });
+  }
+
   async verifyFinalizationChecks(
     start: StartState,
     order: InternalOrder,
@@ -2848,8 +2902,11 @@ export class CoordinatorRunLoop {
     // classify from the frozen issue baseline, never the cleanup's parent.
     const selected = selectVerification(inspectRangeChanges(this.mirror.path, start.baselineSha, observation.productPin),
       start, "finalization", start.checks);
+    const amendment = cursors.checkAmendments?.find((entry) => entry.authorizedPin === consensusSha);
+    const commands = addCheckCommands(selected.commands, amendment?.additions.map((entry) => entry.proposal) ?? []);
+    const policyDigest = effectiveCheckDigest(start, commands, amendment?.additions);
     const checked = await this.runGateVerification(start, order, cursors, "finalization", observation.productPin, selected,
-      selected.commands);
+      commands, policyDigest);
     if (checked.status === "waiting") return waitingObservation(observation, checked.waitingFor);
     if (checked.status === "failed") {
       return {
@@ -2861,7 +2918,7 @@ export class CoordinatorRunLoop {
         ]
       };
     }
-    return { ...observation, checkResults: checked.results };
+    return { ...observation, checkResults: checked.results, policyDigest };
   }
 
   /**
@@ -2911,9 +2968,11 @@ export class CoordinatorRunLoop {
     phase: "candidate" | "finalization",
     pin: string,
     classification: { kind: "coordination" | "documentation" | "product"; reason: string; inputIdentity: string },
-    commands: readonly CheckCommand[]
+    commands: readonly CheckCommand[],
+    policyDigest?: string
   ): Promise<RunVerificationResult> {
     if (commands.length === 0) {
+      this.log(NO_CHECKS);
       const at = this.now();
       this.authority(cursors);
       appendJournal(this.paths, { type: "verification-run", agent: order.agent, actionId: order.actionId,
@@ -2928,7 +2987,7 @@ export class CoordinatorRunLoop {
       checkpoint: () => { this.authority(cursors); },
       journal: (type, details, at) => appendJournal(this.paths, { type, agent: order.agent, actionId: order.actionId, details }, at),
       progress: (message) => this.log(`${order.agent}: ${message}`),
-      phase, pin, classification, commands
+      phase, pin, classification, commands, policyDigest
     });
   }
 
@@ -2939,6 +2998,20 @@ export class CoordinatorRunLoop {
     let openedUrl = cursors.publication.url;
     try {
       if (finalSha === null || branch === null) throw new Error("Pending publication is missing its final pin or branch.");
+      const accepted = cursors.accepted.find((entry) => entry.stepId === "R7.finalize" && entry.productPin === finalSha);
+      const authorizedPin = cursors.derived.consensus?.consensusPin ?? cursors.derived.implementationSelection?.implementationPin;
+      const amendment = cursors.checkAmendments?.find((entry) => entry.authorizedPin === authorizedPin);
+      const selected = selectVerification(inspectRangeChanges(this.mirror.path, start.baselineSha, finalSha), start, "finalization", start.checks);
+      const commands = addCheckCommands(selected.commands, amendment?.additions.map((entry) => entry.proposal) ?? []);
+      if ((accepted?.policyDigest !== undefined || amendment !== undefined) &&
+          accepted?.policyDigest !== effectiveCheckDigest(start, commands, amendment?.additions)) {
+        throw new Error("Final verification belongs to an old check policy; verify the effective commands before publication.");
+      }
+      if (amendment) {
+        persistCheckAdditions(start.configPath, amendment.additions);
+        this.log(`Accepted checks saved to ${start.configPath}: ${amendment.additions.map((entry) => entry.proposal.description).join("; ")}`);
+      }
+      this.log(commands.length ? `${commands.every((command) => /^(configure|build)(?:-|$)/.test(command.name)) ? "Build result" : "Configured check result"}: passed for ${finalSha} (${commands.map((command) => command.name).join(", ")}).` : NO_CHECKS);
       const repository = githubRepositoryFromOrigin(start.origin);
       if (repository === null) throw new Error(`Cannot derive a GitHub repository from origin ${start.origin}.`);
       const issueSnapshot = readGitHubIssueSnapshot(this.paths.issueSnapshot);
@@ -3416,6 +3489,12 @@ export class CoordinatorRunLoop {
       this.authority(cursors);
       observation = await this.verifyFollowUpIssue(start, order, observation);
       this.authority(cursors);
+      try {
+        cursors = await this.prepareCheckAmendment(start, order, observation, cursors);
+      } catch (error) {
+        if (error instanceof StateConflictError) throw error;
+        observation = { ...observation, status: "rejected", outstanding: [`Cannot adopt check proposal: ${error instanceof Error ? error.message : String(error)}`] };
+      }
       observation = await this.verifyFinalizationChecks(start, order, observation, cursors);
       this.authority(cursors);
       observation = await this.verifyCandidateChecks(start, order, observation, cursors);

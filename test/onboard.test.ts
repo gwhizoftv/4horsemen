@@ -31,7 +31,10 @@ const product = (name = "myserver", files: Record<string, string> = {
   ensureBuilt();
   const fixture = makeProduct("plain", name);
   products.push(fixture);
-  for (const [path, contents] of Object.entries(files)) writeFileSync(join(fixture.productRoot, path), contents);
+  for (const [path, contents] of Object.entries(files)) {
+    mkdirSync(dirname(join(fixture.productRoot, path)), { recursive: true });
+    writeFileSync(join(fixture.productRoot, path), contents);
+  }
   git(fixture.productRoot, "add", ...Object.keys(files));
   git(fixture.productRoot, "commit", "-qm", "add checks");
   git(fixture.productRoot, "push", "-q", "origin", "main");
@@ -108,8 +111,8 @@ describe("coord onboard", () => {
 
   it.each(["python", "flutter"])("onboards %s without declarations and reports the effective policy", async (language) => {
     const files: Record<string, string> = language === "python"
-      ? { "pyproject.toml": "# pytest project\n" }
-      : { "pubspec.yaml": 'dependencies: {flutter: {sdk: "flutter"}}\n' };
+      ? { "pyproject.toml": "[tool.pytest.ini_options]\n" }
+      : { "pubspec.yaml": 'dependencies: {flutter: {sdk: "flutter"}}\n', "test/widget_test.dart": "// test context\n" };
     const fixture = product(language, files);
     const coordRoot = join(fixture.workspaceRoot, "coord-runtime");
     const configPath = join(coordRoot, "config.json");
@@ -154,8 +157,8 @@ describe("coord onboard", () => {
       ];
       expect(configured.toolchain).toBe(language);
       expect(configured.checks).toEqual(checks);
-      expect(configured.verify?.precommit).toEqual([checks[0]]);
-      expect(configured.verify?.prepush).toEqual(language === "python" ? [] : [checks[1]]);
+      expect(configured.verify?.precommit).toEqual([]);
+      expect(configured.verify?.prepush).toEqual([]);
       expect(localConfigGet(fixture.productRoot, OWNER_WORKSPACE_CONFIG_KEY)).toBe(realpathSync(configPath));
       const summary = output.join("");
       expect(summary).toContain(`toolchain (inferred): ${language}`);
@@ -183,7 +186,7 @@ describe("coord onboard", () => {
         output.length = 0;
         expect(await runCli([...argv, "--declare", declaration], { home: null, processRunner: runner, io: { stdout: log, stderr: log } })).toBe(0);
         expect(readConfig(configPath).checks).toEqual([strict]);
-        expect(readConfig(configPath).verify?.precommit).toEqual([checks[0]]);
+        expect(readConfig(configPath).verify?.precommit).toEqual([]);
         expect(output.join("")).toContain("leaves analyzer warnings and errors fatal");
         expect(output.join("")).not.toContain("leave only analyzer errors fatal");
 
@@ -191,7 +194,7 @@ describe("coord onboard", () => {
         writeDeclaration(fixture.workspaceRoot, { checks: [{ name: "analyze", argv: ["flutter", "analyze"] }] });
         output.length = 0;
         expect(await runCli([...argv, "--declare", declaration], { home: null, processRunner: runner, io: { stdout: log, stderr: log } })).toBe(0);
-        expect(readConfig(configPath).verify?.precommit).toEqual([checks[0]]);
+        expect(readConfig(configPath).verify?.precommit).toEqual([]);
         expect(output.join("")).toContain('finalization (declared): analyze ["flutter","analyze"]');
         expect(output.join("")).not.toContain("informational diagnostics do not block");
         expect(output.join("")).not.toContain("leave only analyzer errors fatal");

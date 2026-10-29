@@ -1,3 +1,4 @@
+import { NO_CHECKS } from "./projectChecks.js";
 import type { BallotBatch, CursorsState, StartState } from "./state.js";
 import { coordMergesPullRequest, describeWorkflowStep, type WorkflowStepId } from "./steps.js";
 import { containmentCoverage } from "./agentLifecycle.js";
@@ -110,6 +111,15 @@ export const renderIssueReport = (
     `Final commit (PR head): ${pin ?? "(none)"}`,
     `Published branch: ${branch ?? "(not pushed yet)"}`
   ];
+  const amendment = cursors.checkAmendments?.at(-1);
+  if ((amendment?.commands ?? start.checks).length === 0) lines.push(NO_CHECKS);
+  for (const pending of start.pendingChecks ?? []) lines.push(`Pending future check: ${pending}`);
+  if (amendment) {
+    lines.push(`Added checks for ${amendment.authorizedPin}: ${amendment.additions.map((entry) => entry.proposal.description).join("; ")}`);
+    lines.push(`Effective check policy: ${amendment.policyDigest}`);
+    const checked = cursors.accepted.find((entry) => entry.stepId === "R7.finalize" && entry.policyDigest === amendment.policyDigest);
+    lines.push(checked ? `Added checks verified at ${checked.productPin}.` : "Added checks await successful final verification.");
+  }
   const conclusion = cursors.derived.consensus;
   if (conclusion?.round === start.maxRevisionRounds &&
     (conclusion.algorithm === "revision-limit-active-roster-v1" || cursors.acceptedResponses.some((response) =>

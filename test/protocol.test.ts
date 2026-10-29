@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   comparisonBallotArtifactSchema,
+  checkProposalSchema,
   planAmendmentRequestSchema,
   consensusBallotResponseSchema,
   implementationReadyArtifactSchema,
@@ -147,4 +148,13 @@ describe("published protocol schemas", () => {
       }).success
     ).toBe(false);
   });
+});
+
+it("accepts additive check proposals without allowing removal, cache shortcuts or malformed commands", () => {
+  const proposal = { implementationCommitSha: "a".repeat(40), commands: [{ name: "native", argv: ["sh", "scripts/check.sh", "two words"] }], entryPointPaths: ["scripts/check.sh"], description: "Native regression tests" };
+  expect(checkProposalSchema.parse(proposal)).toEqual(proposal);
+  for (const patch of [{ remove: ["old"] }, { commands: [] }, { commands: [{ name: "native", argv: [] }] },
+    { commands: [{ ...proposal.commands[0], cache: {} }] }, { description: " " }, { entryPointPaths: ["../outside"] }]) {
+    expect(checkProposalSchema.safeParse({ ...proposal, ...patch }).success).toBe(false);
+  }
 });

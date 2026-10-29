@@ -1,4 +1,4 @@
-import type { FollowUpEvidence, FollowUpIssueArtifact, PlanAmendmentRequest } from "./protocol.js";
+import type { CheckProposal, FollowUpEvidence, FollowUpIssueArtifact, PlanAmendmentRequest } from "./protocol.js";
 
 export const DEFAULT_MAX_REVISION_ROUNDS = 3;
 
@@ -347,6 +347,7 @@ export type InternalOrder = {
   task: string;
   inputs: readonly BoundInput[];
   approvedPaths: readonly string[];
+  requiredChecks?: readonly { name: string; argv: string[] }[];
   scopeHash?: string;
   scopeRequired?: boolean;
   scopeInputs?: readonly BoundInput[];
@@ -395,6 +396,8 @@ export type EvidenceObservation = {
   disposition?: "approve" | "revise" | "escalate";
   approvedPaths?: readonly string[];
   choice?: string;
+  checkProposal?: CheckProposal;
+  policyDigest?: string;
   checkResults?: readonly CheckResult[];
   /** Present when the observation came from a private ballot response. */
   responseSha256?: string;
@@ -416,7 +419,9 @@ export type MachineDecision =
       disposition?: "approve" | "revise" | "escalate";
       approvedPaths?: readonly string[];
       choice?: string;
-      checkResults?: readonly CheckResult[];
+      checkProposal?: CheckProposal;
+  policyDigest?: string;
+  checkResults?: readonly CheckResult[];
       followUp?: FollowUpEvidence;
     }
   | {

@@ -214,10 +214,11 @@ describe("coord doctor", () => {
     expect(findings.find((item) => item.class === "toolchain")?.subject).toBe("definitely-not-a-real-binary-xyz");
   });
 
-  it("reports an undeclared verify, which would block every agent commit", () => {
-    // A tree with no recognisable ecosystem gets no proposed verify either,
-    // so nothing quietly fills the gap.
-    const { fixture } = installed({ checks: declaredChecks }, "plain");
+  it("accepts intentional empty local checks but reports truly undeclared verify", () => {
+    const { fixture, configPath } = installed({ checks: declaredChecks }, "plain");
+    expect(readConfig(configPath).verify).toEqual({ precommit: [], prepush: [] });
+    expect(report(fixture).findings.map((item) => item.code)).not.toContain(DOCTOR_CODES.verifyUndeclared);
+    editConfig(configPath, (config) => { delete config.verify; });
     expect(report(fixture).findings.map((item) => item.code)).toContain(DOCTOR_CODES.verifyUndeclared);
   });
 

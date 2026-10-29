@@ -1,3 +1,5 @@
+import { addCheckCommands } from "./checkAmendments.js";
+import type { CheckProposal } from "./protocol.js";
 import { agentFacingSubject } from "./agentLanguage.js";
 import { sha256 } from "./hash.js";
 import type { FetchResult } from "./mirror.js";
@@ -194,7 +196,7 @@ const satisfied = (
   sha: string,
   extra: Pick<
     EvidenceObservation,
-    "productPin" | "disposition" | "approvedPaths" | "choice" | "checkResults"
+    "productPin" | "disposition" | "approvedPaths" | "choice" | "checkResults" | "checkProposal"
   > = {}
 ): EvidenceObservation => ({
   agent: order.agent,
@@ -204,6 +206,20 @@ const satisfied = (
   outstanding: [],
   ...extra
 });
+
+const proposalErrors = async (proposal: CheckProposal | undefined, pin: string, order: InternalOrder, mirror: EvidenceMirror): Promise<string[]> => {
+  if (!proposal) return [];
+  const errors: string[] = [];
+  if (proposal.implementationCommitSha !== pin) errors.push("checkProposal must name the submission's exact product pin");
+  for (const path of proposal.entryPointPaths) {
+    if (path.startsWith(".") || path.includes("\\") || path.split("/").some((part) => !part || part === "." || part === "..") || await mirror.readBlob(pin, path) === null) {
+      errors.push(`checkProposal entry point is not a safe product file at its pin: ${path}`);
+    }
+  }
+  try { addCheckCommands(order.requiredChecks ?? [], [proposal]); }
+  catch (error) { errors.push(String(error)); }
+  return errors;
+};
 
 const commonErrors = (
   artifact: { issue: number; issueSessionId: string; agent: string },
@@ -336,6 +352,7 @@ export const evaluateEvidence = async (
       ...scopeErrors(parsed.value.scopeHash, order),
       ...(await pinErrors(parsed.value.implementationCommitSha, submissionSha, fetched.ref, order, mirror))
     ];
+    errors.push(...await proposalErrors(parsed.value.checkProposal, parsed.value.implementationCommitSha, order, mirror));
     const approved = order.approvedPaths;
     if (approved.length === 0) errors.push("no selected plan file map is available");
     if (JSON.stringify([...parsed.value.approvedPaths].sort()) !== JSON.stringify([...approved].sort())) {
@@ -349,7 +366,7 @@ export const evaluateEvidence = async (
       if (disallowed.length > 0) errors.push(`implementation changes paths outside the approved file map: ${disallowed.join(", ")}`);
     }
     return errors.length === 0
-      ? satisfied(order, submissionSha, { productPin: parsed.value.implementationCommitSha })
+      ? satisfied(order, submissionSha, { productPin: parsed.value.implementationCommitSha, checkProposal: parsed.value.checkProposal })
       : rejected(order, submissionSha, errors);
   }
 
@@ -362,6 +379,7 @@ export const evaluateEvidence = async (
       ...scopeErrors(parsed.value.scopeHash, order),
       ...(await pinErrors(parsed.value.revisedBranchHead, submissionSha, fetched.ref, order, mirror))
     ];
+    errors.push(...await proposalErrors(parsed.value.checkProposal, parsed.value.revisedBranchHead, order, mirror));
     if (parsed.value.round !== order.round) errors.push(`revision round must be ${order.round ?? 1}`);
     if (order.approvedPaths.length === 0) errors.push("no selected plan file map is available");
     const expectedPins = revisionProductInputs(order.inputs).map((input) => input.commitSha).sort();
@@ -379,7 +397,7 @@ export const evaluateEvidence = async (
       if (disallowed.length > 0) errors.push(`revision changes paths outside the approved file map: ${disallowed.join(", ")}`);
     }
     return errors.length === 0
-      ? satisfied(order, submissionSha, { productPin: parsed.value.revisedBranchHead })
+      ? satisfied(order, submissionSha, { productPin: parsed.value.revisedBranchHead, checkProposal: parsed.value.checkProposal })
       : rejected(order, submissionSha, errors);
   }
 

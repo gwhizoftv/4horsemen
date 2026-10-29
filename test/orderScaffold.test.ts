@@ -53,6 +53,14 @@ describe("orderScaffold", () => {
     expect(artifactScaffoldValue(ctx)).toMatchObject({ round: 1, basedOn: [implementation.productPin],
       inputSetHash: computeInputSetHash(expectedInputs) });
     expect(ctx.inputs).toEqual(expectedInputs);
+    const proposal = { implementationCommitSha: implementation.productPin, commands: [{ name: "native", argv: ["sh", "scripts/check.sh"] }], entryPointPaths: ["scripts/check.sh"], description: "Native regression" };
+    cursors.accepted[0]!.checkProposal = proposal;
+    const proposed = deriveBoundInputs(start, cursors, "R6.revise", 1);
+    expect(proposed).toContainEqual({ kind: "check-proposal", agent: "codex", commitSha: implementation.submissionSha, path: implementation.path });
+    expect(computeInputSetHash(proposed)).not.toBe(computeInputSetHash(expectedInputs));
+    expect(renderArtifactScaffold({ ...ctx, inputs: proposed })).toContain("checkProposal");
+    cursors.accepted.push({ ...cursors.accepted[0]!, stepId: "R6.revise", round: 1, productPin: "f".repeat(40), submissionSha: "9".repeat(40), checkProposal: undefined });
+    expect(deriveBoundInputs(start, cursors, "R6.revise", 2)).toContainEqual({ kind: "check-proposal", agent: "codex", commitSha: implementation.submissionSha, path: implementation.path });
   });
 
   it("offers a request without a product pin and keeps revision ancestry separate", () => {

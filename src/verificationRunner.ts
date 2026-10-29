@@ -37,6 +37,7 @@ export type VerificationJournal = (type: "verification-run" | "final-check" | "v
 export type RunVerificationInput = {
   paths: IssueRuntimePaths;
   start: StartState;
+  policyDigest?: string;
   mirror: { path: string; materializeWorktree(target: string, sha: string): Promise<void>; removeWorktree(target: string): Promise<void> };
   processRunner: ProcessRunner;
   now: () => string;
@@ -121,7 +122,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
   /** Key material, or the reason this command cannot be cached right now. */
   const keyFor = async (command: CheckCommand): Promise<ReceiptKeyMaterial | string> => {
     if (command.cache === undefined) return "not cached: no cache declaration";
-    if (start.verificationDigest === undefined) return "not cached: no frozen verification policy";
+    if ((input.policyDigest ?? start.verificationDigest) === undefined) return "not cached: no frozen verification policy";
     const mode = command.cache.inputs;
     let identity = identities.get(mode);
     if (identity === undefined) {
@@ -147,7 +148,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
     catch (error) { return `not cached: ${error instanceof Error ? error.message : String(error)}`; }
     return {
       v: 1, origin: start.origin, inputsMode: mode, inputIdentity: identity, argv: [...command.argv],
-      policyDigest: start.verificationDigest, platform: environment.platform, arch: environment.arch,
+      policyDigest: (input.policyDigest ?? start.verificationDigest)!, platform: environment.platform, arch: environment.arch,
       node: environment.node, probes: probeResults, env: envDigests(command.cache.env, environment.env), dependencies
     };
   };

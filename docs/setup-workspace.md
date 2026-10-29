@@ -669,70 +669,100 @@ publication. The journal records which tier failed.
 
 ### Product languages
 
-The driver needs Node 26 and pnpm 12, but the product does not. Installation
-uses `proposeProjectPolicy` in `src/setupWorkspace.ts` to propose the policy
-below. Cargo and Go keep first priority, followed by existing Node checks and
-a Makefile with a `test` target. New language defaults preserve those working
-gates on reinstall. Review the generated config; multi-language monorepos may
-need an explicit declaration instead.
+The driver needs Node 26 and pnpm 12; the product may use any toolchain.
+Onboarding reads the local tree without running build tools, project scripts,
+package installation, or CI workflows. It lists suggestions with their source
+files. Existing test directories are context, not commands. Generated config is
+saved outside the product, at the printed absolute runtime config path (including
+shared-runtime layouts).
 
-| Marker | Toolchain | Precommit / prepush proposal | Finalization checks |
-| --- | --- | --- | --- |
-| `Cargo.toml` | `cargo` | `cargo check --all-targets` / `cargo test` | `cargo test` |
-| `go.mod` | `go` | `go vet ./...` / `go test ./...` | `go build ./...`, `go test ./...` |
-| `package.json` | `pnpm`, `yarn`, or `npm` (lockfile-selected) | first existing `check:fast`, `check`, `lint` / existing `test:e2e` | first existing `check`, `test` |
-| `test` target in `Makefile` | `make` | `make check` if present / none | `make test` |
-| Flutter SDK dependency in `pubspec.yaml` | `flutter` | `flutter analyze --no-fatal-infos --no-fatal-warnings` / `flutter test` | analyze, then test, with the same arguments |
-| `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt` | `python` | `pytest -q` / none | `pytest -q` |
-| other recognized targets in `Makefile` | `make` | `make check` if present / none | no inference; supply `--declare` |
-| none of these | unspecified | no inference | no inference; supply `--declare` |
+| Source | Suggested command or sequence |
+| --- | --- |
+| `scripts/check*.sh`, `scripts/test*.sh`, Bash or Python equivalents | Run the existing script with its interpreter |
+| `package.json` | Existing check/test script, or a build-only script; manager follows the lockfile |
+| `Makefile` | Existing test, check, or all target |
+| `Cargo.toml`, `go.mod` | Cargo tests; Go build then tests |
+| Python test sources or pytest configuration | `pytest -q` |
+| Flutter SDK dependency in `pubspec.yaml` | Analyze; also test when test sources exist |
+| `Package.swift` | `swift build`; also `swift test` when a test target is declared |
+| `CMakePresets.json` | Configure, build, and associated test presets in order |
+| Shared Xcode schemes | `xcodebuild` against the selected project/workspace and scheme |
 
-For Node, the entries name package scripts, not bare executables. A Node
-manifest without `check` or `test` still requires a declaration, even alongside
-a Python marker. A confirmed Flutter SDK dependency is the exception: an
-incidental Node tooling manifest without a finalization script can fall through
-to Make or Flutter. Flutter wins over Python when both language markers are
-present. A Makefile without `test` can fall through to either language.
-An absent `verify` still fails closed in agent hooks. Detection happens only
-at install; hooks execute the recorded policy without inspecting language files.
+CMake includes and inheritance are resolved from files inside the project.
+CTest commands include `--output-on-failure --no-tests=error`; a fresh worktree
+configures and builds before testing. Incomplete or conditional preset chains
+need an explicit command. Xcode choices identify the project/workspace, scheme,
+and configured test action. Onboarding asks for an unresolved configuration or
+destination; it never chooses a device, signing identity, or build directory.
+Shared schemes without a test action are build-only choices. A custom project
+script can supply more complex native setup.
 
-Use `coord onboard /path/to/app` for either language without special options.
-The installer prints the effective toolchain, local hook and finalization
-commands, critical paths, and any documentation-only profile, labeling each
-group as inferred or declared. Partial declarations are reflected field by
-field. Coordinator-mode hooks and candidate checks are labeled separately;
-dry-run output describes the proposed policy without writing it.
+Choose an existing suggestion, enter an ordered command list, or choose
+**Continue without automated checks for now**. For a nonempty list the timing
+choices are **Before each agent commit**, **Before opening a pull request**, and
+**Both**. These map to `verify.precommit`, `checks`, or both; they do not create a
+push requirement. Empty lists skip the timing question. Commands are stored as
+argv arrays: quoted spaces remain one argument, and no implicit shell expansion
+occurs. Put pipelines in a project script or explicitly name a shell.
 
-Python defaults run pytest at commit and finalization, with no additional push
-check and no mandatory linter. Install pytest and the project's dependencies
-in the environment inherited by the agents and coordinator. Activate a prepared
-virtual environment before onboarding when appropriate. uv, Poetry, and Hatch
-are not selected automatically; expose their prepared tools on PATH, or declare
-their runner commands and any dependency setup needed in fresh finalization
-worktrees. No tests collected remains a failure. The default does not assume
-Ruff, unittest discovery, or a packaging/install command.
+A noninteractive run gives explicit declaration fields priority over saved
+settings and otherwise accepts only one fully resolved suggestion. Multiple
+build systems or unresolved native parameters require interactive onboarding or
+`--declare <file.json>`. A first-time tree without a recognized command is saved
+with empty lists and the message `Automated checks skipped: none configured.`
+Malformed metadata/configuration is an error, not an empty result.
 
-Flutter detection reads the YAML dependency mappings, including quoted values,
-comments, and inline mappings. It recognizes a Flutter SDK dependency named
-`flutter`, or a development dependency named `flutter` or `flutter_test` with
-`sdk: flutter`. A plain Dart pubspec or descriptive text mentioning Flutter
-does not select the Flutter SDK. The analyzer default leaves only errors fatal;
-warnings and informational diagnostics do not block precommit or finalization.
-Declare `flutter analyze --no-fatal-infos` to make warnings fatal again, or plain
-`flutter analyze` to make both warnings and informational diagnostics fatal.
-`flutter test` remains unchanged. Existing workspaces adopt the new generated
-default on reinstall or re-onboarding; retained declarations still override it.
-The default requires the Flutter SDK, prepared project dependencies, and runnable
-tests; it does not select an emulator, device, or platform build target.
+Re-onboarding displays the saved lists and offers to keep or change them. A
+change replaces the saved commands and accepted additions, and resets advanced
+coordinator/documentation check overrides shown in the preview; cancellation writes
+nothing. Reinstall preserves saved choices. Ordinary settings changes apply to
+new issues; active issues retain their original local and final check policy.
 
-Installation records policy without running product checks or installing product
-dependencies. Onboarding's doctor checks executable availability, not test
-success. Keep environments usable from both agent clones and fresh verification
-worktrees. Unknown product paths retain product checks; critical paths prevent
-source, platform, and manifest changes from becoming documentation-only changes.
+Installation records commands without running them. Doctor checks executable
+availability. Prepare tools and dependencies for agent clones and fresh
+verification worktrees. A missing tool or failed command blocks its configured
+gate with an actionable error. Empty gates explicitly report that checks were
+skipped. Passing a build-only list reports a build result, not a test result.
+
+### Checks introduced during an issue
+
+An implementation-ready or revision-ready signal may include `checkProposal`:
+
+```json
+{
+  "implementationCommitSha": "<the signal's product pin>",
+  "commands": [{ "name": "native-regression", "argv": ["sh", "scripts/check.sh"] }],
+  "entryPointPaths": ["scripts/check.sh"],
+  "description": "Run the new native regression suite"
+}
+```
+
+Use ordinary tracked entry point files (including the manifest when a new
+command is added to an existing manifest). The proposal is bound and exported
+with the submitted code for normal implementation comparison and revision
+review. It may add commands, never remove existing obligations. Omission in a
+later revision carries a proposal forward; an explicit replacement for the same
+entry point paths can correct it before adoption. No separate approval stage or
+early mandatory full suite is introduced.
+
+After the normal code decision authorizes the pin, coord records an additive
+issue amendment alongside the immutable start snapshot. It runs the effective
+commands in a fresh worktree before publication and binds results and receipts
+to the effective policy and code. A failed check blocks publication. Saving the
+accepted addition is also required before publication; a failed save remains
+retryable on restart rather than losing the obligation.
+
+Accepted additions are saved conditionally for future issues. An unmerged script
+or a new command in an existing manifest does not become a missing-command gate
+on older starting code. Activation requires ancestry from an accepted/witnessed
+pin, or matching approved entry point contents (including squash merges).
+Once witnessed, later descendants retain the obligation. Removed active entry
+points produce an error. If a squash merge also changes entry point contents
+before activation, the addition stays pending with guidance to review/change
+settings through `coord onboard`; pathname existence alone is insufficient.
 
 To customize the defaults, save a declaration outside the product's tracked
-tree and retain it for reinstalls. For example, a Python project that already
+tree. The resulting settings persist for reinstalls. For example, a Python project that already
 uses Ruff can declare it explicitly, adjusting commands and paths to its layout:
 
 ```json
@@ -783,9 +813,8 @@ paths are placeholders to replace, not shell variables or real install stamps.
   explicit: `"verify": { "precommit": [], "prepush": [] }`. This applies only
   where coordination hooks are installed — that is, agent clones. A human clone
   has no coordination hooks and is unaffected whether or not `verify` exists.
-- The installer never writes that product-wide opt-out on your behalf. When its proposal
-  finds no command to run, it omits `verify` entirely, so the hooks fail closed
-  and name the fix rather than recording a decision nobody made.
+- Onboarding can save empty local and final lists explicitly. A first-time
+  noninteractive run without a recognized command announces that decision.
 - `coord doctor` fails when a declared `argv[0]` is not on PATH, at install time
   rather than at an agent's first commit.
 
@@ -866,11 +895,9 @@ baseline through the approved product pin at finalization. Both rename paths are
 included, and NUL-delimited paths preserve tabs/newlines. First pushes compare to
 the merge base with the configured remote/base; missing history fails closed.
 Deleting evidence in the last commit cannot hide earlier product changes.
-Finalization uses the documentation profile and critical paths snapshotted at
-issue start. Hooks, like their existing product `verify` commands, use the live
-workspace declaration (outside coordinator verification mode, below). A mid-issue configuration change can therefore change
-local checks without changing the frozen final gate; the shared classifier does
-not imply a shared configuration snapshot.
+Finalization and active-issue hooks use the documentation profile, critical paths
+and check commands snapshotted at issue start. Ordinary workspace changes apply
+to new issues. Manual branches use the current saved workspace policy.
 
 Coordination-only changes under `.plans/`, `.signals/`, `.code-reviews/`,
 `.amendments/`, and `.escalations/` launch no product suite. Identity, branch,

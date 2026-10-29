@@ -768,3 +768,16 @@ describe("follow-up filing receipts", () => {
     }
   });
 });
+
+it.each(["R4.implement", "R6.revise"] as const)("binds additive check proposals to exact code in %s", async (stepId) => {
+  const input = { kind: "implementation", agent: "codex", commitSha: sha("b"), path: ".signals/issue-1/implementation-ready-codex.json" };
+  const action = order({ stepId, evidenceId: stepId === "R4.implement" ? "implementation-pinned" : "revision-pinned", inputs: [input], round: stepId === "R6.revise" ? 1 : null, approvedPaths: ["src/product.ts"], requiredChecks: [{ name: "existing", argv: ["old"] }] });
+  const checkProposal = { implementationCommitSha: sha("d"), commands: [{ name: "native", argv: ["sh", "scripts/check.sh"] }], entryPointPaths: ["scripts/check.sh"], description: "Native tests" };
+  const signal = { protocolVersion: 1, issue: 1, agent: "codex", issueSessionId: action.issueSessionId, inputSetHash: computeInputSetHash(action.inputs), checkProposal,
+    ...(stepId === "R4.implement" ? { artifact: "implementation-ready", implementationCommitSha: sha("d"), approvedPaths: action.approvedPaths } : { artifact: "revision-ready", revisedBranchHead: sha("d"), basedOn: [sha("b")], round: 1 }) };
+  const check = (proposal: object, present = true) => evaluateEvidence(action, sha("e"), mirror(JSON.stringify({ ...signal, checkProposal: proposal }), { readBlob: async (_sha, path) => path === "scripts/check.sh" ? present ? "exit 0" : null : JSON.stringify({ ...signal, checkProposal: proposal }) }));
+  expect(await check(checkProposal)).toMatchObject({ status: "satisfied", checkProposal });
+  expect((await check({ ...checkProposal, implementationCommitSha: sha("c") })).status).toBe("rejected");
+  expect((await check(checkProposal, false)).status).toBe("rejected");
+  expect((await check({ ...checkProposal, commands: [{ name: "existing", argv: ["replacement"] }] })).status).toBe("rejected");
+});

@@ -1,3 +1,4 @@
+import { NO_CHECKS } from "./projectChecks.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
@@ -132,7 +133,7 @@ export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): st
   return [...missing].sort();
 };
 
-export type HookBinding = { bound: true; issue: number; commands: VerifyConfig } | { bound: false; reason: string };
+export type HookBinding = { bound: true; issue: number; commands: VerifyConfig; kind?: "frozen" | "coordinated"; policy?: Pick<CoordinatorConfig, "documentation" | "workflowCriticalFiles" | "workflowCriticalPrefixes"> } | { bound: false; reason: string };
 
 /**
  * Coordinated hook lists apply only to a provably active coordinator run for
@@ -171,11 +172,12 @@ export const resolveHookBinding = (input: {
     if (!start.agents.some((entry) => entry.id === agent && resolve(entry.root) === resolve(input.clone))) {
       return { bound: false, reason: `issue ${issue} does not run this clone` };
     }
-    const coordinated = start.verification?.mode === "coordinator" ? start.verification.coordinated : undefined;
+    const coordinated = start.verification?.mode === "coordinator" ? start.verification.coordinated : start.verify;
     if (coordinated === undefined) return { bound: false, reason: `issue ${issue} is not in coordinator verification mode` };
     if (cursors.completed || cursors.abandoned) return { bound: false, reason: `issue ${issue} is no longer active` };
     if (!cursors.activeRoster.includes(agent)) return { bound: false, reason: `${agent} is not on issue ${issue}'s active roster` };
-    return { bound: true, issue, commands: coordinated };
+    return { bound: true, issue, commands: coordinated, kind: start.verification?.mode === "coordinator" ? "coordinated" : "frozen",
+      policy: { documentation: start.documentation, workflowCriticalFiles: start.workflowCriticalFiles ?? [], workflowCriticalPrefixes: start.workflowCriticalPrefixes ?? [] } };
   } catch (error) {
     return { bound: false, reason: `runtime state unavailable (${error instanceof Error ? error.message.split("\n")[0] : String(error)})` };
   }
@@ -300,6 +302,7 @@ export const runVerifyPhase = (input: {
       ...(error === undefined ? {} : { error }) }));
   };
   if (commands.length === 0) {
+    if (selected.kind === "product") input.log(`${NO_CHECKS}\n`);
     input.log(`coord ${input.phase}: skipping declared checks — ${selected.reason} (no commands).\n`);
     record(null, new Date().toISOString(), 0);
     return { ok: true };

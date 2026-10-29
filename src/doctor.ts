@@ -434,7 +434,9 @@ const checkStartCompatibility = (config: CoordinatorConfig, configPath: string):
 /** Reuse installation checks without treating an active issue's protocol overlay as a defect. */
 export const inspectStartupAgent = (start: StartState, agent: StartState["agents"][number]): string[] => {
   try {
-    const config = readConfig(start.configPath);
+    const saved = readConfig(start.configPath);
+    const config = { ...saved, checks: start.checks, verify: start.verify ?? saved.verify,
+      verification: start.verification, documentation: start.documentation };
     const findings = checkClone({ config, configPath: start.configPath, agent, installDigest: null, home: null })
       .filter((entry) => entry.class !== "agentsProtocol" && entry.class !== "resourceTelemetry")
       .map((entry) => `${entry.message} ${entry.remediation}`);
