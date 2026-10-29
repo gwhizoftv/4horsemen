@@ -1,0 +1,21 @@
+{
+  "protocolVersion": 1,
+  "issue": 261,
+  "issueSessionId": "issue-261:c97bde22150e7a85694e999f4d6930b79122fcaf",
+  "agent": "codex",
+  "inputSetHash": "86eb87ab9f6ef44962aae1a2e6d05e8ca6e1128d185bbe174c8011d4889900b8",
+  "artifact": "plan-amendment-request",
+  "actionId": "2e0fa76d-1f4f-4938-a716-96c7339af1e9",
+  "scopeHash": "bec3e9f64a1ee35fc7546d2603e63f83319cbcf978400f6e54d902502fefcabb",
+  "explanation": "Both bound reviews identify that proposal acceptance calls BareMirror.readBlob, which returns tree listings and symlink target text, while final adoption accepts only ordinary tracked files; an approved proposal can therefore stall every finalization attempt. The approved plan included evidence validation but omitted the existing mirror reader and its real-Git regression tests needed to expose a regular-file-only read. Extend the existing readBlob API with an optional regular-file constraint, preserving existing unconstrained callers and their injected mirrors, then use that constraint from proposal validation. This is necessary for the original tracked-entry-point validation requirement, adds no new feature or abstraction, and preserves the single basedOn product parent 4b1986e6a2a81ab956fb42371af2ce1af2ec8df4. No product edits have been made for this revision request.",
+  "additionalPaths": [
+    {
+      "path": "src/mirror.ts",
+      "reason": "Add an optional regular-file-only constraint to the existing BareMirror.readBlob method, inspecting the exact pin/path mode through its existing authenticated Git runner before returning bytes; reject trees, symlinks and missing paths while accepting ordinary and executable tracked files, including safe dot-directory paths, so submission validation agrees with adoption."
+    },
+    {
+      "path": "test/mirror.test.ts",
+      "reason": "Extend the existing real-repository mirror fixture to verify the constrained read against tracked ordinary/executable files, a directory, symlink, missing path and safe hidden entry point, while checking unchanged default read behavior; mocked evidence responses alone cannot detect Git show accepting non-file entry points."
+    }
+  ]
+}
