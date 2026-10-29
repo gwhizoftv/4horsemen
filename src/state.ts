@@ -208,9 +208,9 @@ export const agentConfigSchema = z
     launcher: z.string().min(1),
     delivery: deliverySchema.default("pull"),
     harnessProcess: z.string().min(1).optional(),
-    /** OpenCode provider/model id; the remainder is opaque (including / and : variants). */
-    model: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*\/[^\s\p{Cc}]+$/u,
-      "model must be provider/model without whitespace or control characters").optional(),
+    /** OpenCode provider/model id; nonempty model segments allow nested paths and : variants. */
+    model: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[^\s/\p{Cc}]+)+$/u,
+      "model must be provider/model without empty segments, whitespace or control characters").optional(),
     /** tmux send-keys before the nudge text (e.g. vim insert `i`). */
     nudgePrelude: z.array(z.string().min(1)).optional(),
     /** tmux send-keys after the nudge text (e.g. Enter or C-j). */

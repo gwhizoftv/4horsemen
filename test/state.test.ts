@@ -87,8 +87,9 @@ describe("operational state", () => {
       const snapshot = startStateSchema.parse({ ...legacy, agents: parsed.agents, originalRoster: ["opencode"] });
       expect(startStateSchema.parse(JSON.parse(JSON.stringify(snapshot))).agents[0]?.model).toBe(model);
     }
-    for (const model of ["", "model", "/model", "provider/", "provider/model name", "provider/model\n", "provider/\u0000model", "provider/\u007fmodel"]) {
+    for (const model of ["", "model", "/model", "provider/", "openrouter//x", "openrouter/x/", "provider/model name", "provider/model\n", "provider/\u0000model", "provider/\u007fmodel"]) {
       expect(() => coordinatorConfigSchema.parse({ ...config, agents: [{ ...agent, model }] })).toThrow(/provider\/model/);
+      expect(() => startStateSchema.parse({ ...legacy, agents: [{ ...agent, model }] })).toThrow(/provider\/model/);
     }
     for (const delivery of ["both", "nudge"]) {
       expect(() => coordinatorConfigSchema.parse({ ...config, agents: [{ ...agent, delivery }] })).toThrow(/requires pull delivery/);
