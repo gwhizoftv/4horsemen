@@ -63,6 +63,8 @@ export const hasTerminalDeliveryAdapter = (agent: string): boolean =>
  * Cursor composer and cancels Antigravity. Cursor with `editor.vimMode` uses
  * vim `a` (when not INSERT) and Escape then Enter so INSERT does not treat
  * Enter as a newline. Muse's Escape interrupts a turn, so it is never sent. Codex uses vim insert (`i`) and `Enter`.
+ * OpenCode submits on Enter and interrupts on Escape; it is pull-only, so these
+ * keys serve owner reminders.
  * Operators override via config.json (non-vim Cursor Escape+Enter is still
  * upgraded to Enter).
  */
@@ -79,6 +81,7 @@ export const agentOwnerUiDefaults = (
     case "antigravity":
       return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Gemini 1" };
     case "muse":
+    case "opencode":
       return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Basic" };
     default:
       return { nudgePrelude: [], nudgeSubmit: ["Escape", "Enter"], terminalProfile: "Basic" };
@@ -129,7 +132,8 @@ const KNOWN_AGENT_LABELS: Record<string, string> = {
   codex: "Codex",
   cursor: "Cursor",
   antigravity: "Antigravity",
-  gemini: "Gemini"
+  gemini: "Gemini",
+  opencode: "OpenCode"
 };
 
 export const agentLabel = (agent: string): string =>
@@ -207,16 +211,22 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
   return coordinatorConfigSchema.parse({
     project: input.project,
     origin: input.origin,
-    agents: input.agents.map((agent) => ({
-      id: agent,
-      // Config-relative, so a workspace directory can be moved with its clones.
-      root: relativeFrom(input.workspaceDir, agentCloneDirectory(input.cloneRoot, input.project, agent)),
-      launcher: `start-${agent}.sh`,
-      // Agents also receive a short action path through the driver.
-      delivery: "both",
-      harnessProcess: agentHarnessProcess(agent),
-      ...agentOwnerUiDefaults(agent)
-    })),
+    agents: input.agents.map((agent) => {
+      // The owner's OpenCode model survives reinstall; removing it clears it.
+      const model = agent === "opencode" ? input.saved?.agents.find((saved) => saved.id === agent)?.model : undefined;
+      return {
+        id: agent,
+        // Config-relative, so a workspace directory can be moved with its clones.
+        root: relativeFrom(input.workspaceDir, agentCloneDirectory(input.cloneRoot, input.project, agent)),
+        launcher: `start-${agent}.sh`,
+        // Agents also receive a short action path through the driver. OpenCode
+        // has no measured terminal adapter, so the owner delivers its actions.
+        delivery: agent === "opencode" ? "pull" : "both",
+        harnessProcess: agentHarnessProcess(agent),
+        ...agentOwnerUiDefaults(agent),
+        ...(model === undefined ? {} : { model })
+      };
+    }),
     branch: declared.branch ?? "issue-{issue}/{agent}",
     baseBranch: input.baseBranch,
     profile: input.profile,

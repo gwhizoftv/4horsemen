@@ -354,6 +354,74 @@ hooks:
 - **Containment:** Muse's own `git status --porcelain` request was refused by
   the PATH Git shim.
 
+### OpenCode and OpenRouter
+
+OpenCode is an opt-in, owner-attended participant. It is not in the default
+roster, so name it explicitly (for example `--agents codex,claude,opencode`). OpenRouter is a
+provider used through OpenCode, not a separate agent. Install OpenCode with its
+install script (the launcher looks in `~/.opencode/bin` first), npm or
+Homebrew (both found on the owner's `PATH`).
+
+OpenCode has no measured terminal adapter, so its agent entry must use
+`delivery: "pull"`; config validation rejects `nudge` and `both`. Coordination
+publishes each action and records the receipts but never types into the
+OpenCode pane on its own. You deliver each action: ask OpenCode to run
+`coord next --issue <n>`, or press `n` in `coord run` and select `opencode`. Send the
+reminder only when OpenCode's normal prompt is showing, after provider setup;
+owner reminders bypass prompt-safety checks. Reminders type the action text
+and Enter, with no vim prelude and no Escape (Escape interrupts an OpenCode
+turn). A `ready` receipt does not trigger the next send. Each action needs
+owner delivery unless OpenCode finds a replacement action when it re-reads
+`action.md`.
+
+Connect OpenRouter inside the OpenCode pane: run `/connect`, choose
+OpenRouter and enter the key, then pick a tool-capable model with `/models`.
+Credentials stay in OpenCode's own store; never put them in coordinator
+config. To fix the model per workspace instead, add it to the opencode
+agent entry in the runtime `config.json`:
+
+```json
+{ "id": "opencode", "root": "../myserver-opencode", "launcher": "start-opencode.sh",
+  "delivery": "pull", "model": "openrouter/anthropic/claude-sonnet-4.5" }
+```
+
+Copy the exact identifier from `opencode models openrouter`. A model is
+`provider/model`, where the model may contain further `/` and `:` variants
+(`openrouter/deepseek/deepseek-chat-v3-0324:free`). It must not contain
+whitespace or control characters, and only the `opencode` agent may set one.
+Reinstalling keeps a saved model, and deleting the field clears it.
+
+Model precedence:
+
+- **Configured model:** applied at launch as a single quoted `--model`
+  argument, on every coordinator-managed start, manual session and pane
+  recovery.
+- **Frozen per issue:** an issue keeps the model recorded when it started.
+  Restarting its pane reapplies that model, even after `/models` changed the
+  live session or `config.json` was edited.
+- **No configured model:** selection is left to OpenCode's own configuration
+  and `/models`.
+- **Running the launcher yourself:** `./start-opencode.sh` does not read
+  `config.json`. Pass `--model provider/model` to it explicitly; arguments
+  are forwarded to OpenCode unchanged.
+
+The launcher sets `OPENCODE_DISABLE_AUTOUPDATE=1`, and `coord start` records
+`opencode --version` without upgrading; run `opencode upgrade` outside coord
+sessions. The launcher passes no sandbox, trust, approval or `--add-dir` flags
+and leaves your OpenCode permission policy unchanged. OpenCode reads
+`AGENTS.md` natively; do not run `/init`, which would rewrite the coordinator
+overlay. Access outside the clone (`external_directory`, `ask` by default)
+therefore prompts. Approve the completion mailbox, this agent's `responses`
+directory and the issue's bound `inputs`/`worktrees` as actions need them;
+approvals do not survive a pane restart.
+
+OpenCode has no lifecycle-hook mapping, usage analytics or quota recovery.
+`coord status` reports its hook coverage as unverified, and native containment
+is unmeasured; only the PATH Git shim applies. Report the containment probe as
+actually observed. These instructions follow OpenCode's documented CLI,
+provider, permission and keybinding interfaces. No live OpenCode or OpenRouter
+session has been verified by coordination yet.
+
 ### Agent editor modes
 
 Install/onboard set Claude's clone-local `.claude/settings.local.json` to

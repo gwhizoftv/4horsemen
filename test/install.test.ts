@@ -1,5 +1,5 @@
 import childProcess, { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1413,6 +1413,50 @@ describe("generated agent launchers", () => {
     }
     expect(git(clone, "check-ignore", ".muse/hooks.json")).toBe(".muse/hooks.json");
     expect(existsSync(join(clone, ".muse/hooks.json"))).toBe(false);
+  });
+
+  it("installs OpenCode opt-in on pull delivery, keeps a saved model, and forwards --model unchanged", () => {
+    const fixture = product("plain");
+    const home = join(fixture.workspaceRoot, "home with spaces");
+    const completesRoot = join(fixture.workspaceRoot, "completion mailbox");
+    const result = installOnce(fixture, { agents: ["opencode"], completesRoot, home });
+    const clone = result.clones[0] as string;
+    const agent = { id: "opencode", delivery: "pull", harnessProcess: "opencode", nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Basic" };
+    expect(readConfig(result.configPath).agents).toEqual([expect.objectContaining(agent)]);
+    expect(readConfig(result.configPath).agents[0]?.model).toBeUndefined();
+
+    const model = "openrouter/deepseek/deepseek-chat-v3-0324:free";
+    const saved = JSON.parse(readFileSync(result.configPath, "utf8"));
+    writeFileSync(result.configPath, JSON.stringify({ ...saved, agents: [{ ...saved.agents[0], model }] }));
+    // Rebuilding keeps the owner's model, so a reinstall has nothing to write.
+    expect(installOnce(fixture, { agents: ["opencode"], completesRoot, home }).changes).toEqual([]);
+    expect(readConfig(result.configPath).agents).toEqual([expect.objectContaining({ ...agent, model })]);
+    writeFileSync(result.configPath, JSON.stringify(saved));
+    installOnce(fixture, { agents: ["opencode"], completesRoot, home });
+    expect(readConfig(result.configPath).agents[0]?.model).toBeUndefined();
+    expect(existsSync(join(home, ".config", "opencode"))).toBe(false);
+
+    const nodeBin = join(fixture.workspaceRoot, "node bin");
+    const ownerBin = join(fixture.workspaceRoot, "owner bin");
+    const installBin = join(home, ".opencode", "bin");
+    for (const dir of [nodeBin, ownerBin, installBin]) mkdirSync(dir, { recursive: true });
+    symlinkSync(process.execPath, join(nodeBin, "node"));
+    const stub = (label: string) => `#!/bin/sh\nprintf '%s\\n' ${label} "$PWD" "$OPENCODE_DISABLE_AUTOUPDATE" "$(command -v git)" "$COORD_ISSUE" "$@" > "$CAPTURE"\n`;
+    writeFileSync(join(ownerBin, "opencode"), stub("owner"), { mode: 0o755 });
+    writeFileSync(join(installBin, "opencode"), stub("install"), { mode: 0o755 });
+    const launch = (issue: string, args: string[]) => {
+      const capture = join(fixture.workspaceRoot, "opencode.args");
+      execFileSync("/bin/bash", [join(clone, "start-opencode.sh"), ...args], {
+        cwd: fixture.workspaceRoot,
+        env: { ...process.env, HOME: home, PATH: `${ownerBin}:/usr/bin:/bin`, COORD_NODE: join(nodeBin, "node"), COORD_ISSUE: issue, CAPTURE: capture },
+        stdio: "pipe"
+      });
+      return readFileSync(capture, "utf8").replace(/\n$/, "").split("\n");
+    };
+    expect(launch("17", ["--model", model])).toEqual(["install", clone, "1", `${clone}/.coord/bin/git`, "17", "--model", model]);
+    expect(launch("", [])).toEqual(["install", clone, "1", `${clone}/.coord/bin/git`, ""]);
+    rmSync(installBin, { recursive: true });
+    expect(launch("", ["--model", "a/b c"])).toEqual(["owner", clone, "1", `${clone}/.coord/bin/git`, "", "--model", "a/b c"]);
   });
 
   /**

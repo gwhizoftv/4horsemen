@@ -26,6 +26,7 @@ import {
   type TmuxResult,
   type TmuxRunner
 } from "../src/tmux.js";
+import { agentOwnerUiDefaults } from "../src/setupWorkspace.js";
 
 const ok = (stdout = ""): TmuxResult => ({ exitCode: 0, stdout, stderr: "" });
 const commandsIn = (args: readonly string[]): string[][] => {
@@ -524,6 +525,44 @@ describe("tmux boundary", () => {
       expect(result.commands[0]).toContain("select-window -t claude");
       expect(result.commands[0]).toContain("coord-1-claude");
     }
+  });
+
+  it("launches OpenCode with its frozen model as one literal argument on start and dead-pane recovery", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-opencode-"));
+    roots.push(root);
+    const clone = join(root, "clone with 'quote'");
+    mkdirSync(clone);
+    writeFileSync(join(clone, "start-opencode.sh"), '#!/bin/sh\nprintf "%s\\n" "$@" > "$CAPTURE"\n', { mode: 0o700 });
+    const model = `openrouter/x'$(touch pwned);"y:free`;
+    const unset = { id: "opencode", root: clone, launcher: "start-opencode.sh", delivery: "pull" as const };
+    const agent = { ...unset, model };
+    const launches: string[] = [];
+    let paneDead = "0";
+    const runner: TmuxRunner = async (args) => {
+      const respawn = commandsIn(args).find((command) => command[0] === "respawn-pane");
+      // Only launchAgent's respawn sets retention; a bare one holds the placeholder.
+      if (respawn !== undefined && args.includes("remain-on-exit")) { launches.push(respawn.at(-1)!); paneDead = "0"; }
+      if (args[0] === "has-session") return { exitCode: 1, stdout: "", stderr: "missing" };
+      if (args[0] === "display-message") return ok(`${paneDead}\topencode\t0\n`);
+      if (args[0] === "list-windows") return ok("opencode");
+      return ok();
+    };
+    await new TmuxController(runner, null, null, null).startSession(5, [agent]);
+    const started = launches.length;
+    paneDead = "1";
+    await new TmuxController(async (args) => args[0] === "has-session" ? ok() : runner(args), null, null, null).ensureSession(5, [agent]);
+    expect(started).toBeGreaterThan(0);
+    expect(launches.length).toBeGreaterThan(started);
+    for (const command of launches) {
+      const capture = join(root, "args");
+      const ran = spawnSync("/bin/sh", ["-c", command], { cwd: clone, env: { ...process.env, CAPTURE: capture }, encoding: "utf8" });
+      expect(ran.status, ran.stderr).toBe(0);
+      expect(readFileSync(capture, "utf8")).toBe(`--model\n${model}\n`);
+      expect(readdirSync(clone)).toEqual(["start-opencode.sh"]);
+    }
+    launches.length = 0;
+    await new TmuxController(runner, null, null, null).startSession(6, [unset]);
+    expect(new Set(launches)).toEqual(new Set([join(clone, "start-opencode.sh")]));
   });
 
   it("ensureSession recreates missing agent windows and respawns a dead pane", async () => {
@@ -1692,6 +1731,27 @@ describe("explicit owner reminder transport", () => {
     expect(keys.find((args) => args.includes("-l"))?.at(-1)).toBe(id === "claude" ? ` ${text}` : text);
     expect(keys.at(-1)?.at(-1)).toBe("Enter");
     if (id !== "antigravity") expect(keys).toContainEqual(["run-shell", "sleep 0.3"]);
+  });
+
+  it("sends an OpenCode owner reminder as the literal text and one Enter, never a vim letter or Escape", async () => {
+    const calls: string[][] = [];
+    const controller = new TmuxController(async (args) => {
+      calls.push([...args]);
+      if (args[0] === "display-message") return ok("0\topencode\t0\t0");
+      if (args[0] === "capture-pane") return ok("┃ Ask anything...\n  enter send");
+      return ok();
+    }, undefined, undefined, undefined, noopSleep);
+    const agent = { id: "opencode", root: "/clone", launcher: "start-opencode.sh", delivery: "pull" as const, harnessProcess: "opencode",
+      ...agentOwnerUiDefaults("opencode") };
+    expect(agent).toMatchObject({ nudgePrelude: [], nudgeSubmit: ["Enter"] });
+    expect(vimInsertPrelude("> ", "opencode")).toEqual([]);
+    expect(await controller.nudge(1, agent, "/action.md")).toMatchObject({ status: "disabled" });
+    const text = "Read and execute coordinator action at /runtime/action.md";
+    expect(await controller.remind(1, agent, text)).toEqual({ status: "sent", reason: "sent", stage: "complete" });
+    const keys = calls.filter((args) => args[0] === "send-keys").flatMap(commandsIn)
+      .filter((args) => args[0] === "send-keys" && !args.includes("-X"));
+    expect(keys.filter((args) => args.includes("-l")).map((args) => args.at(-1))).toEqual([text]);
+    expect(keys.filter((args) => !args.includes("-l")).map((args) => args.at(-1))).toEqual(["Enter"]);
   });
 
   it("uses configured keys when capture is unavailable", async () => {

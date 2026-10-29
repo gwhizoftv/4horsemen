@@ -43,7 +43,8 @@ import {
   releaseHold,
   writeCursorsState
 } from "../src/state.js";
-import { TmuxController } from "../src/tmux.js";
+import { renderNudgeText, TmuxController } from "../src/tmux.js";
+import { agentOwnerUiDefaults } from "../src/setupWorkspace.js";
 import { renderIssueReport } from "../src/issueReport.js";
 import type { CodexQuotaReader, CodexQuotaResult } from "../src/codexQuota.js";
 import { readBindingRecord } from "../src/codexQuota.js";
@@ -343,6 +344,26 @@ describe("owner reminders and advisory diagnostics", () => {
       expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudged", agent: "cursor",
         details: expect.objectContaining({ owner: true, outcome: "sent", messageKind: "action" }) }));
     });
+
+  it("never sends a pull OpenCode action automatically, and sends the owed action once on an owner reminder", async () => {
+    const f = safetyFixture("opencode");
+    const start = readStartState(f.paths);
+    writeFileSync(f.paths.start, JSON.stringify({ ...start, agents: [{ ...start.agents[0], delivery: "pull",
+      harnessProcess: "opencode", ...agentOwnerUiDefaults("opencode") }] }));
+    f.ui.foreground = "opencode";
+    const loop = f.makeLoop();
+    await loop.runTick(); f.advance(60_000); await loop.runTick();
+    const runtime = agentRuntimePaths(f.paths, "opencode");
+    const actionId = readAction(runtime.action).actionId;
+    expect(f.ui.sends).toBe(0);
+    expect(readAgentLifecycle(f.paths).agents.opencode).toMatchObject({ action: { actionId, delivery: "ordered", injectedAt: null } });
+    loop.reminders()[0]!.request();
+    await loop.runTick();
+    expect(f.ui.sentTexts).toEqual([renderNudgeText(runtime.action, actionId, createHash("sha256").update(readFileSync(runtime.action)).digest("hex"), true)]);
+    writeFileSync(runtime.ready, `ready ${actionId}\n`);
+    f.advance(60_000); await loop.runTick(); await loop.runTick();
+    expect(f.ui.sends).toBe(1);
+  });
 
   it("attempts every deliberate selection without a cooldown or automatic duplicate", async () => {
     const f = safetyFixture("cursor"), loop = f.makeLoop();

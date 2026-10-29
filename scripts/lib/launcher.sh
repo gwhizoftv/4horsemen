@@ -39,6 +39,11 @@ launcher_environment() {
   if [[ "$1" == claude || "$1" == antigravity || "$1" == muse ]]; then
     search="$HOME/.local/bin:$search"
   fi
+  # OpenCode's install script writes only to ~/.opencode/bin; npm and Homebrew
+  # installs stay reachable through the owner PATH behind it.
+  if [[ "$1" == opencode ]]; then
+    search="$HOME/.opencode/bin:$search"
+  fi
   bin="$(PATH="$search" type -P "$2" || true)"
 
   if [[ -f .nvmrc ]]; then
@@ -56,6 +61,9 @@ launcher_environment() {
   fi
   if [[ "$1" == muse ]]; then
     export MUSE_NO_AUTO_UPDATE=1
+  fi
+  if [[ "$1" == opencode ]]; then
+    export OPENCODE_DISABLE_AUTOUPDATE=1
   fi
 
   # Keep installations reachable only through the product pin as a final
@@ -107,7 +115,7 @@ launcher_executable() {
   case "$1" in
     cursor) printf 'agent\n' ;;
     antigravity) printf 'agy\n' ;;
-    claude|codex|gemini|muse) printf '%s\n' "$1" ;;
+    claude|codex|gemini|muse|opencode) printf '%s\n' "$1" ;;
     *) return 1 ;;
   esac
 }
@@ -118,7 +126,7 @@ launcher_executable() {
 # flags are recorded; setup scripts and the post-merge hook both read them here.
 #
 # Claude, Codex, Cursor and Antigravity accept --add-dir for extra roots;
-# Muse and Gemini do not receive these flags. The coord_grant array is
+# Muse, OpenCode and Gemini do not receive these flags. The coord_grant array is
 # computed by the generated launcher at exec time
 # (see write_launcher); it is empty when there is no current issue. The
 # expansion is written as ${a[@]+"${a[@]}"} because macOS /bin/bash is 3.2,
@@ -171,6 +179,15 @@ launcher_command() {
       # Muse has no --add-dir, so do not pass coord_grant. The PATH Git shim is
       # still installed, but native hooks and live containment are unverified.
       printf 'exec "${coord_agent_cmd[@]}" --approval-mode never --disable-sandbox --trust-workspace\n'
+      ;;
+    opencode)
+      # Owner-attended pull participant: OpenCode has no --add-dir, and its own
+      # permission policy is left intact, so external-directory access to the
+      # mailbox, responses and bound inputs stays an owner prompt. No sandbox,
+      # trust or approval flags. Arguments are forwarded unchanged, which is how
+      # coordination passes a configured `--model provider/model`. The PATH Git
+      # shim is still installed; native hooks and live containment are unverified.
+      printf 'exec "${coord_agent_cmd[@]}" ${1+"$@"}\n'
       ;;
     cursor)
       # --add-dir only means something if the harness is sandboxed: an

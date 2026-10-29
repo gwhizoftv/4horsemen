@@ -215,6 +215,15 @@ export const agentConfigSchema = z
     /** macOS Terminal.app settings-set (profile) name for owner attach windows. */
     terminalProfile: z.string().min(1).optional(),
     /**
+     * OpenCode `provider/model`, passed as one `--model` argument at launch
+     * (#257). Further slashes and `:` variants (`openrouter/a/b:free`) belong to
+     * the model; omitted leaves selection to OpenCode's own config and `/models`.
+     */
+    model: z
+      .string()
+      .regex(/^[^\s/\p{Cc}-][^\s/\p{Cc}]*(?:\/[^\s/\p{Cc}]+)+$/u, "model must be provider/model with no whitespace or control characters")
+      .optional(),
+    /**
      * Owner-confirmed Codex quota binding (#140). Explicit configuration is the
      * confirmation: the coordinator never discovers a home or account itself.
      */
@@ -313,6 +322,15 @@ export const coordinatorConfigSchema = z
     for (const [index, agent] of config.agents.entries()) {
       if (agent.codexQuota !== undefined && agent.id !== "codex") {
         context.addIssue({ code: "custom", message: "codexQuota is only valid on the codex agent", path: ["agents", index, "codexQuota"] });
+      }
+      if (agent.model !== undefined && agent.id !== "opencode") {
+        context.addIssue({ code: "custom", message: "model is only valid on the opencode agent", path: ["agents", index, "model"] });
+      }
+      // No measured OpenCode terminal adapter yet: unattended sends could type
+      // into its provider menu or interrupt a turn. Owner reminders still work.
+      if (agent.id === "opencode" && agent.delivery !== "pull") {
+        context.addIssue({ code: "custom", message: "opencode supports only delivery \"pull\"; automatic delivery is not yet supported",
+          path: ["agents", index, "delivery"] });
       }
     }
     if (new Set(ids).size !== ids.length) {

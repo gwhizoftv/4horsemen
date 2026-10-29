@@ -349,13 +349,13 @@ export const harnessPromptReadiness = (
 /**
  * Vim-mode TUIs swallow the first nudge character in NORMAL. Enter insert with
  * `a` when INSERT is not visible. Codex keeps its configured `i` prelude.
- * Antigravity and Muse use no vim prelude. Cursor uses `a` only when `editor.vimMode` is on
+ * Antigravity, Muse and OpenCode use no vim prelude. Cursor uses `a` only when `editor.vimMode` is on
  * (see `readCursorVimMode`). Claude often omits a mode indicator — still send
  * `a` unless INSERT is shown. resolveNudgeKeys skips this fallback when the
  * installed Claude settings explicitly disable vim.
  */
 export const vimInsertPrelude = (paneText: string, agentId: string): readonly string[] => {
-  if (agentId === "antigravity" || agentId === "codex" || agentId === "muse") return [];
+  if (agentId === "antigravity" || agentId === "codex" || agentId === "muse" || agentId === "opencode") return [];
   const plain = stripAnsi(paneText);
   if (/--\s*INSERT\s*--/i.test(plain) || /Vim:\s*Insert/i.test(plain)) return [];
   if (/--\s*VISUAL(?:\s+LINE)?\s*--/i.test(plain)) return ["Escape", "a"];
@@ -1187,7 +1187,9 @@ export class TmuxController {
         ";", "set-option", "-w", "-t", target, "@coord-log", log,
         ";", "pipe-pane", "-t", target, pipeToLog(log)
       ]),
-      ";", "respawn-pane", "-k", "-t", target, "-c", resolve(agent.root), launcher
+      ";", "respawn-pane", "-k", "-t", target, "-c", resolve(agent.root),
+      // The frozen OpenCode model is data: one quoted argument, never shell syntax.
+      agent.model === undefined ? launcher : `${shellQuote(launcher)} --model ${shellQuote(agent.model)}`
     ]);
   }
 

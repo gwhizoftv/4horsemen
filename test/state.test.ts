@@ -259,6 +259,31 @@ describe("operational state", () => {
     expect(() => coordinatorConfigSchema.parse(withBinding({ id: "claude", launcher: "start-claude.sh" }))).toThrow(/only valid on the codex agent/);
   });
 
+  it("accepts an OpenCode model only as provider/model on a pull opencode agent, through start state", () => {
+    const opencode = { id: "opencode", root: "/o", launcher: "start-opencode.sh" };
+    const config = (agent: Record<string, unknown>) => ({
+      project: "p", origin: "https://github.com/example/p.git", branch: "issue-{issue}/{agent}",
+      checks: [{ name: "check", argv: ["true"] }], agents: [{ ...opencode, ...agent }]
+    });
+    expect(coordinatorConfigSchema.parse(config({})).agents[0]).toMatchObject({ delivery: "pull" });
+    expect(coordinatorConfigSchema.parse(config({})).agents[0]?.model).toBeUndefined();
+    for (const model of ["anthropic/claude-sonnet-4-5", "openrouter/anthropic/claude-sonnet-4.5", "openrouter/deepseek/deepseek-chat-v3-0324:free"]) {
+      expect(coordinatorConfigSchema.parse(config({ model })).agents[0]?.model).toBe(model);
+    }
+    for (const model of ["", "openrouter", "openrouter/", "/model", "openrouter//x", "open router/x", "openrouter/x y", "openrouter/x\u0007", "-x/y"]) {
+      expect(() => coordinatorConfigSchema.parse(config({ model })), JSON.stringify(model)).toThrow(/provider\/model/);
+    }
+    expect(() => coordinatorConfigSchema.parse(config({ id: "claude", launcher: "start-claude.sh", model: "a/b" })))
+      .toThrow(/only valid on the opencode agent/);
+    for (const delivery of ["nudge", "both"]) {
+      expect(() => coordinatorConfigSchema.parse(config({ delivery }))).toThrow(/opencode supports only delivery/);
+    }
+    const { paths, start } = initialize();
+    const frozen = { ...opencode, delivery: "pull", model: "openrouter/anthropic/claude-sonnet-4.5" };
+    writeFileSync(paths.start, JSON.stringify({ ...start, agents: [...start.agents, frozen] }));
+    expect(readStartState(paths).agents.at(-1)).toEqual(frozen);
+  });
+
   it("writes strict versioned start, cursor, and journal state atomically", () => {
     const { paths } = initialize();
     expect(readStartState(paths)).toMatchObject({ formatVersion: 4, maxRevisionRounds: 3 });

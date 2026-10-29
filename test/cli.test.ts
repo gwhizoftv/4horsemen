@@ -222,13 +222,18 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
 };
 
 describe("fresh-start agent maintenance", () => {
-  it("records Muse's version without running an update command", async () => {
+  it("records Muse's and OpenCode's versions without running an update command, freezing OpenCode's model", async () => {
     const f = setup();
     const clone = join(f.root, "clone-muse");
+    const opencode = join(f.root, "clone-opencode");
     mkdirSync(clone);
+    mkdirSync(opencode);
     writeFileSync(join(clone, "start-muse.sh"), "#!/bin/sh\n", { mode: 0o700 });
+    writeFileSync(join(opencode, "start-opencode.sh"), "#!/bin/sh\n", { mode: 0o700 });
     const config = JSON.parse(readFileSync(f.configPath, "utf8"));
-    config.agents.push({ id: "muse", root: clone, launcher: "start-muse.sh", delivery: "pull" });
+    const model = "openrouter/anthropic/claude-sonnet-4.5";
+    config.agents.push({ id: "muse", root: clone, launcher: "start-muse.sh", delivery: "pull" },
+      { id: "opencode", root: opencode, launcher: "start-opencode.sh", delivery: "pull", model });
     writeFileSync(f.configPath, JSON.stringify(config));
     const calls: string[] = [], output: string[] = [], errors: string[] = [];
     expect(await runCli(["start", "1", "--config", f.configPath, "--coord-runtime", f.runtime], {
@@ -241,11 +246,16 @@ describe("fresh-start agent maintenance", () => {
     })).toBe(0);
     expect(calls).toEqual([
       "codex update", "claude update", "agent update",
-      "codex --version", "claude --version", "agent --version", "muse --version"
+      "codex --version", "claude --version", "agent --version", "muse --version", "opencode --version"
     ]);
-    expect(readStartState(issueRuntimePaths(f.runtime, 1)).agentVersions?.muse).toBe("muse fixture-version");
-    expect(output.join("")).toContain("muse has no update command; recording the installed version.");
-    expect(errors.join("")).not.toContain("WARNING: muse");
+    const start = readStartState(issueRuntimePaths(f.runtime, 1));
+    expect(start.agentVersions?.muse).toBe("muse fixture-version");
+    expect(start.agentVersions?.opencode).toBe("opencode fixture-version");
+    expect(start.agents.find((agent) => agent.id === "opencode")?.model).toBe(model);
+    for (const id of ["muse", "opencode"]) {
+      expect(output.join("")).toContain(`${id}: automatic update skipped; recording the installed version.`);
+      expect(errors.join("")).not.toContain(`WARNING: ${id}`);
+    }
   });
 
   it.each(["start", "numeric"])("awaits updates and records versions before %s launches", async (entry) => {
