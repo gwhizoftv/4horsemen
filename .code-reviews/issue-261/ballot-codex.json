@@ -1,0 +1,24 @@
+{
+  "actionId": "154e2283-bf05-4e5e-9ab5-0d1fd20c4ab6",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "217bc09ccd656ab932b5c5fdba76b48c292b2411",
+      "path": ".signals/issue-261/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "4b1986e6a2a81ab956fb42371af2ce1af2ec8df4",
+      "path": ".signals/issue-261/implementation-ready-codex.json"
+    }
+  ],
+  "inputSetHash": "8fe48264b813986f0f6ed5e0e68a481e5d7bceb1ccd5df6667af2b0ff0a47b82",
+  "issue": 261,
+  "issueSessionId": "issue-261:c97bde22150e7a85694e999f4d6930b79122fcaf",
+  "protocolVersion": 2,
+  "rationale": "Codex more completely implements cumulative check additions, competing ecosystem discovery, compatible native plans and owner-selected timing, while its publication, saved-policy, entry-point validation, quoting and diagnostic defects require the focused corrections documented in the comparison.",
+  "responseSha256": "2dbd70a55f2d0f888ea2f08d1a66965599bcb45394f2c425130e21a683b59c1f"
+}

@@ -1,0 +1,24 @@
+{
+  "actionId": "c7551de2-9750-481e-8a96-4c307a544259",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "claude",
+      "commitSha": "217bc09ccd656ab932b5c5fdba76b48c292b2411",
+      "path": ".signals/issue-261/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "4b1986e6a2a81ab956fb42371af2ce1af2ec8df4",
+      "path": ".signals/issue-261/implementation-ready-codex.json"
+    }
+  ],
+  "inputSetHash": "8fe48264b813986f0f6ed5e0e68a481e5d7bceb1ccd5df6667af2b0ff0a47b82",
+  "issue": 261,
+  "issueSessionId": "issue-261:c97bde22150e7a85694e999f4d6930b79122fcaf",
+  "protocolVersion": 2,
+  "rationale": "Both pins implement the full plan and codex is more compact, but codex's reinstall converts a legacy undeclared verify into an empty opt-out (projectChecks.ts:400-402) and its submission check accepts directory/symlink entry points that finalization then refuses (evidence.ts:215 vs checkAmendments.ts:32-45), while claude preserves undeclared policy and rejects non-file entry points at submission within the original file map.",
+  "responseSha256": "1d822e6a8a654fc092490c4a7c0cc77eb270249f8f13d9a380707ca87d1a4b08"
+}
