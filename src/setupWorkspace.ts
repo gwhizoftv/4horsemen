@@ -79,6 +79,7 @@ export const agentOwnerUiDefaults = (
     case "antigravity":
       return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Gemini 1" };
     case "muse":
+    case "opencode":
       return { nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Basic" };
     default:
       return { nudgePrelude: [], nudgeSubmit: ["Escape", "Enter"], terminalProfile: "Basic" };
@@ -129,7 +130,8 @@ const KNOWN_AGENT_LABELS: Record<string, string> = {
   codex: "Codex",
   cursor: "Cursor",
   antigravity: "Antigravity",
-  gemini: "Gemini"
+  gemini: "Gemini",
+  opencode: "OpenCode"
 };
 
 export const agentLabel = (agent: string): string =>
@@ -213,8 +215,9 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
       root: relativeFrom(input.workspaceDir, agentCloneDirectory(input.cloneRoot, input.project, agent)),
       launcher: `start-${agent}.sh`,
       // Agents also receive a short action path through the driver.
-      delivery: "both",
+      delivery: agent === "opencode" ? "pull" : "both",
       harnessProcess: agentHarnessProcess(agent),
+      ...(agent === "opencode" ? { model: input.saved?.agents.find((saved) => saved.id === agent)?.model } : {}),
       ...agentOwnerUiDefaults(agent)
     })),
     branch: declared.branch ?? "issue-{issue}/{agent}",

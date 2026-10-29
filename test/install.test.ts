@@ -1326,6 +1326,70 @@ describe("generated git shim", () => {
 });
 
 describe("generated agent launchers", () => {
+  it("installs OpenCode with a persistent model and forwards argv without changing owner permissions", () => {
+    const fixture = product("plain");
+    const home = join(fixture.workspaceRoot, "home with spaces");
+    const completesRoot = join(fixture.workspaceRoot, "completion mailbox");
+    const settings = join(home, ".config/opencode/opencode.json");
+    const nativeConfig = '{"permission":{"bash":"deny"}}\n';
+    mkdirSync(dirname(settings), { recursive: true });
+    writeFileSync(settings, nativeConfig);
+    const options = { agents: ["opencode"], completesRoot, home };
+    const result = installOnce(fixture, options);
+    const clone = result.clones[0] as string;
+    const config = readConfig(result.configPath);
+    expect(config.agents).toEqual([expect.objectContaining({
+      id: "opencode", delivery: "pull", harnessProcess: "opencode", nudgePrelude: [], nudgeSubmit: ["Enter"], terminalProfile: "Basic"
+    })]);
+    const model = "openrouter/vendor/model:free";
+    config.agents[0]!.model = model;
+    writeFileSync(result.configPath, JSON.stringify(config, null, 2) + "\n");
+    installOnce(fixture, options);
+    expect(readConfig(result.configPath).agents[0]?.model).toBe(model);
+    expect(installOnce(fixture, options).changes).toEqual([]);
+    delete config.agents[0]!.model;
+    writeFileSync(result.configPath, JSON.stringify(config, null, 2) + "\n");
+    installOnce(fixture, options);
+    expect(readConfig(result.configPath).agents[0]?.model).toBeUndefined();
+    expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
+
+    for (const directory of [
+      join(completesRoot, "issue-17", "opencode"),
+      join(fixture.coordRoot, "issue-17", "agents", "opencode", "responses"),
+      join(fixture.coordRoot, "issue-17", "inputs"),
+      join(fixture.coordRoot, "issue-17", "worktrees")
+    ]) mkdirSync(directory, { recursive: true });
+    const installedBin = join(home, ".opencode/bin");
+    const pathBin = join(fixture.workspaceRoot, "path-bin");
+    const stub = '#!/usr/bin/env node\n' +
+      'require("node:fs").writeFileSync(process.env.CAPTURE, JSON.stringify({args:process.argv.slice(2), cwd:process.cwd(), ' +
+      'update:process.env.OPENCODE_DISABLE_AUTOUPDATE, permission:process.env.OPENCODE_PERMISSION, ' +
+      'git:require("node:child_process").execFileSync("/bin/sh",["-c","command -v git"],{encoding:"utf8"}).trim(), binary:__filename}));\n';
+    for (const bin of [installedBin, pathBin]) {
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(join(bin, "opencode"), stub, { mode: 0o755 });
+    }
+    const permission = '{"bash":"deny","edit":"deny"}';
+    for (const fromPath of [false, true]) {
+      for (const issue of ["17", ""]) {
+        for (const args of [[], ["--model", model]]) {
+          const capture = join(fixture.workspaceRoot, "opencode-capture.json");
+          const run = spawnSync("/bin/bash", [join(clone, "start-opencode.sh"), ...args], {
+            cwd: fixture.workspaceRoot, encoding: "utf8",
+            env: { ...process.env, HOME: home, PATH: `${fromPath ? pathBin + ":" : ""}/usr/bin:/bin`, COORD_NODE: process.execPath,
+              COORD_ISSUE: issue, OPENCODE_PERMISSION: permission, CAPTURE: capture }
+          });
+          expect(run.status, run.stderr).toBe(0);
+          expect(run.stdout).toContain("OpenCode agent");
+          expect(JSON.parse(readFileSync(capture, "utf8"))).toEqual({ args, cwd: realpathSync(clone), update: "1", permission,
+            git: `${realpathSync(clone)}/.coord/bin/git`, binary: realpathSync(join(fromPath ? pathBin : installedBin, "opencode")) });
+        }
+      }
+    }
+    expect(readFileSync(settings, "utf8")).toBe(nativeConfig);
+    expect(existsSync(join(clone, "opencode.json"))).toBe(false);
+  });
+
   it.each([
     { pnpm: true, corepack: true, lockfile: true },
     { pnpm: true, corepack: false, lockfile: true },
