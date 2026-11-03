@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -1520,6 +1520,33 @@ describe("tmux boundary", () => {
 
 const tmuxInstalled = spawnSync("tmux", ["-V"]).status === 0;
 
+it.each(["start", "manual", "dead-pane"])("passes OpenCode model arguments literally on %s", async (mode) => {
+  const root = mkdtempSync(join(tmpdir(), "coord-opencode's launch-"));
+  roots.push(root);
+  const capture = join(root, "args");
+  writeFileSync(join(root, "start-opencode.sh"), '#!/bin/sh\nfor arg do printf \'%s\\0\' "$arg"; done > "$CAPTURE"\n', { mode: 0o700 });
+  for (const model of [undefined, "openrouter/vendor/model:free'$(touch${IFS}injected)\""]) {
+    let command = "";
+    const controller = new TmuxController(async (args) => {
+      if (args[0] === "has-session") return { exitCode: 1, stdout: "", stderr: "" };
+      if (args[0] === "list-windows") return ok(mode === "dead-pane" ? "opencode\n" : "");
+      if (args[0] === "display-message") return ok("1\topencode\t0\t0");
+      for (const part of commandsIn(args)) {
+        if (part[0] === "respawn-pane" && part.at(-1) !== "sleep 60") command = part.at(-1)!;
+      }
+      return ok();
+    }, "opencode-test", null, null, noopSleep);
+    const agent = { id: "opencode", root, launcher: "start-opencode.sh", delivery: "pull" as const, model };
+    if (mode === "start") await controller.startSession(3, [agent]);
+    else await controller.ensureSession(mode === "manual" ? "manual" : 3, [agent]);
+    expect(command).not.toBe("");
+    const run = spawnSync("/bin/sh", ["-c", command], { cwd: root, encoding: "utf8", env: { ...process.env, CAPTURE: capture } });
+    expect(run.status, run.stderr).toBe(0);
+    expect(readFileSync(capture, "utf8")).toBe(model === undefined ? "" : `--model\0${model}\0`);
+    expect(existsSync(join(root, "injected"))).toBe(false);
+  }
+});
+
 it("flushes partial terminal chunks and keeps bytes ordered between timestamp prefixes", async () => {
   const root = mkdtempSync(join(tmpdir(), "coord-log-chunks-"));
   roots.push(root);
@@ -1673,7 +1700,7 @@ describe("explicit owner reminder transport", () => {
     expect(keys.find((args) => args.includes("-l"))?.at(-1)).toBe(mode === "Normal" ? " owner reminder" : "owner reminder");
   });
 
-  it.each(["claude", "codex", "cursor", "antigravity"])("sends to %s despite automatic configuration and pane vetoes", async (id) => {
+  it.each(["claude", "codex", "cursor", "antigravity", "opencode"])("sends to %s despite automatic configuration and pane vetoes (OpenCode compatibility)", async (id) => {
     const calls: string[][] = [];
     const controller = new TmuxController(async (args) => {
       calls.push([...args]);
@@ -1691,6 +1718,13 @@ describe("explicit owner reminder transport", () => {
     // Only Claude gets a vim prelude here (`a`), so only its text is space-separated.
     expect(keys.find((args) => args.includes("-l"))?.at(-1)).toBe(id === "claude" ? ` ${text}` : text);
     expect(keys.at(-1)?.at(-1)).toBe("Enter");
+    if (id === "opencode") {
+      expect(keys.filter((args) => args[0] === "send-keys" && !args.includes("-l") && !args.includes("-X")))
+        .toEqual([["send-keys", "-t", "coord-1:opencode.0", "Enter"]]);
+      expect(vimInsertPrelude("", id)).toEqual([]);
+      expect(resolveNudgeKeys({ ...agent, nudgePrelude: ["C-a"], nudgeSubmit: ["C-s"] }))
+        .toEqual({ prelude: ["C-a"], submit: ["C-s"] });
+    }
     if (id !== "antigravity") expect(keys).toContainEqual(["run-shell", "sleep 0.3"]);
   });
 

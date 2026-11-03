@@ -39,6 +39,10 @@ launcher_environment() {
   if [[ "$1" == claude || "$1" == antigravity || "$1" == muse ]]; then
     search="$HOME/.local/bin:$search"
   fi
+  if [[ "$1" == opencode ]]; then
+    search="$search:$HOME/.opencode/bin"
+    export OPENCODE_DISABLE_AUTOUPDATE=1
+  fi
   bin="$(PATH="$search" type -P "$2" || true)"
 
   if [[ -f .nvmrc ]]; then
@@ -107,7 +111,7 @@ launcher_executable() {
   case "$1" in
     cursor) printf 'agent\n' ;;
     antigravity) printf 'agy\n' ;;
-    claude|codex|gemini|muse) printf '%s\n' "$1" ;;
+    claude|codex|gemini|muse|opencode) printf '%s\n' "$1" ;;
     *) return 1 ;;
   esac
 }
@@ -118,7 +122,7 @@ launcher_executable() {
 # flags are recorded; setup scripts and the post-merge hook both read them here.
 #
 # Claude, Codex, Cursor and Antigravity accept --add-dir for extra roots;
-# Muse and Gemini do not receive these flags. The coord_grant array is
+# Muse, Gemini and OpenCode do not receive these flags. The coord_grant array is
 # computed by the generated launcher at exec time
 # (see write_launcher); it is empty when there is no current issue. The
 # expansion is written as ${a[@]+"${a[@]}"} because macOS /bin/bash is 3.2,
@@ -162,6 +166,12 @@ launcher_command() {
       # No mailbox grant: gemini is not a configured coordination harness and
       # has no completion receipt to write.
       printf 'exec "${coord_agent_cmd[@]}"\n'
+      ;;
+    opencode)
+      # Interactive, pull-only participant. --model is supplied by tmux or the
+      # owner as argv; preserve native permission configuration and prompts for
+      # external receipt/input paths. No --add-dir or native hook integration.
+      printf 'exec "${coord_agent_cmd[@]}" "$@"\n'
       ;;
     muse)
       # Automatic participant without lifecycle hooks: Muse's sandbox protects .git, blocking the

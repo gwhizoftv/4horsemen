@@ -354,6 +354,94 @@ hooks:
 - **Containment:** Muse's own `git status --porcelain` request was refused by
   the PATH Git shim.
 
+### OpenCode and OpenRouter
+
+OpenCode is an opt-in participant with attended, pull-only delivery. Install
+OpenCode first, then include it explicitly when onboarding or installing:
+
+```sh
+coord onboard /path/to/app --agents codex,opencode
+```
+
+The default roster does not include OpenCode. Its generated start-opencode.sh
+opens the interactive CLI in its own clone and tmux window. The launcher uses
+the shared executable lookup (coordination's Node directory and the owner's
+PATH), with ~/.opencode/bin as an additional fallback. Fresh issue startup records
+the installed version using `opencode --version`; coordination skips automatic
+upgrades and sets `OPENCODE_DISABLE_AUTOUPDATE=1` for the process.
+
+In the OpenCode window, run `/connect`, choose OpenRouter, and enter your provider
+key. Run `/models` to select a tool-capable model available to your account.
+OpenRouter is OpenCode's provider, so the coordinator agent id stays `opencode`.
+Credentials remain in OpenCode's own authentication storage. See the upstream
+[OpenRouter setup](https://opencode.ai/docs/providers/#openrouter).
+
+For a repeatable model selection, edit the OpenCode entry in runtime config.json
+before starting an issue. Keep the generated root and launcher values. This
+illustrative entry uses a model placeholder; replace it with the **complete** id
+reported by `opencode models openrouter`:
+
+```json
+{
+  "id": "opencode",
+  "root": "/path/to/app-opencode",
+  "launcher": "start-opencode.sh",
+  "delivery": "pull",
+  "harnessProcess": "opencode",
+  "model": "openrouter/provider/model:free",
+  "nudgePrelude": [],
+  "nudgeSubmit": ["Enter"],
+  "terminalProfile": "Basic"
+}
+```
+
+The optional `model` field is supported only for OpenCode. It accepts a provider
+and model separated by `/`, including further slashes and suffixes such as
+`:free` or `:nitro`, without whitespace or control characters. Coordination
+validates that shape; OpenCode validates whether the provider/model exists.
+The model is passed as one literal `--model` argument, and is preserved when
+reinstalling a selected OpenCode agent. Delete the field to return to OpenCode's
+own selection defaults. No OpenCode configuration file is generated or rewritten.
+
+An issue freezes its model with the rest of its agent configuration. Changing
+runtime config.json affects future issues; restarting a dead pane in an existing
+issue reapplies that issue's model. `/models` may change the current interactive
+session. If `model` is omitted, no model option is passed and OpenCode uses its
+native configuration/selection behavior. A directly invoked start-opencode.sh
+does not read the runtime model; pass `--model` explicitly for that invocation.
+These options are described in the [OpenCode CLI reference](https://opencode.ai/docs/cli/).
+
+Pull delivery means coordination publishes action.md but does not type actions
+automatically, including after a ready receipt. Once provider setup is finished,
+ask OpenCode to read and execute the output of `coord next --issue N`. For each
+later action, repeat that instruction or use the coordinator's `n` owner reminder
+menu at OpenCode's normal prompt. Owner reminders send the action text and Enter
+without a vim letter or Escape. Intentional custom nudge keys are respected.
+Owner reminders bypass automatic prompt checks, so do not send them into a
+provider picker, permission dialog, or a running turn. OpenCode nudge/both
+delivery is rejected until an automatic terminal adapter is implemented.
+
+OpenCode's permission settings, including an inherited `OPENCODE_PERMISSION`,
+are preserved. The launcher does not add permission overrides or pass another
+vendor's --add-dir flags. Native policy may ask for access to the completion
+mailbox, the agent's response directory, and bound inputs/worktrees, as well as
+Git commands or checks. Approve the needed operations in the attended session
+or configure the specific paths through OpenCode's own permission settings.
+Session-only approvals may need renewing after a restart. See the upstream
+[permissions reference](https://opencode.ai/docs/permissions/). Leave provider
+keys and permission policy out of the coordinator's model entry.
+
+The existing AGENTS.md overlay supplies coordination instructions; do not run
+OpenCode's /init over it. Git-mode completion still requires a pushed commit and
+complete/ready receipts, and ballots still use their private response files.
+OpenCode has no coordinator lifecycle hooks, transcript/usage reader, or quota
+recovery. The PATH Git shim is installed, but its resolution and actual refusal
+must be measured through the normal containment probe; native hook coverage is
+unverified. No live OpenCode version or OpenRouter account was available during
+this integration's tests. Launcher, model transport, and owner sends are tested
+with isolated stubs; provider authentication and live TUI behavior remain an
+owner-attended smoke check.
+
 ### Agent editor modes
 
 Install/onboard set Claude's clone-local `.claude/settings.local.json` to
