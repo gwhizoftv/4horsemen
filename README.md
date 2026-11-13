@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/new-coord-banner.jpg" width="100%" alt="Four Horsemen: four coding agents collaborating around a shared software project">
+  <img src="docs/images/new-coord-banner.png" width="100%" alt="Four Horsemen: four coding agents collaborating around a shared software project">
 </p>
 
 # Four Horsemen
