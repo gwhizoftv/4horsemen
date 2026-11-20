@@ -1,0 +1,14 @@
+{
+  "actionId": "c76dc9a0-a09c-4fe2-bdfc-4e73cba98e3d",
+  "agent": "antigravity",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "3709caba181616f90211724878dd518315c8bf14dbab41623f0ffe9349ebe759",
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "protocolVersion": 2,
+  "rationale": "Revision 46094757 preserves the clean two-file session-scoped copy-command fix without global keybindings or mouse regressions, reuses runTmux with an isolated environment, tests both startSession and ensureSession across all seven supported agents and copy-command edge cases, and deterministically synchronizes the unrelated-session isolation check.",
+  "responseSha256": "7770745f9f61cb21921e164fb04839a7258dea89df5e9724bbe257a0d03b700b",
+  "revisionCommitSha": "4609475722c89dcfe32690744e5f53ab73fc3aee",
+  "round": 1
+}

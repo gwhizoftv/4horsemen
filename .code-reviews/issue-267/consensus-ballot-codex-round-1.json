@@ -1,0 +1,14 @@
+{
+  "actionId": "cae056f2-116d-4174-9df8-c5340ed9f23f",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "3709caba181616f90211724878dd518315c8bf14dbab41623f0ffe9349ebe759",
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "protocolVersion": 2,
+  "rationale": "The revision needs window-scoped clipboard writes and drag-and-release tests in all seven linked clients because Muse, Antigravity, Gemini and OpenCode bypass the copy command while the control window can write to the clipboard.",
+  "responseSha256": "b6ddc533799229fbf3ea54f160387f6a7e1b4ca512611e36cf34e07abc696bad",
+  "revisionCommitSha": "4609475722c89dcfe32690744e5f53ab73fc3aee",
+  "round": 1
+}

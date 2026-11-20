@@ -1,0 +1,14 @@
+{
+  "actionId": "dafa4369-4997-42f2-ae8b-23c5acaeebdd",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "3709caba181616f90211724878dd518315c8bf14dbab41623f0ffe9349ebe759",
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "protocolVersion": 2,
+  "rationale": "Antigravity's revision 46094757 keeps the selected env-scoped, owner-preserving copy-command fix unchanged, replaces the fixed 250 ms negative-copy sleep with a completion marker, reuses runTmux through a backward-compatible optional env parameter instead of a duplicated spawn runner, extends the guard cases to startSession, and its recorded hook check:fast and test:e2e runs passed.",
+  "responseSha256": "d5fab17c26ea9ade471c168055eeee29f68e0bd0a61c9c26a3bd0c7f1a5a4d74",
+  "revisionCommitSha": "4609475722c89dcfe32690744e5f53ab73fc3aee",
+  "round": 1
+}
