@@ -1775,15 +1775,18 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
     const runner: TmuxRunner = (args, input) => runTmux(["-L", socket, "-f", "/dev/null", ...args], input, cleanEnv);
     const allIds = ["codex", "cursor", "claude", "antigravity", "muse", "gemini", "opencode"] as const;
     const agents = allIds.map((id) => {
-      writeFileSync(join(clone, `start-${id}.sh`), `#!/bin/sh\nprintf '${id}-drag-selection\\n'\nexec sleep 60\n`, { mode: 0o700 });
+      const prefix = id === "codex"
+        ? "printf 'codex-scrollback-history\\n'; i=0; while [ $i -lt 40 ]; do echo filler-$i; i=$((i+1)); done\n"
+        : "";
+      writeFileSync(join(clone, `start-${id}.sh`), `#!/bin/sh\n${prefix}printf '${id}-drag-selection\\n'\nexec sleep 60\n`, { mode: 0o700 });
       return { id, root: clone, launcher: `start-${id}.sh`, delivery: "both" as const };
     });
     const sink = `cat > '${clipFile.replaceAll("'", "'\\''")}'`;
     const controller = new TmuxController(runner, null, null, null, noopSleep, "grp", null, sink);
-    const copyFirstLine = async (target: string): Promise<void> => {
+    const copyLine = async (target: string, motion: "top-line" | "history-top" = "top-line"): Promise<void> => {
       const copied = await runner([
         "copy-mode", "-t", target,
-        ";", "send-keys", "-t", target, "-X", "top-line",
+        ";", "send-keys", "-t", target, "-X", motion,
         ";", "send-keys", "-t", target, "-X", "begin-selection",
         ";", "send-keys", "-t", target, "-X", "end-of-line",
         ";", "send-keys", "-t", target, "-X", "copy-pipe-and-cancel"
@@ -1792,6 +1795,7 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
     };
     try {
       await runner(["new-session", "-d", "-s", "hook-holder", "printf 'unrelated-session-text\\n'; exec sleep 60"]);
+      const stockRootKeys = (await runner(["list-keys", "-T", "root"])).stdout;
       await controller.startSession(9, agents);
       // Wait for all seven panes to print their marker line.
       for (const id of allIds) {
@@ -1801,21 +1805,36 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
       await expect.poll(async () => (await runner(["capture-pane", "-p", "-t", "hook-holder"])).stdout, { timeout: 4000 })
         .toContain("unrelated-session-text");
 
-      // Create pre-existing linked clients for all seven agents, then repair them via ensureSession.
+      // Exercise both paths: fresh agentClientAttachCommand for cursor and ensureSession repair for the rest.
+      const cursorAttachArgs = agentClientAttachCommand("coord-9", "cursor")
+        .split(" ';' ")
+        .filter((part) => part !== "set-option destroy-unattached on")
+        .flatMap((part, index) => {
+          const tokens = (index === 0 ? part.replace(/^tmux /, "").replace(" -A ", " -d ") : part).split(" ");
+          return index === 0 ? tokens : [";", ...tokens];
+        });
+      const freshCursor = await runner(cursorAttachArgs);
+      expect(freshCursor.exitCode, freshCursor.stderr).toBe(0);
       for (const id of allIds) {
+        if (id === "cursor") continue;
         const linked = await runner(["new-session", "-d", "-s", `coord-9-${id}`, "-t", "coord-9", ";", "select-window", "-t", `coord-9-${id}:${id}`]);
         expect(linked.exitCode, linked.stderr).toBe(0);
       }
       await controller.ensureSession(9, agents);
 
+      // Server root key table (including MouseDrag1Pane for mouse-tracking apps like Claude/OpenCode) stays untouched.
+      expect((await runner(["list-keys", "-T", "root"])).stdout).toBe(stockRootKeys);
+
       // All seven linked agent clients copy to the clipboard sink and exit copy-mode;
       // mouse stays on for codex/cursor/claude and off for native-selection clients.
       for (const id of allIds) {
         const expectedMouse = ["codex", "cursor", "claude"].includes(id) ? "1" : "0";
-        expect((await runner(["display-message", "-p", "-t", `coord-9-${id}`, "#{mouse}"])).stdout.trim()).toBe(expectedMouse);
+        expect((await runner(["display-message", "-p", "-t", `coord-9-${id}`, "#{mouse} #{history_limit}"])).stdout.trim())
+          .toBe(`${expectedMouse} 50000`);
         writeFileSync(clipFile, "before-copy");
-        await copyFirstLine(`coord-9-${id}`);
-        await expect.poll(() => readFileSync(clipFile, "utf8"), { timeout: 4000 }).toBe(`${id}-drag-selection`);
+        await copyLine(`coord-9-${id}`, id === "codex" ? "history-top" : "top-line");
+        const expectedText = id === "codex" ? "codex-scrollback-history" : `${id}-drag-selection`;
+        await expect.poll(() => readFileSync(clipFile, "utf8"), { timeout: 4000 }).toBe(expectedText);
         expect((await runner(["display-message", "-p", "-t", `coord-9-${id}`, "#{pane_in_mode}"])).stdout.trim()).toBe("0");
       }
 
@@ -1827,7 +1846,7 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
         const doneFile = join(root, markerName);
         await runner(["set-option", "-s", "copy-command", `${installedCopy}; printf done > '${doneFile.replaceAll("'", "'\\''")}'`]);
         writeFileSync(clipFile, "sentinel-untouched");
-        await copyFirstLine(target);
+        await copyLine(target);
         await expect.poll(() => existsSync(doneFile), { timeout: 4000 }).toBe(true);
         expect(readFileSync(clipFile, "utf8")).toBe("sentinel-untouched");
         expect((await runner(["show-buffer"])).stdout).toContain(expectedBuffer);

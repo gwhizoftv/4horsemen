@@ -1011,7 +1011,7 @@ export class TmuxController {
 
   /**
    * Configure tmux's server-level `copy-command` when unset so copy-mode drags
-   * in coord's mouse-enabled sessions reach the macOS pasteboard without
+   * in coord's linked agent clients reach the macOS pasteboard without
    * overwriting owner `~/.tmux.conf` settings or affecting unrelated sessions.
    */
   private async configureServerCopyCommand(assertAuthority: () => void = () => undefined): Promise<void> {
