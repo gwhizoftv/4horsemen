@@ -18,7 +18,8 @@ import {
 } from "../src/verificationReceipts.js";
 import { runVerification, type RunVerificationInput } from "../src/verificationRunner.js";
 import { runArgv } from "../src/runLoop.js";
-import { runVerifyPhase } from "../src/hookPolicy.js";
+import { verificationEnvironment } from "../src/verificationEnvironment.js";
+import { HookPolicyError, runVerifyPhase, unresolvableCommands } from "../src/hookPolicy.js";
 import { git } from "./support/workspaceFixture.js";
 import { sha256 } from "../src/hash.js";
 
@@ -203,6 +204,38 @@ describe("dependency identity", () => {
 });
 
 describe("verification runner", () => {
+  it("resolves installed partial Node pins and reports an unavailable pin to doctor and hooks", () => {
+    const { root, seed } = setup();
+    const pin = join(seed, ".nvmrc");
+    const nvm = join(root, "nvm");
+    const pathBin = join(root, "bin");
+    const env = { PATH: pathBin, NVM_DIR: nvm };
+    writeFileSync(pin, process.versions.node.split(".")[0]!);
+    expect(verificationEnvironment(seed, env).node).toBe(process.version);
+
+    const nvmBin = join(nvm, "versions/node/v97.12.1/bin");
+    for (const [dir, version] of [[pathBin, "v97.123.1"], [nvmBin, "v97.12.1"]] as const) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "node"), `#!/bin/sh\necho ${version}\n`, { mode: 0o700 });
+    }
+    writeFileSync(pin, "97");
+    expect(verificationEnvironment(seed, env).node).toBe("v97.123.1");
+    writeFileSync(pin, "v97.12");
+    expect(verificationEnvironment(seed, env)).toMatchObject({ node: "v97.12.1", env: { PATH: `${nvmBin}:${pathBin}` } });
+
+    writeFileSync(pin, "99.99.99");
+    vi.stubEnv("NVM_DIR", nvm);
+    vi.stubEnv("PATH", pathBin);
+    try {
+      const check = { name: "compile", argv: ["some-missing-compiler"] };
+      const config = coordinatorConfigSchema.parse({ project: "fixture", origin: seed, branch: "issue-{issue}/{agent}",
+        agents: [{ id: "codex", root: seed, launcher: "start-codex.sh", delivery: "pull" }],
+        checks: [check], verify: { precommit: [check], prepush: [] } });
+      expect(unresolvableCommands(config, seed)).toEqual(["node (99.99.99 required by .nvmrc)", "some-missing-compiler"]);
+      expect(() => runVerifyPhase({ clone: seed, config, phase: "precommit", log: () => {} })).toThrow(HookPolicyError);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("uses the pinned Node in pnpm scripts in hooks, candidate and final checks", async () => {
     const { root, seed, paths, input } = setup();
     const older = join(root, "old");

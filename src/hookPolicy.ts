@@ -1,4 +1,4 @@
-import { verificationEnvironment } from "./verificationEnvironment.js";
+import { NodePinError, verificationEnvironment } from "./verificationEnvironment.js";
 import { NO_CHECKS } from "./projectChecks.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
@@ -128,7 +128,11 @@ export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): st
   ];
   const missing = new Set<string>();
   if (!commands.length) return [];
-  const { env } = verificationEnvironment(cwd);
+  let env = process.env;
+  try { env = verificationEnvironment(cwd).env; }
+  catch (error) {
+    missing.add(error instanceof NodePinError ? error.requirement : "node (unreadable project toolchain)");
+  }
   for (const command of commands) {
     const executable = command.argv[0] as string;
     if (!resolves(executable, cwd, env)) missing.add(executable);
@@ -311,7 +315,9 @@ export const runVerifyPhase = (input: {
     record(null, new Date().toISOString(), 0);
     return { ok: true };
   }
-  const { env } = verificationEnvironment(input.clone);
+  let env: NodeJS.ProcessEnv;
+  try { env = verificationEnvironment(input.clone).env; }
+  catch (error) { throw new HookPolicyError(error instanceof Error ? error.message : String(error)); }
   for (const command of commands) {
     input.log(`coord ${input.phase}: ${command.name} — ${command.argv.join(" ")}\n`);
     const startedAt = new Date().toISOString();

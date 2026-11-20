@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -3514,15 +3514,10 @@ describe("coordinator verification gates", () => {
     const calls: string[] = [];
     let failing: string | null = null;
     const processRunner = async (argv: readonly string[], cwd: string) => {
-      if (argv[0] === "native") {
-        expect(cwd).not.toBe(seed);
-        if (readFileSync(join(cwd, "src/a.ts"), "utf8") === "baseline\n") {
-          return { exitCode: 1, stdout: "", stderr: "native entry point missing on baseline" };
-        }
-      }
+      if (argv[0] === "native") expect(cwd).not.toBe(seed);
       calls.push(argv[0]!);
       if (argv[0] === "probe") return { exitCode: 0, stdout: "probe 1.0\n", stderr: "" };
-      return argv[0] === failing ? { exitCode: 1, stdout: "", stderr: `${argv[0]} broke` } : { exitCode: 0, stdout: "ok", stderr: "" };
+      return argv[0] === failing ? { exitCode: 1, stdout: "", stderr: failing === "native" ? "ERR_PNPM_NO_SCRIPT Missing script: test:new" : `${argv[0]} broke` } : { exitCode: 0, stdout: "ok", stderr: "" };
     };
     const loop = () => new CoordinatorRunLoop(paths, { tmux: null, mirror: new BareMirror(paths.mirror, seed), processRunner });
     const observe = (stepId: "R4.implement" | "R6.revise", productPin: string) => {
@@ -3533,7 +3528,7 @@ describe("coordinator verification gates", () => {
     return { paths, seed, calls, loop, observe, implementationPin, consensusSha, finalSha, fail: (name: string | null) => { failing = name; } };
   };
 
-  it.each(["pass", "different", "generic", "details"] as const)("keeps the actionable final diagnostic and routes %s baseline evidence to correction", async mode => {
+  it.each(["pass", "different", "generic", "details", "shared"] as const)("keeps the actionable final diagnostic and routes %s baseline evidence", async mode => {
     const { seed, paths, consensusSha, finalSha } = gateFixture("local");
     const start = { ...readStartState(paths), checks: [{ name: "compile", argv: ["compile"] }] };
     const cursors = readCursorsState(paths);
@@ -3545,14 +3540,19 @@ describe("coordinator verification gates", () => {
         const baseline = git(cwd, "rev-parse", "HEAD") === start.baselineSha;
         const diagnostic = mode === "generic" ? "An unexpected error occurred"
           : mode === "details" ? `compiler error A\n  expected ${baseline ? "B" : "A"}`
+          : mode === "shared" ? `TypeError: items is not iterable at ${baseline ? realpathSync(cwd) : cwd}/compile.js`
           : `compiler error ${baseline ? "B" : "A"}`;
-        return { exitCode: baseline && mode === "pass" ? 0 : 1, stderr: "build failed", stdout: diagnostic + "\n" + progress };
+        const noise = baseline ? " ✓ test/a.test.ts (2 tests) 9ms" : " ✓ test/a.test.ts (3 tests) 12ms";
+        const prefix = baseline ? "[12:30:16] [3/4]" : "[12:30:12] [2/4]";
+        return { exitCode: baseline && mode === "pass" ? 0 : 1, stderr: "build failed",
+          stdout: `${progress}${noise}\n${prefix} ${diagnostic}\r${progress}` };
       } });
     const result = await loop.verifyFinalizationChecks(start, order, { agent: "codex", actionId: order.actionId,
       submissionSha: "e".repeat(40), productPin: finalSha, status: "satisfied", outstanding: [] }, cursors);
-    expect(result.status).toBe("rejected");
+    expect(result.status).toBe(mode === "shared" ? "retry" : "rejected");
     expect(result.outstanding[0]!.length).toBeLessThan(2500);
-    if (mode !== "generic") expect(result.outstanding[0]).toContain("compiler error A");
+    if (mode === "shared") expect(result.finalRetry?.candidateExcerpt).toContain("TypeError: items is not iterable at {worktree}/compile.js");
+    else if (mode !== "generic") expect(result.outstanding[0]).toContain("compiler error A");
     if (mode === "different") expect(result.outstanding[1]).toContain("compiler error B");
     const log = /\(log: (.*?)\)/.exec(result.outstanding[0]!)![1]!;
     expect(readFileSync(log, "utf8")).toContain(progress);
@@ -3603,6 +3603,15 @@ describe("coordinator verification gates", () => {
     expect(open).not.toHaveBeenCalled();
     writeFileSync(tool, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     setOwnerPause(paths, false);
+    const resumed = readCursorsState(paths);
+    const pending = renderIssueReport(start, resumed);
+    expect(pending).toContain(paused.finalRetry!.candidateLog);
+    expect(pending).toContain(paused.finalRetry!.baselineLog);
+    expect(pending).toContain(finalSha);
+    expect(pending).toContain("verification of the approved commit is pending");
+    expect(pending).not.toContain("Repair the shared failure");
+    expect(renderIssueReport(start, { ...resumed, finalRetry: { ...paused.finalRetry!, actionId: actionIdFor("retired") } }))
+      .not.toContain(paused.finalRetry!.candidateLog);
     const done = await tick();
     expect(done.finalRetry).toBeUndefined();
     expect(done.accepted.find(a => a.stepId === "R7.finalize")).toMatchObject({ submissionSha, productPin: finalSha });
@@ -3652,7 +3661,10 @@ describe("coordinator verification gates", () => {
     expect(readFileSync(gate.paths.start, "utf8")).toBe(frozenBytes);
     expect(await gate.loop()["prepareCheckAmendment"](start, order, observation, cursors)).toEqual(cursors);
     gate.fail("native");
-    expect((await loop.verifyFinalizationChecks(start, order, observation, cursors)).status).toBe("rejected");
+    const failedCheck = await loop.verifyFinalizationChecks(start, order, observation, cursors);
+    expect(failedCheck.status).toBe("rejected");
+    expect(failedCheck.outstanding.join(" ")).toContain("Missing script: test:new");
+    expect(readJournal(gate.paths).filter(event => event.type === "baseline-check")).toHaveLength(0);
     gate.fail(null);
     const verified = await gate.loop().verifyFinalizationChecks(start, order, observation, cursors);
     expect(verified).toMatchObject({ status: "satisfied", policyDigest: cursors.checkAmendments![0]!.policyDigest });

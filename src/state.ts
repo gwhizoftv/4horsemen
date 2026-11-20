@@ -1403,6 +1403,15 @@ export const acquireExclusiveLock = (lockPath: string): number => {
   throw new Error(`Timed out waiting for coordinator state lock ${lockPath}.`);
 };
 
+export const currentFinalRetry = (cursors: CursorsState) => {
+  const retry = cursors.finalRetry;
+  if (!retry || cursors.completed || cursors.abandoned || cursors.issueCursor.stepId !== "R7.finalize" ||
+      !cursors.activeRoster.includes(retry.agent)) return undefined;
+  const cursor = cursors.agents[retry.agent];
+  return cursor?.stepId === "R7.finalize" && cursor.actionId === retry.actionId && cursor.submissionSha === retry.submissionSha
+    ? retry : undefined;
+};
+
 /**
  * Apply one short local state transition under an exclusive lock. Slow Git,
  * tmux, check, and publication effects must happen outside this callback and
@@ -1420,13 +1429,8 @@ export const mutateCursorsState = (
       return { applied: false, state: current };
     }
     const candidate = mutation(current);
-    const retry = candidate.finalRetry;
-    const retryCursor = retry && candidate.agents[retry.agent];
-    const retired = retry && (candidate.completed || candidate.abandoned || candidate.issueCursor.stepId !== "R7.finalize" ||
-      retryCursor?.actionId !== retry.actionId || retryCursor.submissionSha !== retry.submissionSha);
     const state = cursorsStateSchema.parse({
-      ...candidate,
-      ...(retired ? { finalRetry: undefined } : {}),
+      ...candidate, finalRetry: currentFinalRetry(candidate),
       stateRevision: current.stateRevision + 1
     });
     writeCursorsState(paths, state);

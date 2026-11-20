@@ -2924,6 +2924,9 @@ export class CoordinatorRunLoop {
         return { ...observation, status: "rejected", outstanding: [summary, detail] };
       };
       if (checked.modified) return rejection("The command or its probes modified tracked inputs.");
+      if (checked.results.length > selected.commands.length) {
+        return rejection(`Check ${checked.failed.name} was added by this issue and does not apply to the frozen baseline.`);
+      }
       if (!await this.mirror.commitExists(start.baselineSha)) return rejection(`Frozen baseline ${start.baselineSha} is unavailable for comparison.`);
       const baseline = await this.runGateVerification(start, order, cursors, "finalization", start.baselineSha, selected,
         commands.slice(0, checked.results.length), policyDigest, { execution: "baseline", environment: checked.environment });
@@ -3531,7 +3534,7 @@ export class CoordinatorRunLoop {
           appendJournal(this.paths, { type: "paused", agent, actionId: order.actionId, details: { finalRetry: pending } }, now);
           return setPaused({ ...current, finalRetry: pending }, true, now);
         });
-        this.log(finalRetryMessage(start, pending));
+        this.log(finalRetryMessage(start, pending, true));
         return paused;
       }
       observation = final;

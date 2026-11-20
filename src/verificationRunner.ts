@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
 import { verificationEnvironment } from "./verificationEnvironment.js";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { hermeticGitEnv } from "./mirror.js";
 import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.js";
 import type { ProcessResult, ProcessRunner } from "./runLoop.js";
@@ -71,34 +71,46 @@ export type RunVerificationResult =
   | { status: "waiting"; results: CheckResult[]; waitingFor: string };
 
 /** Choose display lines before truncating. Compare the complete evidence, never the excerpt. */
-const failureDiagnostics = (result: ProcessResult, worktree: string) => {
+const failureDiagnostics = (result: ProcessResult, worktree: string, canonicalWorktree: string) => {
+  const roots = [...new Set([worktree, canonicalWorktree])].sort((a, b) => b.length - a.length);
   const specific: string[] = [];
-  const identity = new Set<string>();
-  const details = new Set<string>();
+  const diagnostics: string[][] = [];
   const fallback: string[] = [];
   for (const stream of ["stdout", "stderr"] as const) {
+    let current: string[] | undefined;
     for (const raw of stripVTControlCharacters(result[stream]).split(/[\r\n]+/)) {
-      const line = raw.trim().replaceAll(worktree, "{worktree}");
+      let line = raw.trim();
+      for (const root of roots) line = line.replaceAll(root, "{worktree}");
       if (!line) continue;
       const tagged = `[${stream}] ${line}`;
       if (fallback.length < 8) fallback.push(tagged);
-      const message = line.replace(/^(?:npm\s+)?(?:\[?(?:error|fatal)\]?:?)(?:\s+|$)/i, "");
-      if (!message || /^(?:(?:an? |unknown |unexpected |fatal |internal )*error(?: occurred)?|something went wrong|operation failed)[.!:]?$/i.test(message)) continue;
-      if (/^(?:progress\b|\d+%|\[\d+\/\d+\])|^.*\bELIFECYCLE\b/i.test(line) ||
+      // Strip presentation prefixes before classifying the remaining payload.
+      const payload = line.replace(/^\[?(?:\d{4}-\d\d-\d\d[T ])?\d\d:\d\d:\d\d(?:\.\d+)?Z?\]?\s+/, "")
+        .replace(/^(?:(?:progress\s*:?\s*)?(?:\[\d+\/\d+\]|\d+%)\s*)+/i, "");
+      const message = payload.replace(/^(?:npm\s+)?(?:\[?(?:error|fatal)\]?:?)(?:\s+|$)/i, "");
+      if (!message || /^[✓✔]|^progress\b|\bELIFECYCLE\b/i.test(message) ||
+          /^(?:(?:an? |unknown |unexpected |fatal |internal )*error(?: occurred)?|something went wrong|operation failed)[.!:]?$/i.test(message) ||
           /^(?:(?:build|test|check|command|script|compilation)\s+)?(?:failed|failure|error)(?:[.!:]| with exit code \d+[.!]?)?$/i.test(message) ||
-          /^(?:(?:command|process) (?:exited|terminated|completed) with (?:exit )?)?code \d+\.?$/i.test(message)) continue;
-      // Preserve assertion values, source locations and multiline compiler details.
-      // Two runs can share an error heading but have different lines underneath.
-      if (/^\s|^[+-]|^(?:expected|received|actual)\b/i.test(raw)) details.add(line);
-      if (/\b(?:error|fatal|exception|panic|missing|cannot|denied|ENOENT|EACCES|TS\d+|assertionerror)\b|not found|no such file/i.test(line)) {
+          /^(?:(?:command|process) (?:exited|terminated|completed) with (?:exit )?)?code \d+\.?$/i.test(message)) {
+        current = undefined;
+        continue;
+      }
+      if (/\b(?:[a-z]*error|fatal|exception|panic|missing|cannot|denied|ENOENT|EACCES|TS\d+)\b|not found|no such file/i.test(payload)) {
         if (specific.length < 8) specific.push(tagged);
-        identity.add(line);
+        current = [payload];
+        diagnostics.push(current);
+      } else if (current && (/^\s/.test(raw) || /^[+-]|^(?:expected|received|actual)\b/i.test(payload))) {
+        // Keep continuation values attached to the diagnostic they explain.
+        current.push(payload);
+      } else {
+        current = undefined;
       }
     }
   }
   const excerpt = [...specific, ...fallback.filter(line => !specific.includes(line))].slice(0, 8)
     .map(line => line.slice(0, 512)).join("\n").slice(0, 2048);
-  return { excerpt, signature: identity.size ? JSON.stringify([result.exitCode, [...identity].sort(), [...details].sort()]) : null };
+  const identity = [...new Set(diagnostics.map(lines => lines.join("\n")))].sort();
+  return { excerpt, signature: identity.length ? JSON.stringify([result.exitCode, identity]) : null };
 };
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -208,6 +220,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
     checkpoint();
     // Every command below must leave tracked files as the pin has them, so a
     // later command, and any receipt it reuses or writes, always sees the pin.
+    const canonicalWorktree = realpathSync(target);
     if (!trackedInputsClean(target)) throw new Error(`Verification worktree for ${input.pin} does not match its pin.`);
     if (input.execution !== "baseline" && (!input.environment || existsSync(containedPath(target, ".nvmrc")))) {
       environment = { ...environment, ...verificationEnvironment(target, environment.env) };
@@ -330,7 +343,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
         progress(`[ACTION] Verification failed: ${failure} (log: ${first.logPath}).`);
         const notes = [first.result.exitCode !== 0 && first.modified ? "it also modified tracked files" : null, retryNote]
           .filter((entry): entry is string => entry !== null);
-        return { status: "failed", results, failed, failure, stderr: first.result.stderr, ...failureDiagnostics(first.result, target), modified: first.modified, environment, note: notes.length === 0 ? null : notes.join("; ") };
+        return { status: "failed", results, failed, failure, stderr: first.result.stderr, ...failureDiagnostics(first.result, target, canonicalWorktree), modified: first.modified, environment, note: notes.length === 0 ? null : notes.join("; ") };
       }
       // A receipt certifies the inputs the command actually ran against: the
       // declared dependencies must still be what the key recorded.
