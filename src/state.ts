@@ -822,6 +822,12 @@ export const cursorsStateSchema = z
     pendingAmendment: pendingAmendmentSchema.nullable().default(null),
     amendments: z.array(amendmentDecisionSchema).default([]),
     checkAmendments: z.array(checkAmendmentSchema).optional(),
+    finalRetry: z.object({
+      issueSessionId: z.string(), actionId: actionIdSchema, agent: agentIdSchema, submissionSha: gitShaSchema,
+      consensusSha: gitShaSchema, finalSha: gitShaSchema, baselineSha: gitShaSchema, policyDigest: digestSchema,
+      command: z.string(), candidateExcerpt: z.string(), baselineExcerpt: z.string(),
+      candidateLog: z.string(), baselineLog: z.string()
+    }).strict().optional(),
     // Durable cleanup intent: never delete an old request before its transition is saved.
     amendmentRetirements: z.array(z.object({ agent: agentIdSchema, actionId: z.string().uuid() }).strict()).default([]),
     ownerQuestion: z
@@ -902,6 +908,7 @@ const journalEventTypeSchema = z.enum([
   "action-restarted",
   "abandoned",
   "final-check",
+  "baseline-check",
   "verification-run",
   "candidate-check",
   "verification-reused",
@@ -1413,8 +1420,13 @@ export const mutateCursorsState = (
       return { applied: false, state: current };
     }
     const candidate = mutation(current);
+    const retry = candidate.finalRetry;
+    const retryCursor = retry && candidate.agents[retry.agent];
+    const retired = retry && (candidate.completed || candidate.abandoned || candidate.issueCursor.stepId !== "R7.finalize" ||
+      retryCursor?.actionId !== retry.actionId || retryCursor.submissionSha !== retry.submissionSha);
     const state = cursorsStateSchema.parse({
       ...candidate,
+      ...(retired ? { finalRetry: undefined } : {}),
       stateRevision: current.stateRevision + 1
     });
     writeCursorsState(paths, state);

@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { stripVTControlCharacters } from "node:util";
+import { verificationEnvironment } from "./verificationEnvironment.js";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { hermeticGitEnv } from "./mirror.js";
 import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.js";
 import type { ProcessResult, ProcessRunner } from "./runLoop.js";
@@ -31,7 +33,7 @@ import {
  * inputs unchanged. Diagnostic retries never turn a failure green.
  */
 
-export type VerificationJournal = (type: "verification-run" | "final-check" | "verification-reused" | "verification-joined",
+export type VerificationJournal = (type: "verification-run" | "baseline-check" | "final-check" | "verification-reused" | "verification-joined",
   details: Record<string, unknown>, at: string) => void;
 
 export type RunVerificationInput = {
@@ -47,6 +49,8 @@ export type RunVerificationInput = {
   /** Operator progress only; verification decisions continue to use receipts and checkpoints. */
   progress?: (message: string) => void;
   phase: "candidate" | "finalization";
+  /** A baseline is diagnostic only. A resumed final gate must execute afresh. */
+  execution?: "baseline" | "fresh";
   pin: string;
   classification: { kind: "coordination" | "documentation" | "product"; reason: string; inputIdentity: string };
   commands: readonly CheckCommand[];
@@ -59,9 +63,39 @@ export type RunVerificationInput = {
 
 export type RunVerificationResult =
   | { status: "passed"; results: CheckResult[] }
-  | { status: "failed"; results: CheckResult[]; failed: CheckResult; failure: string; stderr: string; note: string | null }
+  | {
+      status: "failed"; results: CheckResult[]; failed: CheckResult; failure: string; stderr: string; note: string | null;
+      excerpt: string; signature: string | null; modified: boolean; environment: NonNullable<RunVerificationInput["environment"]>;
+    }
   /** Another live runner still holds this input's key: re-evaluate later rather than run unlocked. */
   | { status: "waiting"; results: CheckResult[]; waitingFor: string };
+
+/** Choose display lines before truncating. Compare the complete evidence, never the excerpt. */
+const failureDiagnostics = (result: ProcessResult, worktree: string) => {
+  const specific: string[] = [];
+  const identity = new Set<string>();
+  const fallback: string[] = [];
+  for (const stream of ["stdout", "stderr"] as const) {
+    for (const raw of stripVTControlCharacters(result[stream]).split(/[\r\n]+/)) {
+      const line = raw.trim().replaceAll(worktree, "{worktree}");
+      if (!line) continue;
+      const tagged = `[${stream}] ${line}`;
+      if (fallback.length < 8) fallback.push(tagged);
+      const message = line.replace(/^(?:npm\s+)?(?:\[?(?:error|fatal)\]?:?)(?:\s+|$)/i, "");
+      if (!message) continue;
+      if (/^(?:progress\b|\d+%|\[\d+\/\d+\])|^.*\bELIFECYCLE\b/i.test(line) ||
+          /^(?:(?:build|test|check|command|script|compilation)\s+)?(?:failed|failure|error)(?:[.!:]| with exit code \d+[.!]?)?$/i.test(message) ||
+          /^(?:(?:command|process) (?:exited|terminated|completed) with (?:exit )?)?code \d+\.?$/i.test(message)) continue;
+      if (/\b(?:error|fatal|exception|panic|missing|cannot|denied|ENOENT|EACCES|TS\d+|assertionerror)\b|not found|no such file/i.test(line)) {
+        if (specific.length < 8) specific.push(tagged);
+        identity.add(line);
+      }
+    }
+  }
+  const excerpt = [...specific, ...fallback.filter(line => !specific.includes(line))].slice(0, 8)
+    .map(line => line.slice(0, 512)).join("\n").slice(0, 2048);
+  return { excerpt, signature: identity.size ? JSON.stringify([result.exitCode, [...identity].sort()]) : null };
+};
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -79,7 +113,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
   const sleep = input.sleep ?? defaultSleep;
   const pollMs = input.pollMs ?? 1_000;
   const joinWaitMs = input.joinWaitMs ?? 30 * 60_000;
-  const environment = input.environment ?? { platform: process.platform, arch: process.arch, node: process.version, env: process.env };
+  let environment = input.environment ?? { platform: process.platform, arch: process.arch, node: process.version, env: process.env };
   const results: CheckResult[] = [];
   if (input.commands.length === 0) return { status: "passed", results };
 
@@ -121,6 +155,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
 
   /** Key material, or the reason this command cannot be cached right now. */
   const keyFor = async (command: CheckCommand): Promise<ReceiptKeyMaterial | string> => {
+    if (input.execution) return `not cached: ${input.execution} verification`;
     if (command.cache === undefined) return "not cached: no cache declaration";
     if ((input.policyDigest ?? start.verificationDigest) === undefined) return "not cached: no frozen verification policy";
     const mode = command.cache.inputs;
@@ -135,7 +170,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
       const id = JSON.stringify(argv);
       let probe = probes.get(id);
       if (probe === undefined) {
-        try { probe = await input.processRunner(argv, target); }
+        try { probe = await input.processRunner(argv, target, { env: environment.env }); }
         catch { return `not cached: probe ${argv.join(" ")} could not run`; }
         probes.set(id, probe);
       }
@@ -147,7 +182,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
     try { dependencies = dependencyIdentity(target, command.cache.dependencies, command.cache.dependencyExcludes); }
     catch (error) { return `not cached: ${error instanceof Error ? error.message : String(error)}`; }
     return {
-      v: 1, origin: start.origin, inputsMode: mode, inputIdentity: identity, argv: [...command.argv],
+      v: 2, origin: start.origin, inputsMode: mode, inputIdentity: identity, argv: [...command.argv],
       policyDigest: (input.policyDigest ?? start.verificationDigest)!, platform: environment.platform, arch: environment.arch,
       node: environment.node, probes: probeResults, env: envDigests(command.cache.env, environment.env), dependencies
     };
@@ -170,6 +205,9 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
     // Every command below must leave tracked files as the pin has them, so a
     // later command, and any receipt it reuses or writes, always sees the pin.
     if (!trackedInputsClean(target)) throw new Error(`Verification worktree for ${input.pin} does not match its pin.`);
+    if (input.execution !== "baseline" && (!input.environment || existsSync(containedPath(target, ".nvmrc")))) {
+      environment = { ...environment, ...verificationEnvironment(target, environment.env) };
+    }
     const logs = containedPath(paths.issueRoot, "verification-logs");
     mkdirSync(logs, { recursive: true, mode: 0o700 });
     assertNoSymlink(paths.issueRoot, logs);
@@ -186,7 +224,7 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
           { mode: 0o600 });
         const failed: CheckResult = { name: command.name, argv: [...command.argv], exitCode: 1, logPath };
         results.push(failed);
-        return { status: "failed", results, failed, failure: `probes for ${command.name} modified tracked files`, stderr: "", note: null };
+        return { status: "failed", results, failed, failure: `probes for ${command.name} modified tracked files`, stderr: "", excerpt: "", signature: null, modified: true, environment, note: null };
       }
       const key = typeof material === "string" ? null : receiptKey(material);
       let cacheReason = typeof material === "string" ? material : "miss: no receipt";
@@ -219,8 +257,8 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
       }
 
       const argv = command.argv.map((argument) => argument.replaceAll("{worktree}", target));
-      const attempts = 1 + (command.retry ?? 0);
-      let original: { exitCode: number; stderr: string; logPath: string; measurement: VerificationMeasurement; modified: boolean } | null = null;
+      const attempts = input.execution === "baseline" ? 1 : 1 + (command.retry ?? 0);
+      let original: { result: ProcessResult; logPath: string; measurement: Pick<VerificationMeasurement, "durationMs" | "completedAt">; modified: boolean } | null = null;
       let retryNote: string | null = null;
       let ran = 0;
       for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -229,9 +267,15 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
         const logPath = containedPath(logs, `${randomUUID()}.log`);
         const startedAt = input.now();
         const record = (exitCode: number, error?: string) => {
+          const completedAt = input.now();
+          if (input.execution === "baseline") {
+            const durationMs = Date.parse(completedAt) - Date.parse(startedAt);
+            journal("baseline-check", { pin: input.pin, name: command.name, argv, exitCode, durationMs, logPath, error }, completedAt);
+            return { durationMs, completedAt };
+          }
           const measurement = verificationMeasurement({ trigger: "coordinator", phase: input.phase,
             inputIdentity: input.classification.inputIdentity, classification: input.classification.kind,
-            reason: input.classification.reason, command: { name: command.name, argv }, startedAt, completedAt: input.now(),
+            reason: input.classification.reason, command: { name: command.name, argv }, startedAt, completedAt,
             exitCode, skipReason: null, cacheReason, attempt, logPath,
             ...(attempt === 1 && command.expensive === true ? { queueWaitMs } : {}),
             ...(key === null ? {} : { receiptId: key }), ...(error === undefined ? {} : { error }) });
@@ -240,27 +284,32 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
         };
         let result: ProcessResult;
         progress(`[WAIT] Running ${command.name}${attempt > 1 ? ` (diagnostic retry ${attempt - 1}; original failure remains)` : ""}...`);
-        try { result = await input.processRunner(argv, target); }
+        try { result = await input.processRunner(argv, target, { env: environment.env }); }
         catch (error) {
-          writeFileSync(logPath, `$ ${argv.join(" ")}\n${String(error)}\n`, { mode: 0o600 });
-          record(1, String(error));
-          progress(`[ACTION] ${command.name}: could not start/finish (log: ${logPath}).`);
-          // A coordinator launch failure is not a rejected agent submission.
-          throw error;
+          const launch = error as NodeJS.ErrnoException & { path?: string };
+          if (input.phase === "finalization" && launch?.code === "ENOENT" && launch.path === argv[0] && existsSync(target)) {
+            result = { exitCode: 127, stdout: "", stderr: `Missing executable: ${argv[0]} (ENOENT)` };
+          } else {
+            writeFileSync(logPath, `$ ${argv.join(" ")}\n${String(error)}\n`, { mode: 0o600 });
+            record(1, String(error));
+            progress(`[ACTION] ${command.name}: could not start/finish (log: ${logPath}).`);
+            // A coordinator launch failure is not a rejected agent submission.
+            throw error;
+          }
         }
         const modified = !trackedInputsClean(target);
         progress(`${result.exitCode === 0 && !modified ? "[OK]" : "[ACTION]"} ${command.name}: ${result.exitCode === 0 && !modified ? "passed" : "failed"}${attempt > 1 ? "; diagnostic only, original failure remains" : ""} (log: ${logPath}).`);
         writeFileSync(logPath, `$ ${argv.join(" ")}\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}\nexit ${result.exitCode}\n` +
           (modified ? "coord: this command modified tracked files, so the pin's bytes are not what was checked.\n" : ""), { mode: 0o600 });
         const measurement = record(result.exitCode);
-        if (input.phase === "finalization") {
+        if (input.phase === "finalization" && input.execution !== "baseline") {
           journal("final-check", { tier: "checks", name: command.name, argv, exitCode: result.exitCode,
             durationMs: measurement.durationMs, logPath, attempt, cacheReason, ...(key === null ? {} : { receiptId: key }) },
           measurement.completedAt);
         }
         // Never retry in a tree that no longer matches the pin.
         if (original === null) {
-          original = { exitCode: result.exitCode, stderr: result.stderr, logPath, measurement, modified };
+          original = { result, logPath, measurement, modified };
           if (result.exitCode === 0 || modified) break;
         } else {
           retryNote = `diagnostic retry ${result.exitCode === 0 && !modified ? "passed" : "also failed"}; the original failure is the outcome`;
@@ -269,15 +318,15 @@ export const runVerification = async (input: RunVerificationInput): Promise<RunV
       }
       if (slot !== null) release(slot);
       const first = original!;
-      if (first.exitCode !== 0 || first.modified) {
-        const failed: CheckResult = { name: command.name, argv, exitCode: first.exitCode, logPath: first.logPath, attempts: ran };
+      if (first.result.exitCode !== 0 || first.modified) {
+        const failed: CheckResult = { name: command.name, argv, exitCode: first.result.exitCode, logPath: first.logPath, attempts: ran };
         results.push(failed);
-        const failure = first.exitCode !== 0 ? `${command.name} failed with exit ${first.exitCode}`
+        const failure = first.result.exitCode !== 0 ? `${command.name} failed with exit ${first.result.exitCode}`
           : `${command.name} exited 0 but modified tracked files`;
         progress(`[ACTION] Verification failed: ${failure} (log: ${first.logPath}).`);
-        const notes = [first.exitCode !== 0 && first.modified ? "it also modified tracked files" : null, retryNote]
+        const notes = [first.result.exitCode !== 0 && first.modified ? "it also modified tracked files" : null, retryNote]
           .filter((entry): entry is string => entry !== null);
-        return { status: "failed", results, failed, failure, stderr: first.stderr, note: notes.length === 0 ? null : notes.join("; ") };
+        return { status: "failed", results, failed, failure, stderr: first.result.stderr, ...failureDiagnostics(first.result, target), modified: first.modified, environment, note: notes.length === 0 ? null : notes.join("; ") };
       }
       // A receipt certifies the inputs the command actually ran against: the
       // declared dependencies must still be what the key recorded.

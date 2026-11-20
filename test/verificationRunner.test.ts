@@ -2,10 +2,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BareMirror } from "../src/mirror.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
-import type { CheckCommand, StartState } from "../src/state.js";
+import { coordinatorConfigSchema, type CheckCommand, type StartState } from "../src/state.js";
 import {
   computeInputIdentity,
   dependencyIdentity,
@@ -17,6 +17,8 @@ import {
   type ReceiptKeyMaterial
 } from "../src/verificationReceipts.js";
 import { runVerification, type RunVerificationInput } from "../src/verificationRunner.js";
+import { runArgv } from "../src/runLoop.js";
+import { runVerifyPhase } from "../src/hookPolicy.js";
 import { git } from "./support/workspaceFixture.js";
 import { sha256 } from "../src/hash.js";
 
@@ -58,11 +60,11 @@ const setup = () => {
     checkpoint: () => {}, journal: (type, details) => { journal.push({ type, details }); }, phase: "candidate", pin,
     classification: { kind: "product", reason: "test", inputIdentity: "range" }, commands, environment, pollMs: 5, ...overrides
   });
-  const material = (command: CheckCommand, at = pin): ReceiptKeyMaterial => ({ v: 1, origin: start.origin,
+  const material = (command: CheckCommand, at = pin): ReceiptKeyMaterial => ({ v: 2, origin: start.origin,
     inputsMode: "tree-excluding-evidence", inputIdentity: computeInputIdentity(paths.mirror, at, "tree-excluding-evidence"),
     argv: [...command.argv], policyDigest: start.verificationDigest!, platform: environment.platform, arch: environment.arch,
     node: environment.node, probes: [], env: [], dependencies: sha256("") });
-  return { paths, pin, evidencePin, productPin, journal, input, material };
+  return { seed, root, paths, pin, evidencePin, productPin, journal, input, material };
 };
 
 const ok = async () => ({ exitCode: 0, stdout: "", stderr: "" });
@@ -121,6 +123,12 @@ describe("verification receipts", () => {
       issue: 1, issueSessionId: "s", productPin: "a".repeat(40), logPath: "/log", completedAt: new Date().toISOString() };
     writeFileSync(receiptPath(paths.coordRoot, key), JSON.stringify(forged));
     expect(readReceipt(paths.coordRoot, key)).toEqual({ status: "miss", reason: "receipt key material does not match" });
+    // Legacy material reported the coordinator's Node even when PATH selected another.
+    const legacy = { ...material(lint), v: 1 };
+    const legacyKey = sha256(JSON.stringify(legacy));
+    writeFileSync(receiptPath(paths.coordRoot, legacyKey), JSON.stringify({ ...forged, key: legacyKey, material: legacy }));
+    expect(key).not.toBe(legacyKey);
+    expect(readReceipt(paths.coordRoot, legacyKey).status).toBe("miss");
   });
 
   it("fails the command that modifies tracked files, so nothing later runs or reuses against changed bytes", async () => {
@@ -195,6 +203,41 @@ describe("dependency identity", () => {
 });
 
 describe("verification runner", () => {
+  it("uses the pinned Node in pnpm scripts in hooks, candidate and final checks", async () => {
+    const { root, seed, paths, input } = setup();
+    const older = join(root, "old");
+    mkdirSync(older);
+    writeFileSync(join(older, "node"), "#!/bin/sh\necho v23.0.0\nexit 1\n", { mode: 0o700 });
+    writeFileSync(join(seed, ".nvmrc"), process.version);
+    writeFileSync(join(seed, "package.json"), JSON.stringify({ name: "fixture", private: true,
+      scripts: { check: `node -e "console.log(process.version); process.exit(process.version === '${process.version}' ? 0 : 1)"` } }));
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "pin product Node");
+    const pin = git(seed, "rev-parse", "HEAD");
+    git(paths.mirror, "fetch", "origin", pin);
+    const command = { ...cached("check"), argv: ["pnpm", "run", "check"] };
+    command.cache!.probes = [["node", "--version"]];
+    const path = `${older}:${process.env.PATH}`;
+    vi.stubEnv("PATH", path);
+    try {
+      const config = coordinatorConfigSchema.parse({ project: "fixture", origin: seed, branch: "issue-{issue}/{agent}",
+        agents: [{ id: "codex", root: seed, launcher: "start-codex.sh", delivery: "pull" }],
+        checks: [command], verify: { precommit: [command], prepush: [] } });
+      const hook = runVerifyPhase({ clone: seed, config, phase: "precommit", log: () => {} });
+      expect(hook.ok).toBe(true);
+      for (const phase of ["candidate", "finalization"] as const) {
+        const result = await runVerification(input([command], runArgv, { phase, pin, environment: undefined,
+          policyDigest: sha256(phase) }));
+        const receipt = readReceipt(paths.coordRoot, result.results[0]!.receiptId!);
+        expect(receipt).toMatchObject({ status: "hit", receipt: { material: { v: 2, node: process.version,
+          probes: [{ argv: ["node", "--version"], stdout: process.version }] } } });
+        expect(result.status).toBe("passed");
+        expect(readFileSync(result.results[0]!.logPath!, "utf8")).toContain(process.version);
+      }
+      expect(process.env.PATH).toBe(path);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("fails, rather than reuses a receipt, when a probe modifies tracked files", async () => {
     const { input, journal } = setup();
     const lint = cached("lint", { cache: { inputs: "tree-excluding-evidence", env: [], probes: [["probe"]], dependencies: [], dependencyExcludes: [] } });

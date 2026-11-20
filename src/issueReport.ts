@@ -23,6 +23,12 @@ export const currentScrollbackWait = (cursors: CursorsState, agent: string, life
 export const issueCommand = (command: string, issue: number, coordRoot: string): string =>
   `coord ${command} --issue ${issue} --coord-runtime ${shellQuote(coordRoot)}`;
 
+export const finalRetryMessage = (start: StartState, retry: NonNullable<CursorsState["finalRetry"]>): string =>
+  `Check ${retry.command} failed on both the approved commit and frozen baseline.\n` +
+  `Approved ${retry.finalSha}: ${retry.candidateExcerpt} (log: ${retry.candidateLog})\n` +
+  `Baseline ${retry.baselineSha}: ${retry.baselineExcerpt} (log: ${retry.baselineLog})\n` +
+  `Repair the shared failure and run ${issueCommand("resume", start.issue, start.coordRoot)} to verify the approved commit again.`;
+
 const stageNames: Record<WorkflowStepId, string> = {
   "R1.join": "checking agent readiness", "R2.plan": "writing plans", "R3.review": "reviewing plans",
   "R3.plan-ballot": "choosing a plan", "R4.implement": "implementing", "R4.amend-ballot": "reviewing scope changes",
@@ -111,6 +117,7 @@ export const renderIssueReport = (
     `Final commit (PR head): ${pin ?? "(none)"}`,
     `Published branch: ${branch ?? "(not pushed yet)"}`
   ];
+  if (cursors.manualPaused && cursors.finalRetry) lines.push(finalRetryMessage(start, cursors.finalRetry));
   const amendment = cursors.checkAmendments?.at(-1);
   if ((amendment?.commands ?? start.checks).length === 0) lines.push(NO_CHECKS);
   for (const pending of start.pendingChecks ?? []) lines.push(`Pending future check: ${pending}`);
