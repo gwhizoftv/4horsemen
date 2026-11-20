@@ -38,7 +38,12 @@ import {
 import { computeInputSetHash, evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
 import { inspectRangeChanges, selectCandidateVerification, selectVerification } from "./changeClassification.js";
-import { runVerification, type RunVerificationResult } from "./verificationRunner.js";
+import {
+  areDiagnosticEvidencesEquivalent,
+  runVerification,
+  type RunVerificationResult,
+  type VerificationEnvironment
+} from "./verificationRunner.js";
 import { createVerificationIngestor, verificationMeasurement } from "./verificationLog.js";
 import { BareMirror, GitCommandError, hermeticGitEnv, isTransientGitFailure } from "./mirror.js";
 import {
@@ -83,6 +88,7 @@ import {
   releaseResourceHold,
   replaceCursor,
   requireStateMutation,
+  setPaused,
   StateConflictError,
   type AcceptedResponse,
   type AcceptedSubmission,
@@ -93,6 +99,7 @@ import {
   type DerivedInputCitation,
   type DerivedInputKind,
   type ImplementationSelectionDerived,
+  type PendingFinalVerification,
   type PlanSelectionDerived,
   type StartState
 } from "./state.js";
@@ -2268,6 +2275,9 @@ export class CoordinatorRunLoop {
       }
       return cursorsStateSchema.parse({
         ...current,
+        ...(accepted.stepId === "R7.finalize" && current.pendingFinalVerification != null
+          ? { pendingFinalVerification: null }
+          : {}),
         publication,
         agents: {
           ...current.agents,
@@ -2448,8 +2458,12 @@ export class CoordinatorRunLoop {
       clearCompletion(runtime.complete);
       writeAction(this.paths.coordRoot, runtime.action, order);
       const actionDigest = sha256OfFile(runtime.action);
+      const base =
+        stepId === "R7.finalize" && current.pendingFinalVerification != null
+          ? { ...current, pendingFinalVerification: null }
+          : current;
       return replaceCursor(
-        current,
+        base,
         agent,
         {
           status: "ordered",
@@ -2886,17 +2900,27 @@ export class CoordinatorRunLoop {
     });
   }
 
-  async verifyFinalizationChecks(
+  private async evaluateFinalizationChecks(
     start: StartState,
     order: InternalOrder,
     observation: EvidenceObservation,
-    cursors: CursorsState
-  ): Promise<EvidenceObservation> {
-    if (observation.status !== "satisfied" || order.stepId !== "R7.finalize" || observation.productPin === undefined) return observation;
+    cursors: CursorsState,
+    options: { bypassReceipts?: boolean } = {}
+  ): Promise<
+    | { kind: "observation"; observation: EvidenceObservation }
+    | { kind: "baseline-match"; pending: PendingFinalVerification; summary: string }
+  > {
+    if (observation.status !== "satisfied" || order.stepId !== "R7.finalize" || observation.productPin === undefined) {
+      return { kind: "observation", observation };
+    }
     const consensusSha = order.inputs.find((input) => input.kind === "consensus")?.commitSha;
-    if (consensusSha === undefined) return { ...observation, status: "rejected", outstanding: ["no consensus pin is bound to finalization"] };
+    if (consensusSha === undefined) {
+      return { kind: "observation", observation: { ...observation, status: "rejected", outstanding: ["no consensus pin is bound to finalization"] } };
+    }
     const verified = verifyFinalization({ root: this.mirror.path, issue: start.issue, consensusSha, finalSha: observation.productPin });
-    if (!verified.ok) return { ...observation, status: "rejected", outstanding: [verified.details] };
+    if (!verified.ok) {
+      return { kind: "observation", observation: { ...observation, status: "rejected", outstanding: [verified.details] } };
+    }
 
     // Evidence cleanup is the final commit, not the full issue change. Always
     // classify from the frozen issue baseline, never the cleanup's parent.
@@ -2906,19 +2930,184 @@ export class CoordinatorRunLoop {
     const commands = addCheckCommands(selected.commands, amendment?.additions.map((entry) => entry.proposal) ?? []);
     const policyDigest = effectiveCheckDigest(start, commands, amendment?.additions);
     const checked = await this.runGateVerification(start, order, cursors, "finalization", observation.productPin, selected,
-      commands, policyDigest);
-    if (checked.status === "waiting") return waitingObservation(observation, checked.waitingFor);
+      commands, policyDigest, { bypassReceipts: options.bypassReceipts });
+    if (checked.status === "waiting") {
+      return { kind: "observation", observation: waitingObservation(observation, checked.waitingFor) };
+    }
     if (checked.status === "failed") {
+      const baseMessage =
+        `finalization check (tier: checks) ${checked.failure}` +
+        `${checked.excerpt === "" ? "" : `: ${checked.excerpt}`}` +
+        ` (log: ${checked.failed.logPath})${checked.note === null ? "" : `; ${checked.note}`}`;
+      const canCompareBaseline =
+        (checked.evidence.kind === "exit" || checked.evidence.kind === "missing-executable") &&
+        checked.evidence.actionable.length > 0 &&
+        (await this.mirror.commitExists(start.baselineSha));
+      this.authority(cursors);
+      if (canCompareBaseline) {
+        const baselineCommands = commands.slice(0, checked.failedIndex + 1);
+        const baseline = await runVerification({
+          paths: this.paths,
+          start,
+          mirror: this.mirror,
+          processRunner: this.processRunner,
+          now: () => this.now(),
+          checkpoint: () => { this.authority(cursors); },
+          journal: (type, details, at) => {
+            if (type === "final-check") return;
+            appendJournal(this.paths, {
+              type: "baseline-check",
+              agent: order.agent,
+              actionId: order.actionId,
+              details: { event: type, ...details }
+            }, at);
+          },
+          progress: (message) => this.log(`${order.agent} (baseline): ${message}`),
+          phase: "finalization",
+          pin: start.baselineSha,
+          classification: selected,
+          commands: baselineCommands,
+          policyDigest,
+          environment: checked.environment,
+          resolveEnvironment: false,
+          bypassReceipts: true
+        });
+        this.authority(cursors);
+        if (
+          baseline.status === "failed" &&
+          baseline.failedIndex === checked.failedIndex &&
+          baseline.failed.name === checked.failed.name &&
+          areDiagnosticEvidencesEquivalent(checked.evidence, baseline.evidence)
+        ) {
+          const at = this.now();
+          appendJournal(this.paths, {
+            type: "baseline-check",
+            agent: order.agent,
+            actionId: order.actionId,
+            details: {
+              matched: true,
+              commandName: checked.failed.name,
+              finalSha: observation.productPin,
+              baselineSha: start.baselineSha,
+              candidateLogPath: checked.failed.logPath ?? null,
+              baselineLogPath: baseline.failed.logPath ?? null
+            }
+          }, at);
+          const pending: PendingFinalVerification = {
+            issueSessionId: start.issueSessionId,
+            actionId: order.actionId,
+            agent: order.agent,
+            submissionSha: observation.submissionSha,
+            consensusSha,
+            finalSha: observation.productPin,
+            baselineSha: start.baselineSha,
+            policyDigest,
+            commandName: checked.failed.name,
+            commandArgv: [...checked.failed.argv],
+            excerpt: checked.excerpt || checked.failure,
+            candidateLogPath: checked.failed.logPath!,
+            baselineLogPath: baseline.failed.logPath!,
+            recordedAt: at
+          };
+          return { kind: "baseline-match", pending, summary: baseMessage };
+        }
+        const baselineOutcome =
+          baseline.status === "passed"
+            ? "passed"
+            : baseline.status === "waiting"
+              ? "waiting"
+              : baseline.failed.name !== checked.failed.name
+                ? "different-command"
+                : "different-failure";
+        appendJournal(this.paths, {
+          type: "baseline-check",
+          agent: order.agent,
+          actionId: order.actionId,
+          details: {
+            matched: false,
+            outcome: baselineOutcome,
+            commandName: checked.failed.name,
+            finalSha: observation.productPin,
+            baselineSha: start.baselineSha,
+            candidateLogPath: checked.failed.logPath ?? null,
+            baselineLogPath: baseline.status === "failed" ? (baseline.failed.logPath ?? null) : null
+          }
+        }, this.now());
+        const baselineNote =
+          baseline.status === "passed"
+            ? `; frozen baseline ${start.baselineSha.slice(0, 12)} passed this check`
+            : baseline.status === "failed"
+              ? `; frozen baseline ${start.baselineSha.slice(0, 12)} failed differently (log: ${baseline.failed.logPath})`
+              : `; frozen baseline ${start.baselineSha.slice(0, 12)} comparison inconclusive`;
+        return {
+          kind: "observation",
+          observation: { ...observation, status: "rejected", outstanding: [`${baseMessage}${baselineNote}`] }
+        };
+      }
       return {
-        ...observation,
-        status: "rejected",
-        outstanding: [
-          `finalization check (tier: checks) ${checked.failure}: ${checked.stderr.trim()}` +
-            ` (log: ${checked.failed.logPath})${checked.note === null ? "" : `; ${checked.note}`}`
-        ]
+        kind: "observation",
+        observation: { ...observation, status: "rejected", outstanding: [baseMessage] }
       };
     }
-    return { ...observation, checkResults: checked.results, policyDigest };
+    return { kind: "observation", observation: { ...observation, checkResults: checked.results, policyDigest } };
+  }
+
+  async verifyFinalizationChecks(
+    start: StartState,
+    order: InternalOrder,
+    observation: EvidenceObservation,
+    cursors: CursorsState
+  ): Promise<EvidenceObservation> {
+    const evaluated = await this.evaluateFinalizationChecks(start, order, observation, cursors);
+    if (evaluated.kind === "baseline-match") {
+      return { ...observation, status: "retry", outstanding: [evaluated.summary] };
+    }
+    return evaluated.observation;
+  }
+
+  private pauseForBaselineFailure(
+    start: StartState,
+    cursors: CursorsState,
+    pending: PendingFinalVerification
+  ): CursorsState {
+    const at = this.now();
+    const next = this.mutate(cursors, (current) => {
+      if (!current.paused) {
+        appendJournal(this.paths, { type: "paused", details: { reason: "finalization-baseline-failure" } }, at);
+      }
+      appendJournal(
+        this.paths,
+        {
+          type: "finalization-baseline-paused",
+          agent: pending.agent,
+          actionId: pending.actionId,
+          submissionSha: pending.submissionSha,
+          details: { ...pending }
+        },
+        at
+      );
+      const withCursor = replaceCursor(
+        current,
+        pending.agent,
+        { status: "intent", submissionSha: pending.submissionSha, outstanding: [] },
+        at
+      );
+      return setPaused(
+        cursorsStateSchema.parse({ ...withCursor, pendingFinalVerification: pending, updatedAt: at }),
+        true,
+        at
+      );
+    });
+    this.log(
+      `Owner action required: finalization check '${pending.commandName}' failed identically on candidate ${pending.finalSha} ` +
+        `and frozen baseline ${pending.baselineSha}.\n` +
+        `  excerpt: ${pending.excerpt}\n` +
+        `  candidate log: ${pending.candidateLogPath}\n` +
+        `  baseline log: ${pending.baselineLogPath}\n` +
+        `Fix the shared environment/tool problem, then rerun verification on ${pending.finalSha} with: ` +
+        issueCommand("resume", start.issue, start.coordRoot)
+    );
+    return next;
   }
 
   /**
@@ -2969,7 +3158,8 @@ export class CoordinatorRunLoop {
     pin: string,
     classification: { kind: "coordination" | "documentation" | "product"; reason: string; inputIdentity: string },
     commands: readonly CheckCommand[],
-    policyDigest?: string
+    policyDigest?: string,
+    options: { environment?: VerificationEnvironment; resolveEnvironment?: boolean; bypassReceipts?: boolean } = {}
   ): Promise<RunVerificationResult> {
     if (commands.length === 0) {
       this.log(NO_CHECKS);
@@ -2980,14 +3170,21 @@ export class CoordinatorRunLoop {
           inputIdentity: classification.inputIdentity, classification: classification.kind, reason: classification.reason,
           command: null, startedAt: at, completedAt: at, exitCode: 0, skipReason: classification.reason,
           cacheReason: "not cached: nothing selected" }) }, at);
-      return { status: "passed", results: [] };
+      return {
+        status: "passed",
+        results: [],
+        environment: options.environment ?? { platform: process.platform, arch: process.arch, node: process.version, env: process.env }
+      };
     }
     return runVerification({
       paths: this.paths, start, mirror: this.mirror, processRunner: this.processRunner, now: () => this.now(),
       checkpoint: () => { this.authority(cursors); },
       journal: (type, details, at) => appendJournal(this.paths, { type, agent: order.agent, actionId: order.actionId, details }, at),
       progress: (message) => this.log(`${order.agent}: ${message}`),
-      phase, pin, classification, commands, policyDigest
+      phase, pin, classification, commands, policyDigest,
+      ...(options.environment === undefined ? {} : { environment: options.environment }),
+      ...(options.resolveEnvironment === undefined ? {} : { resolveEnvironment: options.resolveEnvironment }),
+      ...(options.bypassReceipts === undefined ? {} : { bypassReceipts: options.bypassReceipts })
     });
   }
 
@@ -3332,8 +3529,82 @@ export class CoordinatorRunLoop {
       cursors = this.retireAmendmentActions(cursors);
       const observations: EvidenceObservation[] = [];
 
+      let handledPendingFinalAgent: string | null = null;
+      if (cursors.pendingFinalVerification != null) {
+        const pending = cursors.pendingFinalVerification;
+        const pendingCursor = cursors.agents[pending.agent];
+        const stillValid =
+          pending.issueSessionId === start.issueSessionId &&
+          cursors.issueCursor.stepId === "R7.finalize" &&
+          cursors.activeRoster.includes(pending.agent) &&
+          pendingCursor?.stepId === "R7.finalize" &&
+          pendingCursor.actionId === pending.actionId;
+        if (!stillValid) {
+          cursors = this.mutate(cursors, (current) =>
+            cursorsStateSchema.parse({ ...current, pendingFinalVerification: null, updatedAt: this.now() })
+          );
+        } else {
+          handledPendingFinalAgent = pending.agent;
+          cursors = this.mutate(cursors, (current) =>
+            replaceCursor(current, pending.agent, { status: "verifying", submissionSha: pending.submissionSha }, this.now())
+          );
+          const approvedPaths = await resolveApprovedPaths(this.mirror, cursors, "R7.finalize");
+          this.authority(cursors);
+          const order = buildOrder(
+            this.paths,
+            start,
+            cursors,
+            pending.agent,
+            "R7.finalize",
+            null,
+            pending.actionId,
+            pendingCursor.outstanding,
+            approvedPaths
+          );
+          let observation = await evaluateEvidence(order, pending.submissionSha, this.mirror as EvidenceMirror, () =>
+            this.authority(cursors)
+          );
+          this.authority(cursors);
+          const currentConsensus = order.inputs.find((input) => input.kind === "consensus")?.commitSha;
+          if (
+            observation.status === "satisfied" &&
+            (observation.productPin !== pending.finalSha || currentConsensus !== pending.consensusSha)
+          ) {
+            observation = {
+              ...observation,
+              status: "rejected",
+              outstanding: [
+                `pending finalization retry for ${pending.finalSha} no longer matches the authorized pins`
+              ]
+            };
+          } else {
+            try {
+              cursors = await this.prepareCheckAmendment(start, order, observation, cursors);
+            } catch (error) {
+              if (error instanceof StateConflictError) throw error;
+              observation = { ...observation, status: "rejected", outstanding: [`Cannot adopt check proposal: ${error instanceof Error ? error.message : String(error)}`] };
+            }
+            const retried = await this.evaluateFinalizationChecks(start, order, observation, cursors, { bypassReceipts: true });
+            this.authority(cursors);
+            if (retried.kind === "baseline-match") {
+              return this.pauseForBaselineFailure(start, cursors, retried.pending);
+            }
+            observation = retried.observation;
+            if (observation.status === "satisfied" && observation.policyDigest !== pending.policyDigest) {
+              observation = {
+                ...observation,
+                status: "rejected",
+                outstanding: ["pending finalization retry no longer matches the effective check policy"]
+              };
+            }
+          }
+          observations.push(observation);
+        }
+      }
+
       for (const dropped of cursors.droppedAgents) clearCompletion(agentRuntimePaths(this.paths, dropped).complete);
       for (const agent of cursors.activeRoster) {
+      if (agent === handledPendingFinalAgent) continue;
       if (cursors.paused) return cursors;
       const cursor = cursors.agents[agent];
       if (cursor === undefined || cursor.actionId === null || cursor.stepId === null) continue;
@@ -3496,8 +3767,12 @@ export class CoordinatorRunLoop {
         if (error instanceof StateConflictError) throw error;
         observation = { ...observation, status: "rejected", outstanding: [`Cannot adopt check proposal: ${error instanceof Error ? error.message : String(error)}`] };
       }
-      observation = await this.verifyFinalizationChecks(start, order, observation, cursors);
+      const finalChecked = await this.evaluateFinalizationChecks(start, order, observation, cursors);
       this.authority(cursors);
+      if (finalChecked.kind === "baseline-match") {
+        return this.pauseForBaselineFailure(start, cursors, finalChecked.pending);
+      }
+      observation = finalChecked.observation;
       observation = await this.verifyCandidateChecks(start, order, observation, cursors);
       this.authority(cursors);
       observations.push(observation);

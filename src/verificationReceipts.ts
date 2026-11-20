@@ -34,7 +34,7 @@ import { atomicWriteJson } from "./state.js";
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 
 export const receiptKeyMaterialSchema = z.object({
-  v: z.literal(1),
+  v: z.literal(2),
   origin: z.string().min(1),
   inputsMode: z.enum(["tree", "tree-excluding-evidence"]),
   inputIdentity: z.string().min(1),
@@ -44,6 +44,8 @@ export const receiptKeyMaterialSchema = z.object({
   platform: z.string().min(1),
   arch: z.string().min(1),
   node: z.string().min(1),
+  /** Effective product runtime identity so pre-fix receipts never collide with propagated toolchains. */
+  runtime: z.string().min(1),
   probes: z.array(z.object({ argv: z.array(z.string()).min(1), stdout: z.string() }).strict()),
   /** Digests, not values: receipts must not copy secrets out of the environment. */
   env: z.array(z.object({ name: z.string().min(1), value: hex64.nullable() }).strict()),
@@ -71,7 +73,7 @@ export type Receipt = z.infer<typeof receiptSchema>;
 export const receiptKey = (material: ReceiptKeyMaterial): string => sha256(JSON.stringify({
   v: material.v, origin: material.origin, inputsMode: material.inputsMode, inputIdentity: material.inputIdentity,
   argv: material.argv, policyDigest: material.policyDigest, platform: material.platform, arch: material.arch,
-  node: material.node, probes: material.probes.map((probe) => ({ argv: probe.argv, stdout: probe.stdout })),
+  node: material.node, runtime: material.runtime, probes: material.probes.map((probe) => ({ argv: probe.argv, stdout: probe.stdout })),
   env: material.env.map((entry) => ({ name: entry.name, value: entry.value })),
   dependencies: material.dependencies
 }));

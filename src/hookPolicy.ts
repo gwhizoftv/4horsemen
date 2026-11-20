@@ -1,7 +1,7 @@
 import { NO_CHECKS } from "./projectChecks.js";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { git, localConfigGet } from "./gitExec.js";
 import { agentRuntimePaths, assertNoSymlink, containedPath, issueRuntimePaths } from "./paths.js";
 import { parseAction } from "./action.js";
@@ -17,6 +17,7 @@ import {
 } from "./state.js";
 import { workspaceLocationFromConfig } from "./workspace.js";
 import { inspectOutgoingChanges, isCoordinationEvidencePath, selectVerification, type ChangeInput } from "./changeClassification.js";
+import { executableResolves, ProductToolchainError, resolveProjectEnvironment } from "./verificationEnvironment.js";
 import { verificationMeasurement, type VerificationMeasurement } from "./verificationLog.js";
 
 /**
@@ -85,33 +86,9 @@ export const verifyCommands = (config: CoordinatorConfig, phase: VerifyPhase): r
   return config.verify[phase];
 };
 
-const isExecutableFile = (path: string): boolean => {
-  try {
-    const stats = statSync(path);
-    return stats.isFile() && (stats.mode & 0o111) !== 0;
-  } catch {
-    return false;
-  }
-};
-
-/**
- * Resolve a declared command exactly as the hook will spawn it: with the clone
- * as the working directory, and requiring an executable file.
- *
- * Checking mere existence against the caller's own directory reported a
- * relative `./scripts/check.sh` as missing when run from the runtime, and
- * accepted a directory or a non-executable file that the first hook then failed
- * to spawn.
- */
-const resolves = (command: string, cwd: string): boolean => {
-  if (command.includes("/")) return isExecutableFile(resolve(cwd, command));
-  const entries = (process.env.PATH ?? "").split(delimiter).filter((entry) => entry !== "");
-  return entries.some((entry) => isExecutableFile(join(entry, command)));
-};
-
 /**
  * Which declared `argv[0]` values cannot be resolved right now, checked against
- * the clone the hooks will run in.
+ * the clone the hooks will run in using its resolved product environment.
  */
 export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): string[] => {
   const commands = [
@@ -125,10 +102,15 @@ export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): st
     ...(config.verification?.candidate?.checks ?? []),
     ...config.checks
   ];
+  let env: NodeJS.ProcessEnv = process.env;
+  if (commands.length > 0) {
+    try { env = resolveProjectEnvironment(cwd, process.env).env; }
+    catch { env = process.env; }
+  }
   const missing = new Set<string>();
   for (const command of commands) {
     const executable = command.argv[0] as string;
-    if (!resolves(executable, cwd)) missing.add(executable);
+    if (!executableResolves(executable, cwd, env)) missing.add(executable);
   }
   return [...missing].sort();
 };
@@ -264,9 +246,9 @@ export const assertRequiredArtifact = (input: { clone: string; configPath: strin
 
 export type VerifyRunner = (command: CheckCommand, cwd: string) => number;
 
-const inheritRunner: VerifyRunner = (command, cwd) => {
+const spawnWithEnv = (command: CheckCommand, cwd: string, env: NodeJS.ProcessEnv): number => {
   const [executable, ...args] = command.argv;
-  const result = spawnSync(executable as string, args, { cwd, stdio: "inherit" });
+  const result = spawnSync(executable as string, args, { cwd, stdio: "inherit", env });
   if (result.error !== undefined) {
     throw new HookPolicyError(
       `Declared verify command '${command.name}' could not run: ${result.error.message}.\n` +
@@ -289,7 +271,6 @@ export const runVerifyPhase = (input: {
   /** Coordinated lists from a bound, active coordinator run (see resolveHookBinding). */
   bound?: VerifyConfig;
 }): VerifyRunResult => {
-  const runner = input.runner ?? inheritRunner;
   const selected = selectVerification(input.changes ?? { changes: null, identity: "unknown" }, input.config, input.phase,
     // The evidence exemption does not require a product verification declaration.
     input.bound?.[input.phase] ?? input.config.verify?.[input.phase] ?? []);
@@ -307,6 +288,17 @@ export const runVerifyPhase = (input: {
     input.log(`coord ${input.phase}: skipping declared checks — ${selected.reason} (no commands).\n`);
     record(null, new Date().toISOString(), 0);
     return { ok: true };
+  }
+  let runner = input.runner;
+  if (runner === undefined) {
+    let env: NodeJS.ProcessEnv;
+    try {
+      env = resolveProjectEnvironment(input.clone, process.env).env;
+    } catch (error) {
+      if (error instanceof ProductToolchainError) throw new HookPolicyError(error.message);
+      throw error;
+    }
+    runner = (command, cwd) => spawnWithEnv(command, cwd, env);
   }
   for (const command of commands) {
     input.log(`coord ${input.phase}: ${command.name} — ${command.argv.join(" ")}\n`);

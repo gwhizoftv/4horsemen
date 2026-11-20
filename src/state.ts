@@ -803,6 +803,26 @@ const emptyOwnerGuidance = (): z.infer<typeof ownerGuidanceSchema> => ({
   pending: [], generation: 0, bound: null, suspended: null
 });
 
+export const pendingFinalVerificationSchema = z
+  .object({
+    issueSessionId: issueSessionIdSchema,
+    actionId: actionIdSchema,
+    agent: agentIdSchema,
+    submissionSha: gitShaSchema,
+    consensusSha: gitShaSchema,
+    finalSha: gitShaSchema,
+    baselineSha: gitShaSchema,
+    policyDigest: digestSchema,
+    commandName: z.string().min(1),
+    commandArgv: z.array(z.string()).min(1),
+    excerpt: z.string().min(1),
+    candidateLogPath: z.string().min(1),
+    baselineLogPath: z.string().min(1),
+    recordedAt: timestampSchema
+  })
+  .strict();
+export type PendingFinalVerification = z.infer<typeof pendingFinalVerificationSchema>;
+
 export const cursorsStateSchema = z
   .object({
     formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
@@ -822,6 +842,8 @@ export const cursorsStateSchema = z
     pendingAmendment: pendingAmendmentSchema.nullable().default(null),
     amendments: z.array(amendmentDecisionSchema).default([]),
     checkAmendments: z.array(checkAmendmentSchema).optional(),
+    /** Shared baseline-matching finalization failure awaiting owner repair and resume. */
+    pendingFinalVerification: pendingFinalVerificationSchema.nullable().optional(),
     // Durable cleanup intent: never delete an old request before its transition is saved.
     amendmentRetirements: z.array(z.object({ agent: agentIdSchema, actionId: z.string().uuid() }).strict()).default([]),
     ownerQuestion: z
@@ -902,6 +924,8 @@ const journalEventTypeSchema = z.enum([
   "action-restarted",
   "abandoned",
   "final-check",
+  "baseline-check",
+  "finalization-baseline-paused",
   "verification-run",
   "candidate-check",
   "verification-reused",

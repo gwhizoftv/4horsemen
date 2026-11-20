@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { BareMirror } from "../src/mirror.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
-import type { CheckCommand, StartState } from "../src/state.js";
+import { runVerifyPhase } from "../src/hookPolicy.js";
+import { runArgv } from "../src/runLoop.js";
+import type { CheckCommand, CoordinatorConfig, StartState } from "../src/state.js";
+import { ProductToolchainError } from "../src/verificationEnvironment.js";
 import {
   computeInputIdentity,
   dependencyIdentity,
@@ -16,7 +19,12 @@ import {
   writeReceipt,
   type ReceiptKeyMaterial
 } from "../src/verificationReceipts.js";
-import { runVerification, type RunVerificationInput } from "../src/verificationRunner.js";
+import {
+  areDiagnosticEvidencesEquivalent,
+  extractDiagnosticEvidence,
+  runVerification,
+  type RunVerificationInput
+} from "../src/verificationRunner.js";
 import { git } from "./support/workspaceFixture.js";
 import { sha256 } from "../src/hash.js";
 
@@ -58,10 +66,10 @@ const setup = () => {
     checkpoint: () => {}, journal: (type, details) => { journal.push({ type, details }); }, phase: "candidate", pin,
     classification: { kind: "product", reason: "test", inputIdentity: "range" }, commands, environment, pollMs: 5, ...overrides
   });
-  const material = (command: CheckCommand, at = pin): ReceiptKeyMaterial => ({ v: 1, origin: start.origin,
+  const material = (command: CheckCommand, at = pin): ReceiptKeyMaterial => ({ v: 2, origin: start.origin,
     inputsMode: "tree-excluding-evidence", inputIdentity: computeInputIdentity(paths.mirror, at, "tree-excluding-evidence"),
     argv: [...command.argv], policyDigest: start.verificationDigest!, platform: environment.platform, arch: environment.arch,
-    node: environment.node, probes: [], env: [], dependencies: sha256("") });
+    node: environment.node, runtime: "inherited", probes: [], env: [], dependencies: sha256("") });
   return { paths, pin, evidencePin, productPin, journal, input, material };
 };
 
@@ -95,6 +103,7 @@ describe("verification receipts", () => {
     const key = receiptKey(base);
     for (const changed of [
       { argv: ["lint", "--fix"] }, { policyDigest: "e".repeat(64) }, { platform: "other" }, { arch: "other" }, { node: "v1" },
+      { runtime: "nvmrc:v1:/other/node" },
       { probes: [{ argv: ["node", "--version"], stdout: "v2" }] }, { env: [{ name: "TOKEN", value: "f".repeat(64) }] },
       { dependencies: "f".repeat(64) },
       { inputIdentity: computeInputIdentity(paths.mirror, productPin, "tree-excluding-evidence") }
@@ -305,4 +314,236 @@ it("cannot reuse an earlier policy receipt after adding a check obligation", asy
   const reused = await runVerification(input([command], runner, { policyDigest: "e".repeat(64) }));
   expect(reused.results[0]?.reused).toBe(true);
   expect(runs).toBe(2);
+});
+
+describe("project toolchain propagation and diagnostics", () => {
+  it.each(["candidate", "finalization"] as const)(
+    "propagates the project-selected Node through pnpm in %s phase when an older Node is first on PATH",
+    async (phase) => {
+      const root = mkdtempSync(join(tmpdir(), "coord-toolchain-"));
+      roots.push(root);
+      const oldBin = join(root, "old-node-bin");
+      const pnpmBin = join(root, "pnpm-bin");
+      const nvmDir = join(root, "nvm");
+      const newBin = join(nvmDir, "versions", "node", "v26.99.0", "bin");
+      for (const dir of [oldBin, pnpmBin, newBin]) mkdirSync(dir, { recursive: true });
+      writeFileSync(join(oldBin, "node"), '#!/bin/sh\nif [ "$1" = --version ] || [ "$1" = -v ]; then echo v23.0.0; exit 0; fi\nexit 0\n', { mode: 0o700 });
+      writeFileSync(join(newBin, "node"), '#!/bin/sh\nif [ "$1" = --version ] || [ "$1" = -v ]; then echo v26.99.0; exit 0; fi\nexit 0\n', { mode: 0o700 });
+      writeFileSync(join(pnpmBin, "pnpm"), '#!/bin/sh\nsh -c \'printf "child_node=%s\\n" "$(node --version)"\'\n', { mode: 0o700 });
+
+      const seed = join(root, "seed");
+      mkdirSync(join(seed, "src"), { recursive: true });
+      git(seed, "init", "-q");
+      writeFileSync(join(seed, ".nvmrc"), "26.99.0\n");
+      writeFileSync(join(seed, "src/a.ts"), "export const x = 1;\n");
+      git(seed, "add", ".");
+      git(seed, "commit", "-qm", "pinned");
+      const pin = git(seed, "rev-parse", "HEAD");
+
+      const coordRoot = join(root, "coord-runtime");
+      const paths = issueRuntimePaths(coordRoot, 1, join(root, "completes"));
+      createIssueRuntime(paths, ["codex"]);
+      git(root, "clone", "--bare", "-q", seed, paths.mirror);
+      const start = {
+        issue: 1,
+        issueSessionId: `issue-1:${pin}`,
+        origin: "https://example.com/p.git",
+        verificationDigest: "d".repeat(64),
+        verification: { mode: "coordinator", maxConcurrentExpensive: 1 }
+      } as unknown as StartState;
+
+      // Seed a legacy v1 receipt for the same pin and node version string to prove it misses after the PATH fix.
+      const legacyMaterial = {
+        v: 1,
+        origin: start.origin,
+        inputsMode: "tree-excluding-evidence",
+        inputIdentity: computeInputIdentity(paths.mirror, pin, "tree-excluding-evidence"),
+        argv: ["pnpm", "run", "check"],
+        policyDigest: start.verificationDigest!,
+        platform: process.platform,
+        arch: process.arch,
+        node: "v26.99.0",
+        probes: [{ argv: ["node", "--version"], stdout: "v26.99.0" }],
+        env: [],
+        dependencies: sha256("")
+      };
+      const legacyKey = sha256(JSON.stringify(legacyMaterial));
+      mkdirSync(join(paths.coordRoot, "verification/receipts"), { recursive: true });
+      writeFileSync(
+        receiptPath(paths.coordRoot, legacyKey),
+        JSON.stringify({
+          formatVersion: 1,
+          key: legacyKey,
+          material: legacyMaterial,
+          name: "check",
+          exitCode: 0,
+          durationMs: 5,
+          issue: 1,
+          issueSessionId: start.issueSessionId,
+          productPin: pin,
+          logPath: "/legacy.log",
+          completedAt: new Date().toISOString()
+        })
+      );
+      expect(readReceipt(paths.coordRoot, legacyKey).status).toBe("miss");
+
+      const inheritedEnv: NodeJS.ProcessEnv = {
+        PATH: `${oldBin}:${pnpmBin}:/usr/bin:/bin`,
+        NVM_DIR: nvmDir,
+        HOME: root
+      };
+      const beforePath = inheritedEnv.PATH;
+      const command = cached("check", {
+        argv: ["pnpm", "run", "check"],
+        cache: {
+          inputs: "tree-excluding-evidence",
+          env: [],
+          probes: [["node", "--version"]],
+          dependencies: [],
+          dependencyExcludes: []
+        }
+      });
+
+      const result = await runVerification({
+        paths,
+        start,
+        mirror: new BareMirror(paths.mirror, seed),
+        processRunner: runArgv,
+        now: () => new Date().toISOString(),
+        checkpoint: () => {},
+        journal: () => {},
+        phase,
+        pin,
+        classification: { kind: "product", reason: "test", inputIdentity: "range" },
+        commands: [command],
+        environment: { platform: process.platform, arch: process.arch, node: "v23.0.0", env: inheritedEnv }
+      });
+
+      expect(result.status).toBe("passed");
+      if (result.status !== "passed") throw new Error("expected pass");
+      const log = readFileSync(result.results[0]!.logPath!, "utf8");
+      expect(log).toContain("child_node=v26.99.0");
+      expect(log).not.toContain("child_node=v23.0.0");
+      expect(result.results[0]!.reused).not.toBe(true);
+      expect(result.environment.node).toBe("v26.99.0");
+      expect(inheritedEnv.PATH).toBe(beforePath);
+
+      // Hook entry point against the same pinned checkout also resolves v26.99.0.
+      const prevPath = process.env.PATH;
+      const prevNvm = process.env.NVM_DIR;
+      const marker = join(root, "hook-node.txt");
+      try {
+        process.env.PATH = inheritedEnv.PATH;
+        process.env.NVM_DIR = nvmDir;
+        const hookResult = runVerifyPhase({
+          clone: seed,
+          config: {
+            verify: { precommit: [{ name: "hook", argv: ["sh", "-c", `node --version > ${JSON.stringify(marker)}`] }], prepush: [] },
+            checks: []
+          } as unknown as CoordinatorConfig,
+          phase: "precommit",
+          log: () => undefined
+        });
+        expect(hookResult).toEqual({ ok: true });
+        expect(readFileSync(marker, "utf8").trim()).toBe("v26.99.0");
+      } finally {
+        process.env.PATH = prevPath;
+        if (prevNvm === undefined) delete process.env.NVM_DIR;
+        else process.env.NVM_DIR = prevNvm;
+      }
+    }
+  );
+
+  it("preserves inherited PATH when unpinned and fails explicitly when a pinned Node is unavailable", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-toolchain-edge-"));
+    roots.push(root);
+    const oldBin = join(root, "old-node-bin");
+    const pnpmBin = join(root, "pnpm-bin");
+    for (const dir of [oldBin, pnpmBin]) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(oldBin, "node"), '#!/bin/sh\nif [ "$1" = --version ]; then echo v22.5.0; exit 0; fi\nexit 0\n', { mode: 0o700 });
+    writeFileSync(join(pnpmBin, "pnpm"), '#!/bin/sh\nprintf "child_node=%s\\n" "$(node --version)"\n', { mode: 0o700 });
+
+    const seed = join(root, "seed");
+    mkdirSync(seed, { recursive: true });
+    git(seed, "init", "-q");
+    writeFileSync(join(seed, "package.json"), JSON.stringify({ name: "unpinned", version: "1.0.0" }));
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "unpinned");
+    const unpinnedPin = git(seed, "rev-parse", "HEAD");
+    writeFileSync(join(seed, ".nvmrc"), "99.88.77\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "unavailable pin");
+    const missingPin = git(seed, "rev-parse", "HEAD");
+
+    const paths = issueRuntimePaths(join(root, "coord-runtime"), 1, join(root, "completes"));
+    createIssueRuntime(paths, ["codex"]);
+    git(root, "clone", "--bare", "-q", seed, paths.mirror);
+    const start = {
+      issue: 1,
+      issueSessionId: `issue-1:${unpinnedPin}`,
+      origin: "https://example.com/p.git"
+    } as unknown as StartState;
+    const env: NodeJS.ProcessEnv = { PATH: `${oldBin}:${pnpmBin}:/usr/bin:/bin`, NVM_DIR: join(root, "absent"), HOME: root };
+
+    const unpinned = await runVerification({
+      paths,
+      start,
+      mirror: new BareMirror(paths.mirror, seed),
+      processRunner: runArgv,
+      now: () => new Date().toISOString(),
+      checkpoint: () => {},
+      journal: () => {},
+      phase: "candidate",
+      pin: unpinnedPin,
+      classification: { kind: "product", reason: "test", inputIdentity: "range" },
+      commands: [{ name: "check", argv: ["pnpm", "check"] }],
+      environment: { platform: process.platform, arch: process.arch, node: process.version, env }
+    });
+    expect(unpinned.status).toBe("passed");
+    if (unpinned.status !== "passed") throw new Error("expected pass");
+    expect(readFileSync(unpinned.results[0]!.logPath!, "utf8")).toContain("child_node=v22.5.0");
+
+    await expect(
+      runVerification({
+        paths,
+        start,
+        mirror: new BareMirror(paths.mirror, seed),
+        processRunner: runArgv,
+        now: () => new Date().toISOString(),
+        checkpoint: () => {},
+        journal: () => {},
+        phase: "finalization",
+        pin: missingPin,
+        classification: { kind: "product", reason: "test", inputIdentity: "range" },
+        commands: [{ name: "check", argv: ["pnpm", "check"] }],
+        environment: { platform: process.platform, arch: process.arch, node: process.version, env }
+      })
+    ).rejects.toThrow(ProductToolchainError);
+    expect(readdirSync(paths.issueRoot).some((name) => name.startsWith(".verification-"))).toBe(false);
+  });
+
+  it("extracts bounded actionable diagnostics across streams and compares complete diagnostic sets", () => {
+    const progress = Array.from({ length: 500 }, (_, i) => `progress step ${i}`).join("\n");
+    const candidate = extractDiagnosticEvidence(`compiler error A\n${progress}\n`, "build failed\n");
+    expect(candidate.excerpt).toContain("compiler error A");
+    expect(candidate.excerpt.length).toBeLessThanOrEqual(2_000);
+    expect(candidate.actionable).toEqual(["stdout:compiler error A"]);
+
+    const baselineDifferent = extractDiagnosticEvidence(`compiler error B\n${progress}\n`, "build failed\n");
+    expect(areDiagnosticEvidencesEquivalent(candidate, baselineDifferent)).toBe(false);
+
+    const genericA = extractDiagnosticEvidence("progress 100%\n", "build failed\n");
+    const genericB = extractDiagnosticEvidence("done\n", "build failed\n");
+    expect(genericA.actionable).toEqual([]);
+    expect(areDiagnosticEvidencesEquivalent(genericA, genericB)).toBe(false);
+
+    const sharedErrors = Array.from({ length: 50 }, (_, i) => `src/f.ts:${i + 1}: error TS2322: bad type ${i}`);
+    const fifty = extractDiagnosticEvidence(sharedErrors.join("\n"), "");
+    const fiftyOne = extractDiagnosticEvidence([...sharedErrors, "src/new.ts:9: error TS2304: missing foo"].join("\n"), "");
+    expect(areDiagnosticEvidencesEquivalent(fiftyOne, fifty)).toBe(false);
+
+    const toolA = extractDiagnosticEvidence("", "/tmp/.verification-11111111-aaaa/run.sh: line 1: protoc: command not found\n");
+    const toolB = extractDiagnosticEvidence("", "/tmp/.verification-22222222-bbbb/run.sh: line 1: protoc: command not found\n");
+    expect(areDiagnosticEvidencesEquivalent(toolA, toolB)).toBe(true);
+  });
 });

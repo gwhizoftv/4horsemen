@@ -51,7 +51,7 @@ import { parseClaudeRateLimits, parseCodexRateLimits } from "../src/resourceEvid
 import { resourceBindingPaths } from "../src/paths.js";
 import type { RunLoopDependencies } from "../src/runLoop.js";
 import { writeAgentResponse } from "../src/ballotResponse.js";
-import { applyOwnerAnswer, dropOwnerAgent, queueOwnerGuidance } from "../src/ownerControls.js";
+import { applyOwnerAnswer, dropOwnerAgent, queueOwnerGuidance, setOwnerPause } from "../src/ownerControls.js";
 import type { ConsensusBallotResponse } from "../src/protocol.js";
 import type { AcceptedResponse, BallotBatch } from "../src/state.js";
 import { decide } from "../src/machine.js";
@@ -4811,5 +4811,241 @@ describe("ready-driven delivery and stall watchdog", () => {
     expect(readAgentLifecycle(f.paths).agents.codex!.action!.resentAt).not.toBeNull();
     expect(readJournal(f.paths)).toContainEqual(expect.objectContaining({ type: "nudged",
       details: expect.objectContaining({ resend: true, readiness: "pending-prompt-submitted" }) }));
+  });
+});
+
+describe("finalization diagnostics and baseline failure retry", () => {
+  const buildFinalizationScenario = (checks: Array<{ name: string; argv: string[] }>) => {
+    const { root, paths } = fixture({
+      prPolicy: "coord-open-unmerged",
+      origin: "https://github.com/example/project.git"
+    });
+    const seed = join(root, "baseline-retry-seed");
+    mkdirSync(join(seed, "src"), { recursive: true });
+    git(seed, "init", "-q");
+    writeFileSync(join(seed, "src/app.ts"), "export const stage = 'baseline';\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "baseline");
+    const baselineSha = git(seed, "rev-parse", "HEAD");
+
+    mkdirSync(join(seed, ".signals/issue-1"), { recursive: true });
+    writeFileSync(join(seed, "src/app.ts"), "export const stage = 'candidate';\n");
+    writeFileSync(join(seed, ".signals/issue-1/implementation-ready-codex.json"), "{}\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "implementation");
+    const implementationPin = git(seed, "rev-parse", "HEAD");
+
+    rmSync(join(seed, ".signals"), { recursive: true });
+    git(seed, "add", "-u");
+    git(seed, "commit", "-qm", "cleanup");
+    const finalSha = git(seed, "rev-parse", "HEAD");
+
+    const start = {
+      ...readStartState(paths),
+      profile: "solo" as const,
+      baselineSha,
+      issueSessionId: `issue-1:${baselineSha}`,
+      checks
+    };
+    writeFileSync(paths.start, JSON.stringify(start));
+    writeFileSync(
+      paths.issueSnapshot,
+      JSON.stringify({
+        repository: "example/project",
+        number: 1,
+        title: "Test issue 1",
+        body: "body",
+        url: "https://github.com/example/project/issues/1"
+      })
+    );
+
+    const signalPath = ".signals/issue-1/finalization-ready-codex.json";
+    mkdirSync(join(seed, ".signals/issue-1"), { recursive: true });
+    writeFileSync(
+      join(seed, signalPath),
+      JSON.stringify({
+        protocolVersion: 1,
+        issue: 1,
+        issueSessionId: start.issueSessionId,
+        agent: "codex",
+        artifact: "finalization",
+        consensusSha: implementationPin,
+        finalSha,
+        checks: []
+      })
+    );
+    git(seed, "add", ".");
+    git(seed, "commit", "-qm", "finalization signal");
+    const submissionSha = git(seed, "rev-parse", "HEAD");
+    git(seed, "branch", "-f", "issue-1/codex", submissionSha);
+
+    // Also create a second valid signal commit pointing to a different cleanup commit to test tamper defense.
+    git(seed, "checkout", "-q", finalSha);
+    writeFileSync(join(seed, "src/app.ts"), "export const stage = 'other';\n");
+    git(seed, "commit", "-qam", "other");
+    const alternateSha = git(seed, "rev-parse", "HEAD");
+
+    git(root, "clone", "--bare", "-q", seed, paths.mirror);
+    const mirror = new BareMirror(paths.mirror, start.origin);
+    mirror.fetchBranch = async () => ({ ok: true, ref: "refs/remotes/origin/issue-1/codex", tip: submissionSha });
+    mirror.isReachable = async () => true;
+
+    const actionId = actionIdFor("codex");
+    const now = "2026-08-21T00:00:00.000Z";
+    const cursors = cursorsStateSchema.parse({
+      ...readCursorsState(paths),
+      issueCursor: { stepId: "R7.finalize", gateId: "gate-7-finalized", round: null },
+      activeRoster: ["codex"],
+      accepted: [
+        {
+          stepId: "R4.implement",
+          agent: "codex",
+          round: null,
+          submissionSha: implementationPin,
+          productPin: implementationPin,
+          path: ".signals/issue-1/implementation-ready-codex.json",
+          acceptedAt: now
+        }
+      ],
+      agents: {
+        codex: {
+          ...readCursorsState(paths).agents.codex!,
+          stepId: "R7.finalize",
+          evidenceId: "finalization-verified",
+          actionId,
+          submissionMode: "git",
+          status: "ordered",
+          attempt: 1,
+          submissionSha: null,
+          outstanding: [],
+          updatedAt: now
+        }
+      }
+    });
+    writeCursorsState(paths, cursors);
+    const order = buildOrder(paths, start, cursors, "codex", "R7.finalize", null, actionId);
+    writeAction(paths.coordRoot, agentRuntimePaths(paths, "codex").action, order);
+    writeFileSync(agentRuntimePaths(paths, "codex").complete, `${submissionSha}\n`);
+    return { root, paths, seed, mirror, start, baselineSha, implementationPin, finalSha, submissionSha, alternateSha, order };
+  };
+
+  it("surfaces bounded stdout diagnostics over trailing progress and generic stderr, retaining full logs, and routes passing or differing baselines to correction", async () => {
+    const trailingProgress = Array.from({ length: 200 }, (_, i) => `progress line ${i}`).join("\n");
+    for (const mode of ["passing-baseline", "different-baseline", "generic-only"] as const) {
+      const scenario = buildFinalizationScenario([{ name: "build", argv: ["build"] }]);
+      let pushes = 0;
+      let opens = 0;
+      scenario.mirror.publishBranch = async () => { pushes += 1; };
+      const loop = new CoordinatorRunLoop(scenario.paths, {
+        tmux: null,
+        mirror: scenario.mirror,
+        pullRequestOpener: async () => { opens += 1; return { url: "https://github.com/example/project/pull/9" }; },
+        processRunner: async (_argv, cwd) => {
+          const isBaseline = readFileSync(join(cwd, "src/app.ts"), "utf8").includes("'baseline'");
+          if (mode === "generic-only") {
+            return { exitCode: 1, stdout: trailingProgress, stderr: "build failed\n" };
+          }
+          if (isBaseline) {
+            return mode === "passing-baseline"
+              ? { exitCode: 0, stdout: "ok\n", stderr: "" }
+              : { exitCode: 1, stdout: `compiler error B\n${trailingProgress}\n`, stderr: "build failed\n" };
+          }
+          return { exitCode: 1, stdout: `compiler error A\n${trailingProgress}\n`, stderr: "build failed\n" };
+        }
+      });
+
+      const after = await loop.runTick();
+      expect(after.paused).toBe(false);
+      expect(after.pendingFinalVerification ?? null).toBeNull();
+      expect(after.publication.status).toBe("not-required");
+      expect(pushes).toBe(0);
+      expect(opens).toBe(0);
+      expect(after.agents.codex?.status).toBe("ordered");
+      const summary = after.agents.codex?.outstanding.join("\n") ?? "";
+      const logPath = /\(log: (.+?)\)/.exec(summary)?.[1];
+      expect(logPath).toBeTruthy();
+      const fullLog = readFileSync(logPath!, "utf8");
+      expect(fullLog).toContain("progress line 199");
+      expect(fullLog).toContain("build failed");
+      if (mode !== "generic-only") {
+        expect(summary).toContain("compiler error A");
+        expect(summary.length).toBeLessThan(2_500);
+        expect(fullLog).toContain("compiler error A");
+        expect(summary).toContain(mode === "passing-baseline" ? "passed this check" : "failed differently");
+      }
+    }
+  });
+
+  it("pauses on a shared unavailable tool across candidate and baseline, then retries the original approved SHA before publishing", async () => {
+    const toolDir = mkdtempSync(join(tmpdir(), "coord-shared-tool-"));
+    roots.push(toolDir);
+    const scenario = buildFinalizationScenario([
+      { name: "setup", argv: ["sh", "-c", "mkdir -p .prepared && echo ready > .prepared/ok"] },
+      { name: "check-tool", argv: ["sh", "-c", `test -f .prepared/ok && PATH=${JSON.stringify(`${toolDir}:/usr/bin:/bin`)} required-tool-272`] }
+    ]);
+    let pushes = 0;
+    let opens = 0;
+    const pushedShas: string[] = [];
+    scenario.mirror.publishBranch = async (sha) => { pushes += 1; pushedShas.push(sha); };
+    const seenWorktrees: string[] = [];
+    const messages: string[] = [];
+    const makeLoop = () =>
+      new CoordinatorRunLoop(scenario.paths, {
+        tmux: null,
+        mirror: scenario.mirror,
+        log: (line) => { messages.push(line); },
+        pullRequestOpener: async () => { opens += 1; return { url: "https://github.com/example/project/pull/272" }; },
+        processRunner: async (argv, cwd, options) => {
+          seenWorktrees.push(cwd);
+          return runArgv(argv, cwd, options);
+        }
+      });
+
+    const paused = await makeLoop().runTick();
+    expect(paused.paused).toBe(true);
+    expect(paused.publication.status).toBe("not-required");
+    expect(pushes).toBe(0);
+    expect(opens).toBe(0);
+    expect(paused.pendingFinalVerification).toMatchObject({
+      agent: "codex",
+      submissionSha: scenario.submissionSha,
+      consensusSha: scenario.implementationPin,
+      finalSha: scenario.finalSha,
+      baselineSha: scenario.baselineSha,
+      commandName: "check-tool"
+    });
+    expect(new Set(seenWorktrees).size).toBe(2);
+    expect(readFileSync(paused.pendingFinalVerification!.candidateLogPath, "utf8")).toContain("required-tool-272");
+    expect(readFileSync(paused.pendingFinalVerification!.baselineLogPath, "utf8")).toContain("required-tool-272");
+    const report = renderIssueReport(scenario.start, paused);
+    expect(report).toContain(scenario.finalSha);
+    expect(report).toContain(scenario.baselineSha);
+    expect(report).toContain(paused.pendingFinalVerification!.candidateLogPath);
+    expect(report).toContain(paused.pendingFinalVerification!.baselineLogPath);
+    expect(report).toContain("coord resume");
+
+    // Recreate loop while paused: no checks run and nothing publishes.
+    const callsWhilePaused = seenWorktrees.length;
+    await makeLoop().runTick();
+    expect(seenWorktrees.length).toBe(callsWhilePaused);
+    expect(pushes).toBe(0);
+    expect(opens).toBe(0);
+
+    // Tampering with the completion marker while paused cannot substitute another SHA.
+    writeFileSync(agentRuntimePaths(scenario.paths, "codex").complete, `${scenario.alternateSha}\n`);
+
+    // Restore the unavailable tool and resume.
+    writeFileSync(join(toolDir, "required-tool-272"), "#!/bin/sh\necho tool-restored\n", { mode: 0o700 });
+    setOwnerPause(scenario.paths, false);
+
+    const completed = await makeLoop().runTick();
+    expect(completed.paused).toBe(false);
+    expect(completed.pendingFinalVerification ?? null).toBeNull();
+    expect(completed.publication.status).toBe("completed");
+    expect(completed.publication.finalSha).toBe(scenario.finalSha);
+    expect(pushedShas).toEqual([scenario.finalSha]);
+    expect(pushes).toBe(1);
+    expect(opens).toBe(1);
+    expect(seenWorktrees.length).toBeGreaterThan(callsWhilePaused);
   });
 });

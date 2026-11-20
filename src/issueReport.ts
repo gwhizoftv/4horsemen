@@ -56,6 +56,15 @@ export const holdRecoveryCommand = (issue: number, cursors: CursorsState, hold: 
     (hold.reason === "nudge-loop" ? " --reset-nudge-budget" : "") + ` --coord-runtime ${shellQuote(coordRoot)}`;
 };
 
+const activePendingFinalVerification = (start: StartState, cursors: CursorsState) => {
+  const pending = cursors.pendingFinalVerification;
+  if (pending == null || cursors.completed || cursors.abandoned) return null;
+  if (pending.issueSessionId !== start.issueSessionId || cursors.issueCursor.stepId !== "R7.finalize") return null;
+  if (!cursors.activeRoster.includes(pending.agent)) return null;
+  if (cursors.agents[pending.agent]?.actionId !== pending.actionId) return null;
+  return pending;
+};
+
 /**
  * What the owner needs after a run: who won, which commit is the PR head,
  * which branch coord pushed, evidence publication state, and whether they
@@ -67,6 +76,7 @@ export const renderIssueReport = (
   cursors: CursorsState,
   lifecycle?: import("./agentLifecycle.js").AgentLifecycleState
 ): string => {
+  const pendingFinal = activePendingFinalVerification(start, cursors);
   const r7 = finalization(cursors);
   const acceptedImplementation = cursors.accepted
     .filter(
@@ -91,7 +101,12 @@ export const renderIssueReport = (
       : cursors.completed
         ? "complete"
         : (stageNames[cursors.issueCursor.stepId] ?? "running");
-  const needsAction = cursors.paused || cursors.holds.length > 0 || cursors.ownerQuestion != null || cursors.publication.status === "failed";
+  const needsAction =
+    cursors.paused ||
+    cursors.holds.length > 0 ||
+    cursors.ownerQuestion != null ||
+    pendingFinal !== null ||
+    cursors.publication.status === "failed";
   // A finished issue has no live containment risk; post-run agent state must not downgrade it.
   const uncertain = !cursors.completed && lifecycle !== undefined && cursors.activeRoster.some((id) => {
     const entry = lifecycle.agents[id];
@@ -139,6 +154,16 @@ export const renderIssueReport = (
         : `Follow-up filed by ${agent}: ${receipt.followUp.url}`);
     }
     if (cursors.droppedAgents.length > 0) lines.push(`Dropped agents: ${cursors.droppedAgents.join(", ")}; historical objections are not approvals or filing receipts.`);
+  }
+  if (pendingFinal !== null) {
+    lines.push(
+      `[ACTION] Finalization check '${pendingFinal.commandName}' failed with the same actionable diagnostic on candidate ${pendingFinal.finalSha} and frozen baseline ${pendingFinal.baselineSha}.`,
+      `Command: ${pendingFinal.commandArgv.join(" ")}`,
+      `Failure excerpt: ${pendingFinal.excerpt}`,
+      `Candidate log: ${pendingFinal.candidateLogPath}`,
+      `Baseline log: ${pendingFinal.baselineLogPath}`,
+      `Fix the shared environment/tool problem, then rerun verification on ${pendingFinal.finalSha} with: ${issueCommand("resume", start.issue, start.coordRoot)}`
+    );
   }
   if (cursors.manualPaused) lines.push(`Manual pause: active (${issueCommand("resume", start.issue, start.coordRoot)} clears only this pause).`);
   for (const agent of cursors.activeRoster) {
