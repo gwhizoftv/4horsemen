@@ -1,0 +1,17 @@
+{
+  "protocolVersion": 1,
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "agent": "claude",
+  "inputSetHash": "95c1573491e9d988c369ae97dc565327304db367f505874307c2f2f2b79992df",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "ea9a12ba08a62bf179911997ce292ab7438de3c2",
+  "scopeHash": "8098611ac0881a942a9e530aafb2e8d67e0cedd1a04ef74822fee1347d7905c1",
+  "approvedPaths": [
+    "TmuxController.injectionGate",
+    "package.json",
+    "src/tmux.ts",
+    "test/tmux.test.ts",
+    "verify.precommit"
+  ]
+}
