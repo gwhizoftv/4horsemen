@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "agent": "codex",
+  "inputSetHash": "46b1350b1a96cc895ba016e3b97fa615b6cac4f154b670b52ce1322fd341164c",
+  "artifact": "follow-up-ready",
+  "actionId": "86ffea7a-1e8f-4c35-a338-f1365d10dc12",
+  "round": 3,
+  "revisionCommitSha": "c8b59c8f9bcc9ac2f583e2626033f5cf473736cd",
+  "followUpIssueUrl": "https://github.com/gwhizoftv/4horsemen/issues/275"
+}
