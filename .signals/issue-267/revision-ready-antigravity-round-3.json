@@ -1,0 +1,14 @@
+{
+  "protocolVersion": 1,
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "agent": "antigravity",
+  "inputSetHash": "07690fe6209eb2e64600d5e57595913da8b96af59fd04d7098cadc0bad2eae6f",
+  "artifact": "revision-ready",
+  "round": 3,
+  "revisedBranchHead": "c8b59c8f9bcc9ac2f583e2626033f5cf473736cd",
+  "scopeHash": "8098611ac0881a942a9e530aafb2e8d67e0cedd1a04ef74822fee1347d7905c1",
+  "basedOn": [
+    "27603ea35907f0a1ef8f559370ee0333a90366f1"
+  ]
+}
