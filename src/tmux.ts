@@ -528,10 +528,21 @@ export const nudgePreludeKeys = (agentId: string): readonly string[] => agentNud
 
 const mouseScrollingAgent = (agentId: string): boolean => ["claude", "cursor", "codex"].includes(agentId);
 
-const sessionScrollOptions = (session: string, mouse = true): string[][] => [
-  ["set-option", "-t", session, "history-limit", "50000"],
-  ...(mouse ? [["set-option", "-t", session, "mouse", "on"]] : [])
-];
+const defaultClipboardCommand = platform() === "darwin" ? "/usr/bin/pbcopy" : null;
+const clipboardSession = "COORD_COPY_SESSION";
+const clipboardWindow = "@coord-copy-window";
+
+const sessionScrollOptions = (session: string, mouse: boolean, clipboard: boolean): string[][] => {
+  const options = [["set-option", "-t", session, "history-limit", "50000"]];
+  const enableMouse = ["set-option", "-t", session, "mouse", "on"];
+  if (mouse) options.push(enableMouse);
+  else if (clipboard) {
+    // Keep native selection in these clients on older tmux without copy-command.
+    options.push(["if-shell", "-F", "#{!=:#{copy-command},}", enableMouse.join(" ")]);
+  }
+  if (clipboard) options.push(["set-environment", "-t", session, clipboardSession, session]);
+  return options;
+};
 
 // Older tmux lacks scrollbars; -q ignores only unknown/ambiguous options.
 const windowScrollOptions = (target: string, agentId: string): string[][] =>
@@ -546,14 +557,15 @@ const windowScrollOptions = (target: string, agentId: string): string[][] =>
  * cannot turn them into shell command separators (which would skip select-window
  * and leave every client on the last window, usually antigravity).
  */
-export const agentClientAttachCommand = (session: string, agentId: string): string => {
+export const agentClientAttachCommand = (session: string, agentId: string, clipboard = defaultClipboardCommand !== null): string => {
   const window = safeName(agentId);
   const client = `${session}-${window}`;
   return [
     `tmux new-session -A -s ${client} -t ${session}`,
     `select-window -t ${window}`,
     "set-option destroy-unattached on",
-    ...sessionScrollOptions(client, mouseScrollingAgent(agentId)).map((args) => args.join(" ")),
+    ...sessionScrollOptions(client, mouseScrollingAgent(agentId), clipboard).map((args) =>
+      args.map((arg) => /[ #]/.test(arg) ? shellQuote(arg) : arg).join(" ")),
     ...windowScrollOptions(`${client}:${window}`, agentId).map((args) => args.join(" "))
   ].join(" ';' ");
 };
@@ -823,7 +835,8 @@ export class TmuxController {
       new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
     /** Workspace fingerprint for Terminal titles; defaults to tmux namespace. */
     private readonly titleGroup: string | null = null,
-    private readonly titleProbe: OwnerTerminalTitleProbe | null = defaultOwnerTerminalTitleProbe()
+    private readonly titleProbe: OwnerTerminalTitleProbe | null = defaultOwnerTerminalTitleProbe(),
+    private readonly clipboardCommand: string | null = defaultClipboardCommand
   ) {}
 
   /** Group id embedded in Terminal custom titles for this workspace. */
@@ -849,7 +862,7 @@ export class TmuxController {
     const group = this.terminalTitleGroup();
     return agents.map((agent) => ({
       agentId: agent.id,
-      command: agentClientAttachCommand(session, agent.id),
+      command: agentClientAttachCommand(session, agent.id, this.clipboardCommand !== null),
       terminalProfile: resolveTerminalProfile(agent),
       windowTitle: ownerTerminalWindowTitle(key, agent.id, group)
     }));
@@ -959,6 +972,7 @@ export class TmuxController {
     if (created.exitCode !== 0) throw new Error(`tmux session creation failed: ${created.stderr}`);
     try {
       await this.configureSessionScrolling(session);
+      await this.configureClipboard();
       const environment = await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(issue)]);
       if (environment.exitCode !== 0) {
         throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
@@ -988,9 +1002,46 @@ export class TmuxController {
   }
 
   private async configureSessionScrolling(session: string, mouse = true): Promise<void> {
-    const commands = sessionScrollOptions(session, mouse);
+    const commands = sessionScrollOptions(session, mouse, this.clipboardCommand !== null);
     const result = await this.runner(commands.flatMap((args, index) => index === 0 ? args : [";", ...args]));
     if (result.exitCode !== 0) throw new Error(`cannot configure scrolling in ${session}: ${result.stderr}`);
+  }
+
+  private async configureClipboard(assertAuthority: () => void = () => undefined): Promise<void> {
+    if (this.clipboardCommand === null) return;
+    const existing = await this.runner(["show-options", "-sv", "copy-command"]);
+    assertAuthority();
+    // Older tmux has no copy-command. An owner's configured pipe takes precedence.
+    if (existing.exitCode !== 0) return;
+    if (existing.stdout.trim() === "") {
+      // tmux starts the pipe with the copying session's TMUX (socket,pid,session ID).
+      // Resolve that session explicitly even when another grouped client is focused.
+      const copy = [
+        '[ -n "$COORD_COPY_SESSION" ] || exit 0',
+        'session_id="\\$${TMUX##*,}"',
+        `pane=$(tmux display-message -p -t "$session_id:" '#{session_name}:#{${clipboardWindow}}' </dev/null) || exit 0`,
+        '[ "$pane" = "$COORD_COPY_SESSION:1" ] || exit 0',
+        `exec ${this.clipboardCommand}`
+      ].join("\n");
+      // Recheck inside tmux in case another workspace or the owner just configured it.
+      const install = await this.runner(["if-shell", "-F", "#{==:#{copy-command},}",
+        `set-option -s copy-command ${shellQuote(`/bin/sh -c ${shellQuote(copy)}`)}`]);
+      assertAuthority();
+      if (install.exitCode !== 0) throw new Error(`cannot configure tmux clipboard: ${install.stderr}`);
+    }
+
+    // The stock drag forwards to any mouse-reporting TUI, bypassing copy-command.
+    // Only specialize that stock action. Custom bindings, wheels and copy-mode keep their behavior.
+    const bindings = await this.runner(["list-keys", "-T", "root"]);
+    assertAuthority();
+    const stockDrag = 'bind-key -T root MouseDrag1Pane if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" { send-keys -M } { copy-mode -M }';
+    if (bindings.exitCode === 0 && bindings.stdout.split("\n").some((line) => line.replace(/[ \t]+/g, " ") === stockDrag)) {
+      const managedWindow = `#{&&:#{${clipboardWindow}},#{==:#{session_name},#{${clipboardSession}}}}`;
+      const bound = await this.runner(["bind-key", "-T", "root", "MouseDrag1Pane", "if-shell", "-F", "-t", "=",
+        `#{||:#{pane_in_mode},#{?${managedWindow},0,#{mouse_any_flag}}}`, "send-keys -M", "copy-mode -M"]);
+      assertAuthority();
+      if (bound.exitCode !== 0) throw new Error(`cannot configure tmux drag selection: ${bound.stderr}`);
+    }
   }
 
   /** The git shim disarms on COORD_MANUAL=1, so an automated session must never pass one on. */
@@ -1097,6 +1148,8 @@ export class TmuxController {
     // Set history before creating agent panes; repair existing sessions on resume too.
     await this.configureSessionScrolling(session);
     assertAuthority();
+    await this.configureClipboard(assertAuthority);
+    assertAuthority();
     // `-r` removes the variable from every process the session starts, even one
     // the tmux server's global environment still carries; `-u` would only drop
     // the session value and let that global value through.
@@ -1143,7 +1196,7 @@ export class TmuxController {
         const pane = await this.inspectPane(target);
         assertAuthority();
         if (pane.alive) {
-          for (const command of windowScrollOptions(target, agent.id)) {
+          for (const command of this.agentWindowOptions(target, agent.id)) {
             const configured = await this.runner(command);
             assertAuthority();
             if (configured.exitCode !== 0) throw new Error(`cannot configure scrolling in ${target}: ${configured.stderr}`);
@@ -1191,13 +1244,19 @@ export class TmuxController {
       : launcher;
     return this.runner([
       "set-option", "-w", "-t", target, "remain-on-exit", "on",
-      ...windowScrollOptions(target, agent.id).flatMap((args) => [";", ...args]),
+      ...this.agentWindowOptions(target, agent.id).flatMap((args) => [";", ...args]),
       ...(log === null ? [] : [
         ";", "set-option", "-w", "-t", target, "@coord-log", log,
         ";", "pipe-pane", "-t", target, pipeToLog(log)
       ]),
       ";", "respawn-pane", "-k", "-t", target, "-c", resolve(agent.root), command
     ]);
+  }
+
+  private agentWindowOptions(target: string, agentId: string): string[][] {
+    const commands = windowScrollOptions(target, agentId);
+    if (this.clipboardCommand !== null) commands.push(["set-option", "-w", "-t", target, clipboardWindow, "1"]);
+    return commands;
   }
 
   async inspectPane(target: string): Promise<PaneState> {

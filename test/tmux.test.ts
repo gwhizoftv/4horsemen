@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { shellQuote } from "../src/agentHookSync.js";
 import {
   agentClientAttachCommand,
   harnessLooksReady,
@@ -420,7 +421,7 @@ describe("tmux boundary", () => {
   });
 
   it("builds one attach command per agent window with terminal profiles", () => {
-    const controller = new TmuxController(async () => ok(), null, async () => undefined);
+    const controller = new TmuxController(async () => ok(), null, async () => undefined, null, noopSleep, null, null, null);
     expect(controller.agentAttachLaunches(7, [
       { id: "claude", root: "/c", launcher: "start-claude.sh", delivery: "both", terminalProfile: "Pro" },
       { id: "codex", root: "/x", launcher: "start-codex.sh", delivery: "both", terminalProfile: "Grass" }
@@ -444,8 +445,8 @@ describe("tmux boundary", () => {
       }
     ]);
     expect(agentClientAttachCommand("coord-7", "cursor")).toContain("set-option -w -q -t coord-7-cursor:cursor pane-scrollbars on");
-    for (const id of ["antigravity", "gemini"]) {
-      const command = agentClientAttachCommand("coord-7", id);
+    for (const id of ["antigravity", "gemini", "muse", "opencode"]) {
+      const command = agentClientAttachCommand("coord-7", id, false);
       expect(command).toContain(`set-option -t coord-7-${id} history-limit 50000`);
       expect(command).not.toMatch(/mouse|pane-scrollbars| -g /);
     }
@@ -1578,6 +1579,103 @@ it("flushes partial terminal chunks and keeps bytes ordered between timestamp pr
     expect(recorded.replace(stamp, "")).toBe("prompt without newline continued\r\nnext\n\n\u001b[2J");
   } finally {
     child.kill();
+  }
+});
+
+it.skipIf(!tmuxInstalled)("copies selections from all seven managed agent clients and isolates the clipboard", async () => {
+  const root = mkdtempSync(join(tmpdir(), "coord-tmux-copy-"));
+  roots.push(root);
+  const socket = join(root, "tmux.sock");
+  const sink = join(root, "clipboard");
+  const runner: TmuxRunner = (args, input) => runTmux(["-S", socket, "-f", "/dev/null", ...args], input);
+  const run = async (...args: string[]): Promise<string> => {
+    const result = await runner(args);
+    expect(result.exitCode, result.stderr).toBe(0);
+    return result.stdout.trimEnd();
+  };
+  const controller = new TmuxController(runner, null, null, null, noopSleep, null, null, `/bin/cat > ${shellQuote(sink)}`);
+  const agents = ["muse", "codex", "cursor", "claude", "antigravity", "gemini", "opencode"].map((id) => {
+    const launcher = `start-${id}.sh`;
+    // Alternate plain terminal output and TUIs that capture SGR mouse drags themselves.
+    const tracking = ["cursor", "claude", "opencode"].includes(id) ? "\\033[?1002h\\033[?1006h" : "";
+    const history = id === "codex" ? "i=0; while [ $i -lt 60 ]; do echo history; i=$((i+1)); done\n" : "";
+    writeFileSync(join(root, launcher), `#!/bin/sh\n${history}printf '\\033[H\\033[2J${tracking}text from ${id}'\nexec sleep 60\n`, { mode: 0o700 });
+    return { id, root, launcher, delivery: "pull" as const };
+  });
+  const copyLine = (target: string) => run("copy-mode", "-t", target,
+    ";", "send-keys", "-t", target, "-X", "start-of-line",
+    ";", "send-keys", "-t", target, "-X", "begin-selection",
+    ";", "send-keys", "-t", target, "-X", "end-of-line",
+    ";", "send-keys", "-t", target, "-X", "copy-pipe-and-cancel");
+  let terminal: ReturnType<typeof spawn> | undefined;
+  try {
+    await run("new-session", "-d", "-s", "personal", "printf 'personal text'; exec sleep 60");
+    await controller.startSession(7, agents);
+    for (const agent of agents) {
+      const client = `coord-7-${agent.id}`;
+      const command = agentClientAttachCommand("coord-7", agent.id, true);
+      expect(command).toContain(`set-option -t ${client} mouse on`);
+      expect(command).toContain(`set-environment -t ${client} COORD_COPY_SESSION ${client}`);
+      if (agent.id === "muse") continue; // Exercise a fresh owner attach below.
+      await run("new-session", "-d", "-s", client, "-t", "coord-7");
+      await run("select-window", "-t", `${client}:${agent.id}`);
+    }
+    // Also exercises repair of pre-upgrade linked clients without relaunching their panes.
+    await controller.ensureSession(7, agents);
+    const museAttach = agentClientAttachCommand("coord-7", "muse", true).replace(/^tmux /, `tmux -S ${shellQuote(socket)} `);
+    const attach = ["/bin/sh", "-c", museAttach];
+    const scriptArgs = process.platform === "linux"
+      ? ["-qec", attach.map(shellQuote).join(" "), "/dev/null"]
+      : ["-q", "/dev/null", ...attach];
+    // BSD script accepts a pipe on stdin, but Node's child stdio is a socket pair.
+    terminal = spawn("/bin/sh", ["-c", 'cat | script "$@"', "sh", ...scriptArgs], {
+      env: { ...process.env, TERM: "xterm-256color", TMUX: "" }
+    });
+    let output = "";
+    terminal.stdout?.on("data", (chunk) => { output = (output + chunk).slice(-1000); });
+    terminal.stderr?.on("data", (chunk) => { output = (output + chunk).slice(-1000); });
+    await expect.poll(async () => (await run("list-clients", "-F", "#{client_tty}")) || output, { timeout: 3000 }).toMatch(/^\/dev\//);
+    const tty = await run("list-clients", "-F", "#{client_tty}");
+    const drag = (text: string): void => {
+      const end = text.length + 1;
+      terminal!.stdin!.write(`\x1b[<0;1;1M\x1b[<32;2;1M\x1b[<32;${end};1M\x1b[<0;${end};1m`);
+    };
+    for (const { id } of agents) {
+      const target = `coord-7-${id}:${id}`;
+      expect(await run("display-message", "-p", "-t", target, "#{mouse} #{history_limit}")).toBe("1 50000");
+      await run("switch-client", "-c", tty, "-t", target);
+      drag(`text from ${id}`);
+      await expect.poll(() => existsSync(sink) && readFileSync(sink, "utf8")).toBe(`text from ${id}`);
+      expect(await run("display-message", "-p", "-t", target, "#{pane_in_mode}")).toBe("0");
+    }
+    const codex = "coord-7-codex:codex";
+    await run("switch-client", "-c", tty, "-t", codex);
+    terminal.stdin!.write("\x1b[<64;1;1M\x1b[<64;1;1M");
+    await expect.poll(async () => Number(await run("display-message", "-p", "-t", codex, "#{scroll_position}"))).toBeGreaterThan(0);
+    drag("history");
+    await expect.poll(() => readFileSync(sink, "utf8")).toBe("history");
+    // Wait for each copy job to finish, including the branches that skip the sink.
+    const copyCommand = await run("show-options", "-sv", "copy-command");
+    await run("set-option", "-s", "copy-command", `${copyCommand}; tmux wait-for -S copy-finished`);
+    await copyLine("personal:");
+    await run("wait-for", "copy-finished");
+    expect(await run("show-buffer")).toBe("personal text");
+    await run("select-window", "-t", "coord-7:control");
+    await run("respawn-pane", "-k", "-t", "coord-7:control", "printf 'control text'; exec sleep 60");
+    await expect.poll(() => run("capture-pane", "-p", "-t", "coord-7:control")).toContain("control text");
+    await copyLine("coord-7:control");
+    await run("wait-for", "copy-finished");
+    expect(await run("show-buffer")).toBe("control text");
+    expect(readFileSync(sink, "utf8")).toBe("history");
+
+    await run("set-option", "-s", "copy-command", "owner-copy");
+    await run("bind-key", "-T", "root", "MouseDrag1Pane", "display-message", "owner-drag");
+    await controller.ensureSession(7, agents);
+    expect(await run("show-options", "-sv", "copy-command")).toBe("owner-copy");
+    expect(await run("list-keys", "-T", "root")).toMatch(/MouseDrag1Pane\s+display-message owner-drag/);
+  } finally {
+    terminal?.stdin?.end();
+    await runner(["kill-server"]);
   }
 });
 
