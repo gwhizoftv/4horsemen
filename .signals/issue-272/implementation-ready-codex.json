@@ -4,14 +4,18 @@
   "issueSessionId": "issue-272:f63828c1b459580c242974eb3ce496b18ff430f0",
   "agent": "codex",
   "inputSetHash": "ef67fad58689de1d5f7dc831101caa16abb9d5487de35874957dab0f77a59ec8",
-  "artifact": "plan-amendment-request",
-  "actionId": "d341cafa-b150-49cf-a371-6fb52424763a",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "aa59721fdbc69d7be1be908188ee2d9b7fe836d0",
   "scopeHash": "94a3d154948b2f3736d9f7f5759efdd8e1bb04c6e05802db5f01b526c7902a27",
-  "explanation": "The selected plan reuses runVerification for the frozen-baseline comparison and requires baseline evidence to remain distinguishable from candidate and final attempts. Each executed command produces a typed verification measurement, but the phase schema that defines this type was omitted from the approved file map.",
-  "additionalPaths": [
-    {
-      "path": "src/verificationLog.ts",
-      "reason": "Extend verificationMeasurementSchema to identify coordinator baseline attempts, and restrict createVerificationIngestor to precommit and prepush hook phases. The current filter rejects only candidate and finalization, so adding baseline to the shared schema alone would also admit hook-supplied baseline measurements."
-    }
+  "approvedPaths": [
+    "src/hookPolicy.ts",
+    "src/issueReport.ts",
+    "src/runLoop.ts",
+    "src/state.ts",
+    "src/verificationEnvironment.ts",
+    "src/verificationReceipts.ts",
+    "src/verificationRunner.ts",
+    "test/runLoop.test.ts",
+    "test/verificationRunner.test.ts"
   ]
 }
