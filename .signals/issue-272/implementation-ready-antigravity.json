@@ -1,0 +1,21 @@
+{
+  "protocolVersion": 1,
+  "issue": 272,
+  "issueSessionId": "issue-272:f63828c1b459580c242974eb3ce496b18ff430f0",
+  "agent": "antigravity",
+  "inputSetHash": "ef67fad58689de1d5f7dc831101caa16abb9d5487de35874957dab0f77a59ec8",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "db04b1f4c95aa9f5a269e040866909cb2de94fb1",
+  "scopeHash": "94a3d154948b2f3736d9f7f5759efdd8e1bb04c6e05802db5f01b526c7902a27",
+  "approvedPaths": [
+    "src/hookPolicy.ts",
+    "src/issueReport.ts",
+    "src/runLoop.ts",
+    "src/state.ts",
+    "src/verificationEnvironment.ts",
+    "src/verificationReceipts.ts",
+    "src/verificationRunner.ts",
+    "test/runLoop.test.ts",
+    "test/verificationRunner.test.ts"
+  ]
+}
