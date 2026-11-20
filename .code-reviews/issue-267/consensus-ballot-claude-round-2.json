@@ -1,0 +1,14 @@
+{
+  "actionId": "fbaf8961-fa9f-4875-9cf2-4635eeade56d",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "727f8a12220255765e24535f2233a0cfb0d27a97bb4b1cfeba4911035a631708",
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "protocolVersion": 2,
+  "rationale": "Antigravity's round-2 revision 27603ea3 moves the clipboard marker from the primary session (which holds the control window) onto all seven linked agent clients without changing mouse policy, proves with completion-marker waits that the control window and an unrelated session never write the sink while every agent client does, keeps the owner copy-command preserved, and its recorded hook check:fast and test:e2e runs passed; the only trade-off is that agent windows viewed by attaching the primary session directly keep baseline behavior, which the standard per-agent owner terminals do not use.",
+  "responseSha256": "d1f5893d3c225344dd54f1e49481bfa332aabd85d369e035e784e70efeaf40a1",
+  "revisionCommitSha": "27603ea35907f0a1ef8f559370ee0333a90366f1",
+  "round": 2
+}

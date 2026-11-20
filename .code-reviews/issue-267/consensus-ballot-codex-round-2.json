@@ -1,0 +1,14 @@
+{
+  "actionId": "f1ccaa89-07b1-4e71-836e-5584e6dbdcae",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "727f8a12220255765e24535f2233a0cfb0d27a97bb4b1cfeba4911035a631708",
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "protocolVersion": 2,
+  "rationale": "Scope clipboard writes to the source agent window and verify drag-and-release in all seven linked clients because a real tmux drag in Muse left the clipboard sink unchanged and copying from the control window through that same client wrote control text.",
+  "responseSha256": "577ddbfa34f271479bf84de24ff8d4566fca51ecb48d2c5a2f589218681ebf13",
+  "revisionCommitSha": "27603ea35907f0a1ef8f559370ee0333a90366f1",
+  "round": 2
+}

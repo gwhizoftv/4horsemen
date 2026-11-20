@@ -1,0 +1,14 @@
+{
+  "actionId": "81b70829-2895-42c3-8cfd-96888b0f2b1d",
+  "agent": "antigravity",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "727f8a12220255765e24535f2233a0cfb0d27a97bb4b1cfeba4911035a631708",
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "protocolVersion": 2,
+  "rationale": "Revision 27603ea3 tags all seven per-agent linked clients for clipboard copy while removing the marker from the primary session so coord-N:control and unrelated sessions never write to the clipboard, keeps mouse off on non-mouse clients with zero global keybindings, and passes deterministic real-tmux and hook checks.",
+  "responseSha256": "55729e8a6a930c88c12f096be99000801d6ff764a95db336eb5ff7997c02fe55",
+  "revisionCommitSha": "27603ea35907f0a1ef8f559370ee0333a90366f1",
+  "round": 2
+}
