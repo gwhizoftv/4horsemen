@@ -1,0 +1,46 @@
+{
+  "actionId": "ccd59678-6c7c-4e6f-8d28-3472f8d764a5",
+  "agent": "codex",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "f616234d8a0d57d1f3c27eca9220615219778389892a65fb4781b1def7b52fbf",
+  "issue": 272,
+  "issueSessionId": "issue-272:f63828c1b459580c242974eb3ce496b18ff430f0",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "8cbda15a6b23bb8dada9927ccd2ff935e860c924",
+      "path": ".plans/issue-272/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "4cb22ad81efae1a6f6bee01c8682288ab6eeb728",
+      "path": ".plans/issue-272/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "f3c1cdcb1b4c7fe3349255dea5ceeac8aa8897b2",
+      "path": ".plans/issue-272/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "The Codex plan invalidates receipts produced under the wrong Node version, compares complete diagnostics from fresh baseline runs, and binds the owner’s retry to the original submission and approved commit.",
+  "responseSha256": "8680f614d759d9daa6c978b1e93dcecf368e3de5707b10a5a242bc2297545d3c",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "a06d39ba52156cc5d1ba9aad6c216883ac0c2231",
+      "path": ".plans/issue-272/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "6c5cb1183c452bd78d773fb2c4177c026a83df2e",
+      "path": ".plans/issue-272/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9c2a9a8bd71146d0041fbd0ad4e7b0ad133c7fbd",
+      "path": ".plans/issue-272/review.md"
+    }
+  ]
+}

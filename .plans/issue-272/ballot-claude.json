@@ -1,0 +1,46 @@
+{
+  "actionId": "2a81c227-1747-43c0-985f-cc0640af318b",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "claude",
+  "inputSetHash": "f616234d8a0d57d1f3c27eca9220615219778389892a65fb4781b1def7b52fbf",
+  "issue": 272,
+  "issueSessionId": "issue-272:f63828c1b459580c242974eb3ce496b18ff430f0",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "8cbda15a6b23bb8dada9927ccd2ff935e860c924",
+      "path": ".plans/issue-272/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "4cb22ad81efae1a6f6bee01c8682288ab6eeb728",
+      "path": ".plans/issue-272/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "f3c1cdcb1b4c7fe3349255dea5ceeac8aa8897b2",
+      "path": ".plans/issue-272/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "The claude plan reuses nvm, the shared runner and the owner-question flow with no new files and runs the baseline uncached; its reviewed defects (pre-fix receipt collision, binding retry to the recorded signal and final SHAs, uncapped comparison, a hook-phase allowlist, excluding amendment-only checks, and status evidence) are small corrections mostly inside its file map, whereas codex's pause-based retry and unpinned-Node fallback and antigravity's cached baseline and reimplemented version parsing need larger redesigns.",
+  "responseSha256": "d953b651858bb349743adedfd2a834f121b9c3c4bc7b6982445e1944f5329f5c",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "a06d39ba52156cc5d1ba9aad6c216883ac0c2231",
+      "path": ".plans/issue-272/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "6c5cb1183c452bd78d773fb2c4177c026a83df2e",
+      "path": ".plans/issue-272/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9c2a9a8bd71146d0041fbd0ad4e7b0ad133c7fbd",
+      "path": ".plans/issue-272/review.md"
+    }
+  ]
+}
