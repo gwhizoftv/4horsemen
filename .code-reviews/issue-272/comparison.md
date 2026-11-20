@@ -1,0 +1,29 @@
+## Comparison
+
+I recommend the Codex implementation for revision. It binds a fresh retry to the original signal and final commit, keeps that binding until the cursor transition, and distinguishes multiline assertion values in its comparison. Its remaining toolchain and diagnostic gaps are localized. I reviewed these exact product pins.
+
+| Implementation | Product pin | Scope and coverage |
+| --- | --- | --- |
+| Codex | `aa59721fdbc69d7be1be908188ee2d9b7fe836d0` | Uses the existing gate runner and run-loop fixture. Its toolchain test invokes an installed pnpm package script. Its retry test creates a real missing executable, restores it after the pause, replaces the completion marker and checks which SHA publishes. |
+| Claude | `f7a4704f1e423ff2d2e4c304149e26407e90655a` | Reuses the gate fixture and receipt machinery. Its retry test explicitly checks that a previously receipted command executes again. It distinguishes issue-added commands in the baseline comparison. The separate cursor mutation for clearing a retry introduces a recovery gap. |
+| Antigravity | `db04b1f4c95aa9f5a269e040866909cb2de94fb1` | Exercises correction and publication through real Git fixtures. Its scope also includes a custom engine-range parser and a second finalization path for resumed work. Both add behavior to maintain beyond the selected plan's project-pin lookup and common verification path. |
+
+All three stay inside the nine approved product paths, add the shared environment resolver, invalidate old receipt keys and extend existing test files. Their tests target the requested behavior. The following findings distinguish the implementations.
+
+1. **Claude, `src/runLoop.ts:3598`.** The saved retry must remain authoritative until acceptance or correction commits to cursor state. Claude clears it in a separate mutation before applying the decision. A crash after that clear leaves R7 active with its original retry binding gone. If the marker changed during the owner pause, the restarted tick can consume a different submission. Exercise a restart immediately after the clear, with a replacement marker already present, and assert that only the original pin can publish.
+
+2. **Antigravity, `src/verificationRunner.ts:200`, and Claude, `src/verificationRunner.ts:135`.** A shared heading cannot establish a shared failure when the diagnostic values underneath differ. With stdout containing `AssertionError: mismatch` followed by an indented `Expected: 1` on the candidate and `Expected: 2` on the baseline, and identical generic stderr, both pinned comparators returned true. That sends a candidate-specific assertion failure to the owner. Codex retains those detail lines in its comparison and has a corresponding regression test.
+
+3. **Claude, `src/verificationRunner.ts:116`, and Antigravity, `src/verificationRunner.ts:115`.** The summary must retain an actionable diagnostic when subsequent progress overwrites the terminal line. Both implementations discard earlier carriage-return segments before diagnostic selection. I passed each helper stdout `compiler error A\rprogress 90%\n` and stderr `build failed`. Both excerpts contained only `[stderr] build failed`. Codex splits the segments before selecting lines and preserves the compiler message in this case.
+
+4. **Codex, `src/verificationEnvironment.ts:26`.** A numeric product pin must resolve when a matching Node is already installed. With `.nvmrc` containing `26`, Node v26.12.1 running, and no nvm installation, the resolver skipped its installed-binary branch and told me to install Node 26. Both peer resolvers selected v26.12.1 under the same conditions. Cover a major-only pin with an absent nvm directory alongside the existing exact-pin test.
+
+5. **Codex, `src/verificationRunner.ts:87`.** A progress prefix must not disqualify a line that also contains the actionable diagnostic. After eight ordinary progress lines, stdout `[2/4] compiler error A` is discarded by the prefix filter and falls outside the eight-line fallback. With generic stderr the owner loses A despite the full log containing it. Test progress-prefixed compiler diagnostics before applying the display limit.
+
+6. **Antigravity, `src/runLoop.ts:2944`.** A failed final command needs a baseline run even when its output alone cannot establish a match. An exit-1 candidate printing only `build failed` skips the baseline entirely, so the owner gets no baseline result or log even when the baseline would pass. Running the comparison can supply that evidence while keeping generic-only pairs on the correction path.
+
+7. **Claude, `src/verificationRunner.ts:277`.** Cache identity must describe the runtime the product actually used. On an unpinned Node project the resolver returns a null version, so the receipt records the coordinator's version while children use inherited PATH. With a fixed Node 26 coordinator, changing PATH from Node 20 to Node 22 can reuse the Node 20 result when the command declares neither a Node probe nor PATH in its cache inputs. Comparing two fresh environments with the same tree and policy exposes the collision even after invalidating v1 receipts.
+
+8. **Antigravity, `src/verificationRunner.ts:539`.** A check that modifies tracked inputs must remain an integrity failure. Here the modified classification applies only to exit zero. If a command writes a tracked file and exits one with a specific diagnostic, it enters ordinary failure matching and can pause for owner repair when the baseline does the same. A two-pin fixture should assert correction and the tracked-input explanation regardless of the command's exit status.
+
+The focused review probes used the resolvers and exported diagnostic helpers from the bound worktrees. The Codex product hook previously passed lint, typechecking, 908 fast tests, 284 system tests and two end-to-end tests. The action supplied no coordinator verification results for the three pins.
