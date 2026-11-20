@@ -34,7 +34,10 @@ import { atomicWriteJson } from "./state.js";
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 
 export const receiptKeyMaterialSchema = z.object({
-  v: z.literal(1),
+  /** 2: checks receive the product's selected Node on PATH. A version-1 key
+   * recorded the coordinator's Node even when the check's children ran
+   * another one from the inherited PATH, so it never certifies a run now. */
+  v: z.literal(2),
   origin: z.string().min(1),
   inputsMode: z.enum(["tree", "tree-excluding-evidence"]),
   inputIdentity: z.string().min(1),
@@ -44,6 +47,8 @@ export const receiptKeyMaterialSchema = z.object({
   platform: z.string().min(1),
   arch: z.string().min(1),
   node: z.string().min(1),
+  /** The product Node selected for the check, or null for the inherited PATH. */
+  toolchain: z.string().min(1).nullable(),
   probes: z.array(z.object({ argv: z.array(z.string()).min(1), stdout: z.string() }).strict()),
   /** Digests, not values: receipts must not copy secrets out of the environment. */
   env: z.array(z.object({ name: z.string().min(1), value: hex64.nullable() }).strict()),
@@ -71,7 +76,7 @@ export type Receipt = z.infer<typeof receiptSchema>;
 export const receiptKey = (material: ReceiptKeyMaterial): string => sha256(JSON.stringify({
   v: material.v, origin: material.origin, inputsMode: material.inputsMode, inputIdentity: material.inputIdentity,
   argv: material.argv, policyDigest: material.policyDigest, platform: material.platform, arch: material.arch,
-  node: material.node, probes: material.probes.map((probe) => ({ argv: probe.argv, stdout: probe.stdout })),
+  node: material.node, toolchain: material.toolchain, probes: material.probes.map((probe) => ({ argv: probe.argv, stdout: probe.stdout })),
   env: material.env.map((entry) => ({ name: entry.name, value: entry.value })),
   dependencies: material.dependencies
 }));

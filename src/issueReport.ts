@@ -1,5 +1,5 @@
 import { NO_CHECKS } from "./projectChecks.js";
-import type { BallotBatch, CursorsState, StartState } from "./state.js";
+import { liveFinalRetry, type BallotBatch, type CursorsState, type StartState } from "./state.js";
 import { coordMergesPullRequest, describeWorkflowStep, type WorkflowStepId } from "./steps.js";
 import { containmentCoverage } from "./agentLifecycle.js";
 import { containmentPolicy } from "./shellGuard.js";
@@ -141,6 +141,15 @@ export const renderIssueReport = (
     if (cursors.droppedAgents.length > 0) lines.push(`Dropped agents: ${cursors.droppedAgents.join(", ")}; historical objections are not approvals or filing receipts.`);
   }
   if (cursors.manualPaused) lines.push(`Manual pause: active (${issueCommand("resume", start.issue, start.coordRoot)} clears only this pause).`);
+  const retry = liveFinalRetry(start, cursors);
+  if (retry !== null) {
+    lines.push(`[ACTION] Final check ${retry.command.name} (${retry.command.argv.join(" ")}) fails the same way at the frozen baseline ` +
+      `${retry.baselineSha} as at final commit ${retry.finalSha}.`);
+    lines.push(`Final: ${retry.candidate.excerpt} (log: ${retry.candidate.logPath})`);
+    lines.push(`Baseline: ${retry.baseline.excerpt} (log: ${retry.baseline.logPath})`);
+    lines.push(`Repair the shared tool or environment, then ${issueCommand("resume", start.issue, start.coordRoot)} ` +
+      `re-verifies ${retry.finalSha} (submission ${retry.submissionSha}) fresh before publication.`);
+  }
   for (const agent of cursors.activeRoster) {
     const wait = currentScrollbackWait(cursors, agent, lifecycle);
     if (wait === undefined) continue;

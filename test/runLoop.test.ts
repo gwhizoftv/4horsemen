@@ -51,7 +51,7 @@ import { parseClaudeRateLimits, parseCodexRateLimits } from "../src/resourceEvid
 import { resourceBindingPaths } from "../src/paths.js";
 import type { RunLoopDependencies } from "../src/runLoop.js";
 import { writeAgentResponse } from "../src/ballotResponse.js";
-import { applyOwnerAnswer, dropOwnerAgent, queueOwnerGuidance } from "../src/ownerControls.js";
+import { applyOwnerAnswer, dropOwnerAgent, queueOwnerGuidance, setOwnerPause } from "../src/ownerControls.js";
 import type { ConsensusBallotResponse } from "../src/protocol.js";
 import type { AcceptedResponse, BallotBatch } from "../src/state.js";
 import { decide } from "../src/machine.js";
@@ -3373,8 +3373,11 @@ describe("effectful run loop", () => {
     // A restart cannot turn a failure or an advisory record into successful verification.
     const retried = await new CoordinatorRunLoop(paths, dependencies).verifyFinalizationChecks(readStartState(paths), order, observation, cursors);
     expect(retried.status).toBe("rejected");
-    expect(calls).toHaveLength(2);
+    // Each failure is also run at an available frozen baseline; generic output alone never matches it.
+    expect(calls).toHaveLength(change === "missing-history" ? 2 : 4);
+    expect(retried.outstanding[0]).toContain(change === "missing-history" ? "is unavailable" : "no specific diagnostic to compare");
     expect(calls[0]).toEqual(change === "README.md" ? ["docs-check"] : start.checks[0]!.argv);
+    expect(readJournal(paths).filter((event) => event.type === "baseline-check")).toHaveLength(change === "missing-history" ? 0 : 2);
     const passed = await new CoordinatorRunLoop(paths, { ...dependencies,
       processRunner: async () => ({ exitCode: 0, stdout: "", stderr: "" }) }).verifyFinalizationChecks(start, order, observation, cursors);
     expect(passed.status).toBe("satisfied");
@@ -3611,6 +3614,131 @@ describe("coordinator verification gates", () => {
     const restarted = await gate.loop().verifyCandidateChecks(readStartState(gate.paths), order, observation, readCursorsState(gate.paths));
     expect(restarted.status).toBe("rejected");
     expect(gate.calls.filter((call) => call === "lint")).toHaveLength(2);
+  });
+
+  /** The final R7 order and observation for a gate fixture, with a distinct signal commit. */
+  const finalOrderFor = (gate: ReturnType<typeof gateFixture>, submissionSha = "5".repeat(40)) => {
+    const order = { ...buildOrder(gate.paths, readStartState(gate.paths), readCursorsState(gate.paths), "codex", "R7.finalize", null),
+      inputs: [{ agent: "codex", commitSha: gate.consensusSha, path: ".signals/issue-1/revision-ready-codex.json", kind: "consensus" }] };
+    return { order, observation: { agent: "codex", actionId: order.actionId, submissionSha, status: "satisfied" as const,
+      outstanding: [], productPin: gate.finalSha } };
+  };
+  /** Tells the frozen baseline tree from the final tree by the file each one pins. */
+  const treeRunner = (build: (tree: string) => { exitCode: number; stdout: string; stderr: string }, calls: string[]) =>
+    async (argv: readonly string[], cwd: string) => {
+      const tree = readFileSync(join(cwd, "src/a.ts"), "utf8").trim();
+      calls.push(`${argv[0]}@${tree}`);
+      if (argv[0] === "probe") return { exitCode: 0, stdout: "probe 1.0\n", stderr: "" };
+      return argv[0] === "build" ? build(tree) : { exitCode: 0, stdout: "ok", stderr: "" };
+    };
+  const progressLines = Array.from({ length: 3000 }, (_, index) => `progress ${index}%`).join("\n");
+  const compilerA = { exitCode: 1, stdout: `compiler error A\n${progressLines}\n`, stderr: "build failed\n" };
+
+  it.each([
+    ["a passing baseline", compilerA, null, "passes this check", "[stdout] compiler error A"],
+    ["a baseline with another diagnostic, exit code and generic stderr", compilerA,
+      { exitCode: 1, stdout: "compiler error B\n", stderr: "build failed\n" }, "fails differently: [stdout] compiler error B", "[stdout] compiler error A"],
+    ["generic-only output on both", { exitCode: 1, stdout: "", stderr: "build failed\n" }, { exitCode: 1, stdout: "", stderr: "build failed\n" },
+      "no specific diagnostic to compare", "[stderr] build failed"],
+    ["a stderr-only diagnostic", { exitCode: 1, stdout: `${progressLines}\n`, stderr: "error TS2322: Type 'A' is not assignable to type 'B'.\n" },
+      null, "passes this check", "[stderr] error TS2322: Type 'A' is not assignable to type 'B'."]
+  ] as const)("routes a final failure for correction given %s", async (_label, final, baseline, note, excerpt) => {
+    const gate = gateFixture("coordinator");
+    const calls: string[] = [];
+    const loop = new CoordinatorRunLoop(gate.paths, { tmux: null, mirror: new BareMirror(gate.paths.mirror, readStartState(gate.paths).origin),
+      processRunner: treeRunner((tree) => tree === "baseline" ? baseline ?? { exitCode: 0, stdout: "built", stderr: "" } : final, calls) });
+    const { order, observation } = finalOrderFor(gate);
+    const result = await loop.verifyFinalizationChecks(readStartState(gate.paths), order, observation, readCursorsState(gate.paths));
+    expect(result.status).toBe("rejected");
+    expect(result.sharedFailure).toBeUndefined();
+    expect(result.outstanding[0]).toContain(`finalization check (tier: checks) build failed with exit 1: ${excerpt}`);
+    expect(result.outstanding[0]).toContain(note);
+    expect(result.outstanding[0]!.length).toBeLessThan(4000);
+    const log = readFileSync(/\(log: (.+?)\)/.exec(result.outstanding[0]!)![1]!, "utf8");
+    expect(log).toContain(final.stderr.trim());
+    if (final.stdout !== "") expect(log).toContain("progress 2999%");
+    // The failed command and its declared setup ran fresh at the baseline, apart from the final gate's records.
+    expect(calls.filter((call) => call.endsWith("@baseline"))).toEqual(["install@baseline", "lint@baseline", "build@baseline"]);
+    expect(readJournal(gate.paths).filter((event) => event.type === "baseline-check")).toHaveLength(3);
+    expect(readJournal(gate.paths).filter((event) => event.type === "final-check").map((event) => event.details.name))
+      .toEqual(["install", "lint", "build"]);
+    expect(readCursorsState(gate.paths)).toMatchObject({ paused: false });
+  });
+
+  it("pauses for a final failure the baseline shares, then verifies the recorded commit fresh and publishes once", async () => {
+    const gate = gateFixture("coordinator");
+    const start = { ...readStartState(gate.paths), origin: "https://github.com/example/project.git" };
+    writeFileSync(gate.paths.start, JSON.stringify(start));
+    seedPendingPublication(gate.paths, gate.finalSha);
+    const seeded = readCursorsState(gate.paths);
+    const actionId = randomUUID();
+    const revision = { stepId: "R6.revise" as const, agent: "codex", round: 1, submissionSha: gate.consensusSha, productPin: gate.consensusSha,
+      path: ".signals/issue-1/revision-ready-codex.json", acceptedAt: seeded.updatedAt };
+    writeCursorsState(gate.paths, cursorsStateSchema.parse({ ...seeded, accepted: [revision],
+      derived: { ...seeded.derived, consensus: { kind: "consensus", algorithm: "unanimous-active-roster-v1", round: 1,
+        inputSetHash: "b".repeat(64), activeRoster: seeded.activeRoster, supersedes: null, decidedAt: seeded.updatedAt,
+        decisionId: `consensus:${"b".repeat(64)}:r1`, consensusPin: gate.consensusSha,
+        inputs: [{ kind: "revision", agent: "codex", submissionSha: gate.consensusSha, productPin: gate.consensusSha, path: revision.path }] } },
+      publication: { status: "not-required", finalSha: null, branch: null, url: null, error: null, attempts: 0 },
+      agents: { ...seeded.agents, codex: { ...seeded.agents.codex!, stepId: "R7.finalize", evidenceId: "finalization-verified", actionId,
+        submissionMode: "git", status: "ordered", submissionSha: null, outstanding: [] } } }));
+    const submission = "5".repeat(40);
+    const replacement = "6".repeat(40);
+    const signal = (finalSha: string) => JSON.stringify({ protocolVersion: 1, issue: 1, issueSessionId: start.issueSessionId, agent: "codex",
+      artifact: "finalization", consensusSha: gate.consensusSha, finalSha, checks: [] });
+    const mirror = new BareMirror(gate.paths.mirror, start.origin);
+    vi.spyOn(mirror, "fetchBranch").mockResolvedValue({ ok: true, ref: "refs/remotes/origin/issue-1/codex", tip: submission });
+    vi.spyOn(mirror, "isReachable").mockResolvedValue(true);
+    vi.spyOn(mirror, "validatePhasePin").mockResolvedValue({ ok: true } as Awaited<ReturnType<BareMirror["validatePhasePin"]>>);
+    const ancestor = mirror.isAncestor.bind(mirror);
+    vi.spyOn(mirror, "isAncestor").mockImplementation(async (base, tip) => tip === submission || tip === replacement || ancestor(base, tip));
+    const blob = mirror.readBlob.bind(mirror);
+    vi.spyOn(mirror, "readBlob").mockImplementation(async (sha, path, options) =>
+      sha === submission ? signal(gate.finalSha) : sha === replacement ? signal(gate.implementationPin) : blob(sha, path, options));
+    let pushes = 0;
+    vi.spyOn(mirror, "publishBranch").mockImplementation(async () => { pushes++; });
+    let opens = 0;
+    let missing = true;
+    const calls: string[] = [];
+    const messages: string[] = [];
+    const loop = () => new CoordinatorRunLoop(gate.paths, { tmux: null, mirror, log: (message) => messages.push(message),
+      processRunner: treeRunner(() => missing ? { exitCode: 127, stdout: "", stderr: "sh: protoc: command not found\n" }
+        : { exitCode: 0, stdout: "built", stderr: "" }, calls),
+      pullRequestOpener: async () => { opens++; return { url: "https://github.com/example/project/pull/1" }; } });
+    const complete = agentRuntimePaths(gate.paths, "codex").complete;
+    writeFileSync(complete, submission);
+
+    const paused = await loop().runTick();
+    expect(paused.paused).toBe(true);
+    expect(paused.finalRetry).toMatchObject({ actionId, agent: "codex", submissionSha: submission, finalSha: gate.finalSha,
+      consensusSha: gate.consensusSha, baselineSha: start.baselineSha, command: { name: "build", argv: ["build"] } });
+    expect(calls.filter((call) => call.startsWith("build@"))).toEqual(["build@implementation", "build@baseline"]);
+    expect(paused.accepted.some((entry) => entry.stepId === "R7.finalize")).toBe(false);
+    expect([pushes, opens]).toEqual([0, 0]);
+    const report = renderIssueReport(readStartState(gate.paths), paused);
+    for (const text of ["fails the same way at the frozen baseline", "protoc: command not found", "resume",
+      paused.finalRetry!.candidate.logPath, paused.finalRetry!.baseline.logPath]) {
+      expect(report).toContain(text);
+      expect(messages.join("\n")).toContain(text);
+    }
+
+    // A restarted coordinator waits without rerunning the suite, and a replaced marker cannot swap the commit.
+    writeFileSync(complete, replacement);
+    calls.length = 0;
+    expect((await loop().runTick()).paused).toBe(true);
+    expect(calls).toEqual([]);
+
+    missing = false;
+    setOwnerPause(gate.paths, false);
+    const done = await loop().runTick();
+    // Fresh: the lint receipt the first run wrote is not reused for the retry.
+    expect(calls).toContain("lint@implementation");
+    expect(calls.some((call) => call.endsWith("@baseline"))).toBe(false);
+    expect(done.accepted.find((entry) => entry.stepId === "R7.finalize")).toMatchObject({ submissionSha: submission, productPin: gate.finalSha });
+    expect(done.finalRetry ?? null).toBeNull();
+    expect(done.publication.status).toBe("completed");
+    expect([pushes, opens]).toEqual([1, 1]);
+    expect(readJournal(gate.paths).filter((event) => event.type === "final-retry-cleared").map((event) => event.details.reason)).toEqual(["verified"]);
   });
 
   it("shares one execution across equivalent pins and finalization runs only what no receipt covers", async () => {

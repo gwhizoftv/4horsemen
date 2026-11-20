@@ -1,7 +1,7 @@
 import { NO_CHECKS } from "./projectChecks.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { git, localConfigGet } from "./gitExec.js";
 import { agentRuntimePaths, assertNoSymlink, containedPath, issueRuntimePaths } from "./paths.js";
 import { parseAction } from "./action.js";
@@ -18,6 +18,7 @@ import {
 import { workspaceLocationFromConfig } from "./workspace.js";
 import { inspectOutgoingChanges, isCoordinationEvidencePath, selectVerification, type ChangeInput } from "./changeClassification.js";
 import { verificationMeasurement, type VerificationMeasurement } from "./verificationLog.js";
+import { resolveProductEnvironment, resolvesOnPath } from "./verificationEnvironment.js";
 
 /**
  * The bridge between the shell hook bodies and the workspace config.
@@ -103,15 +104,12 @@ const isExecutableFile = (path: string): boolean => {
  * accepted a directory or a non-executable file that the first hook then failed
  * to spawn.
  */
-const resolves = (command: string, cwd: string): boolean => {
-  if (command.includes("/")) return isExecutableFile(resolve(cwd, command));
-  const entries = (process.env.PATH ?? "").split(delimiter).filter((entry) => entry !== "");
-  return entries.some((entry) => isExecutableFile(join(entry, command)));
-};
+const resolves = (command: string, cwd: string, env: NodeJS.ProcessEnv): boolean =>
+  command.includes("/") ? isExecutableFile(resolve(cwd, command)) : resolvesOnPath(command, env);
 
 /**
  * Which declared `argv[0]` values cannot be resolved right now, checked against
- * the clone the hooks will run in.
+ * the clone the hooks will run in and the PATH its checks will receive.
  */
 export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): string[] => {
   const commands = [
@@ -125,10 +123,15 @@ export const unresolvableCommands = (config: CoordinatorConfig, cwd: string): st
     ...(config.verification?.candidate?.checks ?? []),
     ...config.checks
   ];
+  if (commands.length === 0) return [];
   const missing = new Set<string>();
+  // An unavailable product pin is reported by the hook itself; executable
+  // lookup then falls back to the PATH the owner has now.
+  let env: NodeJS.ProcessEnv = process.env;
+  try { env = resolveProductEnvironment(cwd).env; } catch { /* reported when a hook runs */ }
   for (const command of commands) {
     const executable = command.argv[0] as string;
-    if (!resolves(executable, cwd)) missing.add(executable);
+    if (!resolves(executable, cwd, env)) missing.add(executable);
   }
   return [...missing].sort();
 };
@@ -262,11 +265,11 @@ export const assertRequiredArtifact = (input: { clone: string; configPath: strin
   }
 };
 
-export type VerifyRunner = (command: CheckCommand, cwd: string) => number;
+export type VerifyRunner = (command: CheckCommand, cwd: string, env: NodeJS.ProcessEnv) => number;
 
-const inheritRunner: VerifyRunner = (command, cwd) => {
+const inheritRunner: VerifyRunner = (command, cwd, env) => {
   const [executable, ...args] = command.argv;
-  const result = spawnSync(executable as string, args, { cwd, stdio: "inherit" });
+  const result = spawnSync(executable as string, args, { cwd, stdio: "inherit", env });
   if (result.error !== undefined) {
     throw new HookPolicyError(
       `Declared verify command '${command.name}' could not run: ${result.error.message}.\n` +
@@ -308,11 +311,15 @@ export const runVerifyPhase = (input: {
     record(null, new Date().toISOString(), 0);
     return { ok: true };
   }
+  // Selected only when something runs, so an empty profile needs no product Node.
+  let env: NodeJS.ProcessEnv;
+  try { env = resolveProductEnvironment(input.clone).env; }
+  catch (error) { throw new HookPolicyError(error instanceof Error ? error.message : String(error)); }
   for (const command of commands) {
     input.log(`coord ${input.phase}: ${command.name} — ${command.argv.join(" ")}\n`);
     const startedAt = new Date().toISOString();
     let exitCode: number;
-    try { exitCode = runner(command, input.clone); }
+    try { exitCode = runner(command, input.clone, env); }
     catch (error) {
       record(command, startedAt, 1, String(error));
       throw error;

@@ -803,6 +803,24 @@ const emptyOwnerGuidance = (): z.infer<typeof ownerGuidanceSchema> => ({
   pending: [], generation: 0, bound: null, suspended: null
 });
 
+const failureSideSchema = z.object({ excerpt: z.string(), logPath: z.string().min(1) }).strict();
+
+export const finalRetrySchema = z.object({
+  issueSessionId: z.string().min(1),
+  actionId: z.string().uuid(),
+  agent: agentIdSchema,
+  submissionSha: gitShaSchema,
+  consensusSha: gitShaSchema,
+  finalSha: gitShaSchema,
+  baselineSha: gitShaSchema,
+  policyDigest: z.string().min(1).nullable(),
+  command: z.object({ name: z.string().min(1), argv: z.array(z.string()).min(1) }).strict(),
+  candidate: failureSideSchema,
+  baseline: failureSideSchema,
+  recordedAt: timestampSchema
+}).strict();
+export type FinalRetry = z.infer<typeof finalRetrySchema>;
+
 export const cursorsStateSchema = z
   .object({
     formatVersion: z.literal(RUNTIME_FORMAT_VERSION),
@@ -842,6 +860,12 @@ export const cursorsStateSchema = z
       })
       .strict()
       .nullable(),
+    /**
+     * A final check that failed the same way at the frozen baseline. The issue
+     * is paused for the owner to repair the shared cause; resuming re-verifies
+     * exactly this submission and final pin, fresh, before any publication.
+     */
+    finalRetry: finalRetrySchema.nullable().optional(),
     publication: z
       .object({
         status: z.enum(["not-required", "pending", "completed", "failed"]),
@@ -906,6 +930,9 @@ const journalEventTypeSchema = z.enum([
   "candidate-check",
   "verification-reused",
   "verification-joined",
+  "baseline-check",
+  "final-retry-pending",
+  "final-retry-cleared",
   "publication-pending",
   "publication-failed",
   "pr-created",
@@ -1450,6 +1477,15 @@ export const replaceCursor = (
     agents: { ...cursors.agents, [agent]: { ...current, ...patch, updatedAt: now } },
     updatedAt: now
   });
+};
+
+/** The pending final retry, only while it still names the live finalization action. */
+export const liveFinalRetry = (start: Pick<StartState, "issueSessionId">, cursors: CursorsState): FinalRetry | null => {
+  const retry = cursors.finalRetry ?? null;
+  if (retry === null) return null;
+  const cursor = cursors.agents[retry.agent];
+  return retry.issueSessionId === start.issueSessionId && !cursors.abandoned && !cursors.completed &&
+    cursors.activeRoster.includes(retry.agent) && cursor?.actionId === retry.actionId && cursor.stepId === "R7.finalize" ? retry : null;
 };
 
 export const setPaused = (cursors: CursorsState, paused: boolean, now = new Date().toISOString()): CursorsState =>

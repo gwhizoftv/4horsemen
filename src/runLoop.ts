@@ -7,7 +7,7 @@ import { lstat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
-import { clearCompletion, clearReady, createActionId, readAction, readCompletion, readReady, writeAction } from "./action.js";
+import { clearCompletion, clearReady, createActionId, readAction, readCompletion, readReady, writeAction, type CompletionParseResult } from "./action.js";
 import {
   containmentCoverage,
   markActionInjected,
@@ -38,7 +38,7 @@ import {
 import { computeInputSetHash, evaluateEvidence, extractApprovedPaths, type EvidenceMirror } from "./evidence.js";
 import { verifyFinalization } from "./finalization.js";
 import { inspectRangeChanges, selectCandidateVerification, selectVerification } from "./changeClassification.js";
-import { runVerification, type RunVerificationResult } from "./verificationRunner.js";
+import { runVerification, sameFailure, type RunVerificationInput, type RunVerificationResult } from "./verificationRunner.js";
 import { createVerificationIngestor, verificationMeasurement } from "./verificationLog.js";
 import { BareMirror, GitCommandError, hermeticGitEnv, isTransientGitFailure } from "./mirror.js";
 import {
@@ -71,6 +71,8 @@ import { decide } from "./machine.js";
 import {
   appendJournal,
   bindOwnerGuidance,
+  liveFinalRetry,
+  setPaused,
   ownerGuidanceFor,
   resetOwnerGuidance,
   suspendOwnerGuidance,
@@ -92,6 +94,7 @@ import {
   type CursorsState,
   type DerivedInputCitation,
   type DerivedInputKind,
+  type FinalRetry,
   type ImplementationSelectionDerived,
   type PlanSelectionDerived,
   type StartState
@@ -2891,7 +2894,7 @@ export class CoordinatorRunLoop {
     order: InternalOrder,
     observation: EvidenceObservation,
     cursors: CursorsState
-  ): Promise<EvidenceObservation> {
+  ): Promise<EvidenceObservation & { sharedFailure?: FinalRetry }> {
     if (observation.status !== "satisfied" || order.stepId !== "R7.finalize" || observation.productPin === undefined) return observation;
     const consensusSha = order.inputs.find((input) => input.kind === "consensus")?.commitSha;
     if (consensusSha === undefined) return { ...observation, status: "rejected", outstanding: ["no consensus pin is bound to finalization"] };
@@ -2905,20 +2908,76 @@ export class CoordinatorRunLoop {
     const amendment = cursors.checkAmendments?.find((entry) => entry.authorizedPin === consensusSha);
     const commands = addCheckCommands(selected.commands, amendment?.additions.map((entry) => entry.proposal) ?? []);
     const policyDigest = effectiveCheckDigest(start, commands, amendment?.additions);
+    // The owner's retry of a shared failure re-verifies exactly the recorded
+    // submission, pins and policy, fresh: no earlier success stands in for it.
+    const retry = liveFinalRetry(start, cursors);
+    const fresh = retry !== null && retry.agent === order.agent && retry.actionId === order.actionId &&
+      retry.submissionSha === observation.submissionSha && retry.finalSha === observation.productPin &&
+      retry.consensusSha === consensusSha && retry.policyDigest === policyDigest;
     const checked = await this.runGateVerification(start, order, cursors, "finalization", observation.productPin, selected,
-      commands, policyDigest);
+      commands, policyDigest, fresh ? { reuse: false } : {});
     if (checked.status === "waiting") return waitingObservation(observation, checked.waitingFor);
     if (checked.status === "failed") {
+      const summary = `finalization check (tier: checks) ${checked.failure}: ${checked.excerpt}` +
+        ` (log: ${checked.failed.logPath})${checked.note === null ? "" : `; ${checked.note}`}`;
+      const comparison = await this.compareFinalFailure(start, order, cursors, selected, commands, checked);
+      if (comparison.shared === null) return { ...observation, status: "rejected", outstanding: [`${summary}${comparison.note}`] };
+      const failed = commands[checked.index]!;
       return {
         ...observation,
-        status: "rejected",
-        outstanding: [
-          `finalization check (tier: checks) ${checked.failure}: ${checked.stderr.trim()}` +
-            ` (log: ${checked.failed.logPath})${checked.note === null ? "" : `; ${checked.note}`}`
-        ]
+        status: "retry",
+        outstanding: [`${summary}; the frozen baseline fails the same way, so the owner must repair the shared cause`],
+        sharedFailure: {
+          issueSessionId: start.issueSessionId, actionId: order.actionId, agent: order.agent,
+          submissionSha: observation.submissionSha, consensusSha, finalSha: observation.productPin, baselineSha: start.baselineSha,
+          policyDigest, command: { name: failed.name, argv: [...failed.argv] },
+          candidate: { excerpt: checked.excerpt, logPath: checked.failed.logPath! }, baseline: comparison.shared, recordedAt: this.now()
+        }
       };
     }
     return { ...observation, checkResults: checked.results, policyDigest };
+  }
+
+  /**
+   * Run the failed final command, with its declared setup prefix, at the frozen
+   * baseline under the candidate's exact environment and without receipts. Only
+   * the same failure kind with the identical, non-empty set of specific
+   * diagnostics is shared; a passing, earlier-failing, differing, generic-only
+   * or unavailable baseline leaves the candidate on the normal correction path.
+   */
+  private async compareFinalFailure(
+    start: StartState,
+    order: InternalOrder,
+    cursors: CursorsState,
+    selected: { kind: "coordination" | "documentation" | "product"; reason: string; inputIdentity: string; commands: readonly CheckCommand[] },
+    commands: readonly CheckCommand[],
+    checked: Extract<RunVerificationResult, { status: "failed" }>
+  ): Promise<{ shared: { excerpt: string; logPath: string }; note: "" } | { shared: null; note: string }> {
+    const short = start.baselineSha.slice(0, 12);
+    const failed = commands[checked.index];
+    if (checked.evidence.kind === "modified" || failed === undefined) return { shared: null, note: "" };
+    if (!selected.commands.some((command) => command.name === failed.name)) {
+      return { shared: null, note: `; not compared with the frozen baseline ${short}: ${failed.name} was added by this issue` };
+    }
+    if (!(await this.mirror.commitExists(start.baselineSha))) {
+      return { shared: null, note: `; not compared: the frozen baseline ${short} is unavailable` };
+    }
+    this.log(`${order.agent}: [WAIT] Running ${failed.name} at the frozen baseline ${short} for comparison...`);
+    const baseline = await this.runGateVerification(start, order, cursors, "finalization", start.baselineSha, selected,
+      commands.slice(0, checked.index + 1), undefined, { resolved: checked.environment, diagnostic: "baseline" });
+    this.authority(cursors);
+    if (baseline.status === "passed") {
+      return { shared: null, note: `; the frozen baseline ${short} passes this check, so the failure belongs to this change` };
+    }
+    if (baseline.status === "waiting") return { shared: null, note: `; the comparison with the frozen baseline ${short} is inconclusive` };
+    const log = baseline.failed.logPath!;
+    if (baseline.index !== checked.index) {
+      return { shared: null, note: `; inconclusive: the frozen baseline ${short} failed earlier at ${baseline.failed.name} (log: ${log})` };
+    }
+    if (sameFailure(checked.evidence, baseline.evidence)) return { shared: { excerpt: baseline.excerpt, logPath: log }, note: "" };
+    return { shared: null, note: checked.evidence.diagnostics.length === 0
+      ? `; no specific diagnostic to compare with the frozen baseline ${short} (log: ${log})`
+      : `; the frozen baseline ${short} fails differently: ${baseline.excerpt} (log: ${log})` };
   }
 
   /**
@@ -2961,6 +3020,32 @@ export class CoordinatorRunLoop {
     return { ...observation, checkResults: verified.results };
   }
 
+  /** One revision-checked mutation: record the shared failure and pause for the owner. */
+  private pauseForSharedFailure(start: StartState, cursors: CursorsState, retry: FinalRetry): CursorsState {
+    const next = this.mutate(cursors, (current) => {
+      const at = this.now();
+      appendJournal(this.paths, { type: "final-retry-pending", agent: retry.agent, actionId: retry.actionId, details: { ...retry } }, at);
+      if (!current.paused) appendJournal(this.paths, { type: "paused", details: { reason: "final check fails the same way at the frozen baseline" } }, at);
+      return setPaused({ ...current, finalRetry: retry }, true, at);
+    });
+    this.log(`[ACTION] Issue ${start.issue}: final check ${retry.command.name} fails the same way at the frozen baseline ` +
+      `${retry.baselineSha.slice(0, 12)} as at final commit ${retry.finalSha.slice(0, 12)}.`);
+    this.log(`  Final: ${retry.candidate.excerpt} (log: ${retry.candidate.logPath})`);
+    this.log(`  Baseline: ${retry.baseline.excerpt} (log: ${retry.baseline.logPath})`);
+    this.log(`  Repair the shared tool or environment, then run ${issueCommand("resume", start.issue, start.coordRoot)}; ` +
+      `the coordinator re-verifies ${retry.finalSha} fresh before publication.`);
+    return next;
+  }
+
+  private clearFinalRetry(cursors: CursorsState, reason: string): CursorsState {
+    return this.mutate(cursors, (current) => {
+      if (current.finalRetry == null) return current;
+      appendJournal(this.paths, { type: "final-retry-cleared", agent: current.finalRetry.agent, actionId: current.finalRetry.actionId,
+        details: { reason, finalSha: current.finalRetry.finalSha } }, this.now());
+      return { ...current, finalRetry: null, updatedAt: this.now() };
+    });
+  }
+
   private async runGateVerification(
     start: StartState,
     order: InternalOrder,
@@ -2969,7 +3054,8 @@ export class CoordinatorRunLoop {
     pin: string,
     classification: { kind: "coordination" | "documentation" | "product"; reason: string; inputIdentity: string },
     commands: readonly CheckCommand[],
-    policyDigest?: string
+    policyDigest?: string,
+    options: Pick<RunVerificationInput, "resolved" | "diagnostic" | "reuse"> = {}
   ): Promise<RunVerificationResult> {
     if (commands.length === 0) {
       this.log(NO_CHECKS);
@@ -2987,7 +3073,7 @@ export class CoordinatorRunLoop {
       checkpoint: () => { this.authority(cursors); },
       journal: (type, details, at) => appendJournal(this.paths, { type, agent: order.agent, actionId: order.actionId, details }, at),
       progress: (message) => this.log(`${order.agent}: ${message}`),
-      phase, pin, classification, commands, policyDigest
+      phase, pin, classification, commands, policyDigest, ...options
     });
   }
 
@@ -3330,6 +3416,7 @@ export class CoordinatorRunLoop {
       // this read. Keep that poll effect-free until initialization succeeds.
       if (options.observeOnly === true) return cursors;
       cursors = this.retireAmendmentActions(cursors);
+      if (cursors.finalRetry != null && liveFinalRetry(start, cursors) === null) cursors = this.clearFinalRetry(cursors, "action retired");
       const observations: EvidenceObservation[] = [];
 
       for (const dropped of cursors.droppedAgents) clearCompletion(agentRuntimePaths(this.paths, dropped).complete);
@@ -3338,7 +3425,11 @@ export class CoordinatorRunLoop {
       const cursor = cursors.agents[agent];
       if (cursor === undefined || cursor.actionId === null || cursor.stepId === null) continue;
       const runtime = agentRuntimePaths(this.paths, agent);
-      const completion = readCompletion(runtime.complete);
+      // A recorded shared final failure binds its retry to the recorded
+      // submission; a replaced marker cannot substitute another commit.
+      const pendingRetry = liveFinalRetry(start, cursors);
+      const completion: CompletionParseResult = pendingRetry?.agent === agent
+        ? { status: "valid", kind: "sha", sha: pendingRetry.submissionSha } : readCompletion(runtime.complete);
       if (cursors.actionSafety[agent]?.scrollbackWait !== undefined &&
           (completion.status !== "missing" || currentScrollbackWait(cursors, agent, readAgentLifecycle(this.paths)) === undefined)) {
         cursors = this.clearScrollbackWait(cursors, agent);
@@ -3496,8 +3587,16 @@ export class CoordinatorRunLoop {
         if (error instanceof StateConflictError) throw error;
         observation = { ...observation, status: "rejected", outstanding: [`Cannot adopt check proposal: ${error instanceof Error ? error.message : String(error)}`] };
       }
-      observation = await this.verifyFinalizationChecks(start, order, observation, cursors);
+      const { sharedFailure, ...finalized } = await this.verifyFinalizationChecks(start, order, observation, cursors);
       this.authority(cursors);
+      if (sharedFailure !== undefined) {
+        cursors = this.pauseForSharedFailure(start, cursors, sharedFailure);
+        continue;
+      }
+      observation = finalized;
+      if (cursors.finalRetry != null && cursors.finalRetry.agent === agent && order.stepId === "R7.finalize" && observation.status !== "retry") {
+        cursors = this.clearFinalRetry(cursors, observation.status === "satisfied" ? "verified" : "routed for correction");
+      }
       observation = await this.verifyCandidateChecks(start, order, observation, cursors);
       this.authority(cursors);
       observations.push(observation);

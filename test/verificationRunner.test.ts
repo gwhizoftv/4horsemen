@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BareMirror } from "../src/mirror.js";
 import { createIssueRuntime, issueRuntimePaths } from "../src/paths.js";
 import type { CheckCommand, StartState } from "../src/state.js";
@@ -17,23 +17,30 @@ import {
   type ReceiptKeyMaterial
 } from "../src/verificationReceipts.js";
 import { runVerification, type RunVerificationInput } from "../src/verificationRunner.js";
+import { runArgv } from "../src/runLoop.js";
+import { runVerifyPhase } from "../src/hookPolicy.js";
+import { coordinatorConfigSchema } from "../src/state.js";
 import { git } from "./support/workspaceFixture.js";
 import { sha256 } from "../src/hash.js";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 const environment = { platform: "test-os", arch: "test-arch", node: "v0", env: { TOKEN: "secret" } };
 const cached = (name: string, extra: Partial<CheckCommand> = {}): CheckCommand =>
   ({ name, argv: [name], cache: { inputs: "tree-excluding-evidence", env: [], probes: [], dependencies: [], dependencyExcludes: [] }, ...extra });
 
-const setup = () => {
+const setup = (files: Record<string, string> = {}) => {
   const root = mkdtempSync(join(tmpdir(), "coord-verify-"));
   roots.push(root);
   const seed = join(root, "seed");
   mkdirSync(join(seed, "src"), { recursive: true });
   git(seed, "init", "-q");
   writeFileSync(join(seed, "src/a.ts"), "source\n");
+  for (const [path, content] of Object.entries(files)) writeFileSync(join(seed, path), content);
   git(seed, "add", ".");
   git(seed, "commit", "-qm", "source");
   const pin = git(seed, "rev-parse", "HEAD");
@@ -58,11 +65,30 @@ const setup = () => {
     checkpoint: () => {}, journal: (type, details) => { journal.push({ type, details }); }, phase: "candidate", pin,
     classification: { kind: "product", reason: "test", inputIdentity: "range" }, commands, environment, pollMs: 5, ...overrides
   });
-  const material = (command: CheckCommand, at = pin): ReceiptKeyMaterial => ({ v: 1, origin: start.origin,
+  const material = (command: CheckCommand, at = pin): ReceiptKeyMaterial => ({ v: 2, origin: start.origin,
     inputsMode: "tree-excluding-evidence", inputIdentity: computeInputIdentity(paths.mirror, at, "tree-excluding-evidence"),
     argv: [...command.argv], policyDigest: start.verificationDigest!, platform: environment.platform, arch: environment.arch,
-    node: environment.node, probes: [], env: [], dependencies: sha256("") });
-  return { paths, pin, evidencePin, productPin, journal, input, material };
+    node: environment.node, toolchain: null, probes: [], env: [], dependencies: sha256("") });
+  return { root, seed, paths, pin, evidencePin, productPin, journal, input, material };
+};
+
+const script = (path: string, body: string): string => {
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, `#!/bin/sh\n${body}\n`);
+  chmodSync(path, 0o755);
+  return path;
+};
+
+/** An older Node first on PATH, the product's pinned Node installed under nvm, and a
+ * pnpm stand-in that, like pnpm running a script, starts `node` by name from PATH. */
+const toolchainFixture = (root: string) => {
+  const old = join(root, "old-node");
+  script(join(old, "node"), "echo v23.0.0");
+  const nvm = join(root, "nvm");
+  const pinned = script(join(nvm, "versions/node/v26.99.0/bin/node"), "echo v26.99.0");
+  const bin = join(root, "tools");
+  script(join(bin, "pnpm"), 'echo "child node $(node --version)"');
+  return { pinned, env: { PATH: [old, bin, "/usr/bin", "/bin"].join(":"), NVM_DIR: nvm, HOME: root } };
 };
 
 const ok = async () => ({ exitCode: 0, stdout: "", stderr: "" });
@@ -305,4 +331,98 @@ it("cannot reuse an earlier policy receipt after adding a check obligation", asy
   const reused = await runVerification(input([command], runner, { policyDigest: "e".repeat(64) }));
   expect(reused.results[0]?.reused).toBe(true);
   expect(runs).toBe(2);
+});
+
+describe("product toolchain", () => {
+  it.each(["candidate", "finalization"] as const)("gives %s checks and their children the pinned Node, keyed by that Node", async (phase) => {
+    const { root, paths, input } = setup({ ".nvmrc": "26.99.0\n" });
+    const { pinned, env } = toolchainFixture(root);
+    const check: CheckCommand = { name: "check", argv: ["pnpm", "run", "check"],
+      cache: { inputs: "tree-excluding-evidence", env: [], probes: [["node", "--version"]], dependencies: [], dependencyExcludes: [] } };
+    const result = await runVerification(input([check], runArgv, { phase, environment: { ...environment, node: "v26.99.0", env } }));
+    expect(result.status).toBe("passed");
+    const log = readFileSync(result.results[0]!.logPath!, "utf8");
+    expect(log).toContain("child node v26.99.0");
+    expect(log).not.toContain("v23.0.0");
+    const receipt = readReceipt(paths.coordRoot, result.results[0]!.receiptId!);
+    expect(receipt.status === "hit" && receipt.receipt.material).toMatchObject({
+      v: 2, node: "v26.99.0", toolchain: pinned, probes: [{ argv: ["node", "--version"], stdout: "v26.99.0" }] });
+  });
+
+  it("never lets a version-1 receipt certify a check whose children ran another Node", async () => {
+    const { root, paths, pin, input } = setup({ ".nvmrc": "26.99.0\n" });
+    const { env } = toolchainFixture(root);
+    const check = cached("check", { argv: ["pnpm", "run", "check"] });
+    // Before the fix the key held only the coordinator's version string, which can equal the pin's.
+    const material = { v: 1, origin: "https://example.com/p.git", inputsMode: "tree-excluding-evidence",
+      inputIdentity: computeInputIdentity(paths.mirror, pin, "tree-excluding-evidence"), argv: check.argv, policyDigest: "d".repeat(64),
+      platform: environment.platform, arch: environment.arch, node: "v26.99.0", probes: [], env: [], dependencies: sha256("") };
+    const legacyKey = sha256(JSON.stringify(material));
+    mkdirSync(join(receiptPath(paths.coordRoot, legacyKey), ".."), { recursive: true });
+    writeFileSync(receiptPath(paths.coordRoot, legacyKey), JSON.stringify({ formatVersion: 1, key: legacyKey, material, name: "check",
+      exitCode: 0, durationMs: 1, issue: 1, issueSessionId: `issue-1:${"a".repeat(40)}`, productPin: pin, logPath: "/old.log",
+      completedAt: new Date().toISOString() }));
+    let runs = 0;
+    const runner: RunVerificationInput["processRunner"] = async (argv, cwd, options) => { runs++; return runArgv(argv, cwd, options); };
+    const result = await runVerification(input([check], runner, { environment: { ...environment, node: "v26.99.0", env } }));
+    expect(result.results[0]?.reused).toBeUndefined();
+    expect(result.results[0]?.receiptId).not.toBe(legacyKey);
+    expect(runs).toBe(1);
+  });
+
+  it("runs hook checks with the pinned Node, and leaves an unpinned product's PATH alone", () => {
+    const { root, seed } = setup({ ".nvmrc": "26.99.0\n" });
+    const { env } = toolchainFixture(root);
+    vi.stubEnv("PATH", env.PATH);
+    vi.stubEnv("NVM_DIR", env.NVM_DIR);
+    const config = coordinatorConfigSchema.parse({ project: "p", origin: "https://example.com/p.git",
+      agents: [{ id: "claude", root: "../p-claude", launcher: "start-claude.sh" }], branch: "issue-{issue}/{agent}", checks: [],
+      verify: { precommit: [{ name: "check", argv: ["pnpm", "run", "check"] }], prepush: [] } });
+    const seen: string[] = [];
+    const runner = (command: CheckCommand, cwd: string, childEnv: NodeJS.ProcessEnv) => {
+      const result = spawnSync(command.argv[0]!, command.argv.slice(1), { cwd, env: childEnv, encoding: "utf8" });
+      seen.push(result.stdout.trim());
+      return result.status ?? 1;
+    };
+    expect(runVerifyPhase({ clone: seed, config, phase: "precommit", log: () => undefined, runner })).toEqual({ ok: true });
+    rmSync(join(seed, ".nvmrc"));
+    expect(runVerifyPhase({ clone: seed, config, phase: "precommit", log: () => undefined, runner })).toEqual({ ok: true });
+    expect(seen).toEqual(["child node v26.99.0", "child node v23.0.0"]);
+  });
+
+  it("reports an unavailable pin instead of falling back, and leaves no worktree", async () => {
+    const { root, paths, input } = setup({ ".nvmrc": "26.98.0\n" });
+    const { env } = toolchainFixture(root);
+    let runs = 0;
+    await expect(runVerification(input([cached("check")], async () => { runs++; return ok(); }, { environment: { ...environment, env } })))
+      .rejects.toThrow(/pins Node '26\.98\.0'.*nvm install 26\.98\.0/);
+    expect(runs).toBe(0);
+    expect(readdirSync(paths.issueRoot).some((name) => name.startsWith(".verification-"))).toBe(false);
+  });
+
+  it("records a missing declared executable as comparable final-check evidence, but a coordinator error for candidates", async () => {
+    const { input } = setup();
+    const check = { name: "protoc", argv: ["coord-test-missing-protoc", "--version"] };
+    const final = await runVerification(input([check], runArgv, { phase: "finalization" }));
+    expect(final).toMatchObject({ status: "failed", failed: { exitCode: 127 }, index: 0,
+      evidence: { kind: "missing-executable", diagnostics: ["missing executable coord-test-missing-protoc"] } });
+    await expect(runVerification(input([check], runArgv))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the actionable diagnostic in a bounded excerpt while the log keeps both streams", async () => {
+    const { input } = setup();
+    const progress = Array.from({ length: 5000 }, (_, index) => `progress ${index}%`).join("\n");
+    const result = await runVerification(input([{ name: "build", argv: ["build"] }],
+      async () => ({ exitCode: 1, stdout: `compiler error A\n${progress}\n`, stderr: "build failed\n" })));
+    if (result.status !== "failed") throw new Error("expected a failure");
+    expect(result.excerpt).toContain("compiler error A");
+    expect(result.excerpt.length).toBeLessThanOrEqual(2048);
+    expect(result.evidence).toEqual({ kind: "exit", diagnostics: ["stdout: compiler error A"] });
+    const log = readFileSync(result.failed.logPath!, "utf8");
+    expect(log).toContain("progress 4999%");
+    expect(log).toContain("build failed");
+    const generic = await runVerification(input([{ name: "build", argv: ["build"] }],
+      async () => ({ exitCode: 1, stdout: "progress 1%\n", stderr: "build failed\n ELIFECYCLE  Command failed with exit code 1.\n" })));
+    expect(generic).toMatchObject({ status: "failed", evidence: { kind: "exit", diagnostics: [] } });
+  });
 });
