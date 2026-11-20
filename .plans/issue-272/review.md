@@ -1,7 +1,8 @@
 # Plan Review — Issue 272
 
-Reviewed bound peer plans:
+Reviewed bound plans:
 - **codex** (`f3c1cdcb1b4c7fe3349255dea5ceeac8aa8897b2`)
+- **antigravity** (`8cbda15a6b23bb8dada9927ccd2ff935e860c924`)
 - **claude** (`4cb22ad81efae1a6f6bee01c8682288ab6eeb728`)
 
 ## Findings
@@ -71,11 +72,26 @@ Reviewed bound peer plans:
    - Adds no new files and reuses `ownerQuestion`, `applyOwnerAnswer`, `runVerification`, and existing test fixtures well.
    - Includes a concise doc update (`docs/coord-driver.md`), which is reasonable, and proposes focused tests in `test/verificationRunner.test.ts` and `test/runLoop.test.ts`, though it omits hook-phase (`test/verify-config.test.ts`) and CLI (`test/cli.test.ts`) coverage for `coord answer <id> retry`.
 
+---
+
+### Antigravity plan (`8cbda15a6b23bb8dada9927ccd2ff935e860c924`)
+
+1. **Plan claim / section:** `Exact File List to be changed or deleted` -> `src/verificationRunner.ts` (updating `ReceiptKeyMaterial.node` without modifying `src/verificationReceipts.ts`)
+   - **Rule that must hold:** Receipts written before the toolchain `PATH` propagation fix (which recorded the coordinator's Node version in `material.node` even when `pnpm` child scripts executed under an older inherited `PATH` Node) must not hit after the fix when the project's `.nvmrc` matches the coordinator's Node version.
+   - **Concrete failure:** On a repo like `4horsemen` (coordinator on Node `26.12.1`, `.nvmrc` = `26.12.1`), pre-fix receipts already stored `v: 1` and `node: "v26.12.1"`, so post-fix runs compute the identical key and falsely reuse a stale receipt produced under the older inherited `PATH` Node.
+   - **Smallest correction:** Add `src/verificationReceipts.ts` to the file map (via amendment if selected) to distinguish post-fix receipt key material so pre-fix receipts miss.
+
+2. **Scope, reuse, new files, and tests (antigravity):**
+   - Stays within issue #272 and reuses `runVerification`, `BareMirror`, `runArgv`, `runVerifyPhase`, `ownerQuestion`, `applyOwnerAnswer`, `renderIssueReport`, and existing test suites.
+   - Justifies `src/toolchain.ts` (shared between `src/verificationRunner.ts` and `src/hookPolicy.ts`) and `src/verificationDiagnostics.ts` (separating diagnostic extraction/comparison from the >3,600-line `src/runLoop.ts`).
+   - Proposes focused tests across the four relevant existing test files (`test/verificationRunner.test.ts`, `test/verify-config.test.ts`, `test/runLoop.test.ts`, `test/cli.test.ts`).
+
 ## Conclusion
 
-Both peer plans accurately diagnose the core mechanisms behind #266, #270, and #271, but each has concrete gaps that would fail if followed as written:
+All three bound plans (`f3c1cdcb1b4c7fe3349255dea5ceeac8aa8897b2`, `8cbda15a6b23bb8dada9927ccd2ff935e860c924`, `4cb22ad81efae1a6f6bee01c8682288ab6eeb728`) diagnose the core mechanisms behind #266, #270, and #271, with distinct tradeoffs:
 
+- **Antigravity (`8cbda15a`)** covers multi-source toolchain resolution (`.nvmrc`, `.node-version`, `engines.node`, with non-nvm fallback) across both `src/verificationRunner.ts` and `src/hookPolicy.ts`, bounded dual-stream excerpts, `ownerQuestion` baseline retry with `src/issueReport.ts` and `src/interactive.ts`, and exclusion of issue-only `checkAmendment` commands from baseline runs, but should add `src/verificationReceipts.ts` to invalidate stale pre-fix receipts (and could inline or keep its two small helper modules minimal).
 - **Codex (`f3c1cdcb`)** rightly addresses `hookPolicy.ts` and pre-fix receipt invalidation in `verificationReceipts.ts`, and cleanly renders evidence in `issueReport.ts`, but its `manualPaused` / pending-retry design misses `src/verificationLog.ts`, `src/ownerControls.ts`, and `src/cli.ts` retirement paths, over-broadly overrides unpinned Node projects with coordination's Node 26, and risks breaking the `launchError` rejection contract in `test/runLoop.test.ts:3388`.
 - **Claude (`4cb22ad8`)** cleanly reuses `ownerQuestion` / `applyOwnerAnswer` and avoids extra files, but requires `nvm.sh` unconditionally (failing on non-nvm hosts, `engines.node`-only repos, and mocked `processRunner` tests), skips `src/hookPolicy.ts`, omits `src/issueReport.ts` and `src/interactive.ts` (leaving `coord status` and interactive prompts without failure evidence), fails to invalidate stale pre-fix receipts in `src/verificationReceipts.ts`, runs issue-only `checkAmendment` commands against the baseline, and spams owner-action logs every poll tick.
 
-Neither peer plan should be implemented as written without addressing the above defects. Combining the `ownerQuestion` retry architecture (with `src/issueReport.ts`, `src/interactive.ts`, and deduplicated logging) with multi-source toolchain resolution (supporting `.nvmrc`, `.node-version`, and `engines.node` with non-nvm fallback across both `src/verificationRunner.ts` and `src/hookPolicy.ts`), pre-fix receipt invalidation in `src/verificationReceipts.ts`, and baseline-check exclusion of issue-only `checkAmendment` commands resolves all findings cleanly.
+Combining `antigravity`'s multi-source toolchain resolution, `ownerQuestion` + `issueReport.ts` + `interactive.ts` evidence display, and `checkAmendment` exclusion with `codex`'s pre-fix receipt invalidation in `src/verificationReceipts.ts` resolves all findings cleanly.
