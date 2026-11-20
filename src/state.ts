@@ -822,6 +822,12 @@ export const cursorsStateSchema = z
     pendingAmendment: pendingAmendmentSchema.nullable().default(null),
     amendments: z.array(amendmentDecisionSchema).default([]),
     checkAmendments: z.array(checkAmendmentSchema).optional(),
+    finalRetry: z.object({
+      issueSessionId: z.string(), actionId: actionIdSchema, agent: agentIdSchema, submissionSha: gitShaSchema,
+      consensusSha: gitShaSchema, finalSha: gitShaSchema, baselineSha: gitShaSchema, policyDigest: digestSchema,
+      command: z.string(), candidateExcerpt: z.string(), baselineExcerpt: z.string(),
+      candidateLog: z.string(), baselineLog: z.string()
+    }).strict().optional(),
     // Durable cleanup intent: never delete an old request before its transition is saved.
     amendmentRetirements: z.array(z.object({ agent: agentIdSchema, actionId: z.string().uuid() }).strict()).default([]),
     ownerQuestion: z
@@ -902,6 +908,7 @@ const journalEventTypeSchema = z.enum([
   "action-restarted",
   "abandoned",
   "final-check",
+  "baseline-check",
   "verification-run",
   "candidate-check",
   "verification-reused",
@@ -1396,6 +1403,15 @@ export const acquireExclusiveLock = (lockPath: string): number => {
   throw new Error(`Timed out waiting for coordinator state lock ${lockPath}.`);
 };
 
+export const currentFinalRetry = (cursors: CursorsState) => {
+  const retry = cursors.finalRetry;
+  if (!retry || cursors.completed || cursors.abandoned || cursors.issueCursor.stepId !== "R7.finalize" ||
+      !cursors.activeRoster.includes(retry.agent)) return undefined;
+  const cursor = cursors.agents[retry.agent];
+  return cursor?.stepId === "R7.finalize" && cursor.actionId === retry.actionId && cursor.submissionSha === retry.submissionSha
+    ? retry : undefined;
+};
+
 /**
  * Apply one short local state transition under an exclusive lock. Slow Git,
  * tmux, check, and publication effects must happen outside this callback and
@@ -1414,7 +1430,7 @@ export const mutateCursorsState = (
     }
     const candidate = mutation(current);
     const state = cursorsStateSchema.parse({
-      ...candidate,
+      ...candidate, finalRetry: currentFinalRetry(candidate),
       stateRevision: current.stateRevision + 1
     });
     writeCursorsState(paths, state);

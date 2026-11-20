@@ -1,5 +1,5 @@
 import { NO_CHECKS } from "./projectChecks.js";
-import type { BallotBatch, CursorsState, StartState } from "./state.js";
+import { currentFinalRetry, type BallotBatch, type CursorsState, type StartState } from "./state.js";
 import { coordMergesPullRequest, describeWorkflowStep, type WorkflowStepId } from "./steps.js";
 import { containmentCoverage } from "./agentLifecycle.js";
 import { containmentPolicy } from "./shellGuard.js";
@@ -22,6 +22,13 @@ export const currentScrollbackWait = (cursors: CursorsState, agent: string, life
 
 export const issueCommand = (command: string, issue: number, coordRoot: string): string =>
   `coord ${command} --issue ${issue} --coord-runtime ${shellQuote(coordRoot)}`;
+
+export const finalRetryMessage = (start: StartState, retry: NonNullable<CursorsState["finalRetry"]>, manualPaused: boolean): string =>
+  `Check ${retry.command} failed on both the approved commit and frozen baseline.\n` +
+  `Approved ${retry.finalSha}: ${retry.candidateExcerpt} (log: ${retry.candidateLog})\n` +
+  `Baseline ${retry.baselineSha}: ${retry.baselineExcerpt} (log: ${retry.baselineLog})\n` +
+  (manualPaused ? `Repair the shared failure and run ${issueCommand("resume", start.issue, start.coordRoot)} to verify the approved commit again.`
+    : "Final verification of the approved commit is pending.");
 
 const stageNames: Record<WorkflowStepId, string> = {
   "R1.join": "checking agent readiness", "R2.plan": "writing plans", "R3.review": "reviewing plans",
@@ -111,6 +118,10 @@ export const renderIssueReport = (
     `Final commit (PR head): ${pin ?? "(none)"}`,
     `Published branch: ${branch ?? "(not pushed yet)"}`
   ];
+  const retry = currentFinalRetry(cursors);
+  if (retry && retry.issueSessionId === start.issueSessionId && retry.baselineSha === start.baselineSha) {
+    lines.push(finalRetryMessage(start, retry, cursors.manualPaused));
+  }
   const amendment = cursors.checkAmendments?.at(-1);
   if ((amendment?.commands ?? start.checks).length === 0) lines.push(NO_CHECKS);
   for (const pending of start.pendingChecks ?? []) lines.push(`Pending future check: ${pending}`);

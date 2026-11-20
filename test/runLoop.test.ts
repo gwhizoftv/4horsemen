@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -51,7 +51,7 @@ import { parseClaudeRateLimits, parseCodexRateLimits } from "../src/resourceEvid
 import { resourceBindingPaths } from "../src/paths.js";
 import type { RunLoopDependencies } from "../src/runLoop.js";
 import { writeAgentResponse } from "../src/ballotResponse.js";
-import { applyOwnerAnswer, dropOwnerAgent, queueOwnerGuidance } from "../src/ownerControls.js";
+import { applyOwnerAnswer, setOwnerPause, dropOwnerAgent, queueOwnerGuidance } from "../src/ownerControls.js";
 import type { ConsensusBallotResponse } from "../src/protocol.js";
 import type { AcceptedResponse, BallotBatch } from "../src/state.js";
 import { decide } from "../src/machine.js";
@@ -3373,7 +3373,7 @@ describe("effectful run loop", () => {
     // A restart cannot turn a failure or an advisory record into successful verification.
     const retried = await new CoordinatorRunLoop(paths, dependencies).verifyFinalizationChecks(readStartState(paths), order, observation, cursors);
     expect(retried.status).toBe("rejected");
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(change === "missing-history" ? 2 : 4);
     expect(calls[0]).toEqual(change === "README.md" ? ["docs-check"] : start.checks[0]!.argv);
     const passed = await new CoordinatorRunLoop(paths, { ...dependencies,
       processRunner: async () => ({ exitCode: 0, stdout: "", stderr: "" }) }).verifyFinalizationChecks(start, order, observation, cursors);
@@ -3514,13 +3514,10 @@ describe("coordinator verification gates", () => {
     const calls: string[] = [];
     let failing: string | null = null;
     const processRunner = async (argv: readonly string[], cwd: string) => {
-      if (argv[0] === "native") {
-        expect(cwd).not.toBe(seed);
-        expect(readFileSync(join(cwd, "src/a.ts"), "utf8")).toBe("implementation\n");
-      }
+      if (argv[0] === "native") expect(cwd).not.toBe(seed);
       calls.push(argv[0]!);
       if (argv[0] === "probe") return { exitCode: 0, stdout: "probe 1.0\n", stderr: "" };
-      return argv[0] === failing ? { exitCode: 1, stdout: "", stderr: `${argv[0]} broke` } : { exitCode: 0, stdout: "ok", stderr: "" };
+      return argv[0] === failing ? { exitCode: 1, stdout: "", stderr: failing === "native" ? "ERR_PNPM_NO_SCRIPT Missing script: test:new" : `${argv[0]} broke` } : { exitCode: 0, stdout: "ok", stderr: "" };
     };
     const loop = () => new CoordinatorRunLoop(paths, { tmux: null, mirror: new BareMirror(paths.mirror, seed), processRunner });
     const observe = (stepId: "R4.implement" | "R6.revise", productPin: string) => {
@@ -3528,8 +3525,100 @@ describe("coordinator verification gates", () => {
       return { order, observation: { agent: "codex", actionId: order.actionId, submissionSha: productPin,
         status: "satisfied" as const, outstanding: [], productPin } };
     };
-    return { paths, calls, loop, observe, implementationPin, consensusSha, finalSha, fail: (name: string | null) => { failing = name; } };
+    return { paths, seed, calls, loop, observe, implementationPin, consensusSha, finalSha, fail: (name: string | null) => { failing = name; } };
   };
+
+  it.each(["pass", "different", "generic", "details", "shared"] as const)("keeps the actionable final diagnostic and routes %s baseline evidence", async mode => {
+    const { seed, paths, consensusSha, finalSha } = gateFixture("local");
+    const start = { ...readStartState(paths), checks: [{ name: "compile", argv: ["compile"] }] };
+    const cursors = readCursorsState(paths);
+    const order = { ...buildOrder(paths, start, cursors, "codex", "R7.finalize", null),
+      inputs: [{ agent: "codex", commitSha: consensusSha, path: "signal", kind: "consensus" }] };
+    const progress = "progress 50%\n".repeat(500);
+    const loop = new CoordinatorRunLoop(paths, { tmux: null, mirror: new BareMirror(paths.mirror, seed),
+      processRunner: async (_argv, cwd) => {
+        const baseline = git(cwd, "rev-parse", "HEAD") === start.baselineSha;
+        const diagnostic = mode === "generic" ? "An unexpected error occurred"
+          : mode === "details" ? `compiler error A\n  expected ${baseline ? "B" : "A"}`
+          : mode === "shared" ? `TypeError: items is not iterable at ${baseline ? realpathSync(cwd) : cwd}/compile.js`
+          : `compiler error ${baseline ? "B" : "A"}`;
+        const noise = baseline ? " ✓ test/a.test.ts (2 tests) 9ms" : " ✓ test/a.test.ts (3 tests) 12ms";
+        const prefix = baseline ? "[12:30:16] [3/4]" : "[12:30:12] [2/4]";
+        return { exitCode: baseline && mode === "pass" ? 0 : 1, stderr: "build failed",
+          stdout: `${progress}${noise}\n${prefix} ${diagnostic}\r${progress}` };
+      } });
+    const result = await loop.verifyFinalizationChecks(start, order, { agent: "codex", actionId: order.actionId,
+      submissionSha: "e".repeat(40), productPin: finalSha, status: "satisfied", outstanding: [] }, cursors);
+    expect(result.status).toBe(mode === "shared" ? "retry" : "rejected");
+    expect(result.outstanding[0]!.length).toBeLessThan(2500);
+    if (mode === "shared") expect(result.finalRetry?.candidateExcerpt).toContain("TypeError: items is not iterable at {worktree}/compile.js");
+    else if (mode !== "generic") expect(result.outstanding[0]).toContain("compiler error A");
+    if (mode === "different") expect(result.outstanding[1]).toContain("compiler error B");
+    const log = /\(log: (.*?)\)/.exec(result.outstanding[0]!)![1]!;
+    expect(readFileSync(log, "utf8")).toContain(progress);
+    expect(readFileSync(log, "utf8")).toContain("build failed");
+    expect(readJournal(paths).filter(e => e.type === "baseline-check")).toHaveLength(1);
+  });
+
+  it("pauses on a shared missing tool and publishes the original verified pin after owner repair", async () => {
+    const { paths, seed, consensusSha, finalSha } = gateFixture("local");
+    const tool = join(paths.issueRoot, "project-tool");
+    const start = { ...readStartState(paths), profile: "solo" as const, origin: "https://github.com/example/project.git",
+      prPolicy: "coord-open-unmerged" as const, checks: [{ name: "compile", argv: [tool] }] };
+    writeFileSync(paths.start, JSON.stringify(start));
+    const initial = readCursorsState(paths);
+    seedPendingPublication(paths, finalSha);
+    const state = readCursorsState(paths);
+    const agent = "codex", actionId = actionIdFor(agent);
+    const path = ".signals/issue-1/finalization-ready-codex.json";
+    writeCursorsState(paths, cursorsStateSchema.parse({ ...state, activeRoster: [agent], publication: initial.publication,
+      derived: initial.derived, accepted: [{ stepId: "R4.implement", agent, submissionSha: consensusSha, productPin: consensusSha,
+        path: ".signals/issue-1/implementation-ready-codex.json", round: null, acceptedAt: state.updatedAt }],
+      agents: { ...state.agents, codex: { ...state.agents.codex, actionId, stepId: "R7.finalize",
+        evidenceId: "finalization-verified", status: "ordered", submissionMode: "git" } } }));
+    mkdirSync(join(seed, ".signals/issue-1"), { recursive: true });
+    writeFileSync(join(seed, path), JSON.stringify({ protocolVersion: 1, issue: 1, issueSessionId: start.issueSessionId,
+      agent, artifact: "finalization", consensusSha, finalSha, checks: [] }));
+    git(seed, "add", path);
+    git(seed, "commit", "-qm", "publish finalization signal");
+    git(seed, "branch", "issue-1/codex");
+    const submissionSha = git(seed, "rev-parse", "HEAD");
+    const marker = agentRuntimePaths(paths, agent).complete;
+    writeFileSync(marker, submissionSha);
+    const mirror = new BareMirror(paths.mirror, seed);
+    const publish = vi.spyOn(mirror, "publishBranch").mockResolvedValue();
+    const open = vi.fn(async () => ({ url: "https://github.com/example/project/pull/1" }));
+    const tick = () => new CoordinatorRunLoop(paths, { tmux: null, mirror, pullRequestOpener: open }).runTick();
+    const paused = await tick();
+    expect(paused.finalRetry).toMatchObject({ finalSha, submissionSha, baselineSha: start.baselineSha });
+    expect(paused.paused).toBe(true);
+    const report = renderIssueReport(start, paused);
+    expect(report).toContain(paused.finalRetry!.baselineLog);
+    expect(report).toContain(paused.finalRetry!.candidateLog);
+    expect(report).toContain("coord resume");
+    writeFileSync(marker, "0".repeat(40));
+    await tick();
+    expect(readJournal(paths).filter(e => e.type === "baseline-check")).toHaveLength(1);
+    expect(publish).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    writeFileSync(tool, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    setOwnerPause(paths, false);
+    const resumed = readCursorsState(paths);
+    const pending = renderIssueReport(start, resumed);
+    expect(pending).toContain(paused.finalRetry!.candidateLog);
+    expect(pending).toContain(paused.finalRetry!.baselineLog);
+    expect(pending).toContain(finalSha);
+    expect(pending).toContain("verification of the approved commit is pending");
+    expect(pending).not.toContain("Repair the shared failure");
+    expect(renderIssueReport(start, { ...resumed, finalRetry: { ...paused.finalRetry!, actionId: actionIdFor("retired") } }))
+      .not.toContain(paused.finalRetry!.candidateLog);
+    const done = await tick();
+    expect(done.finalRetry).toBeUndefined();
+    expect(done.accepted.find(a => a.stepId === "R7.finalize")).toMatchObject({ submissionSha, productPin: finalSha });
+    expect(readJournal(paths).filter(e => e.type === "final-check").map(e => e.details.exitCode)).toEqual([127, 0]);
+    expect(publish).toHaveBeenCalledExactlyOnceWith(finalSha, "issue-1/codex-final");
+    expect(open).toHaveBeenCalledTimes(1);
+  });
 
   it.each(["solo", "reviewed", "consensus"] as const)("adopts checks and retries saving before publication in %s", async (profile) => {
     const gate = gateFixture("local");
@@ -3572,7 +3661,10 @@ describe("coordinator verification gates", () => {
     expect(readFileSync(gate.paths.start, "utf8")).toBe(frozenBytes);
     expect(await gate.loop()["prepareCheckAmendment"](start, order, observation, cursors)).toEqual(cursors);
     gate.fail("native");
-    expect((await loop.verifyFinalizationChecks(start, order, observation, cursors)).status).toBe("rejected");
+    const failedCheck = await loop.verifyFinalizationChecks(start, order, observation, cursors);
+    expect(failedCheck.status).toBe("rejected");
+    expect(failedCheck.outstanding.join(" ")).toContain("Missing script: test:new");
+    expect(readJournal(gate.paths).filter(event => event.type === "baseline-check")).toHaveLength(0);
     gate.fail(null);
     const verified = await gate.loop().verifyFinalizationChecks(start, order, observation, cursors);
     expect(verified).toMatchObject({ status: "satisfied", policyDigest: cursors.checkAmendments![0]!.policyDigest });

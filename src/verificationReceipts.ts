@@ -34,7 +34,7 @@ import { atomicWriteJson } from "./state.js";
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 
 export const receiptKeyMaterialSchema = z.object({
-  v: z.literal(1),
+  v: z.literal(2),
   origin: z.string().min(1),
   inputsMode: z.enum(["tree", "tree-excluding-evidence"]),
   inputIdentity: z.string().min(1),
