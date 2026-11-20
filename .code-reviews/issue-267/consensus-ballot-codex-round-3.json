@@ -1,0 +1,14 @@
+{
+  "actionId": "18300a30-3af3-437e-bb57-c3245d34bd91",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "revise",
+  "inputSetHash": "241886343d3fbd7fc3e8e8dffd1e4fe7ecc279abace2ed403d419d6075aaa9c7",
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "protocolVersion": 2,
+  "rationale": "Drag-and-release on the pinned revision left the test clipboard unchanged in Muse, Antigravity, Gemini and OpenCode, and copying control-window text through the linked Muse client still overwrote it.",
+  "responseSha256": "cea8178abe4e2e3a2dfe738daae10b55c2de236267ac8a692ee515314822a9a7",
+  "revisionCommitSha": "c8b59c8f9bcc9ac2f583e2626033f5cf473736cd",
+  "round": 3
+}

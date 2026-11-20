@@ -1,0 +1,14 @@
+{
+  "actionId": "d7be1556-72ff-4d5b-8761-7f0bb14bdcc8",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "241886343d3fbd7fc3e8e8dffd1e4fe7ecc279abace2ed403d419d6075aaa9c7",
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "protocolVersion": 2,
+  "rationale": "Antigravity's round-3 revision c8b59c8f changes product code only in a comment and strengthens the real-tmux test to cover a fresh agentClientAttachCommand attach, a Codex scrollback copy, and an unchanged root key table alongside the existing seven-agent and isolation checks, and its recorded hook check:fast and test:e2e runs passed.",
+  "responseSha256": "6ea137cfad52d6f549ab2568c9d005e30f7b7209e9125b607c33922c67834fb4",
+  "revisionCommitSha": "c8b59c8f9bcc9ac2f583e2626033f5cf473736cd",
+  "round": 3
+}

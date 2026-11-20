@@ -1,0 +1,14 @@
+{
+  "actionId": "2d4dc1f2-07c2-48f2-9b47-ef32529e4eb3",
+  "agent": "antigravity",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "241886343d3fbd7fc3e8e8dffd1e4fe7ecc279abace2ed403d419d6075aaa9c7",
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "protocolVersion": 2,
+  "rationale": "Revision c8b59c8f keeps the clean two-file linked-client clipboard fix without global bind-key mutations or mouse regressions on native-selection agents, while adding real-tmux verification of fresh agentClientAttachCommand execution, scrollback-history copying, untouched stock root keybindings, and deterministic control/unrelated-session isolation.",
+  "responseSha256": "9fcffa0a9bdc12a9f5ed7fff4bd5c6dd0530890bca278716c9e7bb571fef465d",
+  "revisionCommitSha": "c8b59c8f9bcc9ac2f583e2626033f5cf473736cd",
+  "round": 3
+}
