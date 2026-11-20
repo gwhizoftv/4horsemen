@@ -612,7 +612,8 @@ describe("tmux boundary", () => {
       return { id, root, launcher: `start-${id}.sh`, delivery: "both" as const };
     });
 
-    const runEnsure = async (
+    const runSession = async (
+      mode: "start" | "ensure",
       copyCommandResult: TmuxResult,
       clipboardCommand: string | null = "/usr/bin/pbcopy",
       assertAuthority?: () => void
@@ -620,16 +621,18 @@ describe("tmux boundary", () => {
       const calls: string[][] = [];
       const controller = new TmuxController(async (args) => {
         calls.push([...args]);
+        if (args[0] === "has-session") return mode === "start" ? { exitCode: 1, stdout: "", stderr: "missing" } : ok();
         if (args[0] === "show-options" && args.includes("copy-command")) return copyCommandResult;
         if (args[0] === "list-windows") return ok(allAgents.map((agent) => agent.id).join("\n"));
         if (args[0] === "display-message") return ok("0\tagent\t0\t0\n");
         return ok();
       }, null, null, null, noopSleep, null, null, clipboardCommand);
-      await controller.ensureSession(3, allAgents, assertAuthority);
+      if (mode === "start") await controller.startSession(3, allAgents);
+      else await controller.ensureSession(3, allAgents, assertAuthority);
       return calls;
     };
 
-    const configured = await runEnsure(ok("\n"));
+    const configured = await runSession("ensure", ok("\n"));
     const flattened = configured.flatMap(commandsIn);
     expect(flattened).toContainEqual(["show-options", "-sv", "copy-command"]);
     expect(flattened).toContainEqual(["set-option", "-s", "-q", "copy-command", expectedCopyCommand]);
@@ -644,13 +647,20 @@ describe("tmux boundary", () => {
     }
     expect(configured.some((args) => args.includes("-g") || args[0] === "bind-key")).toBe(false);
 
-    // Preserve any owner-configured copy-command and tolerate older tmux lacking the option.
-    const preserved = await runEnsure(ok("owner-custom-pbcopy\n"));
-    expect(preserved.some((args) => args[0] === "set-option" && args.includes("copy-command"))).toBe(false);
-    const unsupported = await runEnsure({ exitCode: 1, stdout: "", stderr: "invalid option: copy-command" });
-    expect(unsupported.some((args) => args[0] === "set-option" && args.includes("copy-command"))).toBe(false);
-    const nonDarwin = await runEnsure(ok("\n"), null);
-    expect(nonDarwin.some((args) => args.includes("copy-command"))).toBe(false);
+    // Both startSession and ensureSession set an empty copy-command, preserve owner config,
+    // tolerate older tmux lacking copy-command, and skip when clipboardCommand is null or blank.
+    for (const mode of ["start", "ensure"] as const) {
+      expect((await runSession(mode, ok("\n"))).flatMap(commandsIn))
+        .toContainEqual(["set-option", "-s", "-q", "copy-command", expectedCopyCommand]);
+      const preserved = await runSession(mode, ok("owner-custom-pbcopy\n"));
+      expect(preserved.some((args) => args[0] === "set-option" && args.includes("copy-command"))).toBe(false);
+      const unsupported = await runSession(mode, { exitCode: 1, stdout: "", stderr: "invalid option: copy-command" });
+      expect(unsupported.some((args) => args[0] === "set-option" && args.includes("copy-command"))).toBe(false);
+      for (const disabled of [null, "   "]) {
+        const skipped = await runSession(mode, ok("\n"), disabled);
+        expect(skipped.some((args) => args.includes("copy-command"))).toBe(false);
+      }
+    }
 
     // Losing authority after inspecting copy-command aborts before mutating the server option.
     let sawShowOptions = false;
@@ -1759,19 +1769,7 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
     delete cleanEnv.TMUX;
     delete cleanEnv.TMUX_PANE;
     delete cleanEnv.COORD_COPY_TO_CLIPBOARD;
-    const runner: TmuxRunner = (args) =>
-      new Promise((resolvePromise, reject) => {
-        const child = spawn("tmux", ["-L", socket, "-f", "/dev/null", ...args], {
-          stdio: ["ignore", "pipe", "pipe"],
-          env: cleanEnv
-        });
-        let stdout = "";
-        let stderr = "";
-        child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
-        child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
-        child.once("error", reject);
-        child.once("close", (code) => resolvePromise({ exitCode: code ?? 1, stdout, stderr: stderr.trim() }));
-      });
+    const runner: TmuxRunner = (args, input) => runTmux(["-L", socket, "-f", "/dev/null", ...args], input, cleanEnv);
     const allIds = ["codex", "cursor", "claude", "antigravity", "muse", "gemini", "opencode"] as const;
     const agents = allIds.map((id) => {
       writeFileSync(join(clone, `start-${id}.sh`), `#!/bin/sh\nprintf '${id}-drag-selection\\n'\nexec sleep 60\n`, { mode: 0o700 });
@@ -1826,9 +1824,14 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
       }
 
       // An unrelated session on the same tmux server must never overwrite the clipboard sink.
+      // Append a deterministic completion marker after the installed copy-command so we wait
+      // for the negative copy job itself to finish rather than sleeping a fixed duration.
+      const doneFile = join(root, "copy-done");
+      const installedCopy = (await runner(["show-options", "-sv", "copy-command"])).stdout.trim();
+      await runner(["set-option", "-s", "copy-command", `${installedCopy}; printf done > '${doneFile.replaceAll("'", "'\\''")}'`]);
       writeFileSync(clipFile, "sentinel-untouched");
       await copyFirstLine("hook-holder");
-      await new Promise((resolvePause) => setTimeout(resolvePause, 250));
+      await expect.poll(() => existsSync(doneFile), { timeout: 4000 }).toBe(true);
       expect(readFileSync(clipFile, "utf8")).toBe("sentinel-untouched");
       expect((await runner(["show-buffer"])).stdout).toContain("unrelated-session-text");
 

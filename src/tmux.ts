@@ -12,9 +12,9 @@ export type TmuxResult = { exitCode: number; stdout: string; stderr: string };
 export type TmuxRunner = (args: readonly string[], input?: string) => Promise<TmuxResult>;
 export type SessionKey = number | "manual";
 
-export const runTmux: TmuxRunner = (args, input) =>
+export const runTmux = (args: readonly string[], input?: string, env?: NodeJS.ProcessEnv): Promise<TmuxResult> =>
   new Promise((resolvePromise, reject) => {
-    const child = spawn("tmux", [...args], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn("tmux", [...args], { stdio: ["pipe", "pipe", "pipe"], ...(env === undefined ? {} : { env }) });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
