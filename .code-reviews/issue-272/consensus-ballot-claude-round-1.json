@@ -1,0 +1,14 @@
+{
+  "actionId": "98c23047-3f4c-4dea-99d0-51a5afb20214",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "2decc59ba2cc5822036a557c93431aa3c1c82b77014c29a346c999cdf3783cb3",
+  "issue": 272,
+  "issueSessionId": "issue-272:f63828c1b459580c242974eb3ce496b18ff430f0",
+  "protocolVersion": 2,
+  "rationale": "Revision 97d23bf0 resolves the comparison's blocking codex findings — issue-added checks are now rejected before any baseline comparison (runLoop.ts:2927), the match signature keeps only specific diagnostics plus their continuation lines and drops test-runner progress, and unresolvableCommands now guards an unavailable pin so doctor reports instead of aborting — while keeping the plan's uncached baseline run, recorded-submission binding and fresh retry before publication.",
+  "responseSha256": "2687dfee9ef4c7697078f149f70d32a6a128721b74027f0e137c3777050c2f92",
+  "revisionCommitSha": "97d23bf0ff9536b03ef1a746c828a9bb1f09c780",
+  "round": 1
+}

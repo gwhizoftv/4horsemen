@@ -1,0 +1,14 @@
+{
+  "actionId": "502025db-3d87-4429-9262-df547bcba0e0",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "2decc59ba2cc5822036a557c93431aa3c1c82b77014c29a346c999cdf3783cb3",
+  "issue": 272,
+  "issueSessionId": "issue-272:f63828c1b459580c242974eb3ce496b18ff430f0",
+  "protocolVersion": 2,
+  "rationale": "Revision 97d23bf0ff9536b03ef1a746c828a9bb1f09c780 resolves installed partial Node pins, routes issue-specific failures to correction, and preserves the original approved commit and both logs through a shared-failure retry, as verified by the regression tests and repository hooks.",
+  "responseSha256": "a533b9b26a6ea43e1896588eb253b14bbcdc0f8f2c7097bf80952e86c9777849",
+  "revisionCommitSha": "97d23bf0ff9536b03ef1a746c828a9bb1f09c780",
+  "round": 1
+}
