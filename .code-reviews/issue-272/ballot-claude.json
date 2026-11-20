@@ -1,0 +1,29 @@
+{
+  "actionId": "e0a60d5d-0abd-44d5-8ed6-98f1c0c86f81",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "claude",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "db04b1f4c95aa9f5a269e040866909cb2de94fb1",
+      "path": ".signals/issue-272/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "f7a4704f1e423ff2d2e4c304149e26407e90655a",
+      "path": ".signals/issue-272/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "aa59721fdbc69d7be1be908188ee2d9b7fe836d0",
+      "path": ".signals/issue-272/implementation-ready-codex.json"
+    }
+  ],
+  "inputSetHash": "c421ef95d10dd177eb90df31ff030179cb5f7c7ff02b2ff61a81a0c510a5b870",
+  "issue": 272,
+  "issueSessionId": "issue-272:f63828c1b459580c242974eb3ce496b18ff430f0",
+  "protocolVersion": 2,
+  "rationale": "The claude pin routes final failures correctly in the cases the comparison exercised — it excludes issue-added checks from baseline comparison and normalizes durations so shared failures in single-command gates still match, keeps candidate-phase launch faults on the coordinator path, and lets doctor degrade gracefully — leaving only the narrow unpinned receipt-identity gap (F5), whereas codex misroutes amendment typos and test-runner output (F1, F2) and antigravity adds candidate-phase rejections and a duplicated retry pipeline (F3, F6).",
+  "responseSha256": "89528d33d8fc7d0a6d53912308f9281de4a62e5ad064118c0dbe8cb55839591e"
+}

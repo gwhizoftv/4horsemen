@@ -1,0 +1,29 @@
+{
+  "actionId": "94546fd9-78e9-455e-9322-f73f6f8c8119",
+  "agent": "antigravity",
+  "artifact": "comparison-ballot",
+  "choice": "antigravity",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "db04b1f4c95aa9f5a269e040866909cb2de94fb1",
+      "path": ".signals/issue-272/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "f7a4704f1e423ff2d2e4c304149e26407e90655a",
+      "path": ".signals/issue-272/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "aa59721fdbc69d7be1be908188ee2d9b7fe836d0",
+      "path": ".signals/issue-272/implementation-ready-codex.json"
+    }
+  ],
+  "inputSetHash": "c421ef95d10dd177eb90df31ff030179cb5f7c7ff02b2ff61a81a0c510a5b870",
+  "issue": 272,
+  "issueSessionId": "issue-272:f63828c1b459580c242974eb3ce496b18ff430f0",
+  "protocolVersion": 2,
+  "rationale": "Antigravity's implementation has the fewest structural defects across toolchain resolution, symlink-safe diagnostic matching, and atomic final-retry state transitions, leaving only small targeted fixes for revision.",
+  "responseSha256": "afd098e9038f0213529a4e7f6e6fa109444a79958f4e23678453918cdf8c20f2"
+}
