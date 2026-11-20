@@ -1,0 +1,29 @@
+{
+  "actionId": "bd414987-0ea3-425f-ae74-3a6cac601cd1",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "antigravity",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "e5c9a43f1b050d6e6e551c9b56d7b295f4a60378",
+      "path": ".signals/issue-267/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "ea9a12ba08a62bf179911997ce292ab7438de3c2",
+      "path": ".signals/issue-267/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "adfe985c7853c748ae1855268235cc6f8a045265",
+      "path": ".signals/issue-267/implementation-ready-codex.json"
+    }
+  ],
+  "inputSetHash": "e7cdf298cce61ffcf4b073cf858a2b909a102c510daff7f8036a201c93f5b323",
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "protocolVersion": 2,
+  "rationale": "Antigravity's pin e5c9a43f implements the selected plan with product code functionally identical to claude's (env-scoped, owner-preserving copy-command, no bind-key, no new mouse-on clients) and has the most complete seven-agent mocked and real-tmux coverage, passing 4/4 concurrent runs, whereas codex's adfe985c rewrites the global drag binding, takes drags from Claude and OpenCode, turns mouse on for Antigravity/Muse/Gemini/OpenCode, and its real-client test failed 3 of 8 concurrent runs.",
+  "responseSha256": "d3b924babea44628236396964db725a8186441207fc71ff5fffefa950cab3e52"
+}

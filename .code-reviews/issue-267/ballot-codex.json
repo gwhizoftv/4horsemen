@@ -1,0 +1,29 @@
+{
+  "actionId": "9b495dba-2342-4710-a95c-6f5c08a3192d",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "e5c9a43f1b050d6e6e551c9b56d7b295f4a60378",
+      "path": ".signals/issue-267/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "ea9a12ba08a62bf179911997ce292ab7438de3c2",
+      "path": ".signals/issue-267/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "adfe985c7853c748ae1855268235cc6f8a045265",
+      "path": ".signals/issue-267/implementation-ready-codex.json"
+    }
+  ],
+  "inputSetHash": "e7cdf298cce61ffcf4b073cf858a2b909a102c510daff7f8036a201c93f5b323",
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "protocolVersion": 2,
+  "rationale": "Codex exercises drag-and-release copying in all seven linked agent windows, including Muse, and needs a revision to preserve the source window when focus changes during a copy.",
+  "responseSha256": "0adc19dfb2a2ac36f5be27d00c7e86b11cb35004e2a907cd0aa9ec76475d6148"
+}

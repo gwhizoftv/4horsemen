@@ -1,0 +1,29 @@
+{
+  "actionId": "73e395d3-100b-4028-a830-5a88c1b4c313",
+  "agent": "antigravity",
+  "artifact": "comparison-ballot",
+  "choice": "antigravity",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "e5c9a43f1b050d6e6e551c9b56d7b295f4a60378",
+      "path": ".signals/issue-267/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "ea9a12ba08a62bf179911997ce292ab7438de3c2",
+      "path": ".signals/issue-267/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "adfe985c7853c748ae1855268235cc6f8a045265",
+      "path": ".signals/issue-267/implementation-ready-codex.json"
+    }
+  ],
+  "inputSetHash": "e7cdf298cce61ffcf4b073cf858a2b909a102c510daff7f8036a201c93f5b323",
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "protocolVersion": 2,
+  "rationale": "Antigravity faithfully implements the selected two-file plan without global bind-key mutations or mouse regressions on non-mouse agents, while providing cleaner process-env test isolation and full seven-agent unit and real-tmux acceptance coverage.",
+  "responseSha256": "8c3205218faa0b6912c5af1550eab5be36fddaba552e378601a8fe908804190b"
+}
