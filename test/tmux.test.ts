@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   agentClientAttachCommand,
+  defaultClipboardCommand,
   harnessLooksReady,
   harnessPromptReadiness,
   nudgePreludeKeys,
@@ -21,6 +22,7 @@ import {
   renderNudgeText,
   resolveNudgeKeys,
   runTmux,
+  scopedCopyCommand,
   TmuxController,
   vimInsertPrelude,
   type TmuxResult,
@@ -430,6 +432,7 @@ describe("tmux boundary", () => {
         command:
           "tmux new-session -A -s coord-7-claude -t coord-7 ';' select-window -t claude ';' set-option destroy-unattached on" +
           " ';' set-option -t coord-7-claude history-limit 50000 ';' set-option -t coord-7-claude mouse on" +
+          " ';' set-environment -t coord-7-claude COORD_COPY_TO_CLIPBOARD 1" +
           " ';' set-option -w -q -t coord-7-claude:claude pane-scrollbars on",
         terminalProfile: "Pro",
         windowTitle: "coord-7/claude"
@@ -438,15 +441,22 @@ describe("tmux boundary", () => {
         agentId: "codex",
         command:
           "tmux new-session -A -s coord-7-codex -t coord-7 ';' select-window -t codex ';' set-option destroy-unattached on" +
-          " ';' set-option -t coord-7-codex history-limit 50000 ';' set-option -t coord-7-codex mouse on",
+          " ';' set-option -t coord-7-codex history-limit 50000 ';' set-option -t coord-7-codex mouse on" +
+          " ';' set-environment -t coord-7-codex COORD_COPY_TO_CLIPBOARD 1",
         terminalProfile: "Grass",
         windowTitle: "coord-7/codex"
       }
     ]);
-    expect(agentClientAttachCommand("coord-7", "cursor")).toContain("set-option -w -q -t coord-7-cursor:cursor pane-scrollbars on");
-    for (const id of ["antigravity", "gemini"]) {
+    for (const id of ["claude", "codex", "cursor"]) {
+      const command = agentClientAttachCommand("coord-7", id);
+      expect(command).toContain(`set-option -t coord-7-${id} mouse on`);
+      expect(command).toContain(`set-environment -t coord-7-${id} COORD_COPY_TO_CLIPBOARD 1`);
+      if (id !== "codex") expect(command).toContain(`set-option -w -q -t coord-7-${id}:${id} pane-scrollbars on`);
+    }
+    for (const id of ["antigravity", "muse", "gemini", "opencode"]) {
       const command = agentClientAttachCommand("coord-7", id);
       expect(command).toContain(`set-option -t coord-7-${id} history-limit 50000`);
+      expect(command).toContain(`set-environment -t coord-7-${id} COORD_COPY_TO_CLIPBOARD 1`);
       expect(command).not.toMatch(/mouse|pane-scrollbars| -g /);
     }
   });
@@ -585,9 +595,91 @@ describe("tmux boundary", () => {
       ["set-option", "-t", "coord-3", "mouse", "on"],
       ["set-option", "-t", "coord-3-claude", "history-limit", "50000"],
       ["set-option", "-t", "coord-3-claude", "mouse", "on"],
+      ["set-environment", "-t", "coord-3-claude", "COORD_COPY_TO_CLIPBOARD", "1"],
       ["set-option", "-w", "-q", "-t", "coord-3:claude", "pane-scrollbars", "on"]
     ]));
+    expect(calls.flatMap(commandsIn)).not.toContainEqual(["set-environment", "-t", "coord-3", "COORD_COPY_TO_CLIPBOARD", "1"]);
     expect(calls.some((args) => args.includes("-g") || args[0] === "bind-key")).toBe(false);
+  });
+
+  it("configures scoped tmux copy-command across all supported agents without overwriting owner config", async () => {
+    expect(defaultClipboardCommand("darwin")).toBe("/usr/bin/pbcopy");
+    expect(defaultClipboardCommand("linux")).toBeNull();
+    const expectedCopyCommand = scopedCopyCommand("/usr/bin/pbcopy");
+    const root = mkdtempSync(join(tmpdir(), "coord-copy-opt-"));
+    roots.push(root);
+    const allAgents = ["codex", "cursor", "claude", "antigravity", "muse", "gemini", "opencode"].map((id) => {
+      writeFileSync(join(root, `start-${id}.sh`), "#!/bin/sh\n", { mode: 0o700 });
+      return { id, root, launcher: `start-${id}.sh`, delivery: "both" as const };
+    });
+
+    const runSession = async (
+      mode: "start" | "ensure",
+      copyCommandResult: TmuxResult,
+      clipboardCommand: string | null = "/usr/bin/pbcopy",
+      assertAuthority?: () => void
+    ) => {
+      const calls: string[][] = [];
+      const controller = new TmuxController(async (args) => {
+        calls.push([...args]);
+        if (args[0] === "has-session") return mode === "start" ? { exitCode: 1, stdout: "", stderr: "missing" } : ok();
+        if (args[0] === "show-options" && args.includes("copy-command")) return copyCommandResult;
+        if (args[0] === "list-windows") return ok(allAgents.map((agent) => agent.id).join("\n"));
+        if (args[0] === "display-message") return ok("0\tagent\t0\t0\n");
+        return ok();
+      }, null, null, null, noopSleep, null, null, clipboardCommand);
+      if (mode === "start") await controller.startSession(3, allAgents);
+      else await controller.ensureSession(3, allAgents, assertAuthority);
+      return calls;
+    };
+
+    const configured = await runSession("ensure", ok("\n"));
+    const flattened = configured.flatMap(commandsIn);
+    expect(flattened).toContainEqual(["show-options", "-sv", "copy-command"]);
+    expect(flattened).toContainEqual(["set-option", "-s", "-q", "copy-command", expectedCopyCommand]);
+    // Primary session (which holds the control window) is never tagged for clipboard writes.
+    expect(flattened).not.toContainEqual(["set-environment", "-t", "coord-3", "COORD_COPY_TO_CLIPBOARD", "1"]);
+    for (const id of ["codex", "cursor", "claude"]) {
+      expect(flattened).toContainEqual(["set-option", "-t", `coord-3-${id}`, "mouse", "on"]);
+      expect(flattened).toContainEqual(["set-environment", "-t", `coord-3-${id}`, "COORD_COPY_TO_CLIPBOARD", "1"]);
+    }
+    for (const id of ["antigravity", "muse", "gemini", "opencode"]) {
+      expect(flattened).toContainEqual(["set-option", "-t", `coord-3-${id}`, "history-limit", "50000"]);
+      expect(flattened).toContainEqual(["set-environment", "-t", `coord-3-${id}`, "COORD_COPY_TO_CLIPBOARD", "1"]);
+      expect(flattened.some((cmd) => cmd.includes(`coord-3-${id}`) && cmd.includes("mouse"))).toBe(false);
+    }
+    expect(configured.some((args) => args.includes("-g") || args[0] === "bind-key")).toBe(false);
+
+    // Both startSession and ensureSession set an empty copy-command, preserve owner config,
+    // tolerate older tmux lacking copy-command, and skip when clipboardCommand is null or blank.
+    for (const mode of ["start", "ensure"] as const) {
+      expect((await runSession(mode, ok("\n"))).flatMap(commandsIn))
+        .toContainEqual(["set-option", "-s", "-q", "copy-command", expectedCopyCommand]);
+      const preserved = await runSession(mode, ok("owner-custom-pbcopy\n"));
+      expect(preserved.some((args) => args[0] === "set-option" && args.includes("copy-command"))).toBe(false);
+      const unsupported = await runSession(mode, { exitCode: 1, stdout: "", stderr: "invalid option: copy-command" });
+      expect(unsupported.some((args) => args[0] === "set-option" && args.includes("copy-command"))).toBe(false);
+      for (const disabled of [null, "   "]) {
+        const skipped = await runSession(mode, ok("\n"), disabled);
+        expect(skipped.some((args) => args.includes("copy-command"))).toBe(false);
+      }
+    }
+
+    // Losing authority after inspecting copy-command aborts before mutating the server option.
+    let sawShowOptions = false;
+    const lostAuthorityCalls: string[][] = [];
+    const authorityController = new TmuxController(async (args) => {
+      lostAuthorityCalls.push([...args]);
+      if (args[0] === "show-options" && args.includes("copy-command")) {
+        sawShowOptions = true;
+        return ok("\n");
+      }
+      return ok();
+    }, null, null, null, noopSleep, null, null, "/usr/bin/pbcopy");
+    await expect(authorityController.ensureSession(3, allAgents, () => {
+      if (sawShowOptions) throw new Error("authority lost");
+    })).rejects.toThrow("authority lost");
+    expect(lostAuthorityCalls.some((args) => args[0] === "set-option" && args.includes("copy-command"))).toBe(false);
   });
 
   it("ignores unavailable scrollbars but fails required scrolling options", async () => {
@@ -1667,6 +1759,112 @@ describe.skipIf(!tmuxInstalled)("isolated tmux exit diagnostics", () => {
     expect(exitOf("first")).toMatchObject({ status: 0, signal: null });
     expect(exitOf("second")).toMatchObject({ status: 3, signal: null });
     expect(exitOf("third")).toMatchObject({ status: null, signal: expect.any(String) });
+  });
+
+  it("pipes copy-mode selections to the clipboard sink only from coord sessions across all supported agents", async () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-tmux-copy-"));
+    roots.push(root);
+    const clone = join(root, "clone");
+    mkdirSync(clone);
+    const clipFile = join(root, "clipboard.txt");
+    const socket = `coord-copy-test-${process.pid}-${Date.now()}`;
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.TMUX;
+    delete cleanEnv.TMUX_PANE;
+    delete cleanEnv.COORD_COPY_TO_CLIPBOARD;
+    const runner: TmuxRunner = (args, input) => runTmux(["-L", socket, "-f", "/dev/null", ...args], input, cleanEnv);
+    const allIds = ["codex", "cursor", "claude", "antigravity", "muse", "gemini", "opencode"] as const;
+    const agents = allIds.map((id) => {
+      const prefix = id === "codex"
+        ? "printf 'codex-scrollback-history\\n'; i=0; while [ $i -lt 40 ]; do echo filler-$i; i=$((i+1)); done\n"
+        : "";
+      writeFileSync(join(clone, `start-${id}.sh`), `#!/bin/sh\n${prefix}printf '${id}-drag-selection\\n'\nexec sleep 60\n`, { mode: 0o700 });
+      return { id, root: clone, launcher: `start-${id}.sh`, delivery: "both" as const };
+    });
+    const sink = `cat > '${clipFile.replaceAll("'", "'\\''")}'`;
+    const controller = new TmuxController(runner, null, null, null, noopSleep, "grp", null, sink);
+    const copyLine = async (target: string, motion: "top-line" | "history-top" = "top-line"): Promise<void> => {
+      const copied = await runner([
+        "copy-mode", "-t", target,
+        ";", "send-keys", "-t", target, "-X", motion,
+        ";", "send-keys", "-t", target, "-X", "begin-selection",
+        ";", "send-keys", "-t", target, "-X", "end-of-line",
+        ";", "send-keys", "-t", target, "-X", "copy-pipe-and-cancel"
+      ]);
+      expect(copied.exitCode, copied.stderr).toBe(0);
+    };
+    try {
+      await runner(["new-session", "-d", "-s", "hook-holder", "printf 'unrelated-session-text\\n'; exec sleep 60"]);
+      const stockRootKeys = (await runner(["list-keys", "-T", "root"])).stdout;
+      await controller.startSession(9, agents);
+      // Wait for all seven panes to print their marker line.
+      for (const id of allIds) {
+        await expect.poll(async () => (await runner(["capture-pane", "-p", "-t", `coord-9:${id}`])).stdout, { timeout: 4000 })
+          .toContain(`${id}-drag-selection`);
+      }
+      await expect.poll(async () => (await runner(["capture-pane", "-p", "-t", "hook-holder"])).stdout, { timeout: 4000 })
+        .toContain("unrelated-session-text");
+
+      // Exercise both paths: fresh agentClientAttachCommand for cursor and ensureSession repair for the rest.
+      const cursorAttachArgs = agentClientAttachCommand("coord-9", "cursor")
+        .split(" ';' ")
+        .filter((part) => part !== "set-option destroy-unattached on")
+        .flatMap((part, index) => {
+          const tokens = (index === 0 ? part.replace(/^tmux /, "").replace(" -A ", " -d ") : part).split(" ");
+          return index === 0 ? tokens : [";", ...tokens];
+        });
+      const freshCursor = await runner(cursorAttachArgs);
+      expect(freshCursor.exitCode, freshCursor.stderr).toBe(0);
+      for (const id of allIds) {
+        if (id === "cursor") continue;
+        const linked = await runner(["new-session", "-d", "-s", `coord-9-${id}`, "-t", "coord-9", ";", "select-window", "-t", `coord-9-${id}:${id}`]);
+        expect(linked.exitCode, linked.stderr).toBe(0);
+      }
+      await controller.ensureSession(9, agents);
+
+      // Server root key table (including MouseDrag1Pane for mouse-tracking apps like Claude/OpenCode) stays untouched.
+      expect((await runner(["list-keys", "-T", "root"])).stdout).toBe(stockRootKeys);
+
+      // All seven linked agent clients copy to the clipboard sink and exit copy-mode;
+      // mouse stays on for codex/cursor/claude and off for native-selection clients.
+      for (const id of allIds) {
+        const expectedMouse = ["codex", "cursor", "claude"].includes(id) ? "1" : "0";
+        expect((await runner(["display-message", "-p", "-t", `coord-9-${id}`, "#{mouse} #{history_limit}"])).stdout.trim())
+          .toBe(`${expectedMouse} 50000`);
+        writeFileSync(clipFile, "before-copy");
+        await copyLine(`coord-9-${id}`, id === "codex" ? "history-top" : "top-line");
+        const expectedText = id === "codex" ? "codex-scrollback-history" : `${id}-drag-selection`;
+        await expect.poll(() => readFileSync(clipFile, "utf8"), { timeout: 4000 }).toBe(expectedText);
+        expect((await runner(["display-message", "-p", "-t", `coord-9-${id}`, "#{pane_in_mode}"])).stdout.trim()).toBe("0");
+      }
+
+      // Neither the primary session's control window nor an unrelated session on the same
+      // tmux server may overwrite the clipboard sink. Append a deterministic completion marker
+      // after the installed copy-command so we wait for each negative copy job to finish.
+      const installedCopy = (await runner(["show-options", "-sv", "copy-command"])).stdout.trim();
+      const assertNoClipboardWrite = async (target: string, expectedBuffer: string, markerName: string): Promise<void> => {
+        const doneFile = join(root, markerName);
+        await runner(["set-option", "-s", "copy-command", `${installedCopy}; printf done > '${doneFile.replaceAll("'", "'\\''")}'`]);
+        writeFileSync(clipFile, "sentinel-untouched");
+        await copyLine(target);
+        await expect.poll(() => existsSync(doneFile), { timeout: 4000 }).toBe(true);
+        expect(readFileSync(clipFile, "utf8")).toBe("sentinel-untouched");
+        expect((await runner(["show-buffer"])).stdout).toContain(expectedBuffer);
+      };
+      const respawnControl = await runner(["respawn-pane", "-k", "-t", "coord-9:control", "printf 'control-window-text\\n'; exec sleep 60"]);
+      expect(respawnControl.exitCode, respawnControl.stderr).toBe(0);
+      await expect.poll(async () => (await runner(["capture-pane", "-p", "-t", "coord-9:control"])).stdout, { timeout: 4000 })
+        .toContain("control-window-text");
+      await assertNoClipboardWrite("coord-9:control", "control-window-text", "control-copy-done");
+      await assertNoClipboardWrite("hook-holder", "unrelated-session-text", "holder-copy-done");
+
+      // An owner-configured server copy-command is preserved across ensureSession.
+      await runner(["set-option", "-s", "copy-command", "owner-custom-copy"]);
+      await controller.ensureSession(9, agents);
+      expect((await runner(["show-options", "-sv", "copy-command"])).stdout.trim()).toBe("owner-custom-copy");
+    } finally {
+      await runner(["kill-server"]);
+    }
   });
 });
 

@@ -12,9 +12,9 @@ export type TmuxResult = { exitCode: number; stdout: string; stderr: string };
 export type TmuxRunner = (args: readonly string[], input?: string) => Promise<TmuxResult>;
 export type SessionKey = number | "manual";
 
-export const runTmux: TmuxRunner = (args, input) =>
+export const runTmux = (args: readonly string[], input?: string, env?: NodeJS.ProcessEnv): Promise<TmuxResult> =>
   new Promise((resolvePromise, reject) => {
-    const child = spawn("tmux", [...args], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn("tmux", [...args], { stdio: ["pipe", "pipe", "pipe"], ...(env === undefined ? {} : { env }) });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
@@ -528,9 +528,23 @@ export const nudgePreludeKeys = (agentId: string): readonly string[] => agentNud
 
 const mouseScrollingAgent = (agentId: string): boolean => ["claude", "cursor", "codex"].includes(agentId);
 
-const sessionScrollOptions = (session: string, mouse = true): string[][] => [
+const COORD_COPY_TO_CLIPBOARD_ENV = "COORD_COPY_TO_CLIPBOARD";
+
+/** System clipboard sink for tmux copy-mode on macOS, where Terminal.app ignores OSC 52. */
+export const defaultClipboardCommand = (osPlatform: NodeJS.Platform = platform()): string | null =>
+  osPlatform === "darwin" ? "/usr/bin/pbcopy" : null;
+
+/**
+ * Pipe tmux copy-mode selections to the host clipboard only from coord-tagged
+ * sessions; unrelated sessions on the same tmux server drain stdin cleanly.
+ */
+export const scopedCopyCommand = (clipboardCommand: string): string =>
+  `if [ "\${${COORD_COPY_TO_CLIPBOARD_ENV}:-}" = 1 ]; then ${clipboardCommand}; else cat >/dev/null; fi`;
+
+const sessionScrollOptions = (session: string, mouse = true, clipboard = false): string[][] => [
   ["set-option", "-t", session, "history-limit", "50000"],
-  ...(mouse ? [["set-option", "-t", session, "mouse", "on"]] : [])
+  ...(mouse ? [["set-option", "-t", session, "mouse", "on"]] : []),
+  ...(clipboard ? [["set-environment", "-t", session, COORD_COPY_TO_CLIPBOARD_ENV, "1"]] : [])
 ];
 
 // Older tmux lacks scrollbars; -q ignores only unknown/ambiguous options.
@@ -553,7 +567,7 @@ export const agentClientAttachCommand = (session: string, agentId: string): stri
     `tmux new-session -A -s ${client} -t ${session}`,
     `select-window -t ${window}`,
     "set-option destroy-unattached on",
-    ...sessionScrollOptions(client, mouseScrollingAgent(agentId)).map((args) => args.join(" ")),
+    ...sessionScrollOptions(client, mouseScrollingAgent(agentId), true).map((args) => args.join(" ")),
     ...windowScrollOptions(`${client}:${window}`, agentId).map((args) => args.join(" "))
   ].join(" ';' ");
 };
@@ -823,7 +837,8 @@ export class TmuxController {
       new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
     /** Workspace fingerprint for Terminal titles; defaults to tmux namespace. */
     private readonly titleGroup: string | null = null,
-    private readonly titleProbe: OwnerTerminalTitleProbe | null = defaultOwnerTerminalTitleProbe()
+    private readonly titleProbe: OwnerTerminalTitleProbe | null = defaultOwnerTerminalTitleProbe(),
+    private readonly clipboardCommand: string | null = defaultClipboardCommand()
   ) {}
 
   /** Group id embedded in Terminal custom titles for this workspace. */
@@ -959,6 +974,7 @@ export class TmuxController {
     if (created.exitCode !== 0) throw new Error(`tmux session creation failed: ${created.stderr}`);
     try {
       await this.configureSessionScrolling(session);
+      await this.configureServerCopyCommand();
       const environment = await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(issue)]);
       if (environment.exitCode !== 0) {
         throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
@@ -987,10 +1003,28 @@ export class TmuxController {
     }
   }
 
-  private async configureSessionScrolling(session: string, mouse = true): Promise<void> {
-    const commands = sessionScrollOptions(session, mouse);
+  private async configureSessionScrolling(session: string, mouse = true, clipboard = false): Promise<void> {
+    const commands = sessionScrollOptions(session, mouse, clipboard);
     const result = await this.runner(commands.flatMap((args, index) => index === 0 ? args : [";", ...args]));
     if (result.exitCode !== 0) throw new Error(`cannot configure scrolling in ${session}: ${result.stderr}`);
+  }
+
+  /**
+   * Configure tmux's server-level `copy-command` when unset so copy-mode drags
+   * in coord's linked agent clients reach the macOS pasteboard without
+   * overwriting owner `~/.tmux.conf` settings or affecting unrelated sessions.
+   */
+  private async configureServerCopyCommand(assertAuthority: () => void = () => undefined): Promise<void> {
+    if (this.clipboardCommand === null || this.clipboardCommand.trim() === "") return;
+    const existing = await this.runner(["show-options", "-sv", "copy-command"]);
+    assertAuthority();
+    // Older tmux (< 3.2) lacks `copy-command`; skip without failing startup.
+    if (existing.exitCode !== 0 || existing.stdout.trim() !== "") return;
+    const configured = await this.runner([
+      "set-option", "-s", "-q", "copy-command", scopedCopyCommand(this.clipboardCommand)
+    ]);
+    assertAuthority();
+    if (configured.exitCode !== 0) throw new Error(`cannot configure clipboard copy in tmux: ${configured.stderr}`);
   }
 
   /** The git shim disarms on COORD_MANUAL=1, so an automated session must never pass one on. */
@@ -1097,6 +1131,7 @@ export class TmuxController {
     // Set history before creating agent panes; repair existing sessions on resume too.
     await this.configureSessionScrolling(session);
     assertAuthority();
+    await this.configureServerCopyCommand(assertAuthority);
     // `-r` removes the variable from every process the session starts, even one
     // the tmux server's global environment still carries; `-u` would only drop
     // the session value and let that global value through.
@@ -1129,7 +1164,7 @@ export class TmuxController {
       assertAuthority();
       if (attached.exitCode === 0) {
         // Grouped clients have independent session options and may stay open on resume.
-        await this.configureSessionScrolling(client, mouseScrollingAgent(agent.id));
+        await this.configureSessionScrolling(client, mouseScrollingAgent(agent.id), true);
         assertAuthority();
       }
       const present = await this.runner(["list-windows", "-t", session, "-F", "#{window_name}"]);
