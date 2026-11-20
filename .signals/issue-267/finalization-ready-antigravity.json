@@ -1,0 +1,10 @@
+{
+  "protocolVersion": 1,
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "agent": "antigravity",
+  "artifact": "finalization",
+  "consensusSha": "c8b59c8f9bcc9ac2f583e2626033f5cf473736cd",
+  "finalSha": "5f78c16cfb287782f06041a52cbcfc2ed7a5eae4",
+  "checks": []
+}
