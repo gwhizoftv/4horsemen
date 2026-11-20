@@ -528,9 +528,27 @@ export const nudgePreludeKeys = (agentId: string): readonly string[] => agentNud
 
 const mouseScrollingAgent = (agentId: string): boolean => ["claude", "cursor", "codex"].includes(agentId);
 
+const COORD_COPY_TO_CLIPBOARD_ENV = "COORD_COPY_TO_CLIPBOARD";
+
+/** System clipboard sink for tmux copy-mode on macOS, where Terminal.app ignores OSC 52. */
+export const defaultClipboardCommand = (osPlatform: NodeJS.Platform = platform()): string | null =>
+  osPlatform === "darwin" ? "/usr/bin/pbcopy" : null;
+
+/**
+ * Pipe tmux copy-mode selections to the host clipboard only from coord-tagged
+ * sessions; unrelated sessions on the same tmux server drain stdin cleanly.
+ */
+export const scopedCopyCommand = (clipboardCommand: string): string =>
+  `if [ "\${${COORD_COPY_TO_CLIPBOARD_ENV}:-}" = 1 ]; then ${clipboardCommand}; else cat >/dev/null; fi`;
+
 const sessionScrollOptions = (session: string, mouse = true): string[][] => [
   ["set-option", "-t", session, "history-limit", "50000"],
-  ...(mouse ? [["set-option", "-t", session, "mouse", "on"]] : [])
+  ...(mouse
+    ? [
+        ["set-option", "-t", session, "mouse", "on"],
+        ["set-environment", "-t", session, COORD_COPY_TO_CLIPBOARD_ENV, "1"]
+      ]
+    : [])
 ];
 
 // Older tmux lacks scrollbars; -q ignores only unknown/ambiguous options.
@@ -823,7 +841,8 @@ export class TmuxController {
       new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
     /** Workspace fingerprint for Terminal titles; defaults to tmux namespace. */
     private readonly titleGroup: string | null = null,
-    private readonly titleProbe: OwnerTerminalTitleProbe | null = defaultOwnerTerminalTitleProbe()
+    private readonly titleProbe: OwnerTerminalTitleProbe | null = defaultOwnerTerminalTitleProbe(),
+    private readonly clipboardCommand: string | null = defaultClipboardCommand()
   ) {}
 
   /** Group id embedded in Terminal custom titles for this workspace. */
@@ -959,6 +978,7 @@ export class TmuxController {
     if (created.exitCode !== 0) throw new Error(`tmux session creation failed: ${created.stderr}`);
     try {
       await this.configureSessionScrolling(session);
+      await this.configureServerCopyCommand();
       const environment = await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(issue)]);
       if (environment.exitCode !== 0) {
         throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
@@ -991,6 +1011,24 @@ export class TmuxController {
     const commands = sessionScrollOptions(session, mouse);
     const result = await this.runner(commands.flatMap((args, index) => index === 0 ? args : [";", ...args]));
     if (result.exitCode !== 0) throw new Error(`cannot configure scrolling in ${session}: ${result.stderr}`);
+  }
+
+  /**
+   * Configure tmux's server-level `copy-command` when unset so copy-mode drags
+   * in coord's mouse-enabled sessions reach the macOS pasteboard without
+   * overwriting owner `~/.tmux.conf` settings or affecting unrelated sessions.
+   */
+  private async configureServerCopyCommand(assertAuthority: () => void = () => undefined): Promise<void> {
+    if (this.clipboardCommand === null || this.clipboardCommand.trim() === "") return;
+    const existing = await this.runner(["show-options", "-sv", "copy-command"]);
+    assertAuthority();
+    // Older tmux (< 3.2) lacks `copy-command`; skip without failing startup.
+    if (existing.exitCode !== 0 || existing.stdout.trim() !== "") return;
+    const configured = await this.runner([
+      "set-option", "-s", "-q", "copy-command", scopedCopyCommand(this.clipboardCommand)
+    ]);
+    assertAuthority();
+    if (configured.exitCode !== 0) throw new Error(`cannot configure clipboard copy in tmux: ${configured.stderr}`);
   }
 
   /** The git shim disarms on COORD_MANUAL=1, so an automated session must never pass one on. */
@@ -1097,6 +1135,7 @@ export class TmuxController {
     // Set history before creating agent panes; repair existing sessions on resume too.
     await this.configureSessionScrolling(session);
     assertAuthority();
+    await this.configureServerCopyCommand(assertAuthority);
     // `-r` removes the variable from every process the session starts, even one
     // the tmux server's global environment still carries; `-u` would only drop
     // the session value and let that global value through.
