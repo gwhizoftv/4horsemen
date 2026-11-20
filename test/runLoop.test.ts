@@ -3533,7 +3533,7 @@ describe("coordinator verification gates", () => {
     return { paths, seed, calls, loop, observe, implementationPin, consensusSha, finalSha, fail: (name: string | null) => { failing = name; } };
   };
 
-  it.each(["pass", "different", "generic"] as const)("keeps the actionable final diagnostic and routes %s baseline evidence to correction", async mode => {
+  it.each(["pass", "different", "generic", "details"] as const)("keeps the actionable final diagnostic and routes %s baseline evidence to correction", async mode => {
     const { seed, paths, consensusSha, finalSha } = gateFixture("local");
     const start = { ...readStartState(paths), checks: [{ name: "compile", argv: ["compile"] }] };
     const cursors = readCursorsState(paths);
@@ -3543,8 +3543,10 @@ describe("coordinator verification gates", () => {
     const loop = new CoordinatorRunLoop(paths, { tmux: null, mirror: new BareMirror(paths.mirror, seed),
       processRunner: async (_argv, cwd) => {
         const baseline = git(cwd, "rev-parse", "HEAD") === start.baselineSha;
-        return { exitCode: baseline && mode === "pass" ? 0 : 1, stderr: "build failed",
-          stdout: (mode === "generic" ? "" : `compiler error ${baseline ? "B" : "A"}\n`) + progress };
+        const diagnostic = mode === "generic" ? "An unexpected error occurred"
+          : mode === "details" ? `compiler error A\n  expected ${baseline ? "B" : "A"}`
+          : `compiler error ${baseline ? "B" : "A"}`;
+        return { exitCode: baseline && mode === "pass" ? 0 : 1, stderr: "build failed", stdout: diagnostic + "\n" + progress };
       } });
     const result = await loop.verifyFinalizationChecks(start, order, { agent: "codex", actionId: order.actionId,
       submissionSha: "e".repeat(40), productPin: finalSha, status: "satisfied", outstanding: [] }, cursors);

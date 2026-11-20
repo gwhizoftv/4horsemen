@@ -74,6 +74,7 @@ export type RunVerificationResult =
 const failureDiagnostics = (result: ProcessResult, worktree: string) => {
   const specific: string[] = [];
   const identity = new Set<string>();
+  const details = new Set<string>();
   const fallback: string[] = [];
   for (const stream of ["stdout", "stderr"] as const) {
     for (const raw of stripVTControlCharacters(result[stream]).split(/[\r\n]+/)) {
@@ -82,10 +83,13 @@ const failureDiagnostics = (result: ProcessResult, worktree: string) => {
       const tagged = `[${stream}] ${line}`;
       if (fallback.length < 8) fallback.push(tagged);
       const message = line.replace(/^(?:npm\s+)?(?:\[?(?:error|fatal)\]?:?)(?:\s+|$)/i, "");
-      if (!message) continue;
+      if (!message || /^(?:(?:an? |unknown |unexpected |fatal |internal )*error(?: occurred)?|something went wrong|operation failed)[.!:]?$/i.test(message)) continue;
       if (/^(?:progress\b|\d+%|\[\d+\/\d+\])|^.*\bELIFECYCLE\b/i.test(line) ||
           /^(?:(?:build|test|check|command|script|compilation)\s+)?(?:failed|failure|error)(?:[.!:]| with exit code \d+[.!]?)?$/i.test(message) ||
           /^(?:(?:command|process) (?:exited|terminated|completed) with (?:exit )?)?code \d+\.?$/i.test(message)) continue;
+      // Preserve assertion values, source locations and multiline compiler details.
+      // Two runs can share an error heading but have different lines underneath.
+      if (/^\s|^[+-]|^(?:expected|received|actual)\b/i.test(raw)) details.add(line);
       if (/\b(?:error|fatal|exception|panic|missing|cannot|denied|ENOENT|EACCES|TS\d+|assertionerror)\b|not found|no such file/i.test(line)) {
         if (specific.length < 8) specific.push(tagged);
         identity.add(line);
@@ -94,7 +98,7 @@ const failureDiagnostics = (result: ProcessResult, worktree: string) => {
   }
   const excerpt = [...specific, ...fallback.filter(line => !specific.includes(line))].slice(0, 8)
     .map(line => line.slice(0, 512)).join("\n").slice(0, 2048);
-  return { excerpt, signature: identity.size ? JSON.stringify([result.exitCode, [...identity].sort()]) : null };
+  return { excerpt, signature: identity.size ? JSON.stringify([result.exitCode, [...identity].sort(), [...details].sort()]) : null };
 };
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
