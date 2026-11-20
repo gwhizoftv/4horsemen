@@ -528,9 +528,35 @@ export const nudgePreludeKeys = (agentId: string): readonly string[] => agentNud
 
 const mouseScrollingAgent = (agentId: string): boolean => ["claude", "cursor", "codex"].includes(agentId);
 
+/**
+ * Marks the coord sessions whose tmux copy-mode copies should reach the system
+ * clipboard. With `mouse on`, a drag in a pane whose program leaves the mouse to
+ * tmux (Codex, Cursor, Muse, Antigravity) enters copy-mode, and release runs
+ * `copy-pipe-and-cancel`. With an empty `copy-command` that only fills a tmux
+ * buffer and emits OSC 52, which macOS Terminal ignores (issue 267). Claude and
+ * OpenCode capture the mouse and copy on their own.
+ */
+const COORD_COPY_TO_CLIPBOARD_ENV = "COORD_COPY_TO_CLIPBOARD";
+
+export const defaultClipboardCommand = (osPlatform: NodeJS.Platform = platform()): string | null =>
+  osPlatform === "darwin" ? "/usr/bin/pbcopy" : null;
+
+/**
+ * `copy-command` is server-scoped and runs with the copying session's
+ * environment, so only marked coord sessions reach the clipboard; every other
+ * session on the server discards the bytes exactly as an empty command would.
+ */
+export const scopedCopyCommand = (clipboardCommand: string): string =>
+  `if [ "\${${COORD_COPY_TO_CLIPBOARD_ENV}:-}" = 1 ]; then ${clipboardCommand}; else cat >/dev/null; fi`;
+
 const sessionScrollOptions = (session: string, mouse = true): string[][] => [
   ["set-option", "-t", session, "history-limit", "50000"],
-  ...(mouse ? [["set-option", "-t", session, "mouse", "on"]] : [])
+  ...(mouse
+    ? [
+      ["set-option", "-t", session, "mouse", "on"],
+      ["set-environment", "-t", session, COORD_COPY_TO_CLIPBOARD_ENV, "1"]
+    ]
+    : [])
 ];
 
 // Older tmux lacks scrollbars; -q ignores only unknown/ambiguous options.
@@ -823,7 +849,9 @@ export class TmuxController {
       new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
     /** Workspace fingerprint for Terminal titles; defaults to tmux namespace. */
     private readonly titleGroup: string | null = null,
-    private readonly titleProbe: OwnerTerminalTitleProbe | null = defaultOwnerTerminalTitleProbe()
+    private readonly titleProbe: OwnerTerminalTitleProbe | null = defaultOwnerTerminalTitleProbe(),
+    /** Command that receives coord copy-mode selections; null leaves `copy-command` alone. */
+    private readonly clipboardCommand: string | null = defaultClipboardCommand()
   ) {}
 
   /** Group id embedded in Terminal custom titles for this workspace. */
@@ -959,6 +987,7 @@ export class TmuxController {
     if (created.exitCode !== 0) throw new Error(`tmux session creation failed: ${created.stderr}`);
     try {
       await this.configureSessionScrolling(session);
+      await this.configureServerCopyCommand();
       const environment = await this.runner(["set-environment", "-t", session, "COORD_ISSUE", String(issue)]);
       if (environment.exitCode !== 0) {
         throw new Error(`cannot set coordinator issue environment in ${session}: ${environment.stderr}`);
@@ -991,6 +1020,20 @@ export class TmuxController {
     const commands = sessionScrollOptions(session, mouse);
     const result = await this.runner(commands.flatMap((args, index) => index === 0 ? args : [";", ...args]));
     if (result.exitCode !== 0) throw new Error(`cannot configure scrolling in ${session}: ${result.stderr}`);
+  }
+
+  /**
+   * Point an empty server `copy-command` at the scoped clipboard pipe. An owner
+   * value is never replaced, and tmux before 3.2 (no such option) is skipped.
+   */
+  private async configureServerCopyCommand(assertAuthority: () => void = () => undefined): Promise<void> {
+    if (this.clipboardCommand === null || this.clipboardCommand.trim() === "") return;
+    const current = await this.runner(["show-options", "-sv", "copy-command"]);
+    assertAuthority();
+    if (current.exitCode !== 0 || current.stdout.trim() !== "") return;
+    const set = await this.runner(["set-option", "-s", "-q", "copy-command", scopedCopyCommand(this.clipboardCommand)]);
+    assertAuthority();
+    if (set.exitCode !== 0) throw new Error(`cannot configure copy-command: ${set.stderr}`);
   }
 
   /** The git shim disarms on COORD_MANUAL=1, so an automated session must never pass one on. */
@@ -1097,6 +1140,7 @@ export class TmuxController {
     // Set history before creating agent panes; repair existing sessions on resume too.
     await this.configureSessionScrolling(session);
     assertAuthority();
+    await this.configureServerCopyCommand(assertAuthority);
     // `-r` removes the variable from every process the session starts, even one
     // the tmux server's global environment still carries; `-u` would only drop
     // the session value and let that global value through.
