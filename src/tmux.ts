@@ -541,14 +541,10 @@ export const defaultClipboardCommand = (osPlatform: NodeJS.Platform = platform()
 export const scopedCopyCommand = (clipboardCommand: string): string =>
   `if [ "\${${COORD_COPY_TO_CLIPBOARD_ENV}:-}" = 1 ]; then ${clipboardCommand}; else cat >/dev/null; fi`;
 
-const sessionScrollOptions = (session: string, mouse = true): string[][] => [
+const sessionScrollOptions = (session: string, mouse = true, clipboard = false): string[][] => [
   ["set-option", "-t", session, "history-limit", "50000"],
-  ...(mouse
-    ? [
-        ["set-option", "-t", session, "mouse", "on"],
-        ["set-environment", "-t", session, COORD_COPY_TO_CLIPBOARD_ENV, "1"]
-      ]
-    : [])
+  ...(mouse ? [["set-option", "-t", session, "mouse", "on"]] : []),
+  ...(clipboard ? [["set-environment", "-t", session, COORD_COPY_TO_CLIPBOARD_ENV, "1"]] : [])
 ];
 
 // Older tmux lacks scrollbars; -q ignores only unknown/ambiguous options.
@@ -571,7 +567,7 @@ export const agentClientAttachCommand = (session: string, agentId: string): stri
     `tmux new-session -A -s ${client} -t ${session}`,
     `select-window -t ${window}`,
     "set-option destroy-unattached on",
-    ...sessionScrollOptions(client, mouseScrollingAgent(agentId)).map((args) => args.join(" ")),
+    ...sessionScrollOptions(client, mouseScrollingAgent(agentId), true).map((args) => args.join(" ")),
     ...windowScrollOptions(`${client}:${window}`, agentId).map((args) => args.join(" "))
   ].join(" ';' ");
 };
@@ -1007,8 +1003,8 @@ export class TmuxController {
     }
   }
 
-  private async configureSessionScrolling(session: string, mouse = true): Promise<void> {
-    const commands = sessionScrollOptions(session, mouse);
+  private async configureSessionScrolling(session: string, mouse = true, clipboard = false): Promise<void> {
+    const commands = sessionScrollOptions(session, mouse, clipboard);
     const result = await this.runner(commands.flatMap((args, index) => index === 0 ? args : [";", ...args]));
     if (result.exitCode !== 0) throw new Error(`cannot configure scrolling in ${session}: ${result.stderr}`);
   }
@@ -1168,7 +1164,7 @@ export class TmuxController {
       assertAuthority();
       if (attached.exitCode === 0) {
         // Grouped clients have independent session options and may stay open on resume.
-        await this.configureSessionScrolling(client, mouseScrollingAgent(agent.id));
+        await this.configureSessionScrolling(client, mouseScrollingAgent(agent.id), true);
         assertAuthority();
       }
       const present = await this.runner(["list-windows", "-t", session, "-F", "#{window_name}"]);
