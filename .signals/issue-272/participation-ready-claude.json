@@ -1,0 +1,9 @@
+{
+  "protocolVersion": 1,
+  "issue": 272,
+  "issueSessionId": "issue-272:f63828c1b459580c242974eb3ce496b18ff430f0",
+  "agent": "claude",
+  "artifact": "participation-ready",
+  "baselineSha": "f63828c1b459580c242974eb3ce496b18ff430f0",
+  "automationDigest": "caaa320e764a0ab1d8db3d78b018460a35baedf874b315ad7f049a7a27aa2787"
+}
