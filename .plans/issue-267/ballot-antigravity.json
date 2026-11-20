@@ -1,0 +1,46 @@
+{
+  "actionId": "a1f7d695-a163-4fb9-b7fa-667d56b50487",
+  "agent": "antigravity",
+  "artifact": "plan-ballot",
+  "choice": "antigravity",
+  "inputSetHash": "1a5085cdfff9ecfa48819b97ec6a9af4a1f7a66b0b6c0f1166669b10a5b5f6f0",
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "efac99cd51e776e118ea6d7930a82804872af86a",
+      "path": ".plans/issue-267/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "97409c3f955c3c7173776ef08f17803f81e1eecb",
+      "path": ".plans/issue-267/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9e8d67c7bc6eb1665efd60550ae25683b8b8bd37",
+      "path": ".plans/issue-267/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Antigravity's plan is the cleanest two-file base because it preserves scrolling and owner tmux config while scoping clipboard writes to coordinator-managed sessions without mutating global key tables or breaking scrollback drag selection, and it can readily absorb the review refinements for all seven agents, /usr/bin/pbcopy, and live mouse-tracking verification.",
+  "responseSha256": "1fb1f6a8856a9ea4f04a119caf7d490d24e4665671787718358ef199e2c45378",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "7b93821a274d1e86b5641a676bb07bf151e0cc05",
+      "path": ".plans/issue-267/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "89213d29924374060b902e582f489038fdc4a254",
+      "path": ".plans/issue-267/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "7ac349415b69945e63fde153c51cce4e1909a293",
+      "path": ".plans/issue-267/review.md"
+    }
+  ]
+}

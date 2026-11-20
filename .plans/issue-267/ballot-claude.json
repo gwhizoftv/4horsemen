@@ -1,0 +1,46 @@
+{
+  "actionId": "31a8301d-5bd3-4fa8-8de2-c1a3fa7132a6",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "antigravity",
+  "inputSetHash": "1a5085cdfff9ecfa48819b97ec6a9af4a1f7a66b0b6c0f1166669b10a5b5f6f0",
+  "issue": 267,
+  "issueSessionId": "issue-267:96c68525200c778d65d50a7f2f8d9c8c0fc05b1f",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "efac99cd51e776e118ea6d7930a82804872af86a",
+      "path": ".plans/issue-267/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "97409c3f955c3c7173776ef08f17803f81e1eecb",
+      "path": ".plans/issue-267/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "9e8d67c7bc6eb1665efd60550ae25683b8b8bd37",
+      "path": ".plans/issue-267/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Antigravity's plan is the only one that keeps mouse scrolling, issues no bind-key, never overwrites an owner copy-command, scopes clipboard writes to coordinator sessions via an environment-guarded copy-command, and proves delivery with a hermetic sink test, so it is the safest base once amended with seven-agent acceptance coverage, /usr/bin/pbcopy, and measured Cursor/Gemini/OpenCode mouse capture, whereas the Codex plan's global key-table rewriting and the Claude plan's unscoped server copy-command each violate the owner's scoping guidance.",
+  "responseSha256": "372b94e70f4c2b8312ece6d870817d2013aa1eb19454997ed793e658aad20e14",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "7b93821a274d1e86b5641a676bb07bf151e0cc05",
+      "path": ".plans/issue-267/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "89213d29924374060b902e582f489038fdc4a254",
+      "path": ".plans/issue-267/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "7ac349415b69945e63fde153c51cce4e1909a293",
+      "path": ".plans/issue-267/review.md"
+    }
+  ]
+}
