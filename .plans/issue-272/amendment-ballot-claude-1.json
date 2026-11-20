@@ -1,0 +1,26 @@
+{
+  "actionId": "92506342-22f5-4a48-8ec9-d006a0fe6e3f",
+  "agent": "claude",
+  "artifact": "amendment-ballot",
+  "disposition": "revise",
+  "inputSetHash": "bbf918ca56de9059bb1f3d07b4e9e31e1e845df1e8f53deef818344ccf556e8d",
+  "issue": 272,
+  "issueSessionId": "issue-272:f63828c1b459580c242974eb3ce496b18ff430f0",
+  "plans": [
+    {
+      "agent": "codex",
+      "commitSha": "f3c1cdcb1b4c7fe3349255dea5ceeac8aa8897b2",
+      "path": ".plans/issue-272/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "src/verificationLog.ts is not necessary for the selected plan: baseline attempts can stay distinguishable by journaling them under a separate baseline-check event type in the already-approved src/state.ts (keeping them out of verification-run and final-check, so analytics totals and receipts never see them), which leaves the measurement phase enum and the hook ingestor filter unchanged and avoids the very widening that the requested ingestor hardening would only be needed to contain.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "f7138620e331dac3f198b1b922122acf2b1a1810",
+    "path": ".signals/issue-272/implementation-ready-codex.json"
+  },
+  "responseSha256": "0f0b80bb3f0439c0b81f3657b8cc1e43a44f4c6494eea83cbc5deae7fae51911",
+  "sequence": 1
+}

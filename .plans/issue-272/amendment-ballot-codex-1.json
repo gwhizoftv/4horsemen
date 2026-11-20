@@ -1,0 +1,26 @@
+{
+  "actionId": "1e741b2c-d350-489d-a534-451b6c273428",
+  "agent": "codex",
+  "artifact": "amendment-ballot",
+  "disposition": "approve",
+  "inputSetHash": "bbf918ca56de9059bb1f3d07b4e9e31e1e845df1e8f53deef818344ccf556e8d",
+  "issue": 272,
+  "issueSessionId": "issue-272:f63828c1b459580c242974eb3ce496b18ff430f0",
+  "plans": [
+    {
+      "agent": "codex",
+      "commitSha": "f3c1cdcb1b4c7fe3349255dea5ceeac8aa8897b2",
+      "path": ".plans/issue-272/plan.md"
+    }
+  ],
+  "priorApprovals": [],
+  "protocolVersion": 2,
+  "rationale": "The selected plan requires distinct baseline measurements, and src/verificationLog.ts defines both their allowed phases and the hook filter that must keep baseline records coordinator-only.",
+  "request": {
+    "agent": "codex",
+    "commitSha": "f7138620e331dac3f198b1b922122acf2b1a1810",
+    "path": ".signals/issue-272/implementation-ready-codex.json"
+  },
+  "responseSha256": "4f92a41f89db90d450b4142d4254d6f267994aa24afcc271e6330db64314b05f",
+  "sequence": 1
+}
