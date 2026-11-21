@@ -1,0 +1,14 @@
+{
+  "actionId": "8ce3398a-3613-4fcd-9a79-1eaa4ab5ee0b",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "0d26d354b271bf16e851b77e6c46f04be1477965c37de0846ee7ee82401e6ae6",
+  "issue": 274,
+  "issueSessionId": "issue-274:66346c2983e0cc56fc1e2d14dce5a25c9b1cd03d",
+  "protocolVersion": 2,
+  "rationale": "The revision rejects invalid agent lists before session cleanup, reports the configured choices, and verifies that a matching selection resumes exactly once while a dropped agent stays inactive.",
+  "responseSha256": "0eae9c0944b8e1fc8c7e8eafc65259cf7ced59d59aa3dfe9cb5fc630474d6bd3",
+  "revisionCommitSha": "9473f96ffd1ee96f39ffeb202db967a9a3c01b40",
+  "round": 1
+}
