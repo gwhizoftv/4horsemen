@@ -253,6 +253,7 @@ After `coord onboard`, the daily command is:
 ```sh
 cd /path/to/onboarded/product
 coord 42
+coord 42 --agents claude,codex,antigravity
 ```
 
 The positive-number command resolves only the current registered worktree (or
@@ -261,6 +262,19 @@ then enters the normal run loop. Repeating it resumes durable state without
 refetching or rebinding an edited issue. From an unrelated worktree, pass
 `--product /path/to/onboarded/product`; coordination never guesses from a
 machine-global registry.
+
+Pass `--agents <a,b,c>` on `coord N` or `coord start N` to run a subset of
+agents already configured in `config.json` without editing the config file.
+When omitted, `solo` runs the first configured agent and `reviewed`/`consensus`
+run all configured agents in config order. When supplied, the list is used in
+the exact order given; unknown ids, repeated ids (after trimming), empty
+entries, and multi-agent selections under `solo` fail before manual-session
+cleanup or startup effects. Under `solo`, `--agents` accepts a single named
+agent (not limited to the first entry in `config.json`). Repeating
+`coord N --agents ...` on an existing issue continues only when the ordered
+list matches the issue's saved `originalRoster` (even after an agent drop or a
+change to the workspace's default profile); omit `--agents` and run `coord N`
+to continue with the saved roster.
 
 `--product` takes a filesystem path, not a project nickname. Relative paths are
 resolved from the directory where you invoke `coord`; for example, from a parent

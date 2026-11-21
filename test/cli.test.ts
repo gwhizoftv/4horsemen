@@ -2447,3 +2447,151 @@ it("freezes local hooks for a running issue when saved settings change", async (
   })).toBe(0);
   expect(readStartState(issueRuntimePaths(f.runtime, 2)).verify).toEqual(config.verify);
 });
+
+describe("CLI --agents run selection", () => {
+  it.each([
+    {
+      label: "numeric consensus subset in CLI order",
+      argv: ["1", "--agents", "cursor, claude"],
+      expected: ["cursor", "claude"],
+      profile: "consensus"
+    },
+    {
+      label: "explicit solo selecting a non-first configured agent",
+      argv: ["start", "1", "--profile", "solo", "--agents", "claude"],
+      expected: ["claude"],
+      profile: "solo"
+    }
+  ])("starts only the selected configured agents ($label)", async ({ argv, expected, profile }) => {
+    const f = setup();
+    const configBefore = readFileSync(f.configPath, "utf8");
+    const launched: string[][] = [];
+    const maintenance: string[] = [];
+    expect(
+      await runCli([...argv, "--config", f.configPath, "--coord-runtime", f.runtime], {
+        io: { stdout: () => undefined },
+        makeRunLoop: fakeLoop,
+        processRunner: async (cmd) => {
+          if (cmd[3] === "coord-agent-maintenance") maintenance.push(`${cmd[5]}:${cmd.at(-1)}`);
+          return successfulStartGit(cmd);
+        },
+        startEffects: async (input) => {
+          launched.push(input.agents.map((agent) => agent.id));
+          return { cleanup: async () => undefined };
+        }
+      })
+    ).toBe(0);
+
+    const paths = issueRuntimePaths(f.runtime, 1);
+    const start = readStartState(paths);
+    expect(launched).toEqual([expected]);
+    expect(start.profile).toBe(profile);
+    expect(start.originalRoster).toEqual(expected);
+    expect(start.agents.map((agent) => ({ id: agent.id, root: agent.root }))).toEqual(
+      expected.map((id) => ({ id, root: join(f.root, `clone-${id}`) }))
+    );
+    expect(readCursorsState(paths).activeRoster).toEqual(expected);
+    expect(Object.keys(start.agentVersions ?? {})).toEqual(expected);
+    expect(maintenance).toEqual([...expected.map((id) => `${id}:update`), ...expected.map((id) => `${id}:--version`)]);
+    expect(readFileSync(f.configPath, "utf8")).toBe(configBefore);
+  });
+
+  it.each([
+    { label: "unknown agent", extra: ["--agents", "codex,antigravity"], pattern: /'antigravity' is not configured/ },
+    { label: "repeated agent after trimming", extra: ["--agents", "claude, claude"], pattern: /lists 'claude' more than once/ },
+    { label: "empty argument", extra: ["--agents", ""], pattern: /requires at least one agent id/ },
+    { label: "empty CSV field", extra: ["--agents", "codex,,claude"], pattern: /empty agent entry/ },
+    { label: "trailing comma", extra: ["--agents", "codex,"], pattern: /empty agent entry/ },
+    { label: "multi-agent solo", extra: ["--profile", "solo", "--agents", "claude,codex"], pattern: /Profile solo runs one agent/ }
+  ])("rejects $label before manual cleanup or startup effects", async ({ extra, pattern }) => {
+    for (const prefix of [["1"], ["start", "1"]]) {
+      const f = setup();
+      const errors: string[] = [];
+      const confirm = vi.fn(async () => true);
+      const processRunner = vi.fn<ProcessRunner>(async () => {
+        throw new Error("invalid selection must not invoke processes");
+      });
+      const startEffects = vi.fn(async () => {
+        throw new Error("invalid selection must not launch effects");
+      });
+      expect(
+        await runCli([...prefix, ...extra, "--config", f.configPath, "--coord-runtime", f.runtime], {
+          io: { stdout: () => undefined, stderr: (line) => errors.push(line) },
+          sessionExists: async (name) => name.startsWith("coord-manual-"),
+          confirm,
+          processRunner,
+          startEffects,
+          makeRunLoop: () => {
+            throw new Error("invalid selection must not create a runner");
+          }
+        })
+      ).toBe(2);
+      expect(errors.join("")).toMatch(pattern);
+      expect(confirm).not.toHaveBeenCalled();
+      expect(processRunner).not.toHaveBeenCalled();
+      expect(startEffects).not.toHaveBeenCalled();
+      expect(existsSync(issueRuntimePaths(f.runtime, 1).issueRoot)).toBe(false);
+    }
+  });
+
+  it("continues a subset run on matching --agents or omission even after drop and default profile change, and rejects mismatches", async () => {
+    const f = setup();
+    expect(
+      await runCli(["1", "--agents", "cursor,claude", "--config", f.configPath, "--coord-runtime", f.runtime], {
+        io: { stdout: () => undefined },
+        processRunner: successfulStartGit,
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    const paths = issueRuntimePaths(f.runtime, 1);
+    const savedStartBytes = readFileSync(paths.start, "utf8");
+
+    // Drop one active agent and change the workspace default profile to solo.
+    expect(
+      await runCli(["drop", "claude", "--issue", "1", "--coord-runtime", f.runtime], {
+        io: { stdout: () => undefined },
+        makeRunLoop: fakeLoop
+      })
+    ).toBe(0);
+    const updatedConfig = { ...JSON.parse(readFileSync(f.configPath, "utf8")) as Record<string, unknown>, profile: "solo" };
+    writeFileSync(f.configPath, JSON.stringify(updatedConfig));
+
+    const processRunner = vi.fn<ProcessRunner>(async () => {
+      throw new Error("continuation must not run maintenance");
+    });
+    for (const extra of [["--agents", "cursor,claude"], []]) {
+      let runs = 0;
+      expect(
+        await runCli(["1", ...extra, "--config", f.configPath, "--coord-runtime", f.runtime], {
+          io: { stdout: () => undefined },
+          processRunner,
+          makeRunLoop: (p) => ({ ...fakeLoop(p), run: async () => { runs += 1; } })
+        })
+      ).toBe(0);
+      expect(runs).toBe(1);
+    }
+    expect(readCursorsState(paths).activeRoster).toEqual(["cursor"]);
+    expect(readFileSync(paths.start, "utf8")).toBe(savedStartBytes);
+    expect(processRunner).not.toHaveBeenCalled();
+
+    for (const mismatched of ["claude,cursor", "cursor"]) {
+      const errors: string[] = [];
+      const confirm = vi.fn(async () => true);
+      expect(
+        await runCli(["1", "--agents", mismatched, "--config", f.configPath, "--coord-runtime", f.runtime], {
+          io: { stdout: () => undefined, stderr: (line) => errors.push(line) },
+          sessionExists: async (name) => name.startsWith("coord-manual-"),
+          confirm,
+          processRunner,
+          makeRunLoop: () => {
+            throw new Error("mismatched continuation must not enter run loop");
+          }
+        })
+      ).toBe(2);
+      expect(errors.join("")).toContain("cursor,claude");
+      expect(errors.join("")).toContain("coord 1");
+      expect(confirm).not.toHaveBeenCalled();
+    }
+    expect(readFileSync(paths.start, "utf8")).toBe(savedStartBytes);
+  });
+});
