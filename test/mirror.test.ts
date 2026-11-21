@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { BareMirror, isTransientGitFailure } from "../src/mirror.js";
+import { BareMirror, hermeticGitEnv, isTransientGitFailure } from "../src/mirror.js";
 import { assertNoSymlink, resolveSafeCoordRoot } from "../src/paths.js";
 
 const roots: string[] = [];
@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 const git = (root: string, ...args: string[]): string =>
-  execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+  execFileSync("git", ["-C", root, ...args], { encoding: "utf8", env: hermeticGitEnv() }).trim();
 
 const repository = () => {
   const root = mkdtempSync(join(tmpdir(), "coord-mirror-"));
@@ -122,6 +122,51 @@ describe("owner bare mirror", () => {
     calls.length = 0;
     await new BareMirror("/runtime/mirror.git", "https://github.com/acme/app.git", runner).fetchBranch("issue-1/codex");
     expect(calls.every((args) => args[0] === "--git-dir")).toBe(true);
+  });
+
+  it("configures local author metadata for detached worktrees on creation and repair", async () => {
+    const fixture = repository();
+    const globalConfig = join(fixture.root, "global.gitconfig");
+    writeFileSync(globalConfig, "[user]\n\tname = GlobalUser\n\temail = global@example.com\n");
+    const mirrorPath = join(fixture.root, "runtime/mirror.git");
+    const authorA = { name: "gwhizofss", email: "155764113+gwhizofss@users.noreply.github.com" };
+    const authorB = { name: "otheracct", email: "999+otheracct@users.noreply.github.com" };
+    const mirrorA = new BareMirror(mirrorPath, fixture.origin, undefined, {
+      account: "gwhizofss",
+      cliEntry: "/coord/dist/main.js",
+      author: authorA
+    });
+    await mirrorA.initialize();
+    const fetched = await mirrorA.fetchBranch("issue-1/codex");
+    expect(fetched.ok).toBe(true);
+
+    const worktree = join(fixture.root, "wt");
+    await mirrorA.materializeWorktree(worktree, fixture.sha);
+    writeFileSync(join(worktree, "first.txt"), "one\n");
+    git(worktree, "add", "first.txt");
+    execFileSync("git", ["commit", "-qm", "detached commit A"], {
+      cwd: worktree,
+      encoding: "utf8",
+      env: { ...hermeticGitEnv(), GIT_CONFIG_GLOBAL: globalConfig }
+    });
+    expect(git(worktree, "log", "-1", "--format=%an|%ae|%cn|%ce")).toBe(
+      "gwhizofss|155764113+gwhizofss@users.noreply.github.com|gwhizofss|155764113+gwhizofss@users.noreply.github.com"
+    );
+
+    // Reinitializing the existing mirror with a new author updates existing linked worktrees too.
+    await mirrorA.initialize(authorB);
+    writeFileSync(join(worktree, "second.txt"), "two\n");
+    git(worktree, "add", "second.txt");
+    execFileSync("git", ["commit", "-qm", "detached commit B"], {
+      cwd: worktree,
+      encoding: "utf8",
+      env: { ...hermeticGitEnv(), GIT_CONFIG_GLOBAL: globalConfig }
+    });
+    expect(git(worktree, "log", "-1", "--format=%an|%ae|%cn|%ce")).toBe(
+      "otheracct|999+otheracct@users.noreply.github.com|otheracct|999+otheracct@users.noreply.github.com"
+    );
+
+    await mirrorA.removeWorktree(worktree);
   });
 
   it("distinguishes transient network failures", () => {

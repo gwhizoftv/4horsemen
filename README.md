@@ -117,12 +117,18 @@ coord auth status                  # account, repository access, clone wiring
 coord auth login                   # sign in again when a token expires or is revoked
 ```
 
-Coord stores only the account name. Each run reads that account's token from
+Coord stores only the account name and its verified public GitHub login and
+numeric ID (never tokens). Onboarding configures clone-local `user.name=<login>`
+and `user.email=<id>+<login>@users.noreply.github.com` on every agent clone and
+on the workspace mirror (covering coordinator-created worktrees), so commits
+link to the selected account; re-run `coord onboard <repository>` to add these
+settings to an older installation. Each run reads that account's token from
 gh (`gh auth token --user`) for coordinator git and gh, the agent clones and the
 agent terminals, without `gh auth switch`. The origin must be
 `https://[login@]github.com/<owner>/<repository>`. When the credential is
 unavailable, coord stops with `Run: coord auth login` instead of using another
-account. Without a selection, ambient gh and git credentials apply as before.
+account. Without a selection, ambient gh and git credentials and author settings
+apply as before.
 
 ### 3. Run a GitHub issue
 

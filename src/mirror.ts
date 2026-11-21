@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname } from "node:path";
 import { gitShaSchema, repositoryPathSchema } from "./protocol.js";
 import { validatePhasePin, type PinValidationResult } from "./pinValidation.js";
-import { explainGitHubAuthFailure, gitCredentialArgs } from "./githubAuth.js";
+import { explainGitHubAuthFailure, gitCredentialArgs, type GitAuthor } from "./githubAuth.js";
 
 export type CommandResult = { exitCode: number; stdout: Buffer; stderr: string };
 export type GitRunner = (
@@ -95,8 +95,19 @@ export class BareMirror {
     readonly path: string,
     readonly origin: string,
     private readonly runner: GitRunner = runGitCommand,
-    private readonly auth: { account: string; cliEntry: string } | null = null
+    private readonly auth: { account: string; cliEntry: string; author?: GitAuthor | null } | null = null
   ) {}
+
+  private async configureLocalAuthor(author: GitAuthor): Promise<void> {
+    for (const [key, value] of [
+      ["user.name", author.name],
+      ["user.email", author.email]
+    ] as const) {
+      const current = await this.git(["config", "--local", "--get", key], true);
+      if (current.exitCode === 0 && current.stdout.toString("utf8").trim() === value) continue;
+      await this.git(["config", "--local", key, value]);
+    }
+  }
 
   private async git(args: readonly string[], allowFailure = false): Promise<CommandResult> {
     const authArgs = this.auth === null ? [] : gitCredentialArgs(this.auth.account, this.auth.cliEntry);
@@ -110,7 +121,7 @@ export class BareMirror {
     return result;
   }
 
-  async initialize(): Promise<void> {
+  async initialize(author: GitAuthor | null = this.auth?.author ?? null): Promise<void> {
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     if (!existsSync(this.path)) {
       const initialized = await this.runner(["init", "--bare", this.path]);
@@ -118,11 +129,12 @@ export class BareMirror {
         throw new GitCommandError(`cannot initialize bare mirror: ${initialized.stderr}`, initialized, false);
       }
       await this.git(["remote", "add", "origin", this.origin]);
-      return;
+    } else {
+      const remote = await this.git(["remote", "get-url", "origin"], true);
+      if (remote.exitCode !== 0) await this.git(["remote", "add", "origin", this.origin]);
+      else if (remote.stdout.toString("utf8").trim() !== this.origin) await this.git(["remote", "set-url", "origin", this.origin]);
     }
-    const remote = await this.git(["remote", "get-url", "origin"], true);
-    if (remote.exitCode !== 0) await this.git(["remote", "add", "origin", this.origin]);
-    else if (remote.stdout.toString("utf8").trim() !== this.origin) await this.git(["remote", "set-url", "origin", this.origin]);
+    if (author !== null) await this.configureLocalAuthor(author);
   }
 
   async fetchBranch(branch: string): Promise<FetchResult> {

@@ -29,7 +29,7 @@ import {
   issueSessionIdSchema,
   repositoryPathSchema
 } from "./protocol.js";
-import { githubLoginSchema } from "./githubAuth.js";
+import { gitHubProfileSchema, githubLoginSchema } from "./githubAuth.js";
 import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.js";
 import { resourceEvidenceSchema } from "./resourceEvidence.js";
 import {
@@ -312,11 +312,22 @@ export const coordinatorConfigSchema = z
      */
     completesRoot: z.string().min(1).optional(),
     /**
-     * The GitHub account this workspace's git and gh operations use (#227).
-     * Only the name: its token stays in gh's credential storage. Absent means
-     * ambient gh/git credentials, exactly as before the selection existed.
+     * The GitHub account this workspace's git and gh operations use (#227), plus
+     * its optional verified public profile (canonical login and numeric ID) used
+     * to configure Git commit attribution (#269). Tokens stay in gh's credential
+     * storage. Absent means ambient gh/git credentials and author settings.
      */
-    github: z.object({ account: githubLoginSchema }).strict().optional(),
+    github: z
+      .object({
+        account: githubLoginSchema,
+        profile: gitHubProfileSchema.optional()
+      })
+      .strict()
+      .refine(
+        (value) => value.profile === undefined || value.profile.login.toLowerCase() === value.account.toLowerCase(),
+        { message: "github.profile.login must match github.account", path: ["profile", "login"] }
+      )
+      .optional(),
     coordination: installStampSchema.optional()
   })
   .strict()
@@ -446,6 +457,8 @@ export const startStateSchema = z
     origin: z.string().min(1),
     /** Frozen like origin: resume, attach and the run loop keep the account the issue started with. */
     githubAccount: githubLoginSchema.optional(),
+    /** Verified public GitHub profile frozen alongside githubAccount for mirror worktree attribution. */
+    githubProfile: gitHubProfileSchema.optional(),
     coordRoot: z.string().min(1),
     /**
      * Where this issue's receipts live, frozen for the issue session.
@@ -485,7 +498,25 @@ export const startStateSchema = z
     contextPaths: z.array(z.string().min(1)).default([]),
     createdAt: timestampSchema
   })
-  .strict();
+  .strict()
+  .superRefine((state, context) => {
+    if (state.githubProfile === undefined) return;
+    if (state.githubAccount === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "githubProfile requires githubAccount",
+        path: ["githubProfile"]
+      });
+      return;
+    }
+    if (state.githubProfile.login.toLowerCase() !== state.githubAccount.toLowerCase()) {
+      context.addIssue({
+        code: "custom",
+        message: "githubProfile.login must match githubAccount",
+        path: ["githubProfile", "login"]
+      });
+    }
+  });
 
 export const startStateHeaderSchema = z.object({
   formatVersion: z.union([z.literal(2), z.literal(3), z.literal(RUNTIME_FORMAT_VERSION)]),

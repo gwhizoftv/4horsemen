@@ -174,8 +174,12 @@ describe("ballotPublication", () => {
     git(product, "clone", "--bare", "-q", product, origin);
 
     const mirrorPath = join(root, "mirror.git");
-    git(root, "clone", "--bare", "-q", origin, mirrorPath);
-    const mirror = new BareMirror(mirrorPath, origin);
+    const mirror = new BareMirror(mirrorPath, origin, undefined, {
+      account: "gwhizofss",
+      cliEntry: "/coord/dist/main.js",
+      author: { name: "gwhizofss", email: "155764113+gwhizofss@users.noreply.github.com" }
+    });
+    await mirror.initialize();
     await mirror.fetchBranch("main");
 
     const priorAuthor = process.env.GIT_AUTHOR_NAME;

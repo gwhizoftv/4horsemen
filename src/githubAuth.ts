@@ -28,6 +28,25 @@ export const githubLoginSchema = z
   .string()
   .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/, "must be a GitHub login (letters, digits and hyphens)");
 
+export const gitHubProfileSchema = z
+  .object({
+    login: githubLoginSchema,
+    id: z.number().int().positive().safe()
+  })
+  .strict();
+
+export type GitHubProfile = z.infer<typeof gitHubProfileSchema>;
+export type GitAuthor = { name: string; email: string };
+
+/** GitHub ID-based noreply address used to attribute commits to the verified account. */
+export const gitHubNoReplyEmail = (profile: GitHubProfile): string =>
+  `${profile.id}+${profile.login}@users.noreply.github.com`;
+
+export const gitHubCommitAuthor = (profile: GitHubProfile): GitAuthor => ({
+  name: profile.login,
+  email: gitHubNoReplyEmail(profile)
+});
+
 /** The installed CLI entry, resolved from this module in `src/` or `dist/`. */
 export const coordCliEntry = (): string => resolve(dirname(fileURLToPath(import.meta.url)), "..", "dist", "main.js");
 
@@ -130,7 +149,14 @@ export const requireHttpsGitHubOrigin = (account: string, origin: string): strin
   return repository;
 };
 
-export type GitHubAccess = { account: string; login: string; repository: string };
+export type GitHubAccess = {
+  account: string;
+  login: string;
+  id: number;
+  profile: GitHubProfile;
+  author: GitAuthor;
+  repository: string;
+};
 
 /** The saved credential signs in as the account and can reach the repository. */
 export const verifyGitHubAccess = async (input: {
@@ -144,18 +170,37 @@ export const verifyGitHubAccess = async (input: {
   const detail = (result: { stdout: string; stderr: string; exitCode: number }): string =>
     result.stderr.trim().split("\n")[0] || result.stdout.trim() || `gh exited ${result.exitCode}`;
 
-  const user = await gh(["gh", "api", "user", "--jq", ".login"], input.cwd);
+  const user = await gh(["gh", "api", "user", "--jq", "{login,id}"], input.cwd);
   if (user.exitCode !== 0) {
     if (isGitHubAuthFailure(`${user.stderr}\n${user.stdout}`)) throw new GitHubAuthError(authExpiredMessage(input.account));
     throw new GitHubAuthError(`Cannot verify GitHub account ${input.account}: ${detail(user)}`);
   }
-  const login = user.stdout.trim();
-  if (login.toLowerCase() !== input.account.toLowerCase()) {
+  let rawUser: unknown;
+  try {
+    rawUser = JSON.parse(user.stdout) as unknown;
+  } catch {
+    throw new GitHubAuthError(`Cannot verify GitHub account ${input.account}: GitHub returned invalid user profile JSON.`);
+  }
+  const rawLogin =
+    typeof rawUser === "object" && rawUser !== null && "login" in rawUser && typeof (rawUser as { login: unknown }).login === "string"
+      ? (rawUser as { login: string }).login.trim()
+      : "";
+  if (rawLogin.toLowerCase() !== input.account.toLowerCase()) {
     throw new GitHubAuthError(
-      `The saved GitHub credential for ${input.account} authenticates as ${login === "" ? "an unknown user" : login}.\n` +
+      `The saved GitHub credential for ${input.account} authenticates as ${rawLogin === "" ? "an unknown user" : rawLogin}.\n` +
         "Run: coord auth login"
     );
   }
+  const parsedProfile = gitHubProfileSchema.safeParse({
+    login: rawLogin,
+    id: typeof rawUser === "object" && rawUser !== null && "id" in rawUser ? (rawUser as { id: unknown }).id : undefined
+  });
+  if (!parsedProfile.success) {
+    throw new GitHubAuthError(
+      `Cannot verify GitHub account ${input.account}: GitHub returned no valid numeric user id.`
+    );
+  }
+  const profile = parsedProfile.data;
   const repo = await gh(["gh", "api", `repos/${repository}`, "--jq", ".full_name"], input.cwd);
   if (repo.exitCode !== 0) {
     if (isGitHubAuthFailure(`${repo.stderr}\n${repo.stdout}`)) throw new GitHubAuthError(authExpiredMessage(input.account));
@@ -164,7 +209,14 @@ export const verifyGitHubAccess = async (input: {
         "Grant that account access, or select another account with coord onboard <repository> --github-account <name>."
     );
   }
-  return { account: input.account, login, repository };
+  return {
+    account: input.account,
+    login: profile.login,
+    id: profile.id,
+    profile,
+    author: gitHubCommitAuthor(profile),
+    repository
+  };
 };
 
 /**

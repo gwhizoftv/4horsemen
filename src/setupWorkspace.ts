@@ -18,7 +18,10 @@ import {
   GITHUB_CREDENTIAL_HELPER_KEY,
   GITHUB_CREDENTIAL_HELPER_MARKER,
   gitCredentialArgs,
-  gitCredentialHelperCommand
+  gitCredentialHelperCommand,
+  gitHubCommitAuthor,
+  type GitAuthor,
+  type GitHubProfile
 } from "./githubAuth.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { isPathInside } from "./paths.js";
@@ -192,6 +195,8 @@ export type WorkspaceConfigInput = {
   completesRoot: string;
   /** Selected GitHub account name; absent or null for ambient credentials. */
   githubAccount?: string | null;
+  /** Verified public GitHub profile for the selected account; absent or null when unavailable. */
+  githubProfile?: GitHubProfile | null;
 };
 
 /**
@@ -237,7 +242,14 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     workflowCriticalPrefixes: declared.workflowCriticalPrefixes ?? input.proposal.workflowCriticalPrefixes,
     workflowCriticalFiles: declared.workflowCriticalFiles ?? input.proposal.workflowCriticalFiles,
     completesRoot: input.completesRoot,
-    ...(input.githubAccount === null || input.githubAccount === undefined ? {} : { github: { account: input.githubAccount } }),
+    ...(input.githubAccount === null || input.githubAccount === undefined
+      ? {}
+      : {
+          github: {
+            account: input.githubAccount,
+            ...(input.githubProfile === null || input.githubProfile === undefined ? {} : { profile: input.githubProfile })
+          }
+        }),
     coordination: stamp
   });
 };
@@ -618,6 +630,8 @@ export type CloneIdentity = {
   completesRoot: string;
   /** Selected GitHub account the launcher exports GH_TOKEN for; null for ambient credentials. */
   githubAccount: string | null;
+  /** Verified Git commit author for the selected GitHub account; null leaves user.name/user.email untouched. */
+  gitAuthor?: GitAuthor | null;
 };
 
 /**
@@ -643,6 +657,7 @@ const IDENTITY_KEYS: readonly string[] = [
 ];
 
 export const configureCloneIdentity = (clone: string, identity: CloneIdentity, options: EffectOptions): void => {
+  const gitAuthor = identity.gitAuthor ?? null;
   const desired: Array<[string, string | null]> = [
     ["consensus.agentId", identity.agent],
     ["consensus.agentLabel", identity.label],
@@ -652,7 +667,13 @@ export const configureCloneIdentity = (clone: string, identity: CloneIdentity, o
     [CLI_ENTRY_KEY, identity.cliEntry],
     [WORKSPACE_CONFIG_KEY, identity.workspaceConfig],
     [COMPLETES_ROOT_KEY, identity.completesRoot],
-    [GITHUB_ACCOUNT_KEY, identity.githubAccount]
+    [GITHUB_ACCOUNT_KEY, identity.githubAccount],
+    ...(gitAuthor === null
+      ? []
+      : ([
+          ["user.name", gitAuthor.name],
+          ["user.email", gitAuthor.email]
+        ] as Array<[string, string | null]>))
   ];
   const stale = desired.filter(([key, value]) => localConfigGet(clone, key) !== value);
   if (stale.length === 0) {
@@ -667,6 +688,46 @@ export const configureCloneIdentity = (clone: string, identity: CloneIdentity, o
   });
   // The helper is only ever written with the account, so it goes with it.
   if (stale.some(([key, value]) => key === GITHUB_ACCOUNT_KEY && value === null)) clearCloneGitHubCredential(clone, options);
+};
+
+/** Remove local user.name/user.email only when they still match the profile coord recorded. */
+export const clearCloneGitHubAuthor = (
+  clone: string,
+  profile: GitHubProfile | null | undefined,
+  options: EffectOptions
+): void => {
+  if (profile === null || profile === undefined) return;
+  const author = gitHubCommitAuthor(profile);
+  const matching = (
+    [
+      ["user.name", author.name],
+      ["user.email", author.email]
+    ] as const
+  ).filter(([key, expected]) => localConfigGet(clone, key) === expected);
+  if (matching.length === 0) return;
+  act(options, `clear ${matching.map(([key]) => key).join(", ")} in ${clone}`, () => {
+    for (const [key] of matching) localConfigUnset(clone, key);
+  });
+};
+
+/** Refresh local user.name/user.email in an existing bare mirror; never creates the mirror. */
+export const configureMirrorGitAuthor = (mirrorPath: string, author: GitAuthor, options: EffectOptions): void => {
+  const bare = git(mirrorPath, "rev-parse", "--is-bare-repository");
+  if (bare.exitCode !== 0 || bare.stdout.trim() !== "true") {
+    throw new Error(`${mirrorPath} already exists but is not a bare git repository.`);
+  }
+  const desired: ReadonlyArray<[string, string]> = [
+    ["user.name", author.name],
+    ["user.email", author.email]
+  ];
+  const stale = desired.filter(([key, value]) => localConfigGet(mirrorPath, key) !== value);
+  if (stale.length === 0) {
+    options.log(`mirror Git author already current in ${mirrorPath}\n`);
+    return;
+  }
+  act(options, `record ${stale.map(([key]) => key).join(", ")} in ${mirrorPath}`, () => {
+    for (const [key, value] of stale) localConfigSet(mirrorPath, key, value);
+  });
 };
 
 export const clearCloneIdentity = (clone: string, options: EffectOptions): void => {

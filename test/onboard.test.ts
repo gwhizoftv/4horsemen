@@ -6,6 +6,7 @@ import { runCli, type CliRunLoop } from "../src/cli.js";
 import { localConfigGet } from "../src/gitExec.js";
 import { install, onboard, uninstall } from "../src/install.js";
 import { issueRuntimePaths } from "../src/paths.js";
+import { hermeticGitEnv } from "../src/mirror.js";
 import { agentCloneDirectory, resolveRealGit } from "../src/setupWorkspace.js";
 import { readConfig, readCursorsState, readStartState } from "../src/state.js";
 import { nestedConfigPath, OWNER_WORKSPACE_CONFIG_KEY } from "../src/workspace.js";
@@ -588,5 +589,65 @@ describe("coord onboard", () => {
     } finally {
       process.env.PATH = originalPath;
     }
+  });
+
+  it("configures clone-local user.name and user.email for a selected GitHub account and repairs drift on re-onboard", async () => {
+    const fixture = product("soundsplore");
+    const globalConfig = join(fixture.workspaceRoot, "global.gitconfig");
+    writeFileSync(globalConfig, "[user]\n\tname = OtherAccount\n\temail = other@example.com\n");
+    const gh = async (argv: readonly string[]) => {
+      if (argv[0] === "gh" && argv[1] === "auth" && argv[2] === "token") {
+        return { exitCode: 0, stdout: "tok-gwhizofss\n", stderr: "" };
+      }
+      if (argv[0] === "gh" && argv[1] === "api" && argv[2] === "user") {
+        return { exitCode: 0, stdout: `${JSON.stringify({ login: "gwhizofss", id: 155764113 })}\n`, stderr: "" };
+      }
+      if (argv[0] === "gh" && argv[1] === "api" && argv.includes("--jq")) {
+        return { exitCode: 0, stdout: "acme/soundsplore\n", stderr: "" };
+      }
+      if (argv[0] === "gh" && argv[1] === "api") {
+        return { exitCode: 0, stdout: JSON.stringify({ default_branch: "main" }), stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: `unexpected command ${argv.join(" ")}` };
+    };
+    const dependencies = { home: null, io: { stdout: () => undefined, stderr: () => undefined }, processRunner: gh };
+    expect(
+      await runCli(
+        ["onboard", fixture.productRoot, "--agents", "claude", "--profile", "solo", "--github-account", "gwhizofss"],
+        dependencies
+      )
+    ).toBe(0);
+
+    const clone = agentCloneDirectory(fixture.workspaceRoot, "soundsplore", "claude");
+    const configPath = join(fixture.workspaceRoot, "coord-runtime", "config.json");
+    expect(readConfig(configPath).github).toEqual({
+      account: "gwhizofss",
+      profile: { login: "gwhizofss", id: 155764113 }
+    });
+    expect(localConfigGet(clone, "user.name")).toBe("gwhizofss");
+    expect(localConfigGet(clone, "user.email")).toBe("155764113+gwhizofss@users.noreply.github.com");
+    // Product checkout keeps its own local author settings untouched.
+    expect(localConfigGet(fixture.productRoot, "user.name")).toBe("Fixture");
+    expect(localConfigGet(fixture.productRoot, "user.email")).toBe("fixture@example.com");
+
+    // An ordinary commit on an agent branch (with ambient GIT_AUTHOR_* scrubbed) uses the bound identity.
+    git(clone, "checkout", "-qb", "claude/attribution-check");
+    writeFileSync(join(clone, "note.txt"), "hello\n");
+    git(clone, "add", "note.txt");
+    execFileSync("git", ["commit", "-qm", "Claude: verify attribution"], {
+      cwd: clone,
+      encoding: "utf8",
+      env: { ...hermeticGitEnv(), GIT_CONFIG_GLOBAL: globalConfig }
+    });
+    expect(git(clone, "log", "-1", "--format=%an|%ae|%cn|%ce")).toBe(
+      "gwhizofss|155764113+gwhizofss@users.noreply.github.com|gwhizofss|155764113+gwhizofss@users.noreply.github.com"
+    );
+
+    // Re-onboarding with the saved selection repairs a drifted author field.
+    git(clone, "config", `url.${fixture.originPath}.insteadOf`, "https://github.com/acme/soundsplore.git");
+    git(clone, "config", "--local", "user.email", "wrong@example.com");
+    expect(await runCli(["onboard", fixture.productRoot, "--agents", "claude", "--profile", "solo"], dependencies)).toBe(0);
+    expect(localConfigGet(clone, "user.name")).toBe("gwhizofss");
+    expect(localConfigGet(clone, "user.email")).toBe("155764113+gwhizofss@users.noreply.github.com");
   });
 });

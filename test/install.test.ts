@@ -397,35 +397,67 @@ describe("coord install — two-mode footprint", () => {
   it("binds clones to a selected GitHub account without storing a token, keeps it on reinstall, and removes it on uninstall", () => {
     const fixture = product();
     const origin = "https://acct@github.com/example/myserver.git";
+    const profile = { login: "Acct", id: 4242 };
     const helper = "credential.https://github.com.helper";
     const coordHelper = `!'${join(repoRoot, "scripts/lib/node-runtime.sh")}' --fallback-node '${process.execPath}' '${join(repoRoot, "dist", "main.js")}' auth git-credential --account acct`;
     const helpers = () => tryGit(clone, "config", "--local", "--get-all", helper).stdout.split("\n").slice(0, -1);
-    const result = installOnce(fixture, { origin, githubAccount: "acct" });
+    const result = installOnce(fixture, { origin, githubAccount: "acct", githubProfile: profile });
     const clone = result.clones[0] as string;
-    expect(readConfig(result.configPath).github).toEqual({ account: "acct" });
+    expect(readConfig(result.configPath).github).toEqual({ account: "acct", profile });
     expect(git(clone, "config", "--local", "--get", "coord.githubAccount")).toBe("acct");
+    expect(git(clone, "config", "--local", "--get", "user.name")).toBe("Acct");
+    expect(git(clone, "config", "--local", "--get", "user.email")).toBe("4242+Acct@users.noreply.github.com");
     expect(helpers()).toEqual(["", coordHelper]);
     expect(cloneGitHubWiringProblem(clone, "acct")).toBeNull();
     const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
     expect(launcher).toContain('gh auth token --hostname github.com --user "$coord_github_account"');
     expect(launcher).not.toMatch(/GH_TOKEN=["']?[A-Za-z0-9_]{8,}/);
+    // First creation of mirror.git belongs to the runtime, not install.
+    const mirrorPath = join(fixture.coordRoot, "mirror.git");
+    expect(existsSync(mirrorPath)).toBe(false);
 
     // A repair run without the option keeps the selection (dry run: no fetch from github.com).
     expect(installOnce(fixture, { origin, dryRun: true }).changes).toEqual([]);
 
-    // An owner's own helper survives a real repair (fetch redirected to the local origin) and
-    // stays ahead of coord's reset; a later reset would defeat coord's helper and is reported.
+    // Dry-run with a stale local author reports the repair without mutating the clone.
+    git(clone, "config", "--local", "user.email", "stale@example.com");
+    expect(installOnce(fixture, { origin, dryRun: true }).changes.some((change) => change.includes("user.email"))).toBe(true);
+    expect(git(clone, "config", "--local", "--get", "user.email")).toBe("stale@example.com");
+
+    // An existing workspace mirror is repaired alongside adopted clones, while owner helpers survive.
+    execFileSync("git", ["init", "--bare", "-q", mirrorPath]);
+    git(mirrorPath, "config", "--local", "user.name", "OldUser");
     git(clone, "config", `url.${fixture.originPath}.insteadOf`, origin);
     git(clone, "config", "--local", "--add", helper, "cache --timeout=42");
     installOnce(fixture, { origin });
+    expect(git(clone, "config", "--local", "--get", "user.email")).toBe("4242+Acct@users.noreply.github.com");
+    expect(git(mirrorPath, "config", "--local", "--get", "user.name")).toBe("Acct");
+    expect(git(mirrorPath, "config", "--local", "--get", "user.email")).toBe("4242+Acct@users.noreply.github.com");
     expect(helpers()).toEqual(["cache --timeout=42", "", coordHelper]);
     expect(installOnce(fixture, { origin }).changes).toEqual([]);
     git(clone, "config", "--local", "--add", helper, "");
     expect(cloneGitHubWiringProblem(clone, "acct")).toMatch(/no effective GitHub credential helper/);
 
+    // Uninstall removes coord-written user.* while preserving an owner-customized value.
+    git(clone, "config", "--local", "user.email", "owner-custom@example.com");
     uninstallOnce(fixture);
     expect(tryGit(clone, "config", "--local", "--get", "coord.githubAccount").exitCode).not.toBe(0);
+    expect(tryGit(clone, "config", "--local", "--get", "user.name").exitCode).not.toBe(0);
+    expect(git(clone, "config", "--local", "--get", "user.email")).toBe("owner-custom@example.com");
     expect(helpers()).toEqual(["cache --timeout=42", ""]);
+  });
+
+  it("preserves custom local author settings on unbound installs and uninstalls", () => {
+    const fixture = product();
+    const clone = installOnce(fixture).clones[0] as string;
+    git(clone, "config", "--local", "user.name", "Owner Name");
+    git(clone, "config", "--local", "user.email", "owner@example.com");
+    expect(installOnce(fixture).changes).toEqual([]);
+    expect(git(clone, "config", "--local", "--get", "user.name")).toBe("Owner Name");
+    expect(git(clone, "config", "--local", "--get", "user.email")).toBe("owner@example.com");
+    uninstallOnce(fixture);
+    expect(git(clone, "config", "--local", "--get", "user.name")).toBe("Owner Name");
+    expect(git(clone, "config", "--local", "--get", "user.email")).toBe("owner@example.com");
   });
 
   it("launches an agent with the selected account's token only after GitHub accepts it", () => {

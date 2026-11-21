@@ -105,19 +105,36 @@ process.stdout.write(JSON.stringify({args: process.argv.slice(2), input: fs.read
     expect(calls.some((call) => call.argv[1] === "pr")).toBe(false);
   });
 
-  it("verifies the login and repository access with actionable failures", async () => {
+  it("verifies the login, numeric id, and repository access with actionable failures", async () => {
     const verify = (api: (argv: readonly string[]) => ProcessResult) =>
       verifyGitHubAccess({ account: "acct", origin: "https://acct@github.com/acme/app.git", cwd: "/work",
         runner: fakeRunner({ token: "tok", api }).runner });
     const ok = { exitCode: 0, stderr: "" };
 
-    await expect(verify((argv) => argv[2] === "user" ? { ...ok, stdout: "Acct\n" } : { ...ok, stdout: "acme/app\n" }))
-      .resolves.toEqual({ account: "acct", login: "Acct", repository: "acme/app" });
+    await expect(verify((argv) => argv[2] === "user"
+      ? { ...ok, stdout: JSON.stringify({ login: "Acct", id: 155764113 }) }
+      : { ...ok, stdout: "acme/app\n" }))
+      .resolves.toEqual({
+        account: "acct",
+        login: "Acct",
+        id: 155764113,
+        profile: { login: "Acct", id: 155764113 },
+        author: { name: "Acct", email: "155764113+Acct@users.noreply.github.com" },
+        repository: "acme/app"
+      });
     await expect(verify(() => ({ exitCode: 1, stdout: "", stderr: "HTTP 401: Bad credentials (https://api.github.com/user)" })))
       .rejects.toThrow("GitHub authentication for acct has expired or been revoked.\nRun: coord auth login");
-    await expect(verify(() => ({ ...ok, stdout: "someone-else\n" })))
+    await expect(verify(() => ({ ...ok, stdout: JSON.stringify({ login: "someone-else", id: 99 }) })))
       .rejects.toThrow("The saved GitHub credential for acct authenticates as someone-else.\nRun: coord auth login");
-    await expect(verify((argv) => argv[2] === "user" ? { ...ok, stdout: "acct\n" } : { exitCode: 1, stdout: "", stderr: "HTTP 404: Not Found" }))
+    await expect(verify(() => ({ ...ok, stdout: "not-json\n" })))
+      .rejects.toThrow("invalid user profile JSON");
+    await expect(verify(() => ({ ...ok, stdout: JSON.stringify({ login: "acct", id: null }) })))
+      .rejects.toThrow("no valid numeric user id");
+    await expect(verify(() => ({ ...ok, stdout: JSON.stringify({ login: "acct", id: 0 }) })))
+      .rejects.toThrow("no valid numeric user id");
+    await expect(verify((argv) => argv[2] === "user"
+      ? { ...ok, stdout: JSON.stringify({ login: "acct", id: 42 }) }
+      : { exitCode: 1, stdout: "", stderr: "HTTP 404: Not Found" }))
       .rejects.toThrow("GitHub account acct cannot access acme/app: HTTP 404: Not Found.");
     await expect(verifyGitHubAccess({ account: "acct", origin: "git@github.com:acme/app.git", cwd: "/work",
       runner: fakeRunner({ token: "tok" }).runner })).rejects.toThrow("needs an https://github.com/");

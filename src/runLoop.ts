@@ -120,7 +120,7 @@ import { finalRetryMessage, currentScrollbackWait, holdRecoveryCommand, holdDesc
 import { inspectStartupAgent } from "./doctor.js";
 import { assessFollowUpIssue, followUpKey, formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
-import { coordCliEntry, withGitHubAccount } from "./githubAuth.js";
+import { coordCliEntry, gitHubCommitAuthor, withGitHubAccount } from "./githubAuth.js";
 import { harnessPromptReadiness, paneActivityDigest, paneHasBusyIndicator, renderNudgeText, TmuxController, type OwnerReminderOutcome } from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
@@ -1121,7 +1121,13 @@ export class CoordinatorRunLoop {
   constructor(readonly paths: IssueRuntimePaths, dependencies: RunLoopDependencies = {}) {
     const start = readStartState(paths);
     this.mirror = dependencies.mirror ?? new BareMirror(paths.mirror, start.origin, undefined,
-      start.githubAccount === undefined ? null : { account: start.githubAccount, cliEntry: coordCliEntry() });
+      start.githubAccount === undefined
+        ? null
+        : {
+            account: start.githubAccount,
+            cliEntry: coordCliEntry(),
+            ...(start.githubProfile === undefined ? {} : { author: gitHubCommitAuthor(start.githubProfile) })
+          });
     this.tmux = dependencies.tmux === undefined ? new TmuxController(undefined, paths.tmuxNamespace, undefined, undefined, undefined, paths.terminalGroup) : dependencies.tmux;
     this.processRunner = dependencies.processRunner ?? runArgv;
     this.githubRunner = withGitHubAccount(this.processRunner, start.githubAccount);
@@ -1153,9 +1159,11 @@ export class CoordinatorRunLoop {
     // clones that were never installed against it, adding an untracked
     // AGENTS.md that an agent's `git add -A` then sweeps into its commit.
     let installRoot: string | null = null;
+    let savedConfig: ReturnType<typeof readConfig> | null = null;
     if (existsSync(start.configPath)) {
       try {
-        installRoot = readConfig(start.configPath).coordination?.installRoot ?? null;
+        savedConfig = readConfig(start.configPath);
+        installRoot = savedConfig.coordination?.installRoot ?? null;
       } catch (error) {
         this.log(
           `could not read ${start.configPath} for the install root ` +
@@ -1174,7 +1182,13 @@ export class CoordinatorRunLoop {
       log: (message) => this.log(message.trimEnd())
     });
     this.authority(authority);
-    await this.mirror.initialize();
+    const mirrorProfile =
+      start.githubProfile ??
+      (start.githubAccount !== undefined &&
+      savedConfig?.github?.account.toLowerCase() === start.githubAccount.toLowerCase()
+        ? savedConfig.github.profile
+        : undefined);
+    await this.mirror.initialize(mirrorProfile === undefined ? null : gitHubCommitAuthor(mirrorProfile));
     this.authority(authority);
     await this.restoreTerminals();
     this.authority(authority);

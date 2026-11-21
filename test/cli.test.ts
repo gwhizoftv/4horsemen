@@ -795,7 +795,7 @@ describe("CLI GitHub account selection", () => {
   type Call = { argv: readonly string[]; env: NodeJS.ProcessEnv | undefined };
   /** gh answers as `acct` with `tok-acct`, or reports no saved credential when token is null. */
   const accountRunner = (calls: Call[], token: string | null = "tok-acct", api = (argv: readonly string[]) =>
-    ({ exitCode: 0, stdout: argv[2] === "user" ? "acct\n" : "example/fixture\n", stderr: "" })): ProcessRunner =>
+    ({ exitCode: 0, stdout: argv[2] === "user" ? `${JSON.stringify({ login: "acct", id: 4242 })}\n` : "example/fixture\n", stderr: "" })): ProcessRunner =>
     async (argv, _cwd, options) => {
       calls.push({ argv, env: options?.env });
       if (argv[0] === "gh" && argv[1] === "auth" && argv[2] === "token") {
@@ -804,11 +804,22 @@ describe("CLI GitHub account selection", () => {
       if (argv[0] === "gh" && argv[1] === "api") return api(argv);
       return successfulStartGit(argv);
     };
-  const start = (fixture: ReturnType<typeof setup>, runner: ProcessRunner, errors: string[], effects: string[]) =>
+  const start = (
+    fixture: ReturnType<typeof setup>,
+    runner: ProcessRunner,
+    errors: string[],
+    effects: Array<{ account: string; author: string | null }>
+  ) =>
     runCli(["start", "1", "--profile", "solo", "--config", fixture.configPath, "--coord-runtime", fixture.runtime], {
       io: { stdout: () => undefined, stderr: (message) => errors.push(message) },
       processRunner: runner,
-      startEffects: async (input) => { effects.push(input.githubAccount ?? "none"); return { cleanup: async () => undefined }; },
+      startEffects: async (input) => {
+        effects.push({
+          account: input.githubAccount ?? "none",
+          author: input.githubAuthor == null ? null : `${input.githubAuthor.name} <${input.githubAuthor.email}>`
+        });
+        return { cleanup: async () => undefined };
+      },
       makeRunLoop: fakeLoop
     });
 
@@ -816,7 +827,7 @@ describe("CLI GitHub account selection", () => {
     const fixture = setup();
     selectAccount(fixture.configPath);
     wireClone(join(fixture.root, "clone-codex"), "issue-1/codex");
-    const calls: Call[] = [], errors: string[] = [], effects: string[] = [];
+    const calls: Call[] = [], errors: string[] = [], effects: Array<{ account: string; author: string | null }> = [];
     expect(await start(fixture, accountRunner(calls, null), errors, effects)).toBe(2);
     expect(errors.join("")).toContain("GitHub authentication for acct is unavailable.\nRun: coord auth login");
     expect(calls.some((call) => call.argv[1] === "issue" || call.argv.includes("ls-remote"))).toBe(false);
@@ -828,13 +839,15 @@ describe("CLI GitHub account selection", () => {
     const fixture = setup();
     selectAccount(fixture.configPath);
     wireClone(join(fixture.root, "clone-codex"), "issue-1/codex");
-    const calls: Call[] = [], errors: string[] = [], effects: string[] = [];
+    const calls: Call[] = [], errors: string[] = [], effects: Array<{ account: string; author: string | null }> = [];
     expect(await start(fixture, accountRunner(calls), errors, effects)).toBe(0);
     expect(calls.find((call) => call.argv[1] === "issue")?.env?.GH_TOKEN).toBe("tok-acct");
     const lsRemote = calls.find((call) => call.argv.includes("ls-remote"))!.argv;
     expect(lsRemote.slice(0, 3)).toEqual(["git", "-c", `${helperKey}=`]);
-    expect(effects).toEqual(["acct"]);
-    expect(readStartState(issueRuntimePaths(fixture.runtime, 1)).githubAccount).toBe("acct");
+    expect(effects).toEqual([{ account: "acct", author: "acct <4242+acct@users.noreply.github.com>" }]);
+    const frozenStart = readStartState(issueRuntimePaths(fixture.runtime, 1));
+    expect(frozenStart.githubAccount).toBe("acct");
+    expect(frozenStart.githubProfile).toEqual({ login: "acct", id: 4242 });
 
     const resumeErrors: string[] = [];
     expect(await runCli(["run", "--issue", "1", "--coord-runtime", fixture.runtime], {
@@ -2216,13 +2229,16 @@ describe("CLI — install, doctor, and the hook bridge", () => {
       calls.push({ argv, token: options?.env?.GH_TOKEN, timeout: options?.timeoutMs });
       if (argv[1] === "auth") return { exitCode: 0, stdout: "selected-token\n", stderr: "" };
       return { exitCode: 0, stderr: "", stdout: argv.length === 3 ? JSON.stringify({ default_branch: branch }) :
-        argv[2] === "user" ? "acct\n" : "example/myserver\n" };
+        argv[2] === "user" ? `${JSON.stringify({ login: "acct", id: 4242 })}\n` : "example/myserver\n" };
     };
     const output: string[] = [];
     const dependencies = { home: null, processRunner: gh, io: { stdout: (text: string) => output.push(text) } };
     expect(await runCli([...installArgs(product, declarePath), "--github-account", "acct"], dependencies)).toBe(0);
     const configPath = join(product.coordRoot, "config.json");
     const clone = join(product.workspaceRoot, "myserver-claude");
+    expect(readConfig(configPath).github).toEqual({ account: "acct", profile: { login: "acct", id: 4242 } });
+    expect(fixtureGit(clone, "config", "--local", "--get", "user.name")).toBe("acct");
+    expect(fixtureGit(clone, "config", "--local", "--get", "user.email")).toBe("4242+acct@users.noreply.github.com");
     const configBefore = readFileSync(configPath, "utf8");
     const cloneConfigBefore = readFileSync(join(clone, ".git/config"), "utf8");
     fixtureGit(product.productRoot, "remote", "set-url", "origin", "https://github.com/unrelated/local.git");
@@ -2263,7 +2279,7 @@ describe("CLI — install, doctor, and the hook bridge", () => {
     const gh = (token: string | null): ProcessRunner => async (argv) => {
       if (argv[1] === "auth") return token === null ? { exitCode: 1, stdout: "", stderr: "no account" } : { exitCode: 0, stdout: `${token}\n`, stderr: "" };
       if (argv.length === 3 && argv[1] === "api") return defaultBranchRunner(argv, product.productRoot);
-      return { exitCode: 0, stdout: argv[2] === "user" ? "acct\n" : "example/myserver\n", stderr: "" };
+      return { exitCode: 0, stdout: argv[2] === "user" ? `${JSON.stringify({ login: "acct", id: 4242 })}\n` : "example/myserver\n", stderr: "" };
     };
     expect(await runCli([...installArgs(product, declarePath), "--github-account", "acct"], {
       home: null, io: { stdout: () => undefined }, processRunner: gh("tok")
