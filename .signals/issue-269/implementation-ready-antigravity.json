@@ -1,0 +1,32 @@
+{
+  "protocolVersion": 1,
+  "issue": 269,
+  "issueSessionId": "issue-269:be694aa9f3190cc55b370d42c581d110ac8d45ce",
+  "agent": "antigravity",
+  "inputSetHash": "3bac8f28d8ea5403159e9d9ffc9f42be541383c5a19a977fbb9775856a2948d1",
+  "artifact": "implementation-ready",
+  "implementationCommitSha": "ff396b3133e38227179375cd5a19ff4a36353e39",
+  "scopeHash": "1d9754f770c90f038b2cc71c1b0fa7f4fbf0f2873e7f5fd3dfcdf3479669f989",
+  "approvedPaths": [
+    "BareMirror.fetchBranch",
+    "BareMirror.initialize",
+    "README.md",
+    "coord.githubAccount",
+    "src/cli.ts",
+    "src/githubAuth.ts",
+    "src/install.ts",
+    "src/mirror.ts",
+    "src/runLoop.ts",
+    "src/setupWorkspace.ts",
+    "src/state.ts",
+    "start.githubAccount",
+    "test/ballotPublication.test.ts",
+    "test/cli.test.ts",
+    "test/githubAuth.test.ts",
+    "test/install.test.ts",
+    "test/mirror.test.ts",
+    "test/onboard.test.ts",
+    "user.email",
+    "user.name"
+  ]
+}
