@@ -514,17 +514,23 @@ const workspaceUiIdentity = (workspaceRoot: string): WorkspaceUiIdentity => {
 const resolvedAgents = (resolution: StartResolution): CoordinatorConfig["agents"] =>
   resolution.config.agents.map((agent) => ({ ...agent, root: resolve(dirname(resolution.configPath), agent.root) }));
 
-const selectIssueAgents = (agents: CoordinatorConfig["agents"], list: string): CoordinatorConfig["agents"] => {
+const resolveIssueAgents = (resolution: StartResolution, list: string | undefined) => {
+  const agents = resolvedAgents(resolution);
+  if (list === undefined) return { agents, roster: resolution.profile === "solo" ? agents.slice(0, 1) : agents };
   const seen = new Set<string>();
-  return list.split(",").map((entry) => {
+  const roster = list.split(",").map((entry) => {
     const id = entry.trim();
     if (!id) throw new Error("--agents contains an empty agent ID.");
     if (seen.has(id)) throw new Error(`--agents lists '${id}' more than once.`);
     const agent = agents.find((candidate) => candidate.id === id);
-    if (agent === undefined) throw new Error(`Agent '${id}' is not configured for this workspace.`);
+    if (agent === undefined) {
+      const available = agents.map((candidate) => candidate.id).join(", ");
+      throw new Error(`Agent '${id}' is not configured in ${resolution.configPath}. Choose from ${available}.`);
+    }
     seen.add(id);
     return agent;
   });
+  return { agents, roster };
 };
 
 /** What closing manual mode needs: every configured clone, the base, and the protocol template root. */
@@ -1175,16 +1181,11 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   };
 
   const startIssue = async (
-    issue: number, resolution: StartResolution, agentList: string | undefined
+    issue: number, resolution: StartResolution, { agents, roster }: ReturnType<typeof resolveIssueAgents>
   ): Promise<{ paths: IssueRuntimePaths; loop: CliRunLoop }> => {
     const { configPath, config, profile } = resolution;
-    const agents = resolvedAgents(resolution);
-    let roster = profile === "solo" ? agents.slice(0, 1) : agents;
-    if (agentList !== undefined) {
-      roster = selectIssueAgents(agents, agentList);
-      if (profile === "solo" && roster.length > 1) {
-        throw new Error("The solo profile requires one agent. Pass a single ID to --agents or choose --profile reviewed or --profile consensus.");
-      }
+    if (profile === "solo" && roster.length > 1) {
+      throw new Error("The solo profile requires one agent. Pass a single ID to --agents or choose --profile reviewed or --profile consensus.");
     }
     if (roster.length === 0) throw new Error(`Profile ${profile} requires at least one configured agent.`);
     await assertNoManualSession(resolution.runtimeRoot, manualCleanup(config, configPath));
@@ -1365,10 +1366,11 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const issue = parseIssue(command);
       const resolution = resolveStart(parsed, io);
       const agentList = parsed.flags.get("agents");
+      const issueAgents = resolveIssueAgents(resolution, agentList);
       const existing = existingIssueRuntime(resolution, issue);
       if (existing !== null) {
         if (agentList !== undefined) {
-          const selected = selectIssueAgents(resolvedAgents(resolution), agentList);
+          const selected = issueAgents.roster;
           const saved = readStartState(existing).originalRoster;
           if (selected.length !== saved.length || selected.some((agent, index) => agent.id !== saved[index])) {
             throw new Error(`Issue ${issue} started with agents ${saved.join(", ")}. Use coord ${issue} to resume with its saved roster.`);
@@ -1377,7 +1379,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         await assertNoManualSession(resolution.runtimeRoot, manualCleanup(resolution.config, resolution.configPath));
         return await runIssue(existing);
       }
-      const started = await startIssue(issue, resolution, agentList);
+      const started = await startIssue(issue, resolution, issueAgents);
       return await runIssue(started.paths, started.loop);
     }
 
@@ -1692,7 +1694,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       verboseState.enabled = flagIsSet(parsed, "verbose");
       const issue = parseIssue(parsed.positionals[0] as string);
       const resolution = resolveStart(parsed, io);
-      await startIssue(issue, resolution, parsed.flags.get("agents"));
+      await startIssue(issue, resolution, resolveIssueAgents(resolution, parsed.flags.get("agents")));
       return 0;
     }
 
