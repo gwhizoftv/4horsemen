@@ -1,0 +1,29 @@
+{
+  "actionId": "cb0af9f7-eabe-498c-8327-6fb8725a84d2",
+  "agent": "codex",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "ff396b3133e38227179375cd5a19ff4a36353e39",
+      "path": ".signals/issue-269/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "7e2b1c39be95ada9c63aa87de41f4eb29397506f",
+      "path": ".signals/issue-269/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c16f985990d637db91a10d2be26d4bbe8f944559",
+      "path": ".signals/issue-269/implementation-ready-codex.json"
+    }
+  ],
+  "inputSetHash": "882257d8eae353849707505019582a349d8ea14f53f43efbdc94e287d601cff0",
+  "issue": 269,
+  "issueSessionId": "issue-269:be694aa9f3190cc55b370d42c581d110ac8d45ce",
+  "protocolVersion": 2,
+  "rationale": "Codex retains each issue’s commit author across workspace account changes and verifies account-only installs, making it the best revision base for fixing adopted-clone author overrides and concurrent worktree creation.",
+  "responseSha256": "18138e98bd94c51f147e28c2193324baeee3f046d36c54357313b6b1ba7d78ca"
+}

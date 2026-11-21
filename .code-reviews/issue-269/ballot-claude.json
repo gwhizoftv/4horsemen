@@ -1,0 +1,29 @@
+{
+  "actionId": "cef2a964-2518-4b0c-b2ee-358119162764",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "ff396b3133e38227179375cd5a19ff4a36353e39",
+      "path": ".signals/issue-269/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "7e2b1c39be95ada9c63aa87de41f4eb29397506f",
+      "path": ".signals/issue-269/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c16f985990d637db91a10d2be26d4bbe8f944559",
+      "path": ".signals/issue-269/implementation-ready-codex.json"
+    }
+  ],
+  "inputSetHash": "882257d8eae353849707505019582a349d8ea14f53f43efbdc94e287d601cff0",
+  "issue": 269,
+  "issueSessionId": "issue-269:be694aa9f3190cc55b370d42c581d110ac8d45ce",
+  "protocolVersion": 2,
+  "rationale": "Codex's c16f9859 is the only implementation that keeps each issue's frozen author in its own mirror worktrees across workspace account switches (its core.bare migration plus per-worktree config held up in a real bare-mirror replica, with evidence commits still authored by the driver) and that restores owner author values on uninstall via a provenance receipt, leaving only the small fix of reusing a matching saved profile before the sync gh lookup on real installs.",
+  "responseSha256": "fb66c85c5c32ac330ad70db1073441f1642e8c3a49f2775ce32fa7a51371d3cf"
+}

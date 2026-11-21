@@ -1,0 +1,29 @@
+{
+  "actionId": "c87cafee-4efe-4f68-a906-e9409f2f49dc",
+  "agent": "antigravity",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "ff396b3133e38227179375cd5a19ff4a36353e39",
+      "path": ".signals/issue-269/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "7e2b1c39be95ada9c63aa87de41f4eb29397506f",
+      "path": ".signals/issue-269/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "c16f985990d637db91a10d2be26d4bbe8f944559",
+      "path": ".signals/issue-269/implementation-ready-codex.json"
+    }
+  ],
+  "inputSetHash": "882257d8eae353849707505019582a349d8ea14f53f43efbdc94e287d601cff0",
+  "issue": 269,
+  "issueSessionId": "issue-269:be694aa9f3190cc55b370d42c581d110ac8d45ce",
+  "protocolVersion": 2,
+  "rationale": "Codex is the only implementation that safely isolates per-issue worktree authors via locked core.bare migration, restores original owner author values via provenance receipts on unbind/uninstall for both clones and mirror, freezes start.githubProfile, and handles direct programmatic install.",
+  "responseSha256": "12dadf85ee96ff179a2370235e8f24f78ced2680f85e05857dae961352f87c72"
+}
