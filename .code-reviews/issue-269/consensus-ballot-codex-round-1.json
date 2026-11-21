@@ -1,0 +1,14 @@
+{
+  "actionId": "e2b5f657-70d3-4ed0-90f1-8efdc8e2b0eb",
+  "agent": "codex",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "baa298e3f9dab171c550e435ae5897d5adac0e8cd7621e5c47fc2002ccbd2e79",
+  "issue": 269,
+  "issueSessionId": "issue-269:be694aa9f3190cc55b370d42c581d110ac8d45ce",
+  "protocolVersion": 2,
+  "rationale": "Revision 584a6b95 fixes author attribution in adopted clones and concurrently created worktrees, preserves coordinator authorship for evidence commits, and passed the required commit and push checks.",
+  "responseSha256": "6afcf4fe4a54c5500ffdaa6365b5418cf0cee0fe71517e0c293f259e9ade8b3f",
+  "revisionCommitSha": "584a6b9559ccc61741f325ad7f75988fea7b2886",
+  "round": 1
+}

@@ -1,0 +1,14 @@
+{
+  "actionId": "5ab51658-49c9-4aa8-bfab-c09024c6a7ef",
+  "agent": "claude",
+  "artifact": "consensus-ballot",
+  "disposition": "approve",
+  "inputSetHash": "baa298e3f9dab171c550e435ae5897d5adac0e8cd7621e5c47fc2002ccbd2e79",
+  "issue": 269,
+  "issueSessionId": "issue-269:be694aa9f3190cc55b370d42c581d110ac8d45ce",
+  "protocolVersion": 2,
+  "rationale": "Revision 584a6b95 fixes the one defect I raised against c16f9859 (install now reuses a matching saved profile before any gh lookup, so offline direct repairs no longer fail), and its other changes—login-mismatch reported before id validation, a bounded retry on the mirror config lock for concurrent migrations, and --worktree-scoped author repair in clones that enable worktree config—are narrow, within approved paths, and keep the per-issue worktree attribution and provenance-based uninstall I verified earlier.",
+  "responseSha256": "4d8588b09f0b93b92b0948847d0022ed4d4687e407e91047856f9ef7aff4836f",
+  "revisionCommitSha": "584a6b9559ccc61741f325ad7f75988fea7b2886",
+  "round": 1
+}
