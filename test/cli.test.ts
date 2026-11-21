@@ -221,6 +221,94 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
   return { exitCode: 0, stdout: execFileSync(command, args, { cwd, encoding: "utf8" }), stderr: "" };
 };
 
+describe("issue --agents selection", () => {
+  const recordingRunner = (calls: string[]): ProcessRunner => async (argv) => {
+    calls.push(argv[3] === "coord-agent-maintenance" ? `${argv.at(-2)} ${argv.at(-1)}` : argv.join(" "));
+    return successfulStartGit(argv);
+  };
+
+  it.each([
+    { entry: ["1"], list: "cursor, claude", ids: ["cursor", "claude"], commands: ["agent", "claude"] },
+    { entry: ["start", "1", "--profile", "solo"], list: "claude", ids: ["claude"], commands: ["claude"] }
+  ])("starts only $ids from $entry in the given order", async ({ entry, list, ids, commands }) => {
+    const f = setup();
+    const configBytes = readFileSync(f.configPath, "utf8");
+    const paths = issueRuntimePaths(f.runtime, 1);
+    const calls: string[] = [];
+    let launched: string[] = [];
+    expect(await runCli([...entry, "--agents", list, "--config", f.configPath, "--coord-runtime", f.runtime], {
+      processRunner: recordingRunner(calls), makeRunLoop: fakeLoop, io: { stdout: () => undefined },
+      startEffects: async (input) => { launched = input.agents.map((agent) => agent.id); return { cleanup: async () => undefined }; }
+    })).toBe(0);
+    const start = readStartState(paths);
+    expect(launched).toEqual(ids);
+    expect(start.agents.map((agent) => [agent.id, agent.root])).toEqual(ids.map((id) => [id, join(f.root, `clone-${id}`)]));
+    expect(start.originalRoster).toEqual(ids);
+    expect(readCursorsState(paths).activeRoster).toEqual(ids);
+    expect(Object.keys(start.agentVersions ?? {})).toEqual(ids);
+    expect(calls.filter((call) => / (update|--version)$/.test(call)))
+      .toEqual([...commands.map((c) => `${c} update`), ...commands.map((c) => `${c} --version`)]);
+    expect(readFileSync(f.configPath, "utf8")).toBe(configBytes);
+  });
+
+  it.each([
+    { name: "unknown", list: "claude,gemini", profile: [], message: "--agents names 'gemini', which is not configured in" },
+    { name: "repeated after trimming", list: "claude, claude", profile: [], message: "--agents lists 'claude' more than once." },
+    { name: "empty argument", list: "", profile: [], message: "--agents requires at least one agent id." },
+    { name: "empty CSV field", list: "claude,,cursor", profile: [], message: "--agents has an empty entry at position 2" },
+    { name: "multi-agent solo", list: "claude,cursor", profile: ["--profile", "solo"],
+      message: "Profile solo runs one agent, but --agents selected 2 (claude, cursor)." }
+  ])("refuses an $name selection before any prompt or effect", async ({ list, profile, message }) => {
+    const f = setup();
+    for (const entry of [["1"], ["start", "1"]]) {
+      const calls: string[] = [], questions: string[] = [], errors: string[] = [];
+      expect(await runCli([...entry, ...profile, "--agents", list, "--config", f.configPath, "--coord-runtime", f.runtime], {
+        processRunner: recordingRunner(calls), io: { stdout: () => undefined, stderr: (line) => errors.push(line) },
+        sessionExists: async () => true,
+        confirm: async (question) => { questions.push(question); return true; },
+        makeRunLoop: () => { throw new Error("a refused selection must not create a runner"); },
+        startEffects: async () => { throw new Error("a refused selection must not launch"); }
+      })).toBe(2);
+      expect(errors.join("")).toContain(message);
+      expect(questions).toEqual([]);
+      expect(calls).toEqual([]);
+      expect(existsSync(issueRuntimePaths(f.runtime, 1).issueRoot)).toBe(false);
+    }
+  });
+
+  it("continues only with the original ordered list or none", async () => {
+    const f = setup();
+    const paths = issueRuntimePaths(f.runtime, 1);
+    const options = (calls: string[], errors: string[] = []) => ({
+      processRunner: recordingRunner(calls), makeRunLoop: fakeLoop,
+      io: { stdout: () => undefined, stderr: (line: string) => errors.push(line) }
+    });
+    expect(await runCli(["start", "1", "--agents", "cursor,claude", "--config", f.configPath, "--coord-runtime", f.runtime],
+      options([]))).toBe(0);
+    const startBytes = readFileSync(paths.start, "utf8");
+    // A later default-profile change must not re-validate the frozen roster.
+    const config = JSON.parse(readFileSync(f.configPath, "utf8"));
+    writeFileSync(f.configPath, JSON.stringify({ ...config, profile: "solo" }));
+
+    for (const list of ["claude,cursor", "cursor"]) {
+      const calls: string[] = [], errors: string[] = [];
+      expect(await runCli(["1", "--agents", list, "--config", f.configPath, "--coord-runtime", f.runtime], {
+        ...options(calls, errors), makeRunLoop: () => { throw new Error("a mismatched roster must not run"); }
+      })).toBe(2);
+      expect(errors.join("")).toContain(
+        `Issue 1 already started with agents cursor,claude; --agents ${list} cannot change them. Run \`coord 1\` to continue it.`
+      );
+      expect(calls).toEqual([]);
+    }
+    for (const extra of [["--agents", "cursor,claude"], []]) {
+      const calls: string[] = [];
+      expect(await runCli(["1", ...extra, "--config", f.configPath, "--coord-runtime", f.runtime], options(calls))).toBe(0);
+      expect(calls.filter((call) => / (update|--version)$/.test(call))).toEqual([]);
+    }
+    expect(readFileSync(paths.start, "utf8")).toBe(startBytes);
+  });
+});
+
 describe("fresh-start agent maintenance", () => {
   it.each(["muse", "opencode"])("records %s's version without automatic updates (OpenCode compatibility)", async (id) => {
     const f = setup();

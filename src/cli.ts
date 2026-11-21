@@ -313,7 +313,7 @@ Usage:
   coord --version | -V | version
   coord onboard <repository> [--coord-runtime <path>] [--completes-root <path>] [--agents <a,b,c>] [--profile <p>] [--declare <file>]
                 [--github-account <login>] [--base-branch <branch>]
-  coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>] [-v|--verbose]
+  coord <issue> [--product <path>] [--profile <solo|reviewed|consensus>] [--agents <a,b,c>] [-v|--verbose]
   coord manual [--product <path> | --config <path> --coord-runtime <path>]
   coord install --product <path> --coord-runtime <external-path> --agents <a,b,c> [--profile <p>]
                 [--completes-root <path>] [--clone-root <dir>] [--declare <file>] [--github-account <login>] [--base-branch <branch>]
@@ -321,8 +321,9 @@ Usage:
   coord uninstall --coord-runtime <path> --product <path> [--delete-clones] [--force]
                   [--wipe-runtime] [--delete-coordination] [--dry-run]
   coord doctor [--coord-runtime <path>] [--product <path>]
-  coord start <issue> --product <path> [--profile <solo|reviewed|consensus>] [-v|--verbose]
-  coord start <issue> --config <path> --coord-runtime <external-path> [--profile <solo|reviewed|consensus>] [-v|--verbose]
+  coord start <issue> --product <path> [--profile <solo|reviewed|consensus>] [--agents <a,b,c>] [-v|--verbose]
+  coord start <issue> --config <path> --coord-runtime <external-path> [--profile <solo|reviewed|consensus>]
+              [--agents <a,b,c>] [-v|--verbose]
   coord run --issue <issue> [--product <path> | --coord-runtime <path>] [-v|--verbose]
   coord status --issue <issue> [--product <path> | --coord-runtime <path>]
   coord analytics --issue <issue> [--product <path> | --coord-runtime <path>]
@@ -419,6 +420,9 @@ registered agent clone when neither --product nor --coord-runtime is supplied, a
 from --config alone (its directory). Use --coord-runtime to name the runtime
 directory explicitly. Onboard defaults to a coord-runtime directory beside the repository
 and to --agents ${DEFAULT_AGENTS.join(",")}; an explicit --agents list is used exactly.
+On coord <issue> and coord start, --agents runs only the named configured agents, in that
+order (solo takes exactly one); an unconfigured or repeated id is an error. Continuing an
+issue accepts only its original list.
 coord detach manual first checks every clone, then closes manual terminals and returns
 the clones to the base branch; uncommitted or unpushed work refuses it and nothing is
 discarded. In a terminal, coord <issue>/start/attach/run offer to close a leftover manual
@@ -513,6 +517,51 @@ const workspaceUiIdentity = (workspaceRoot: string): WorkspaceUiIdentity => {
 
 const resolvedAgents = (resolution: StartResolution): CoordinatorConfig["agents"] =>
   resolution.config.agents.map((agent) => ({ ...agent, root: resolve(dirname(resolution.configPath), agent.root) }));
+
+/**
+ * An issue's --agents selection: configured agents in the order named, or
+ * null when the flag is absent. Checked before any prompt or effect.
+ */
+const selectedAgents = (resolution: StartResolution, value: string | undefined): CoordinatorConfig["agents"] | null => {
+  if (value === undefined) return null;
+  if (value.trim() === "") throw new Error("--agents requires at least one agent id.");
+  const configured = resolvedAgents(resolution);
+  const selected: CoordinatorConfig["agents"] = [];
+  for (const [index, token] of value.split(",").entries()) {
+    const id = token.trim();
+    if (id === "") throw new Error(`--agents has an empty entry at position ${index + 1} in '${value}'.`);
+    if (selected.some((agent) => agent.id === id)) throw new Error(`--agents lists '${id}' more than once.`);
+    const agent = configured.find((candidate) => candidate.id === id);
+    if (agent === undefined) {
+      throw new Error(
+        `--agents names '${id}', which is not configured in ${resolution.configPath}; ` +
+          `configured agents: ${configured.map((candidate) => candidate.id).join(", ")}.`
+      );
+    }
+    selected.push(agent);
+  }
+  return selected;
+};
+
+/** A fresh solo start runs exactly one agent; refuse rather than drop named ones. */
+const assertSoloSelection = (profile: WorkflowProfile, selection: CoordinatorConfig["agents"] | null): void => {
+  if (profile !== "solo" || selection === null || selection.length === 1) return;
+  throw new Error(
+    `Profile solo runs one agent, but --agents selected ${selection.length} ` +
+      `(${selection.map((agent) => agent.id).join(", ")}). Pass one agent, or use --profile reviewed or --profile consensus.`
+  );
+};
+
+/** Continuing an issue cannot change its frozen roster; replaying the original list is allowed. */
+const assertResumeSelection = (paths: IssueRuntimePaths, issue: number, selection: CoordinatorConfig["agents"]): void => {
+  const saved = readStartStateHeader(paths).originalRoster;
+  const requested = selection.map((agent) => agent.id);
+  if (requested.join(",") === saved.join(",")) return;
+  throw new Error(
+    `Issue ${issue} already started with agents ${saved.join(",")}; --agents ${requested.join(",")} cannot change them. ` +
+      `Run \`coord ${issue}\` to continue it.`
+  );
+};
 
 /** What closing manual mode needs: every configured clone, the base, and the protocol template root. */
 type ManualCleanup = { agents: readonly { id: string; root: string }[]; baseBranch: string; installRoot: string | null };
@@ -1161,10 +1210,16 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
   };
 
-  const startIssue = async (issue: number, resolution: StartResolution): Promise<{ paths: IssueRuntimePaths; loop: CliRunLoop }> => {
+  const startIssue = async (
+    issue: number,
+    resolution: StartResolution,
+    selection: CoordinatorConfig["agents"] | null
+  ): Promise<{ paths: IssueRuntimePaths; loop: CliRunLoop }> => {
     const { configPath, config, profile } = resolution;
+    // Every configured clone still bounds runtime containment and stale UI
+    // cleanup; only the issue roster narrows to an --agents selection.
     const agents = resolvedAgents(resolution);
-    const roster = profile === "solo" ? agents.slice(0, 1) : agents;
+    const roster = selection ?? (profile === "solo" ? agents.slice(0, 1) : agents);
     if (roster.length === 0) throw new Error(`Profile ${profile} requires at least one configured agent.`);
     for (const agent of roster) resolveAgentLauncher(agent);
     const coordRoot = resolveSafeCoordRoot({
@@ -1337,15 +1392,19 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     const parsed = parseArgs(rest, booleanFlags[command] ?? []);
 
     if (/^[0-9]+$/.test(command)) {
-      allowedFlags(parsed, ["product", "profile", "config", "coord-runtime", "verbose"]);
+      allowedFlags(parsed, ["product", "profile", "config", "coord-runtime", "verbose", "agents"]);
       if (parsed.positionals.length !== 0) throw new Error("coord <issue> takes no additional positional arguments.");
       verboseState.enabled = flagIsSet(parsed, "verbose");
       const issue = parseIssue(command);
       const resolution = resolveStart(parsed, io);
-      await assertNoManualSession(resolution.runtimeRoot, manualCleanup(resolution.config, resolution.configPath));
+      const selection = selectedAgents(resolution, parsed.flags.get("agents"));
+      // Selection errors must surface before the manual-session prompt can close anything.
       const existing = existingIssueRuntime(resolution, issue);
+      if (existing !== null && selection !== null) assertResumeSelection(existing, issue, selection);
+      if (existing === null) assertSoloSelection(resolution.profile, selection);
+      await assertNoManualSession(resolution.runtimeRoot, manualCleanup(resolution.config, resolution.configPath));
       if (existing !== null) return await runIssue(existing);
-      const started = await startIssue(issue, resolution);
+      const started = await startIssue(issue, resolution, selection);
       return await runIssue(started.paths, started.loop);
     }
 
@@ -1655,13 +1714,15 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     if (command === "start") {
-      allowedFlags(parsed, ["profile", "config", "coord-runtime", "product", "verbose"]);
+      allowedFlags(parsed, ["profile", "config", "coord-runtime", "product", "verbose", "agents"]);
       if (parsed.positionals.length !== 1) throw new Error("start requires exactly one issue number.");
       verboseState.enabled = flagIsSet(parsed, "verbose");
       const issue = parseIssue(parsed.positionals[0] as string);
       const resolution = resolveStart(parsed, io);
+      const selection = selectedAgents(resolution, parsed.flags.get("agents"));
+      assertSoloSelection(resolution.profile, selection);
       await assertNoManualSession(resolution.runtimeRoot, manualCleanup(resolution.config, resolution.configPath));
-      await startIssue(issue, resolution);
+      await startIssue(issue, resolution, selection);
       return 0;
     }
 

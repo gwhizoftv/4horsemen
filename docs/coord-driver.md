@@ -262,6 +262,25 @@ refetching or rebinding an edited issue. From an unrelated worktree, pass
 `--product /path/to/onboarded/product`; coordination never guesses from a
 machine-global registry.
 
+To run only some of the workspace's configured agents for one issue, name them
+instead of editing `config.json`:
+
+```sh
+coord 42 --agents claude,codex,antigravity
+```
+
+`coord start 42 --agents …` accepts the same list. Without `--agents`, a start
+uses every agent in `config.json` in config order (`--profile solo` uses the
+first). With it, the issue runs exactly the named agents in the order given.
+Every id must already be configured; an unknown, repeated or empty entry is an
+error before anything starts. Solo takes exactly one agent, so
+`--profile solo --agents claude` runs Claude even when it is not first in the
+config, while `--profile solo` with two or more names is refused. The roster
+is frozen into the issue, and the workspace configuration is not changed.
+To continue the issue, run `coord 42` or repeat the original command with the
+same list in the same order. A different list is refused; use
+`coord drop <agent> --issue 42` to remove an active agent.
+
 `--product` takes a filesystem path, not a project nickname. Relative paths are
 resolved from the directory where you invoke `coord`; for example, from a parent
 directory use `--product ./my-product` or an absolute path to that onboarded
