@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
+  gitAuthorSettings,
   gitCredentialResponse,
   gitCredentialHelperCommand,
   verifyGitHubAccess,
@@ -111,13 +112,21 @@ process.stdout.write(JSON.stringify({args: process.argv.slice(2), input: fs.read
         runner: fakeRunner({ token: "tok", api }).runner });
     const ok = { exitCode: 0, stderr: "" };
 
-    await expect(verify((argv) => argv[2] === "user" ? { ...ok, stdout: "Acct\n" } : { ...ok, stdout: "acme/app\n" }))
-      .resolves.toEqual({ account: "acct", login: "Acct", repository: "acme/app" });
+    const profile = { login: "Acct", id: 4242 };
+    const access = await verify((argv) => argv[2] === "user"
+      ? { ...ok, stdout: JSON.stringify(profile) } : { ...ok, stdout: "acme/app\n" });
+    expect(access).toEqual({ account: "acct", login: "Acct", profile, repository: "acme/app" });
+    expect(gitAuthorSettings(access.profile)).toEqual([["user.name", "Acct"], ["user.email", "4242+Acct@users.noreply.github.com"]]);
+    for (const id of [undefined, 0, 1.1, Number.MAX_SAFE_INTEGER + 1]) {
+      await expect(verify(() => ({ ...ok, stdout: JSON.stringify({ login: "acct", id }) }))).rejects.toThrow("numeric user ID");
+    }
     await expect(verify(() => ({ exitCode: 1, stdout: "", stderr: "HTTP 401: Bad credentials (https://api.github.com/user)" })))
       .rejects.toThrow("GitHub authentication for acct has expired or been revoked.\nRun: coord auth login");
-    await expect(verify(() => ({ ...ok, stdout: "someone-else\n" })))
+    await expect(verify(() => ({ ...ok, stdout: JSON.stringify({ login: "someone-else", id: null }) })))
       .rejects.toThrow("The saved GitHub credential for acct authenticates as someone-else.\nRun: coord auth login");
-    await expect(verify((argv) => argv[2] === "user" ? { ...ok, stdout: "acct\n" } : { exitCode: 1, stdout: "", stderr: "HTTP 404: Not Found" }))
+    await expect(verify(() => ({ ...ok, stdout: JSON.stringify({ login: "", id: null }) })))
+      .rejects.toThrow("The saved GitHub credential for acct authenticates as an unknown user.\nRun: coord auth login");
+    await expect(verify((argv) => argv[2] === "user" ? { ...ok, stdout: JSON.stringify(profile) } : { exitCode: 1, stdout: "", stderr: "HTTP 404: Not Found" }))
       .rejects.toThrow("GitHub account acct cannot access acme/app: HTTP 404: Not Found.");
     await expect(verifyGitHubAccess({ account: "acct", origin: "git@github.com:acme/app.git", cwd: "/work",
       runner: fakeRunner({ token: "tok" }).runner })).rejects.toThrow("needs an https://github.com/");

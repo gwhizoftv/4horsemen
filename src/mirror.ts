@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { constants, copyFileSync, existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { gitShaSchema, repositoryPathSchema } from "./protocol.js";
 import { validatePhasePin, type PinValidationResult } from "./pinValidation.js";
-import { explainGitHubAuthFailure, gitCredentialArgs } from "./githubAuth.js";
+import { explainGitHubAuthFailure, gitCredentialArgs, AUTHOR_KEYS, AUTHOR_RECEIPT_KEY, gitAuthorSettings, gitAuthorEdits, type GitHubProfile } from "./githubAuth.js";
 
 export type CommandResult = { exitCode: number; stdout: Buffer; stderr: string };
 export type GitRunner = (
@@ -86,6 +87,8 @@ const branchPattern = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 export type FetchResult = { ok: true; ref: string; tip: string } | { ok: false; transient: boolean; error: string };
 
 export class BareMirror {
+  private issueProfile?: GitHubProfile;
+
   /**
    * `auth` binds every mirror Git call to a workspace's GitHub account (#227)
    * through one-shot `-c` helper settings, so an existing mirror needs no
@@ -95,8 +98,10 @@ export class BareMirror {
     readonly path: string,
     readonly origin: string,
     private readonly runner: GitRunner = runGitCommand,
-    private readonly auth: { account: string; cliEntry: string } | null = null
-  ) {}
+    private readonly auth: { account: string; cliEntry: string; profile?: GitHubProfile } | null = null
+  ) {
+    this.issueProfile = auth?.profile;
+  }
 
   private async git(args: readonly string[], allowFailure = false): Promise<CommandResult> {
     const authArgs = this.auth === null ? [] : gitCredentialArgs(this.auth.account, this.auth.cliEntry);
@@ -110,7 +115,16 @@ export class BareMirror {
     return result;
   }
 
-  async initialize(): Promise<void> {
+  private async configValue(args: string[]): Promise<string | null> {
+    const result = await this.git(["config", ...args], true);
+    if (result.exitCode === 1) return null;
+    if (result.exitCode !== 0) throw new GitCommandError(`Cannot read Git config: ${result.stderr}`, result, false);
+    return result.stdout.toString("utf8").replace(/\n$/, "");
+  }
+
+  /** Undefined keeps existing workspace defaults; null restores ambient attribution. */
+  async initialize(profile?: GitHubProfile | null): Promise<void> {
+    this.issueProfile = this.auth?.profile ?? profile ?? undefined;
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     if (!existsSync(this.path)) {
       const initialized = await this.runner(["init", "--bare", this.path]);
@@ -118,11 +132,21 @@ export class BareMirror {
         throw new GitCommandError(`cannot initialize bare mirror: ${initialized.stderr}`, initialized, false);
       }
       await this.git(["remote", "add", "origin", this.origin]);
-      return;
+    } else {
+      const remote = await this.git(["remote", "get-url", "origin"], true);
+      if (remote.exitCode !== 0) await this.git(["remote", "add", "origin", this.origin]);
+      else if (remote.stdout.toString("utf8").trim() !== this.origin) await this.git(["remote", "set-url", "origin", this.origin]);
     }
-    const remote = await this.git(["remote", "get-url", "origin"], true);
-    if (remote.exitCode !== 0) await this.git(["remote", "add", "origin", this.origin]);
-    else if (remote.stdout.toString("utf8").trim() !== this.origin) await this.git(["remote", "set-url", "origin", this.origin]);
+    if (profile !== undefined) {
+      const saved = await this.configValue(["--local", "--get", AUTHOR_RECEIPT_KEY]);
+      if (!profile && !saved) return;
+      const current = new Map<string, string | null>([[AUTHOR_RECEIPT_KEY, saved]]);
+      for (const key of AUTHOR_KEYS) current.set(key, await this.configValue(["--local", "--get", key]));
+      for (const [key, value] of gitAuthorEdits(profile ?? undefined, current)) {
+        if (value === null) await this.git(["config", "--local", "--unset-all", key]);
+        else await this.git(["config", "--local", key, value]);
+      }
+    }
   }
 
   async fetchBranch(branch: string): Promise<FetchResult> {
@@ -191,9 +215,60 @@ export class BareMirror {
     return validatePhasePin({ root: this.path, ...params });
   }
 
+  private async enableWorktreeConfig(): Promise<void> {
+    // Git applies core.bare to every checkout once the extension is enabled.
+    // Stage the common config under Git's normal writer lock so other readers
+    // see the original or the migrated config, including all unrelated keys.
+    const config = join(this.path, "config");
+    const lock = `${config}.lock`;
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      // A competing issue can finish the migration while we wait for Git's lock.
+      if (await this.configValue(["--local", "--bool", "--get", "extensions.worktreeConfig"]) === "true") return;
+      try {
+        copyFileSync(config, lock, constants.COPYFILE_EXCL);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST" || Date.now() >= deadline) throw error;
+        await delay(20);
+      }
+    }
+    try {
+      for (const key of ["core.bare", "core.worktree"]) {
+        const value = await this.configValue(["--file", lock, "--get", key]);
+        if (value === null) continue;
+        await this.git(["config", "--file", join(this.path, "config.worktree"), key, value]);
+        await this.git(["config", "--file", lock, "--unset-all", key]);
+      }
+      const version = await this.configValue(["--file", lock, "--int", "--get", "core.repositoryformatversion"]);
+      if (version === null || version === "0") {
+        await this.git(["config", "--file", lock, "core.repositoryformatversion", "1"]);
+      }
+      await this.git(["config", "--file", lock, "extensions.worktreeConfig", "true"]);
+      renameSync(lock, config);
+    } catch (error) {
+      rmSync(lock, { force: true });
+      throw error;
+    }
+  }
+
   async materializeWorktree(target: string, sha: string): Promise<void> {
     gitShaSchema.parse(sha);
+    const profile = this.auth ? this.issueProfile : undefined;
+    if (profile) await this.enableWorktreeConfig();
     await this.git(["worktree", "add", "--detach", target, sha]);
+    if (!profile) return;
+    try {
+      // This issue keeps its verified author if onboarding later changes the
+      // workspace defaults shared by linked worktrees.
+      for (const [key, value] of gitAuthorSettings(profile)) {
+        const result = await this.runner(["-C", target, "config", "--worktree", key, value]);
+        if (result.exitCode !== 0) throw new GitCommandError(`Cannot configure ${key}: ${result.stderr}`, result, false);
+      }
+    } catch (error) {
+      await this.removeWorktree(target);
+      throw error;
+    }
   }
 
   async removeWorktree(target: string): Promise<void> {

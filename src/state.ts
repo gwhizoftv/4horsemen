@@ -29,7 +29,7 @@ import {
   issueSessionIdSchema,
   repositoryPathSchema
 } from "./protocol.js";
-import { githubLoginSchema } from "./githubAuth.js";
+import { githubLoginSchema, githubProfileSchema } from "./githubAuth.js";
 import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.js";
 import { resourceEvidenceSchema } from "./resourceEvidence.js";
 import {
@@ -313,10 +313,12 @@ export const coordinatorConfigSchema = z
     completesRoot: z.string().min(1).optional(),
     /**
      * The GitHub account this workspace's git and gh operations use (#227).
-     * Only the name: its token stays in gh's credential storage. Absent means
+     * The optional public profile supplies the Git author. Absent selection means
      * ambient gh/git credentials, exactly as before the selection existed.
      */
-    github: z.object({ account: githubLoginSchema }).strict().optional(),
+    github: z.object({ account: githubLoginSchema, profile: githubProfileSchema.optional() }).strict()
+      .refine(({ account, profile }) => !profile || profile.login.toLowerCase() === account.toLowerCase(),
+        "GitHub author profile must match the selected account").optional(),
     coordination: installStampSchema.optional()
   })
   .strict()
@@ -446,6 +448,7 @@ export const startStateSchema = z
     origin: z.string().min(1),
     /** Frozen like origin: resume, attach and the run loop keep the account the issue started with. */
     githubAccount: githubLoginSchema.optional(),
+    githubProfile: githubProfileSchema.optional(),
     coordRoot: z.string().min(1),
     /**
      * Where this issue's receipts live, frozen for the issue session.
@@ -485,7 +488,9 @@ export const startStateSchema = z
     contextPaths: z.array(z.string().min(1)).default([]),
     createdAt: timestampSchema
   })
-  .strict();
+  .strict()
+  .refine(({ githubProfile, githubAccount }) => !githubProfile || githubProfile.login.toLowerCase() === githubAccount?.toLowerCase(),
+    "GitHub author profile must match the frozen account");
 
 export const startStateHeaderSchema = z.object({
   formatVersion: z.union([z.literal(2), z.literal(3), z.literal(RUNTIME_FORMAT_VERSION)]),

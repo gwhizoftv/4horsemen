@@ -25,6 +25,7 @@ import {
 
 const fixtures: ProductFixture[] = [];
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const fixture of fixtures.splice(0)) fixture.cleanup();
 });
 
@@ -397,12 +398,24 @@ describe("coord install — two-mode footprint", () => {
   it("binds clones to a selected GitHub account without storing a token, keeps it on reinstall, and removes it on uninstall", () => {
     const fixture = product();
     const origin = "https://acct@github.com/example/myserver.git";
+    const bin = join(fixture.workspaceRoot, "fake-gh");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "gh"), [
+      "#!/bin/sh",
+      'if [ "$1 $2" = "auth token" ] && [ "$6" = acct ] && [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then echo selected-token',
+      'elif [ "$1 $2" = "api user" ] && [ "$GH_TOKEN" = selected-token ]; then echo \'{"login":"Acct","id":42}\'',
+      "else exit 2; fi", ""
+    ].join("\n"), { mode: 0o755 });
+    vi.stubEnv("PATH", `${bin}${delimiter}${process.env.PATH}`);
+    vi.stubEnv("GH_TOKEN", "unrelated-token");
     const helper = "credential.https://github.com.helper";
     const coordHelper = `!'${join(repoRoot, "scripts/lib/node-runtime.sh")}' --fallback-node '${process.execPath}' '${join(repoRoot, "dist", "main.js")}' auth git-credential --account acct`;
     const helpers = () => tryGit(clone, "config", "--local", "--get-all", helper).stdout.split("\n").slice(0, -1);
     const result = installOnce(fixture, { origin, githubAccount: "acct" });
     const clone = result.clones[0] as string;
-    expect(readConfig(result.configPath).github).toEqual({ account: "acct" });
+    expect(readConfig(result.configPath).github).toEqual({ account: "acct", profile: { login: "Acct", id: 42 } });
+    expect(git(clone, "config", "--local", "user.name")).toBe("Acct");
+    expect(git(clone, "config", "--local", "user.email")).toBe("42+Acct@users.noreply.github.com");
     expect(git(clone, "config", "--local", "--get", "coord.githubAccount")).toBe("acct");
     expect(helpers()).toEqual(["", coordHelper]);
     expect(cloneGitHubWiringProblem(clone, "acct")).toBeNull();
@@ -410,27 +423,41 @@ describe("coord install — two-mode footprint", () => {
     expect(launcher).toContain('gh auth token --hostname github.com --user "$coord_github_account"');
     expect(launcher).not.toMatch(/GH_TOKEN=["']?[A-Za-z0-9_]{8,}/);
 
+    // The saved profile suffices for direct repairs even when gh is unavailable.
+    writeFileSync(join(bin, "gh"), "#!/bin/sh\nexit 1\n");
     // A repair run without the option keeps the selection (dry run: no fetch from github.com).
     expect(installOnce(fixture, { origin, dryRun: true }).changes).toEqual([]);
 
     // An owner's own helper survives a real repair (fetch redirected to the local origin) and
     // stays ahead of coord's reset; a later reset would defeat coord's helper and is reported.
+    const mirror = join(fixture.coordRoot, "mirror.git");
+    git(fixture.coordRoot, "init", "--bare", mirror);
+    git(clone, "config", "--local", "user.name", "Stale");
+    expect(installOnce(fixture, { origin, dryRun: true }).changes.length).toBeGreaterThan(0);
+    expect(git(clone, "config", "--local", "user.name")).toBe("Stale");
+    expect(tryGit(mirror, "config", "--local", "--get", "user.name").exitCode).toBe(1);
     git(clone, "config", `url.${fixture.originPath}.insteadOf`, origin);
     git(clone, "config", "--local", "--add", helper, "cache --timeout=42");
     installOnce(fixture, { origin });
+    expect(git(clone, "config", "--local", "user.name")).toBe("Acct");
+    expect(git(mirror, "config", "--local", "user.email")).toBe("42+Acct@users.noreply.github.com");
     expect(helpers()).toEqual(["cache --timeout=42", "", coordHelper]);
     expect(installOnce(fixture, { origin }).changes).toEqual([]);
     git(clone, "config", "--local", "--add", helper, "");
     expect(cloneGitHubWiringProblem(clone, "acct")).toMatch(/no effective GitHub credential helper/);
 
+    git(clone, "config", "--local", "user.name", "Owner edit");
     uninstallOnce(fixture);
+    expect(git(clone, "config", "--local", "user.name")).toBe("Owner edit");
+    expect(tryGit(clone, "config", "--local", "--get", "user.email").exitCode).toBe(1);
+    expect(tryGit(mirror, "config", "--local", "--get", "user.email").exitCode).toBe(1);
     expect(tryGit(clone, "config", "--local", "--get", "coord.githubAccount").exitCode).not.toBe(0);
     expect(helpers()).toEqual(["cache --timeout=42", ""]);
   });
 
   it("launches an agent with the selected account's token only after GitHub accepts it", () => {
     const fixture = product();
-    const clone = installOnce(fixture, { origin: "https://github.com/example/myserver.git", githubAccount: "acct" }).clones[0] as string;
+    const clone = installOnce(fixture, { origin: "https://github.com/example/myserver.git", githubAccount: "acct", githubProfile: { login: "acct", id: 42 } }).clones[0] as string;
     const bin = join(fixture.workspaceRoot, "fake-bin");
     mkdirSync(bin);
     symlinkSync(process.execPath, join(bin, "node"));
@@ -481,9 +508,14 @@ describe("coord install — idempotence", () => {
     const fixture = product();
     const first = installOnce(fixture);
     expect(first.changes.length).toBeGreaterThan(0);
+    const clone = first.clones[0]!;
+    git(clone, "config", "--local", "user.name", "Owner");
+    git(clone, "config", "--local", "user.email", "owner@example.com");
 
     const second = installOnce(fixture);
     expect(second.changes).toEqual([]);
+    expect(git(clone, "config", "--local", "user.name")).toBe("Owner");
+    expect(git(clone, "config", "--local", "user.email")).toBe("owner@example.com");
   });
 
   it("dry-run reports work without performing it", () => {

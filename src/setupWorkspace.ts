@@ -17,6 +17,10 @@ import {
   GITHUB_ACCOUNT_KEY,
   GITHUB_CREDENTIAL_HELPER_KEY,
   GITHUB_CREDENTIAL_HELPER_MARKER,
+  AUTHOR_KEYS,
+  AUTHOR_RECEIPT_KEY,
+  gitAuthorEdits,
+  type GitHubProfile,
   gitCredentialArgs,
   gitCredentialHelperCommand
 } from "./githubAuth.js";
@@ -192,6 +196,7 @@ export type WorkspaceConfigInput = {
   completesRoot: string;
   /** Selected GitHub account name; absent or null for ambient credentials. */
   githubAccount?: string | null;
+  githubProfile?: GitHubProfile;
 };
 
 /**
@@ -237,7 +242,7 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     workflowCriticalPrefixes: declared.workflowCriticalPrefixes ?? input.proposal.workflowCriticalPrefixes,
     workflowCriticalFiles: declared.workflowCriticalFiles ?? input.proposal.workflowCriticalFiles,
     completesRoot: input.completesRoot,
-    ...(input.githubAccount === null || input.githubAccount === undefined ? {} : { github: { account: input.githubAccount } }),
+    ...(input.githubAccount == null ? {} : { github: { account: input.githubAccount, profile: input.githubProfile } }),
     coordination: stamp
   });
 };
@@ -618,6 +623,7 @@ export type CloneIdentity = {
   completesRoot: string;
   /** Selected GitHub account the launcher exports GH_TOKEN for; null for ambient credentials. */
   githubAccount: string | null;
+  githubProfile?: GitHubProfile;
 };
 
 /**
@@ -642,7 +648,42 @@ const IDENTITY_KEYS: readonly string[] = [
   GITHUB_ACCOUNT_KEY
 ];
 
+export const configureGitAuthor = (
+  repo: string, profile: GitHubProfile | undefined, options: EffectOptions, scope: "--local" | "--worktree" = "--local"
+): void => {
+  const get = (key: string): string | null => {
+    const read = git(repo, "config", scope, "--get", key);
+    if (read.exitCode === 1) return null;
+    if (read.exitCode !== 0) throw new Error(`Cannot read ${key} in ${repo}: ${read.stderr.trim()}`);
+    return read.stdout.replace(/\n$/, "");
+  };
+  const saved = get(AUTHOR_RECEIPT_KEY);
+  if (!profile && !saved) return;
+  const current = new Map<string, string | null>([[AUTHOR_RECEIPT_KEY, saved]]);
+  for (const key of AUTHOR_KEYS) current.set(key, get(key));
+  const changes = gitAuthorEdits(profile, current);
+  if (changes.length) act(options, `update Git author in ${repo}`, () => {
+    for (const [key, value] of changes) {
+      if (value === null) gitOrThrow(repo, "config", scope, "--unset-all", key);
+      else gitOrThrow(repo, "config", scope, key, value);
+    }
+  });
+};
+
+const configureCloneAuthor = (clone: string, profile: GitHubProfile | undefined, options: EffectOptions): void => {
+  const privateConfig = git(clone, "config", "--local", "--bool", "--get", "extensions.worktreeConfig");
+  if (privateConfig.exitCode !== 0 && privateConfig.exitCode !== 1) throw new Error(`Cannot read worktree configuration in ${clone}: ${privateConfig.stderr.trim()}`);
+  if (privateConfig.stdout.trim() === "true") {
+    configureGitAuthor(clone, profile, options, "--worktree");
+    // The owner may have enabled per-worktree configuration after the original install.
+    configureGitAuthor(clone, undefined, options);
+  } else {
+    configureGitAuthor(clone, profile, options);
+  }
+};
+
 export const configureCloneIdentity = (clone: string, identity: CloneIdentity, options: EffectOptions): void => {
+  if (identity.githubProfile || identity.githubAccount === null) configureCloneAuthor(clone, identity.githubProfile, options);
   const desired: Array<[string, string | null]> = [
     ["consensus.agentId", identity.agent],
     ["consensus.agentLabel", identity.label],
@@ -670,6 +711,7 @@ export const configureCloneIdentity = (clone: string, identity: CloneIdentity, o
 };
 
 export const clearCloneIdentity = (clone: string, options: EffectOptions): void => {
+  configureCloneAuthor(clone, undefined, options);
   const present = IDENTITY_KEYS.filter((key) => localConfigGet(clone, key) !== null);
   if (present.length === 0) return;
   act(options, `clear ${present.join(", ")} in ${clone}`, () => {
