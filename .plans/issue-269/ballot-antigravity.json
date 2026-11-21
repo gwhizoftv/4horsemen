@@ -1,0 +1,46 @@
+{
+  "actionId": "96eb2fff-d993-46ea-b34d-96dba1a704c8",
+  "agent": "antigravity",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "eb0900fa56ea1fc31f8d6ebb3b56d2ae041e3c519959442dd22b205b7cf5ef16",
+  "issue": 269,
+  "issueSessionId": "issue-269:be694aa9f3190cc55b370d42c581d110ac8d45ce",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "c308aacb18113fd52084f8fb64c19d0161c99c61",
+      "path": ".plans/issue-269/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "6367a41864df4fd1fbbcce0879939d74abdaa87e",
+      "path": ".plans/issue-269/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "f4882fc2ecab6914dd53937b877e8ca29ddb8a5a",
+      "path": ".plans/issue-269/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex is the only plan whose file map covers both agent clones and coordinator-created mirror worktrees with a working bare-mirror config mechanism, canonical login casing, and real-commit tests without breaking linked worktrees (as antigravity's extensions.worktreeConfig on a bare mirror does) or omitting mirror worktrees (as claude does).",
+  "responseSha256": "5df5f8efc827888bcaf1d076594bbc1a8087fab9444ccc63417408805d117bb4",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "8ec037ba537040f6851f6976b5ed360e59b2cb97",
+      "path": ".plans/issue-269/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "e60bc2acdf7e4f4d8f8dd1801547d5353ab55305",
+      "path": ".plans/issue-269/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "47cbaefdc3a38fab94cbb047187e7db78972c501",
+      "path": ".plans/issue-269/review.md"
+    }
+  ]
+}
