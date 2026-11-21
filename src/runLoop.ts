@@ -120,7 +120,7 @@ import { finalRetryMessage, currentScrollbackWait, holdRecoveryCommand, holdDesc
 import { inspectStartupAgent } from "./doctor.js";
 import { assessFollowUpIssue, followUpKey, formatFinalizationPullRequest, githubRepositoryFromOrigin, readGitHubIssueSnapshot } from "./githubIssue.js";
 import { prepareAgentIssueBranches } from "./prepareAgentBranch.js";
-import { coordCliEntry, withGitHubAccount } from "./githubAuth.js";
+import { coordCliEntry, gitAuthorForProfile, withGitHubAccount, type GitAuthor } from "./githubAuth.js";
 import { harnessPromptReadiness, paneActivityDigest, paneHasBusyIndicator, renderNudgeText, TmuxController, type OwnerReminderOutcome } from "./tmux.js";
 import { sha256, sha256OfFile } from "./hash.js";
 
@@ -1153,9 +1153,19 @@ export class CoordinatorRunLoop {
     // clones that were never installed against it, adding an untracked
     // AGENTS.md that an agent's `git add -A` then sweeps into its commit.
     let installRoot: string | null = null;
+    // The commit author for coordinator-created worktrees (#269): the saved
+    // profile, only while it belongs to the account frozen for this issue.
+    // An older or unreadable config leaves the mirror's author as it is.
+    let mirrorAuthor: GitAuthor | null = null;
     if (existsSync(start.configPath)) {
       try {
-        installRoot = readConfig(start.configPath).coordination?.installRoot ?? null;
+        const config = readConfig(start.configPath);
+        installRoot = config.coordination?.installRoot ?? null;
+        const github = config.github;
+        if (github?.profile !== undefined && start.githubAccount !== undefined &&
+            github.account.toLowerCase() === start.githubAccount.toLowerCase()) {
+          mirrorAuthor = gitAuthorForProfile(github.profile);
+        }
       } catch (error) {
         this.log(
           `could not read ${start.configPath} for the install root ` +
@@ -1174,7 +1184,7 @@ export class CoordinatorRunLoop {
       log: (message) => this.log(message.trimEnd())
     });
     this.authority(authority);
-    await this.mirror.initialize();
+    await this.mirror.initialize(mirrorAuthor);
     this.authority(authority);
     await this.restoreTerminals();
     this.authority(authority);

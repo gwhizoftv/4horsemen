@@ -23,6 +23,7 @@ import {
 } from "./hookSync.js";
 import {
   assertMailboxClaim,
+  containedPath,
   defaultCompletesRoot,
   isPathInside,
   resolveSafeCompletesRoot,
@@ -40,6 +41,7 @@ import {
   clearCloneIdentity,
   cloneIsDirty,
   configureCloneIdentity,
+  configureRepositoryAuthor,
   effectOptions,
   ensureAgentClone,
   productName,
@@ -59,7 +61,14 @@ import {
   type WorkspaceDeclaration
 } from "./state.js";
 import { agentIdSchema } from "./protocol.js";
-import { githubLoginSchema, requireHttpsGitHubOrigin } from "./githubAuth.js";
+import {
+  gitAuthorForProfile,
+  githubLoginSchema,
+  githubProfileSchema,
+  readGitHubProfileSync,
+  requireHttpsGitHubOrigin,
+  type GitHubProfile
+} from "./githubAuth.js";
 import {
   clearOwnerWorkspace,
   flatConfigPath,
@@ -123,6 +132,13 @@ export type InstallOptions = {
    * the account the existing workspace config already selects, if any.
    */
   githubAccount?: string;
+  /**
+   * The effective account's verified profile (the CLI's `verifyGitHubAccess`
+   * result), from which commit authorship derives. Omitted: a matching saved
+   * profile is reused; otherwise a real run looks it up once and a dry run
+   * defers it.
+   */
+  githubProfile?: GitHubProfile;
 };
 
 export type InstallResult = {
@@ -313,6 +329,37 @@ const logProjectPolicy = (
   options.log(`${lines.join("\n")}\n`);
 };
 
+/**
+ * The selected account's profile for commit authorship (#269): supplied and
+ * verified by the caller, else a saved profile of the same account, else one
+ * lookup on a real run. A dry run never contacts GitHub and never guesses.
+ */
+const resolveInstallGitHubProfile = (input: {
+  account: string | null;
+  supplied: GitHubProfile | undefined;
+  saved: { account: string; profile?: GitHubProfile | undefined } | undefined;
+  dryRun: boolean;
+  cwd: string;
+  effects: EffectOptions;
+}): GitHubProfile | null => {
+  if (input.account === null) {
+    if (input.supplied !== undefined) throw new Error("A GitHub profile was supplied without a selected GitHub account.");
+    return null;
+  }
+  const account = input.account.toLowerCase();
+  if (input.supplied !== undefined) {
+    const supplied = githubProfileSchema.parse(input.supplied);
+    if (supplied.login.toLowerCase() !== account) {
+      throw new Error(`GitHub profile ${supplied.login} does not belong to the selected account ${input.account}.`);
+    }
+    return supplied;
+  }
+  if (input.saved?.profile !== undefined && input.saved.account.toLowerCase() === account) return input.saved.profile;
+  if (!input.dryRun) return readGitHubProfileSync(input.account, input.cwd);
+  input.effects.log(`would resolve the commit author for GitHub account ${input.account} (a dry run does not contact GitHub)\n`);
+  return null;
+};
+
 export const install = (options: InstallOptions): InstallResult => {
   const effects = effectOptions(options.log, options.dryRun);
   const installRoot = requireWorktree(resolve(options.installRoot), "The coordination install root");
@@ -369,12 +416,17 @@ export const install = (options: InstallOptions): InstallResult => {
   }
   // Before any clone is created or fetched: the clone must already authenticate
   // as the selected account, and an origin the helper cannot cover is refused.
-  const githubAccount = options.githubAccount ?? readPreviousConfig(workspace.configPath)?.github?.account ?? null;
+  const savedGitHub = readPreviousConfig(workspace.configPath)?.github;
+  const githubAccount = options.githubAccount ?? savedGitHub?.account ?? null;
   if (githubAccount !== null) {
     const parsedAccount = githubLoginSchema.safeParse(githubAccount);
     if (!parsedAccount.success) throw new Error(`Invalid GitHub account '${githubAccount}': ${parsedAccount.error.issues[0]?.message ?? "invalid"}.`);
     requireHttpsGitHubOrigin(githubAccount, origin);
   }
+  const githubProfile = resolveInstallGitHubProfile({
+    account: githubAccount, supplied: options.githubProfile, saved: savedGitHub, dryRun: options.dryRun, cwd: productRoot, effects
+  });
+  const gitAuthor = githubProfile === null ? null : gitAuthorForProfile(githubProfile);
   const baseBranch = options.baseBranch ?? "main";
   const validBranch = git(productRoot, "check-ref-format", "--branch", baseBranch);
   if (validBranch.exitCode !== 0 || validBranch.stdout.trim() !== baseBranch) {
@@ -447,7 +499,8 @@ export const install = (options: InstallOptions): InstallResult => {
       saved: previous,
       proposal,
       completesRoot,
-      githubAccount
+      githubAccount,
+      githubProfile
     },
     // A re-install must not look like a change just because time passed — but
     // only the timestamp may be carried over. Comparing three fields let a run
@@ -467,6 +520,18 @@ export const install = (options: InstallOptions): InstallResult => {
   logProjectPolicy(config, explicit, effects);
   effects.log(`Build and test settings (${options.checkSettings ? "selected" : explicit ? "declared" : previous ? "saved" : "detected"}): ${configPath}\n`);
   if (config.checks.length === 0 && (config.verify?.precommit.length ?? 0) === 0 && (config.verify?.prepush.length ?? 0) === 0) effects.log(`${NO_CHECKS}\n`);
+
+  // An existing workspace mirror backs every coordinator-created worktree; the
+  // runtime creates it on first start, so only a mirror already present is repaired.
+  if (gitAuthor !== null) {
+    const mirror = containedPath(workspace.workspaceRoot, "mirror.git");
+    if (existsSync(mirror)) {
+      if (git(mirror, "rev-parse", "--is-bare-repository").stdout.trim() !== "true") {
+        throw new Error(`${mirror} exists but is not a bare Git repository; move it aside so coord start can recreate the mirror.`);
+      }
+      configureRepositoryAuthor(mirror, gitAuthor, effects);
+    }
+  }
 
   // ---- steps 2-5: per-agent clone wiring ----------------------------------
   const clones: string[] = [];
@@ -504,7 +569,8 @@ export const install = (options: InstallOptions): InstallResult => {
         cliEntry,
         workspaceConfig: configPath,
         completesRoot,
-        githubAccount
+        githubAccount,
+        gitAuthor
       },
       effects
     );
@@ -890,6 +956,7 @@ export type OnboardOptions = {
   log: Logger;
   home?: string | null;
   githubAccount?: string;
+  githubProfile?: GitHubProfile;
   baseBranch?: string;
 };
 
@@ -947,7 +1014,8 @@ export const onboard = (options: OnboardOptions): OnboardResult => {
     dryRun: false,
     log: options.log,
     ...(options.home === undefined ? {} : { home: options.home }),
-    ...(options.githubAccount === undefined ? {} : { githubAccount: options.githubAccount })
+    ...(options.githubAccount === undefined ? {} : { githubAccount: options.githubAccount }),
+    ...(options.githubProfile === undefined ? {} : { githubProfile: options.githubProfile })
   });
   const report = doctor({ coordRoot, productRoot, ...(options.home === undefined ? {} : { home: options.home }) });
   if (report.exitCode === 0) {

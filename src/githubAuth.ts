@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -130,7 +131,78 @@ export const requireHttpsGitHubOrigin = (account: string, origin: string): strin
   return repository;
 };
 
-export type GitHubAccess = { account: string; login: string; repository: string };
+/**
+ * The public identity GitHub reports for the authenticated account: its
+ * canonical login and numeric id. Saved in the workspace config so a repair or
+ * a later mirror can derive the same commit author without another lookup.
+ */
+export const githubProfileSchema = z
+  .object({ login: githubLoginSchema, id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) })
+  .strict();
+export type GitHubProfile = z.infer<typeof githubProfileSchema>;
+
+export type GitAuthor = { name: string; email: string };
+
+/**
+ * Git's author for a profile. GitHub links a commit to an account by the email
+ * in its header; the id-based noreply address always belongs to the account
+ * and never exposes a private address.
+ */
+export const gitAuthorForProfile = (profile: GitHubProfile): GitAuthor => ({
+  name: profile.login,
+  email: `${profile.id}+${profile.login}@users.noreply.github.com`
+});
+
+/** The `gh api user` request, reduced to the two public fields coord keeps. */
+export const GITHUB_PROFILE_REQUEST = ["gh", "api", "user", "--jq", "{login,id}"] as const;
+
+/** Validate `gh api user` output as the selected account's profile. */
+export const parseGitHubProfile = (account: string, stdout: string): GitHubProfile => {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stdout) as unknown;
+  } catch {
+    raw = undefined;
+  }
+  const login = typeof raw === "object" && raw !== null && typeof (raw as { login?: unknown }).login === "string"
+    ? (raw as { login: string }).login
+    : "";
+  if (login.toLowerCase() !== account.toLowerCase()) {
+    throw new GitHubAuthError(
+      `The saved GitHub credential for ${account} authenticates as ${login === "" ? "an unknown user" : login}.\n` +
+        "Run: coord auth login"
+    );
+  }
+  const parsed = githubProfileSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new GitHubAuthError(`Cannot verify GitHub account ${account}: GitHub returned no numeric user id.`);
+  }
+  return parsed.data;
+};
+
+/**
+ * Synchronous profile lookup for a direct `install` call made without a
+ * CLI-verified profile. Same token source and ambient-token scrubbing as
+ * `withGitHubAccount`, and the same validation as `verifyGitHubAccess`.
+ */
+export const readGitHubProfileSync = (account: string, cwd: string): GitHubProfile => {
+  const run = (argv: readonly string[], env: NodeJS.ProcessEnv) =>
+    spawnSync(argv[0] as string, argv.slice(1), { cwd, env, encoding: "utf8", timeout: TOKEN_LOOKUP_TIMEOUT_MS });
+  const tokenResult = run(["gh", "auth", "token", "--hostname", GITHUB_HOST, "--user", account], withoutAmbientTokens());
+  const token = (tokenResult.stdout ?? "").trim();
+  if (tokenResult.error !== undefined || tokenResult.status !== 0 || token === "" || /\s/.test(token)) {
+    throw new GitHubAuthError(authUnavailableMessage(account));
+  }
+  const user = run(GITHUB_PROFILE_REQUEST, { ...withoutAmbientTokens(), GH_TOKEN: token, GH_PROMPT_DISABLED: "1" });
+  if (user.error !== undefined || user.status !== 0) {
+    const output = `${user.stderr ?? ""}\n${user.stdout ?? ""}`;
+    if (isGitHubAuthFailure(output)) throw new GitHubAuthError(authExpiredMessage(account));
+    throw new GitHubAuthError(`Cannot verify GitHub account ${account}: ${output.trim().split("\n")[0] || "gh failed"}`);
+  }
+  return parseGitHubProfile(account, user.stdout);
+};
+
+export type GitHubAccess = { account: string; login: string; profile: GitHubProfile; repository: string };
 
 /** The saved credential signs in as the account and can reach the repository. */
 export const verifyGitHubAccess = async (input: {
@@ -144,18 +216,13 @@ export const verifyGitHubAccess = async (input: {
   const detail = (result: { stdout: string; stderr: string; exitCode: number }): string =>
     result.stderr.trim().split("\n")[0] || result.stdout.trim() || `gh exited ${result.exitCode}`;
 
-  const user = await gh(["gh", "api", "user", "--jq", ".login"], input.cwd);
+  const user = await gh([...GITHUB_PROFILE_REQUEST], input.cwd);
   if (user.exitCode !== 0) {
     if (isGitHubAuthFailure(`${user.stderr}\n${user.stdout}`)) throw new GitHubAuthError(authExpiredMessage(input.account));
     throw new GitHubAuthError(`Cannot verify GitHub account ${input.account}: ${detail(user)}`);
   }
-  const login = user.stdout.trim();
-  if (login.toLowerCase() !== input.account.toLowerCase()) {
-    throw new GitHubAuthError(
-      `The saved GitHub credential for ${input.account} authenticates as ${login === "" ? "an unknown user" : login}.\n` +
-        "Run: coord auth login"
-    );
-  }
+  const profile = parseGitHubProfile(input.account, user.stdout);
+  const login = profile.login;
   const repo = await gh(["gh", "api", `repos/${repository}`, "--jq", ".full_name"], input.cwd);
   if (repo.exitCode !== 0) {
     if (isGitHubAuthFailure(`${repo.stderr}\n${repo.stdout}`)) throw new GitHubAuthError(authExpiredMessage(input.account));
@@ -164,7 +231,7 @@ export const verifyGitHubAccess = async (input: {
         "Grant that account access, or select another account with coord onboard <repository> --github-account <name>."
     );
   }
-  return { account: input.account, login, repository };
+  return { account: input.account, login, profile, repository };
 };
 
 /**

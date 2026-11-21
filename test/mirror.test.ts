@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { BareMirror, isTransientGitFailure } from "../src/mirror.js";
+import { BareMirror, hermeticGitEnv, isTransientGitFailure } from "../src/mirror.js";
 import { assertNoSymlink, resolveSafeCoordRoot } from "../src/paths.js";
 
 const roots: string[] = [];
@@ -72,6 +72,35 @@ describe("owner bare mirror", () => {
     expect(await mirror.isReachable(fixture.sha, fetched.ref)).toBe(true);
     expect(await mirror.readBlob(fixture.sha, ".plans/issue-1/plan.md")).toBe("# Plan\n");
     expect(await mirror.changedPaths(git(fixture.work, "rev-parse", "main"), fixture.sha)).toContain(".plans/issue-1/plan.md");
+  });
+
+  it("attributes ordinary commits in materialized worktrees to the selected author, across repair", async () => {
+    const fixture = repository();
+    const mirror = new BareMirror(join(fixture.root, "runtime/mirror.git"), fixture.origin);
+    // A fresh mirror: author applied after the origin is added on creation.
+    await mirror.initialize({ name: "gwhizofss", email: "155764113+gwhizofss@users.noreply.github.com" });
+    await mirror.fetchBranch("issue-1/codex");
+    const worktree = join(fixture.root, "runtime/worktrees/codex");
+    await mirror.materializeWorktree(worktree, fixture.sha);
+    // Only the repository's local config may answer: no ambient author, no global or system identity.
+    const emptyGlobal = join(fixture.root, "empty.gitconfig");
+    writeFileSync(emptyGlobal, "");
+    const env = { ...hermeticGitEnv(), GIT_CONFIG_GLOBAL: emptyGlobal, GIT_CONFIG_NOSYSTEM: "1" };
+    const commit = (message: string): string => {
+      writeFileSync(join(worktree, "notes.md"), `${message}\n`);
+      execFileSync("git", ["-C", worktree, "add", "notes.md"], { env });
+      execFileSync("git", ["-C", worktree, "commit", "-qm", message], { env });
+      return execFileSync("git", ["-C", worktree, "log", "-1", "--format=%an|%ae|%cn|%ce"], { env, encoding: "utf8" }).trim();
+    };
+    expect(commit("first")).toBe(
+      "gwhizofss|155764113+gwhizofss@users.noreply.github.com|gwhizofss|155764113+gwhizofss@users.noreply.github.com");
+
+    // Reopening with another author repairs both fields for the already-open worktree.
+    await mirror.initialize({ name: "other", email: "7+other@users.noreply.github.com" });
+    expect(commit("second")).toBe("other|7+other@users.noreply.github.com|other|7+other@users.noreply.github.com");
+    // Without a profile the recorded author is left in place.
+    await mirror.initialize();
+    expect(commit("third")).toBe("other|7+other@users.noreply.github.com|other|7+other@users.noreply.github.com");
   });
 
   it("ignores ambient Git repository and config redirectors", async () => {

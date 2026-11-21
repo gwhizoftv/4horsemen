@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname } from "node:path";
 import { gitShaSchema, repositoryPathSchema } from "./protocol.js";
 import { validatePhasePin, type PinValidationResult } from "./pinValidation.js";
-import { explainGitHubAuthFailure, gitCredentialArgs } from "./githubAuth.js";
+import { explainGitHubAuthFailure, gitCredentialArgs, type GitAuthor } from "./githubAuth.js";
 
 export type CommandResult = { exitCode: number; stdout: Buffer; stderr: string };
 export type GitRunner = (
@@ -110,7 +110,13 @@ export class BareMirror {
     return result;
   }
 
-  async initialize(): Promise<void> {
+  /**
+   * `author` (#269) goes into the mirror's local config, which every detached
+   * worktree materialized from it shares, so an ordinary commit there carries
+   * the selected account. Evidence commits keep their explicit `-c`/env
+   * override. Null leaves any author already recorded in place.
+   */
+  async initialize(author: GitAuthor | null = null): Promise<void> {
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     if (!existsSync(this.path)) {
       const initialized = await this.runner(["init", "--bare", this.path]);
@@ -118,11 +124,18 @@ export class BareMirror {
         throw new GitCommandError(`cannot initialize bare mirror: ${initialized.stderr}`, initialized, false);
       }
       await this.git(["remote", "add", "origin", this.origin]);
-      return;
+    } else {
+      const remote = await this.git(["remote", "get-url", "origin"], true);
+      if (remote.exitCode !== 0) await this.git(["remote", "add", "origin", this.origin]);
+      else if (remote.stdout.toString("utf8").trim() !== this.origin) await this.git(["remote", "set-url", "origin", this.origin]);
     }
-    const remote = await this.git(["remote", "get-url", "origin"], true);
-    if (remote.exitCode !== 0) await this.git(["remote", "add", "origin", this.origin]);
-    else if (remote.stdout.toString("utf8").trim() !== this.origin) await this.git(["remote", "set-url", "origin", this.origin]);
+    if (author === null) return;
+    for (const [key, value] of [["user.name", author.name], ["user.email", author.email]] as const) {
+      const current = await this.git(["config", "--local", "--get", key], true);
+      if (current.exitCode !== 0 || current.stdout.toString("utf8").trim() !== value) {
+        await this.git(["config", "--local", key, value]);
+      }
+    }
   }
 
   async fetchBranch(branch: string): Promise<FetchResult> {

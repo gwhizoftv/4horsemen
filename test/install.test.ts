@@ -400,10 +400,18 @@ describe("coord install — two-mode footprint", () => {
     const helper = "credential.https://github.com.helper";
     const coordHelper = `!'${join(repoRoot, "scripts/lib/node-runtime.sh")}' --fallback-node '${process.execPath}' '${join(repoRoot, "dist", "main.js")}' auth git-credential --account acct`;
     const helpers = () => tryGit(clone, "config", "--local", "--get-all", helper).stdout.split("\n").slice(0, -1);
-    const result = installOnce(fixture, { origin, githubAccount: "acct" });
+    const mirror = join(fixture.coordRoot, "mirror.git");
+    const author = (repository: string) =>
+      ["user.name", "user.email"].map((key) => tryGit(repository, "config", "--local", "--get", key).stdout.trim());
+    const result = installOnce(fixture, { origin, githubAccount: "acct", githubProfile: { login: "acct", id: 4242 } });
     const clone = result.clones[0] as string;
-    expect(readConfig(result.configPath).github).toEqual({ account: "acct" });
+    expect(readConfig(result.configPath).github).toEqual({ account: "acct", profile: { login: "acct", id: 4242 } });
     expect(git(clone, "config", "--local", "--get", "coord.githubAccount")).toBe("acct");
+    expect(author(clone)).toEqual(["acct", "4242+acct@users.noreply.github.com"]);
+    // The runtime creates the workspace mirror on first start; install never does.
+    expect(existsSync(mirror)).toBe(false);
+    // The owner's product checkout keeps its own identity.
+    expect(tryGit(fixture.productRoot, "config", "--local", "--get", "user.email").stdout).not.toContain("noreply");
     expect(helpers()).toEqual(["", coordHelper]);
     expect(cloneGitHubWiringProblem(clone, "acct")).toBeNull();
     const launcher = readFileSync(join(clone, "start-claude.sh"), "utf8");
@@ -420,6 +428,19 @@ describe("coord install — two-mode footprint", () => {
     installOnce(fixture, { origin });
     expect(helpers()).toEqual(["cache --timeout=42", "", coordHelper]);
     expect(installOnce(fixture, { origin }).changes).toEqual([]);
+    // Either stale field is repaired from the saved profile even though the account still matches,
+    // in the clone and in a workspace mirror an earlier issue created.
+    git(fixture.workspaceRoot, "init", "-q", "--bare", mirror);
+    git(mirror, "config", "--local", "user.email", "4242+acct@users.noreply.github.com");
+    git(clone, "config", "--local", "user.email", "drifted@example.com");
+    // A dry run previews both repairs without writing either.
+    expect(installOnce(fixture, { origin, dryRun: true }).changes).toEqual(
+      expect.arrayContaining([`record user.email in ${clone}`, `record user.name in ${mirror}`]));
+    expect(author(clone)).toEqual(["acct", "drifted@example.com"]);
+    expect(author(mirror)).toEqual(["", "4242+acct@users.noreply.github.com"]);
+    installOnce(fixture, { origin });
+    expect(author(clone)).toEqual(["acct", "4242+acct@users.noreply.github.com"]);
+    expect(author(mirror)).toEqual(["acct", "4242+acct@users.noreply.github.com"]);
     git(clone, "config", "--local", "--add", helper, "");
     expect(cloneGitHubWiringProblem(clone, "acct")).toMatch(/no effective GitHub credential helper/);
 
@@ -430,7 +451,9 @@ describe("coord install — two-mode footprint", () => {
 
   it("launches an agent with the selected account's token only after GitHub accepts it", () => {
     const fixture = product();
-    const clone = installOnce(fixture, { origin: "https://github.com/example/myserver.git", githubAccount: "acct" }).clones[0] as string;
+    const clone = installOnce(fixture, {
+      origin: "https://github.com/example/myserver.git", githubAccount: "acct", githubProfile: { login: "acct", id: 4242 }
+    }).clones[0] as string;
     const bin = join(fixture.workspaceRoot, "fake-bin");
     mkdirSync(bin);
     symlinkSync(process.execPath, join(bin, "node"));
@@ -468,6 +491,50 @@ describe("coord install — two-mode footprint", () => {
     for (const refused of [revoked, other]) expect(refused.stdout).not.toContain("harness");
   });
 
+  it("resolves the commit author once for a direct account-only install, and a dry run never asks GitHub", () => {
+    const fixture = product();
+    const origin = "https://github.com/example/myserver.git";
+    const bin = join(fixture.workspaceRoot, "fake-gh");
+    const log = join(fixture.workspaceRoot, "gh.log");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "gh"), [
+      "#!/usr/bin/env bash",
+      'echo "$*" >>"$FAKE_GH_LOG"',
+      'case "$1 $2" in',
+      '  "auth token") [[ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" && "$6" == acct ]] || exit 9; echo selected-token ;;',
+      '  "api user") [[ "$GH_TOKEN" == selected-token ]] || exit 9; echo \'{"login":"Acct","id":4242}\' ;;',
+      "  *) exit 8 ;;",
+      "esac", ""
+    ].join("\n"), { mode: 0o755 });
+    const saved = { PATH: process.env.PATH, FAKE_GH_LOG: process.env.FAKE_GH_LOG, GH_TOKEN: process.env.GH_TOKEN };
+    process.env.PATH = `${bin}${delimiter}${process.env.PATH ?? ""}`;
+    process.env.FAKE_GH_LOG = log;
+    process.env.GH_TOKEN = "ambient";
+    try {
+      // A brand-new account in a dry run is deferred, not guessed.
+      installOnce(fixture, { origin, githubAccount: "acct", dryRun: true });
+      expect(existsSync(log)).toBe(false);
+
+      const result = installOnce(fixture, { origin, githubAccount: "acct" });
+      const clone = result.clones[0] as string;
+      expect(readFileSync(log, "utf8")).toBe(
+        "auth token --hostname github.com --user acct\napi user --jq {login,id}\n");
+      expect(readConfig(result.configPath).github).toEqual({ account: "acct", profile: { login: "Acct", id: 4242 } });
+      expect(git(clone, "config", "--local", "--get", "user.name")).toBe("Acct");
+      expect(git(clone, "config", "--local", "--get", "user.email")).toBe("4242+Acct@users.noreply.github.com");
+
+      // The saved profile answers later runs offline.
+      git(clone, "config", `url.${fixture.originPath}.insteadOf`, origin);
+      expect(installOnce(fixture, { origin }).changes).toEqual([]);
+      expect(readFileSync(log, "utf8").split("\n").filter(Boolean)).toHaveLength(2);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("refuses a selected GitHub account on an SSH origin before creating any clone", () => {
     const fixture = product();
     expect(() => installOnce(fixture, { origin: "git@github.com:example/myserver.git", githubAccount: "acct" }))
@@ -481,9 +548,16 @@ describe("coord install — idempotence", () => {
     const fixture = product();
     const first = installOnce(fixture);
     expect(first.changes.length).toBeGreaterThan(0);
+    // Without a selected account, an author the owner set in the clone is never touched.
+    const clone = first.clones[0] as string;
+    git(clone, "config", "--local", "user.name", "Owner");
+    git(clone, "config", "--local", "user.email", "owner@example.com");
 
     const second = installOnce(fixture);
     expect(second.changes).toEqual([]);
+    expect(git(clone, "config", "--local", "--get", "user.email")).toBe("owner@example.com");
+    uninstallOnce(fixture);
+    expect(git(clone, "config", "--local", "--get", "user.name")).toBe("Owner");
   });
 
   it("dry-run reports work without performing it", () => {

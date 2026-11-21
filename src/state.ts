@@ -29,7 +29,7 @@ import {
   issueSessionIdSchema,
   repositoryPathSchema
 } from "./protocol.js";
-import { githubLoginSchema } from "./githubAuth.js";
+import { githubLoginSchema, githubProfileSchema } from "./githubAuth.js";
 import { assertNoSymlink, containedPath, type IssueRuntimePaths } from "./paths.js";
 import { resourceEvidenceSchema } from "./resourceEvidence.js";
 import {
@@ -313,10 +313,19 @@ export const coordinatorConfigSchema = z
     completesRoot: z.string().min(1).optional(),
     /**
      * The GitHub account this workspace's git and gh operations use (#227).
-     * Only the name: its token stays in gh's credential storage. Absent means
+     * Only public data: its token stays in gh's credential storage. `profile`
+     * is the verified login and numeric id that commit authorship derives from
+     * (#269); configs written before it carry only `account`. Absent means
      * ambient gh/git credentials, exactly as before the selection existed.
      */
-    github: z.object({ account: githubLoginSchema }).strict().optional(),
+    github: z
+      .object({ account: githubLoginSchema, profile: githubProfileSchema.optional() })
+      .strict()
+      .refine((github) => github.profile === undefined || github.profile.login.toLowerCase() === github.account.toLowerCase(), {
+        message: "github.profile must belong to github.account",
+        path: ["profile"]
+      })
+      .optional(),
     coordination: installStampSchema.optional()
   })
   .strict()

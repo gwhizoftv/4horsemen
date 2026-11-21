@@ -109,6 +109,53 @@ describe("coord onboard", () => {
     expect(git(fixture.productRoot, "status", "--porcelain")).toBe("");
   });
 
+  it("attributes agent commits to the selected account and repairs the author on saved-account re-onboarding", async () => {
+    // The repository's owner (acme) differs from the account that authenticates and authors.
+    const fixture = product("soundsplore");
+    git(fixture.productRoot, "config", "--local", "user.name", "Product Owner");
+    git(fixture.productRoot, "config", "--local", "user.email", "owner@example.com");
+    const calls: string[] = [];
+    const processRunner = async (argv: readonly string[]) => {
+      calls.push(argv.join(" "));
+      if (argv[1] === "auth" && argv[2] === "token") return { exitCode: 0, stdout: "tok-gwhizofss\n", stderr: "" };
+      if (argv[1] === "api" && argv[2] === "user") return { exitCode: 0, stdout: '{"login":"gwhizofss","id":155764113}\n', stderr: "" };
+      if (argv[1] === "api" && argv.length === 3) return { exitCode: 0, stdout: JSON.stringify({ default_branch: "main" }), stderr: "" };
+      if (argv[1] === "api") return { exitCode: 0, stdout: "acme/soundsplore\n", stderr: "" };
+      return { exitCode: 1, stdout: "", stderr: `unexpected command ${argv.join(" ")}` };
+    };
+    const dependencies = { home: null, io: { stdout: () => undefined }, processRunner };
+    const argv = ["onboard", fixture.productRoot, "--agents", "claude", "--profile", "solo"];
+    expect(await runCli([...argv, "--github-account", "gwhizofss"], dependencies)).toBe(0);
+    const clone = agentCloneDirectory(fixture.workspaceRoot, "soundsplore", "claude");
+    const email = "155764113+gwhizofss@users.noreply.github.com";
+    expect(localConfigGet(clone, "user.name")).toBe("gwhizofss");
+    expect(localConfigGet(clone, "user.email")).toBe(email);
+    expect(readConfig(join(fixture.workspaceRoot, "coord-runtime", "config.json")).github)
+      .toEqual({ account: "gwhizofss", profile: { login: "gwhizofss", id: 155764113 } });
+
+    // An ordinary agent-branch commit: no fixture author override, no global or system identity.
+    const emptyGlobal = join(fixture.workspaceRoot, "empty.gitconfig");
+    writeFileSync(emptyGlobal, "");
+    const env: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_GLOBAL: emptyGlobal, GIT_CONFIG_NOSYSTEM: "1" };
+    for (const key of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]) delete env[key];
+    const plain = (...args: string[]) => execFileSync("git", ["-C", clone, ...args], { env, encoding: "utf8" }).trim();
+    plain("checkout", "-qb", "claude/attribution");
+    writeFileSync(join(clone, "notes.md"), "attributed\n");
+    plain("add", "notes.md");
+    plain("commit", "--no-verify", "-qm", "attributed commit");
+    expect(plain("log", "-1", "--format=%an|%ae|%cn|%ce")).toBe(`gwhizofss|${email}|gwhizofss|${email}`);
+    expect(localConfigGet(fixture.productRoot, "user.email")).toBe("owner@example.com");
+
+    // Re-onboarding with the saved selection verifies it again and repairs a drifted field.
+    git(clone, "config", "--local", "user.email", "drifted@example.com");
+    git(clone, "config", `url.${fixture.originPath}.insteadOf`, "https://github.com/acme/soundsplore.git");
+    calls.length = 0;
+    expect(await runCli(argv, dependencies)).toBe(0);
+    expect(calls).toContain("gh api user --jq {login,id}");
+    expect(localConfigGet(clone, "user.email")).toBe(email);
+    expect(localConfigGet(fixture.productRoot, "user.name")).toBe("Product Owner");
+  });
+
   it.each(["python", "flutter"])("onboards %s without declarations and reports the effective policy", async (language) => {
     const files: Record<string, string> = language === "python"
       ? { "pyproject.toml": "[tool.pytest.ini_options]\n" }

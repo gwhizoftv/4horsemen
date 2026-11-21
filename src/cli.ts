@@ -24,6 +24,8 @@ import {
   verifyGitHubAccess,
   withGitHubAccount,
   withoutAmbientTokens,
+  gitAuthorForProfile,
+  type GitAuthor,
   type GitHubAccess
 } from "./githubAuth.js";
 import { cloneGitHubWiringProblem } from "./setupWorkspace.js";
@@ -120,6 +122,8 @@ export type CliDependencies = {
     issue: number;
     origin: string;
     githubAccount: string | null;
+    /** Commit author for coordinator-created worktrees: the verified account's (#269). */
+    githubAuthor?: GitAuthor | null;
     agents: CoordinatorConfig["agents"];
     log?: (message: string) => void;
   }) => Promise<{ cleanup: () => Promise<void> }>;
@@ -775,12 +779,13 @@ const defaultStartEffects = async (input: {
   issue: number;
   origin: string;
   githubAccount: string | null;
+  githubAuthor?: GitAuthor | null;
   agents: CoordinatorConfig["agents"];
   log?: (message: string) => void;
 }): Promise<{ cleanup: () => Promise<void> }> => {
   const mirror = new BareMirror(input.paths.mirror, input.origin, undefined,
     input.githubAccount === null ? null : { account: input.githubAccount, cliEntry: coordCliEntry() });
-  await mirror.initialize();
+  await mirror.initialize(input.githubAuthor ?? null);
   const tmux = new TmuxController(undefined, input.paths.tmuxNamespace, undefined, undefined, undefined, input.paths.terminalGroup);
   await tmux.startSession(input.issue, input.agents, (agentId) => agentRuntimePaths(input.paths, agentId).terminalLogs);
   const opened = await tmux.openOwnerAgentClients(input.issue, input.agents);
@@ -984,13 +989,14 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     return choice === SIGN_IN_ANOTHER_ACCOUNT ? signInGitHub(null, false) : choice;
   };
 
-  const verifyInstallAccount = async (account: string, productRoot: string, origin: string | undefined): Promise<void> => {
+  const verifyInstallAccount = async (account: string, productRoot: string, origin: string | undefined): Promise<GitHubAccess> => {
     const parsedAccount = githubLoginSchema.safeParse(account);
     if (!parsedAccount.success) throw new Error(`Invalid GitHub account '${account}'.`);
     const remote = origin ?? localConfigGet(productRoot, "remote.origin.url");
     if (remote === null) throw new Error(`The product ${productRoot} has no 'origin' remote.`);
     const access = await verifyGitHubAccess({ account, origin: remote, runner, cwd: io.cwd });
     io.stdout(`GitHub account ${access.login} can access ${access.repository}.\n`);
+    return access;
   };
 
   const resolveInstallBaseBranch = async (
@@ -1225,9 +1231,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     }
 
     const githubAccount = config.github?.account ?? null;
-    if (githubAccount !== null) {
-      await preflightGitHubAccount({ account: githubAccount, origin: config.origin, agents: roster, configPath });
-    }
+    const githubAuthor = githubAccount === null ? null : gitAuthorForProfile(
+      (await preflightGitHubAccount({ account: githubAccount, origin: config.origin, agents: roster, configPath })).profile);
     const githubRunner = withGitHubAccount(runner, githubAccount);
     const snapshot = await fetchGitHubIssue({ origin: config.origin, issue, cwd: io.cwd, runner: githubRunner });
     const snapshotBytes = renderGitHubIssueSnapshot(snapshot);
@@ -1307,7 +1312,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       initializeAgentLifecycle(paths, roster.map((agent) => agent.id));
       // Start the CLIs only after their owner runtime exists. SessionStart
       // hooks can then establish a durable handshake instead of racing start.
-      effects = await startEffects({ paths, issue, origin: config.origin, githubAccount, agents: roster, log: io.stdout });
+      effects = await startEffects({ paths, issue, origin: config.origin, githubAccount, githubAuthor, agents: roster, log: io.stdout });
     } catch (error) {
       rmSync(paths.issueRoot, { recursive: true, force: true });
       // The mailbox is a separate tree, so the rollback has to name it too.
@@ -1457,7 +1462,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const saved = savedGitHubAccount(productRoot,
         parsed.flags.has("coord-runtime") ? resolve(io.cwd, requireFlag(parsed, "coord-runtime")) : undefined);
       const githubAccount = parsed.flags.get("github-account") ?? saved.account ?? await chooseOnboardAccount();
-      if (githubAccount !== undefined) await verifyInstallAccount(githubAccount, productRoot, undefined);
+      const githubAccess = githubAccount === undefined ? undefined : await verifyInstallAccount(githubAccount, productRoot, undefined);
       const baseBranch = await resolveInstallBaseBranch(productRoot, undefined, githubAccount, parsed.flags.get("base-branch"));
       readPreviousConfig(resolve(saved.coordRoot, "config.json"));
       const checkConfigPath = selectWorkspaceLocation(saved.coordRoot, basename(productRoot)).configPath;
@@ -1473,6 +1478,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         replaceCheckSettings: selection.changed,
         baseBranch,
         ...(githubAccount === undefined ? {} : { githubAccount }),
+        ...(githubAccess === undefined ? {} : { githubProfile: githubAccess.profile }),
         coordRoot: saved.coordRoot,
         installRoot: coordinatorSourceRoot,
         productRoot,
@@ -1522,9 +1528,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const installAccount = parsed.flags.get("github-account");
       // A repair keeps the saved account, so it is verified before any effect too.
       const effectiveAccount = installAccount ?? savedGitHubAccount(installProduct, installRuntime).account;
-      if (effectiveAccount !== null && !flagIsSet(parsed, "dry-run")) {
-        await verifyInstallAccount(effectiveAccount, installProduct, parsed.flags.get("origin"));
-      }
+      const installAccess = effectiveAccount !== null && !flagIsSet(parsed, "dry-run")
+        ? await verifyInstallAccount(effectiveAccount, installProduct, parsed.flags.get("origin"))
+        : undefined;
       const baseBranch = await resolveInstallBaseBranch(
         installProduct, parsed.flags.get("origin"), effectiveAccount, parsed.flags.get("base-branch")
       );
@@ -1532,6 +1538,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         installRoot: coordinatorSourceRoot,
         productRoot: installProduct,
         ...(installAccount === undefined ? {} : { githubAccount: installAccount }),
+        ...(installAccess === undefined ? {} : { githubProfile: installAccess.profile }),
         coordRoot: installRuntime,
         agents,
         profile,

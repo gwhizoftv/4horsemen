@@ -18,7 +18,9 @@ import {
   GITHUB_CREDENTIAL_HELPER_KEY,
   GITHUB_CREDENTIAL_HELPER_MARKER,
   gitCredentialArgs,
-  gitCredentialHelperCommand
+  gitCredentialHelperCommand,
+  type GitAuthor,
+  type GitHubProfile
 } from "./githubAuth.js";
 import { CLI_ENTRY_KEY, INSTALL_ROOT_KEY, WORKSPACE_CONFIG_KEY } from "./hookPolicy.js";
 import { isPathInside } from "./paths.js";
@@ -192,6 +194,8 @@ export type WorkspaceConfigInput = {
   completesRoot: string;
   /** Selected GitHub account name; absent or null for ambient credentials. */
   githubAccount?: string | null;
+  /** The account's verified public profile, saved beside it when known. */
+  githubProfile?: GitHubProfile | null;
 };
 
 /**
@@ -237,7 +241,10 @@ export const buildWorkspaceConfig = (input: WorkspaceConfigInput, stamp: Coordin
     workflowCriticalPrefixes: declared.workflowCriticalPrefixes ?? input.proposal.workflowCriticalPrefixes,
     workflowCriticalFiles: declared.workflowCriticalFiles ?? input.proposal.workflowCriticalFiles,
     completesRoot: input.completesRoot,
-    ...(input.githubAccount === null || input.githubAccount === undefined ? {} : { github: { account: input.githubAccount } }),
+    ...(input.githubAccount === null || input.githubAccount === undefined ? {} : { github: {
+      account: input.githubAccount,
+      ...(input.githubProfile === null || input.githubProfile === undefined ? {} : { profile: input.githubProfile })
+    } }),
     coordination: stamp
   });
 };
@@ -618,6 +625,12 @@ export type CloneIdentity = {
   completesRoot: string;
   /** Selected GitHub account the launcher exports GH_TOKEN for; null for ambient credentials. */
   githubAccount: string | null;
+  /**
+   * Commit author derived from the account's verified profile (#269). Null
+   * leaves `user.name`/`user.email` exactly as they are: an unbound workspace,
+   * or a dry run that could not resolve the profile, never guesses or clears.
+   */
+  gitAuthor: GitAuthor | null;
 };
 
 /**
@@ -652,7 +665,8 @@ export const configureCloneIdentity = (clone: string, identity: CloneIdentity, o
     [CLI_ENTRY_KEY, identity.cliEntry],
     [WORKSPACE_CONFIG_KEY, identity.workspaceConfig],
     [COMPLETES_ROOT_KEY, identity.completesRoot],
-    [GITHUB_ACCOUNT_KEY, identity.githubAccount]
+    [GITHUB_ACCOUNT_KEY, identity.githubAccount],
+    ...gitAuthorEntries(identity.gitAuthor)
   ];
   const stale = desired.filter(([key, value]) => localConfigGet(clone, key) !== value);
   if (stale.length === 0) {
@@ -667,6 +681,26 @@ export const configureCloneIdentity = (clone: string, identity: CloneIdentity, o
   });
   // The helper is only ever written with the account, so it goes with it.
   if (stale.some(([key, value]) => key === GITHUB_ACCOUNT_KEY && value === null)) clearCloneGitHubCredential(clone, options);
+};
+
+/**
+ * Local `user.name`/`user.email` for the selected account. Each key is
+ * compared on its own, so a rerun repairs either stale field. Deliberately not
+ * in IDENTITY_KEYS: uninstall must not delete an author the owner set.
+ */
+const gitAuthorEntries = (author: GitAuthor | null): Array<[string, string]> =>
+  author === null ? [] : [["user.name", author.name], ["user.email", author.email]];
+
+/**
+ * Repair the author in an existing repository's local config — the workspace
+ * mirror, whose config every coordinator-created detached worktree shares.
+ */
+export const configureRepositoryAuthor = (repository: string, author: GitAuthor, options: EffectOptions): void => {
+  const stale = gitAuthorEntries(author).filter(([key, value]) => localConfigGet(repository, key) !== value);
+  if (stale.length === 0) return;
+  act(options, `record ${stale.map(([key]) => key).join(", ")} in ${repository}`, () => {
+    for (const [key, value] of stale) localConfigSet(repository, key, value);
+  });
 };
 
 export const clearCloneIdentity = (clone: string, options: EffectOptions): void => {
