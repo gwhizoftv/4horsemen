@@ -221,6 +221,104 @@ const resolvableStartGit = async (argv: readonly string[], cwd: string) => {
   return { exitCode: 0, stdout: execFileSync(command, args, { cwd, encoding: "utf8" }), stderr: "" };
 };
 
+describe("issue agent selection", () => {
+  it.each([
+    { args: ["1", "--agents", "cursor, claude"], expected: ["cursor", "claude"] },
+    { args: ["start", "1", "--profile", "solo", "--agents", "claude"], expected: ["claude"] }
+  ])("launches and records only the requested agents for $args", async ({ args, expected }) => {
+    const f = setup();
+    const config = readFileSync(f.configPath, "utf8");
+    const launched: string[] = [];
+    expect(await runCli([...args, "--config", f.configPath, "--coord-runtime", f.runtime], {
+      processRunner: successfulStartGit, makeRunLoop: fakeLoop, io: { stdout: () => undefined },
+      startEffects: async ({ agents }) => {
+        launched.push(...agents.map((agent) => agent.id));
+        return { cleanup: async () => undefined };
+      }
+    })).toBe(0);
+    const paths = issueRuntimePaths(f.runtime, 1);
+    const start = readStartState(paths);
+    expect(launched).toEqual(expected);
+    expect(start.agents.map(({ id, root }) => [id, root])).toEqual(expected.map((id) => [id, join(f.root, `clone-${id}`)]));
+    expect(start.originalRoster).toEqual(expected);
+    expect(readCursorsState(paths).activeRoster).toEqual(expected);
+    expect(Object.keys(start.agentVersions ?? {}).sort()).toEqual([...expected].sort());
+    expect(readFileSync(f.configPath, "utf8")).toBe(config);
+  });
+
+  it.each([
+    { args: ["1", "--agents", "cursor,missing"], message: "'missing' is not configured" },
+    { args: ["start", "1", "--agents", "claude, claude"], message: "'claude' more than once" },
+    { args: ["1", "--agents", ""], message: "empty agent ID" },
+    { args: ["start", "1", "--agents", "codex,,cursor"], message: "empty agent ID" },
+    { args: ["1", "--profile", "solo", "--agents", "cursor,claude"], message: "solo profile requires one agent" }
+  ])("rejects $args before session cleanup or startup", async ({ args, message }) => {
+    const f = setup();
+    const errors: string[] = [];
+    const sessionExists = vi.fn(async () => true);
+    const processRunner = vi.fn(successfulStartGit);
+    const startEffects = vi.fn(async () => ({ cleanup: async () => undefined }));
+    expect(await runCli([...args, "--config", f.configPath, "--coord-runtime", f.runtime], {
+      sessionExists, processRunner, startEffects, makeRunLoop: fakeLoop, io: { stderr: (line) => errors.push(line) }
+    })).toBe(2);
+    expect(errors.join("")).toContain(message);
+    expect(sessionExists).not.toHaveBeenCalled();
+    expect(processRunner).not.toHaveBeenCalled();
+    expect(startEffects).not.toHaveBeenCalled();
+    expect(existsSync(issueRuntimePaths(f.runtime, 1).issueRoot)).toBe(false);
+  });
+
+  it("reports the selected workspace's configured IDs before checking who owns an existing issue", async () => {
+    const owner = setup();
+    const caller = setup();
+    const config = readConfig(caller.configPath);
+    writeFileSync(caller.configPath, JSON.stringify({ ...config, agents: config.agents.slice(1) }));
+    const errors: string[] = [];
+    const deps = { makeRunLoop: fakeLoop, processRunner: successfulStartGit,
+      io: { stdout: () => undefined, stderr: (line: string) => errors.push(line) } };
+    const runtime = ["--coord-runtime", owner.runtime];
+    expect(await runCli(["start", "1", "--config", owner.configPath, ...runtime], deps)).toBe(0);
+    expect(await runCli(["1", "--agents", "missing", "--config", caller.configPath, ...runtime], deps)).toBe(2);
+    expect(errors.join("")).toContain(`'missing' is not configured in ${caller.configPath}. Choose from claude, cursor.`);
+  });
+
+  it("resumes the original selection exactly once after a drop and a change to the default profile", async () => {
+    const f = setup();
+    const workspace = ["--config", f.configPath, "--coord-runtime", f.runtime];
+    const io = { stdout: () => undefined };
+    const deps = { io, processRunner: successfulStartGit, makeRunLoop: fakeLoop };
+    expect(await runCli(["start", "1", "--agents", "cursor,claude", ...workspace], deps)).toBe(0);
+    const paths = issueRuntimePaths(f.runtime, 1);
+    const before = readFileSync(paths.start, "utf8");
+    expect(await runCli(["drop", "claude", "--issue", "1", "--coord-runtime", f.runtime], deps)).toBe(0);
+    const config = JSON.parse(readFileSync(f.configPath, "utf8"));
+    writeFileSync(f.configPath, JSON.stringify({ ...config, profile: "solo" }));
+
+    const processRunner = vi.fn(successfulStartGit);
+    for (const selection of [[], ["--agents", "cursor,claude"]]) {
+      const run = vi.fn(async () => undefined);
+      expect(await runCli(["1", ...selection, ...workspace], {
+        io, processRunner, makeRunLoop: (p) => ({ ...fakeLoop(p), run })
+      })).toBe(0);
+      expect(run).toHaveBeenCalledTimes(1);
+    }
+    const sessionExists = vi.fn(async () => true);
+    const makeRunLoop = vi.fn(fakeLoop);
+    for (const list of ["cursor", "claude,cursor"]) {
+      const errors: string[] = [];
+      expect(await runCli(["1", "--agents", list, ...workspace], {
+        sessionExists, processRunner, makeRunLoop, io: { stderr: (line) => errors.push(line) }
+      })).toBe(2);
+      expect(errors.join("")).toContain("Issue 1 started with agents cursor, claude. Use coord 1 to resume");
+    }
+    expect(sessionExists).not.toHaveBeenCalled();
+    expect(makeRunLoop).not.toHaveBeenCalled();
+    expect(processRunner).not.toHaveBeenCalled();
+    expect(readCursorsState(paths).activeRoster).toEqual(["cursor"]);
+    expect(readFileSync(paths.start, "utf8")).toBe(before);
+  });
+});
+
 describe("fresh-start agent maintenance", () => {
   it.each(["muse", "opencode"])("records %s's version without automatic updates (OpenCode compatibility)", async (id) => {
     const f = setup();

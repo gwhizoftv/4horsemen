@@ -262,6 +262,18 @@ refetching or rebinding an edited issue. From an unrelated worktree, pass
 `--product /path/to/onboarded/product`; coordination never guesses from a
 machine-global registry.
 
+To choose agents for one issue, list their configured IDs in the order they should run.
+For example, use `coord 42 --agents claude,codex,antigravity` or
+`coord start 42 --agents claude,codex,antigravity`. Each ID must appear in the
+workspace config and may appear only once in the list. Empty entries are errors.
+With the solo profile, pass a single ID. If you omit `--agents`, solo uses the
+first configured agent and the reviewed and consensus profiles use all configured
+agents in config order.
+
+To continue an existing issue, run `coord 42` or repeat the numeric command
+with the original list in the same order. Coord resumes with the saved active
+agents, including any changes made with `coord drop`.
+
 `--product` takes a filesystem path, not a project nickname. Relative paths are
 resolved from the directory where you invoke `coord`; for example, from a parent
 directory use `--product ./my-product` or an absolute path to that onboarded
