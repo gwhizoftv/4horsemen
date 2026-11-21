@@ -423,6 +423,8 @@ describe("coord install — two-mode footprint", () => {
     expect(launcher).toContain('gh auth token --hostname github.com --user "$coord_github_account"');
     expect(launcher).not.toMatch(/GH_TOKEN=["']?[A-Za-z0-9_]{8,}/);
 
+    // The saved profile suffices for direct repairs even when gh is unavailable.
+    writeFileSync(join(bin, "gh"), "#!/bin/sh\nexit 1\n");
     // A repair run without the option keeps the selection (dry run: no fetch from github.com).
     expect(installOnce(fixture, { origin, dryRun: true }).changes).toEqual([]);
 

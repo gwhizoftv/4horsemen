@@ -393,10 +393,10 @@ export const install = (options: InstallOptions): InstallResult => {
     const parsedAccount = githubLoginSchema.safeParse(githubAccount);
     if (!parsedAccount.success) throw new Error(`Invalid GitHub account '${githubAccount}': ${parsedAccount.error.issues[0]?.message ?? "invalid"}.`);
     requireHttpsGitHubOrigin(githubAccount, origin);
-    if (!githubProfile) {
-      if (!options.dryRun) githubProfile = resolveInstallProfile(githubAccount, productRoot);
-      else if (previous?.github?.account.toLowerCase() === githubAccount.toLowerCase()) githubProfile = previous.github.profile;
+    if (!githubProfile && previous?.github?.account.toLowerCase() === githubAccount.toLowerCase()) {
+      githubProfile = previous.github.profile;
     }
+    if (!githubProfile && !options.dryRun) githubProfile = resolveInstallProfile(githubAccount, productRoot);
   } else if (githubProfile) {
     throw new Error("A GitHub author profile requires a selected GitHub account.");
   }

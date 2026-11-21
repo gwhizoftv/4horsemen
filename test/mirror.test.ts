@@ -64,9 +64,9 @@ describe("owner bare mirror", () => {
     await first.fetchBranch("issue-1/codex");
     const a = join(fixture.root, "one", "same-name");
     const b = join(fixture.root, "two", "same-name");
-    await first.materializeWorktree(a, fixture.sha);
     await second.initialize({ login: "second", id: 2 });
-    await second.materializeWorktree(b, fixture.sha);
+    await Promise.all([first.materializeWorktree(a, fixture.sha), second.materializeWorktree(b, fixture.sha)]);
+    await first.initialize({ login: "first", id: 1 });
     for (const [checkout, login, id] of [[a, "first", 1], [b, "second", 2]] as const) {
       execFileSync("git", ["commit", "--allow-empty", "-qm", "check attribution"], { cwd: checkout, env: hermeticGitEnv() });
       const email = `${id}+${login}@users.noreply.github.com`;

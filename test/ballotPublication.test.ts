@@ -175,7 +175,9 @@ describe("ballotPublication", () => {
 
     const mirrorPath = join(root, "mirror.git");
     git(root, "clone", "--bare", "-q", origin, mirrorPath);
-    const mirror = new BareMirror(mirrorPath, origin);
+    const profile = { login: "gwhizofss", id: 155764113 };
+    const mirror = new BareMirror(mirrorPath, origin, undefined, { account: profile.login, cliEntry: "/coord/dist/main.js", profile });
+    await mirror.initialize(profile);
     await mirror.fetchBranch("main");
 
     const priorAuthor = process.env.GIT_AUTHOR_NAME;
@@ -198,8 +200,9 @@ describe("ballotPublication", () => {
         message: evidenceCommitMessage("plan-ballot-batch", 1, null)
       });
       expect(commitSha).toMatch(/^[a-f0-9]{40}$/);
-      const author = git(mirrorPath, "log", "-1", "--format=%an <%ae>", commitSha);
-      expect(author).toBe(`${COORDINATOR_EVIDENCE_AUTHOR.name} <${COORDINATOR_EVIDENCE_AUTHOR.email}>`);
+      const headers = git(mirrorPath, "log", "-1", "--format=%an <%ae>%n%cn <%ce>", commitSha).split("\n");
+      const coordinator = `${COORDINATOR_EVIDENCE_AUTHOR.name} <${COORDINATOR_EVIDENCE_AUTHOR.email}>`;
+      expect(headers).toEqual([coordinator, coordinator]);
       const parent = git(mirrorPath, "rev-parse", `${commitSha}^`);
       expect(parent).toBe(baseline);
       const tree = git(mirrorPath, "ls-tree", "-r", "--name-only", commitSha);

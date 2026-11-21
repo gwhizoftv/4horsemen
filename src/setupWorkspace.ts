@@ -648,22 +648,42 @@ const IDENTITY_KEYS: readonly string[] = [
   GITHUB_ACCOUNT_KEY
 ];
 
-export const configureGitAuthor = (repo: string, profile: GitHubProfile | undefined, options: EffectOptions): void => {
-  const saved = localConfigGet(repo, AUTHOR_RECEIPT_KEY);
+export const configureGitAuthor = (
+  repo: string, profile: GitHubProfile | undefined, options: EffectOptions, scope: "--local" | "--worktree" = "--local"
+): void => {
+  const get = (key: string): string | null => {
+    const read = git(repo, "config", scope, "--get", key);
+    if (read.exitCode === 1) return null;
+    if (read.exitCode !== 0) throw new Error(`Cannot read ${key} in ${repo}: ${read.stderr.trim()}`);
+    return read.stdout.replace(/\n$/, "");
+  };
+  const saved = get(AUTHOR_RECEIPT_KEY);
   if (!profile && !saved) return;
   const current = new Map<string, string | null>([[AUTHOR_RECEIPT_KEY, saved]]);
-  for (const key of AUTHOR_KEYS) current.set(key, localConfigGet(repo, key));
+  for (const key of AUTHOR_KEYS) current.set(key, get(key));
   const changes = gitAuthorEdits(profile, current);
   if (changes.length) act(options, `update Git author in ${repo}`, () => {
     for (const [key, value] of changes) {
-      if (value === null) localConfigUnset(repo, key);
-      else localConfigSet(repo, key, value);
+      if (value === null) gitOrThrow(repo, "config", scope, "--unset-all", key);
+      else gitOrThrow(repo, "config", scope, key, value);
     }
   });
 };
 
+const configureCloneAuthor = (clone: string, profile: GitHubProfile | undefined, options: EffectOptions): void => {
+  const privateConfig = git(clone, "config", "--local", "--bool", "--get", "extensions.worktreeConfig");
+  if (privateConfig.exitCode !== 0 && privateConfig.exitCode !== 1) throw new Error(`Cannot read worktree configuration in ${clone}: ${privateConfig.stderr.trim()}`);
+  if (privateConfig.stdout.trim() === "true") {
+    configureGitAuthor(clone, profile, options, "--worktree");
+    // The owner may have enabled per-worktree configuration after the original install.
+    configureGitAuthor(clone, undefined, options);
+  } else {
+    configureGitAuthor(clone, profile, options);
+  }
+};
+
 export const configureCloneIdentity = (clone: string, identity: CloneIdentity, options: EffectOptions): void => {
-  if (identity.githubProfile || identity.githubAccount === null) configureGitAuthor(clone, identity.githubProfile, options);
+  if (identity.githubProfile || identity.githubAccount === null) configureCloneAuthor(clone, identity.githubProfile, options);
   const desired: Array<[string, string | null]> = [
     ["consensus.agentId", identity.agent],
     ["consensus.agentLabel", identity.label],
@@ -691,7 +711,7 @@ export const configureCloneIdentity = (clone: string, identity: CloneIdentity, o
 };
 
 export const clearCloneIdentity = (clone: string, options: EffectOptions): void => {
-  configureGitAuthor(clone, undefined, options);
+  configureCloneAuthor(clone, undefined, options);
   const present = IDENTITY_KEYS.filter((key) => localConfigGet(clone, key) !== null);
   if (present.length === 0) return;
   act(options, `clear ${present.join(", ")} in ${clone}`, () => {

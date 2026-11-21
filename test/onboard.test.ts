@@ -79,7 +79,7 @@ describe("coord onboard", () => {
     const email = "155764113+gwhizofss@users.noreply.github.com";
     const declare = writeDeclaration(fixture.workspaceRoot, { checks: [], verify: { precommit: [], prepush: [] } });
     const argv = ["onboard", fixture.productRoot, "--agents", "claude", "--profile", "solo",
-      "--base-branch", "main", "--declare", declare];
+      "--base-branch", "main", "--coord-runtime", fixture.coordRoot, "--declare", declare];
     const options = { home: null, io: { stdout: () => undefined }, processRunner: async (cmd: readonly string[]) => {
       if (cmd[1] === "auth") return { exitCode: 0, stdout: "test-token", stderr: "" };
       if (cmd[2] === "user") return { exitCode: 0, stdout: JSON.stringify(profile), stderr: "" };
@@ -91,11 +91,24 @@ describe("coord onboard", () => {
     expect(localConfigGet(clone, "user.name")).toBe(profile.login);
     expect(localConfigGet(clone, "user.email")).toBe(email);
     git(clone, "checkout", "-qb", "claude/attribution");
-    execFileSync("git", ["commit", "--allow-empty", "-qm", "Claude: check attribution"], { cwd: clone, env: hermeticGitEnv() });
-    expect(git(clone, "log", "-1", "--format=%an|%ae|%cn|%ce")).toBe([profile.login, email, profile.login, email].join("|"));
+    const checkCommit = () => {
+      execFileSync("git", ["commit", "--allow-empty", "-qm", "Claude: check attribution"], { cwd: clone, env: hermeticGitEnv() });
+      expect(git(clone, "log", "-1", "--format=%an|%ae|%cn|%ce")).toBe([profile.login, email, profile.login, email].join("|"));
+    };
+    checkCommit();
     git(clone, "config", "--local", "user.email", "stale@example.com");
     expect(await runCli(argv, options)).toBe(0);
     expect(localConfigGet(clone, "user.email")).toBe(email);
+    git(clone, "config", "extensions.worktreeConfig", "true");
+    git(clone, "config", "--worktree", "user.name", "Worktree Owner");
+    git(clone, "config", "--worktree", "user.email", "owner@example.com");
+    expect(await runCli(argv, options)).toBe(0);
+    checkCommit();
+    expect(localConfigGet(clone, "user.email")).toBeNull();
+    uninstall({ coordRoot: fixture.coordRoot, productRoot: fixture.productRoot, deleteClones: false, wipeRuntime: false,
+      deleteCoordination: false, force: false, dryRun: false, log: () => undefined });
+    expect(git(clone, "config", "--worktree", "user.name")).toBe("Worktree Owner");
+    expect(git(clone, "config", "--worktree", "user.email")).toBe("owner@example.com");
     expect(localConfigGet(fixture.productRoot, "user.name")).toBe("Fixture");
     expect(localConfigGet(fixture.productRoot, "user.email")).toBe("fixture@example.com");
   });

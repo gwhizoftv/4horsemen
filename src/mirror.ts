@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { constants, copyFileSync, existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { gitShaSchema, repositoryPathSchema } from "./protocol.js";
 import { validatePhasePin, type PinValidationResult } from "./pinValidation.js";
 import { explainGitHubAuthFailure, gitCredentialArgs, AUTHOR_KEYS, AUTHOR_RECEIPT_KEY, gitAuthorSettings, gitAuthorEdits, type GitHubProfile } from "./githubAuth.js";
@@ -215,15 +216,23 @@ export class BareMirror {
   }
 
   private async enableWorktreeConfig(): Promise<void> {
-    const enabled = await this.configValue(["--local", "--bool", "--get", "extensions.worktreeConfig"]);
-    if (enabled === "true") return;
-
     // Git applies core.bare to every checkout once the extension is enabled.
     // Stage the common config under Git's normal writer lock so other readers
     // see the original or the migrated config, including all unrelated keys.
     const config = join(this.path, "config");
     const lock = `${config}.lock`;
-    copyFileSync(config, lock, constants.COPYFILE_EXCL);
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      // A competing issue can finish the migration while we wait for Git's lock.
+      if (await this.configValue(["--local", "--bool", "--get", "extensions.worktreeConfig"]) === "true") return;
+      try {
+        copyFileSync(config, lock, constants.COPYFILE_EXCL);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST" || Date.now() >= deadline) throw error;
+        await delay(20);
+      }
+    }
     try {
       for (const key of ["core.bare", "core.worktree"]) {
         const value = await this.configValue(["--file", lock, "--get", key]);

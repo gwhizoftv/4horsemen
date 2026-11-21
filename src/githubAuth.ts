@@ -194,18 +194,22 @@ const authenticatedProfile = (account: string, result: { exitCode: number; stdou
     if (isGitHubAuthFailure(`${result.stderr}\n${result.stdout}`)) throw new GitHubAuthError(authExpiredMessage(account));
     throw new GitHubAuthError(`Cannot verify GitHub account ${account}: ${detail(result)}`);
   }
-  let profile: GitHubProfile;
+  let raw: unknown;
   try {
-    profile = githubProfileSchema.parse(JSON.parse(result.stdout));
+    raw = JSON.parse(result.stdout);
   } catch {
     throw new GitHubAuthError(`Cannot verify GitHub account ${account}: expected a login and a positive numeric user ID.`);
   }
-  if (profile.login.toLowerCase() !== account.toLowerCase()) {
+  const identity = z.object({ login: githubLoginSchema }).safeParse(raw);
+  const login = identity.data?.login;
+  if (login?.toLowerCase() !== account.toLowerCase()) {
     throw new GitHubAuthError(
-      `The saved GitHub credential for ${account} authenticates as ${profile.login}.\nRun: coord auth login`
+      `The saved GitHub credential for ${account} authenticates as ${login ?? "an unknown user"}.\nRun: coord auth login`
     );
   }
-  return profile;
+  const profile = githubProfileSchema.safeParse(raw);
+  if (!profile.success) throw new GitHubAuthError(`Cannot verify GitHub account ${account}: expected a login and a positive numeric user ID.`);
+  return profile.data;
 };
 
 /** Direct synchronous installer callers have no CLI preflight to supply the profile. */
