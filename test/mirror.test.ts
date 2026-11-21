@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { BareMirror, isTransientGitFailure } from "../src/mirror.js";
+import { BareMirror, hermeticGitEnv, isTransientGitFailure } from "../src/mirror.js";
 import { assertNoSymlink, resolveSafeCoordRoot } from "../src/paths.js";
 
 const roots: string[] = [];
@@ -38,6 +38,53 @@ const repository = () => {
 };
 
 describe("owner bare mirror", () => {
+  it("attributes ordinary detached commits and repairs mirrors that already have linked worktrees", async () => {
+    const fixture = repository();
+    const mirror = new BareMirror(join(fixture.root, "mirror.git"), fixture.origin);
+    const profile = { login: "gwhizofss", id: 155764113 };
+    const email = "155764113+gwhizofss@users.noreply.github.com";
+    await mirror.initialize(profile);
+    await mirror.fetchBranch("issue-1/codex");
+    const checkout = join(fixture.root, "checkout");
+    await mirror.materializeWorktree(checkout, fixture.sha);
+    execFileSync("git", ["commit", "--allow-empty", "-qm", "check attribution"], { cwd: checkout, env: hermeticGitEnv() });
+    expect(git(checkout, "log", "-1", "--format=%an|%ae|%cn|%ce")).toBe([profile.login, email, profile.login, email].join("|"));
+
+    git(mirror.path, "config", "--local", "user.email", "stale@example.com");
+    await mirror.initialize(profile);
+    expect(git(checkout, "config", "user.email")).toBe(email);
+  });
+
+  it("retains the issue author in its worktree after another issue changes the mirror defaults", async () => {
+    const fixture = repository();
+    const path = join(fixture.root, "mirror.git");
+    const first = new BareMirror(path, fixture.origin, undefined, { account: "first", cliEntry: "/coord/dist/main.js" });
+    const second = new BareMirror(path, fixture.origin, undefined, { account: "second", cliEntry: "/coord/dist/main.js" });
+    await first.initialize({ login: "first", id: 1 });
+    await first.fetchBranch("issue-1/codex");
+    const a = join(fixture.root, "one", "same-name");
+    const b = join(fixture.root, "two", "same-name");
+    await first.materializeWorktree(a, fixture.sha);
+    await second.initialize({ login: "second", id: 2 });
+    await second.materializeWorktree(b, fixture.sha);
+    for (const [checkout, login, id] of [[a, "first", 1], [b, "second", 2]] as const) {
+      execFileSync("git", ["commit", "--allow-empty", "-qm", "check attribution"], { cwd: checkout, env: hermeticGitEnv() });
+      const email = `${id}+${login}@users.noreply.github.com`;
+      expect(git(checkout, "log", "-1", "--format=%an|%ae|%cn|%ce")).toBe([login, email, login, email].join("|"));
+    }
+    await new BareMirror(path, fixture.origin).initialize(null);
+    expect(git(a, "config", "--worktree", "user.name")).toBe("first");
+    expect(git(b, "config", "--worktree", "user.name")).toBe("second");
+    const ambient = join(fixture.root, "ambient");
+    await new BareMirror(path, fixture.origin).materializeWorktree(ambient, fixture.sha);
+    expect(git(ambient, "config", "--worktree", "--list")).not.toContain("user.name");
+    expect(git(path, "config", "--local", "--list")).not.toContain("user.email");
+    expect(git(path, "rev-parse", "--is-bare-repository")).toBe("true");
+    expect(git(ambient, "rev-parse", "--is-inside-work-tree")).toBe("true");
+    await first.removeWorktree(a);
+    await second.removeWorktree(b);
+  });
+
   it("constrains proposal reads to ordinary tracked files at the exact pin", async () => {
     const fixture = repository();
     mkdirSync(join(fixture.work, ".ci"));

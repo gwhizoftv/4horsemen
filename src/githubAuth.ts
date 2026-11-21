@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -76,21 +77,29 @@ export const explainGitHubAuthFailure = (account: string, stderr: string): strin
   isGitHubAuthFailure(stderr) ? `${stderr.trimEnd()}\n${authExpiredMessage(account)}` : stderr;
 
 const TOKEN_LOOKUP_TIMEOUT_MS = 30_000;
+const tokenLookupArgs = (account: string) => ["auth", "token", "--hostname", GITHUB_HOST, "--user", account];
+const tokenFromResult = (account: string, code: number | null, stdout: string): string => {
+  const token = stdout.trim();
+  if (code !== 0 || token === "" || /\s/.test(token)) throw new GitHubAuthError(authUnavailableMessage(account));
+  return token;
+};
+
+const selectedGhEnv = (token: string, source?: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({
+  ...withoutAmbientTokens(source), GH_TOKEN: token, GH_PROMPT_DISABLED: "1"
+});
 
 /** Read the named account's token from gh's credential storage; never the active account's. */
 export const resolveGitHubToken = async (account: string, runner: ProcessRunner, cwd: string): Promise<string> => {
   let result;
   try {
-    result = await runner(["gh", "auth", "token", "--hostname", GITHUB_HOST, "--user", account], cwd, {
+    result = await runner(["gh", ...tokenLookupArgs(account)], cwd, {
       env: withoutAmbientTokens(),
       timeoutMs: TOKEN_LOOKUP_TIMEOUT_MS
     });
   } catch {
     throw new GitHubAuthError(authUnavailableMessage(account));
   }
-  const token = result.stdout.trim();
-  if (result.exitCode !== 0 || token === "" || /\s/.test(token)) throw new GitHubAuthError(authUnavailableMessage(account));
-  return token;
+  return tokenFromResult(account, result.exitCode, result.stdout);
 };
 
 /**
@@ -109,7 +118,7 @@ export const withGitHubAccount = (
       const token = await resolveGitHubToken(account, runner, cwd);
       const result = await runner(argv, cwd, {
         ...options,
-        env: { ...withoutAmbientTokens(options.env ?? process.env), GH_TOKEN: token, GH_PROMPT_DISABLED: "1" }
+        env: selectedGhEnv(token, options.env)
       });
       return result.exitCode === 0 ? result : { ...result, stderr: explainGitHubAuthFailure(account, result.stderr) };
     }
@@ -130,7 +139,87 @@ export const requireHttpsGitHubOrigin = (account: string, origin: string): strin
   return repository;
 };
 
-export type GitHubAccess = { account: string; login: string; repository: string };
+export const githubProfileSchema = z.object({
+  login: githubLoginSchema,
+  id: z.number().int().positive()
+}).strict();
+export type GitHubProfile = z.infer<typeof githubProfileSchema>;
+
+export const AUTHOR_KEYS = ["user.name", "user.email"] as const;
+type AuthorKey = typeof AUTHOR_KEYS[number];
+export const AUTHOR_RECEIPT_KEY = "coord.managedGitAuthor";
+export const gitAuthorSettings = ({ login, id }: GitHubProfile): [AuthorKey, string][] => [
+  ["user.name", login],
+  ["user.email", `${id}+${login}@users.noreply.github.com`]
+];
+
+const receiptSchema = z.partialRecord(z.enum(AUTHOR_KEYS), z.object({
+  original: z.string().nullable(),
+  installed: z.string()
+}));
+
+/** Record only keys coord changed. On unbind, restore those the owner hasn't edited. */
+export const gitAuthorEdits = (profile: GitHubProfile | undefined, current: ReadonlyMap<string, string | null>): [string, string | null][] => {
+  const saved = current.get(AUTHOR_RECEIPT_KEY);
+  const receipt = saved ? receiptSchema.parse(JSON.parse(saved)) : {};
+  const desired = new Map(profile ? gitAuthorSettings(profile) : []);
+  const changes: [string, string | null][] = [];
+  for (const key of AUTHOR_KEYS) {
+    const value = current.get(key) ?? null;
+    const target = desired.get(key);
+    const previous = receipt[key];
+    if (target !== undefined && target !== value) {
+      receipt[key] = { original: previous ? previous.original : value, installed: target };
+      changes.push([key, target]);
+    } else if (target === undefined && previous) {
+      if (value === previous.installed) changes.push([key, previous.original]);
+      delete receipt[key];
+    }
+  }
+  const record = Object.keys(receipt).length ? JSON.stringify(receipt) : null;
+  if (record !== (saved ?? null)) {
+    // Save provenance before installing, and forget it only after restoration.
+    if (profile) changes.unshift([AUTHOR_RECEIPT_KEY, record]);
+    else changes.push([AUTHOR_RECEIPT_KEY, record]);
+  }
+  return changes;
+};
+
+const profileArgs = ["api", "user", "--jq", "{login,id}"];
+const detail = (result: { stdout: string; stderr: string; exitCode: number }): string =>
+  result.stderr.trim().split("\n")[0] || result.stdout.trim() || `gh exited ${result.exitCode}`;
+
+const authenticatedProfile = (account: string, result: { exitCode: number; stdout: string; stderr: string }): GitHubProfile => {
+  if (result.exitCode !== 0) {
+    if (isGitHubAuthFailure(`${result.stderr}\n${result.stdout}`)) throw new GitHubAuthError(authExpiredMessage(account));
+    throw new GitHubAuthError(`Cannot verify GitHub account ${account}: ${detail(result)}`);
+  }
+  let profile: GitHubProfile;
+  try {
+    profile = githubProfileSchema.parse(JSON.parse(result.stdout));
+  } catch {
+    throw new GitHubAuthError(`Cannot verify GitHub account ${account}: expected a login and a positive numeric user ID.`);
+  }
+  if (profile.login.toLowerCase() !== account.toLowerCase()) {
+    throw new GitHubAuthError(
+      `The saved GitHub credential for ${account} authenticates as ${profile.login}.\nRun: coord auth login`
+    );
+  }
+  return profile;
+};
+
+/** Direct synchronous installer callers have no CLI preflight to supply the profile. */
+export const resolveInstallProfile = (account: string, cwd: string): GitHubProfile => {
+  const options = { cwd, encoding: "utf8" as const, timeout: TOKEN_LOOKUP_TIMEOUT_MS };
+  const lookup = spawnSync("gh", tokenLookupArgs(account), { ...options, env: withoutAmbientTokens() });
+  const token = tokenFromResult(account, lookup.status, lookup.stdout ?? "");
+  const user = spawnSync("gh", profileArgs, { ...options, env: selectedGhEnv(token) });
+  return authenticatedProfile(account, {
+    exitCode: user.status ?? 1, stdout: user.stdout ?? "", stderr: user.stderr || user.error?.message || ""
+  });
+};
+
+export type GitHubAccess = { account: string; login: string; profile: GitHubProfile; repository: string };
 
 /** The saved credential signs in as the account and can reach the repository. */
 export const verifyGitHubAccess = async (input: {
@@ -141,21 +230,7 @@ export const verifyGitHubAccess = async (input: {
 }): Promise<GitHubAccess> => {
   const repository = requireHttpsGitHubOrigin(input.account, input.origin);
   const gh = withGitHubAccount(input.runner, input.account);
-  const detail = (result: { stdout: string; stderr: string; exitCode: number }): string =>
-    result.stderr.trim().split("\n")[0] || result.stdout.trim() || `gh exited ${result.exitCode}`;
-
-  const user = await gh(["gh", "api", "user", "--jq", ".login"], input.cwd);
-  if (user.exitCode !== 0) {
-    if (isGitHubAuthFailure(`${user.stderr}\n${user.stdout}`)) throw new GitHubAuthError(authExpiredMessage(input.account));
-    throw new GitHubAuthError(`Cannot verify GitHub account ${input.account}: ${detail(user)}`);
-  }
-  const login = user.stdout.trim();
-  if (login.toLowerCase() !== input.account.toLowerCase()) {
-    throw new GitHubAuthError(
-      `The saved GitHub credential for ${input.account} authenticates as ${login === "" ? "an unknown user" : login}.\n` +
-        "Run: coord auth login"
-    );
-  }
+  const profile = authenticatedProfile(input.account, await gh(["gh", ...profileArgs], input.cwd, { timeoutMs: TOKEN_LOOKUP_TIMEOUT_MS }));
   const repo = await gh(["gh", "api", `repos/${repository}`, "--jq", ".full_name"], input.cwd);
   if (repo.exitCode !== 0) {
     if (isGitHubAuthFailure(`${repo.stderr}\n${repo.stdout}`)) throw new GitHubAuthError(authExpiredMessage(input.account));
@@ -164,7 +239,7 @@ export const verifyGitHubAccess = async (input: {
         "Grant that account access, or select another account with coord onboard <repository> --github-account <name>."
     );
   }
-  return { account: input.account, login, repository };
+  return { account: input.account, login: profile.login, profile, repository };
 };
 
 /**
