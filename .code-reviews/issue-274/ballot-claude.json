@@ -1,0 +1,29 @@
+{
+  "actionId": "0c72a35f-bc0a-4052-a250-bb5e81dcc89f",
+  "agent": "claude",
+  "artifact": "comparison-ballot",
+  "choice": "codex",
+  "implementations": [
+    {
+      "agent": "antigravity",
+      "commitSha": "76c894beac6c031d3b19ba299f38031df6323de9",
+      "path": ".signals/issue-274/implementation-ready-antigravity.json"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "c8e84f7dec019326ec15a8bc78e1e06cbe9b5e92",
+      "path": ".signals/issue-274/implementation-ready-claude.json"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "ff24cca4b8e2c496c0f7633004b264509b5d015d",
+      "path": ".signals/issue-274/implementation-ready-codex.json"
+    }
+  ],
+  "inputSetHash": "815bdd02bd0a114d826e4c8b1c5c33e1fa93d415686cb06810cb0ef78b3a69f8",
+  "issue": 274,
+  "issueSessionId": "issue-274:66346c2983e0cc56fc1e2d14dce5a25c9b1cd03d",
+  "protocolVersion": 2,
+  "rationale": "All three pins implement the selected plan correctly within the approved files, and codex's is the smallest, most plan-faithful change, refusing invalid selections before the manual-session probe (proved by asserting sessionExists is never called) and covering continuation after drop and a default-profile change, whereas claude's lacks drop-continuation coverage and antigravity's adds larger tests and doc wording nits.",
+  "responseSha256": "25211ff4e584f0fc903cf2a7759842f0124b85d88668120d9cd6985300dd02f2"
+}
