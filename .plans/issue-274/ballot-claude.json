@@ -1,0 +1,46 @@
+{
+  "actionId": "049f1a6c-ba3f-4f3b-b0a3-b9e9bb46739c",
+  "agent": "claude",
+  "artifact": "plan-ballot",
+  "choice": "codex",
+  "inputSetHash": "f967fd0ac38712b147ee779a39be1fe1612e07d4409f6e974e9b61818f549d43",
+  "issue": 274,
+  "issueSessionId": "issue-274:66346c2983e0cc56fc1e2d14dce5a25c9b1cd03d",
+  "plans": [
+    {
+      "agent": "antigravity",
+      "commitSha": "8b884baed15fc16f9fd34674772cd3a4362a2059",
+      "path": ".plans/issue-274/plan.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "13a88fdf0ae7ed34ddfbfbe266dd078ec20b46e5",
+      "path": ".plans/issue-274/plan.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "8d35e7358c6950d37273bc0ff44c1d78db76fae9",
+      "path": ".plans/issue-274/plan.md"
+    }
+  ],
+  "protocolVersion": 2,
+  "rationale": "Codex's plan is the only one with a clean extracted file map (cli.ts, cli.test.ts, coord-driver.md), the correct exit code 2, the system Vitest config, and resume compared against the saved originalRoster regardless of current profile; its sole gap is moving the fresh-start multi-agent solo check ahead of assertNoManualSession, whereas antigravity needs F4/F5 fixes and its file map over-approves paths like src/install.ts, and claude's plan has four blocking defects.",
+  "responseSha256": "34794110fb6c4434b68c0388620c1d0cb850b952ee02c7d5d8852baa357ecced",
+  "reviews": [
+    {
+      "agent": "antigravity",
+      "commitSha": "4a52bc67412cf102e4a0e884b3ba936a51707a22",
+      "path": ".plans/issue-274/review.md"
+    },
+    {
+      "agent": "claude",
+      "commitSha": "518c7653a2e2553c5b4a6eaccf18894412ce46e4",
+      "path": ".plans/issue-274/review.md"
+    },
+    {
+      "agent": "codex",
+      "commitSha": "fabc96fd89e104656d44c02c81adabf33ab13c27",
+      "path": ".plans/issue-274/review.md"
+    }
+  ]
+}
